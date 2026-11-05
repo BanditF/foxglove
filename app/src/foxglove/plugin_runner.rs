@@ -10,6 +10,8 @@ use foxglove_plugin_host::{Client, Context, Limits};
 
 static RUNNERS: Mutex<Option<HashMap<String, Runner>>> = Mutex::new(None);
 static STATES: Mutex<Option<HashMap<String, PluginState>>> = Mutex::new(None);
+/// The running plugins that were launched unsigned (#381), with their package hashes.
+static UNSIGNED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 /// A Plugin's state for the Plugins tab, if it has been started this session.
 pub fn state(id: &str) -> Option<PluginState> {
@@ -30,10 +32,52 @@ pub fn sync() {
     let Some(dir) = super::plugin_install::plugins_dir() else {
         return;
     };
-    let wanted: Vec<_> = super::plugin_install::installed()
+    let enabled: Vec<_> = super::plugin_install::installed()
         .into_iter()
         .filter(|k| k.record.enabled)
         .collect();
+    // Before every launch: still signed with its files unchanged (#159), or an unsigned build
+    // the user allowed in developer mode (#381). A running plugin launched unsigned is checked
+    // again against developer mode, so turning it off stops it; it stays installed.
+    use super::plugin_trust::{self as trust, Trust};
+    let running: Vec<String> = RUNNERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|r| r.keys().cloned().collect())
+        .unwrap_or_default();
+    let mut unsigned = UNSIGNED.lock().unwrap_or_else(|e| e.into_inner());
+    let unsigned = unsigned.get_or_insert_with(HashMap::new);
+    unsigned.retain(|id, _| running.contains(id));
+    let dev = trust::dev_mode();
+    let mut catalog = None;
+    let mut wanted = Vec::new();
+    for plugin in enabled {
+        let id = &plugin.manifest.id;
+        let t = if running.contains(id) {
+            unsigned
+                .get(id)
+                .map_or(Trust::Signed, |h| Trust::Unsigned(h.clone()))
+        } else {
+            let c = catalog.get_or_insert_with(|| trust::catalog().ok());
+            let t = trust::trust_in(c.as_ref(), id, &plugin.manifest.version, &dir.join(id));
+            match &t {
+                Trust::Unsigned(h) => unsigned.insert(id.clone(), h.clone()),
+                _ => unsigned.remove(id),
+            };
+            t
+        };
+        match trust::verdict(&t, &dev) {
+            Ok(()) => wanted.push(plugin),
+            Err(why) => {
+                STATES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_insert_with(HashMap::new)
+                    .insert(plugin.manifest.id.clone(), PluginState::Disabled(why));
+            }
+        }
+    }
     let mut guard = RUNNERS.lock().unwrap_or_else(|e| e.into_inner());
     let runners = guard.get_or_insert_with(HashMap::new);
     runners.retain(|id, _| wanted.iter().any(|k| &k.manifest.id == id));
@@ -41,22 +85,6 @@ pub fn sync() {
         let id = plugin.manifest.id.clone();
         if runners.contains_key(&id) {
             continue;
-        }
-        // Before every launch: still signed, files unchanged (#159).
-        if let Err(e) =
-            super::plugin_trust::check_installed(&id, &plugin.manifest.version, &dir.join(&id))
-        {
-            if !super::plugin_trust::dev_unsigned() {
-                STATES
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .get_or_insert_with(HashMap::new)
-                    .insert(
-                        id.clone(),
-                        PluginState::Disabled(format!("not verified: {e}")),
-                    );
-                continue;
-            }
         }
         use foxglove_plugin_api::permission::Permission;
         // Plugins that don't ask for the network or the user's files don't get either.

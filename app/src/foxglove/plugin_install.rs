@@ -67,10 +67,17 @@ pub struct PluginRecord {
     pub approved: Vec<Permission>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-struct Plugins {
-    installed: BTreeMap<String, PluginRecord>,
+/// The store's `[plugins.installed]`. Saved as its own section, so saving it leaves
+/// `[plugins.trust]`, `[plugins.refresh]` and `[plugins.dev]` alone (saving all of `[plugins]`
+/// used to drop them).
+const RECORDS: &str = "plugins.installed";
+
+fn records() -> BTreeMap<String, PluginRecord> {
+    super::store::try_load(RECORDS).unwrap_or_default()
+}
+
+fn save_records(records: &BTreeMap<String, PluginRecord>) -> Result<(), String> {
+    super::store::save(RECORDS, records).map_err(|e| e.to_string())
 }
 
 /// `plugins\` next to the settings store; a `kits\` folder from before #87 is renamed to it.
@@ -95,9 +102,7 @@ pub fn installed() -> Vec<Installed> {
     let Some(dir) = plugins_dir() else {
         return vec![];
     };
-    let records = super::store::try_load::<Plugins>("plugins")
-        .unwrap_or_default()
-        .installed;
+    let records = records();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return vec![];
     };
@@ -117,6 +122,29 @@ pub fn installed() -> Vec<Installed> {
     plugins
 }
 
+/// Each installed plugin's trust by id (#381), against the signed catalog, read once.
+pub fn trust_all(
+    plugins: &[Installed],
+) -> std::collections::HashMap<String, super::plugin_trust::Trust> {
+    let Some(dir) = plugins_dir() else {
+        return Default::default();
+    };
+    let catalog = super::plugin_trust::catalog().ok();
+    plugins
+        .iter()
+        .map(|p| {
+            let id = &p.manifest.id;
+            let t = super::plugin_trust::trust_in(
+                catalog.as_ref(),
+                id,
+                &p.manifest.version,
+                &dir.join(id),
+            );
+            (id.clone(), t)
+        })
+        .collect()
+}
+
 /// A Plugin unpacked next to the plugins folder, waiting for the user's approval.
 #[derive(Clone, Debug)]
 pub struct Staged {
@@ -124,25 +152,62 @@ pub struct Staged {
     pub dir: PathBuf,
     /// Permissions that an installed version didn't have (all of them for a new plugin).
     pub new_permissions: Vec<Permission>,
+    /// Not signed (#381): its package hash, which installing allows. `None` when signed.
+    pub unsigned: Option<String>,
+    /// The user allowed this exact unsigned build before, so it isn't asked again.
+    pub allowed_before: bool,
+    /// A warning when it takes a catalog plugin's id, or a signed plugin replaces an unsigned one.
+    pub clash: Option<String>,
 }
+
+/// Why an unsigned archive doesn't install outside developer mode.
+pub const UNSIGNED_REFUSED: &str =
+    "Foxglove only installs signed plugins unless developer mode is on";
 
 /// Unpacks a plugin archive into a staging folder and checks its manifest. Nothing is installed
 /// until [`commit`].
 pub fn stage(archive: &Path) -> Result<Staged, String> {
+    stage_with(
+        archive,
+        &super::plugin_trust::catalog(),
+        &super::plugin_trust::dev_mode(),
+    )
+}
+
+/// [`stage`] against a given signed catalog and developer mode.
+fn stage_with(
+    archive: &Path,
+    catalog: &Result<foxglove_plugin_trust::Catalog, String>,
+    dev: &super::plugin_trust::DevMode,
+) -> Result<Staged, String> {
+    use super::plugin_trust::{self as trust, Trust};
     let plugins = plugins_dir().ok_or("no settings folder")?;
     let staging = plugins.join(format!(".staging-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
-    // Only signed plugins: the archive's hash must be in the signed catalog (#159).
+    // Signed plugins: the archive's hash is in the signed catalog (#159). Others only in
+    // developer mode (#381); a withdrawn version never.
     let bytes = std::fs::read(archive).map_err(|e| e.to_string())?;
-    let signed = match super::plugin_trust::entry_for_archive(&bytes) {
-        Ok(entry) => Some(entry),
-        Err(_) if super::plugin_trust::dev_unsigned() => None,
-        Err(e) => return Err(e),
+    let signed = match catalog {
+        Ok(c) => trust::entry_in(c, &bytes)?,
+        Err(_) => None,
     };
+    if signed.is_none() && !dev.on {
+        let why = match catalog {
+            Ok(_) => "this archive isn't a signed Foxglove plugin",
+            Err(e) => e.as_str(),
+        };
+        return Err(format!("{why}. {UNSIGNED_REFUSED}"));
+    }
     unpack(archive, &staging)?;
     let text = manifest::read_in(&staging)
         .map_err(|_| "the archive has no plugin.toml at its top".to_string())?;
-    let manifest = Manifest::parse(&text, API_VERSION)?;
+    let manifest = match Manifest::parse(&text, API_VERSION) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    };
     if let Some(entry) = &signed {
         let checked = if (entry.id.as_str(), entry.version.as_str())
             != (manifest.id.as_str(), manifest.version.as_str())
@@ -159,6 +224,16 @@ pub fn stage(archive: &Path) -> Result<Staged, String> {
             return Err(e);
         }
     }
+    let unsigned = match signed {
+        Some(_) => None,
+        None => match trust::package_hash(&staging) {
+            Ok(hash) => Some(hash),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(e);
+            }
+        },
+    };
     let previous = manifest::read_in(&plugins.join(&manifest.id))
         .ok()
         .and_then(|t| Manifest::parse(&t, API_VERSION).ok());
@@ -166,11 +241,48 @@ pub fn stage(archive: &Path) -> Result<Staged, String> {
         Some(old) => manifest.added_permissions(old),
         None => manifest.permissions.clone(),
     };
+    let clash = match (&unsigned, &previous) {
+        // An unsigned file under a catalog plugin's id.
+        (Some(_), _) => catalog_name(&manifest.id, catalog.as_ref().ok()).map(|name| {
+            format!("Same id as {name} from the Foxglove catalog. This file takes its place, and the catalog won't update it.")
+        }),
+        // A signed plugin over an unsigned one installed from a file.
+        (None, Some(old)) => {
+            let dir = plugins.join(&old.id);
+            let was = trust::trust_in(catalog.as_ref().ok(), &old.id, &old.version, &dir);
+            matches!(was, Trust::Unsigned(_)).then(|| {
+                format!(
+                    "This replaces {} {}, the unsigned copy you installed from a file.",
+                    old.name, old.version
+                )
+            })
+        }
+        (None, None) => None,
+    };
+    let allowed_before = unsigned
+        .as_ref()
+        .is_some_and(|h| dev.allowed.contains_key(h));
     Ok(Staged {
         manifest,
         dir: staging,
         new_permissions,
+        unsigned,
+        allowed_before,
+        clash,
     })
+}
+
+/// A catalog plugin's name by id: the curated catalog's, or the id if only the signed one has it.
+fn catalog_name(id: &str, signed: Option<&foxglove_plugin_trust::Catalog>) -> Option<String> {
+    catalog()
+        .into_iter()
+        .find(|e| e.id == id)
+        .map(|e| e.name)
+        .or_else(|| {
+            signed
+                .is_some_and(|c| c.plugins.iter().any(|e| e.id == id))
+                .then(|| id.to_string())
+        })
 }
 
 /// Unzips `archive` into `into`, refusing paths that leave it and archives that are too big.
@@ -214,6 +326,7 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
 }
 
 /// Installs a staged plugin (replacing an older version) with the permissions the user approved.
+/// An unsigned one's build is allowed with it: installing it is the user's one-time OK.
 pub fn commit(staged: Staged, enabled: bool) -> Result<(), String> {
     let plugins = plugins_dir().ok_or("no settings folder")?;
     let target = plugins.join(&staged.manifest.id);
@@ -221,15 +334,18 @@ pub fn commit(staged: Staged, enabled: bool) -> Result<(), String> {
         std::fs::remove_dir_all(&target).map_err(|e| format!("removing the old version: {e}"))?;
     }
     std::fs::rename(&staged.dir, &target).map_err(|e| e.to_string())?;
-    let mut all = super::store::try_load::<Plugins>("plugins").unwrap_or_default();
-    all.installed.insert(
+    if let Some(hash) = &staged.unsigned {
+        super::plugin_trust::allow(hash, &staged.manifest.id, &staged.manifest.version)?;
+    }
+    let mut all = records();
+    all.insert(
         staged.manifest.id.clone(),
         PluginRecord {
             enabled,
             approved: staged.manifest.permissions.clone(),
         },
     );
-    super::store::save("plugins", &all).map_err(|e| e.to_string())
+    save_records(&all)
 }
 
 /// Test hook for the Test lab: `FOXGLOVE_PLUGINS_AUTOINSTALL=<zip or folder>` installs and
@@ -246,7 +362,7 @@ pub fn autoinstall() {
     let real =
         directories::ProjectDirs::from("", "", "Foxglove").map(|d| d.config_dir().to_path_buf());
     let result = autoinstall_allowed(
-        super::plugin_trust::dev_unsigned(),
+        super::plugin_trust::dev_env(),
         config_dir.as_deref(),
         real.as_deref(),
     )
@@ -347,9 +463,9 @@ pub fn discard(staged: Staged) {
 }
 
 pub fn set_enabled(id: &str, enabled: bool) -> Result<(), String> {
-    let mut all = super::store::try_load::<Plugins>("plugins").unwrap_or_default();
-    all.installed.entry(id.to_string()).or_default().enabled = enabled;
-    super::store::save("plugins", &all).map_err(|e| e.to_string())
+    let mut all = records();
+    all.entry(id.to_string()).or_default().enabled = enabled;
+    save_records(&all)
 }
 
 /// Uninstalls a plugin: its folder and its record.
@@ -362,15 +478,22 @@ pub fn remove(id: &str) -> Result<(), String> {
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
-    #[cfg(windows)]
-    ::foxglove_plugin_host::delete_container(id);
-    // Its passwords and tokens go with it (#213).
-    if let Err(e) = ::foxglove_plugin_host::secrets::delete_all(id) {
-        eprintln!("Foxglove: removing {id}'s secrets: {e}");
+    // Its sandbox profile, passwords and tokens go with it (#213). Not from tests: those live
+    // in Windows, outside the test settings folder, and a test id can be a real plugin's.
+    if !cfg!(test) {
+        #[cfg(windows)]
+        ::foxglove_plugin_host::delete_container(id);
+        if let Err(e) = ::foxglove_plugin_host::secrets::delete_all(id) {
+            eprintln!("Foxglove: removing {id}'s secrets: {e}");
+        }
     }
-    let mut all = super::store::try_load::<Plugins>("plugins").unwrap_or_default();
-    all.installed.remove(id);
-    super::store::save("plugins", &all).map_err(|e| e.to_string())
+    // So are the unsigned builds the user allowed for it (#381).
+    if let Err(e) = super::plugin_trust::forget(id) {
+        eprintln!("Foxglove: forgetting {id}'s allowed builds: {e}");
+    }
+    let mut all = records();
+    all.remove(id);
+    save_records(&all)
 }
 
 #[cfg(test)]
@@ -484,9 +607,26 @@ mod tests {
         let _ = std::fs::remove_file(evil);
     }
 
+    /// The tests that use the plugins folder and developer mode, one at a time: both are shared
+    /// by every test in the process.
+    static SIDELOAD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn sideload_lock() -> std::sync::MutexGuard<'static, ()> {
+        let guard = SIDELOAD.lock().unwrap_or_else(|e| e.into_inner());
+        super::super::store::test_config_dir();
+        let _ = std::fs::remove_dir_all(plugins_dir().unwrap());
+        super::super::store::save(
+            "plugins.dev",
+            &super::super::plugin_trust::DevMode::default(),
+        )
+        .unwrap();
+        guard
+    }
+
     /// The whole install flow in a temp settings folder (FOXGLOVE_CONFIG_DIR), never the real one.
     #[test]
     fn stage_commit_list_and_remove() {
+        let _lock = sideload_lock();
         let root = super::super::store::test_config_dir()
             .parent()
             .unwrap()
@@ -501,7 +641,7 @@ permissions = [\"facts.write:weather.*\", \"key.events\"]
         let archive = zip_with(&[("plugin.toml", manifest.as_bytes()), ("weather.exe", b"MZ")]);
         // Unsigned: refused, then allowed in developer mode for the rest of the flow.
         assert!(stage(&archive).unwrap_err().contains("signed"));
-        std::env::set_var("FOXGLOVE_DEV_UNSIGNED_PLUGINS", "1");
+        super::super::plugin_trust::set_dev_mode(true).unwrap();
         let staged = stage(&archive).unwrap();
         assert_eq!(staged.new_permissions.len(), 2);
         assert!(staged.new_permissions.iter().any(Permission::sensitive));
@@ -528,6 +668,266 @@ permissions = [\"facts.write:weather.*\", \"key.events\"]
         );
         // The settings folder is shared with the other tests: only this test's plugins go.
         let _ = std::fs::remove_dir_all(root.join("config/plugins"));
+        super::super::plugin_trust::set_dev_mode(false).unwrap();
         let _ = std::fs::remove_file(archive);
+    }
+
+    const MIC_BUILD: &str = "id = \"org.foxglove.mic-mute\"
+name = \"Mic mute (my build)\"
+version = \"0.0.1\"
+api = \"1.0\"
+run = [\"mic.exe\"]
+permissions = [\"facts.write:mine.*\"]
+";
+
+    /// The done-when test (#381): a sideloaded unsigned plugin under a catalog id. Refused
+    /// outside developer mode; in it, the clash warning and the one-time OK, the SIDELOADED
+    /// and UNSIGNED badges, off again when developer mode is, a changed build asks again, and
+    /// it gets only the permissions it was approved for.
+    #[test]
+    fn sideloaded_unsigned_plugin_with_warning_badge_and_permissions() {
+        use super::super::plugin_trust::{self as trust, Trust};
+        use super::super::plugins_ui::{cards, Tag};
+        let _lock = sideload_lock();
+        let archive = zip_with(&[("plugin.toml", MIC_BUILD.as_bytes()), ("mic.exe", b"MZ")]);
+
+        // Developer mode is off by default: refused, nothing unpacked.
+        let e = stage(&archive).unwrap_err();
+        assert!(e.ends_with(UNSIGNED_REFUSED), "{e}");
+        assert!(installed().is_empty());
+
+        trust::set_dev_mode(true).unwrap();
+        let staged = stage(&archive).unwrap();
+        let hash = staged.unsigned.clone().expect("unsigned");
+        assert!(!staged.allowed_before, "asks the first time");
+        assert!(
+            staged
+                .clash
+                .as_deref()
+                .is_some_and(|c| c.starts_with("Same id as Mic mute from the Foxglove catalog")),
+            "{:?}",
+            staged.clash
+        );
+        commit(staged, true).unwrap();
+        assert!(
+            trust::dev_mode().allowed.contains_key(&hash),
+            "the OK is kept by hash"
+        );
+        let again = stage(&archive).unwrap();
+        assert!(again.allowed_before, "the same build isn't asked twice");
+        discard(again);
+
+        let plugins = installed();
+        let t = trust_all(&plugins);
+        assert_eq!(
+            t.get("org.foxglove.mic-mute"),
+            Some(&Trust::Unsigned(hash.clone()))
+        );
+        let card = |dev: &trust::DevMode| {
+            cards(&plugins, |id| t[id].clone(), dev, &catalog())
+                .into_iter()
+                .find(|c| c.id == "org.foxglove.mic-mute")
+                .unwrap()
+        };
+        let on = card(&trust::dev_mode());
+        assert_eq!(
+            (on.tag, on.unsigned, on.blocked.clone()),
+            (Tag::Sideloaded, true, None)
+        );
+
+        // Developer mode off: disabled, not deleted, with the reason.
+        trust::set_dev_mode(false).unwrap();
+        let off = card(&trust::dev_mode());
+        assert_eq!(off.blocked.as_deref(), Some(trust::OFF_UNSIGNED));
+        assert_eq!(installed().len(), 1, "still installed");
+        assert!(
+            installed()[0].record.enabled,
+            "its own switch is kept for later"
+        );
+
+        // A changed build is a new hash, not allowed yet.
+        trust::set_dev_mode(true).unwrap();
+        let dir = plugins_dir().unwrap().join("org.foxglove.mic-mute");
+        std::fs::write(dir.join("mic.exe"), b"MZ patched").unwrap();
+        let changed = trust_all(&installed());
+        assert_eq!(
+            trust::verdict(&changed["org.foxglove.mic-mute"], &trust::dev_mode()),
+            Err(trust::OFF_NOT_ALLOWED.into())
+        );
+        std::fs::write(dir.join("mic.exe"), b"MZ").unwrap();
+
+        // Its permissions are enforced: it gets what it was approved for and nothing else.
+        let approved = installed()[0].record.approved.clone();
+        let ctx = foxglove_plugin_host::Context {
+            facts: foxglove_devices::facts::Facts::default(),
+            devices: std::sync::Arc::new(foxglove_plugin_host::NoDevices),
+            client: foxglove_plugin_host::Client::Plugin(approved),
+            app_version: "test".into(),
+            limits: Default::default(),
+        };
+        let input = [
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"api":"1.0","client":{"name":"t","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"facts.set","params":{"key":"mine.x","value":true}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"facts.set","params":{"key":"weather.x","value":true}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"lighting.set","params":{}}"#,
+        ]
+        .join("\n")
+            + "\n";
+        let out = Out::default();
+        foxglove_plugin_host::serve(std::io::Cursor::new(input), out.clone(), ctx).unwrap();
+        let replies = out.replies();
+        let denied = foxglove_plugin_api::rpc::code::DENIED;
+        let code = |id: i64| {
+            replies
+                .iter()
+                .find(|r| r["id"] == id)
+                .map(|r| r["error"]["code"].as_i64())
+        };
+        assert_eq!(code(1), Some(None), "its own facts: {replies:?}");
+        assert_eq!(code(2), Some(Some(denied as i64)), "another plugin's facts");
+        assert_eq!(
+            code(3),
+            Some(Some(denied as i64)),
+            "lighting it never asked for"
+        );
+
+        // Removing it forgets the OK too.
+        remove("org.foxglove.mic-mute").unwrap();
+        assert!(!trust::dev_mode().allowed.contains_key(&hash));
+        trust::set_dev_mode(false).unwrap();
+        let _ = std::fs::remove_file(archive);
+    }
+
+    /// #381: a signed plugin is unaffected by developer mode, and installing it over an unsigned
+    /// copy says so (the reverse of the catalog-id warning).
+    #[test]
+    fn signed_plugins_are_unaffected_and_replacing_a_sideload_warns() {
+        use super::super::plugin_trust::{self as trust, tests::*, Trust};
+        let _lock = sideload_lock();
+        // The unsigned copy, in developer mode.
+        trust::set_dev_mode(true).unwrap();
+        let mine = zip_with(&[("plugin.toml", MIC_BUILD.as_bytes()), ("mic.exe", b"MZ")]);
+        commit(stage(&mine).unwrap(), true).unwrap();
+        trust::set_dev_mode(false).unwrap();
+
+        // The signed release: the same id, its files and archive in a (test) catalog.
+        let release = MIC_BUILD
+            .replace("Mic mute (my build)", "Mic mute")
+            .replace("0.0.1", "1.0.0");
+        let files = std::env::temp_dir().join(format!("foxglove-signed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&files);
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::write(files.join("plugin.toml"), &release).unwrap();
+        std::fs::write(files.join("mic.exe"), b"MZ signed").unwrap();
+        let archive = zip_dir(&files).unwrap();
+        let bytes = std::fs::read(&archive).unwrap();
+        let entry = entry_for("org.foxglove.mic-mute", "1.0.0", &bytes, &files);
+        let signed = Ok(catalog_with(vec![entry], vec![]));
+
+        let off = trust::DevMode::default();
+        let staged = stage_with(&archive, &signed, &off).unwrap();
+        assert!(staged.unsigned.is_none(), "signed: no OK to give");
+        assert_eq!(
+            staged.clash.as_deref(),
+            Some("This replaces Mic mute (my build) 0.0.1, the unsigned copy you installed from a file.")
+        );
+        commit(staged, true).unwrap();
+        let dir = plugins_dir().unwrap().join("org.foxglove.mic-mute");
+        let t = trust::trust_in(signed.as_ref().ok(), "org.foxglove.mic-mute", "1.0.0", &dir);
+        assert_eq!(t, Trust::Signed);
+        assert_eq!(
+            trust::verdict(&t, &off),
+            Ok(()),
+            "runs with developer mode off"
+        );
+
+        remove("org.foxglove.mic-mute").unwrap();
+        let _ = std::fs::remove_dir_all(files);
+        let _ = std::fs::remove_file(archive);
+        let _ = std::fs::remove_file(mine);
+    }
+
+    /// #381: a sideloaded plugin never updates from the catalog. A newer signed version of its
+    /// id, with a download, leaves its files, its version and its card alone; and the catalog
+    /// refresh has no way to touch the plugins folder.
+    #[test]
+    fn sideloads_never_update_from_the_catalog() {
+        use super::super::plugin_trust::{self as trust, tests::*, Trust};
+        use super::super::plugins_ui::{cards, Tag};
+        let _lock = sideload_lock();
+        trust::set_dev_mode(true).unwrap();
+        let mine = zip_with(&[("plugin.toml", MIC_BUILD.as_bytes()), ("mic.exe", b"MZ")]);
+        commit(stage(&mine).unwrap(), true).unwrap();
+        let dir = plugins_dir().unwrap().join("org.foxglove.mic-mute");
+        let before = trust::package_hash(&dir).unwrap();
+
+        let newer = foxglove_plugin_trust::Entry {
+            url: Some("https://example.invalid/mic-mute-9.9.9.zip".into()),
+            ..entry_for("org.foxglove.mic-mute", "9.9.9", b"newer", &dir)
+        };
+        let catalog_now = catalog_with(vec![newer], vec![]);
+        let t = trust::trust_in(Some(&catalog_now), "org.foxglove.mic-mute", "0.0.1", &dir);
+        assert_eq!(t, Trust::Unsigned(before.clone()), "still the user's build");
+        let plugins = installed();
+        let card = cards(&plugins, |_| t.clone(), &trust::dev_mode(), &catalog())
+            .into_iter()
+            .find(|c| c.id == "org.foxglove.mic-mute")
+            .unwrap();
+        assert_eq!(card.tag, Tag::Sideloaded);
+        assert!(card.name.ends_with("0.0.1") && card.blocked.is_none());
+        assert_eq!(
+            trust::package_hash(&dir).unwrap(),
+            before,
+            "files untouched"
+        );
+        // Nothing that fetches the catalog installs or replaces plugins.
+        let refresh = include_str!("catalog_refresh.rs");
+        for word in ["plugin_install", "plugins_dir", "commit(", "stage("] {
+            assert!(
+                !refresh.contains(word),
+                "catalog_refresh.rs mentions {word}"
+            );
+        }
+
+        remove("org.foxglove.mic-mute").unwrap();
+        trust::set_dev_mode(false).unwrap();
+        let _ = std::fs::remove_file(mine);
+    }
+
+    /// Saving the installed list leaves the rest of `[plugins]` alone (it used to drop the
+    /// catalog's rollback state and developer mode).
+    #[test]
+    fn saving_records_keeps_the_other_plugin_sections() {
+        let _lock = sideload_lock();
+        super::super::plugin_trust::set_dev_mode(true).unwrap();
+        set_enabled("org.example.nothing", false).unwrap();
+        assert!(super::super::plugin_trust::dev_mode().on);
+        super::super::plugin_trust::set_dev_mode(false).unwrap();
+        let mut all = records();
+        all.remove("org.example.nothing");
+        save_records(&all).unwrap();
+    }
+
+    #[derive(Clone, Default)]
+    struct Out(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Out {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Out {
+        fn replies(&self) -> Vec<serde_json::Value> {
+            String::from_utf8(self.0.lock().unwrap().clone())
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        }
     }
 }
