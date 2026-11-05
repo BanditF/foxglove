@@ -13,7 +13,7 @@
 //!   section is "unread" and a save of it is refused, until a read of that section succeeds.
 //!   A missing file is a genuine first run: defaults, saved as usual.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -106,17 +106,20 @@ fn read_once(path: &Path) -> std::io::Result<String> {
 
 /// Tests: reads of these files fail, as one another program holds would.
 #[cfg(test)]
-pub static FAIL_READS: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+pub static FAIL_READS: Mutex<std::collections::BTreeSet<PathBuf>> =
+    Mutex::new(std::collections::BTreeSet::new());
 
 /// Sections whose last read failed, by store file: saving one would write over settings that
 /// were never read, so it's refused until a read of it succeeds (#741).
-static UNREAD: Mutex<BTreeSet<(PathBuf, String)>> = Mutex::new(BTreeSet::new());
+/// The value is the failed read's error.
+static UNREAD: Mutex<BTreeMap<(PathBuf, String), String>> = Mutex::new(BTreeMap::new());
 
 fn mark_unread(path: &Path, section: &str, why: &str) {
     let fresh = UNREAD
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert((path.to_path_buf(), section.to_string()));
+        .insert((path.to_path_buf(), section.to_string()), why.to_string())
+        .is_none();
     if fresh {
         eprintln!(
             "Foxglove: settings: can't read [{section}] ({why}); it won't be saved until a read succeeds"
@@ -135,7 +138,46 @@ fn is_unread(path: &Path, section: &str) -> bool {
     UNREAD
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .contains(&(path.to_path_buf(), section.to_string()))
+        .contains_key(&(path.to_path_buf(), section.to_string()))
+}
+
+/// The sections of the store at `path` whose read is failing, with the last error.
+fn unread_at(path: &Path) -> Vec<(String, String)> {
+    UNREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|((p, _), _)| p == path)
+        .map(|((_, s), why)| (s.clone(), why.clone()))
+        .collect()
+}
+
+/// The health view's row (registered as "settings", #741): a warning while any section's read
+/// is failing, from the store's own state; nothing otherwise.
+pub fn health_rows() -> Vec<super::health::HealthRow> {
+    path().map(|p| rows_for(&unread_at(&p))).unwrap_or_default()
+}
+
+/// Tests: the health row for the store at `path`.
+#[cfg(test)]
+pub fn rows_for_test(path: &Path) -> Vec<super::health::HealthRow> {
+    rows_for(&unread_at(path))
+}
+
+fn rows_for(unread: &[(String, String)]) -> Vec<super::health::HealthRow> {
+    let Some((_, why)) = unread.last() else {
+        return vec![];
+    };
+    let sections: Vec<String> = unread.iter().map(|(s, _)| format!("[{s}]")).collect();
+    vec![super::health::HealthRow::new(
+        "app",
+        "Settings",
+        super::health::Level::Warn,
+        format!(
+            "settings unreadable: {why} (not saved until read: {})",
+            sections.join(", ")
+        ),
+    )]
 }
 
 fn write(path: &Path, table: &Table) -> std::io::Result<()> {
