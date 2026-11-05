@@ -34,7 +34,9 @@ use std::time::Duration;
 use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
-pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
+pub use catalog::{
+    CalibrationHint, Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec,
+};
 pub use lamp_array::{Lamp, LampAccess, LampArrayDesc, LampArrayDriver, LampHandle};
 pub use zones::{HealthLevel, Zone, ZoneHealth, ZoneKey, ZoneSource, Zones};
 
@@ -87,6 +89,9 @@ pub struct Found {
     pub local: bool,
     /// The model's default colour calibration, from the catalog.
     pub calibration: Option<Calibration>,
+    /// The gains its first match starts from (linear light), from the catalog's hint for its
+    /// model or class (#473); `None` starts neutral.
+    pub calibration_hint: Option<[f32; 3]>,
     /// Its front in millimetres (width, height), from the catalog, for scenes' room map.
     pub size: Option<[u16; 2]>,
     /// What it is, from the catalog ("other" for a LampArray: Windows says its kind).
@@ -203,6 +208,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
                 caps: known.caps(),
                 local: known.local,
                 calibration: known.calibration.clone(),
+                calibration_hint: catalog.hint(known).map(|h| h.gain),
                 size: known.size,
                 kind: known.kind,
                 conflicts: known.conflicts.clone(),
@@ -234,6 +240,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
             },
             local: false,
             calibration: None,
+            calibration_hint: None,
             size: None,
             kind: DeviceKind::Other,
             conflicts: Vec::new(),

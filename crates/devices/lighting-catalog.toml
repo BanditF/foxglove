@@ -17,6 +17,11 @@
 # [device.calibration]: the model's default colour calibration (white-balance `gain`, `gamma`,
 # `brightness`, optional `matrix` and `curve`), until the user calibrates their own unit on
 # the Lights page. Neutral values change nothing.
+# `calibration_hint` = "<id>", optional: the model's starting white balance for its first match
+# on the Lights page (one of the [[calibration_hint]] tables at the end), so the white step
+# starts close instead of at neutral. Unset, the entry uses its `kind`'s hint, if any;
+# "none" uses no hint. A hint only starts a match: nothing a device shows changes until the
+# user saves one.
 # `kind` = "case" | "cooler" | "strip" | "peripheral" | "other" (the default): what the device
 # is, for scenes' room map and the page. The catalog says it, not the driver.
 # [[device.conflict]] tables, optional, one per app that drives the same device and may put its
@@ -74,3 +79,20 @@ kind = "cooler"
 [[device.screen]]
 images = true
 animations = true
+
+# Starting white balances for the match calibrator (#473). `gain` is each channel's gain in
+# linear light (red, green, blue; 1 = unchanged, 0 to 2), as in [device.calibration]. `kinds`,
+# optional, lists the device classes that start from it unless their entry names another
+# hint. The values are FastLED's colour correction presets (src/color.h, LEDColorCorrection;
+# FastLED is MIT licensed, https://github.com/FastLED/FastLED), as fractions of 255: FastLED
+# scales each channel's PWM duty, which is linear light, so they map straight to our gains.
+# TypicalSMD5050 and TypicalLEDStrip are both 0xFFB0F0: WS2812-style strips and underglow.
+[[calibration_hint]]
+id = "typical-smd5050"
+gain = [1.0, 0.6902, 0.9412]
+kinds = ["strip"]
+
+# Typical8mmPixel = 0xFFE08C: through-hole 8 mm pixels.
+[[calibration_hint]]
+id = "typical-8mm-pixel"
+gain = [1.0, 0.8784, 0.549]

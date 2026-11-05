@@ -433,6 +433,26 @@ impl Match {
         }
     }
 
+    /// A match whose light side starts from white-balance gains (linear light, as
+    /// [`Calibration::gain`]): a model's starting hint from the catalog (#473). The screen side
+    /// starts as is.
+    pub fn hinted(color: [u8; 3], gain: [f32; 3]) -> Self {
+        let values = Calibration {
+            gain,
+            ..Default::default()
+        }
+        .sanitized();
+        let l = values.apply_rgb(Rgb {
+            r: color[0],
+            g: color[1],
+            b: color[2],
+        });
+        Self {
+            light: [l.r, l.g, l.b],
+            ..Self::plain(color)
+        }
+    }
+
     pub fn side(&self, side: Side) -> [u8; 3] {
         match side {
             Side::Light => self.light,
@@ -656,6 +676,33 @@ impl DeviceCalibration {
             fit: self.fit(zone, Side::Light),
             values: self.zone(zone).clone(),
         }
+    }
+
+    /// Where a new match for a test colour on a zone starts: where the matches so far put it,
+    /// so each match starts from the ones before. Before the zone has any, from the model's
+    /// starting gains (`hint`, from the catalog: [`Match::hinted`]), else as is.
+    pub fn start_match(&self, color: [u8; 3], zone: Option<&str>, hint: Option<[f32; 3]>) -> Match {
+        let first = self.zone_matches(zone).next().is_none();
+        let mut m = match hint {
+            Some(gain) if first => Match::hinted(color, gain),
+            _ => {
+                let rgb = Rgb {
+                    r: color[0],
+                    g: color[1],
+                    b: color[2],
+                };
+                let light = self.fit(zone, Side::Light).apply_rgb(rgb);
+                let screen = self.fit(zone, Side::Screen).apply_rgb(rgb);
+                Match {
+                    color,
+                    light: [light.r, light.g, light.b],
+                    screen: [screen.r, screen.g, screen.b],
+                    zone: None,
+                }
+            }
+        };
+        m.zone = zone.map(str::to_string);
+        m
     }
 
     pub fn sanitized(self) -> Self {
@@ -965,6 +1012,55 @@ mod tests {
                 .step_by(15)
                 .flat_map(move |g| (0..=255u8).step_by(51).map(move |b| Rgb { r, g, b }))
         })
+    }
+
+    #[test]
+    fn a_hint_starts_the_first_match_and_nothing_else() {
+        // FastLED's TypicalSMD5050 (MIT): 0xFFB0F0.
+        let gain = [1.0, 176.0 / 255.0, 240.0 / 255.0];
+        let white = [153, 153, 153];
+        let none = DeviceCalibration::default();
+        // Without a hint, a first match starts as is, as before.
+        assert_eq!(none.start_match(white, None, None), Match::plain(white));
+        let mut zoned = Match::plain(white);
+        zoned.zone = Some("fan".into());
+        assert_eq!(none.start_match(white, Some("fan"), None), zoned);
+        // With one, the light side starts from its gains (linear light), the screen as is.
+        let first = none.start_match(white, None, Some(gain));
+        assert_eq!(first, Match::hinted(white, gain));
+        let want = |g: f32| (linear_to_srgb(srgb_to_linear(153.0 / 255.0) * g) * 255.0).round();
+        assert_eq!(first.light[0], 153);
+        assert_eq!(f32::from(first.light[1]), want(gain[1]));
+        assert_eq!(f32::from(first.light[2]), want(gain[2]));
+        assert!(first.light[1] < first.light[2] && first.light[2] < 153);
+        assert_eq!(first.screen, white);
+        // Neutral gains are the same as no hint; wild ones are kept in range.
+        assert_eq!(Match::hinted(white, [1.0; 3]), Match::plain(white));
+        assert_eq!(
+            Match::hinted(white, [f32::NAN, 9.0, -1.0]).light,
+            [153, 209, 0]
+        );
+        // A hint only starts a match: the device shows nothing different until one is saved.
+        assert!(none.is_neutral());
+        // Once the zone has a match, the matches lead and the hint is not used.
+        let mut cal = DeviceCalibration::default();
+        cal.matches.push(Match {
+            light: [153, 140, 120],
+            ..Match::plain(white)
+        });
+        assert_eq!(
+            cal.start_match(white, None, Some(gain)),
+            cal.start_match(white, None, None)
+        );
+        assert_eq!(
+            cal.start_match(white, None, Some(gain)).light,
+            [153, 140, 120]
+        );
+        // A zone with none of its own uses the device's matches, so the hint isn't used there.
+        assert_eq!(
+            cal.start_match(white, Some("fan"), Some(gain)).light,
+            [153, 140, 120]
+        );
     }
 
     #[test]

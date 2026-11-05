@@ -211,6 +211,7 @@ pub fn found(source: &Source) -> Found {
         caps: source.caps.clone(),
         local: false,
         calibration: None,
+        calibration_hint: None,
         size: None,
         kind: source.kind,
         conflicts: Vec::new(),
