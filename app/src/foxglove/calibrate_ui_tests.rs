@@ -1,6 +1,7 @@
 //! The calibrator's tests (`calibrate_ui::tests`), and the samples the previews draw.
 
 use super::*;
+use foxglove_devices::bracket::{Answer, Bracket, Pick};
 use foxglove_devices::calibration::Calibration;
 
 pub fn case() -> Target {
@@ -74,6 +75,7 @@ pub fn sample(step: Step, master: bool) -> (View, Wizard) {
     if step == Step::Blue {
         w.current.light = [0, 0, 107];
         w.current.screen = [0, 0, 161];
+        w.ask_from_here();
     }
     if master {
         w.reference = Some(corne());
@@ -361,7 +363,10 @@ fn every_colour_draws_and_zones_show_for_the_case() {
         let (v, mut w) = sample(step, false);
         let text = shown(&v, &mut w);
         assert!(text.contains(step.name()), "{step:?}: {text}");
-        assert!(text.contains("These match") && text.contains("Save"));
+        // An unmatched colour asks; a matched one (White and Red here) says so.
+        let asks = text.contains("They match") && text.contains("A is closer");
+        assert!(asks != text.contains("Ask again"), "{step:?}: {text}");
+        assert!(text.contains("Save"));
         assert!(text.contains("Front top fan") && text.contains("All zones"));
     }
     let (v, mut w) = sample(Step::Blue, true);
@@ -375,6 +380,171 @@ fn every_colour_draws_and_zones_show_for_the_case() {
         ..View::default()
     };
     assert!(shown(&moving, &mut keyboard).contains("Solid"));
+}
+
+/// A user who sees exactly: answers every choice for `w`'s side by which candidate is nearer
+/// `target` in Oklab, until the colour is matched. Returns the choices it took.
+pub fn answer_toward(w: &mut Wizard, target: [u8; 3]) -> u8 {
+    use foxglove_devices::oklab;
+    let t = oklab::from_srgb(target);
+    let mut n = 0;
+    while let Some((a, b)) = w.ask.as_ref().and_then(Bracket::pair) {
+        let da = oklab::distance(oklab::from_srgb(a), t);
+        let db = oklab::distance(oklab::from_srgb(b), t);
+        let pick = if da <= db { Pick::A } else { Pick::B };
+        n += 1;
+        if w.choose(Answer::Closer(pick)) {
+            break;
+        }
+        assert!(n <= foxglove_devices::bracket::MAX_ROUNDS);
+    }
+    n
+}
+
+/// A warmer white than the screen's: the light side's choices (two warm or cool, two green or
+/// pink, then two brightness) find it within one just-noticeable difference in six choices,
+/// and it's kept as White's match, with the next colour offered.
+#[test]
+fn choices_find_the_match_and_keep_it() {
+    use foxglove_devices::{bracket::MAX_ROUNDS, oklab};
+    let mut w = Wizard::new(case(), None);
+    let b = w.ask.clone().expect("White asks");
+    assert_eq!((b.rounds(), b.planned()), (0, 6));
+    assert!(b.planned() <= MAX_ROUNDS);
+    // The device shows A until B is picked to look at.
+    let (a, bb) = b.pair().unwrap();
+    assert_eq!(w.lit(), a);
+    w.showing = Pick::B;
+    assert_eq!(w.lit(), bb);
+    let text = shown(&View::default(), &mut w);
+    for t in [
+        "Choice 1 of 6 · warm or cool",
+        "DEVICE SHOWS",
+        "Which looks closer to your screen?",
+        "A is closer",
+        "B is closer",
+        "They match",
+    ] {
+        assert!(text.contains(t), "{t}: {text}");
+    }
+    let white = oklab::from_srgb([153; 3]);
+    let target = oklab::to_srgb([white[0], white[1] - 0.01, white[2] + 0.03]);
+    assert_eq!(answer_toward(&mut w, target), 6);
+    // Skin and Warm: hue and strength three each, then brightness twice.
+    for step in [Step::Skin, Step::Warm] {
+        let mut other = Wizard::new(case(), None);
+        other.go_to(step, None);
+        assert_eq!(other.ask.as_ref().unwrap().planned(), 8, "{step:?}");
+    }
+    assert!(w.ask.is_none() && w.matched(Step::White.color()));
+    assert_eq!(w.cal.matches.len(), 1);
+    assert_eq!(w.cal.matches[0].light, w.current.light);
+    assert_eq!(w.cal.matches[0].screen, [153; 3], "the screen side as is");
+    let off = oklab::delta_e(w.current.light, target);
+    assert!(
+        off < oklab::JND,
+        "{:?} vs {target:?}: {off}",
+        w.current.light
+    );
+    assert!(!w.unconfirmed(), "kept: Save has nothing more to take");
+    assert_eq!(w.lit(), w.current.light, "the device shows the match");
+    let note = w.note.clone().unwrap();
+    assert!(
+        note.starts_with("Matched: White · 6 choices · moved ΔE 0.0"),
+        "{note}"
+    );
+    assert!(note.contains(" · within ΔE 0.01"), "{note}");
+    assert!(w.finished.as_ref().unwrap().left() < oklab::JND);
+    let text = shown(&View::default(), &mut w);
+    for t in [
+        "✓ Matched after 6 choices",
+        "Next: Grey",
+        "Ask again",
+        "White ✓",
+    ] {
+        assert!(text.contains(t), "{t}: {text}");
+    }
+    assert!(!text.contains("A is closer"));
+    // The result is in what Save keeps.
+    assert_eq!(w.result().unwrap().matches, w.cal.matches);
+    // Ask again starts from the match.
+    w.ask_from_here();
+    assert_eq!(w.ask.as_ref().unwrap().start(), w.current.light);
+}
+
+#[test]
+fn they_match_stops_and_keeps_where_the_choices_stand() {
+    let mut w = Wizard::new(case(), None);
+    assert!(!w.choose(Answer::Closer(Pick::B)));
+    let moved = w.current.light;
+    assert_ne!(moved, [153; 3], "a pick moves the light half a step");
+    assert!(w.unconfirmed(), "Save would take it as it stands");
+    assert!(w.choose(Answer::Same));
+    assert_eq!(w.cal.matches[0].light, moved);
+    assert_eq!(w.finished.as_ref().unwrap().rounds(), 2);
+    assert!(w.note.clone().unwrap().contains("· 2 choices ·"));
+}
+
+/// Red lights one channel: three choices of brightness, and green and blue stay off in every
+/// candidate.
+#[test]
+fn a_one_channel_colour_asks_only_its_brightness() {
+    let mut w = Wizard::new(case(), None);
+    w.go_to(Step::Red, None);
+    let b = w.ask.clone().unwrap();
+    assert_eq!(b.planned(), 3);
+    let text = shown(&View::default(), &mut w);
+    assert!(text.contains("Choice 1 of 3 · brightness"), "{text}");
+    let mut n = 0;
+    while let Some((a, bb)) = w.ask.as_ref().and_then(Bracket::pair) {
+        assert_eq!((a[1], a[2], bb[1], bb[2]), (0, 0, 0, 0));
+        n += 1;
+        w.choose(Answer::Closer(Pick::A));
+    }
+    assert_eq!(n, 3);
+    assert!(w.current.light[0] < 153 && w.current.light[1..] == [0, 0]);
+}
+
+/// The screen side: both candidates are drawn on the screen and the device keeps the light.
+#[test]
+fn the_screen_side_draws_both_candidates() {
+    let (v, mut w) = sample(Step::Grey, false);
+    let light = w.current.light;
+    w.set_side(Side::Screen);
+    let (a, b) = w.ask.as_ref().unwrap().pair().unwrap();
+    assert_eq!(w.lit(), light, "the device shows the match's light");
+    let drawn = fills(&v, &mut w);
+    for c in [a, b] {
+        assert!(
+            drawn.contains(&Color32::from_rgb(c[0], c[1], c[2])),
+            "{c:?}"
+        );
+    }
+    let text = shown(&v, &mut w);
+    assert!(
+        text.contains("Which swatch looks closer to this device?"),
+        "{text}"
+    );
+    assert!(text.contains("Screen A") && text.contains("Screen B"));
+    assert!(!text.contains("DEVICE SHOWS"));
+    answer_toward(&mut w, [120, 115, 110]);
+    assert_eq!(w.current.light, light, "the light side stays");
+    assert_ne!(w.current.screen, Step::Grey.color());
+}
+
+/// The hinted strip's first choices start from the hint (#473), and against another device the
+/// question names it.
+#[test]
+fn choices_start_from_the_hint_and_name_the_other_device() {
+    let mut w = Wizard::new(hinted_strip(), None);
+    let hinted = Match::hinted(Step::White.color(), [1.0, 0.6902, 0.9412]).light;
+    assert_eq!(w.ask.as_ref().unwrap().start(), hinted);
+    w.reference = Some(corne());
+    let text = shown(&View::default(), &mut w);
+    assert!(
+        text.contains("Which looks closer to the Eyelash Corne?"),
+        "{text}"
+    );
 }
 
 /// Draws the calibrator headless and returns its text.

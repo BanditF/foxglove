@@ -16,4 +16,6 @@ hid = ["dep:hidapi"]
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 toml = "0.9"
+# Oklab, for the calibrator's candidate steps and colour differences (#474). MIT OR Apache-2.0.
+palette = { version = "0.7.7", default-features = false, features = ["std"] }
 hidapi = { version = "2.6", optional = true }

@@ -4,6 +4,8 @@ pub mod actor;
 
 pub mod battery;
 
+pub mod bracket;
+
 pub mod calibration;
 
 mod capabilities;
@@ -11,6 +13,8 @@ mod capabilities;
 mod events;
 
 pub mod hidpp;
+
+pub mod oklab;
 
 pub mod pc_lighting;
 

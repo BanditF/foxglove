@@ -8,7 +8,7 @@
 //! The calibrator (`calibrate_ui`) writes through here: [`show`] puts a colour on a device
 //! without saving it as the user's (the PC lights' worker coalesces a burst; the keyboard has
 //! a one-slot writer here), [`restore`] puts back what a device showed before, and [`commit`]
-//! saves a calibration. Every write follows a slider move or a click; nothing waits on a timer.
+//! saves a calibration. Every write follows a click; nothing waits on a timer.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -118,7 +118,7 @@ static KEYBOARD_NEXT: Mutex<Option<Hsb>> = Mutex::new(None);
 static KEYBOARD_WAKE: OnceLock<Mutex<mpsc::Sender<()>>> = OnceLock::new();
 
 /// Sets the keyboard's colour from the calibrator. One slot: while a write is on its way, a
-/// newer colour replaces the waiting one, so sliders never queue up writes. The writer thread
+/// newer colour replaces the waiting one, so clicks never queue up writes. The writer thread
 /// blocks on its channel between colours.
 fn keyboard(c: Hsb) {
     let idle = KEYBOARD_NEXT
