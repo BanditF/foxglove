@@ -21,7 +21,9 @@
 //!   gathered on each change too: the Scenes page offers their looks and marks the ones on
 //!   screen, and wallpaper sync (#493) reaches the monitors showing one that supports it.
 //! - "Lights follow the wallpaper" (#70) gets the accent of the wallpaper on screen from its
-//!   manifest's palette on each of those changes (`accent::wallpaper_changed`).
+//!   manifest's palette on each of those changes (`accent::wallpaper_changed`); a wallpaper
+//!   without one gives its picture's accent (#40, `wallpaper_image`), taken only while the
+//!   lights follow the wallpaper and decoded again only when the picture changed.
 
 use std::path::PathBuf;
 
@@ -421,6 +423,26 @@ fn accent_on_screen(
         })
 }
 
+/// The pictures that stand for the wallpaper on screen (#40), best first, for its accent when it
+/// has no manifest palette: on the monitor the setting names (Wallpaper Engine's only), else the
+/// first monitor that has one. For the desktop wallpaper, Windows' copy (`desktop`) comes last, for a file
+/// the registry names that is gone.
+fn pictures_on_screen(
+    text: &str,
+    source: &Source,
+    monitor: Option<&str>,
+    desktop: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
+    let monitor = monitor.filter(|_| matches!(source, Source::Engine(_)));
+    let fallback = desktop.filter(|_| matches!(source, Source::Desktop));
+    on_screen(text, source)
+        .iter()
+        .filter(|(m, _)| monitor.is_none_or(|want| want == m))
+        .map(|(_, file)| super::wallpaper_image::candidates(file, fallback))
+        .find(|c| !c.is_empty())
+        .unwrap_or_default()
+}
+
 /// The folders of the wallpapers on screen, where a manifest may be.
 fn folders_on_screen(text: &str, source: &Source) -> Vec<PathBuf> {
     on_screen(text, source)
@@ -431,6 +453,10 @@ fn folders_on_screen(text: &str, source: &Source) -> Vec<PathBuf> {
 
 /// Refresh asks for Wallpaper Engine's folders to be read again, changed or not.
 static RESCAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The lights started following the wallpaper (#40): the next pass reads the picture on screen,
+/// changed or not.
+static RECHECK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Wakes the wallpaper service: a watched folder changed, or the user pressed Refresh.
 static WAKE: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
@@ -448,6 +474,17 @@ pub fn refresh() {
     if !sent {
         super::wallpaper_engine::refresh();
     }
+}
+
+/// The lights started following the wallpaper (#40): the wallpaper service takes the accent of
+/// the wallpaper on screen (its picture's, which it reads only while they follow it) and wakes the
+/// light follower. False without the service: the caller wakes the follower itself.
+pub fn recheck() -> bool {
+    RECHECK.store(true, std::sync::atomic::Ordering::Relaxed);
+    WAKE.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|tx| tx.send(()).is_ok())
 }
 
 /// Watches the wallpaper sources and tells the art service about the wallpaper on screen. Each
@@ -486,6 +523,11 @@ pub fn start() {
         // The wallpaper folders the manifests come from: a wallpaper added or removed there
         // changes their write time, so it counts as a change too.
         let mut roots = super::wallpaper_manifest::roots(&engine);
+        // The picture on screen and its accent (#40), decoded again only when it changed.
+        let mut pictures = super::wallpaper_image::Images::default();
+        // The lights just started following the wallpaper (`recheck`): wake the follower once
+        // the accent is known, even when it didn't change.
+        let mut follower_due = false;
         // Check once at start, then on each change in a watched folder or Refresh.
         for (n, ()) in std::iter::once(()).chain(rx.iter()).enumerate() {
             let now = stamp(
@@ -494,7 +536,12 @@ pub fn start() {
                 desktop_wallpaper(),
             );
             let refresh = RESCAN.load(std::sync::atomic::Ordering::Relaxed);
-            if n > 0 && !refresh && seen.as_ref() == Some(&now) {
+            let recheck = RECHECK.swap(false, std::sync::atomic::Ordering::Relaxed);
+            if recheck {
+                // Whatever this pass finds, the follower runs after it (`recheck`).
+                follower_due = true;
+            }
+            if n > 0 && !refresh && !recheck && seen.as_ref() == Some(&now) {
                 continue;
             }
             seen = Some(now);
@@ -531,6 +578,9 @@ pub fn start() {
             }
             let Some(text) = text else {
                 super::accent::wallpaper_changed(None);
+                if std::mem::take(&mut follower_due) {
+                    super::accent::wake();
+                }
                 if repaint {
                     super::scene_run::repaint_page();
                 }
@@ -543,13 +593,27 @@ pub fn start() {
                 continue;
             }
             let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
-            // Lights follow the wallpaper (#70): the accent on screen now, none without one.
-            super::accent::wallpaper_changed(accent_on_screen(
-                &manifests,
-                &text,
-                &source,
-                monitor.as_deref(),
-            ));
+            // Lights follow the wallpaper (#70): the accent on screen now, from a manifest's
+            // palette, else (#40) from the picture, read only while the lights follow it.
+            let accent =
+                accent_on_screen(&manifests, &text, &source, monitor.as_deref()).or_else(|| {
+                    super::accent::wallpaper_enabled()
+                        .then(|| {
+                            let desktop = desktop_marker();
+                            let found = pictures_on_screen(
+                                &text,
+                                &source,
+                                monitor.as_deref(),
+                                desktop.as_deref(),
+                            );
+                            pictures.accent(&found).map(|c| c.0)
+                        })
+                        .flatten()
+                });
+            super::accent::wallpaper_changed(accent);
+            if std::mem::take(&mut follower_due) {
+                super::accent::wake();
+            }
             // Wallpaper sync (#493): the monitors showing a wallpaper that reads Foxglove's
             // properties get them; a new wallpaper gets them at once.
             super::wallpaper_sync::wallpapers(
@@ -677,6 +741,45 @@ mod tests {
             folders_on_screen(config, &engine)[0],
             PathBuf::from("C:/WE/projects/myprojects/reef")
         );
+    }
+
+    /// #40: the picture for the wallpaper on screen, on the monitor the setting names (Wallpaper
+    /// Engine's) or the first; Windows' copy stands in last for the desktop wallpaper only.
+    #[test]
+    fn the_picture_on_screen_is_its_file_or_its_preview() {
+        let dir = std::env::temp_dir().join(format!("foxglove-wp-pictures-{}", std::process::id()));
+        let reef = dir.join("reef");
+        std::fs::create_dir_all(&reef).unwrap();
+        std::fs::write(reef.join("project.json"), r#"{"preview":"preview.jpg"}"#).unwrap();
+        let reef_file = reef.join("index.html").to_string_lossy().replace('\\', "/");
+        let config = format!(
+            r#"{{"me":{{"general":{{"wallpaperconfig":{{"selectedwallpapers":{{
+            "Monitor0":{{"file":"C:/WE/workshop/content/431960/1/scene.pkg"}},
+            "Monitor1":{{"file":"{reef_file}"}}}}}}}}}}}}"#
+        );
+        let engine = Source::Engine(PathBuf::new());
+        let copy = PathBuf::from(r"C:\AppData\Themes\TranscodedWallpaper");
+        assert_eq!(
+            pictures_on_screen(&config, &engine, None, Some(&copy)),
+            vec![reef.join("preview.jpg")],
+            "the first monitor with a picture; Windows' copy isn't Wallpaper Engine's"
+        );
+        assert!(pictures_on_screen(&config, &engine, Some("Monitor0"), Some(&copy)).is_empty());
+        assert_eq!(
+            pictures_on_screen(&config, &engine, Some("Monitor1"), Some(&copy)),
+            vec![reef.join("preview.jpg")]
+        );
+        let desktop = r"C:\Users\me\Pictures\beach.jpg";
+        assert_eq!(
+            pictures_on_screen(desktop, &Source::Desktop, Some("Monitor1"), Some(&copy)),
+            vec![
+                PathBuf::from("C:/Users/me/Pictures/beach.jpg"),
+                copy.clone()
+            ],
+            "the monitor setting doesn't apply to the desktop"
+        );
+        assert!(pictures_on_screen("", &Source::Desktop, None, Some(&copy)).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A config read while Wallpaper Engine writes it is skipped, not taken as "no wallpapers"

@@ -2,8 +2,10 @@
 //! `[lighting]` (a profile may change them):
 //! - **Follow the Windows accent colour** (#93);
 //! - **Lights follow the wallpaper** (#70): the accent of the wallpaper on screen, from its
-//!   `foxglove.json` palette (`wallpaper_manifest`, docs/wallpaper-manifest.md). A wallpaper
-//!   without a palette gives the Windows accent instead. (Screen-edge sampling, decided opt-in
+//!   `foxglove.json` palette (`wallpaper_manifest`, docs/wallpaper-manifest.md), else from its
+//!   picture (#40, `wallpaper_image`: the desktop wallpaper's file or a Wallpaper Engine
+//!   project's preview). A wallpaper with neither (a grey picture, a video without a preview)
+//!   gives the Windows accent instead. (Screen-edge sampling, decided opt-in
 //!   on #39, isn't built yet; once it is, it comes before the Windows accent here, when on.)
 //!
 //! Event-driven: Windows' UISettings.ColorValuesChanged (accent or theme changed), the
@@ -197,11 +199,25 @@ fn store(s: LightingSettings) {
 /// Saves the settings and applies what the lights follow now (turning the wallpaper off can
 /// leave the Windows accent to follow).
 fn change(s: LightingSettings) {
+    let before = settings();
     store(s);
     if let Err(e) = super::store::save("lighting", &s) {
         eprintln!("Foxglove: can't save the lighting settings: {e}");
     }
-    wake();
+    if !recheck(before, s) {
+        wake();
+    }
+}
+
+/// The lights started following the wallpaper: its picture is read only while they do (#40),
+/// so the wallpaper service reads it now and wakes the follower after (`wallpaper::recheck`).
+/// False when there is nothing to read, or no service: the caller wakes the follower.
+fn recheck(before: LightingSettings, now: LightingSettings) -> bool {
+    starts_following(before, now) && super::wallpaper::recheck()
+}
+
+fn starts_following(before: LightingSettings, now: LightingSettings) -> bool {
+    !before.follow_wallpaper && now.follow_wallpaper
 }
 
 /// Turns following the Windows accent on or off.
@@ -357,7 +373,13 @@ mod windows_impl {
             .subscribe("profile.active");
         crate::foxglove::services::spawn_named("accent-profile", move || {
             for _ in profile {
-                store(load());
+                let before = settings();
+                let now = load();
+                store(now);
+                // A profile that follows the wallpaper: its picture is read first (#40).
+                if recheck(before, now) {
+                    continue;
+                }
                 if switched.send(Wake::Changed).is_err() {
                     break;
                 }
@@ -493,6 +515,21 @@ mod tests {
             pick(s(false, true), Some(teal), || panic!("not asked")),
             Some(teal)
         );
+    }
+
+    /// #40: only turning the wallpaper on (by the switch or a profile) has its picture read
+    /// first; every other change wakes the follower at once.
+    #[test]
+    fn only_starting_to_follow_the_wallpaper_reads_its_picture() {
+        let s = |follow_accent, follow_wallpaper| LightingSettings {
+            follow_accent,
+            follow_wallpaper,
+        };
+        assert!(starts_following(s(false, false), s(false, true)));
+        assert!(starts_following(s(true, false), s(true, true)));
+        assert!(!starts_following(s(false, true), s(false, true)), "already");
+        assert!(!starts_following(s(false, true), s(true, false)), "off");
+        assert!(!starts_following(s(false, false), s(true, false)));
     }
 
     #[test]
