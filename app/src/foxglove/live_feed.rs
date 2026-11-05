@@ -103,6 +103,8 @@ enum Msg {
     },
     /// A `keyboard.*` fact or the art changed.
     State,
+    /// Foxglove sent the left screen's panel a new frame, or handed it back (`screens`).
+    Panel,
     /// The program in front changed.
     Foreground,
     Board,
@@ -146,6 +148,9 @@ struct Hub {
     art: Option<wire::Art>,
     /// The piece changed while the feed was quiet: it goes out when the feed is live again.
     art_unsent: bool,
+    /// The left screen's PC panel as last sent to the keyboard.
+    panel: Option<wire::Panel>,
+    panel_unsent: bool,
 }
 
 impl Hub {
@@ -169,7 +174,7 @@ impl Hub {
         }
     }
 
-    /// The hello, then the piece's frames when there are any.
+    /// The hello, then the piece's frames and the left panel when there are any.
     fn greet(&self, id: u64, out: &mut impl Out) -> bool {
         out.send(id, &self.hello().json())
             && self.art.as_ref().is_none_or(|_| {
@@ -177,6 +182,15 @@ impl Hub {
                     id,
                     &Message::Art {
                         art: self.art.clone(),
+                    }
+                    .json(),
+                )
+            })
+            && self.panel.as_ref().is_none_or(|_| {
+                out.send(
+                    id,
+                    &Message::Panel {
+                        panel: self.panel.clone(),
                     }
                     .json(),
                 )
@@ -227,6 +241,10 @@ impl Hub {
                     let art = self.art.clone();
                     dead.extend(self.broadcast(out, &Message::Art { art }));
                 }
+                if std::mem::take(&mut self.panel_unsent) {
+                    let panel = self.panel.clone();
+                    dead.extend(self.broadcast(out, &Message::Panel { panel }));
+                }
                 dead
             }
         }
@@ -255,6 +273,20 @@ impl Hub {
         }
         let art = self.art.clone();
         self.broadcast(out, &Message::Art { art })
+    }
+
+    /// The left screen's panel changed (the caller holds it to [`wire::PANEL_MS`]).
+    fn set_panel(&mut self, panel: Option<wire::Panel>, out: &mut impl Out) -> Vec<u64> {
+        if panel == self.panel {
+            return Vec::new();
+        }
+        self.panel = panel;
+        if self.quiet.is_some() {
+            self.panel_unsent = true;
+            return Vec::new();
+        }
+        let panel = self.panel.clone();
+        self.broadcast(out, &Message::Panel { panel })
     }
 
     fn set_board(&mut self, board: Option<Geometry>, out: &mut impl Out) -> Vec<u64> {
@@ -327,6 +359,21 @@ pub fn layout(layout: &crate::protocols::KeyboardLayout) {
     *GEOMETRY.lock().unwrap_or_else(|e| e.into_inner()) =
         Some((wire::Board { name, keys }, positions));
     send(Msg::Board);
+}
+
+/// The left screen's panel as Foxglove last sent it, kept while the feed is off.
+static PANEL: Mutex<Option<wire::Panel>> = Mutex::new(None);
+
+/// Foxglove sent the left screen's panel a frame (`Some`), or handed the panel back to the
+/// firmware (`None`), from the screens service.
+pub fn panel(frame: Option<&super::screens::Frame>) {
+    let p = frame.and_then(|f| wire::Panel::of(f.width, f.height, f.stride, &f.bits));
+    let mut cur = PANEL.lock().unwrap_or_else(|e| e.into_inner());
+    if *cur != p {
+        *cur = p;
+        drop(cur);
+        send(Msg::Panel);
+    }
 }
 
 /// The right screen's art may have changed (`art_service`).
@@ -540,13 +587,16 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
     hub.quiet = wire::quiet(super::pause::paused(), super::away::away(), fullscreen);
     let mut art = ArtWatch::default();
     hub.art = art.read(&hub.state).unwrap_or_default();
+    hub.panel = PANEL.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut panel = PanelPace::default();
     let mut batch_started: Option<Instant> = None;
     let mut last_key: Option<Instant> = None;
     let mut keys = KeyTap::new(key_generation.clone());
     loop {
-        let msg = match batch_started {
-            Some(started) => {
-                let left = Duration::from_millis(wire::BATCH_MS).saturating_sub(started.elapsed());
+        let batch_due = batch_started.map(|t| t + Duration::from_millis(wire::BATCH_MS));
+        let msg = match [batch_due, panel.due].into_iter().flatten().min() {
+            Some(due) => {
+                let left = due.saturating_duration_since(Instant::now());
                 match rx.recv_timeout(left) {
                     Ok(m) => Some(m),
                     Err(RecvTimeoutError::Timeout) => None,
@@ -589,6 +639,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
                     dead.extend(hub.set_art(piece, &mut Streams(&mut clients)));
                 }
             }
+            Some(Msg::Panel) => panel.changed(Instant::now()),
             Some(Msg::Board) => {
                 let board = GEOMETRY.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 dead = hub.set_board(board, &mut Streams(&mut clients));
@@ -621,6 +672,10 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
             Some(Msg::Key { .. }) => {
                 KEYS_QUEUED.fetch_sub(1, Ordering::SeqCst);
             }
+        }
+        if panel.take(Instant::now()) {
+            let latest = PANEL.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            dead.extend(hub.set_panel(latest, &mut Streams(&mut clients)));
         }
         let due = batch_started.is_some_and(|t| {
             t.elapsed() >= Duration::from_millis(wire::BATCH_MS) || hub.batch.is_full()
@@ -746,6 +801,42 @@ impl KeyTap {
     }
 }
 
+/// Paces the left panel to one frame a [`wire::PANEL_MS`]: the first change goes out at once, a
+/// change within the window waits for its end (the latest frame then), so an animated panel
+/// costs a wallpaper at most four frames a second.
+#[derive(Default)]
+struct PanelPace {
+    sent: Option<Instant>,
+    /// When the held change goes out.
+    due: Option<Instant>,
+    ready: bool,
+}
+
+impl PanelPace {
+    fn changed(&mut self, now: Instant) {
+        let gap = Duration::from_millis(wire::PANEL_MS);
+        match self.sent {
+            Some(t) if now.duration_since(t) < gap => {
+                self.due.get_or_insert(t + gap);
+            }
+            _ => self.ready = true,
+        }
+    }
+
+    /// True when the latest panel should go out now.
+    fn take(&mut self, now: Instant) -> bool {
+        if self.due.is_some_and(|d| now >= d) {
+            self.due = None;
+            self.ready = true;
+        }
+        if std::mem::take(&mut self.ready) {
+            self.sent = Some(now);
+            return true;
+        }
+        false
+    }
+}
+
 /// Where the right screen's piece comes from, so its frames are read only when it changes (a
 /// battery or layer change re-reads the state, not the art file).
 #[derive(Default)]
@@ -813,6 +904,10 @@ fn read_state(facts: &Facts) -> wire::State {
                 _ => None,
             },
             profile: int("keyboard.profile"),
+            profile_connected: match facts.get("keyboard.profile_connected") {
+                Some(Value::Bool(b)) => Some(b),
+                _ => None,
+            },
         },
         lights: lights(facts),
     }
@@ -1178,6 +1273,56 @@ mod tests {
         assert_eq!(out.count(1), quiet + 2, "unchanged: live and state only");
         hub.set_art(None, &mut out);
         assert_eq!(out.last(1), r#"{"t":"art","art":null}"#);
+    }
+
+    /// The left panel: sent on change, to joining wallpapers, after a quiet spell only when it
+    /// changed; paced to one frame a PANEL_MS.
+    #[test]
+    fn the_left_panel_goes_out_paced() {
+        let frame = |b: u8| wire::Panel::of(8, 1, 1, &[b]);
+        let mut hub = Hub::default();
+        let mut out = Sent::default();
+        hub.join(1, &mut out);
+        hub.set_panel(frame(1), &mut out);
+        assert!(out
+            .last(1)
+            .starts_with(r#"{"t":"panel","panel":{"w":8,"h":1"#));
+        let n = out.count(1);
+        assert!(
+            hub.set_panel(frame(1), &mut out).is_empty(),
+            "the same frame"
+        );
+        assert_eq!(out.count(1), n);
+        hub.join(2, &mut out);
+        assert_eq!(out.count(2), 2, "hello, then the panel");
+        hub.gates(Some(Why::Away), &mut out);
+        hub.set_panel(None, &mut out);
+        let q = out.count(1);
+        hub.gates(None, &mut out);
+        assert_eq!(out.count(1), q + 3, "live, state, panel");
+        assert_eq!(out.last(1), r#"{"t":"panel","panel":null}"#);
+
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut pace = PanelPace::default();
+        pace.changed(t0);
+        assert!(pace.take(t0), "the first goes at once");
+        pace.changed(ms(50));
+        assert!(!pace.take(ms(50)), "held");
+        pace.changed(ms(120));
+        assert_eq!(
+            pace.due,
+            Some(ms(wire::PANEL_MS)),
+            "one wake for the window"
+        );
+        assert!(!pace.take(ms(200)));
+        assert!(
+            pace.take(ms(wire::PANEL_MS)),
+            "the latest at the window's end"
+        );
+        assert!(!pace.take(ms(400)), "nothing more");
+        pace.changed(ms(900));
+        assert!(pace.take(ms(900)), "after a quiet window: at once");
     }
 
     /// The art file is read only when the source changes, not on every state change.

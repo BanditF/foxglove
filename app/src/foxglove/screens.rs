@@ -179,6 +179,8 @@ fn stop_driving(lock: &mut PanelLock, drawing: &Option<Drawing>, was_driving: &m
         if let Some(d) = drawing {
             let _ = panel::release(d.link.as_ref());
         }
+        // The firmware draws its own panel again (the WPM chart): the live feed says so.
+        super::live_feed::panel(None);
     }
     lock.release();
     *was_driving = false;
@@ -802,11 +804,13 @@ fn run() {
                     bits: d.panel.bits.clone(),
                 };
                 dump_panel(&frame);
+                super::live_feed::panel(Some(&frame));
                 update_snapshot(|s| s.frame = Some(frame));
                 new_frame_shown();
             }
             Err(e) => {
                 set_status(format!("Lost keyboard: {e}"));
+                super::live_feed::panel(None);
                 lock.release();
                 was_driving = false;
                 d.last = None;

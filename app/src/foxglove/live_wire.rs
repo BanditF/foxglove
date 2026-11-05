@@ -16,6 +16,7 @@
 //! {"t":"state","layer":{"index":3,"name":"NAV"},"art":"Fox run","battery":{"left":80,"right":61},"link":{"connected":true,"output":"ble","profile":1},
 //!  "lights":{"on":true,"color":"#ff6a00","brightness":60,"effect":"Solid","rainbow":false}}
 //! {"t":"art","art":{"name":"Fox run","nva":"TlZBMUSM..."}}   the piece's frames, once per change
+//! {"t":"panel","panel":{"w":64,"h":52,"bits":"AAAA..."}}     the left screen's PC panel, as shown
 //! {"t":"keys","e":[[17,1,0],[17,0,9]]}      index, 1 down / 0 up, ms since the batch's first
 //! {"t":"board","board":{...}}               the geometry changed (another keyboard, layout)
 //! {"t":"quiet","why":"away"}                nothing more until "live": paused, away, fullscreen
@@ -31,7 +32,11 @@ pub const VERSION: u8 = 1;
 /// The WebSocket sub-protocol a wallpaper offers (with its token as a second one).
 pub const PROTOCOL: &str = "foxglove-live.v1";
 /// The topics this build sends; reserved for later: `stats`, `notes`.
-pub const TOPICS: &[&str] = &["keys", "state", "art"];
+pub const TOPICS: &[&str] = &["keys", "state", "art", "panel"];
+/// The left screen's PC panel at most this many bytes of bits (a 64x52 panel is 416).
+pub const MAX_PANEL_BYTES: usize = 1024;
+/// Panel frames at most this often (an animated panel changes a few times a second).
+pub const PANEL_MS: u64 = 250;
 /// Key events in one frame at most (a burst beyond it waits for the next frame).
 pub const MAX_BATCH: usize = 64;
 /// How long a batch collects after its first key: at most 60 frames a second.
@@ -72,6 +77,10 @@ pub struct Link {
     /// The 1-based Bluetooth profile.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<u8>,
+    /// The active Bluetooth profile has its host connected (the left screen's LINKED / SEARCH,
+    /// and its BT label struck through when not), once the keyboard said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_connected: Option<bool>,
 }
 
 /// The keyboard's lights as it reports them (#40: the wallpaper can take the keyboard's colour).
@@ -112,6 +121,37 @@ pub struct Art {
     pub nva: Option<String>,
 }
 
+/// The left screen's PC panel as Foxglove last sent it to the keyboard (`screens`): the part of the
+/// left screen Foxglove draws (clock, volume, media). `None` while the firmware draws its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Panel {
+    pub w: u16,
+    pub h: u16,
+    /// Rows MSB first, `ceil(w / 8)` bytes a row, a set bit for ink, in base64.
+    pub bits: String,
+}
+
+impl Panel {
+    /// A frame as the screens service sent it, repacked to whole-byte rows; `None` past
+    /// [`MAX_PANEL_BYTES`] or when the bits don't cover the frame.
+    pub fn of(width: usize, height: usize, stride: usize, bits: &[u8]) -> Option<Panel> {
+        use base64::Engine;
+        let row = width.div_ceil(8);
+        if width == 0 || height == 0 || row * height > MAX_PANEL_BYTES || stride < row {
+            return None;
+        }
+        let mut out = Vec::with_capacity(row * height);
+        for y in 0..height {
+            out.extend_from_slice(bits.get(y * stride..y * stride + row)?);
+        }
+        Some(Panel {
+            w: u16::try_from(width).ok()?,
+            h: u16::try_from(height).ok()?,
+            bits: base64::engine::general_purpose::STANDARD.encode(out),
+        })
+    }
+}
+
 /// Why the feed is quiet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -144,6 +184,10 @@ pub enum Message {
     /// `art: null`: nothing on the right screen Foxglove can name (no keyboard).
     Art {
         art: Option<Art>,
+    },
+    /// `panel: null`: the firmware draws that part of the left screen itself.
+    Panel {
+        panel: Option<Panel>,
     },
     Board {
         board: Option<Board>,
@@ -324,6 +368,7 @@ mod tests {
                 connected: true,
                 output: Some("ble".into()),
                 profile: Some(1),
+                profile_connected: Some(true),
             },
             lights: Some(Lights {
                 on: true,
@@ -363,6 +408,9 @@ mod tests {
                 why: Why::Fullscreen,
             },
             Message::Live,
+            Message::Panel {
+                panel: Panel::of(16, 2, 2, &[0x80, 0x01, 0xff, 0x00]),
+            },
         ]
     }
 
@@ -411,6 +459,11 @@ mod tests {
             "e",
             "why",
             "nva",
+            "profile_connected",
+            "panel",
+            "w",
+            "h",
+            "bits",
         ];
         for m in every_message() {
             let json = m.json();
@@ -448,7 +501,12 @@ mod tests {
             Message::Art { art: None }.json(),
             r#"{"t":"art","art":null}"#
         );
+        assert_eq!(
+            m[7].json(),
+            r#"{"t":"panel","panel":{"w":16,"h":2,"bits":"gAH/AA=="}}"#
+        );
         let hello: Value = serde_json::from_str(&m[0].json()).unwrap();
+        assert_eq!(hello["state"]["link"]["profile_connected"], true);
         assert_eq!(hello["t"], "hello");
         assert_eq!(hello["v"], 1);
         assert_eq!(
@@ -466,6 +524,25 @@ mod tests {
             empty,
             r#"{"t":"state","layer":null,"art":null,"battery":{},"link":{"connected":false}}"#
         );
+    }
+
+    /// The panel goes out as the keyboard shows it: whole-byte rows, bounded.
+    #[test]
+    fn a_panel_is_repacked_and_bounded() {
+        // 12 px wide in 3-byte rows: the padding byte goes, the bits stay.
+        let p = Panel::of(12, 2, 3, &[0xab, 0xc0, 0x77, 0x12, 0x30, 0x77]).unwrap();
+        assert_eq!((p.w, p.h), (12, 2));
+        assert_eq!(p.bits, "q8ASMA==", "ab c0 12 30");
+        assert!(
+            Panel::of(64, 52, 8, &[0; 8 * 52]).is_some(),
+            "the Corne's 64x52"
+        );
+        assert!(
+            Panel::of(128, 128, 16, &[0; 16 * 128]).is_none(),
+            "past the bound"
+        );
+        assert!(Panel::of(64, 52, 8, &[0; 100]).is_none(), "short bits");
+        assert!(Panel::of(0, 52, 8, &[]).is_none());
     }
 
     #[test]
