@@ -494,8 +494,7 @@ pub struct Worker {
 }
 
 /// The Keyboard card's pick while a scene draws the held keyboard through Windows (#768).
-const SCENE_FIRST: &str =
-    "the running scene draws it through Windows Dynamic Lighting; this look shows after the scene";
+const SCENE_FIRST: &str = "a scene is running; this look shows when it ends";
 
 /// The keyboard's own LampArray as the Lights worker draws it (#749 b): the same host handle as
 /// any Dynamic Lighting device's, opened by the same opener, one colour on every lamp.
@@ -2886,8 +2885,7 @@ mod tests {
         w.handle(Msg::SceneStart, false, &mut no_wait());
         look(&mut w, Some(solid(240)), false);
         assert!(drained().is_empty(), "the scene draws the keyboard");
-        let waits = "Eyelash Corne: the running scene draws it through Windows Dynamic \
-                     Lighting; this look shows after the scene";
+        let waits = "Eyelash Corne: a scene is running; this look shows when it ends";
         assert_eq!(w.status.as_deref(), Some(waits));
         w.handle(Msg::SceneEnd, false, &mut no_wait());
         assert_eq!(drained(), vec![(KB.to_string(), None, [0, 0, 255])]);
