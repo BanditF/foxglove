@@ -21,8 +21,10 @@
 //!   timer: the report that frees the lights, a keyboard (re)connect, or [`retry`] (the user
 //!   acting, Windows changing a LampArray's availability), which lets exactly one send
 //!   through; its reply holds the output again while Windows still has the lights.
-//! - While a LampArray has them, the Lights page's Keyboard card and the Keyboard page say so
-//!   in one line ([`NOTICE`], [`setting_path`]); it goes on the first report saying they're free.
+//! - While a LampArray has them, the Lights page's Keyboard card says so in one amber line
+//!   ([`NOTICE`], [`setting_path`]) with a button to the Windows Dynamic Lighting settings
+//!   ([`DL_SETTINGS`]); it goes on the first report saying they're free. The Scenes page only
+//!   names who has them.
 //! - The pages repaint on the owner's change ([`set_wake`]), not on a timer.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -405,21 +407,6 @@ pub fn line(who: &Who, scene: Option<&str>, device: Option<&str>) -> Line {
     }
 }
 
-/// The Keyboard page's line (#749): [`windows_line`] while a LampArray has the lights, else
-/// nothing.
-pub fn notice(owner: Option<Owner>, device: Option<&str>) -> Option<String> {
-    owner
-        .is_some_and(Owner::lamp_array)
-        .then(|| windows_line(device, None))
-}
-
-/// [`notice`] for the app's owner now and the connected keyboard (no blocking).
-#[cfg_attr(test, allow(dead_code))]
-pub fn notice_now() -> Option<String> {
-    let owner = lock(&STATE).owner();
-    notice(owner, super::devices::keyboard_name().as_deref())
-}
-
 /// For whom a running scene steps aside now, in words: `None` while it doesn't.
 pub fn yielded_words(now: &Now) -> Option<&'static str> {
     if !now.yielding {
@@ -475,9 +462,16 @@ thread_local! {
     pub static PREVIEW: std::cell::RefCell<Option<Line>> = const { std::cell::RefCell::new(None) };
 }
 
+/// The Windows Settings page for Dynamic Lighting (#749).
+pub const DL_SETTINGS: &str = "ms-settings:personalization-lighting";
+
+/// The button after the notice that opens [`DL_SETTINGS`].
+pub const DL_BUTTON: &str = "Open Dynamic Lighting settings";
+
 /// Draws the owner line (the Lights page's Keyboard card, the Scenes page) after `space` points;
-/// true when it drew one.
-pub fn show_line(ui: &mut egui::Ui, space: f32) -> bool {
+/// true when it drew one. With `notice` (the Lights page only, #749), Windows holding the lights
+/// is the amber notice and a button to its settings; without, the line only names Windows.
+pub fn show_line(ui: &mut egui::Ui, space: f32, notice: bool) -> bool {
     #[cfg(test)]
     let line = match PREVIEW.with_borrow(|l| l.clone()) {
         Some(l) => l,
@@ -489,10 +483,19 @@ pub fn show_line(ui: &mut egui::Ui, space: f32) -> bool {
         line_now()
     };
     let p = super::theme::palette(ui);
-    let color = if line.warn { p.warn } else { p.text };
     ui.add_space(space);
+    if line.warn && !notice {
+        let text = format!("Lights now: {}", Who::Windows.words());
+        ui.add(egui::Label::new(egui::RichText::new(text).color(p.text)).wrap())
+            .on_hover_text(TIP);
+        return true;
+    }
+    let color = if line.warn { p.warn } else { p.text };
     ui.add(egui::Label::new(egui::RichText::new(line.text).color(color)).wrap())
         .on_hover_text(TIP);
+    if line.warn && ui.small_button(DL_BUTTON).clicked() {
+        super::notifications_ui::open_settings_page(DL_SETTINGS);
+    }
     true
 }
 
@@ -677,6 +680,10 @@ mod tests {
     /// only for a LampArray owner, and goes on the first report saying the lights are free.
     #[test]
     fn the_notice_follows_the_replies() {
+        let notice = |o: Option<Owner>, d: Option<&str>| {
+            let l = line(&who(o, None, None), None, d);
+            l.warn.then_some(l.text)
+        };
         assert_eq!(
             setting_path(Some(" Eyelash Corne ")),
             "Settings > Personalization > Dynamic Lighting > Eyelash Corne > \u{201c}Use \

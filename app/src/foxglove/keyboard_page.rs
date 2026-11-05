@@ -63,9 +63,6 @@ pub struct View {
     pub devices: Vec<super::peripherals::Peripheral>,
     /// Their low-battery heads-up is on (#504).
     pub device_notice: bool,
-    /// Windows Dynamic Lighting holds the keyboard's lights, and the setting that gives them
-    /// back (#749): from the keyboard's own owner reports, `None` while it doesn't.
-    pub lights_notice: Option<String>,
 }
 
 /// What a click on the page asks for.
@@ -182,7 +179,6 @@ pub fn view(ctx: &egui::Context) -> View {
         update: super::firmware_update::view(),
         devices: super::peripherals::list(),
         device_notice: super::battery::device_notices_on(),
-        lights_notice: super::lights_owner::notice_now(),
     }
 }
 
@@ -313,13 +309,6 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             let p = theme::palette(ui);
             ui.label(RichText::new("Don't unplug: the keyboard couldn't type.").color(p.warn));
             ui.label(fix);
-        }
-        // #749: Windows Dynamic Lighting has the lights; Foxglove's scenes wait for them.
-        if let Some(notice) = &v.lights_notice {
-            ui.add_space(4.0);
-            let p = theme::palette(ui);
-            ui.add(egui::Label::new(RichText::new(notice).color(p.warn)).wrap())
-                .on_hover_text(super::lights_owner::TIP);
         }
     });
     ui.add_space(10.0);
@@ -978,7 +967,6 @@ pub mod tests {
             update: super::super::firmware_update::tests::sample(),
             devices: super::super::peripherals::tests::sample(),
             device_notice: true,
-            lights_notice: None,
         }
     }
 

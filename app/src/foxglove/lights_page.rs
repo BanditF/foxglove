@@ -268,7 +268,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
     card(ui, "Keyboard", |ui| {
         // Who drives the lights now (#491): a scene, Windows Dynamic Lighting, another app.
-        if super::lights_owner::show_line(ui, 0.0) {
+        if super::lights_owner::show_line(ui, 0.0, true) {
             ui.add_space(6.0);
         }
         if let Some(line) = &v.zones {

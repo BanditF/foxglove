@@ -116,20 +116,28 @@ pub(crate) fn contents(
 
 /// Windows' notification privacy page, where access is turned on.
 fn open_privacy_settings() {
+    open_settings_page("ms-settings:privacy-notifications");
+}
+
+/// Opens a Windows Settings page (an `ms-settings:` URI) with the shell, as the notification
+/// card does; the Lights page's Dynamic Lighting button uses it too (#749).
+pub fn open_settings_page(uri: &str) {
     #[cfg(windows)]
-    // SAFETY: every string is a static wide literal and the window handle is none; ShellExecuteW
-    // keeps nothing after it returns.
+    // SAFETY: the strings live until ShellExecuteW returns and the window handle is none;
+    // ShellExecuteW keeps nothing after it returns.
     unsafe {
-        use windows::core::w;
+        use windows::core::{w, HSTRING};
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
         ShellExecuteW(
             None,
             w!("open"),
-            w!("ms-settings:privacy-notifications"),
+            &HSTRING::from(uri),
             None,
             None,
             SW_SHOWNORMAL,
         );
     }
+    #[cfg(not(windows))]
+    let _ = uri;
 }

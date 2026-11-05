@@ -1432,15 +1432,14 @@ fn lights_owner_line_renders() {
     );
 }
 
-/// #749: Windows Dynamic Lighting holds the keyboard's lights. The Lights page's Keyboard card
-/// and the Keyboard page's Connection card say so in one amber line naming the Windows setting;
-/// with the lights free, neither shows it. Saved together as one review image.
+/// #749: Windows Dynamic Lighting holds the keyboard's lights. Only the Lights page's Keyboard
+/// card says so: one amber line naming the Windows setting, then a small button that opens it.
+/// With the lights free, it doesn't show. Saved as the review image.
 #[test]
 fn dynamic_lighting_notice_renders() {
-    use crate::foxglove::lights_owner::{line, notice, Who, PREVIEW};
+    use crate::foxglove::lights_owner::{line, Who, PREVIEW};
     use crate::foxglove::shell::Page;
     use crate::foxglove::theme::DARK;
-    use foxglove_link::lights_owner::Owner;
     let near = |img: &image::RgbaImage, c: Color32| {
         img.pixels()
             .filter(|p| {
@@ -1455,32 +1454,12 @@ fn dynamic_lighting_notice_renders() {
     PREVIEW.set(Some(line(&Who::Keyboard, None, device)));
     let lights_free = shell_preview_with(Page::Lights, &Samples::full(), 980.0);
     PREVIEW.set(None);
-    let mut samples = Samples::full();
-    samples.keyboard.lights_notice = notice(Some(Owner::LampArrayUsb), device);
-    let keyboard = shell_preview_with(Page::Keyboard, &samples, 1060.0);
-    samples.keyboard.lights_notice = notice(Some(Owner::HostLink), device);
-    let keyboard_free = shell_preview_with(Page::Keyboard, &samples, 1060.0);
-    keep("ui-749-lights-windows.png", &lights);
-    keep("ui-749-keyboard-windows.png", &keyboard);
-    // One review image: the Lights page, then the Keyboard page, side by side.
-    let (w, h) = (
-        lights.width() + keyboard.width(),
-        lights.height().max(keyboard.height()),
-    );
-    let mut both = image::RgbaImage::from_pixel(w, h, image::Rgba([0, 0, 0, 255]));
-    image::imageops::overlay(&mut both, &lights, 0, 0);
-    image::imageops::overlay(&mut both, &keyboard, i64::from(lights.width()), 0);
-    keep("ui-749-dl-notice.png", &both);
+    keep("ui-749-dl-notice.png", &lights);
     assert_ne!(lights, lights_free, "the Lights page shows the notice");
     assert!(
         near(&lights, DARK.warn) > near(&lights_free, DARK.warn),
         "the notice is amber"
     );
-    assert_ne!(
-        keyboard, keyboard_free,
-        "the Keyboard page shows the notice"
-    );
-    assert!(near(&keyboard, DARK.warn) > near(&keyboard_free, DARK.warn));
 }
 
 /// The Scenes page (#487): the user's room with a scene running (wide and at the window's
