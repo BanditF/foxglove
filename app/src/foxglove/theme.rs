@@ -816,13 +816,19 @@ mod widget_tests {
 
     const SOURCE: &str = include_str!("theme.rs");
 
-    /// The body of `fn name` in this file, up to its closing brace at the start of a line.
+    /// The body of `fn name` in this file, up to its closing brace at the start of a line (with
+    /// either line ending: a Windows checkout has CRLF).
     fn body(name: &str) -> &'static str {
         let start = SOURCE
             .find(&format!("fn {name}("))
             .unwrap_or_else(|| panic!("fn {name} in theme.rs"));
         let rest = &SOURCE[start..];
-        &rest[..rest.find("\n}\n").expect("the function ends")]
+        let end = ["\n}\n", "\n}\r\n"]
+            .iter()
+            .filter_map(|e| rest.find(e))
+            .min()
+            .expect("the function ends");
+        &rest[..end]
     }
 
     /// The flat-chip rule (rule 2): nothing a read-only chip runs outlines it. An outline is
