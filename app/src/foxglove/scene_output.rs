@@ -23,15 +23,19 @@
 //!   held, the keyboard gets [`Out::Lamps`] and nothing on the host link; freed, host-link
 //!   frames or its effect again, in full.
 //!
-//! Each output has its own interval (never faster than the scheduler's 30 fps cap): the case
-//! [`CASE_INTERVAL`], the keyboard [`KEYBOARD_INTERVAL`], since its colour goes over the host
-//! link and on to the right half over BLE through the relay. A device gets a frame only when
-//! its colours changed. This is pure: the app's `scene_run` sends what it returns.
+//! Each output has its own interval (never faster than the scheduler's 30 fps cap), from the
+//! measured rates file (`crates/devices/light-rates.toml`, #486: [`keyboard_interval`],
+//! [`case_interval`], [`lamp_interval`]); [`CASE_INTERVAL`], [`KEYBOARD_INTERVAL`] and
+//! [`LAMP_INTERVAL`] only where it says nothing. The keyboard is the slowest, since its colour
+//! goes over the host link and on to the right half over BLE through the relay. A device gets
+//! a frame only when its colours changed. This is pure: the app's `scene_run` sends what it returns.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+use foxglove_devices::pc_lighting::rates::{self, Rates};
 
 use foxglove_link::lamps::LampParts;
 use foxglove_link::protocol::MmRect;
@@ -54,6 +58,36 @@ pub const CASE_INTERVAL: Duration = Duration::from_millis(66);
 /// it takes them: each frame crosses Windows' lighting service and often a vendor's (#313).
 pub const LAMP_INTERVAL: Duration = Duration::from_millis(50);
 
+/// The bundled rates file, read once.
+fn light_rates() -> &'static Rates {
+    static RATES: OnceLock<Rates> = OnceLock::new();
+    RATES.get_or_init(Rates::bundled)
+}
+
+/// The keyboard's frame interval: the rates file's (the slower bus's when both were measured),
+/// else [`KEYBOARD_INTERVAL`].
+pub fn keyboard_interval() -> Duration {
+    light_rates()
+        .interval(rates::KEYBOARD, None)
+        .unwrap_or(KEYBOARD_INTERVAL)
+}
+
+/// A driven board's frame interval: its model's or its protocol's entry in the rates file, else
+/// [`CASE_INTERVAL`].
+pub fn case_interval(protocol: &str, key: &str) -> Duration {
+    light_rates()
+        .interval(protocol, Some(key))
+        .unwrap_or(CASE_INTERVAL)
+}
+
+/// The least interval a Dynamic Lighting device gets: its model's or the class's entry in the
+/// rates file, else [`LAMP_INTERVAL`].
+pub fn lamp_interval(key: &str) -> Duration {
+    light_rates()
+        .interval(rates::LAMP_ARRAY, Some(key))
+        .unwrap_or(LAMP_INTERVAL)
+}
+
 /// A Dynamic Lighting (LampArray) device a scene drives through Windows: any vendor, any kind.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LampTarget {
@@ -70,10 +104,10 @@ impl LampTarget {
         format!("light:{}", self.key)
     }
 
-    /// Its own interval, never under [`LAMP_INTERVAL`].
+    /// Its own interval, never under [`lamp_interval`]'s.
     pub fn interval(&self) -> Duration {
-        self.min_interval
-            .map_or(LAMP_INTERVAL, |m| m.max(LAMP_INTERVAL))
+        let least = lamp_interval(&self.key);
+        self.min_interval.map_or(least, |m| m.max(least))
     }
 }
 
@@ -173,6 +207,8 @@ pub fn keyboard_lamp_key(
 pub struct CaseTarget {
     pub key: String,
     pub zone_ids: Vec<String>,
+    /// Its frame interval ([`case_interval`]).
+    pub interval: Duration,
 }
 
 impl CaseTarget {
@@ -650,7 +686,7 @@ impl Outputs {
         let mut paced: Vec<(String, Option<Duration>)> = self
             .cases
             .iter()
-            .map(|c| (c.room_id(), Some(CASE_INTERVAL)))
+            .map(|c| (c.room_id(), Some(c.interval)))
             .collect();
         paced.extend(
             self.lamps
@@ -659,7 +695,7 @@ impl Outputs {
                 .map(|l| (l.room_id(), Some(l.interval()))),
         );
         if self.keyboard {
-            paced.push((KEYBOARD.into(), Some(KEYBOARD_INTERVAL)));
+            paced.push((KEYBOARD.into(), Some(keyboard_interval())));
             if let Some(k) = &self.keyboard_lamps {
                 paced.push((KEYBOARD_LAMPS.into(), Some(k.target.interval())));
             }
@@ -899,6 +935,7 @@ mod tests {
         let cases = vec![CaseTarget {
             key: "103c:84fd".into(),
             zone_ids: ["1", "2", "5", "6", "7"].map(String::from).to_vec(),
+            interval: CASE_INTERVAL,
         }];
         (room, cases)
     }
@@ -914,6 +951,7 @@ mod tests {
         let cases = vec![CaseTarget {
             key: desk::CASE_ID.trim_start_matches("light:").into(),
             zone_ids: ["1", "2", "3", "4"].map(String::from).to_vec(),
+            interval: CASE_INTERVAL,
         }];
         (room, cases)
     }
@@ -944,7 +982,7 @@ mod tests {
         let target = LampTarget {
             key: "2a5f:0101".into(),
             lamps: 8,
-            // It says it takes 100 frames a second: still paced at LAMP_INTERVAL.
+            // It says it takes 100 frames a second: still paced at the rates file's least.
             min_interval: Some(Duration::from_millis(10)),
         };
         (room, target)
@@ -971,11 +1009,20 @@ mod tests {
         }
         assert!(!sent.is_empty());
         assert!(sent.iter().all(|(_, c)| c.len() == 8), "a colour per lamp");
+        // The pacing's tenth of slack, and the 30 fps cap.
+        let least = target
+            .interval()
+            .max(foxglove_scene::scheduler::MIN_INTERVAL);
+        let gap = least.as_millis() as i64 * 9 / 10;
         assert!(
-            sent.windows(2).all(|w| w[1].0 - w[0].0 >= 45),
-            "never faster than LAMP_INTERVAL"
+            sent.windows(2).all(|w| w[1].0 - w[0].0 >= gap),
+            "never faster than its interval"
         );
-        assert!(sent.len() <= 40, "{} frames in 2 s", sent.len());
+        assert!(
+            sent.len() as i64 <= 2000 / gap + 1,
+            "{} frames in 2 s",
+            sent.len()
+        );
         assert!(sent[0].1[0] != sent[0].1[7], "lamps at their own places");
         // A still look: one frame, then nothing until something changes.
         let still = Effect::Breathe {
@@ -1021,7 +1068,8 @@ mod tests {
         let c = lamp_colours(&t(2), &[("0", red), ("1", Rgb::BLACK), ("5", red)]).unwrap();
         assert_eq!(c[0], [255, 0, 0]);
         assert_eq!(c[1], [0, 0, 0]);
-        assert_eq!(t(0).interval(), LAMP_INTERVAL);
+        assert_eq!(t(0).interval(), lamp_interval("k"));
+        assert_eq!(lamp_interval("k"), LAMP_INTERVAL, "the bundled default");
         assert_eq!(
             LampTarget {
                 min_interval: Some(Duration::from_millis(80)),

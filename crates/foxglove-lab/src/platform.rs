@@ -45,6 +45,42 @@ pub fn cancellation() -> Result<Arc<AtomicBool>> {
     Ok(flag)
 }
 
+/// This process's CPU time so far (user and kernel), for a burst's cost (#486); `None` when
+/// the platform doesn't say.
+#[cfg(windows)]
+pub fn cpu_time() -> Option<Duration> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let (mut created, mut exited, mut kernel, mut user) = Default::default();
+    // SAFETY: the pseudo handle needs no closing; the four out-pointers live on this stack.
+    unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+        .ok()?;
+    }
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    // 100 ns ticks.
+    Some(Duration::from_nanos((ticks(kernel) + ticks(user)) * 100))
+}
+
+#[cfg(unix)]
+pub fn cpu_time() -> Option<Duration> {
+    // SAFETY: getrusage fills the struct it is given.
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) } != 0 {
+        return None;
+    }
+    let tv = |t: libc::timeval| {
+        Duration::from_secs(t.tv_sec as u64) + Duration::from_micros(t.tv_usec as u64)
+    };
+    Some(tv(u.ru_utime) + tv(u.ru_stime))
+}
+
 /// The PC is locked (or on the secure desktop): the input desktop can't be opened for
 /// switching. Foxglove hands the left panel back while away (#410), and typing goes nowhere.
 #[cfg(windows)]

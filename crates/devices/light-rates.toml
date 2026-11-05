@@ -1,0 +1,29 @@
+# How often each kind of light takes a scene's frames (#486): the shortest interval between
+# two frames Foxglove sends it. Scenes read this file (crates/devices pc_lighting::rates), so a
+# rate is a data change, not a code change.
+#
+# One [[light]] per class, optionally narrowed to one model:
+#   class      "keyboard" (a Foxglove link keyboard's SET_FRAME), a catalog protocol
+#              ("omen-tracer"), or "lamp-array" (any Windows Dynamic Lighting device)
+#   device     optional "vvvv:pppp": this model only (a quirk); it wins over the class's own
+#   transport  optional "usb" or "ble", which bus it was measured on
+#   interval_ms  the frame interval scenes use; the slowest entry wins when several match
+#                (a keyboard measured on USB and on BLE gets the BLE one). Scenes never go
+#                faster than 30 frames a second whatever this says.
+# [light.measured], when `foxglove-lab rates` wrote the entry: the burst's sustained accepted
+# rate, the write latency (p50/p95), writes, errors, the lab's CPU time, how long it ran, when
+# and on which build. Entries without it are the defaults Foxglove shipped before a measurement.
+#
+# `foxglove-lab rates --out crates/devices/light-rates.toml` updates this file in place.
+
+[[light]]
+class = "keyboard"
+interval_ms = 100
+
+[[light]]
+class = "omen-tracer"
+interval_ms = 66
+
+[[light]]
+class = "lamp-array"
+interval_ms = 50

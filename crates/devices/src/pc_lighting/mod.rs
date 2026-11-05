@@ -12,6 +12,7 @@
 //! - [`omen_tracer`]: the HP OMEN case lighting board (TracerLED)
 //! - [`openrgb`]: every device a running OpenRGB drives, through its SDK server (#471);
 //!   opt-in, off by default
+//! - [`rates`]: how often each kind of light takes a scene's frames (`light-rates.toml`, #486)
 //! - [`calibrated`]: every opened driver's colours go through the device's colour calibration
 //! - `hid` (feature `hid`): the hidapi enumeration and report writer
 //!
@@ -27,6 +28,7 @@ pub mod hid;
 pub mod lamp_array;
 pub mod omen_tracer;
 pub mod openrgb;
+pub mod rates;
 pub mod zones;
 
 use std::time::Duration;
