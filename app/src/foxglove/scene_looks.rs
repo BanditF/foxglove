@@ -20,13 +20,14 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
 
 use foxglove_scene::{DeviceKind, Effect, Point, Rgb, RoomMap};
 
 use super::art_cycle::Item;
+use super::palette_file;
 
 /// The store section with the chosen look (profiled).
 pub const SECTION: &str = "scenes";
@@ -169,42 +170,46 @@ impl Background {
 
     pub fn rgb(self) -> Rgb {
         match self {
-            Background::Night => Rgb([6, 8, 18]),
+            // The bundled palette's `base` (docs/palette.md).
+            Background::Night => palette_file::bandit().roles.base,
             Background::Off => Rgb::BLACK,
         }
     }
 }
 
-/// The palettes, by name: (name, stops in sRGB).
-pub const PALETTES: [(&str, &[[u8; 3]]); 5] = [
-    (
-        "Bandit",
-        &[[0xf0, 0x8a, 0x3c], [0xff, 0x5f, 0x3c], [6, 8, 18]],
-    ),
-    (
-        "Forest",
-        &[[0x5f, 0xc4, 0x8e], [0x1c, 0x4a, 0x33], [0xf0, 0xd2, 0x3c]],
-    ),
-    (
-        "Steel",
-        &[[0x7f, 0xb0, 0xe0], [0x14, 0x22, 0x3c], [0xe6, 0xe6, 0xe6]],
-    ),
-    (
-        "Ember",
-        &[[0xff, 0x5f, 0x3c], [0xf0, 0xd2, 0x3c], [0x5a, 0x10, 0x08]],
-    ),
-    (
-        "Spectrum",
-        &[
-            [255, 40, 40],
-            [255, 220, 40],
-            [40, 220, 80],
-            [40, 200, 255],
-            [80, 60, 255],
-            [230, 40, 220],
-        ],
-    ),
-];
+/// The palettes, by name: (name, stops in sRGB). Bandit's stops are the bundled palette file's
+/// (`resources/palettes/bandit.json`, docs/palette.md).
+pub static PALETTES: LazyLock<[(&str, Vec<[u8; 3]>); 5]> = LazyLock::new(|| {
+    [
+        (
+            "Bandit",
+            palette_file::bandit().stops.iter().map(|c| c.0).collect(),
+        ),
+        (
+            "Forest",
+            vec![[0x5f, 0xc4, 0x8e], [0x1c, 0x4a, 0x33], [0xf0, 0xd2, 0x3c]],
+        ),
+        (
+            "Steel",
+            vec![[0x7f, 0xb0, 0xe0], [0x14, 0x22, 0x3c], [0xe6, 0xe6, 0xe6]],
+        ),
+        (
+            "Ember",
+            vec![[0xff, 0x5f, 0x3c], [0xf0, 0xd2, 0x3c], [0x5a, 0x10, 0x08]],
+        ),
+        (
+            "Spectrum",
+            vec![
+                [255, 40, 40],
+                [255, 220, 40],
+                [40, 220, 80],
+                [40, 200, 255],
+                [80, 60, 255],
+                [230, 40, 220],
+            ],
+        ),
+    ]
+});
 
 /// The palette that follows the wallpaper on screen (#40): its manifest's palette, else its
 /// picture's colours (`wallpaper_image::stops`). Offered after [`PALETTES`].
@@ -330,11 +335,12 @@ pub struct Look {
 }
 
 impl Default for Look {
-    /// The demo's scanline (#485): Bandit orange, down the room, over night blue.
+    /// The demo's scanline (#485): Bandit orange (the bundled palette's `accent`), down the
+    /// room, over night blue.
     fn default() -> Self {
         Look {
             kind: Kind::Scanline,
-            colour: [0xf0, 0x8a, 0x3c],
+            colour: palette_file::bandit().roles.accent.0,
             background: Background::Night,
             palette: "Bandit".into(),
             speed: 5,

@@ -6,7 +6,6 @@
 //! accent 0.08 lighter in Oklab, `deep` is the accent clamped to 3:1 on `paper` (the rule of
 //! `FoxgloveLive.readable` in bandit-wallpapers), `accent_light` the accent clamped to 4.5:1 on
 //! `paper` (text on light grounds). `base`, `ink`, `paper` and `paper_ink` fall back to Bandit's.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::sync::LazyLock;
 
@@ -299,16 +298,16 @@ mod tests {
         assert!(contrast(b.roles.deep, b.roles.paper) >= 3.0);
     }
 
-    /// Step 1 of #40(c): the file holds today's app colours, so moving the theme and the scenes
-    /// onto it changes nothing on screen.
+    /// The theme and the scenes take their Bandit colours from the file (#40(c) step 5; step 1
+    /// checked that the file held the colours they had, so the move changed nothing on screen).
     #[test]
     fn the_theme_and_the_bandit_scene_palette_equal_the_file() {
         let r = bandit().roles;
         assert_eq!(rgb(theme::DARK.accent), r.accent);
         assert_eq!(rgb(theme::DARK.accent_hover), r.highlight);
         assert_eq!(rgb(theme::LIGHT.accent), r.accent_light);
-        let (name, stops) = scene_looks::PALETTES[0];
-        assert_eq!(name, bandit().name);
+        let (name, stops) = &scene_looks::PALETTES[0];
+        assert_eq!(*name, bandit().name, "saved looks name it");
         assert_eq!(
             stops.iter().map(|c| Rgb(*c)).collect::<Vec<_>>(),
             bandit().stops
