@@ -599,6 +599,31 @@ mod tests {
             .any(|r| r[..2] == [protocol::CUSTOM_GET_VALUE, 0x09]));
     }
 
+    /// #74: a K5 Pro white (3434:0253, VIA protocol 11) with the user's VIA definition: matched
+    /// by its vendor and product id, it gets its keymap; the catalog says it has no VIA
+    /// lighting, so no lighting value is ever asked for, and nothing is written.
+    #[test]
+    fn a_k5_pro_white_with_a_loaded_definition_gets_its_keymap_and_no_lighting_reads() {
+        let fake = board(11);
+        let def = Definition::parse(&SAMPLE.replace("0x0250", "0x0253")).unwrap();
+        let dev = open_with(fake, Some(def), false);
+        assert_eq!(dev.source, Source::Loaded);
+        assert_eq!(dev.info().firmware.as_deref(), Some("VIA protocol 11"));
+        assert_eq!(dev.probe.scheme, None);
+        assert!(dev.lighting().is_none());
+        assert_eq!(dev.binding(0, 0, 0).unwrap().params, vec![0x29]);
+        let sent = fake.sent.lock().unwrap();
+        assert!(
+            !sent.iter().any(|r| r[0] == protocol::CUSTOM_GET_VALUE),
+            "{sent:x?}"
+        );
+        assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
+        assert!(
+            !sent.iter().any(|r| (0xA0..=0xAB).contains(&r[0])),
+            "no Keychron command"
+        );
+    }
+
     #[test]
     fn a_board_with_no_lighting_has_no_lighting() {
         let fake = leak(FakeQmk {
