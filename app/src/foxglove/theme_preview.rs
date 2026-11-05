@@ -1041,6 +1041,28 @@ fn plugins_page_renders() {
     assert!(count(&img, DARK.line) > 2000, "card outlines");
 }
 
+/// Sideloads (#381): developer mode on with an allowed and a not-yet-allowed unsigned plugin,
+/// the same page with it off, and the approval card for an unsigned file under a catalog id.
+#[test]
+fn plugins_sideload_renders() {
+    use crate::foxglove::plugins_ui::tests as plugins;
+    use crate::foxglove::shell::Page;
+    let base = shell_preview_with(Page::Plugins, &Samples::full(), 1150.0);
+    for (name, view) in [
+        ("ui-381-dev-on.png", plugins::sample_sideloads()),
+        ("ui-381-dev-off.png", plugins::sample_dev_off()),
+        ("ui-381-approval.png", plugins::sample_unsigned_approval()),
+    ] {
+        let samples = Samples {
+            plugins: view,
+            ..Samples::full()
+        };
+        let img = shell_preview_with(Page::Plugins, &samples, 1150.0);
+        keep(name, &img);
+        assert_ne!(img, base, "{name} differs from the plain page");
+    }
+}
+
 /// The Settings page (#390): the layer overlay's card on the left, the other cards on the right.
 #[test]
 fn settings_page_renders() {

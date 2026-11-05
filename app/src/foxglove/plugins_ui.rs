@@ -14,6 +14,7 @@ use foxglove_plugin_api::permission::Permission;
 
 use super::plugin_icons as icons;
 use super::plugin_install::{self, CatalogEntry, Installed, Staged};
+use super::plugin_trust::{self, DevMode, Trust};
 use super::theme;
 
 #[derive(Default)]
@@ -36,6 +37,14 @@ struct UiState {
     secret_set: std::collections::HashMap<String, bool>,
     /// A text setting being edited, by `plugin/name`, until it's committed.
     setting_text: std::collections::HashMap<String, String>,
+    /// Each installed plugin's trust and developer mode (#381), read with the installed list.
+    trusts: Option<(std::collections::HashMap<String, Trust>, DevMode)>,
+    /// The installed unsigned plugin whose "Allow this build" was clicked once.
+    confirm_allow: Option<String>,
+    /// The approval card's "I built it myself" box, for an unsigned build not allowed before.
+    unsigned_ok: bool,
+    /// The one-time line after a real signing key shipped (#381), checked once per run.
+    signing_notice: Option<Option<&'static str>>,
 }
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
@@ -74,6 +83,13 @@ pub struct Card {
     pub installed: Option<Installed>,
     /// While it's on: running, restarting, stopped.
     pub state: Option<String>,
+    /// Nobody signed it (#381): an UNSIGNED tag next to SIDELOADED.
+    pub unsigned: bool,
+    /// Why it doesn't run although installed (unsigned outside developer mode, not allowed yet,
+    /// revoked): one line on its card, and its switch is off.
+    pub blocked: Option<String>,
+    /// Developer mode is on and this unsigned build only needs the user's OK.
+    pub can_allow: bool,
 }
 
 /// Whether a plugin with these permissions runs outside the sandbox, as the runner decides it.
@@ -84,11 +100,20 @@ pub fn unsandboxed<'a>(permissions: impl IntoIterator<Item = &'a Permission>) ->
 }
 
 /// The cards: installed plugins first (by name), then the catalog's others in its order. Each
-/// plugin once; one that isn't in the catalog is sideloaded.
-pub fn cards(installed: &[Installed], catalog: &[CatalogEntry]) -> Vec<Card> {
+/// plugin once; one that isn't in the catalog, or isn't signed, is sideloaded. `trust` says
+/// what each installed plugin is (#381), and `dev` whether unsigned ones may run.
+pub fn cards(
+    installed: &[Installed],
+    trust: impl Fn(&str) -> Trust,
+    dev: &DevMode,
+    catalog: &[CatalogEntry],
+) -> Vec<Card> {
     let mut out: Vec<Card> = installed
         .iter()
         .map(|p| {
+            let trust = trust(&p.manifest.id);
+            let unsigned = matches!(trust, Trust::Unsigned(_) | Trust::Grandfathered(_));
+            let blocked = plugin_trust::verdict(&trust, dev).err();
             let listed = catalog.iter().find(|e| e.id == p.manifest.id);
             let description = if p.manifest.description.is_empty() {
                 listed.map(|e| e.description.clone()).unwrap_or_default()
@@ -99,7 +124,7 @@ pub fn cards(installed: &[Installed], catalog: &[CatalogEntry]) -> Vec<Card> {
                 id: p.manifest.id.clone(),
                 name: format!("{} {}", p.manifest.name, p.manifest.version),
                 description,
-                tag: if listed.is_some() {
+                tag: if listed.is_some() && !unsigned {
                     Tag::Installed
                 } else {
                     Tag::Sideloaded
@@ -107,6 +132,9 @@ pub fn cards(installed: &[Installed], catalog: &[CatalogEntry]) -> Vec<Card> {
                 unsandboxed: unsandboxed(&p.record.approved),
                 installed: Some(p.clone()),
                 state: None,
+                unsigned,
+                can_allow: unsigned && dev.on && blocked.is_some(),
+                blocked,
             }
         })
         .collect();
@@ -122,6 +150,9 @@ pub fn cards(installed: &[Installed], catalog: &[CatalogEntry]) -> Vec<Card> {
             unsandboxed: unsandboxed(&e.permissions),
             installed: None,
             state: None,
+            unsigned: false,
+            blocked: None,
+            can_allow: false,
         });
     }
     out
@@ -138,6 +169,12 @@ pub struct View {
     pub note: Option<(String, bool)>,
     /// Who holds the lights (#376): "Lights: Mic mute (high), under OpenRGB (low)".
     pub lights: String,
+    /// Developer mode's switch (#381), and whether the environment holds it on.
+    pub dev_mode: bool,
+    pub dev_forced: bool,
+    /// The previews' approval card, drawn in place of the page.
+    #[cfg(test)]
+    pub staged: Option<Staged>,
 }
 
 fn priority_word(p: super::lighting_leases::Priority) -> &'static str {
@@ -204,6 +241,10 @@ pub enum Intent {
     CheckCatalog,
     Enable(String, bool),
     Remove(String),
+    /// Developer mode on or off (#381).
+    DevMode(bool),
+    /// The user's OK for an installed unsigned build.
+    Allow(String),
 }
 
 #[cfg(test)]
@@ -260,14 +301,27 @@ pub fn group(ui: &mut egui::Ui) {
     super::settings_ui::section(ui, "Plugins", |ui| {
         #[cfg(test)]
         if let Some(v) = PREVIEW.with_borrow(|v| v.clone()) {
-            UI.with_borrow_mut(|state| draw(ui, &v, state));
+            UI.with_borrow_mut(|state| match v.staged.clone() {
+                Some(staged) => {
+                    super::settings_ui::card(ui, "Install from file", |ui| {
+                        // Shown, never decided: the preview's staged folder isn't real.
+                        let _ = approval_card(ui, &staged, state);
+                    });
+                }
+                None => {
+                    draw(ui, &v, state);
+                }
+            });
             return;
         }
         UI.with_borrow_mut(|state| {
             state.dialog.update(ui.ctx());
             if let Some(path) = state.dialog.take_picked() {
                 match plugin_install::stage(&path) {
-                    Ok(staged) => state.staged = Some(staged),
+                    Ok(staged) => {
+                        state.unsigned_ok = false;
+                        state.staged = Some(staged)
+                    }
                     Err(e) => {
                         state.message = Some(format!("Can't install {}: {e}", path.display()))
                     }
@@ -279,16 +333,37 @@ pub fn group(ui: &mut egui::Ui) {
                 });
                 return;
             }
+            if state.installed.is_none() {
+                state.trusts = None;
+            }
             let installed = state
                 .installed
                 .get_or_insert_with(plugin_install::installed)
                 .clone();
-            let note = if super::plugin_trust::dev_unsigned() {
-                Some((
-                    "Developer mode: unsigned plugins are allowed (FOXGLOVE_DEV_UNSIGNED_PLUGINS)."
-                        .to_string(),
-                    true,
-                ))
+            let (trusts, dev) = state
+                .trusts
+                .get_or_insert_with(|| {
+                    (
+                        plugin_install::trust_all(&installed),
+                        plugin_trust::dev_mode(),
+                    )
+                })
+                .clone();
+            // Once after a real signing key shipped (#381); kept for the rest of this run.
+            if state.signing_notice.is_none() {
+                let g = plugin_install::grandfather(&installed);
+                let line = plugin_trust::signing_notice(&g, plugin_trust::signing_key_missing());
+                if line.is_some() {
+                    if let Err(e) = plugin_trust::notice_shown() {
+                        eprintln!("Foxglove: can't keep that the signing line was shown: {e}");
+                    }
+                }
+                state.signing_notice = Some(line);
+            }
+            let note = if let Some(Some(line)) = state.signing_notice {
+                Some((line.to_string(), true))
+            } else if dev.on {
+                Some((DEV_MODE_ON.to_string(), true))
             } else {
                 let status = super::catalog_refresh::status();
                 if state.trust.as_ref().is_none_or(|(s, _)| *s != status) {
@@ -303,10 +378,17 @@ pub fn group(ui: &mut egui::Ui) {
                 }
             };
             let (catalog, can_check) = catalog_words(ui);
-            let mut cards = cards(&installed, &plugin_install::catalog());
+            let trust_of = |id: &str| {
+                trusts
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| Trust::Refused("not checked yet".into()))
+            };
+            let mut cards = cards(&installed, trust_of, &dev, &plugin_install::catalog());
             for c in cards
                 .iter_mut()
                 .filter(|c| c.installed.as_ref().is_some_and(|p| p.record.enabled))
+                .filter(|c| c.blocked.is_none())
             {
                 c.state = Some(plugin_state(&c.id));
             }
@@ -320,6 +402,10 @@ pub fn group(ui: &mut egui::Ui) {
                 can_check,
                 note,
                 lights,
+                dev_mode: dev.on,
+                dev_forced: plugin_trust::dev_env(),
+                #[cfg(test)]
+                staged: None,
             };
             for intent in draw(ui, &view, state) {
                 match intent {
@@ -339,6 +425,20 @@ pub fn group(ui: &mut egui::Ui) {
                         if state.open.as_deref() == Some(id.as_str()) {
                             state.open = None;
                         }
+                    }
+                    Intent::DevMode(on) => {
+                        state.message = plugin_trust::set_dev_mode(on).err();
+                        state.installed = None;
+                        super::plugin_runner::sync();
+                    }
+                    Intent::Allow(id) => {
+                        let found = installed.iter().find(|p| p.manifest.id == id);
+                        if let (Some(p), Some(Trust::Unsigned(hash))) = (found, trusts.get(&id)) {
+                            state.message =
+                                plugin_trust::allow(hash, &id, &p.manifest.version).err();
+                        }
+                        state.installed = None;
+                        super::plugin_runner::sync();
                     }
                 }
             }
@@ -408,7 +508,36 @@ fn draw(ui: &mut egui::Ui, v: &View, state: &mut UiState) -> Vec<Intent> {
     if let Some(m) = &state.message {
         ui.colored_label(p.danger, m);
     }
+    dev_mode_ui(ui, v, &mut out);
     out
+}
+
+/// The Plugins page's top line while developer mode is on.
+pub const DEV_MODE_ON: &str = "Developer mode is on: unsigned plugins you allow can run.";
+
+/// Developer mode's switch and its warning, at the foot of the page (#381).
+fn dev_mode_ui(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    let p = theme::palette(ui);
+    ui.add_space(8.0);
+    ui.separator();
+    let mut on = v.dev_mode;
+    let switch = ui.add_enabled(
+        !v.dev_forced,
+        egui::Checkbox::new(&mut on, "Developer mode"),
+    );
+    if switch
+        .on_disabled_hover_text("On for this run: FOXGLOVE_DEV_UNSIGNED_PLUGINS is set")
+        .changed()
+    {
+        out.push(Intent::DevMode(on));
+    }
+    ui.label(
+        RichText::new(plugin_trust::DEV_MODE_WARNING).color(if v.dev_mode {
+            p.warn
+        } else {
+            p.muted
+        }),
+    );
 }
 
 /// One card: the name and tag, a line about it, and its buttons; an installed plugin's
@@ -462,7 +591,18 @@ fn card_contents(ui: &mut egui::Ui, c: &Card, state: &mut UiState, out: &mut Vec
             });
         });
     });
-    ui.label(RichText::new(&c.description).color(p.muted));
+    // Under the name, so the name keeps its room next to SIDELOADED.
+    if c.unsigned {
+        ui.label(
+            RichText::new(UNSIGNED_TAG)
+                .font(theme::mono(11.0))
+                .color(p.danger),
+        )
+        .on_hover_text("Nobody has signed this plugin");
+    }
+    if !c.description.is_empty() {
+        ui.label(RichText::new(&c.description).color(p.muted));
+    }
     if c.unsandboxed {
         ui.label(
             RichText::new("Runs outside the sandbox: it can use your files or the network.")
@@ -477,14 +617,39 @@ fn card_contents(ui: &mut egui::Ui, c: &Card, state: &mut UiState, out: &mut Vec
             );
         return;
     };
-    if let Some(s) = &c.state {
+    if let Some(why) = &c.blocked {
+        ui.label(RichText::new(why).color(p.danger));
+    } else if let Some(s) = &c.state {
         ui.label(RichText::new(s).color(p.muted));
     }
     let id = &plugin.manifest.id;
     ui.horizontal_wrapped(|ui| {
-        let mut on = plugin.record.enabled;
-        if ui.checkbox(&mut on, "On").changed() {
+        // Blocked: off, and it stays installed until the user removes it or allows it.
+        let mut on = plugin.record.enabled && c.blocked.is_none();
+        if ui
+            .add_enabled(c.blocked.is_none(), egui::Checkbox::new(&mut on, "On"))
+            .changed()
+        {
             out.push(Intent::Enable(id.clone(), on));
+        }
+        if c.can_allow {
+            let confirming = state.confirm_allow.as_deref() == Some(id.as_str());
+            let button = ui.button(if confirming {
+                "Allow? Click again"
+            } else {
+                "Allow this build"
+            });
+            if button
+                .on_hover_text("Run this unsigned build. A changed build asks again.")
+                .clicked()
+            {
+                if confirming {
+                    state.confirm_allow = None;
+                    out.push(Intent::Allow(id.clone()));
+                } else {
+                    state.confirm_allow = Some(id.clone());
+                }
+            }
         }
         let open = state.open.as_deref() == Some(id.as_str());
         if theme::pill(ui, open, "Options").clicked() {
@@ -663,8 +828,38 @@ fn action_keys(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
     ui.weak("    Put F13–F24 on a key in ZMK Studio or VIA; it types nothing, and Foxglove passes it to the plugin.");
 }
 
+/// The UNSIGNED tag on an unsigned plugin's card (#381).
+pub const UNSIGNED_TAG: &str = "UNSIGNED";
+/// On the approval card of an unsigned plugin (#381).
+pub const UNSIGNED_INSTALL: &str =
+    "Nobody has signed this plugin, so Foxglove can't tell who made it or whether it was changed.";
+pub const UNSIGNED_CONFIRM: &str = "I built it myself, or I trust whoever did";
+pub const UNSIGNED_ALLOWED_BEFORE: &str =
+    "Nobody has signed this plugin. You allowed this exact build before.";
+
 /// Shows what a staged plugin may do; returns it again while the user hasn't decided.
 fn approval(ui: &mut egui::Ui, staged: Staged, state: &mut UiState) -> Option<Staged> {
+    match approval_card(ui, &staged, state) {
+        None => Some(staged),
+        Some(install) => {
+            state.installed = None;
+            if install {
+                let name = staged.manifest.name.clone();
+                super::plugin_runner::stop(&staged.manifest.id);
+                state.message = plugin_install::commit(staged, true)
+                    .err()
+                    .map(|e| format!("Can't install {name}: {e}"));
+                super::plugin_runner::sync();
+            } else {
+                plugin_install::discard(staged);
+            }
+            None
+        }
+    }
+}
+
+/// The approval card's contents; `Some(install?)` once the user decides.
+fn approval_card(ui: &mut egui::Ui, staged: &Staged, state: &mut UiState) -> Option<bool> {
     let m = &staged.manifest;
     ui.horizontal(|ui| {
         ui.add(icons::tile(ui, &m.id, Some(&staged.dir), 48.0));
@@ -689,32 +884,41 @@ fn approval(ui: &mut egui::Ui, staged: Staged, state: &mut UiState) -> Option<St
             }
         }
     }
+    let warn = ui.visuals().warn_fg_color;
+    if let Some(clash) = &staged.clash {
+        ui.colored_label(warn, clash);
+    }
+    // Unsigned (#381): the one-time OK for this build, unless it was given before.
+    let needs_ok = staged.unsigned.is_some() && !staged.allowed_before;
+    if staged.unsigned.is_some() {
+        let p = theme::palette(ui);
+        ui.label(
+            RichText::new(UNSIGNED_TAG)
+                .font(theme::mono(11.0))
+                .color(p.danger),
+        );
+        if needs_ok {
+            ui.colored_label(warn, UNSIGNED_INSTALL);
+            ui.checkbox(&mut state.unsigned_ok, UNSIGNED_CONFIRM);
+        } else {
+            ui.colored_label(warn, UNSIGNED_ALLOWED_BEFORE);
+        }
+    }
     let mut decided = None;
     ui.horizontal(|ui| {
-        if ui.button("Install").clicked() {
+        let ready = !needs_ok || state.unsigned_ok;
+        if ui
+            .add_enabled(ready, egui::Button::new("Install"))
+            .on_disabled_hover_text("Tick the box above first")
+            .clicked()
+        {
             decided = Some(true);
         }
         if ui.button("Cancel").clicked() {
             decided = Some(false);
         }
     });
-    match decided {
-        None => Some(staged),
-        Some(install) => {
-            state.installed = None;
-            if install {
-                let name = staged.manifest.name.clone();
-                super::plugin_runner::stop(&staged.manifest.id);
-                state.message = plugin_install::commit(staged, true)
-                    .err()
-                    .map(|e| format!("Can't install {name}: {e}"));
-                super::plugin_runner::sync();
-            } else {
-                plugin_install::discard(staged);
-            }
-            None
-        }
-    }
+    decided
 }
 
 #[cfg(test)]
@@ -755,7 +959,7 @@ run = [\"p.exe\"]
             installed(mic, "Mic mute", vec![Permission::DevicesRead]),
             installed("org.example.clock", "Clock", vec![Permission::Net]),
         ];
-        let cards = cards(&mine, &catalog);
+        let cards = cards(&mine, |_| Trust::Signed, &DevMode::default(), &catalog);
         assert_eq!(
             cards.len(),
             catalog.len() + 1,
@@ -783,7 +987,12 @@ run = [\"p.exe\"]
 
     #[test]
     fn corsair_says_it_runs_outside_the_sandbox() {
-        let cards = cards(&[], &plugin_install::catalog());
+        let cards = cards(
+            &[],
+            |_| Trust::Signed,
+            &DevMode::default(),
+            &plugin_install::catalog(),
+        );
         let icue = cards
             .iter()
             .find(|c| c.id == "org.foxglove.icue")
@@ -952,6 +1161,8 @@ run = [\"p.exe\"]
                 "Mic mute",
                 vec![Permission::DevicesRead, Permission::LightingWrite],
             )],
+            |_| Trust::Signed,
+            &DevMode::default(),
             &catalog,
         );
         cards[0].state = Some("Running".into());
@@ -962,6 +1173,165 @@ run = [\"p.exe\"]
             can_check: true,
             note: None,
             lights,
+            dev_mode: false,
+            dev_forced: false,
+            staged: None,
         }
+    }
+
+    /// The sample sideloads' own lines about them.
+    fn describe(cards: &mut [Card]) {
+        for c in cards.iter_mut() {
+            match c.id.as_str() {
+                "org.example.clock" => {
+                    c.description = "A big clock on the keyboard's info screen.".into()
+                }
+                "org.example.weather" => {
+                    c.description = "Puts the temperature on the left screen.".into()
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The previews' page with sideloads (#381), developer mode on: a clock the user allowed
+    /// and a build of it they haven't, next to signed Mic mute.
+    pub fn sample_sideloads() -> View {
+        let catalog = plugin_install::catalog();
+        let dev = DevMode {
+            on: true,
+            allowed: [("allowed".to_string(), Default::default())].into(),
+        };
+        let mine = [
+            installed(
+                "org.foxglove.mic-mute",
+                "Mic mute",
+                vec![Permission::DevicesRead, Permission::LightingWrite],
+            ),
+            installed(
+                "org.example.clock",
+                "Desk clock",
+                vec![Permission::DevicesRead],
+            ),
+            installed("org.example.weather", "Weather", vec![Permission::Net]),
+        ];
+        let trust = |id: &str| match id {
+            "org.example.clock" => Trust::Unsigned("allowed".into()),
+            "org.example.weather" => Trust::Unsigned("new".into()),
+            _ => Trust::Signed,
+        };
+        let mut cards = cards(&mine, trust, &dev, &catalog);
+        describe(&mut cards);
+        for c in cards
+            .iter_mut()
+            .filter(|c| c.blocked.is_none() && c.installed.is_some())
+        {
+            c.state = Some("Running".into());
+        }
+        View {
+            note: Some((DEV_MODE_ON.into(), true)),
+            dev_mode: true,
+            ..View { cards, ..sample() }
+        }
+    }
+
+    /// The same page with developer mode off: both unsigned plugins stay installed, switched off.
+    pub fn sample_dev_off() -> View {
+        let catalog = plugin_install::catalog();
+        let mine = [
+            installed(
+                "org.example.clock",
+                "Desk clock",
+                vec![Permission::DevicesRead],
+            ),
+            installed(
+                "org.foxglove.mic-mute",
+                "Mic mute",
+                vec![Permission::DevicesRead, Permission::LightingWrite],
+            ),
+        ];
+        let trust = |id: &str| match id {
+            "org.example.clock" => Trust::Unsigned("allowed".into()),
+            _ => Trust::Signed,
+        };
+        let mut cards = cards(&mine, trust, &DevMode::default(), &catalog);
+        describe(&mut cards);
+        for c in cards
+            .iter_mut()
+            .filter(|c| c.blocked.is_none() && c.installed.is_some())
+        {
+            c.state = Some("Running".into());
+        }
+        View { cards, ..sample() }
+    }
+
+    /// The approval card for an unsigned file that takes a catalog plugin's id (#381).
+    pub fn sample_unsigned_approval() -> View {
+        let m = installed("org.foxglove.mic-mute", "Mic mute (my build)", vec![]).manifest;
+        let manifest = Manifest {
+            permissions: vec![Permission::DevicesRead, Permission::LightingWrite],
+            description: "Mic mute with my own colours.".into(),
+            ..m
+        };
+        View {
+            staged: Some(Staged {
+                new_permissions: manifest.permissions.clone(),
+                manifest,
+                dir: std::env::temp_dir().join("foxglove-preview-no-such-plugin"),
+                unsigned: Some("new".into()),
+                allowed_before: false,
+                clash: Some("Same id as Mic mute from the Foxglove catalog. This file takes its place, and the catalog won't update it.".into()),
+            }),
+            ..sample()
+        }
+    }
+
+    /// #381: an unsigned plugin is SIDELOADED and UNSIGNED even under a catalog id, and runs
+    /// only in developer mode once its build is allowed; signed ones don't care.
+    #[test]
+    fn unsigned_cards_say_so_and_why_they_are_off() {
+        let catalog = plugin_install::catalog();
+        let mine = vec![
+            installed("org.foxglove.mic-mute", "Mic mute (mine)", vec![]),
+            installed("org.example.ok", "Signed one", vec![]),
+        ];
+        let trust = |id: &str| match id {
+            "org.foxglove.mic-mute" => Trust::Unsigned("h".into()),
+            _ => Trust::Signed,
+        };
+        let off = cards(&mine, trust, &DevMode::default(), &catalog);
+        let mic = off
+            .iter()
+            .find(|c| c.id == "org.foxglove.mic-mute")
+            .unwrap();
+        assert_eq!((mic.tag, mic.unsigned), (Tag::Sideloaded, true));
+        assert_eq!(mic.blocked.as_deref(), Some(plugin_trust::OFF_UNSIGNED));
+        assert!(!mic.can_allow, "allowing needs developer mode");
+        let ok = off.iter().find(|c| c.id == "org.example.ok").unwrap();
+        assert!(ok.blocked.is_none() && !ok.unsigned);
+
+        let mut dev = DevMode {
+            on: true,
+            ..Default::default()
+        };
+        let on = cards(&mine, trust, &dev, &catalog);
+        let mic = on.iter().find(|c| c.id == "org.foxglove.mic-mute").unwrap();
+        assert_eq!(mic.blocked.as_deref(), Some(plugin_trust::OFF_NOT_ALLOWED));
+        assert!(mic.can_allow);
+        dev.allowed.insert("h".into(), Default::default());
+        let allowed = cards(&mine, trust, &dev, &catalog);
+        let mic = allowed
+            .iter()
+            .find(|c| c.id == "org.foxglove.mic-mute")
+            .unwrap();
+        assert!(mic.blocked.is_none() && !mic.can_allow && mic.unsigned);
+        assert_eq!(
+            allowed
+                .iter()
+                .filter(|c| c.id == "org.foxglove.mic-mute")
+                .count(),
+            1,
+            "the catalog's own card doesn't come back next to it"
+        );
     }
 }

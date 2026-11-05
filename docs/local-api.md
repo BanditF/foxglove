@@ -346,9 +346,17 @@ Each check:
 
 To withdraw a version: `plugin-catalog yank|revoke <catalog.json> <id> [version…] --reason …`, then `-Resign`, sign, and `-Pages`. The weekly re-sign is `-Resign`, sign, `-Pages`. GitHub Pages must be turned on for the `gh-pages` branch once, in the repository settings.
 
-**Developer mode:** `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` allows unsigned plugins, and the Plugins tab shows a warning.
+**Developer mode (#381):** a switch at the foot of the Plugins page, off by default, kept in `[plugins.dev]`. Its warning: "Lets Foxglove load plugins nobody has signed. Only turn this on for plugins you build yourself."
+- **Off:** an unsigned archive doesn't install, and an unsigned plugin that is already installed doesn't run. It stays installed, and its card says why ("Off: nobody has signed it, and unsigned plugins only run in developer mode.").
+- **On:** each unsigned build still needs a one-time OK, ticked on the install card. The OK is kept in `[plugins.dev.allowed]` by the build's package hash: the SHA-256 of its files' paths and SHA-256s (the list the catalog would sign), one `path<TAB>sha256` line per file, sorted. A changed build is a new hash and asks again ("Allow this build" on its card). Removing the plugin forgets its OKs.
+- **Signed plugins** are unaffected either way. A revoked version never runs, and a yanked one never installs, in developer mode too.
+- **Badges:** an unsigned plugin is SIDELOADED, even under a catalog plugin's id, with UNSIGNED under its name.
+- **Ids:** installing an unsigned file under a catalog plugin's id warns that it takes that plugin's place. Installing a signed plugin over an unsigned copy warns that it replaces it.
+- **Updates:** nothing updates a sideloaded plugin from the catalog; the catalog refresh only fetches the signed files.
+- `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` turns developer mode on for one run (the Test lab), and the switch shows it held on.
+- **Before the signing key exists:** while `root.pub` is still the placeholder, the plugins that were installed when this policy first ran (`[plugins.grandfather]`, by id and version) keep running as before, and a health row warns "plugin signing key not set; installed plugins allowed". New installs from a file get the unsigned flow anyway, and installing one of them again from a file ends its grandfathering. Once a build ships the real key, the normal policy applies, and the Plugins page says once: "Plugin signing is on now: plugins nobody has signed only run in developer mode." That it was shown is kept in `[plugins.grandfather]`.
 
-**Test hook:** with developer mode and a test `FOXGLOVE_CONFIG_DIR` (never the real settings folder), `FOXGLOVE_PLUGINS_AUTOINSTALL=<zip or folder>` installs and enables that plugin at start with all its declared permissions, without the approval dialog. It writes a warning to stderr and to `autoinstall.log` in the config dir. It is meant for the Test lab only.
+**Test hook:** with `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` and a test `FOXGLOVE_CONFIG_DIR` (never the real settings folder), `FOXGLOVE_PLUGINS_AUTOINSTALL=<zip or folder>` installs and enables that plugin at start with all its declared permissions, without the approval dialog. It writes a warning to stderr and to `autoinstall.log` in the config dir. It is meant for the Test lab only.
 
 ## Writing a plugin (Rust)
 
@@ -360,4 +368,30 @@ The example is `crates/plugin-focus-timer`, a focus/rest timer that publishes `f
 
 The second example, `crates/plugin-openrgb-e131`, receives network data through Foxglove (`net.listen:udp:127.0.0.1:5568`) and stays sandboxed; see [openrgb-plugin.md](openrgb-plugin.md).
 
-**Pack a plugin:** `powershell -File scripts\pack-plugin.ps1 plugin-focus-timer` builds it, zips `plugin.toml` and the program into `target\plugins\`, and prints the catalog entry (archive and file SHA-256s) to add to `catalog.json` before signing. Until the signing keys exist, install it with `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1`.
+**Pack a plugin:** `powershell -File scripts\pack-plugin.ps1 plugin-focus-timer` builds it, zips `plugin.toml` and the program into `target\plugins\`, and prints the catalog entry (archive and file SHA-256s) to add to `catalog.json` before signing. Until the signing keys exist, install it in developer mode.
+
+## Publishing your own plugin
+
+Anyone can write a plugin and share its archive. Users install it with **Install from file…**. Until it's in the signed catalog, it's unsigned, so it installs and runs only in developer mode, after the user's one-time OK (see Signing).
+
+**Package layout:** a `.zip` with `plugin.toml` at its top, next to the program and anything it needs:
+```
+com.example.weather-1.2.0.zip
+├── plugin.toml
+├── weather.exe
+└── icon.svg        (optional, see plugin-icons.md)
+```
+- The folder it unpacks to is named after `id`, so the id must be yours: reverse-DNS on a domain or account you control. A catalog plugin's id is warned about, and taking one replaces that plugin.
+- `run` names the program inside the package. Nothing outside the package is run.
+- The runner writes `plugin.log` and a data folder itself, so don't ship them.
+- At most 64 MiB unpacked and 2000 files.
+
+**Packing:** `powershell -File scripts\pack-plugin.ps1 <crate>` builds a crate in this repository and zips it into `target\plugins\<id>-<version>.zip`, with the catalog entry (archive and file SHA-256s). For a plugin built elsewhere, zip the files yourself so that `plugin.toml` is at the top.
+
+**Permissions:** ask for the least that works. Users see each one on the install card, and the sensitive ones are marked. The plugin gets only what it declared and the user approved. A call needing anything else fails with "not permitted" (error 5).
+- `facts.write:<your prefix>.*` rather than broad patterns, and read-only permissions where they do.
+- A scoped `net.connect:<host>:<port>` or `net.listen:…` keeps the plugin in the AppContainer. Bare `net` or `files` runs it outside the sandbox, and its card says so.
+- An update that adds permissions asks the user again.
+
+**Getting into the catalog:** open an issue on BanditF/foxglove with the source and a release asset. A maintainer packs and signs it (see Publishing above). Signed, it installs and runs without developer mode.
+

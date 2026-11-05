@@ -199,6 +199,7 @@ pub fn start() {
     register("via_writes", super::via_host::health_rows); // #581
     register("knob", super::knob_health::rows_now); // #719
     register("lights_owner", super::lights_owner::rows_now); // #491
+    register("plugin_signing", super::plugin_trust::health_rows); // #381
     let events = super::services::First::new(super::devices::bus().subscribe(false));
     let _ = super::services::spawn_supervised("health", move || {
         let events = events.take_or(|| super::devices::bus().subscribe(false));

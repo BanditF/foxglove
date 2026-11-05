@@ -479,10 +479,14 @@ the keyboard** shows how full it is ("Kept: 5 of 8 places") and what each place 
 ## 9. Plugins
 
 **The Plugins page.** Each plugin runs as its own small program with only the permissions you
-approve when you install it. Only signed plugins run.
+approve when you install it. Only signed plugins run, unless you turn on developer mode.
 - **Installing:** the catalog lists the first-party plugins as "Coming soon" until they're
   published. For now a plugin installs from its file (**Install from file…**), which shows
   exactly what it may do first.
+- **Plugins nobody has signed:** they install and run only with **Developer mode** on (at the
+  foot of the Plugins page, off by default), and you OK each build once. They're marked
+  SIDELOADED and UNSIGNED. With developer mode off they stay installed but off. To publish your
+  own, see [Publishing your own plugin](local-api.md#publishing-your-own-plugin).
 - **Managing:** each installed plugin has an on/off switch, **Remove** (two clicks), its status
   (running / restarting / stopped), its permissions, and **Options** for its own settings.
 - **Keys for a plugin:** a plugin's actions (pause the timer, mute the mic) each get a key from
