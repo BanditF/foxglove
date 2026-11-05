@@ -43,6 +43,8 @@ struct UiState {
     confirm_allow: Option<String>,
     /// The approval card's "I built it myself" box, for an unsigned build not allowed before.
     unsigned_ok: bool,
+    /// The one-time line after a real signing key shipped (#381), checked once per run.
+    signing_notice: Option<Option<&'static str>>,
 }
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
@@ -110,7 +112,7 @@ pub fn cards(
         .iter()
         .map(|p| {
             let trust = trust(&p.manifest.id);
-            let unsigned = matches!(trust, Trust::Unsigned(_));
+            let unsigned = matches!(trust, Trust::Unsigned(_) | Trust::Grandfathered(_));
             let blocked = plugin_trust::verdict(&trust, dev).err();
             let listed = catalog.iter().find(|e| e.id == p.manifest.id);
             let description = if p.manifest.description.is_empty() {
@@ -347,7 +349,20 @@ pub fn group(ui: &mut egui::Ui) {
                     )
                 })
                 .clone();
-            let note = if dev.on {
+            // Once after a real signing key shipped (#381); kept for the rest of this run.
+            if state.signing_notice.is_none() {
+                let g = plugin_install::grandfather(&installed);
+                let line = plugin_trust::signing_notice(&g, plugin_trust::signing_key_missing());
+                if line.is_some() {
+                    if let Err(e) = plugin_trust::notice_shown() {
+                        eprintln!("Foxglove: can't keep that the signing line was shown: {e}");
+                    }
+                }
+                state.signing_notice = Some(line);
+            }
+            let note = if let Some(Some(line)) = state.signing_notice {
+                Some((line.to_string(), true))
+            } else if dev.on {
                 Some((DEV_MODE_ON.to_string(), true))
             } else {
                 let status = super::catalog_refresh::status();

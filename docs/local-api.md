@@ -354,6 +354,7 @@ To withdraw a version: `plugin-catalog yank|revoke <catalog.json> <id> [versionâ
 - **Ids:** installing an unsigned file under a catalog plugin's id warns that it takes that plugin's place. Installing a signed plugin over an unsigned copy warns that it replaces it.
 - **Updates:** nothing updates a sideloaded plugin from the catalog; the catalog refresh only fetches the signed files.
 - `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` turns developer mode on for one run (the Test lab), and the switch shows it held on.
+- **Before the signing key exists:** while `root.pub` is still the placeholder, the plugins that were installed when this policy first ran (`[plugins.grandfather]`, by id and version) keep running as before, and a health row warns "plugin signing key not set; installed plugins allowed". New installs from a file get the unsigned flow anyway, and installing one of them again from a file ends its grandfathering. Once a build ships the real key, the normal policy applies, and the Plugins page says once: "Plugin signing is on now: plugins nobody has signed only run in developer mode." That it was shown is kept in `[plugins.grandfather]`.
 
 **Test hook:** with `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` and a test `FOXGLOVE_CONFIG_DIR` (never the real settings folder), `FOXGLOVE_PLUGINS_AUTOINSTALL=<zip or folder>` installs and enables that plugin at start with all its declared permissions, without the approval dialog. It writes a warning to stderr and to `autoinstall.log` in the config dir. It is meant for the Test lab only.
 

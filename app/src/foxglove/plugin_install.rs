@@ -129,20 +129,30 @@ pub fn trust_all(
     let Some(dir) = plugins_dir() else {
         return Default::default();
     };
-    let catalog = super::plugin_trust::catalog().ok();
+    use super::plugin_trust as trust;
+    let catalog = trust::catalog().ok();
+    let g = grandfather(plugins);
+    let key_missing = trust::signing_key_missing();
     plugins
         .iter()
         .map(|p| {
             let id = &p.manifest.id;
-            let t = super::plugin_trust::trust_in(
-                catalog.as_ref(),
-                id,
-                &p.manifest.version,
-                &dir.join(id),
-            );
+            let version = &p.manifest.version;
+            let t = trust::trust_in(catalog.as_ref(), id, version, &dir.join(id));
+            let t = trust::with_grandfather(t, id, version, &g, key_missing);
             (id.clone(), t)
         })
         .collect()
+}
+
+/// The plugins installed before the sideload policy (#381); the first call takes them from
+/// `plugins`, which must be all the installed ones.
+pub fn grandfather(plugins: &[Installed]) -> super::plugin_trust::Grandfather {
+    let ids: Vec<(String, String)> = plugins
+        .iter()
+        .map(|p| (p.manifest.id.clone(), p.manifest.version.clone()))
+        .collect();
+    super::plugin_trust::grandfather(&ids)
 }
 
 /// A Plugin unpacked next to the plugins folder, waiting for the user's approval.
@@ -329,6 +339,9 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
 /// An unsigned one's build is allowed with it: installing it is the user's one-time OK.
 pub fn commit(staged: Staged, enabled: bool) -> Result<(), String> {
     let plugins = plugins_dir().ok_or("no settings folder")?;
+    // What was installed before the policy is taken first; this install isn't among it (#381).
+    grandfather(&installed());
+    super::plugin_trust::ungrandfather(&staged.manifest.id)?;
     let target = plugins.join(&staged.manifest.id);
     if target.exists() {
         std::fs::remove_dir_all(&target).map_err(|e| format!("removing the old version: {e}"))?;
@@ -491,6 +504,9 @@ pub fn remove(id: &str) -> Result<(), String> {
     if let Err(e) = super::plugin_trust::forget(id) {
         eprintln!("Foxglove: forgetting {id}'s allowed builds: {e}");
     }
+    if let Err(e) = super::plugin_trust::ungrandfather(id) {
+        eprintln!("Foxglove: forgetting {id} was installed before #381: {e}");
+    }
     let mut all = records();
     all.remove(id);
     save_records(&all)
@@ -618,6 +634,15 @@ mod tests {
         super::super::store::save(
             "plugins.dev",
             &super::super::plugin_trust::DevMode::default(),
+        )
+        .unwrap();
+        // Taken, and empty: these tests' plugins are all new installs.
+        super::super::store::save(
+            "plugins.grandfather",
+            &super::super::plugin_trust::Grandfather {
+                taken: true,
+                ..Default::default()
+            },
         )
         .unwrap();
         guard
@@ -892,6 +917,80 @@ permissions = [\"facts.write:mine.*\"]
         remove("org.foxglove.mic-mute").unwrap();
         trust::set_dev_mode(false).unwrap();
         let _ = std::fs::remove_file(mine);
+    }
+
+    /// #381 with the real store: a plugin installed before the policy keeps running while the
+    /// key is the placeholder; a new install, or the same id installed again, gets the unsigned
+    /// flow; and the one-time line, once due, is kept as shown.
+    #[test]
+    fn plugins_from_before_the_policy_are_grandfathered() {
+        use super::super::plugin_trust::{self as trust, Grandfather, Trust};
+        let _lock = sideload_lock();
+        assert!(
+            trust::signing_key_missing(),
+            "this build has the placeholder key"
+        );
+        // A plugin from before: its folder and record, as an older Foxglove left them.
+        let old = plugins_dir().unwrap().join("org.example.old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(
+            old.join("plugin.toml"),
+            "id = \"org.example.old\"\nname = \"Old\"\nversion = \"1.0.0\"\napi = \"1.0\"\nrun = [\"old.exe\"]\n",
+        )
+        .unwrap();
+        std::fs::write(old.join("old.exe"), b"MZ").unwrap();
+        set_enabled("org.example.old", true).unwrap();
+        // The first run of this policy: nothing taken yet.
+        super::super::store::save("plugins.grandfather", &Grandfather::default()).unwrap();
+
+        let off = trust::DevMode::default();
+        let t = trust_all(&installed());
+        assert!(
+            matches!(t["org.example.old"], Trust::Grandfathered(_)),
+            "{t:?}"
+        );
+        assert_eq!(
+            trust::verdict(&t["org.example.old"], &off),
+            Ok(()),
+            "keeps running"
+        );
+
+        // A new install from a file gets the unsigned flow, placeholder or not.
+        let e = stage(&zip_with(&[
+            ("plugin.toml", MIC_BUILD.as_bytes()),
+            ("mic.exe", b"MZ"),
+        ]))
+        .unwrap_err();
+        assert!(e.ends_with(UNSIGNED_REFUSED), "{e}");
+        trust::set_dev_mode(true).unwrap();
+        let again = MIC_BUILD
+            .replace("org.foxglove.mic-mute", "org.example.old")
+            .replace("0.0.1", "1.0.0");
+        let archive = zip_with(&[("plugin.toml", again.as_bytes()), ("mic.exe", b"MZ")]);
+        let staged = stage(&archive).unwrap();
+        assert!(staged.unsigned.is_some() && !staged.allowed_before, "asks");
+        commit(staged, true).unwrap();
+        trust::set_dev_mode(false).unwrap();
+        let t = trust_all(&installed());
+        assert_eq!(
+            trust::verdict(&t["org.example.old"], &off),
+            Err(trust::OFF_UNSIGNED.into()),
+            "installed again from a file: not grandfathered any more"
+        );
+
+        // The one-time line is kept as shown.
+        let due = Grandfather {
+            taken: true,
+            plugins: [("org.example.old".to_string(), "1.0.0".to_string())].into(),
+            notice_shown: false,
+        };
+        super::super::store::save("plugins.grandfather", &due).unwrap();
+        assert!(trust::signing_notice(&trust::grandfather(&[]), false).is_some());
+        trust::notice_shown().unwrap();
+        assert_eq!(trust::signing_notice(&trust::grandfather(&[]), false), None);
+
+        remove("org.example.old").unwrap();
+        let _ = std::fs::remove_file(archive);
     }
 
     /// Saving the installed list leaves the rest of `[plugins]` alone (it used to drop the

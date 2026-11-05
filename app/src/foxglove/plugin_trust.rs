@@ -18,6 +18,12 @@
 //! unsigned plugin that is already installed stays on disk but doesn't run, and its card says
 //! why. Signed plugins are unaffected. `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` (or the older
 //! `FOXGLOVE_DEV_UNSIGNED_KITS=1`) turns developer mode on for one run, for the Test lab.
+//!
+//! **Grandfathered (#381):** while this build's root key is still the placeholder, the plugins
+//! that were installed when this policy first ran (`[plugins.grandfather]`, by id and version)
+//! keep running as before, and a health row says so. New installs from a file get the unsigned
+//! flow at once. Once a real key ships the normal policy applies, and the Plugins page says so
+//! once.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -134,8 +140,124 @@ pub enum Trust {
     Signed,
     /// Not signed (or changed since): its package hash.
     Unsigned(String),
+    /// Not signed, but installed before this policy while the build has no signing key yet:
+    /// runs as before. Its package hash.
+    Grandfathered(String),
     /// Never runs: revoked, or its files can't be read.
     Refused(String),
+}
+
+/// Whether a root key is the placeholder a build carries until the real one exists (#90).
+fn is_placeholder(key: &str) -> bool {
+    key.trim_start().starts_with("PLACEHOLDER")
+}
+
+/// Whether this build's root key is still the placeholder.
+pub fn signing_key_missing() -> bool {
+    is_placeholder(ROOT_KEY)
+}
+
+/// The store's `[plugins.grandfather]`: the plugins installed when this policy first ran.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Grandfather {
+    /// The list was taken (once, the first time this policy ran).
+    pub taken: bool,
+    /// Id to the version that was installed then.
+    pub plugins: BTreeMap<String, String>,
+    /// The one-time line after a real signing key shipped was shown.
+    pub notice_shown: bool,
+}
+
+const GRANDFATHER: &str = "plugins.grandfather";
+
+/// The grandfathered plugins; the first time, the `installed` ones (id, version) are taken.
+pub fn grandfather(installed: &[(String, String)]) -> Grandfather {
+    let g: Grandfather = super::store::try_load(GRANDFATHER).unwrap_or_default();
+    if g.taken {
+        return g;
+    }
+    let g = Grandfather {
+        taken: true,
+        plugins: installed.iter().cloned().collect(),
+        notice_shown: false,
+    };
+    if let Err(e) = super::store::save(GRANDFATHER, &g) {
+        eprintln!("Foxglove: can't keep the plugins installed before #381: {e}");
+    }
+    g
+}
+
+/// A plugin installed again from a file, or removed, isn't grandfathered any more.
+pub fn ungrandfather(id: &str) -> Result<(), String> {
+    let mut g: Grandfather = super::store::try_load(GRANDFATHER).unwrap_or_default();
+    if g.plugins.remove(id).is_none() {
+        return Ok(());
+    }
+    super::store::save(GRANDFATHER, &g).map_err(|e| e.to_string())
+}
+
+/// `trust`, grandfathered when the key is still the placeholder and this exact version was
+/// installed before the policy.
+pub fn with_grandfather(
+    trust: Trust,
+    id: &str,
+    version: &str,
+    g: &Grandfather,
+    key_missing: bool,
+) -> Trust {
+    match trust {
+        Trust::Unsigned(hash) if key_missing && g.plugins.get(id).is_some_and(|v| v == version) => {
+            Trust::Grandfathered(hash)
+        }
+        t => t,
+    }
+}
+
+/// The health row while the key is the placeholder (#381).
+pub const KEY_MISSING_HEALTH: &str = "plugin signing key not set; installed plugins allowed";
+
+/// The one line on the Plugins page, once, after a real signing key shipped.
+pub const SIGNING_ON_NOTICE: &str =
+    "Plugin signing is on now: plugins nobody has signed only run in developer mode.";
+
+/// The plugin-signing health rows for a build with or without its key.
+pub fn health_rows_for(key_missing: bool) -> Vec<super::health::HealthRow> {
+    use super::health::{HealthRow, Level};
+    if key_missing {
+        vec![HealthRow::new(
+            "plugins",
+            "Plugin signing",
+            Level::Warn,
+            KEY_MISSING_HEALTH,
+        )]
+    } else {
+        vec![]
+    }
+}
+
+/// The health view's provider.
+pub fn health_rows() -> Vec<super::health::HealthRow> {
+    health_rows_for(signing_key_missing())
+}
+
+/// The one-time line, if it's due: a real key, plugins that were grandfathered, not shown yet.
+pub fn signing_notice(g: &Grandfather, key_missing: bool) -> Option<&'static str> {
+    (!key_missing && g.taken && !g.plugins.is_empty() && !g.notice_shown)
+        .then_some(SIGNING_ON_NOTICE)
+}
+
+/// The line was shown: never again.
+pub fn notice_shown() -> Result<(), String> {
+    let g: Grandfather = super::store::try_load(GRANDFATHER).unwrap_or_default();
+    super::store::save(
+        GRANDFATHER,
+        &Grandfather {
+            notice_shown: true,
+            ..g
+        },
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// An installed plugin's trust against `catalog` (`None`: no signed catalog).
@@ -165,7 +287,7 @@ pub fn trust_in(catalog: Option<&Catalog>, id: &str, version: &str, dir: &Path) 
 /// Whether a plugin with this trust may run now, or the line its card shows.
 pub fn verdict(trust: &Trust, dev: &DevMode) -> Result<(), String> {
     match trust {
-        Trust::Signed => Ok(()),
+        Trust::Signed | Trust::Grandfathered(_) => Ok(()),
         Trust::Refused(e) => Err(format!("Off: {e}.")),
         Trust::Unsigned(_) if !dev.on => Err(OFF_UNSIGNED.into()),
         Trust::Unsigned(hash) if !dev.allowed.contains_key(hash) => Err(OFF_NOT_ALLOWED.into()),
@@ -237,10 +359,7 @@ fn cached() -> Option<Signed> {
 }
 
 fn verify(set: &Signed, root_key: &str, now: &str, seen: &Seen) -> Result<(Root, Catalog), String> {
-    if root_key.starts_with("PLACEHOLDER")
-        || set.root_json.is_empty()
-        || set.catalog_json.is_empty()
-    {
+    if is_placeholder(root_key) || set.root_json.is_empty() || set.catalog_json.is_empty() {
         return Err("this build has no signed plugin catalog yet".into());
     }
     let root =
@@ -395,6 +514,85 @@ pub mod tests {
             size: None,
             files: foxglove_plugin_trust::hash_dir(dir, RUNTIME_FILES).unwrap(),
         }
+    }
+
+    /// #381: the three cases of the placeholder key: grandfathered plugins run and the health
+    /// row warns; with a real key the normal policy and the one-time line; new installs and
+    /// other versions are never grandfathered.
+    #[test]
+    fn grandfathering_while_the_key_is_the_placeholder() {
+        assert!(
+            is_placeholder(ROOT_KEY),
+            "this build still has the placeholder"
+        );
+        assert!(signing_key_missing());
+        assert!(!is_placeholder(
+            "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"
+        ));
+        let g = Grandfather {
+            taken: true,
+            plugins: [("org.example.old".to_string(), "1.0.0".to_string())].into(),
+            notice_shown: false,
+        };
+        let off = DevMode::default();
+        let unsigned = || Trust::Unsigned("h".into());
+
+        // 1. Placeholder: the plugin installed before runs with developer mode off, the health
+        //    row warns, and no line is due.
+        let t = with_grandfather(unsigned(), "org.example.old", "1.0.0", &g, true);
+        assert_eq!(t, Trust::Grandfathered("h".into()));
+        assert_eq!(verdict(&t, &off), Ok(()));
+        let rows = health_rows_for(true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].level, super::super::health::Level::Warn);
+        assert_eq!(rows[0].detail, KEY_MISSING_HEALTH);
+        assert_eq!(
+            KEY_MISSING_HEALTH,
+            "plugin signing key not set; installed plugins allowed"
+        );
+        assert_eq!(signing_notice(&g, true), None);
+
+        // 2. A real key: the normal policy, no health row, and the line once.
+        let t = with_grandfather(unsigned(), "org.example.old", "1.0.0", &g, false);
+        assert_eq!(verdict(&t, &off), Err(OFF_UNSIGNED.into()));
+        assert!(health_rows_for(false).is_empty());
+        assert_eq!(signing_notice(&g, false), Some(SIGNING_ON_NOTICE));
+        let shown = Grandfather {
+            notice_shown: true,
+            ..g.clone()
+        };
+        assert_eq!(signing_notice(&shown, false), None, "once");
+        assert_eq!(
+            signing_notice(
+                &Grandfather {
+                    taken: true,
+                    ..Default::default()
+                },
+                false
+            ),
+            None,
+            "nothing was grandfathered, nothing to say"
+        );
+
+        // 3. Another plugin or another version (a new install) isn't grandfathered.
+        for (id, version) in [("org.example.new", "1.0.0"), ("org.example.old", "1.1.0")] {
+            let t = with_grandfather(unsigned(), id, version, &g, true);
+            assert_eq!(
+                verdict(&t, &off),
+                Err(OFF_UNSIGNED.into()),
+                "{id} {version}"
+            );
+        }
+        // Signed and refused plugins are left as they are.
+        assert_eq!(
+            with_grandfather(Trust::Signed, "org.example.old", "1.0.0", &g, true),
+            Trust::Signed
+        );
+        let refused = Trust::Refused("revoked".into());
+        assert_eq!(
+            with_grandfather(refused.clone(), "org.example.old", "1.0.0", &g, true),
+            refused
+        );
     }
 
     #[test]

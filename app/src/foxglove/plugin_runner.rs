@@ -10,8 +10,8 @@ use foxglove_plugin_host::{Client, Context, Limits};
 
 static RUNNERS: Mutex<Option<HashMap<String, Runner>>> = Mutex::new(None);
 static STATES: Mutex<Option<HashMap<String, PluginState>>> = Mutex::new(None);
-/// The running plugins that were launched unsigned (#381), with their package hashes.
-static UNSIGNED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+/// The running plugins that weren't signed at launch (#381), with their trust then.
+static UNSIGNED: Mutex<Option<HashMap<String, super::plugin_trust::Trust>>> = Mutex::new(None);
 
 /// A Plugin's state for the Plugins tab, if it has been started this session.
 pub fn state(id: &str) -> Option<PluginState> {
@@ -32,13 +32,15 @@ pub fn sync() {
     let Some(dir) = super::plugin_install::plugins_dir() else {
         return;
     };
-    let enabled: Vec<_> = super::plugin_install::installed()
-        .into_iter()
-        .filter(|k| k.record.enabled)
-        .collect();
+    let all = super::plugin_install::installed();
+    // Taken from all of them the first time: the plugins installed before #381.
+    let g = super::plugin_install::grandfather(&all);
+    let key_missing = super::plugin_trust::signing_key_missing();
+    let enabled: Vec<_> = all.into_iter().filter(|k| k.record.enabled).collect();
     // Before every launch: still signed with its files unchanged (#159), or an unsigned build
     // the user allowed in developer mode (#381). A running plugin launched unsigned is checked
-    // again against developer mode, so turning it off stops it; it stays installed.
+    // again against developer mode, so turning it off stops it; it stays installed. While the
+    // signing key is the placeholder, plugins installed before the policy run as before.
     use super::plugin_trust::{self as trust, Trust};
     let running: Vec<String> = RUNNERS
         .lock()
@@ -55,15 +57,15 @@ pub fn sync() {
     for plugin in enabled {
         let id = &plugin.manifest.id;
         let t = if running.contains(id) {
-            unsigned
-                .get(id)
-                .map_or(Trust::Signed, |h| Trust::Unsigned(h.clone()))
+            unsigned.get(id).cloned().unwrap_or(Trust::Signed)
         } else {
             let c = catalog.get_or_insert_with(|| trust::catalog().ok());
-            let t = trust::trust_in(c.as_ref(), id, &plugin.manifest.version, &dir.join(id));
+            let version = &plugin.manifest.version;
+            let t = trust::trust_in(c.as_ref(), id, version, &dir.join(id));
+            let t = trust::with_grandfather(t, id, version, &g, key_missing);
             match &t {
-                Trust::Unsigned(h) => unsigned.insert(id.clone(), h.clone()),
-                _ => unsigned.remove(id),
+                Trust::Signed => unsigned.remove(id),
+                other => unsigned.insert(id.clone(), other.clone()),
             };
             t
         };
