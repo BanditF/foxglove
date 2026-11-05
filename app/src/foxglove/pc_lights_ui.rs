@@ -393,6 +393,31 @@ fn pickers(row: &Row) -> bool {
             || row.zones.len() <= MAX_LAMP_PICKERS)
 }
 
+/// Whether the row already shows each zone by name: a colour picker per zone, drawn (the
+/// device takes colour from Foxglove now, its effect uses colour, and it has few enough zones).
+/// Same conditions as the row's own drawing, from the device's data alone.
+fn named_pickers(row: &Row) -> bool {
+    let drawn = match row.control {
+        Control::Driver(_) | Control::OpenRgb => true,
+        Control::LampArray => row.lamp_access.is_some(),
+        Control::NotYet => false,
+    };
+    drawn
+        && row.caps.takes_color()
+        && effect_of(row.control).is_some_and(|e| e.uses_colour())
+        && pickers(row)
+}
+
+/// Whether a device row offers **Show zones** (#611, the Hub's cut on #775): only where the
+/// drawing adds what the row can't show, so not when each zone already has a named picker on
+/// the row. A per-LED strip past [`MAX_LAMP_PICKERS`] (one "All" row) or a device Foxglove
+/// can't drive yet keeps it.
+pub fn offers_zones(row: &Row) -> bool {
+    row.caps.zones.is_some()
+        && super::zones_ui::drawable(row.caps.kind(false))
+        && !named_pickers(row)
+}
+
 /// What Windows lets Foxglove do with a Dynamic Lighting device, in one line (#691): from
 /// `IsEnabled` / `IsAvailable` and whether Foxglove has package identity (background control,
 /// #179). `None` when there's nothing to say.
@@ -417,8 +442,8 @@ pub fn lamp_line(access: pc_lighting::LampAccess, identity: bool) -> Option<&'st
 }
 
 /// A device's real lighting resolution (#611): one summary line ("5 lighting zones",
-/// "Per-LED lighting, 24 lamps") with what it means on hover, **Show zones** for a device with
-/// zones (docs/lighting-zones.md section 2; none for one zone), and its screens' chips. It
+/// "Per-LED lighting, 24 lamps") with what it means on hover, **Show zones** where the
+/// drawing adds to the row ([`offers_zones`]), and its screens' chips. It
 /// replaces the light, brightness and onboard-effect chips (section 6).
 fn light_line(ui: &mut egui::Ui, row: &Row) {
     let caps = &row.caps;
@@ -430,7 +455,7 @@ fn light_line(ui: &mut egui::Ui, row: &Row) {
             ui.horizontal_wrapped(|ui| {
                 ui.add(egui::Label::new(RichText::new(summary).color(p.text)).wrap())
                     .on_hover_text(super::light_zones::TIP);
-                if caps.zones.is_some() {
+                if offers_zones(row) {
                     open = super::zones_ui::toggle(ui, &row.key, caps.kind(false));
                 }
             });
@@ -1204,42 +1229,49 @@ pub mod tests {
         assert_eq!(text.matches("Match keyboard").count(), 1, "the case only");
     }
 
-    /// #611's hide rules on Other devices, one snapshot per kind: a zone device (areas) gets
-    /// Show zones and its zones as numbered tiles with the zone-looks line; a per-LED device
-    /// tiles without numbers and no zone-looks line; one colour no link and no pickers. No
-    /// device offers Check zones (that's the keyboard's probe).
+    /// A 40-LED fan hub through OpenRGB, its LEDs reported (no picker each: one All LEDs row).
+    pub fn strip_row() -> Row {
+        let mut row = openrgb_row("ARGB fan hub", 40, None);
+        row.caps.zones = Some(pc_lighting::Zones::from_report(&[40]));
+        row
+    }
+
+    /// #611's hide rules on Other devices (with the Hub's cut on #775): a device whose zones
+    /// already show as named colour pickers (the case's 5 zones, the mouse's 2 lamps) gets no
+    /// Show zones; a per-LED strip with one All row keeps it, with the source line and no
+    /// zone-looks line; one colour gets no link and no pickers. No device offers Check zones
+    /// (that's the keyboard's probe).
     #[test]
     fn device_zone_drawings_follow_the_hide_rules_per_kind() {
         use crate::foxglove::zones_ui::{CHECK, HIDE, PREVIEW_OPEN, SHOW};
         use foxglove_devices::pc_lighting::zones::ZONE_LOOKS;
-        let v = sample();
+        let mut v = sample();
+        assert!(v.pc.devices.iter().all(|r| !offers_zones(r)));
+        PREVIEW_OPEN.set(v.pc.devices.iter().map(|r| r.key.clone()).collect());
+        let text = shown(&v);
+        PREVIEW_OPEN.set(vec![]);
+        for not in [SHOW, HIDE, ZONE_LOOKS, "From Foxglove's device list"] {
+            assert!(!text.contains(not), "named pickers: {not}: {text}");
+        }
+        assert!(text.contains("Diamond display") && text.contains("Lamp 1 · Logo"));
+        // The same mouse before Windows opens it: no pickers drawn, so the drawing shows its lamps.
+        v.pc.devices[2].lamp_access = None;
+        assert!(offers_zones(&v.pc.devices[2]));
+        v.pc.devices[2].lamp_access = Some(Default::default());
+        // A per-LED strip: one All LEDs row, so Show zones stays.
+        v.pc.devices.push(strip_row());
         let closed = shown(&v);
-        assert_eq!(
-            closed.matches(SHOW).count(),
-            2,
-            "the case and the mouse: {closed}"
-        );
-        assert!(!closed.contains("From Foxglove's device list"), "{closed}");
+        assert_eq!(closed.matches(SHOW).count(), 1, "the strip only: {closed}");
         PREVIEW_OPEN.set(v.pc.devices.iter().map(|r| r.key.clone()).collect());
         let open = shown(&v);
         PREVIEW_OPEN.set(vec![]);
-        for want in [
-            HIDE,
-            "From Foxglove's device list",
-            "Reported by the device",
-            ZONE_LOOKS,
-        ] {
+        for want in [HIDE, "Reported by the device", "ALL LEDS"] {
             assert!(open.contains(want), "{want}: {open}");
         }
-        assert_eq!(open.matches(ZONE_LOOKS).count(), 1, "the case only: {open}");
-        assert!(!open.contains(CHECK), "{open}");
-        // The case's tiles are numbered 1 to 5, in zone order.
         assert!(
-            open.contains("1\nDiamond display") && open.contains("5\nFront top fan"),
+            !open.contains(ZONE_LOOKS) && !open.contains(CHECK),
             "{open}"
         );
-        // The mouse's lamps are tiles without numbers.
-        assert!(!open.contains("1\nLamp 1 · Logo"), "{open}");
         // One colour: no link, no pickers.
         let mut one = sample_fresh();
         one.pc.devices[0].caps.color = Color::Single;

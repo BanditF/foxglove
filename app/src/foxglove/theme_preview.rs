@@ -1813,7 +1813,11 @@ fn zones_render() {
     let corne = shell_preview_with(Page::Lights, &Samples::full(), 1500.0);
     keep("ui-611-zones-corne.png", &corne);
     shots.push(corne);
-    let s = Samples::full();
+    // The Hub's cut on #775: rows with named pickers have no Show zones; the strip keeps it.
+    let mut s = Samples::full();
+    s.pc.pc
+        .devices
+        .push(crate::foxglove::pc_lights_ui::tests::strip_row());
     open(s.pc.pc.devices.iter().map(|r| r.key.clone()).collect());
     let devices = shell_preview_with(Page::Lights, &s, 1700.0);
     keep("ui-611-zones-devices.png", &devices);
