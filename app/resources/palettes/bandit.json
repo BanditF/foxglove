@@ -9,7 +9,9 @@
     "base": "#060812",
     "ink": "#e8dcc4",
     "paper": "#e9e6df",
-    "paper_ink": "#1b1b1c"
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#060812",
+    "wall_ground": "#09090a"
   },
   "stops": ["#f08a3c", "#ff5f3c", "#060812"]
 }

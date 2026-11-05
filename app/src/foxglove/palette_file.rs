@@ -293,6 +293,9 @@ mod tests {
         ] {
             assert!(roles.contains_key(name), "bandit.json lacks {name}");
         }
+        // The app's night ground is `base`; the wallpapers' differs on purpose (docs/palette.md).
+        assert_eq!(roles["app_ground"], roles["base"]);
+        assert_ne!(roles["wall_ground"], roles["app_ground"]);
         // `deep` is derived (Hub, #40 Q2), and holds 3:1 on paper.
         assert!(!roles.contains_key("deep"));
         assert!(contrast(b.roles.deep, b.roles.paper) >= 3.0);
