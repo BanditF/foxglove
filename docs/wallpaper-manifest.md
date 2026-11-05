@@ -65,7 +65,7 @@ share an id, the first wins (own projects before the Workshop), so a prefixed id
 | `title` | no | The name the page shows (1–40 characters). Defaults to `project.json`'s `title` (cut to 40), then the id. |
 | `pack` | no | The pack or author name, shown with the title (1–40 characters). |
 | `supports` | no | The Foxglove properties the wallpaper reads (below). Names Foxglove doesn't know are skipped, so a newer list still loads. |
-| `palette` | no | One named palette: `name` and two or more `#rrggbb` `stops`, and optionally its `accent` (`#rrggbb`): the colour **Lights follow the wallpaper** puts on the lights while the wallpaper is on screen. Without `accent`, the most colourful stop (the first among equals). |
+| `palette` | no | One named palette: `name` and two or more `#rrggbb` `stops`, and optionally its `accent` (`#rrggbb`): the colour **Lights follow the wallpaper** puts on the lights while the wallpaper is on screen. It may also carry `roles`, the shared palette's colour roles (docs/palette.md): `roles.accent` comes before `accent`, then the most colourful stop (the first among equals). Roles it leaves out are derived from the accent or are Bandit's; roles Foxglove doesn't know are skipped, and builds before #40(c) skip `roles` altogether. |
 | `motifs` | no | Up to 8 lighting looks: `name` (1–40 characters), `about` (the hover text), and `look`. |
 | `art` | no | The right-screen art paired with the wallpaper (below). |
 
