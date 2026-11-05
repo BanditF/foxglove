@@ -19,6 +19,7 @@ pub fn case() -> Target {
             .to_vec(),
         },
         default: Some(Calibration::default()),
+        hint: None,
     }
 }
 
@@ -28,6 +29,20 @@ pub fn corne() -> Target {
         name: "Eyelash Corne".into(),
         kind: Kind::Keyboard,
         default: None,
+        hint: None,
+    }
+}
+
+/// A strip with the catalog's SMD5050 hint (#473): FastLED's typical green and blue cut.
+pub fn hinted_strip() -> Target {
+    Target {
+        key: "1a86:fe07".into(),
+        name: "Desk strip".into(),
+        kind: Kind::Lights {
+            zones: vec![("1".into(), "Strip".into())],
+        },
+        default: None,
+        hint: Some([1.0, 0.6902, 0.9412]),
     }
 }
 
@@ -148,6 +163,36 @@ fn these_match_keeps_both_sides_and_moves_on() {
     w.confirm();
     assert_eq!(w.cal.matches.len(), 2);
     assert_eq!(w.cal.matches[1].zone.as_deref(), Some("5"));
+}
+
+/// A model's hint starts the light side of its first match (the screen as is) and nothing
+/// after: once a colour is matched the next ones (and a zone without matches of its own)
+/// follow the matches. Without a hint the first match starts as is.
+#[test]
+fn a_hint_starts_the_first_match_only() {
+    let mut w = Wizard::new(hinted_strip(), None);
+    let white = Step::White.color();
+    assert_eq!(w.current, Match::hinted(white, [1.0, 0.6902, 0.9412]));
+    assert!(w.current.light[1] < 153 && w.current.light[2] < 153);
+    assert_eq!(w.current.screen, white);
+    assert!(!w.unconfirmed(), "the hinted start isn't an adjustment");
+    // Confirmed as the user left it: grey follows that match, not the hint.
+    w.current.light = [153, 140, 150];
+    w.confirm();
+    w.go_to(Step::Grey, None);
+    let grey = Step::Grey.color();
+    assert_ne!(w.current, Match::hinted(grey, [1.0, 0.6902, 0.9412]));
+    assert!(w.current.light[1] > 100, "{:?}", w.current);
+    // A zone with no matches of its own follows the device's, not the hint.
+    w.zone = Some("1".into());
+    w.go_to(Step::White, None);
+    assert_eq!(w.current.light, [153, 140, 150]);
+    assert_eq!(w.current.zone.as_deref(), Some("1"));
+    // Start over goes back to the hint.
+    w.start_over();
+    assert_eq!(w.current, Match::hinted(white, [1.0, 0.6902, 0.9412]));
+    // No hint: as is.
+    assert_eq!(Wizard::new(case(), None).current, Match::plain(white));
 }
 
 #[test]

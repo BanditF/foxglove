@@ -68,6 +68,9 @@ pub struct Row {
     pub zone_ids: Vec<String>,
     /// The model's default colour calibration, from the catalog.
     pub calibration: Option<foxglove_devices::calibration::Calibration>,
+    /// The gains its first match starts from (linear light), from the catalog's hint for its
+    /// model or class (#473); `None` starts neutral.
+    pub calibration_hint: Option<[f32; 3]>,
     /// The user calibrated this device.
     pub calibrated: bool,
     /// Its front in millimetres and each zone's position on it (in zone order), from the
@@ -1033,13 +1036,16 @@ impl Worker {
                     ..*device
                 };
                 // Your own entry for a bundled board keeps what the bundled one knows of it:
-                // its kind and the apps that fight Foxglove over it.
+                // its kind, the apps that fight Foxglove over it and its calibration hint.
                 if let Some(b) = self.bundled.find(device.vid, device.pid) {
                     if device.kind == pcl::DeviceKind::Other {
                         device.kind = b.kind;
                     }
                     if device.conflicts.is_empty() {
                         device.conflicts = b.conflicts.clone();
+                    }
+                    if device.calibration_hint.is_none() {
+                        device.calibration_hint = b.calibration_hint.clone();
                     }
                 }
                 self.local.put(device);
@@ -1465,6 +1471,7 @@ impl Worker {
                         .flatten(),
                     zone_ids: f.zones.iter().map(|z| z.id.to_string()).collect(),
                     calibration: f.calibration.clone(),
+                    calibration_hint: f.calibration_hint,
                     calibrated: foxglove_devices::calibration::global()
                         .device(&f.key)
                         .is_some(),
@@ -3170,8 +3177,9 @@ zones = [{ id = 3, name = \"Logo\" }]
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Your own entry for a bundled board keeps the bundled one's kind and conflicts, so the
-    /// vendor tool's warning doesn't vanish when you rename its zones.
+    /// Your own entry for a bundled board keeps the bundled one's kind, conflicts and
+    /// calibration hint, so the vendor tool's warning (and the calibrator's starting white)
+    /// doesn't vanish when you rename its zones.
     #[test]
     fn your_own_entry_for_a_bundled_board_keeps_its_kind_and_conflicts() {
         let dir = std::env::temp_dir().join(format!("foxglove-own-{}", std::process::id()));
@@ -3190,10 +3198,18 @@ zones = [{ id = 3, name = \"Logo\" }]
                 role: Default::default(),
             }],
         );
+        // No bundled model names a hint yet (#473): give this one a hint to keep.
+        w.bundled
+            .devices
+            .iter_mut()
+            .find(|d| (d.vid, d.pid) == (0x103c, 0x84fd))
+            .unwrap()
+            .calibration_hint = Some("typical-smd5050".into());
         w.handle(Msg::SaveLocal(Box::new(mine)), false, &mut no_wait());
         let saved = Catalog::parse(&std::fs::read_to_string(&local).unwrap()).unwrap();
         let d = &saved.devices[0];
         assert_eq!(d.kind, pcl::DeviceKind::Case);
+        assert_eq!(d.calibration_hint.as_deref(), Some("typical-smd5050"));
         assert_eq!(
             d.conflicts,
             Catalog::bundled().find(0x103c, 0x84fd).unwrap().conflicts
