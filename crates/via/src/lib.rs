@@ -31,5 +31,5 @@ pub mod vial;
 
 pub use catalog::Catalog;
 pub use definition::Definition;
-pub use device::{Source, ViaDevice};
+pub use device::{Source, Summary, ViaDevice};
 pub use protocol::{Guarded, Transport, WRITES_ENABLED};

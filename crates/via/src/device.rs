@@ -36,6 +36,19 @@ pub enum Source {
     Missing { why: Option<String> },
 }
 
+/// What an open board turned out to be, for the app to show next to it (#74). The app only
+/// holds boards as `dyn Device`, so the backend keeps these (see [`crate::hid::Opened`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Summary {
+    /// `VIA protocol 12`, or `VIA protocol 9, Vial protocol 6`.
+    pub firmware: Option<String>,
+    /// The lighting channel shown, if any answered.
+    pub lighting: Option<Channel>,
+    pub source: Source,
+    /// Layers, when it has a keymap.
+    pub layers: Option<u8>,
+}
+
 pub struct ViaDevice<T: Transport> {
     info: DeviceInfo,
     def: Option<Definition>,
@@ -99,6 +112,16 @@ impl<T: Transport> ViaDevice<T> {
     /// The lighting channel Foxglove shows, if any answered.
     pub fn lighting_channel(&self) -> Option<Channel> {
         self.light.map(|(_, c)| c)
+    }
+
+    /// What it turned out to be: firmware, lighting channel, definition source, layers.
+    pub fn summary(&self) -> Summary {
+        Summary {
+            firmware: self.info.firmware.clone(),
+            lighting: self.lighting_channel(),
+            source: self.source.clone(),
+            layers: self.def.is_some().then_some(self.probe.layers),
+        }
     }
 
     /// The whole keymap in one go (layer, row, column), through the keymap buffer; needs the
@@ -423,6 +446,15 @@ mod tests {
         assert!(dev.caps().contains(Caps::LIGHTING));
         assert_eq!(dev.lighting_channel(), Some(Channel::RgbMatrix));
         assert_eq!(dev.read_keymap(), Err(DeviceError::Unsupported));
+        assert_eq!(
+            dev.summary(),
+            Summary {
+                firmware: Some("VIA protocol 12".into()),
+                lighting: Some(Channel::RgbMatrix),
+                source: Source::Missing { why: None },
+                layers: None,
+            }
+        );
         foxglove_devices::contract::check_device(&dev).unwrap();
     }
 
@@ -480,6 +512,15 @@ mod tests {
         let def = Definition::from_board(json, 0xFEED, 0x0001, "test").unwrap();
         assert_eq!(Keymap::layout(&dev).unwrap(), def.layout_for(0b1101));
         assert_eq!(dev.read_keymap().unwrap().len(), 2 * 3 * 4);
+        let s = dev.summary();
+        assert_eq!(
+            (s.source, s.layers, s.firmware.as_deref()),
+            (
+                Source::Vial { protocol: 6 },
+                Some(2),
+                Some("VIA protocol 9, Vial protocol 6")
+            )
+        );
         foxglove_devices::contract::check_device(&dev).unwrap();
         let sent = fake.sent.lock().unwrap();
         assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");

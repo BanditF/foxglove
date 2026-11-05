@@ -1,5 +1,7 @@
-//! Other keyboards over VIA (#74), read-only, off by default: QMK keyboards such as the
-//! Keychron K5 Pro, found by the VIA JSON definitions the user loads. They join the device layer (facts,
+//! Other keyboards over VIA (#74), read-only, off by default: QMK keyboards found by the VIA
+//! JSON definitions the user loads, and, with `generic` on (also off by default), any VIA or
+//! Vial board on Raw HID. A Vial board gives its own definition; another board without one gets
+//! lighting but no keymap. They join the device layer (facts,
 //! the local API, plugins) next to the host-link keyboard. Nothing is written to them: the VIA
 //! backend opens devices read-only, and reset/bootloader/factory commands never go out.
 //! VIA/Vial writes stay off in 0.2 (#581, the `via-writes` feature), whatever a caller asks.
@@ -12,14 +14,19 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use foxglove_devices::{Device, Registry};
+use foxglove_via::client::Channel;
 use foxglove_via::hid::ViaBackend;
-use foxglove_via::Definition;
+use foxglove_via::{Definition, Source, Summary};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViaSettings {
     pub enabled: bool,
+    /// Also find VIA and Vial boards without a loaded definition (`ViaBackend::generic`). Off by
+    /// default: opening one sends it VIA's protocol-version read, and a Vial board's definition
+    /// reads.
+    pub generic: bool,
     /// VIA JSON definitions (Keychron publishes them per keyboard).
     pub definitions: Vec<PathBuf>,
     /// Keyboards Foxglove leaves alone (by [`Known::id`]; `vvvv:pppp` from before #292 still
@@ -105,8 +112,8 @@ static STATUS: Mutex<Vec<Found>> = Mutex::new(Vec::new());
 #[derive(Clone, Debug)]
 pub struct Found {
     pub name: String,
-    /// `Ok(layers)` when it answered VIA, else why not.
-    pub opened: Result<usize, String>,
+    /// What it turned out to be when it answered VIA, else why not.
+    pub opened: Result<Summary, String>,
     /// The id its saved state is under, for pausing it; none for a definition or scan error.
     pub key: Option<String>,
     pub paused: bool,
@@ -229,7 +236,12 @@ pub fn rescan() {
         }
         let (defs, errors) = definitions(&s);
         let mut registry = Registry::new(super::devices::bus().clone());
-        let _ = registry.add_backend(Box::new(ViaBackend::new(defs)));
+        let mut backend = ViaBackend::new(defs);
+        if s.generic {
+            backend = backend.generic();
+        }
+        let summaries = backend.opened();
+        let _ = registry.add_backend(Box::new(backend));
         let report = registry.discover();
         let mut found: Vec<Found> = errors
             .into_iter()
@@ -276,11 +288,13 @@ pub fn rescan() {
             }
             let opened = registry
                 .open(&entry.info.id)
-                .and_then(|d| {
-                    d.keymap()
-                        .ok_or(foxglove_devices::DeviceError::Unsupported)?
-                        .layers()
-                        .map(|l| l.len())
+                .map(|d| {
+                    summaries.get(&entry.info.id).unwrap_or_else(|| Summary {
+                        firmware: d.info().firmware.clone(),
+                        lighting: None,
+                        source: Source::Missing { why: None },
+                        layers: None,
+                    })
                 })
                 .map_err(|e| super::devices::describe(&e));
             found.push(Found {
@@ -331,8 +345,66 @@ pub fn devices() -> Vec<(foxglove_devices::DeviceInfo, foxglove_devices::Caps)> 
         .collect()
 }
 
-/// The health view's row for VIA/Vial writes (#581): off in 0.2 (the `via-writes` feature), so
-/// "VIA/Vial writes: off (0.2)". Registered with `health::register` as "via_writes".
+/// A lighting channel's name, or that none answered.
+pub fn lighting_text(c: Option<Channel>) -> &'static str {
+    c.map(Channel::label).unwrap_or("none answered")
+}
+
+/// Where a board's definition came from, as the settings and the health view say it.
+pub fn source_text(s: &Source) -> String {
+    match s {
+        Source::Loaded => "from a loaded file".into(),
+        Source::Vial { .. } => "read from the keyboard (Vial)".into(),
+        Source::Missing { why: None } => "none, so no keymap: add its VIA definition".into(),
+        Source::Missing { why: Some(why) } => {
+            format!("the keyboard's own couldn't be read ({why}), so no keymap")
+        }
+    }
+}
+
+/// One line on what an open board is: firmware, lighting channel, definition source.
+pub fn summary_line(s: &Summary) -> String {
+    format!(
+        "Firmware: {} · Lighting: {} · Definition: {}",
+        s.firmware.as_deref().unwrap_or("unknown"),
+        lighting_text(s.lighting),
+        source_text(&s.source)
+    )
+}
+
+/// The health view's row per open VIA board (#74): where its definition came from. A loaded or
+/// Vial definition is OK; none is a warning (lighting only, no keymap); a Vial definition that
+/// couldn't be read is a failure. Paused and failed opens have no row.
+pub fn board_rows(found: &[Found]) -> Vec<super::health::HealthRow> {
+    use super::health::{HealthRow, Level};
+    found
+        .iter()
+        .filter(|f| !f.paused)
+        .filter_map(|f| {
+            let s = f.opened.as_ref().ok()?;
+            let level = match &s.source {
+                Source::Loaded | Source::Vial { .. } => Level::Ok,
+                Source::Missing { why: None } => Level::Warn,
+                Source::Missing { why: Some(_) } => Level::Fail,
+            };
+            Some(HealthRow::new(
+                "via",
+                format!("{} · Definition", f.name),
+                level,
+                format!(
+                    "{}; {}; lighting: {}",
+                    source_text(&s.source),
+                    s.firmware.as_deref().unwrap_or("firmware unknown"),
+                    lighting_text(s.lighting)
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// The health view's rows for VIA: writes (#581), off in 0.2 (the `via-writes` feature), so
+/// "VIA/Vial writes: off (0.2)", then one per open board ([`board_rows`]). Registered with
+/// `health::register` as "via_writes".
 pub fn health_rows() -> Vec<super::health::HealthRow> {
     use super::health::{HealthRow, Level};
     let detail = if foxglove_via::WRITES_ENABLED {
@@ -340,7 +412,9 @@ pub fn health_rows() -> Vec<super::health::HealthRow> {
     } else {
         "off (0.2)"
     };
-    vec![HealthRow::new("via", "VIA/Vial writes", Level::Ok, detail)]
+    let mut rows = vec![HealthRow::new("via", "VIA/Vial writes", Level::Ok, detail)];
+    rows.extend(board_rows(&found()));
+    rows
 }
 
 /// Opens the configured VIA keyboards at start-up, if turned on.
@@ -351,7 +425,7 @@ pub fn start() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn known(id: &str) -> Known {
@@ -560,9 +634,129 @@ mod tests {
     #[test]
     fn the_health_view_says_via_writes_are_off() {
         let rows = health_rows();
-        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].line(), "VIA/Vial writes: off (0.2)");
         assert_eq!(rows[0].level, super::super::health::Level::Ok);
+    }
+
+    /// Boards a generic scan finds (#74), one per definition source, for the tests and the
+    /// settings preview: a Vial board, a board with a loaded file, a VIA board with none, a Vial
+    /// board whose definition doesn't unpack, and a paused one.
+    pub(crate) fn sample_found() -> Vec<Found> {
+        let board = |name: &str, firmware: &str, lighting, source, layers| Found {
+            name: name.into(),
+            opened: Ok(Summary {
+                firmware: Some(firmware.into()),
+                lighting,
+                source,
+                layers,
+            }),
+            key: Some(format!("via:{name}")),
+            paused: false,
+            maybe: None,
+        };
+        vec![
+            board(
+                "Vial macropad",
+                "VIA protocol 9, Vial protocol 6",
+                Some(Channel::RgbMatrix),
+                Source::Vial { protocol: 6 },
+                Some(4),
+            ),
+            board(
+                "QMK keyboard",
+                "VIA protocol 12",
+                Some(Channel::RgbMatrix),
+                Source::Loaded,
+                Some(4),
+            ),
+            board(
+                "VIA numpad",
+                "VIA protocol 12",
+                Some(Channel::Backlight),
+                Source::Missing { why: None },
+                None,
+            ),
+            board(
+                "Vial split",
+                "VIA protocol 9, Vial protocol 6",
+                None,
+                Source::Missing {
+                    why: Some("the XZ check failed".into()),
+                },
+                None,
+            ),
+            Found {
+                name: "Paused board".into(),
+                opened: Err("paused".into()),
+                key: Some("via:paused".into()),
+                paused: true,
+                maybe: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn each_board_says_its_firmware_lighting_and_definition_source() {
+        let found = sample_found();
+        let line = |i: usize| summary_line(found[i].opened.as_ref().unwrap());
+        assert_eq!(
+            line(0),
+            "Firmware: VIA protocol 9, Vial protocol 6 · Lighting: RGB Matrix · Definition: read \
+             from the keyboard (Vial)"
+        );
+        assert_eq!(
+            line(1),
+            "Firmware: VIA protocol 12 · Lighting: RGB Matrix · Definition: from a loaded file"
+        );
+        assert_eq!(
+            line(2),
+            "Firmware: VIA protocol 12 · Lighting: Backlight · Definition: none, so no keymap: \
+             add its VIA definition"
+        );
+        assert_eq!(
+            line(3),
+            "Firmware: VIA protocol 9, Vial protocol 6 · Lighting: none answered · Definition: \
+             the keyboard's own couldn't be read (the XZ check failed), so no keymap"
+        );
+    }
+
+    /// The definition source is a health signal: a row per open board, none for a paused one.
+    #[test]
+    fn the_definition_source_is_a_health_row_per_open_board() {
+        use super::super::health::Level;
+        let rows = board_rows(&sample_found());
+        let got: Vec<(&str, Level)> = rows.iter().map(|r| (r.item.as_str(), r.level)).collect();
+        assert_eq!(
+            got,
+            [
+                ("Vial macropad · Definition", Level::Ok),
+                ("QMK keyboard · Definition", Level::Ok),
+                ("VIA numpad · Definition", Level::Warn),
+                ("Vial split · Definition", Level::Fail),
+            ]
+        );
+        assert!(rows.iter().all(|r| r.subsystem == "via"));
+        assert_eq!(
+            rows[0].detail,
+            "read from the keyboard (Vial); VIA protocol 9, Vial protocol 6; lighting: RGB Matrix"
+        );
+        assert!(board_rows(&[]).is_empty());
+    }
+
+    /// Generic discovery is off by default and in stores from before it existed.
+    #[test]
+    fn generic_discovery_is_off_by_default() {
+        assert!(!ViaSettings::default().generic);
+        let old: ViaSettings = toml::from_str("enabled = true\n").unwrap();
+        assert!(old.enabled && !old.generic);
+        let on = ViaSettings {
+            enabled: true,
+            generic: true,
+            ..Default::default()
+        };
+        let text = toml::to_string(&on).unwrap();
+        assert!(text.contains("generic = true"), "{text}");
+        assert_eq!(toml::from_str::<ViaSettings>(&text).unwrap(), on);
     }
 
     #[test]

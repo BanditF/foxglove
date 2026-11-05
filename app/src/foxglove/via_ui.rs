@@ -1,9 +1,9 @@
-//! Settings for other keyboards over VIA: turn it on, load VIA JSON definitions, see what was
-//! found. Read-only: Foxglove never writes to these keyboards.
+//! Settings for other keyboards over VIA: turn it on, load VIA JSON definitions or find any VIA
+//! or Vial board, see what was found. Read-only: Foxglove never writes to these keyboards.
 
 use std::cell::RefCell;
 
-use super::via_host::{self, ViaSettings};
+use super::via_host::{self, Found, ViaSettings};
 
 #[derive(Default)]
 struct UiState {
@@ -15,6 +15,18 @@ struct UiState {
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
 
 pub fn group(ui: &mut egui::Ui) {
+    draw(ui, &via_host::found());
+}
+
+/// The group with these settings and boards, for the theme preview: nothing is read from or
+/// saved to the store unless a control is used.
+#[cfg(test)]
+pub(crate) fn preview(ui: &mut egui::Ui, s: ViaSettings, found: &[Found]) {
+    UI.with_borrow_mut(|state| state.settings = Some(s));
+    draw(ui, found);
+}
+
+fn draw(ui: &mut egui::Ui, found: &[Found]) {
     super::settings_ui::section(ui, "Other keyboards (VIA)", |ui| {
         UI.with_borrow_mut(|state| {
             state.dialog.update(ui.ctx());
@@ -26,9 +38,13 @@ pub fn group(ui: &mut egui::Ui) {
                     changed = true;
                 }
             }
-            ui.weak("QMK keyboards with VIA, like the Keychron K5 Pro, over USB. Foxglove only reads them: the keymap, layers and lights.");
+            ui.weak("QMK keyboards with VIA or Vial, over USB. Foxglove only reads them: the keymap, layers and lights.");
             changed |= ui.checkbox(&mut s.enabled, "Use VIA keyboards").changed();
             ui.add_enabled_ui(s.enabled, |ui| {
+                changed |= ui
+                    .checkbox(&mut s.generic, "Find any VIA or Vial keyboard")
+                    .on_hover_text("Also finds keyboards without a loaded definition. A Vial keyboard gives its own; others get lighting but no keymap. Each is sent a VIA version read when found.")
+                    .changed();
                 let mut remove = None;
                 for (i, d) in s.definitions.iter().enumerate() {
                     ui.horizontal(|ui| {
@@ -50,11 +66,14 @@ pub fn group(ui: &mut egui::Ui) {
                         via_host::rescan();
                     }
                 });
-                for f in via_host::found() {
+                for f in found {
                     ui.horizontal_wrapped(|ui| {
                         match (&f.opened, f.paused) {
                             (_, true) => ui.weak(format!("{}: paused, so VIA or its maker's app can use it", f.name)),
-                            (Ok(layers), _) => ui.label(format!("{}: connected, {layers} layers (read-only)", f.name)),
+                            (Ok(b), _) => match b.layers {
+                                Some(layers) => ui.label(format!("{}: connected, {layers} layers (read-only)", f.name)),
+                                None => ui.label(format!("{}: connected, no keymap (read-only)", f.name)),
+                            },
                             (Err(e), _) => ui.weak(format!("{}: {e}", f.name)),
                         };
                         if let Some(key) = &f.key {
@@ -65,8 +84,11 @@ pub fn group(ui: &mut egui::Ui) {
                             }
                         }
                     });
-                    if f.opened.is_ok() && !f.paused {
-                        ui.weak("    Active layer: unknown (stock firmware doesn't report it).");
+                    if let (Ok(b), false) = (&f.opened, f.paused) {
+                        ui.weak(format!("    {}", via_host::summary_line(b)));
+                        if b.layers.is_some() {
+                            ui.weak("    Active layer: unknown (stock firmware doesn't report it).");
+                        }
                     }
                     // A keyboard of a known model on a new port, while the known one is away.
                     if let Some((id, known)) = &f.maybe {
@@ -84,8 +106,8 @@ pub fn group(ui: &mut egui::Ui) {
                         });
                     }
                 }
-                if s.enabled && s.definitions.is_empty() {
-                    ui.weak("Add the keyboard's VIA definition (from its maker, e.g. Keychron's JSON download).");
+                if s.enabled && !s.generic && s.definitions.is_empty() {
+                    ui.weak("Add the keyboard's VIA definition (from its maker), or find any VIA or Vial keyboard.");
                 }
             });
             if changed {

@@ -64,6 +64,16 @@ impl Channel {
         }
     }
 
+    /// Its name in QMK's docs, for the settings and the health view.
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::Backlight => "Backlight",
+            Channel::RgbLight => "RGB Light",
+            Channel::RgbMatrix => "RGB Matrix",
+            Channel::LedMatrix => "LED Matrix",
+        }
+    }
+
     /// Whether it has a colour (hue and saturation).
     pub fn has_color(self) -> bool {
         matches!(self, Channel::RgbLight | Channel::RgbMatrix)
