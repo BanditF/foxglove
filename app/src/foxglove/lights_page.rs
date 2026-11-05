@@ -257,7 +257,9 @@ pub fn show(ui: &mut egui::Ui) {
                 if let Some(b) = super::boards::current() {
                     match super::led_map::forget(&b.id) {
                         Ok(()) => eprintln!("Foxglove: Check zones: forgot the check for {}", b.id),
-                        Err(e) => eprintln!("Foxglove: can't forget the zone check for {}: {e}", b.id),
+                        Err(e) => {
+                            eprintln!("Foxglove: can't forget the zone check for {}: {e}", b.id)
+                        }
                     }
                     ctx.request_repaint();
                 }
@@ -413,12 +415,7 @@ pub const ZONES_KEY: &str = "keyboard";
 /// The keyboard's lighting resolution (#611): one line under the card's title with what it
 /// means on hover, then **Show zones** (the drawing, docs/lighting-zones.md section 2) or,
 /// while the zones are unknown, **Check zones…**. The probe is offered nowhere else on the card.
-fn zone_line(
-    ui: &mut egui::Ui,
-    v: &View,
-    line: &super::light_zones::Line,
-    out: &mut Vec<Intent>,
-) {
+fn zone_line(ui: &mut egui::Ui, v: &View, line: &super::light_zones::Line, out: &mut Vec<Intent>) {
     use super::zones_ui;
     let p = theme::palette(ui);
     let mut open = false;
@@ -1182,7 +1179,9 @@ pub mod tests {
     }
 
     /// A keyboard line for `zones` on the Corne's drawing (#611).
-    pub fn zone_line_for(zones: Option<&foxglove_devices::pc_lighting::Zones>) -> super::super::light_zones::Line {
+    pub fn zone_line_for(
+        zones: Option<&foxglove_devices::pc_lighting::Zones>,
+    ) -> super::super::light_zones::Line {
         let board = crate::foxglove::fixtures::users_desk::board();
         let drawing = crate::foxglove::boards::drawing(Some(&board));
         super::super::light_zones::line(zones, &drawing)
@@ -1251,11 +1250,16 @@ pub mod tests {
                 colour_effects: None,
             }),
             parts: crate::foxglove::fixtures::second_desk::board().parts(),
-            zones: Some(zone_line_of(&crate::foxglove::fixtures::second_desk::board())),
+            zones: Some(zone_line_of(
+                &crate::foxglove::fixtures::second_desk::board(),
+            )),
             ..sample()
         };
         let text = card_text(&plank, true);
-        assert!(text.contains("Per-key lighting, 61 keys") && text.contains(HIDE), "{text}");
+        assert!(
+            text.contains("Per-key lighting, 61 keys") && text.contains(HIDE),
+            "{text}"
+        );
         assert!(text.contains(CHECK), "{text}");
         for not in ["column", "row 1", ZONE_LOOKS, "Right half", "1\n2\n3\n"] {
             assert!(!text.contains(not), "per key: {not}: {text}");
@@ -1278,7 +1282,10 @@ pub mod tests {
         }
         // Unknown: the probe on the summary line, no drawing.
         let text = card_text(&sample_zones_unknown(), true);
-        assert!(text.contains("Lighting zones unknown") && text.contains(CHECK), "{text}");
+        assert!(
+            text.contains("Lighting zones unknown") && text.contains(CHECK),
+            "{text}"
+        );
         for not in [SHOW, HIDE] {
             assert!(!text.contains(not), "unknown: {not}: {text}");
         }
@@ -1296,7 +1303,10 @@ pub mod tests {
             ..sample()
         };
         let text = card_text(&mine, true);
-        assert!(text.contains("From your check") && text.contains(FORGET), "{text}");
+        assert!(
+            text.contains("From your check") && text.contains(FORGET),
+            "{text}"
+        );
         // No zone line (no keyboard Foxglove knows lights of): the old entry, renamed.
         let bare = View {
             zones: None,

@@ -105,9 +105,8 @@ pub fn describe(zone: &Zone) -> String {
     if let Some(area) = &zone.area {
         return area.clone();
     }
-    let plural = |n: usize, one: &str, many: &str| {
-        format!("{n} {}", if n == 1 { one } else { many })
-    };
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let grid: Vec<_> = zone.keys.iter().filter(|k| k.column.is_some()).collect();
     let others = zone.keys.len() - grid.len();
     let mut out = Vec::new();
@@ -140,7 +139,10 @@ pub fn tint(i: usize) -> Color32 {
 
 /// The zones on part `p`.
 fn on_part(z: &Zones, p: usize) -> Vec<&Zone> {
-    z.list.iter().filter(|zone| usize::from(zone.part) == p).collect()
+    z.list
+        .iter()
+        .filter(|zone| usize::from(zone.part) == p)
+        .collect()
 }
 
 /// Every part lights the same keys in the same order (a split board's halves, as profiles
@@ -234,7 +236,12 @@ fn board(ui: &mut egui::Ui, line: &Line, z: &Zones, per_key: bool) {
                     .keys
                     .iter()
                     .filter_map(|k| keys.get(usize::from(k.index)))
-                    .min_by(|x, y| x.min.y.total_cmp(&y.min.y).then(x.min.x.total_cmp(&y.min.x)));
+                    .min_by(|x, y| {
+                        x.min
+                            .y
+                            .total_cmp(&y.min.y)
+                            .then(x.min.x.total_cmp(&y.min.x))
+                    });
                 let Some(top) = top else { continue };
                 let c = on_screen(top).center();
                 painter.circle_filled(c, 8.0, tint(i));
@@ -249,7 +256,11 @@ fn board(ui: &mut egui::Ui, line: &Line, z: &Zones, per_key: bool) {
         }
         if halves == 2 {
             let name = if a == 1 && same {
-                format!("{} (mirrors the {})", parts.name(1), parts.short(0).to_lowercase())
+                format!(
+                    "{} (mirrors the {})",
+                    parts.name(1),
+                    parts.short(0).to_lowercase()
+                )
             } else {
                 parts.name(a)
             };
@@ -409,7 +420,11 @@ pub mod tests {
         }
     }
 
-    fn key(index: u16, column: Option<u16>, row: Option<u16>) -> foxglove_devices::pc_lighting::ZoneKey {
+    fn key(
+        index: u16,
+        column: Option<u16>,
+        row: Option<u16>,
+    ) -> foxglove_devices::pc_lighting::ZoneKey {
         ZoneKey { index, column, row }
     }
 
@@ -429,11 +444,17 @@ pub mod tests {
             "column 6 + 1 thumb key"
         );
         assert_eq!(
-            describe(&zone(vec![key(0, Some(0), Some(1)), key(3, Some(1), Some(1))])),
+            describe(&zone(vec![
+                key(0, Some(0), Some(1)),
+                key(3, Some(1), Some(1))
+            ])),
             "row 2"
         );
         assert_eq!(
-            describe(&zone(vec![key(0, Some(0), Some(0)), key(4, Some(1), Some(1))])),
+            describe(&zone(vec![
+                key(0, Some(0), Some(0)),
+                key(4, Some(1), Some(1))
+            ])),
             "2 keys"
         );
         assert_eq!(

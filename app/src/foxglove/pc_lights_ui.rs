@@ -1214,7 +1214,11 @@ pub mod tests {
         use foxglove_devices::pc_lighting::zones::ZONE_LOOKS;
         let v = sample();
         let closed = shown(&v);
-        assert_eq!(closed.matches(SHOW).count(), 2, "the case and the mouse: {closed}");
+        assert_eq!(
+            closed.matches(SHOW).count(),
+            2,
+            "the case and the mouse: {closed}"
+        );
         assert!(!closed.contains("From Foxglove's device list"), "{closed}");
         PREVIEW_OPEN.set(v.pc.devices.iter().map(|r| r.key.clone()).collect());
         let open = shown(&v);
@@ -1230,7 +1234,10 @@ pub mod tests {
         assert_eq!(open.matches(ZONE_LOOKS).count(), 1, "the case only: {open}");
         assert!(!open.contains(CHECK), "{open}");
         // The case's tiles are numbered 1 to 5, in zone order.
-        assert!(open.contains("1\nDiamond display") && open.contains("5\nFront top fan"), "{open}");
+        assert!(
+            open.contains("1\nDiamond display") && open.contains("5\nFront top fan"),
+            "{open}"
+        );
         // The mouse's lamps are tiles without numbers.
         assert!(!open.contains("1\nLamp 1 · Logo"), "{open}");
         // One colour: no link, no pickers.

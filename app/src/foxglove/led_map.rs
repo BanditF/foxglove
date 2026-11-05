@@ -361,7 +361,10 @@ impl Wizard {
             keys.dedup();
             let drawn = self.drawing.keys(s.half == 1);
             let at = Lamp(keys.clone()).center(&drawn).map(|c| {
-                [(c.x * 1000.0).round() / 1000.0, (c.y * 1000.0).round() / 1000.0]
+                [
+                    (c.x * 1000.0).round() / 1000.0,
+                    (c.y * 1000.0).round() / 1000.0,
+                ]
             });
             self.answers.push(at);
             self.keys.push(if at.is_some() { keys } else { Vec::new() });
