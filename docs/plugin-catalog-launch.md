@@ -14,8 +14,9 @@ Each run starts with a gate job. It ends the run, green and with a notice, unles
 - `app/resources/plugin-trust/root.pub` is a real key, not the placeholder, and `root.json` next to
   it is signed.
 
-It runs only by hand ("Run workflow"), or when a push to `main` changes `plugins/catalog/`. It has no
-schedule. The signing job never sees the root key; it only has the catalog key, which it reads from
+It runs by hand ("Run workflow"), when a push to `main` changes `plugins/catalog/`, and on a schedule
+on the 1st and 15th of each month at 06:17 UTC, which re-signs the catalog before it expires. The
+same gate applies to all three. The signing job never sees the root key; it only has the catalog key, which it reads from
 the secret into a private temp file and deletes when the step ends.
 
 ## Two keys
@@ -72,15 +73,20 @@ Do this after the commit from step 2 is on `main`.
 3. When it's green, https://banditf.github.io/foxglove/plugins/v2/catalog.json shows the catalog.
 4. In Foxglove, on the Plugins page, click **Check now** next to the catalog line. It says "Catalog: up to date".
 
+### 5. Ship the app build with the real key
+
+Only after step 4, when the first catalog is live: release an app build that carries the real
+`root.pub`. The real key ends #779's grandfathering of unsigned plugins, so a build that ships it
+before a signed catalog is published would have nothing to trust them by.
+
 ## After the launch
 
-- **Expiry:** a catalog expires 30 days after it's signed, and the app refuses an expired one.
-  Run the workflow again (step 4) at least every few weeks. There's no schedule on purpose.
+- **Expiry:** a catalog expires 30 days after it's signed, and the app refuses an expired one. The
+  schedule re-signs it every two weeks. If that stops, the app's health view warns in the last 7
+  days: "plugin catalog expires in N days; publish a fresh one". Then run step 4 by hand.
 - **Adding plugins:** the plugin entries go in `plugins/catalog/catalog.json`
   (`plugin-catalog add plugins/catalog/catalog.json --dir … --zip … --url …`, after the release
   exists). A push to `main` that changes it publishes it. The workflow sets the sequence (one above
   what's published) and the expiry; whatever the source file says for those is ignored.
-- **App builds:** the real `root.pub` ends the grandfathering of unsigned plugins (#779). Ship an
-  app build with it only after the first catalog is published.
 - `scripts\publish-plugins.ps1 -Pages` pushes to a `gh-pages` branch, which Pages doesn't serve
   with Source: GitHub Actions. Use the workflow instead.

@@ -334,6 +334,29 @@ pub fn check_files(dir: &Path, entry: &Entry, skip: &[&str]) -> Result<(), Strin
     Ok(())
 }
 
+/// Unix seconds of an RFC 3339 UTC time in this crate's form (`2026-10-24T00:00:00Z`), the
+/// inverse of [`utc_in`]; `None` for anything else.
+pub fn parse_utc(s: &str) -> Option<u64> {
+    if !time_ok(s) {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hh, mm, ss) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+    // Days since 1970-01-01 from a civil date (Howard Hinnant's algorithm).
+    let y = y - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + hh * 3600 + mm * 60 + ss).ok()
+}
+
 /// The UTC time now as RFC 3339 (`YYYY-MM-DDTHH:MM:SSZ`), for the expiry checks.
 pub fn now_utc() -> String {
     utc_in(0)
@@ -443,6 +466,26 @@ mod tests {
 
     const NOW: &str = "2026-10-24T00:00:00Z";
     const LATER: &str = "2027-01-01T00:00:00Z";
+
+    #[test]
+    fn utc_times_parse_back() {
+        assert_eq!(parse_utc("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_utc("2026-10-24T00:00:00Z"), Some(1_792_800_000));
+        assert_eq!(parse_utc("2028-02-29T12:30:05Z"), Some(1_835_440_205));
+        let clock = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(parse_utc(&now_utc()).unwrap().abs_diff(clock) < 5);
+        for bad in [
+            "",
+            "2026-13-01T00:00:00Z",
+            "2026-10-24 00:00:00Z",
+            "2026-10-24T00:00:00",
+        ] {
+            assert_eq!(parse_utc(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn catalog_from_before_the_rename_still_reads() {

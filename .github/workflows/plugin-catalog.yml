@@ -12,6 +12,10 @@ name: Plugin catalog
 # The root key never comes here: root.json is signed offline. Only the catalog key is a secret.
 on:
   workflow_dispatch:
+  # The re-sign: a catalog expires 30 days after it's signed, so a fresh one goes out on the 1st
+  # and the 15th. The same gate applies, so this too does nothing until the launch steps are done.
+  schedule:
+    - cron: "17 6 1,15 * *"
   push:
     branches: [main]
     paths:
