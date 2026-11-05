@@ -351,6 +351,7 @@ impl Confirm {
             halves: self.halves,
             parts: vec![u16::try_from(self.per_half).unwrap_or(u16::MAX); usize::from(self.halves)],
             leds,
+            led_keys: Vec::new(),
         }
     }
 }

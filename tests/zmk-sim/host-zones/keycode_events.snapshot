@@ -1,0 +1,24 @@
+frames: -- gradient left to right
+frames: left taken from its effect
+frames: left draws 0=8FE000 1=A1D500 2=B0CA00 3=BEBD00 4=C9B100 5=D3A500
+frames: right taken from its effect
+frames: right draws 21=00E07D 22=00D58E 23=00CA9D 24=00BEAB 25=00B2B7 26=00A6C1
+hostlink: rx D7 8C 00 03 03 01
+frames: -- gradient top to bottom
+frames: left draws 0=0059EF 1=005BEE 2=005DED 3=0064EA 4-5=005FEC
+frames: right draws 21=0059EF 22=005BEE 23=005DED 24=0064EA 25-26=005FEC
+hostlink: rx D7 8C 00 03 03 01
+frames: -- sweep, a third of the way round
+frames: left draws 0=F06B00 1=F74E00 2=FE2000 3=EC2F3C 4=D6415B 5=C04B73
+frames: right draws 21=97DB00 22=75EB00 23=36FB00 24=00F156 25=00E27A 26=00D294
+hostlink: rx D7 8C 00 03 03 01
+frames: -- sweep, two thirds of the way round
+frames: left draws 0=4843D8 1=2E34E9 2=0D15FB 3=0043F6 4=0063EB 5=007BDF
+frames: right draws 21=CE4564 22=E43749 23=FA171D 24=FA4100 25=F36100 26=EA7A00
+hostlink: rx D7 8C 00 03 03 01
+frames: 4 of 4 looks show each zone's colour on both halves; 0 dead lamps lit
+frames: -- RELEASE: both halves back to their effect
+frames: left back to its effect
+frames: right back to its effect
+hostlink: rx D7 8C 00 00 03 01
+frames: -- done

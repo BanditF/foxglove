@@ -29,7 +29,7 @@ use super::pc_lights::{LampLayout, Row};
 pub const SECTION: &str = "scene";
 
 /// One key unit, in millimetres.
-const KEY_MM: f32 = 19.05;
+pub(crate) const KEY_MM: f32 = 19.05;
 
 static MONITORS: Mutex<Option<Vec<MonitorInfo>>> = Mutex::new(None);
 

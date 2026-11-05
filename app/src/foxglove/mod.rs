@@ -51,6 +51,8 @@ mod keyboard_direction_vectors;
 pub mod keyboard_facts;
 pub mod keyboard_page;
 pub mod keyboard_settings;
+#[cfg(test)]
+mod keyboard_zone_vectors;
 pub mod keymap_cache;
 pub mod keymap_health;
 pub mod keymap_layers;

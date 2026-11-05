@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use foxglove_link::lamps::LampParts;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const FORMAT: &str = "foxglove-board";
 
@@ -121,13 +121,14 @@ pub struct Lighting {
 /// indices into [`Drawing::keys`]. One key for a per-key LED, several for a pixel that drives a
 /// group of keys together (the Eyelash Corne's columns, #608), none for a pixel that lights
 /// nothing. In the profile a number is one key and a list a group: `led_keys = [20, 17]` and
-/// `led_keys = [[15, 16, 17, 20], [12, 13, 14, 19], []]` both read.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(from = "LampEntry")]
+/// `led_keys = [[15, 16, 17, 20], [12, 13, 14, 19], []]` both read. It is written back the
+/// same way (a single key as a number), so a saved check reads like a profile (#611).
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(from = "LampEntry", into = "LampEntry")]
 pub struct Lamp(pub Vec<u8>);
 
 /// A [`Lamp`] as the profile writes it.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum LampEntry {
     One(u8),
@@ -139,6 +140,16 @@ impl From<LampEntry> for Lamp {
         match e {
             LampEntry::One(k) => Lamp(vec![k]),
             LampEntry::Group(keys) => Lamp(keys),
+        }
+    }
+}
+
+impl From<Lamp> for LampEntry {
+    fn from(l: Lamp) -> Self {
+        if l.0.len() == 1 {
+            LampEntry::One(l.0[0])
+        } else {
+            LampEntry::Group(l.0)
         }
     }
 }
