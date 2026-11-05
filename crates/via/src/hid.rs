@@ -1,18 +1,19 @@
-//! The hidapi transport and the device layer backend: keyboards whose VID/PID matches a loaded VIA
-//! definition, on their Raw HID interface (usage page 0xFF60, usage 0x61), over USB.
+//! The hidapi transport and the device layer backend: QMK keyboards on their Raw HID interface
+//! (usage page 0xFF60, usage 0x61), over USB; which ones is [`crate::discovery`]'s call.
 //!
 //! The backend opens devices read-only unless built with [`ViaBackend::allow_writes`].
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use foxglove_devices::{
-    Backend, BackendId, Device, DeviceError, DeviceId, DeviceInfo, DeviceKind, EventSink, Result,
-};
+use foxglove_devices::{Backend, BackendId, Device, DeviceError, DeviceInfo, EventSink, Result};
 use hidapi::{HidApi, HidDevice};
 
+use crate::catalog::Catalog;
 use crate::definition::Definition;
 use crate::device::ViaDevice;
+use crate::discovery::{Interface, Rules};
+pub use crate::discovery::{USAGE, USAGE_PAGE};
 use crate::protocol::{Guarded, Report, Transport, REPORT};
 
 /// What names a keyboard without a trusted serial: where it's plugged in (#292), else the HID
@@ -21,8 +22,6 @@ fn stable_path(hid_path: &str) -> String {
     crate::location::of(hid_path).unwrap_or_else(|| hid_path.to_string())
 }
 
-pub const USAGE_PAGE: u16 = 0xFF60;
-pub const USAGE: u16 = 0x61;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// One VIA keyboard's Raw HID interface. Replies that don't echo the command (other apps'
@@ -53,9 +52,12 @@ impl Transport for HidTransport {
     }
 }
 
-/// Finds keyboards matching the loaded definitions; backend id `via`.
+/// Finds VIA keyboards; backend id `via`. By default only boards with a loaded definition;
+/// [`ViaBackend::generic`] adds every other QMK Raw HID board the catalog doesn't skip.
 pub struct ViaBackend {
     definitions: Vec<Definition>,
+    catalog: Catalog,
+    generic: bool,
     writes: bool,
 }
 
@@ -63,8 +65,25 @@ impl ViaBackend {
     pub fn new(definitions: Vec<Definition>) -> Self {
         ViaBackend {
             definitions,
+            catalog: Catalog::bundled(),
+            generic: false,
             writes: false,
         }
+    }
+
+    /// Uses another catalog than the bundled one.
+    pub fn with_catalog(mut self, catalog: Catalog) -> Self {
+        self.catalog = catalog;
+        self
+    }
+
+    /// Also finds QMK Raw HID boards without a loaded definition, as keyboards with lighting
+    /// but no keymap. Opening one sends it VIA's protocol-version read, so a board that uses
+    /// Raw HID for its own protocol sees one 0x01 report: such boards go in the catalog with
+    /// `skip`.
+    pub fn generic(mut self) -> Self {
+        self.generic = true;
+        self
     }
 
     /// Opens devices with keycode and lighting writes allowed. Off by default: turn on only
@@ -75,10 +94,24 @@ impl ViaBackend {
         self
     }
 
-    fn definition(&self, vid: u16, pid: u16) -> Option<&Definition> {
-        self.definitions
-            .iter()
-            .find(|d| (d.vendor_id, d.product_id) == (vid, pid))
+    fn rules(&self) -> Rules<'_> {
+        Rules {
+            backend: self.id(),
+            definitions: &self.definitions,
+            catalog: &self.catalog,
+            generic: self.generic,
+        }
+    }
+}
+
+fn interface(d: &hidapi::DeviceInfo) -> Interface {
+    Interface {
+        vid: d.vendor_id(),
+        pid: d.product_id(),
+        usage_page: d.usage_page(),
+        usage: d.usage(),
+        serial: d.serial_number().map(str::to_string),
+        stable_path: stable_path(&d.path().to_string_lossy()),
     }
 }
 
@@ -89,68 +122,26 @@ impl Backend for ViaBackend {
 
     fn discover(&self) -> Result<Vec<DeviceInfo>> {
         let api = HidApi::new().map_err(|e| DeviceError::Backend(e.to_string()))?;
-        let mut seen: Vec<(DeviceId, String)> = Vec::new();
-        let mut names = Vec::new();
-        for d in api.device_list() {
-            if d.usage_page() != USAGE_PAGE || d.usage() != USAGE {
-                continue;
-            }
-            let Some(def) = self.definition(d.vendor_id(), d.product_id()) else {
-                continue;
-            };
-            let path = stable_path(&d.path().to_string_lossy());
-            seen.push((
-                DeviceId::new(
-                    self.id(),
-                    d.vendor_id(),
-                    d.product_id(),
-                    d.serial_number(),
-                    &path,
-                ),
-                path,
-            ));
-            names.push(def.name.clone());
-        }
-        // Two identical boards with the same serial are told apart by their paths (#292).
-        foxglove_devices::untrust_shared_serials(&mut seen);
-        let mut found: Vec<DeviceInfo> = Vec::new();
-        for ((id, _), name) in seen.into_iter().zip(names) {
-            if found.iter().all(|f| f.id != id) {
-                found.push(DeviceInfo {
-                    id,
-                    backend: self.id(),
-                    name,
-                    kind: DeviceKind::Keyboard,
-                    firmware: None,
-                });
-            }
-        }
-        Ok(found)
+        // Only Raw HID interfaces get their location looked up.
+        let interfaces: Vec<Interface> = api
+            .device_list()
+            .filter(|d| (d.usage_page(), d.usage()) == (USAGE_PAGE, USAGE))
+            .map(interface)
+            .collect();
+        Ok(self.rules().plan(&interfaces))
     }
 
     fn open(&self, info: &DeviceInfo, _sink: EventSink) -> Result<Box<dyn Device>> {
-        let def = self
-            .definition(info.id.vid, info.id.pid)
-            .cloned()
-            .ok_or(DeviceError::Unsupported)?;
+        let rules = self.rules();
+        let def = rules.definition(info.id.vid, info.id.pid).cloned();
+        if def.is_none() && !self.generic {
+            return Err(DeviceError::Unsupported);
+        }
         let api = HidApi::new().map_err(|e| DeviceError::Backend(e.to_string()))?;
         let path = api
             .device_list()
-            .find(|d| {
-                let stable = stable_path(&d.path().to_string_lossy());
-                // By serial, or by where it's plugged in when its serial was shared (#292).
-                d.usage_page() == USAGE_PAGE
-                    && d.usage() == USAGE
-                    && (DeviceId::new(
-                        self.id(),
-                        d.vendor_id(),
-                        d.product_id(),
-                        d.serial_number(),
-                        &stable,
-                    ) == info.id
-                        || DeviceId::new(self.id(), d.vendor_id(), d.product_id(), None, &stable)
-                            == info.id)
-            })
+            .filter(|d| (d.usage_page(), d.usage()) == (USAGE_PAGE, USAGE))
+            .find(|d| rules.is(&interface(d), info))
             .map(|d| d.path().to_owned())
             .ok_or(DeviceError::Disconnected)?;
         let dev = api
@@ -162,6 +153,11 @@ impl Backend for ViaBackend {
         } else {
             Guarded::read_only(transport)
         };
-        Ok(Box::new(ViaDevice::open(info.clone(), def, link)?))
+        Ok(Box::new(ViaDevice::open(
+            info.clone(),
+            def,
+            link,
+            &self.catalog,
+        )?))
     }
 }
