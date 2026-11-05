@@ -681,7 +681,8 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     .on_hover_text(
                         "The underglow, and the lights set to match the keyboard, take the accent of the \
                          wallpaper on screen whenever it changes. It comes from the wallpaper's Foxglove \
-                         palette (foxglove.json); a wallpaper without one gives the Windows accent colour. \
+                         palette (foxglove.json), else from its picture; a grey picture gives the \
+                         Windows accent colour. \
                          A running scene keeps the lights until it ends.",
                     )
                     .changed()
