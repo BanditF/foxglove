@@ -142,9 +142,9 @@ impl Palette {
 /// The palette of the theme `ui` is drawn in.
 pub fn palette(ui: &egui::Ui) -> &'static Palette {
     if ui.visuals().dark_mode {
-        &*DARK
+        &DARK
     } else {
-        &*LIGHT
+        &LIGHT
     }
 }
 

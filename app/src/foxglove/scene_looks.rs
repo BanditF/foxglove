@@ -177,9 +177,12 @@ impl Background {
     }
 }
 
-/// The palettes, by name: (name, stops in sRGB). Bandit's stops are the bundled palette file's
+/// A named palette: (name, stops in sRGB).
+pub type Stops = (&'static str, Vec<[u8; 3]>);
+
+/// The palettes, by name. Bandit's stops are the bundled palette file's
 /// (`resources/palettes/bandit.json`, docs/palette.md).
-pub static PALETTES: LazyLock<[(&str, Vec<[u8; 3]>); 5]> = LazyLock::new(|| {
+pub static PALETTES: LazyLock<[Stops; 5]> = LazyLock::new(|| {
     [
         (
             "Bandit",
