@@ -25,6 +25,7 @@ use serde::Deserialize;
 
 use foxglove_scene::Rgb;
 
+use super::palette_file;
 use super::scene_looks::{
     self as looks, Art, FileLook, NamedPalette, Preset, Scenes, WallpaperLook,
 };
@@ -98,8 +99,11 @@ pub struct Manifest {
     pub supports: Supports,
     pub palette: Option<NamedPalette>,
     /// The palette's accent, which "Lights follow the wallpaper" puts on the lights: its
-    /// `accent`, else its most colourful stop. None without a palette.
+    /// `roles.accent`, else its `accent`, else its most colourful stop. None without a palette.
     pub accent: Option<Rgb>,
+    /// The palette's colour roles (docs/palette.md): the ones it gives, the rest derived from
+    /// the accent or Bandit's. None without a palette.
+    pub roles: Option<palette_file::Roles>,
     pub motifs: Vec<Motif>,
     pub art: Art,
 }
@@ -129,6 +133,9 @@ struct FilePalette {
     stops: Vec<String>,
     #[serde(default)]
     accent: Option<String>,
+    /// The shared palette's roles (docs/palette.md); older builds skip them.
+    #[serde(default)]
+    roles: palette_file::FileRoles,
 }
 
 #[derive(Deserialize)]
@@ -215,7 +222,7 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
         .as_deref()
         .map(|p| shown_name(p, "pack"))
         .transpose()?;
-    let (palette, accent) = match f.palette {
+    let (palette, accent, roles) = match f.palette {
         Some(p) => {
             if p.stops.len() < 2 {
                 return Err(format!("palette {} needs two colours", p.name));
@@ -225,17 +232,22 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
                 .iter()
                 .map(|s| looks::hex(s).map(Rgb))
                 .collect::<Result<_, _>>()?;
-            let accent = match p.accent.as_deref() {
-                Some(a) => Some(Rgb(looks::hex(a).map_err(|e| format!("accent: {e}"))?)),
-                None => most_colourful(&stops),
+            let accent = match (p.roles.accent()?, p.accent.as_deref()) {
+                (Some(a), _) => Some(a),
+                (None, Some(a)) => Some(Rgb(looks::hex(a).map_err(|e| format!("accent: {e}"))?)),
+                (None, None) => most_colourful(&stops),
+            };
+            let roles = match accent {
+                Some(a) => Some(p.roles.resolve(a, Some(&palette_file::bandit().roles))?),
+                None => None,
             };
             let palette = NamedPalette {
                 name: shown_name(&p.name, "palette")?,
                 stops,
             };
-            (Some(palette), accent)
+            (Some(palette), accent, roles)
         }
-        None => (None, None),
+        None => (None, None, None),
     };
     if f.motifs.len() > MAX_MOTIFS {
         return Err(format!("at most {MAX_MOTIFS} motifs"));
@@ -280,6 +292,7 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
         supports: Supports::from_names(&f.supports),
         palette,
         accent,
+        roles,
         motifs,
         art: Art {
             builtin: a.builtin,
@@ -554,6 +567,53 @@ pub(crate) mod tests {
     /// What the page offers in tests (`scene_looks::scenes`).
     pub(crate) fn fake_scenes() -> Scenes {
         scenes_of(&fake_manifests())
+    }
+
+    /// #40(c): `palette.roles`. Its accent comes first; the rest are derived or Bandit's.
+    #[test]
+    fn palette_roles_are_read_and_their_accent_wins() {
+        let old = &fake_manifests()[0];
+        let roles = old
+            .roles
+            .expect("a palette without roles still has them, derived");
+        assert_eq!(Some(roles.accent), old.accent);
+        assert_eq!(roles.base, palette_file::bandit().roles.base);
+
+        let with = REEF.replace(
+            "\"stops\": [",
+            "\"accent\": \"#f2e8cf\", \"roles\": { \"accent\": \"#0b2545\", \"base\": \"#010203\",              \"glow\": \"#ffffff\" }, \"stops\": [",
+        );
+        let m = parse(&with, Path::new("x"), None).unwrap();
+        assert_eq!(
+            m.accent,
+            Some(Rgb([0x0b, 0x25, 0x45])),
+            "roles.accent first"
+        );
+        let r = m.roles.unwrap();
+        assert_eq!(r.base, Rgb([1, 2, 3]));
+        assert_eq!(
+            r.ink,
+            palette_file::bandit().roles.ink,
+            "Bandit's for the rest"
+        );
+        assert!(palette_file::contrast(r.deep, r.paper) >= 3.0);
+
+        let only = REEF.replace(
+            "\"stops\": [",
+            "\"accent\": \"#f2e8cf\", \"roles\": {}, \"stops\": [",
+        );
+        let only = parse(&only, Path::new("x"), None).unwrap();
+        assert_eq!(only.accent, Some(Rgb([0xf2, 0xe8, 0xcf])), "then accent");
+
+        let bad = REEF.replace(
+            "\"stops\": [",
+            "\"roles\": { \"ink\": \"cream\" }, \"stops\": [",
+        );
+        assert!(
+            parse(&bad, Path::new("x"), None).is_err(),
+            "a role that isn't #rrggbb"
+        );
+        assert_eq!(fake_manifests()[1].roles, None, "no palette, no roles");
     }
 
     #[test]
