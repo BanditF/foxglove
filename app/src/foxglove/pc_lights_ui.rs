@@ -328,7 +328,7 @@ fn openrgb_row(
     }
     let mut again = s.reconnect;
     if ui
-        .checkbox(&mut again, "Try again when OpenRGB isn't running")
+        .checkbox(&mut again, "Reconnect automatically")
         .on_hover_text("A few tries, a little longer apart each time, then Foxglove stops")
         .changed()
     {
@@ -983,7 +983,7 @@ pub mod tests {
             "HOST",
             "127.0.0.1",
             "6742",
-            "Try again when OpenRGB isn't running",
+            "Reconnect automatically",
             "Connected to OpenRGB at 127.0.0.1:6742: 2 devices",
         ] {
             assert!(text.contains(want), "{want}: {text}");
