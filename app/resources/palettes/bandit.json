@@ -1,0 +1,15 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "base": "#060812",
+    "ink": "#e8dcc4",
+    "paper": "#e9e6df",
+    "paper_ink": "#1b1b1c"
+  },
+  "stops": ["#f08a3c", "#ff5f3c", "#060812"]
+}
