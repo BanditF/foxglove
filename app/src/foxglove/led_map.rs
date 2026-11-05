@@ -390,7 +390,8 @@ impl Wizard {
         Some(Step { lamp, half, index })
     }
 
-    /// The user clicked where the lit LED is (a point on its half, key units).
+    /// A lamp answered at a point at once (the tests' shorthand for a pick and Next).
+    #[cfg(test)]
     pub fn place(&mut self, at: [f32; 2]) {
         if self.step().is_some() && at.iter().all(|v| v.is_finite()) {
             self.answers.push(Some(at));
