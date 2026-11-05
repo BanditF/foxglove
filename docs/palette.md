@@ -1,6 +1,6 @@
 # Shared palette (`foxglove-palette` v1)
 
-One file of colour roles for the app theme, the scenes, the lights, the art previews and the
+One file of colour roles for the app theme, the scenes, the lights and the
 Bandit wallpapers (#40, piece c). Before it, the Bandit colours were copied by hand into each of
 them and drifted.
 
@@ -26,7 +26,9 @@ them and drifted.
     "base": "#060812",
     "ink": "#e8dcc4",
     "paper": "#e9e6df",
-    "paper_ink": "#1b1b1c"
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#060812",
+    "wall_ground": "#09090a"
   },
   "stops": ["#f08a3c", "#ff5f3c", "#060812"]
 }
@@ -46,6 +48,16 @@ them and drifted.
 | `roles.ink` | no | Ink on `base`. Falls back to Bandit's. |
 | `roles.paper` | no | The light ground. Falls back to Bandit's. |
 | `roles.paper_ink` | no | Ink on `paper`. Falls back to Bandit's. |
+| `roles.app_ground` | no | The night ground Foxglove draws on: the scenes' **Night** background. Bandit's file keeps it equal to `base`. |
+| `roles.wall_ground` | no | The night ground the wallpapers draw on (`bg` in bandit-wallpapers' `bandit.js`). |
+
+### The two night grounds
+
+Bandit has two near-blacks on purpose: `app_ground` `#060812`, a blue night that the lights and
+the app's scenes sit on, and `wall_ground` `#09090a`, the neutral black the wallpapers are drawn
+on. They are different surfaces, so they stay different colours. Both are named so neither gets
+"fixed" into the other by accident. Readers that don't know these roles skip them (v1 only adds
+fields); `base` is still the role every reader uses for the dark ground.
 
 Every colour is sRGB `#rrggbb`: every consumer (egui, CSS, the manifest, the lights, the
 previews) takes 8-bit sRGB. Oklab is the space the derivations work in, but it isn't stored, so
@@ -63,7 +75,7 @@ against the ground. The Rust reader (`palette_file::readable`) and the wallpaper
 | App theme (`theme.rs`) | dark: `accent`, `highlight` (hover); light: `accent_light`. The other theme tokens (grounds, text, status colours) stay the theme's own. |
 | Scenes (`scene_looks.rs`) | `stops` is the **Bandit** palette, `base` the **Night** background, `accent` the demo scanline's colour. |
 | Lights | `accent`. Only its hue and saturation reach a device; per-device correction stays in the drivers' calibration, not in the palette. |
-| Art previews | Planned: `ink` on `base` (dark) or `paper_ink` on `paper` (light). Today `art_preview.rs` draws white on black, as the keyboard's 1-bit screen does. |
+| Art previews | None: `art_preview.rs` keeps white on black on purpose, because the previews mimic the keyboard's 1-bit nice!view screen (#610). The palette doesn't tint them. |
 | Wallpapers (`shared/bandit.js`) | `orange` ← `accent`, `orangeLight` ← `highlight`, `orangeDark` ← `deep`, `cream` ← `ink`, `bg` ← `base`, `paper`, `paperInk` ← `paper_ink`; the `schemecolor` default ← `accent`. |
 
 ## Compatibility

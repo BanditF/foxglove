@@ -18,7 +18,7 @@
         "brightness": 60
       },
       "effect": "solid",
-      "swatch": "#e5732b",
+      "swatch": "#f08a3c",
       "wallpapers": [
         "hud",
         "bandit-radar",
@@ -140,7 +140,7 @@
         "brightness": 50
       },
       "effect": "swirl",
-      "swatch": "#e5732b",
+      "swatch": "#f08a3c",
       "wallpapers": [],
       "art": {
         "builtin": "Bandit_Emblem"
