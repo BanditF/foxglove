@@ -2,7 +2,7 @@
 
 Design only (ux-1105, 2026-11-05). **Approved by the user on 2026-11-05** ("i like that a lot"),
 with two fixes now folded in: status chips are flat, and the EFFECT label sits above its pills.
-Nothing here is built yet. The issues are filed; the plan below links them.
+Nothing here is built yet. Issues #793–#804 are filed; the plan below links each one.
 
 ## Decisions (2026-11-05, all option a)
 
@@ -387,7 +387,7 @@ images. A–D can run two at a time: A doesn't touch B or C. Taste checks are ba
 not per PR.
 
 **Phase A: declutter (no new data, ships the user's ask first)**
-1. **A1 · Disclosure widgets.** `theme::hint_chip(text, hover)`, `theme::info_dot(hover)`,
+1. **A1 (#793) · Disclosure widgets.** `theme::hint_chip(text, hover)`, `theme::info_dot(hover)`,
    `theme::info_bar(level, short, full, action)`, and `settings_ui::expander(key, header,
    summary)` with session-remembered open state (generalising `zones_ui::toggle`).
    - *AC:* a preview sheet of each widget, dark and light. `hint_chip` has no outline, a muted
@@ -395,21 +395,21 @@ not per PR.
      The ⓘ hover equals the given text. No first-run highlight. `info_bar` is fill only and
      never collapses. Keyboard focus reaches the ⓘ, and Enter/Space shows its text (for
      keyboard users). No page changes yet.
-2. **A2 · Keyboard card declutter** (K1–K32).
+2. **A2 (#794) · Keyboard card declutter** (K1–K32).
    - *AC:* each K row behaves as the inventory says. EFFECT sits above the effect pills, like
      COLOUR. A test asserts every K-row string still
      renders somewhere: visible, or as hover text found through egui's `WidgetInfo`/tooltips in a
      headless frame. Previews `ui-1105-lights-keyboard{,-windows,-through,-unknown-zones,-old-firmware}.png`.
      The card is shorter than today's at 980 pt (measured in the preview). Amber is still visible
      in the Windows states.
-3. **A3 · Other devices declutter** (O1–O31).
+3. **A3 (#795) · Other devices declutter** (O1–O31).
    - *AC:* device rows are collapsible, collapsed by default, and remembered for the session.
      "More sources" holds OpenRGB and Add a device, and its header summary shows OpenRGB's state
      (amber when on and down). The hex box lives in the zone popup. The same "every string still
      reachable" test covers the O rows. Previews with 1, 3 and 7 devices, plus a conflict.
 
 **Phase B: one layout source**
-4. **B1 · `KeyLayout` and its source ladder.** Steps 1, 3 and 4 of the ladder (ZMK Studio
+4. **B1 (#796) · `KeyLayout` and its source ladder.** Steps 1, 3 and 4 of the ladder (ZMK Studio
    physical layout, profile, guessed), with rotation. The Keyboard page, zones, LED map, Scenes
    room and health take it instead of `boards::drawing`. The source chip goes on the Keyboard
    page drawing.
@@ -417,38 +417,38 @@ not per PR.
      Without one, the profile's drawing as today (snapshot unchanged). The zone and LED-map key
      indices are unchanged (existing #611/LED-map tests green). A Corne preview with rotated
      thumbs.
-5. **B2 · VIA/Vial keyboards drawn.** Step 2 of the ladder from `crates/via::Definition::layout_for(options)`,
+5. **B2 (#797) · VIA/Vial keyboards drawn.** Step 2 of the ladder from `crates/via::Definition::layout_for(options)`,
    for a VIA/Vial keyboard (drawing only, no keymap writes).
    - *AC:* a K5 Pro definition fixture renders the full-size layout and follows a layout-options
      value (test from #770's fixtures). The chip reads "Layout from its VIA definition".
-6. **B3 · "Load a layout…".** For a guessed board, import VIA JSON / QMK `info.json` / KLE into
+6. **B3 (#798) · "Load a layout…".** For a guessed board, import VIA JSON / QMK `info.json` / KLE into
    the user's boards folder as a profile `[drawing]`. It is data, so it survives updates.
    - *AC:* the file dialog accepts only those formats. A bad file says why in one line. Bounded
      size (the 0.2 VIA definition limits). The imported layout wins over the guess on the next
      connect, without a restart.
 
 **Phase C: focus**
-7. **C1 · Focus model (no UI).** `keyboard_focus.rs` holds the keyboards the device layer knows
+7. **C1 (#799) · Focus model (no UI).** `keyboard_focus.rs` holds the keyboards the device layer knows
    (host-link, VIA/Vial, LampArray keyboards), the pick, `[focus]` persistence and the start
    rules. It sends an event on change. Pages read `keyboard_focus::current()`. With one keyboard
    nothing changes.
    - *AC:* unit tests for the start rule, a replug keeping the pick, a new keyboard not stealing
      it, and a gone keyboard greyed. No polling (it is driven by device-watch events). The local
      API gets `focus.get` / `focus.set` (and a plugin-api schema bump if needed).
-8. **C2 · Switcher and pages.** The strip's switcher and its list. Card titles take the focused
+8. **C2 (#800) · Switcher and pages.** The strip's switcher and its list. Card titles take the focused
    keyboard's name. The Keyboard page, Lights card, zones, Find my LEDs and Calibrate follow the
    focus. A read-only keyboard's controls are muted with a reason chip. Other devices lists the
    non-focused keyboards with "Show in Foxglove".
    - *AC:* previews of one keyboard (no ▾), two keyboards, the list open, and the K5 Pro focused
      (read-only chips). Every action is one click. Switching repaints from cached state with no
      device read on the UI thread.
-9. **C3 · Overlay, feed, tray.** The overlay and the wallpaper feed follow the focus by default,
+9. **C3 (#801) · Overlay, feed, tray.** The overlay and the wallpaper feed follow the focus by default,
    each with "Keyboard: Follow focus ▾" in its own card. The tray panel's title names the focus.
    The Scenes room draws every keyboard and rings the focused one.
    - *AC:* a pinned overlay keeps its keyboard while the focus changes (test). The feed's
      manifest output names the keyboard (docs/live-feed.md updated). Room previews with two
      keyboards.
-10. **C4 · "Follow the keyboard I type on"** (optional, last). Raw Input (`RIDEV_INPUTSINK`,
+10. **C4 (#802) · "Follow the keyboard I type on"** (optional, last). Raw Input (`RIDEV_INPUTSINK`,
     device handle only, never key codes stored) maps the last typing device to a known keyboard.
     It is off by default.
     - *AC:* the setting is off by default. Only the device handle is read, with no key contents
@@ -456,45 +456,48 @@ not per PR.
       typing on two boards doesn't flicker.
 
 **Phase D: thumbnails**
-11. **D1 · `device_thumb` painter.** The shape table above, with tints through calibration, dark
+11. **D1 (#803) · `device_thumb` painter.** The shape table above, with tints through calibration, dark
     when off, grey when unknown, and the keyboard shape from `KeyLayout` (B1). Adds the optional
     catalog field `shape` (data, documented in docs/plugins-and-devices.md).
     - *AC:* a preview sheet of every shape, lit, off and unknown. The thumbnail of each
       `fixtures.rs` device. No per-product art in the repo (a source test: no device names in
       `device_thumb`).
-12. **D2 · Thumbnails in place.** Other devices rows (click = Identify when driven), the battery
+12. **D2 (#804) · Thumbnails in place.** Other devices rows (click = Identify when driven), the battery
     list (from Bluetooth category), and the focus switcher.
     - *AC:* previews of ui-423 and ui-505 with thumbnails. A rainbow animates only while visible
       and in front (it reuses the effect frame clock, adds no timer). Identify through the
       thumbnail sends the same message as the button.
 
+**Taste checks (batched):** one after phase A (#793–#795), one after D2 (C1, C2, D1, D2:
+#799, #800, #803, #804).
+
 **Order:** A1 → A2 → A3 (one batched taste check), in parallel with B1. Then C1 → C2 → D1 → D2
 (the second taste check), then C3 → B2 → B3 → C4. B1 comes before D1, because keyboard
 thumbnails are their layout. C2 can ship with a plain keyboard glyph until D1 lands.
 
-## Draft issues (file after the Hub's go)
+## Issues (filed 2026-11-05, labels `ui` and `0.3`)
 
-Each one uses the Feature template. Research and Scope are summarised from the sections above.
+Each one follows the Feature template. Research and Scope are summarised from the sections above.
 
-- **Lights: disclosure widgets (chip, ⓘ, info bar, expander)** (A1). Research: WinUI
+- **Lights: disclosure widgets (chip, ⓘ, info bar, expander)** (A1, #793). Research: WinUI
   SettingsCard / InfoBar / SettingsExpander, macOS ⓘ. Scope: in, a shipped page.
-- **Lights: declutter the keyboard card, keeping every word** (A2). Research: as A1. AC as above.
-- **Lights: declutter Other devices; collapsible rows and More sources** (A3).
-- **One key layout per keyboard, from the keyboard first** (B1). Research: reuse zmk_rpc
+- **Lights: declutter the keyboard card, keeping every word** (A2, #794). Research: as A1. AC as above.
+- **Lights: declutter Other devices; collapsible rows and More sources** (A3, #795).
+- **One key layout per keyboard, from the keyboard first** (B1, #796). Research: reuse zmk_rpc
   physical layouts, `crates/via` KLE, `boards::Drawing`; emulate ZMK Studio, VIA, QMK
   Configurator. Scope: in, the keyboard.
-- **Draw VIA/Vial keyboards from their definitions** (B2). Depends on B1, #770, #771.
-- **Load a layout for an unknown board (VIA, info.json, KLE)** (B3). Research: `kle-serial`
+- **Draw VIA/Vial keyboards from their definitions** (B2, #797). Depends on B1, #770, #771.
+- **Load a layout for an unknown board (VIA, info.json, KLE)** (B3, #798). Research: `kle-serial`
   licence check vs our parser.
-- **Keyboard focus: one focused keyboard across the app** (C1). Research: G HUB, VIA, Windows
+- **Keyboard focus: one focused keyboard across the app** (C1, #799). Research: G HUB, VIA, Windows
   Dynamic Lighting device cards. Scope: in, device management.
-- **Keyboard switcher in the status strip; pages follow the focus** (C2).
-- **Overlay and wallpaper feed: follow the focus or pin a keyboard** (C3).
-- **Follow the keyboard I type on (Raw Input, opt-in)** (C4). Scope note: device handles only,
+- **Keyboard switcher in the status strip; pages follow the focus** (C2, #800).
+- **Overlay and wallpaper feed: follow the focus or pin a keyboard** (C3, #801).
+- **Follow the keyboard I type on (Raw Input, opt-in)** (C4, #802). Scope note: device handles only,
   never key contents.
-- **Low-fi device thumbnails from kind and zones** (D1). Research: Windows device-class glyphs,
+- **Low-fi device thumbnails from kind and zones** (D1, #803). Research: Windows device-class glyphs,
   iCUE/SignalRGB tinted tiles, LampArrayKind + lamp positions.
-- **Thumbnails on device rows, the battery list and the switcher** (D2).
+- **Thumbnails on device rows, the battery list and the switcher** (D2, #804).
 
 ## Open questions for the Hub (answered 2026-11-05: all a)
 
