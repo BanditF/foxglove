@@ -221,6 +221,150 @@ pub fn pair(ui: &mut egui::Ui, name_width: f32, name: &str, value: impl FnOnce(&
     });
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+fn expander_id(key: &str) -> egui::Id {
+    egui::Id::new(("foxglove-expander", key))
+}
+
+/// Whether the expander `key` is open: closed until the user opens it, then remembered for the
+/// session only (rule 6, as the zone drawings' "Show zones" is). With egui's "everything is
+/// visible" (the tests that look for every sentence) it is open.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn expander_open(ctx: &egui::Context, key: &str) -> bool {
+    ctx.memory(|m| m.everything_is_visible())
+        || ctx.data(|d| d.get_temp::<bool>(expander_id(key))) == Some(true)
+}
+
+/// Opens or closes the expander `key` (the previews and tests open it).
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn set_expander_open(ctx: &egui::Context, key: &str, open: bool) {
+    ctx.data_mut(|d| d.insert_temp(expander_id(key), open));
+}
+
+/// What an [`expander`] drew this frame.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub struct Expander<R> {
+    /// The header row: clicked (or Enter/Space) when it opened or closed.
+    pub header: egui::Response,
+    /// What the contents returned, when open.
+    pub body: Option<R>,
+}
+
+/// A section collapsed by default (WinUI's `SettingsExpander`, rule 6): a header row with a
+/// chevron, the `header` and a muted one-line `summary`, and `add_contents` under it once
+/// opened. `key` names it for the session's memory ([`expander_open`]), so give each device row
+/// its own.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn expander<R>(
+    ui: &mut egui::Ui,
+    key: &str,
+    header: &str,
+    summary: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Expander<R> {
+    expander_with(ui, key, header, summary, |_| {}, add_contents)
+}
+
+/// [`expander`] with `header_extra` drawn after the summary in the header row, such as a
+/// status chip that keeps amber on screen while the section is closed. It sits on the row: a
+/// click on it opens or closes the section too.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn expander_with<R>(
+    ui: &mut egui::Ui,
+    key: &str,
+    header: &str,
+    summary: &str,
+    header_extra: impl FnOnce(&mut egui::Ui),
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Expander<R> {
+    use super::theme;
+    let p = theme::palette(ui);
+    let mut open = expander_open(ui.ctx(), key);
+    let height = ui.spacing().interact_size.y + 6.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    if response.clicked() {
+        open = !open;
+        set_expander_open(ui.ctx(), key, open);
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, true, open, header)
+    });
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let radius = egui::CornerRadius::same(6);
+        if response.hovered() {
+            painter.rect_filled(rect, radius, p.surface_raised);
+        }
+        if response.has_focus() {
+            // The focus ring every control has (#384).
+            painter.rect_stroke(
+                rect,
+                radius,
+                egui::Stroke::new(2.0, p.accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+        // The chevron: right when closed, down when open.
+        let c = egui::pos2(rect.left() + 10.0, rect.center().y);
+        let points = if open {
+            vec![
+                c + egui::vec2(-4.0, -2.0),
+                c + egui::vec2(4.0, -2.0),
+                c + egui::vec2(0.0, 3.0),
+            ]
+        } else {
+            vec![
+                c + egui::vec2(-2.0, -4.0),
+                c + egui::vec2(3.0, 0.0),
+                c + egui::vec2(-2.0, 4.0),
+            ]
+        };
+        let color = if response.hovered() || response.has_focus() {
+            p.text_strong
+        } else {
+            p.muted
+        };
+        painter.add(egui::Shape::convex_polygon(
+            points,
+            color,
+            egui::Stroke::NONE,
+        ));
+    }
+    let inner = rect
+        .with_min_x(rect.left() + 22.0)
+        .shrink2(egui::vec2(4.0, 0.0));
+    let mut row = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    row.set_clip_rect(inner.intersect(ui.clip_rect()));
+    row.add(
+        egui::Label::new(egui::RichText::new(header).color(p.text_strong))
+            .truncate()
+            .selectable(false),
+    );
+    if !summary.is_empty() {
+        row.add(
+            egui::Label::new(egui::RichText::new(summary).color(p.muted))
+                .truncate()
+                .selectable(false),
+        );
+    }
+    header_extra(&mut row);
+    let body = open.then(|| {
+        ui.add_space(2.0);
+        ui.indent(expander_id(key), add_contents).inner
+    });
+    Expander {
+        header: response,
+        body,
+    }
+}
+
 fn open_by_default(title: &str) -> bool {
     // A page with one or two sections opens them (#385).
     matches!(
@@ -262,6 +406,82 @@ pub fn footer(ui: &mut egui::Ui) {
         "https://github.com/srwi/keypeek",
     );
     super::theme::credits(ui);
+}
+
+#[cfg(test)]
+mod expander_tests {
+    use super::*;
+    use crate::foxglove::theme::headless::{self, click, frame, tap, texts};
+    use crate::foxglove::theme::Choice;
+
+    fn draw(ui: &mut egui::Ui, rect: &mut egui::Rect) {
+        let e = expander(ui, "more-sources", "More sources", "OpenRGB off", |ui| {
+            ui.label("Use OpenRGB's devices");
+        });
+        *rect = e.header.rect;
+        assert_eq!(e.body.is_some(), expander_open(ui.ctx(), "more-sources"));
+        expander(ui, "adjust-levels", "Adjust levels…", "", |ui| {
+            ui.label("On battery");
+        });
+    }
+
+    fn shows(shapes: &[egui::epaint::Shape], text: &str) -> bool {
+        texts(shapes).iter().any(|t| t == text)
+    }
+
+    #[test]
+    fn an_expander_is_closed_by_default_and_remembers_for_the_session() {
+        let ctx = headless::ctx(Choice::Dark);
+        let mut rect = egui::Rect::NOTHING;
+        let shapes = frame(&ctx, 0.0, vec![], |ui| draw(ui, &mut rect));
+        assert!(shows(&shapes, "More sources") && shows(&shapes, "OpenRGB off"));
+        assert!(
+            !shows(&shapes, "Use OpenRGB's devices"),
+            "closed by default"
+        );
+        assert!(!expander_open(&ctx, "more-sources"));
+
+        // A click on the header opens it; frames later it is still open, the other one not.
+        frame(&ctx, 1.0, click(rect.center()), |ui| draw(ui, &mut rect));
+        let shapes = frame(&ctx, 2.0, vec![], |ui| draw(ui, &mut rect));
+        assert!(shows(&shapes, "Use OpenRGB's devices"));
+        assert!(!shows(&shapes, "On battery"));
+        assert!(expander_open(&ctx, "more-sources"));
+
+        // From the keyboard: Tab onto the header, Enter closes it.
+        frame(&ctx, 3.0, tap(egui::Key::Tab), |ui| draw(ui, &mut rect));
+        frame(&ctx, 4.0, tap(egui::Key::Enter), |ui| draw(ui, &mut rect));
+        let shapes = frame(&ctx, 5.0, vec![], |ui| draw(ui, &mut rect));
+        assert!(!shows(&shapes, "Use OpenRGB's devices"));
+
+        // The tests that look for every sentence see inside all of them.
+        ctx.memory_mut(|m| m.set_everything_is_visible(true));
+        let shapes = frame(&ctx, 6.0, vec![], |ui| draw(ui, &mut rect));
+        assert!(shows(&shapes, "Use OpenRGB's devices") && shows(&shapes, "On battery"));
+    }
+
+    #[test]
+    fn the_header_extra_sits_in_the_header_row() {
+        let ctx = headless::ctx(Choice::Light);
+        let shapes = frame(&ctx, 0.0, vec![], |ui| {
+            expander_with(
+                ui,
+                "more-sources",
+                "More sources",
+                "OpenRGB: on",
+                |ui| {
+                    crate::foxglove::theme::hint_chip(
+                        ui,
+                        "OpenRGB not connected",
+                        None,
+                        Some(crate::foxglove::theme::Dot::Warn),
+                    );
+                },
+                |_| {},
+            );
+        });
+        assert!(shows(&shapes, "OpenRGB not connected"));
+    }
 }
 
 #[cfg(test)]
