@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use foxglove_devices::{Device, Registry};
 use foxglove_via::client::Channel;
 use foxglove_via::hid::ViaBackend;
+use foxglove_via::vial::Unreadable;
 use foxglove_via::{Definition, Source, Summary};
 use serde::{Deserialize, Serialize};
 
@@ -297,6 +298,16 @@ pub fn rescan() {
                     })
                 })
                 .map_err(|e| super::devices::describe(&e));
+            if let Ok(Summary {
+                source: Source::Missing { why: Some(why) },
+                ..
+            }) = &opened
+            {
+                eprintln!(
+                    "Foxglove: {}: its Vial definition couldn't be read: {why}",
+                    entry.info.name
+                );
+            }
             found.push(Found {
                 name: entry.info.name.clone(),
                 opened,
@@ -350,14 +361,26 @@ pub fn lighting_text(c: Option<Channel>) -> &'static str {
     c.map(Channel::label).unwrap_or("none answered")
 }
 
-/// Where a board's definition came from, as the settings and the health view say it.
+/// Where a board's definition came from, as the settings say it: a read failure in plain
+/// words ([`Unreadable::plain`]).
 pub fn source_text(s: &Source) -> String {
+    match s {
+        Source::Missing { why: Some(why) } => format!(
+            "the keyboard's own couldn't be read ({}), so no keymap",
+            Unreadable::of(why).plain()
+        ),
+        s => source_detail(s),
+    }
+}
+
+/// [`source_text`] with a read failure's technical reason, for the health view and the log.
+pub fn source_detail(s: &Source) -> String {
     match s {
         Source::Loaded => "from a loaded file".into(),
         Source::Vial { .. } => "read from the keyboard (Vial)".into(),
         Source::Missing { why: None } => "none, so no keymap: add its VIA definition".into(),
         Source::Missing { why: Some(why) } => {
-            format!("the keyboard's own couldn't be read ({why}), so no keymap")
+            format!("the keyboard's own couldn't be read: {why}")
         }
     }
 }
@@ -393,7 +416,7 @@ pub fn board_rows(found: &[Found]) -> Vec<super::health::HealthRow> {
                 level,
                 format!(
                     "{}; {}; lighting: {}",
-                    source_text(&s.source),
+                    source_detail(&s.source),
                     s.firmware.as_deref().unwrap_or("firmware unknown"),
                     lighting_text(s.lighting)
                 ),
@@ -681,7 +704,9 @@ pub(crate) mod tests {
                 "VIA protocol 9, Vial protocol 6",
                 None,
                 Source::Missing {
-                    why: Some("the XZ check failed".into()),
+                    why: Some(
+                        "the Vial definition doesn't unpack: xz: invalid check (CRC64)".into(),
+                    ),
                 },
                 None,
             ),
@@ -716,7 +741,7 @@ pub(crate) mod tests {
         assert_eq!(
             line(3),
             "Firmware: VIA protocol 9, Vial protocol 6 · Lighting: none answered · Definition: \
-             the keyboard's own couldn't be read (the XZ check failed), so no keymap"
+             the keyboard's own couldn't be read (its stored data was damaged), so no keymap"
         );
     }
 
@@ -740,7 +765,56 @@ pub(crate) mod tests {
             rows[0].detail,
             "read from the keyboard (Vial); VIA protocol 9, Vial protocol 6; lighting: RGB Matrix"
         );
+        assert_eq!(
+            rows[3].detail,
+            "the keyboard's own couldn't be read: the Vial definition doesn't unpack: xz: \
+             invalid check (CRC64); VIA protocol 9, Vial protocol 6; lighting: none answered",
+            "the health view keeps the technical reason"
+        );
         assert!(board_rows(&[]).is_empty());
+    }
+
+    /// The settings say each kind of Vial read failure in plain words (#74).
+    #[test]
+    fn a_vial_read_failure_is_said_in_plain_words() {
+        let say = |why: &str| {
+            source_text(&Source::Missing {
+                why: Some(why.into()),
+            })
+        };
+        let plain = |p: &str| format!("the keyboard's own couldn't be read ({p}), so no keymap");
+        for (why, phrase) in [
+            (
+                "the Vial definition doesn't unpack: xz: invalid check",
+                "its stored data was damaged",
+            ),
+            (
+                "the Vial definition isn't UTF-8 text",
+                "its stored data was damaged",
+            ),
+            (
+                "the Vial definition is 70000 bytes, over the 65536-byte cap",
+                "it's too large",
+            ),
+            (
+                "the Vial definition is 2097152 bytes decompressed, over the 1048576-byte cap",
+                "it's too large",
+            ),
+            ("operation timed out", "it took too long to answer"),
+            ("the Vial definition is empty", "it has none stored"),
+            (
+                "the Vial definition isn't an XZ stream Foxglove reads",
+                "it's stored in a format Foxglove doesn't read",
+            ),
+            (
+                "the Vial definition doesn't parse: missing field `matrix`",
+                "Foxglove doesn't understand its layout",
+            ),
+            ("unsupported operation", "it stopped answering Vial's reads"),
+            ("busy: in use", "something went wrong reading it"),
+        ] {
+            assert_eq!(say(why), plain(phrase), "{why}");
+        }
     }
 
     /// Generic discovery is off by default and in stores from before it existed.

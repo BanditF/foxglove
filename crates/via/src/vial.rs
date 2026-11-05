@@ -189,6 +189,68 @@ impl Write for Capped {
     }
 }
 
+/// Why a Vial board's definition couldn't be read, as a kind the settings can say in plain
+/// words (#74). The technical reason (`Source::Missing`'s `why`) stays for the health view and
+/// the log; [`Unreadable::of`] sorts it from the messages this module and the device make, which
+/// the tests pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unreadable {
+    /// Over a size cap, compressed or unpacked.
+    TooLarge,
+    /// The read ran out of time, or the board stopped answering.
+    TimedOut,
+    /// The board says it has an empty definition.
+    Empty,
+    /// Not laid out as an XZ stream Foxglove reads.
+    UnknownFormat,
+    /// It doesn't unpack (a failed XZ/CRC check, blocks out of order) or isn't text.
+    Damaged,
+    /// It unpacks, but isn't a definition Foxglove understands.
+    Invalid,
+    /// The board stopped handling Vial's reads part way.
+    NoAnswer,
+    /// Anything else.
+    Other,
+}
+
+impl Unreadable {
+    /// The kind of a `Source::Missing` reason.
+    pub fn of(why: &str) -> Self {
+        let has = |s: &str| why.contains(s);
+        if has("doesn't parse") {
+            Unreadable::Invalid
+        } else if has("-byte cap") {
+            Unreadable::TooLarge
+        } else if has("is empty") {
+            Unreadable::Empty
+        } else if has("isn't an XZ stream") {
+            Unreadable::UnknownFormat
+        } else if has("doesn't unpack") || has("isn't UTF-8") {
+            Unreadable::Damaged
+        } else if why == DeviceError::Timeout.to_string() {
+            Unreadable::TimedOut
+        } else if why == DeviceError::Unsupported.to_string() {
+            Unreadable::NoAnswer
+        } else {
+            Unreadable::Other
+        }
+    }
+
+    /// A short phrase in plain words, for the settings.
+    pub fn plain(self) -> &'static str {
+        match self {
+            Unreadable::TooLarge => "it's too large",
+            Unreadable::TimedOut => "it took too long to answer",
+            Unreadable::Empty => "it has none stored",
+            Unreadable::UnknownFormat => "it's stored in a format Foxglove doesn't read",
+            Unreadable::Damaged => "its stored data was damaged",
+            Unreadable::Invalid => "Foxglove doesn't understand its layout",
+            Unreadable::NoAnswer => "it stopped answering Vial's reads",
+            Unreadable::Other => "something went wrong reading it",
+        }
+    }
+}
+
 /// `json` XZ-compressed, as a Vial board stores it (for fakes).
 #[cfg(test)]
 pub(crate) fn xz(json: &str) -> Vec<u8> {
@@ -388,6 +450,65 @@ mod tests {
         let small = include_bytes!("../testdata/vial-small.json.xz");
         assert_eq!(xz_unpacked_size(small), Some(84));
         assert_eq!(xz_unpacked_size(&small[..20]), None, "cut short");
+    }
+
+    /// Each way a read fails sorts into the kind the settings say in plain words, from the
+    /// errors the reads really give.
+    #[test]
+    fn each_failure_has_a_plain_kind() {
+        let kind = |e: DeviceError| Unreadable::of(&e.to_string());
+        let read = |blob: Vec<u8>| {
+            compressed(&Guarded::read_only(vial_board(blob)), BUDGET)
+                .and_then(|b| decompress(&b))
+                .unwrap_err()
+        };
+        assert_eq!(kind(read(vec![])), Unreadable::Empty);
+        assert_eq!(
+            kind(read(vec![0; MAX_COMPRESSED as usize + 1])),
+            Unreadable::TooLarge
+        );
+        let bomb = include_bytes!("../testdata/vial-bomb.xz");
+        assert_eq!(kind(decompress(bomb).unwrap_err()), Unreadable::TooLarge);
+        let big = "x".repeat(MAX_JSON + 1);
+        assert_eq!(
+            kind(decompress(&xz(&big)).unwrap_err()),
+            Unreadable::TooLarge
+        );
+        let f = vial_board(xz(OPTIONS));
+        *f.vial_silent_from.lock().unwrap() = Some(1);
+        assert_eq!(
+            kind(compressed(&Guarded::read_only(f), BUDGET).unwrap_err()),
+            Unreadable::TimedOut
+        );
+        let mut blob = include_bytes!("../testdata/vial-small.json.xz").to_vec();
+        blob[60] ^= 0x55;
+        assert_eq!(kind(decompress(&blob).unwrap_err()), Unreadable::Damaged);
+        assert_eq!(
+            kind(decompress(b"not compressed").unwrap_err()),
+            Unreadable::Damaged
+        );
+        let small = include_bytes!("../testdata/vial-small.json.xz");
+        let mut cut = small.to_vec();
+        cut[12] = 0x01; // a block header that runs past the end
+        cut.truncate(20);
+        assert_eq!(
+            kind(decompress(&cut).unwrap_err()),
+            Unreadable::UnknownFormat
+        );
+        let mut bytes = Vec::new();
+        lzma_rs::xz_compress(&mut &[0xFFu8, 0xFE][..], &mut bytes).unwrap();
+        assert_eq!(kind(decompress(&bytes).unwrap_err()), Unreadable::Damaged);
+        assert_eq!(
+            Unreadable::of("the Vial definition doesn't parse: missing field `matrix`"),
+            Unreadable::Invalid
+        );
+        assert_eq!(kind(DeviceError::Unsupported), Unreadable::NoAnswer);
+        assert_eq!(kind(DeviceError::Busy("x".into())), Unreadable::Other);
+        assert_eq!(
+            Unreadable::Damaged.plain(),
+            "its stored data was damaged",
+            "the coordinator's example"
+        );
     }
 
     #[test]
