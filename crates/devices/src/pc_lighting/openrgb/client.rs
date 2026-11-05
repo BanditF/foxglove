@@ -465,10 +465,12 @@ mod tests {
 
     #[test]
     fn no_server_is_a_quick_disconnected_and_a_client_closes_quietly() {
-        let addr = {
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap()
-        };
+        // A port nothing listens on, held for the whole test: the local end of a live
+        // connection is bound but not listening, so a connect to it is refused, and the OS
+        // hands that port to no other bind (a freed port could go to a parallel test).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let held = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let addr = held.local_addr().unwrap();
         let err = Client::connect(addr, "Foxglove", Duration::from_millis(500), |_| {});
         assert!(matches!(
             err,
