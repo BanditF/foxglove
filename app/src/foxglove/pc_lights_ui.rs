@@ -262,9 +262,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
             ui.add_space(2.0);
             conflict_bar(ui, c);
         }
-        // A result with nowhere narrower to go (a file that can't be saved, a pause): the top
-        // of the card, where amber goes.
-        if let Some(st) = placed(s.status.as_ref(), &Place::Card) {
+        // A result with nowhere narrower to go (your own catalog file that can't be saved): the
+        // top of the card, where amber goes.
+        if let Some(st) = placed(&s.results, &Place::Card) {
             ui.add_space(2.0);
             status_here(ui, st, None);
         }
@@ -274,7 +274,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
         }
         for row in &s.devices {
             ui.add_space(4.0);
-            let status = placed(s.status.as_ref(), &Place::Row(row.key.clone()));
+            let status = placed(&s.results, &Place::Row(row.key.clone()));
             device(ui, row, status, s.busy, draft, &mut out);
         }
         ui.add_space(4.0);
@@ -284,10 +284,10 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
     out
 }
 
-/// The worker's last word when it belongs to `place` and is still shown: a confirmation
-/// fades after [`pc_lights::DONE_FOR`], a note or a problem stays until the next result.
-pub fn placed<'a>(status: Option<&'a Status>, place: &Place) -> Option<&'a Status> {
-    status.filter(|st| &st.place == place && st.shown())
+/// `place`'s own result while it's shown: a confirmation fades after
+/// [`pc_lights::DONE_FOR`], a note or a problem stays until the next result for that place.
+pub fn placed<'a>(results: &'a [Status], place: &Place) -> Option<&'a Status> {
+    results.iter().find(|st| &st.place == place && st.shown())
 }
 
 /// What a result says where it shows: without the device's name when the row already shows
@@ -341,10 +341,13 @@ pub fn status_here(ui: &mut egui::Ui, st: &Status, name: Option<&str>) {
 /// The keyboard card's own results (its picks drawn through Windows, #749 b), at the card's top.
 pub fn keyboard_status(ui: &mut egui::Ui) {
     #[cfg(test)]
-    let status = PREVIEW.with_borrow(|v| v.as_ref().and_then(|(v, _)| v.pc.status.clone()));
+    let status = PREVIEW.with_borrow(|v| {
+        v.as_ref()
+            .and_then(|(v, _)| placed(&v.pc.results, &Place::Keyboard).cloned())
+    });
     #[cfg(not(test))]
-    let status = pc_lights::status();
-    if let Some(st) = placed(status.as_ref(), &Place::Keyboard) {
+    let status = pc_lights::result(&Place::Keyboard);
+    if let Some(st) = status.as_ref().filter(|st| st.shown()) {
         status_here(ui, st, None);
         ui.add_space(6.0);
     }
@@ -405,7 +408,7 @@ fn more_sources(
     }
     let summary = openrgb_summary(s);
     let down = o.settings.enabled && !o.connected;
-    let said = placed(s.status.as_ref(), &Place::Sources);
+    let said = placed(&s.results, &Place::Sources);
     let ex = super::settings_ui::expander_with(
         ui,
         MORE_SOURCES,
@@ -1316,6 +1319,11 @@ pub mod tests {
                     Tone::Done,
                     "HP OMEN 45L case lights: colours set",
                 )),
+                results: vec![Status::new(
+                    Place::Row("103c:84fd".into()),
+                    Tone::Done,
+                    "HP OMEN 45L case lights: colours set",
+                )],
                 busy: false,
                 unknown: vec![
                     unknown_strip(),
@@ -1427,6 +1435,7 @@ pub mod tests {
         v.pc.devices.truncate(1);
         v.pc.conflicts.clear();
         v.pc.status = None;
+        v.pc.results.clear();
         v
     }
 
@@ -2399,23 +2408,29 @@ pub mod tests {
     fn confirmations_fade_and_problems_stay() {
         let row = Place::Row("103c:84fd".into());
         let mut done = Status::new(row.clone(), Tone::Done, "x: colours set");
-        assert!(placed(Some(&done), &row).is_some());
+        assert!(placed(std::slice::from_ref(&done), &row).is_some());
         assert!(
-            placed(Some(&done), &Place::Card).is_none(),
+            placed(std::slice::from_ref(&done), &Place::Card).is_none(),
             "only on its row"
         );
-        assert!(placed(Some(&done), &Place::Row("other".into())).is_none());
+        assert!(placed(std::slice::from_ref(&done), &Place::Row("other".into())).is_none());
         let Some(old) = std::time::Instant::now()
             .checked_sub(pc_lights::DONE_FOR + std::time::Duration::from_secs(1))
         else {
             return; // a clock this young can't go back that far
         };
         done.at = old;
-        assert!(placed(Some(&done), &row).is_none(), "a confirmation fades");
+        assert!(
+            placed(std::slice::from_ref(&done), &row).is_none(),
+            "a confirmation fades"
+        );
         for tone in [Tone::Note, Tone::Problem] {
             let mut st = Status::new(row.clone(), tone, "x: not connected");
             st.at = old;
-            assert!(placed(Some(&st), &row).is_some(), "{tone:?} stays");
+            assert!(
+                placed(std::slice::from_ref(&st), &row).is_some(),
+                "{tone:?} stays"
+            );
         }
     }
 
@@ -2440,7 +2455,7 @@ pub mod tests {
             "the hover only"
         );
 
-        v.pc.status = Some(Status::new(
+        v.pc.said(Status::new(
             Place::Row(case.clone()),
             Tone::Problem,
             "HP OMEN 45L case lights: not connected",
@@ -2466,12 +2481,12 @@ pub mod tests {
                 "HP OMEN 45L case lights: colours set",
             );
             st.at = old;
-            v.pc.status = Some(st);
+            v.pc.said(st);
             assert!(!reachable(&v).contains("olours set"), "faded");
         }
 
         // Card-wide: above the first row, after the conflicts.
-        v.pc.status = Some(Status::new(
+        v.pc.said(Status::new(
             Place::Card,
             Tone::Problem,
             "Can't save C:\\x\\lighting-catalog.local.toml: access denied",
@@ -2482,7 +2497,7 @@ pub mod tests {
         assert!(save < first_row, "above the first row: {casual}");
 
         // Add a device's result: on More sources' header, open or closed.
-        v.pc.status = Some(Status::new(
+        v.pc.said(Status::new(
             Place::Sources,
             Tone::Done,
             "Desk strip: saved as your own device",
@@ -2495,7 +2510,7 @@ pub mod tests {
         assert!(casual.find("Desk strip: saved").unwrap() > casual.find("More sources").unwrap());
 
         // The keyboard card's own results don't land on Other devices.
-        v.pc.status = Some(Status::new(
+        v.pc.said(Status::new(
             Place::Keyboard,
             Tone::Done,
             "Eyelash Corne: shown through Windows Dynamic Lighting",

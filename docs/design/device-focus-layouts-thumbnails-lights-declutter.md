@@ -295,10 +295,13 @@ No per-product art ships, and a board without a layout gets the plain Keyboard s
    2026-11-05). A confirmation is a flat chip with a green dot on that row (closed rows too)
    and fades after 5 s, the art strip's pace. A note (nothing changed, and why) is a muted info
    bar under the row. A problem is an amber info bar under the row. Both stay until the next
-   result. There are no toasts for in-window actions: Windows notifications stay for events
-   that happen while the window is closed. A card-wide result (a file that can't be saved, a
-   pause) goes to the card's top, Add a device's on More sources, and the keyboard card's own
-   on the keyboard card. The full text is the hover or the ⓘ.
+   result for that same place: each place keeps its own, so one row's result never replaces
+   another's. "Match keyboard" following the keyboard on its own shows only what went wrong,
+   never a green chip nobody clicked for. There are no toasts for in-window actions: Windows
+   notifications stay for events that happen while the window is closed. A card-wide result
+   (your own catalog file that can't be saved) goes to the card's top, Add a device's on More
+   sources, and the keyboard card's own on the keyboard card. A refusal while paused goes
+   where it was clicked. The full text is the hover or the ⓘ.
 
 ### Sentence inventory: where each one goes
 

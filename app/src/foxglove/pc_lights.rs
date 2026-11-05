@@ -104,8 +104,12 @@ pub struct Snapshot {
     /// Apps running now that may put their own colours back on a found device (from the
     /// catalog's conflicts), one per app and device.
     pub conflicts: Vec<Conflicting>,
-    /// The last action's result, shown next to what was clicked ([`Status`]).
+    /// The last action's result, wherever it shows: the local API's `status` (#617's readback
+    /// names it when a write didn't take).
     pub status: Option<Status>,
+    /// Each place's latest result, one per [`Place`], shown next to what was clicked: a result
+    /// replaces only its own place's, so a row's problem outlives another row's confirmation.
+    pub results: Vec<Status>,
     pub busy: bool,
     /// HID devices nothing recognises, for "Add a device".
     pub unknown: Vec<Unknown>,
@@ -131,7 +135,8 @@ pub enum Place {
     Keyboard,
     /// In More sources: Add a device, your own entries.
     Sources,
-    /// The whole card: nothing narrower to put it on (a file that can't be saved, a pause).
+    /// The whole card: nothing narrower to put it on (your own catalog file that can't be
+    /// saved). A refusal while paused goes where it was clicked ([`place_of`]).
     Card,
 }
 
@@ -187,6 +192,21 @@ impl std::ops::Deref for Status {
 impl From<&str> for Status {
     fn from(text: &str) -> Status {
         Status::new(Place::Card, Tone::Note, text)
+    }
+}
+
+/// Puts `st` in its place: it replaces that place's result and no other.
+pub fn put(results: &mut Vec<Status>, st: Status) {
+    results.retain(|r| r.place != st.place);
+    results.push(st);
+}
+
+#[cfg(test)]
+impl Snapshot {
+    /// A result as the worker says it (previews and tests): in its place, and the last word.
+    pub fn said(&mut self, st: Status) {
+        put(&mut self.results, st.clone());
+        self.status = Some(st);
     }
 }
 
@@ -315,14 +335,14 @@ pub fn snapshot() -> Snapshot {
         .unwrap_or_default()
 }
 
-/// The worker's last word alone, for the keyboard card (no device list cloned per frame).
+/// One place's result alone, for the keyboard card (no device list cloned per frame).
 #[cfg_attr(test, allow(dead_code))]
-pub fn status() -> Option<Status> {
+pub fn result(place: &Place) -> Option<Status> {
     SNAPSHOT
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
-        .and_then(|s| s.status.clone())
+        .and_then(|s| s.results.iter().find(|r| &r.place == place).cloned())
 }
 
 /// Queues a request; a no-op before [`start`].
@@ -564,7 +584,10 @@ pub struct Worker {
     /// What the keyboard last reported it shows ("Match keyboard" follows it).
     follow: Option<KeyboardLights>,
     conflicts: Vec<Conflicting>,
+    /// The last result, wherever it shows ([`Snapshot::status`]).
     status: Option<Status>,
+    /// Each place's latest result ([`Snapshot::results`]).
+    results: Vec<Status>,
     /// Settings changed and need saving.
     pub dirty: bool,
     /// A scene holds the lights: each board's colours from before it, by key.
@@ -654,6 +677,7 @@ impl Worker {
             follow: None,
             conflicts: Vec::new(),
             status: None,
+            results: Vec::new(),
             dirty: false,
             scene: None,
             scene_error: false,
@@ -884,6 +908,11 @@ impl Worker {
                 Err(e) => eprintln!("Foxglove: can't open {}: {e}", f.name),
             }
         }
+        // A device that went takes its row's result with it (the list stays one per place).
+        self.results.retain(|r| match &r.place {
+            Place::Row(key) => now.iter().any(|f| &f.key == key),
+            _ => true,
+        });
         self.found = now;
     }
 
@@ -925,12 +954,15 @@ impl Worker {
             .collect()
     }
 
-    /// Writes the user's own catalog and rebuilds the merged one.
-    /// Puts the last action's result where it was asked for ([`Status`]).
+    /// Puts an action's result where it was asked for ([`Status`]), replacing only that
+    /// place's.
     fn say(&mut self, place: Place, tone: Tone, text: impl Into<String>) {
-        self.status = Some(Status::new(place, tone, text));
+        let st = Status::new(place, tone, text);
+        put(&mut self.results, st.clone());
+        self.status = Some(st);
     }
 
+    /// Writes the user's own catalog and rebuilds the merged one.
     fn save_local(&mut self) {
         self.catalog = self.bundled.clone().with_local(&self.local);
         self.rescan = true;
@@ -1096,7 +1128,7 @@ impl Worker {
                 self.dirty = true;
                 // A scene holds the lights: its end puts the matched colours on.
                 if on && self.scene.is_none() {
-                    self.match_keyboard(&key);
+                    self.match_keyboard(&key, false);
                 }
             }
             // Superseded by the keyboard's report (#616); see the variant.
@@ -1118,7 +1150,7 @@ impl Worker {
                     .map(|(k, _)| k.clone())
                     .collect();
                 for key in keys {
-                    self.match_keyboard(&key);
+                    self.match_keyboard(&key, true);
                 }
             }
             Msg::TestZone {
@@ -1529,8 +1561,9 @@ impl Worker {
 
     /// Shows on one device what the keyboard last reported ("Match keyboard"), or says why it
     /// can't (no report yet; an effect that ignores the colour), leaving its colours as they
-    /// are. Never the colour the keyboard was sent but doesn't show (#616).
-    fn match_keyboard(&mut self, key: &str) {
+    /// are. Never the colour the keyboard was sent but doesn't show (#616). `auto`: the
+    /// keyboard's report asked, not a click, so it shows no confirmation (only what's wrong).
+    fn match_keyboard(&mut self, key: &str, auto: bool) {
         let Some(k) = self.follow else {
             self.say(
                 Place::Row(key.to_string()),
@@ -1553,12 +1586,25 @@ impl Worker {
             return;
         };
         let colors: Vec<(usize, Rgb)> = colors.into_iter().map(rgb).enumerate().collect();
+        let row = Place::Row(key.to_string());
+        let before = self.results.iter().find(|r| r.place == row).cloned();
         self.write(
             key,
             "Matching the keyboard",
             |d| d.set_zones(&colors),
             false,
         );
+        // The keyboard's report asked, not a click: no green chip nobody clicked for. A click's
+        // own confirmation on the row stays; an older note or problem there is out of date now,
+        // so it goes. A problem from this write stays.
+        let went = self
+            .results
+            .iter()
+            .any(|r| r.place == row && r.tone == Tone::Done);
+        if auto && went {
+            self.results.retain(|r| r.place != row);
+            self.results.extend(before.filter(|b| b.tone == Tone::Done));
+        }
     }
 
     /// Runs one driver call; `manual` saves the colours and stops matching the keyboard.
@@ -1663,6 +1709,7 @@ impl Worker {
             devices,
             conflicts: self.conflicts.clone(),
             status: self.status.clone(),
+            results: self.results.clone(),
             busy: false,
             unknown: self.unknown.clone(),
             local_file: self.local_path.as_ref().map(|p| p.display().to_string()),
@@ -2464,7 +2511,11 @@ mod tests {
         let key = "103c:84fd".to_string();
         w.handle(Msg::Off(key.clone()), true, &mut no_wait());
         assert!(sent.lock().unwrap().is_empty(), "paused: refused");
-        assert!(w.snapshot().status.unwrap().contains("paused"));
+        let refused = w.snapshot().status.unwrap();
+        assert!(refused.contains("paused"));
+        // The refusal shows on the row that was clicked, not the card.
+        assert_eq!(refused.place, Place::Row(key.clone()));
+        assert_eq!(refused.tone, Tone::Problem);
         w.handle(Msg::Off(key.clone()), false, &mut no_wait());
         assert_eq!(sent.lock().unwrap()[0], report(1, [0, 0, 0]));
         sent.lock().unwrap().clear();
@@ -2476,6 +2527,150 @@ mod tests {
         assert_eq!(sent[sent.len() - 1], report(7, [0, 0, 0]), "back to off");
         w.handle(Msg::Off("gone".into()), false, &mut no_wait());
         assert!(w.snapshot().status.unwrap().contains("isn't connected"));
+    }
+
+    /// A3b: each request's result goes where it was asked for.
+    #[test]
+    fn place_of_names_where_a_result_shows() {
+        let key = "103c:84fd".to_string();
+        let row = Place::Row(key.clone());
+        for msg in [
+            Msg::Set {
+                key: key.clone(),
+                colors: vec![],
+            },
+            Msg::Show {
+                key: key.clone(),
+                colors: vec![],
+            },
+            Msg::Off(key.clone()),
+            Msg::Identify(key.clone()),
+            Msg::Match(key.clone(), true),
+            Msg::Recalibrate(key.clone()),
+        ] {
+            assert_eq!(place_of(&msg), row, "{msg:?}");
+        }
+        let lamp = Msg::KeyboardLamp {
+            key: "1d50:615e".into(),
+            look: None,
+            calibration: None,
+            animated: false,
+        };
+        assert_eq!(place_of(&lamp), Place::Keyboard);
+        assert_eq!(place_of(&Msg::KeyboardLampRelease), Place::Keyboard);
+        assert_eq!(place_of(&Msg::RemoveLocal(1, 2)), Place::Sources);
+        assert_eq!(
+            place_of(&Msg::TestZone {
+                vid: 1,
+                pid: 2,
+                path: "p".into(),
+                protocol: Protocol::OmenTracer,
+                zone: 0,
+            }),
+            Place::Sources
+        );
+        for msg in [
+            Msg::Scan,
+            Msg::SceneStart,
+            Msg::SceneEnd,
+            Msg::OpenRgbConnect,
+        ] {
+            assert_eq!(place_of(&msg), Place::Card, "{msg:?}");
+        }
+    }
+
+    /// A3b review: the keyboard's report re-matches every "Match keyboard" device, and that
+    /// automatic write used to replace the one shared result, so a keyboard-card problem went
+    /// at once. Each place keeps its own now, and an automatic match shows no green chip.
+    #[test]
+    fn an_automatic_match_keeps_other_places_results() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let key = "103c:84fd".to_string();
+        let row = Place::Row(key.clone());
+        let at = |w: &Worker, place: &Place| {
+            w.snapshot().results.into_iter().find(|r| &r.place == place)
+        };
+        w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
+        assert!(at(&w, &row).unwrap().contains("waiting"));
+        // The keyboard card's pick, with no keyboard under Dynamic Lighting: a problem there.
+        w.handle(
+            Msg::KeyboardLamp {
+                key: "1d50:615e".into(),
+                look: Some(solid(0)),
+                calibration: None,
+                animated: false,
+            },
+            false,
+            &mut no_wait(),
+        );
+        let problem = at(&w, &Place::Keyboard).expect("the keyboard card's problem");
+        assert_eq!(problem.tone, Tone::Problem);
+        // The keyboard reports a colour: the matched case follows it.
+        w.handle(Msg::Keyboard(solid(240)), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 5, "the case matched");
+        assert_eq!(
+            at(&w, &Place::Keyboard).as_ref(),
+            Some(&problem),
+            "the keyboard card's problem still shows"
+        );
+        assert_eq!(
+            at(&w, &row),
+            None,
+            "no chip nobody clicked for, and the stale note went"
+        );
+        // The local API's last word is unchanged: the write's own.
+        assert!(w
+            .snapshot()
+            .status
+            .unwrap()
+            .contains("matching the keyboard"));
+        // A click's own confirmation on the row outlives the next automatic match.
+        w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
+        let clicked = at(&w, &row).expect("the click's chip");
+        assert_eq!(clicked.tone, Tone::Done);
+        w.handle(Msg::Keyboard(solid(0)), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 15);
+        assert_eq!(at(&w, &row), Some(clicked));
+        assert_eq!(at(&w, &Place::Keyboard), Some(problem));
+    }
+
+    /// A3b review: two rows' results stand side by side, each replacing only its own; a row's
+    /// result goes with its device.
+    #[test]
+    fn two_rows_results_stand_side_by_side() {
+        let (mut w, _) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let key = "103c:84fd".to_string();
+        w.handle(Msg::Off("gone".into()), false, &mut no_wait());
+        w.handle(Msg::Off(key.clone()), false, &mut no_wait());
+        let results = w.snapshot().results;
+        let of = |k: &str| {
+            results
+                .iter()
+                .find(|r| r.place == Place::Row(k.into()))
+                .cloned()
+        };
+        assert!(
+            of("gone").unwrap().contains("isn't connected"),
+            "{results:?}"
+        );
+        assert_eq!(of(&key).unwrap().tone, Tone::Done, "{results:?}");
+        // Another result for the case replaces the case's alone.
+        w.handle(Msg::Off(key.clone()), true, &mut no_wait());
+        let results = w.snapshot().results;
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(results
+            .iter()
+            .any(|r| r.place == Place::Row(key.clone()) && r.contains("paused")));
+        // A scan without "gone" (never found) drops its row's result; the case's stays.
+        w.scan(&case_hid(), &mut nothing(), false, false);
+        let results = w.snapshot().results;
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].place, Place::Row(key));
+        // The case unplugged: its result goes too.
+        w.scan(&[], &mut nothing(), false, false);
+        assert!(w.snapshot().results.is_empty());
     }
 
     #[test]

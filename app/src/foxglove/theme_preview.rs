@@ -2848,8 +2848,8 @@ fn other_devices_card(
 
 /// A3b (#795 follow-up): the worker's last word next to what was clicked, not a loose line at
 /// the card's foot. A confirmation is a fading chip on the row (here the case's "Colours
-/// set"), a problem an amber bar under the row, a note a muted bar; the card-wide ones at the
-/// card's top, Add a device's on More sources, the keyboard card's own on the keyboard card.
+/// set"), a problem an amber bar under the row, a note a muted bar; the card-wide one (a
+/// catalog file that can't be saved) at the card's top, Add a device's on More sources, the keyboard card's own on the keyboard card.
 #[test]
 fn lights_results_a3b_render() {
     use crate::foxglove::pc_lights::{Place, Status, Tone};
@@ -2858,8 +2858,10 @@ fn lights_results_a3b_render() {
     let width = 980.0;
     let none: Vec<String> = Vec::new();
     let with = |place: Place, tone: Tone, text: &str| {
+        // That result alone (the sample's own chip on the case's row aside).
         let mut v = sample();
-        v.pc.status = Some(Status::new(place, tone, text));
+        v.pc.results.clear();
+        v.pc.said(Status::new(place, tone, text));
         v
     };
     let case = Place::Row("103c:84fd".into());
@@ -2879,10 +2881,12 @@ fn lights_results_a3b_render() {
          from Foxglove, so it keeps its colours",
     );
     let (note, _) = other_devices_card(Choice::Dark, &note, &none, width);
+    // The only card-wide result: your own catalog file can't be saved (a pause goes where it
+    // was clicked).
     let card = with(
         Place::Card,
         Tone::Problem,
-        "Foxglove is paused: it doesn't change the lights until you resume",
+        r"Can't save C:\Users\you\AppData\Roaming\Foxglove\lighting-catalog.local.toml: Access is denied. (os error 5)",
     );
     let (card, _) = other_devices_card(Choice::Dark, &card, &none, width);
     let sources = with(
