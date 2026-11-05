@@ -21,3 +21,9 @@ Lighting devices. `pc_lighting::discover` matches a HID enumeration against
 `LightCaps` (colour addressing, effects, brightness, screens), and `pc_lighting::unknown` lists
 the rest for a manual add (`test_zone` lights one zone and puts it back). The `hid` feature
 adds the hidapi enumeration and a writer that opens the device only while it sends.
+
+`hidpp` is a read-only HID++ 2.0 client (#505) for Logitech devices, direct or behind a
+Unifying, Bolt or Lightspeed receiver: framing, the root feature lookup, the feature set, error
+replies, and battery reads (0x1000, 0x1001, 0x1004) into the generic `battery::Battery`. It
+talks through a `hidpp::Transport`, so its tests run on a scripted fake; it opens no device
+itself and sends only "get" requests.
