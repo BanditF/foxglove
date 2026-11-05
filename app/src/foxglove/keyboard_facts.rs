@@ -6,13 +6,18 @@
 //! - `keyboard.right.battery` (Int, percent; `keyboard.<part>.battery` for any part reported)
 //! - `keyboard.link` (Text, `usb` or `ble`), `keyboard.profile` (Int, 1-based Bluetooth profile)
 //!   and `keyboard.profile_connected` (Bool)
+//! - `keyboard.lighting.on` (Bool), `keyboard.lighting.color` (Text, `#rrggbb`: the chosen hue
+//!   and saturation at full brightness), `keyboard.lighting.brightness` (Int, 0-100),
+//!   `keyboard.lighting.effect` (Text, the effect's name, or its id when unknown) and
+//!   `keyboard.lighting.rainbow` (Bool, the effect makes its own colours), from the keyboard's
+//!   report of its lights (#40: the live feed gives them to the wallpaper)
 //!
 //! The same values stay under `device.<id>.*` for anything that needs a particular device. On a
 //! disconnect everything but `keyboard.connected` goes, as it's unknown until the keyboard is
 //! back; the link is read once when it reconnects, then follows the firmware's events.
 
 use foxglove_devices::facts::{Facts, Value};
-use foxglove_devices::DeviceEvent;
+use foxglove_devices::{DeviceEvent, LightingState};
 
 /// The backend of the keyboard with Foxglove's host link (see `devices::device`).
 const HOST_KEYBOARD: &str = "zmk";
@@ -86,9 +91,42 @@ fn publish(facts: &Facts, event: &DeviceEvent) {
         }
         // The keyboard's report of its lights (every RGB_STATE read or event, #605): the
         // case's "Match keyboard" follows it (#616). Its facts are `device.<id>.lighting.*`.
-        DeviceEvent::LightingChanged { state } => super::pc_lights::keyboard_lights(state),
+        DeviceEvent::LightingChanged { state } => {
+            lighting(facts, state);
+            super::pc_lights::keyboard_lights(state);
+        }
         DeviceEvent::Key { .. } => {}
     }
+}
+
+/// The keyboard's lights as `keyboard.lighting.*`. Only what changed is sent on, so a new colour
+/// is one change.
+fn lighting(facts: &Facts, state: &LightingState) {
+    use super::effect_controls::{spec, EffectClass};
+    let [r, g, b] = foxglove_devices::calibration::hsv_to_rgb(
+        f32::from(state.hue),
+        f32::from(state.sat.min(100)) / 100.0,
+        1.0,
+    )
+    .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let effect = spec(EffectClass::Underglow, &state.effect.id);
+    facts.set("keyboard.lighting.on", Value::Bool(state.on));
+    facts.set(
+        "keyboard.lighting.color",
+        Value::Text(format!("#{r:02x}{g:02x}{b:02x}")),
+    );
+    facts.set(
+        "keyboard.lighting.brightness",
+        Value::Int(state.brightness.min(100).into()),
+    );
+    facts.set(
+        "keyboard.lighting.effect",
+        Value::Text(effect.map_or_else(|| state.effect.id.clone(), |e| e.name.to_string())),
+    );
+    facts.set(
+        "keyboard.lighting.rainbow",
+        Value::Bool(effect.is_some_and(|e| e.rainbow())),
+    );
 }
 
 #[cfg(test)]
@@ -142,5 +180,71 @@ mod tests {
         assert_eq!(facts.get("keyboard.layer"), None);
         assert_eq!(facts.get("keyboard.right.battery"), None);
         assert_eq!(facts.get("keyboard.link"), None);
+    }
+
+    fn lights(hue: u16, sat: u8, effect: &str) -> LightingState {
+        LightingState {
+            on: true,
+            hue,
+            sat,
+            brightness: 60,
+            effect: foxglove_devices::Effect {
+                id: effect.into(),
+                params: Vec::new(),
+            },
+            speed: 2,
+            settled: true,
+        }
+    }
+
+    #[test]
+    fn the_lights_become_facts_with_the_colour_at_full_brightness() {
+        let facts = Facts::default();
+        lighting(&facts, &lights(25, 100, "0"));
+        let text = |k: &str| match facts.get(k) {
+            Some(Value::Text(t)) => t,
+            other => panic!("{k}: {other:?}"),
+        };
+        assert_eq!(text("keyboard.lighting.color"), "#ff6a00");
+        assert_eq!(text("keyboard.lighting.effect"), "Solid");
+        assert_eq!(facts.get("keyboard.lighting.on"), Some(Value::Bool(true)));
+        assert_eq!(
+            facts.get("keyboard.lighting.brightness"),
+            Some(Value::Int(60))
+        );
+        assert_eq!(
+            facts.get("keyboard.lighting.rainbow"),
+            Some(Value::Bool(false))
+        );
+
+        // White, a rainbow effect, and an effect the table doesn't know.
+        lighting(&facts, &lights(200, 0, "2"));
+        assert_eq!(text("keyboard.lighting.color"), "#ffffff");
+        assert_eq!(text("keyboard.lighting.effect"), "Spectrum");
+        assert_eq!(
+            facts.get("keyboard.lighting.rainbow"),
+            Some(Value::Bool(true))
+        );
+        lighting(&facts, &lights(0, 100, "42"));
+        assert_eq!(text("keyboard.lighting.color"), "#ff0000");
+        assert_eq!(text("keyboard.lighting.effect"), "42");
+    }
+
+    #[test]
+    fn a_new_colour_is_one_change_and_a_disconnect_clears_the_lights() {
+        let facts = Facts::default();
+        lighting(&facts, &lights(25, 100, "0"));
+        let changes = facts.subscribe("keyboard.*");
+        lighting(&facts, &lights(120, 100, "0"));
+        let got: Vec<_> = changes.try_iter().map(|c| c.key).collect();
+        assert_eq!(got, ["keyboard.lighting.color"]);
+        publish(
+            &facts,
+            &DeviceEvent::Disconnected {
+                reason: "unplugged".into(),
+            },
+        );
+        assert_eq!(facts.get("keyboard.lighting.color"), None);
+        assert_eq!(facts.get("keyboard.lighting.on"), None);
     }
 }

@@ -13,7 +13,8 @@
 //!
 //! ```text
 //! {"t":"hello","v":1,"topics":["keys","state"],"board":{"name":"Eyelash Corne","keys":[[x,y,w,h,r],...]},"state":{...},"quiet":null}
-//! {"t":"state","layer":{"index":3,"name":"NAV"},"art":"Fox run","battery":{"left":80,"right":61},"link":{"connected":true,"output":"ble","profile":1}}
+//! {"t":"state","layer":{"index":3,"name":"NAV"},"art":"Fox run","battery":{"left":80,"right":61},"link":{"connected":true,"output":"ble","profile":1},
+//!  "lights":{"on":true,"color":"#ff6a00","brightness":60,"effect":"Solid","rainbow":false}}
 //! {"t":"keys","e":[[17,1,0],[17,0,9]]}      index, 1 down / 0 up, ms since the batch's first
 //! {"t":"board","board":{...}}               the geometry changed (another keyboard, layout)
 //! {"t":"quiet","why":"away"}                nothing more until "live": paused, away, fullscreen
@@ -72,6 +73,20 @@ pub struct Link {
     pub profile: Option<u8>,
 }
 
+/// The keyboard's lights as it reports them (#40: the wallpaper can take the keyboard's colour).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Lights {
+    pub on: bool,
+    /// The chosen colour, `#rrggbb`, at full brightness (the LEDs' brightness is apart).
+    pub color: String,
+    /// 0-100.
+    pub brightness: u8,
+    /// The effect's name (`Solid`, `Breathe`, …), or the keyboard's id for it when unknown.
+    pub effect: String,
+    /// The effect makes its own colours (Spectrum, Swirl), so `color` isn't what it shows.
+    pub rainbow: bool,
+}
+
 /// The slow facts, sent whole whenever one changes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct State {
@@ -80,6 +95,9 @@ pub struct State {
     pub art: Option<String>,
     pub battery: Battery,
     pub link: Link,
+    /// Left out until the keyboard reported its lights.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lights: Option<Lights>,
 }
 
 /// Why the feed is quiet.
@@ -291,6 +309,13 @@ mod tests {
                 output: Some("ble".into()),
                 profile: Some(1),
             },
+            lights: Some(Lights {
+                on: true,
+                color: "#ff6a00".into(),
+                brightness: 60,
+                effect: "Solid".into(),
+                rainbow: false,
+            }),
         }
     }
 
@@ -355,6 +380,12 @@ mod tests {
             "connected",
             "output",
             "profile",
+            "lights",
+            "on",
+            "color",
+            "brightness",
+            "effect",
+            "rainbow",
             "e",
             "why",
         ];
@@ -395,6 +426,10 @@ mod tests {
         );
         assert_eq!(hello["state"]["layer"]["name"], "NAV");
         assert_eq!(hello["quiet"], "away");
+        assert_eq!(
+            hello["state"]["lights"],
+            serde_json::json!({"on": true, "color": "#ff6a00", "brightness": 60, "effect": "Solid", "rainbow": false})
+        );
         let empty = Message::State(State::default()).json();
         assert_eq!(
             empty,

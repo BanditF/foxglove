@@ -1,5 +1,5 @@
 //! The live keyboard feed (#499, epic #498): a paired wallpaper on this PC gets key positions,
-//! the layer, the right screen's art, battery and connection, as `foxglove-live` v1
+//! the layer, the right screen's art, battery, connection and the lights' colour, as `foxglove-live` v1
 //! (`live_wire`) on a WebSocket at `127.0.0.1:<port>` (8768 by default).
 //!
 //! - **Opt-in:** off by default. While it's off nothing listens and nothing subscribes to keys.
@@ -744,7 +744,27 @@ fn read_state(facts: &Facts) -> wire::State {
             },
             profile: int("keyboard.profile"),
         },
+        lights: lights(facts),
     }
+}
+
+/// The keyboard's lights from `keyboard.lighting.*` (`keyboard_facts`), once it reported them.
+fn lights(facts: &Facts) -> Option<wire::Lights> {
+    let text = |k: &str| match facts.get(k) {
+        Some(Value::Text(t)) => Some(t),
+        _ => None,
+    };
+    let flag = |k: &str| matches!(facts.get(k), Some(Value::Bool(true)));
+    Some(wire::Lights {
+        on: flag("keyboard.lighting.on"),
+        color: text("keyboard.lighting.color")?,
+        brightness: match facts.get("keyboard.lighting.brightness") {
+            Some(Value::Int(n)) => u8::try_from(n.clamp(0, 100)).unwrap_or(0),
+            _ => 0,
+        },
+        effect: text("keyboard.lighting.effect").unwrap_or_default(),
+        rainbow: flag("keyboard.lighting.rainbow"),
+    })
 }
 
 /// The right screen's piece, by name.
@@ -825,7 +845,7 @@ fn new_token() -> Result<(), String> {
 }
 
 /// What the settings card says the feed sends.
-pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the art screen's art, battery and connection. It gets which key position was pressed and when, never the letter or keycode, and only with the pairing token. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
+pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the art screen's art, battery, connection and the keyboard's light colour. It gets which key position was pressed and when, never the letter or keycode, and only with the pairing token. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
 
 /// The settings card.
 pub fn group(ui: &mut egui::Ui) {
@@ -1034,6 +1054,29 @@ mod tests {
         let n = out.count(1);
         assert!(hub.set_state(state, &mut out).is_empty());
         assert_eq!(out.count(1), n, "the same state isn't sent again");
+    }
+
+    /// #40: the keyboard's lights reach the wallpaper once the keyboard reported them.
+    #[test]
+    fn the_state_carries_the_keyboard_lights_once_known() {
+        let facts = Facts::default();
+        assert_eq!(lights(&facts), None, "left out until reported");
+        facts.set("keyboard.lighting.on", Value::Bool(true));
+        facts.set("keyboard.lighting.color", Value::Text("#ff6a00".into()));
+        facts.set("keyboard.lighting.brightness", Value::Int(60));
+        facts.set("keyboard.lighting.effect", Value::Text("Solid".into()));
+        facts.set("keyboard.lighting.rainbow", Value::Bool(false));
+        let state = wire::State {
+            lights: lights(&facts),
+            ..wire::State::default()
+        };
+        assert!(
+            Message::State(state).json().ends_with(
+                r##""lights":{"on":true,"color":"#ff6a00","brightness":60,"effect":"Solid","rainbow":false}}"##
+            ),
+        );
+        facts.remove_prefix("keyboard.", &[]);
+        assert_eq!(lights(&facts), None, "gone with the keyboard");
     }
 
     #[test]
