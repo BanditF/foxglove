@@ -19,7 +19,7 @@
 //! - The keyboard while Windows Dynamic Lighting holds its lights (#749 b): a keyboard that is
 //!   also a LampArray ([`keyboard_lamp_key`] pairs them by VID/PID, never by model) is drawn
 //!   through Windows like any LampArray, each lamp at its own place on the keyboard's rect
-//!   ([`KeyboardLamps`]). Only on the lights owner's word (the "held" flag), never on a timer:
+//!   ([`KeyboardLamps`]), through the keyboard's colour calibration. Only on the lights owner's word (the "held" flag), never on a timer:
 //!   held, the keyboard gets [`Out::Lamps`] and nothing on the host link; freed, host-link
 //!   frames or its effect again, in full.
 //!
@@ -140,9 +140,18 @@ pub struct KeyboardLamps {
     /// left or top, 1 at the right or bottom); empty when Windows gives no positions (then one
     /// colour for all).
     pub places: Vec<[f32; 2]>,
+    /// The keyboard's calibration key (`devices::keyboard_key`): its colour calibration goes on
+    /// every lamp, as on its host-link frames. `None`: sent as drawn.
+    pub calibration: Option<String>,
 }
 
 impl KeyboardLamps {
+    /// With the keyboard's colour calibration (its calibration key) on every lamp.
+    pub fn calibrated(mut self, key: Option<String>) -> Self {
+        self.calibration = key;
+        self
+    }
+
     /// From the array's shape as Windows gives it (`pc_lights::LampLayout`: its bounding box and
     /// each lamp's position, mm); `None` before its attributes are read.
     pub fn new(key: String, shape: Option<([f32; 2], &[[f32; 2]])>) -> Self {
@@ -167,6 +176,7 @@ impl KeyboardLamps {
                 min_interval: None,
             },
             places,
+            calibration: None,
         }
     }
 }
@@ -886,6 +896,15 @@ impl Outputs {
                     c.0
                 })
                 .collect()
+        };
+        // The keyboard's calibration, as its host-link colour gets it (before the "changed?"
+        // check, so a new calibration shows on the next frame that differs).
+        let colors = match &k.calibration {
+            Some(cal) => colors
+                .into_iter()
+                .map(|c| super::calibrate::on_device(cal, None, c))
+                .collect(),
+            None => colors,
         };
         Some((k.target.key.clone(), colors))
     }
@@ -1663,6 +1682,75 @@ mod tests {
         // No LampArray paired (none listed): held means nothing for the keyboard at all.
         o.set_keyboard_lamps(None);
         assert!(lamps(&mut o, 2000).is_empty());
+    }
+
+    /// #749 b follow-up: the keyboard drawn through its LampArray takes the keyboard's colour
+    /// calibration on every lamp, as its host-link frames do; the scene still animates (one
+    /// write per changed frame, at the LampArray's pace).
+    #[test]
+    fn a_held_keyboard_lamparray_goes_through_the_keyboards_calibration() {
+        use foxglove_devices::calibration::{self, Calibration, DeviceCalibration};
+        let cal_key = "1d50:615e:SCENE749D";
+        let cal = DeviceCalibration {
+            device: Calibration {
+                gain: [0.5, 1.0, 0.75],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        calibration::global().set_device(cal_key, Some(cal.clone()));
+        let breathe = Effect::Breathe {
+            from: ORANGE,
+            to: Rgb([0x20, 0x40, 0xf0]),
+            period_ms: 1000,
+        };
+        let writes = |calibrated: bool| -> Vec<Vec<[u8; 3]>> {
+            let (room, cases) = desk();
+            let mut o = Outputs::new(breathe.clone(), room, cases);
+            let lamps = corne_lamps();
+            o.set_keyboard_lamps(Some(if calibrated {
+                lamps.calibrated(Some(cal_key.into()))
+            } else {
+                lamps
+            }));
+            o.keyboard_held().store(true, Ordering::Relaxed);
+            (0..1000)
+                .step_by(10)
+                .flat_map(|ms| o.frame(SceneTime(ms)))
+                .filter_map(|out| match out {
+                    Out::Lamps { colors, .. } => Some(colors),
+                    _ => None,
+                })
+                .collect()
+        };
+        let (raw, sent) = (writes(false), writes(true));
+        assert!(
+            raw.len() > 5,
+            "Breathe animates through Windows: {}",
+            raw.len()
+        );
+        let through = |c: [u8; 3]| {
+            let o = cal.zone(None).apply_rgb(foxglove_devices::Rgb {
+                r: c[0],
+                g: c[1],
+                b: c[2],
+            });
+            [o.r, o.g, o.b]
+        };
+        let expected: Vec<Vec<[u8; 3]>> = raw
+            .iter()
+            .map(|f| f.iter().map(|&c| through(c)).collect())
+            .collect();
+        // Calibration can make two frames equal that weren't; every calibrated write is one
+        // of the expected ones, in order.
+        let mut it = expected.iter();
+        assert!(
+            sent.iter().all(|s| it.any(|e| e == s)),
+            "calibrated writes: {sent:?}"
+        );
+        assert!(sent.len() > 5);
+        assert_ne!(sent[0], raw[0], "the calibration changes the colours");
+        calibration::global().set_device(cal_key, None);
     }
 
     /// A key ripple (#489) over a still scene: the keyboard changes while the ring passes, then

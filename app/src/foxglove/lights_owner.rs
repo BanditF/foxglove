@@ -370,8 +370,11 @@ pub struct Line {
 }
 
 pub const TIP: &str = "Who drives the keyboard's lights, as the keyboard says. Windows Dynamic \
-                       Lighting comes first: a running scene stops sending while Windows has \
-                       them, and comes back when Windows lets go.";
+                       Lighting comes first. While it holds them, Foxglove draws through it if \
+                       Windows lists the keyboard as a Dynamic Lighting device (only while \
+                       Foxglove's window is in front, unless Foxglove has package identity); \
+                       otherwise a running scene stops sending and comes back when Windows \
+                       lets go.";
 
 /// What the pages say while a LampArray (Windows Dynamic Lighting) has the keyboard's lights
 /// (#749).
@@ -816,6 +819,14 @@ mod tests {
         assert_eq!(
             line_through(&Who::Keyboard, None, corne, Some(false)),
             line(&Who::Keyboard, None, corne)
+        );
+        // The tooltip says the same: Foxglove draws through Windows, front-only without
+        // package identity; a scene waits only when the keyboard isn't a LampArray.
+        assert!(TIP.contains("Foxglove draws through it"), "{TIP}");
+        assert!(TIP.contains("window is in front"), "{TIP}");
+        assert!(
+            TIP.contains("otherwise a running scene stops sending"),
+            "{TIP}"
         );
     }
 

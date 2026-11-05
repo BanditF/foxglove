@@ -196,6 +196,7 @@ pub fn show(ui: &mut egui::Ui) {
                 super::pc_lights::send(super::pc_lights::Msg::KeyboardLamp {
                     key: key.clone(),
                     look,
+                    calibration: super::devices::keyboard_key(),
                 });
             }
         }

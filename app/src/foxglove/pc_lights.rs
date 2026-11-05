@@ -192,10 +192,13 @@ pub enum Msg {
     /// The Keyboard card's pick while Windows Dynamic Lighting holds the keyboard's lights
     /// (#749 b), drawn through the keyboard's own LampArray (`key`, from
     /// `scene_output::keyboard_lamp_key`) like any Dynamic Lighting device; `None` is lights
-    /// off. Not saved: the keyboard keeps its own look over its link.
+    /// off. Not saved: the keyboard keeps its own look over its link. `calibration` is the
+    /// keyboard's calibration key (`devices::keyboard_key`): its colour calibration goes on the
+    /// colour, as on the keyboard's own link.
     KeyboardLamp {
         key: String,
         look: Option<KeyboardLights>,
+        calibration: Option<String>,
     },
     /// Windows let go of the keyboard's lights (its owner report): the keyboard's LampArray
     /// is let go too, and the link draws it again.
@@ -490,8 +493,26 @@ struct KeyboardLamp {
     key: String,
     name: String,
     handle: Box<dyn pcl::LampHandle>,
-    /// What Foxglove last set on it, put back when Windows lets Foxglove drive it again.
+    /// What Foxglove last set on it (the pick, before calibration), put back when Windows lets
+    /// Foxglove drive it again.
     shown: Option<Rgb>,
+    /// The keyboard's calibration key; `None` sends the pick as it is.
+    calibration: Option<String>,
+}
+
+impl KeyboardLamp {
+    /// A pick as the lamps are sent it: through the keyboard's colour calibration (as its
+    /// host-link colour is), off left dark.
+    fn sent(&self, pick: Rgb) -> Rgb {
+        match &self.calibration {
+            Some(cal) if pick != pcl::BLACK => rgb(super::calibrate::on_device(
+                cal,
+                None,
+                [pick.r, pick.g, pick.b],
+            )),
+            _ => pick,
+        }
+    }
 }
 
 impl Worker {
@@ -897,7 +918,11 @@ impl Worker {
             }
             Msg::SceneFrame { key, colors } => self.scene_frame(&key, &colors),
             Msg::LampChanged(key) => self.lamp_changed(&key),
-            Msg::KeyboardLamp { key, look } => self.keyboard_lamp_look(&key, look),
+            Msg::KeyboardLamp {
+                key,
+                look,
+                calibration,
+            } => self.keyboard_lamp_look(&key, look, calibration),
             Msg::KeyboardLampRelease => {
                 if let Some(k) = self.keyboard_lamp.take() {
                     eprintln!(
@@ -1218,8 +1243,14 @@ impl Worker {
     /// (#749 b): through the keyboard's own LampArray, opened on the first pick like any
     /// Dynamic Lighting device. An effect that shows the colour shows it steady (as "Match
     /// keyboard" copies it); a rainbow the keyboard makes itself has no colour to show, so the
-    /// lamps keep theirs and the status says why.
-    fn keyboard_lamp_look(&mut self, key: &str, look: Option<KeyboardLights>) {
+    /// lamps keep theirs and the status says why. The colour goes through the keyboard's
+    /// calibration (`calibration`, its key).
+    fn keyboard_lamp_look(
+        &mut self,
+        key: &str,
+        look: Option<KeyboardLights>,
+        calibration: Option<String>,
+    ) {
         if self.keyboard_lamp.as_ref().is_none_or(|k| k.key != key) {
             // Another keyboard's first: its devices are let go before these are claimed.
             self.keyboard_lamp = None;
@@ -1255,7 +1286,11 @@ impl Worker {
                 name: a.name,
                 handle,
                 shown: None,
+                calibration: None,
             });
+        }
+        if let Some(k) = self.keyboard_lamp.as_mut() {
+            k.calibration = calibration;
         }
         let colour = match look {
             None => pcl::BLACK,
@@ -1275,7 +1310,8 @@ impl Worker {
         let Some(k) = self.keyboard_lamp.as_mut() else {
             return;
         };
-        let result = k.handle.set_all(colour);
+        let sent = k.sent(colour);
+        let result = k.handle.set_all(sent);
         let available = k.handle.access().available;
         if result.is_ok() {
             k.shown = Some(colour);
@@ -1309,7 +1345,8 @@ impl Worker {
         if !(access.available && access.enabled) {
             return;
         }
-        if let Err(e) = k.handle.set_all(colour) {
+        let sent = k.sent(colour);
+        if let Err(e) = k.handle.set_all(sent) {
             eprintln!(
                 "Foxglove: {}: colour back through Dynamic Lighting: {e}",
                 k.name
@@ -2530,7 +2567,7 @@ mod tests {
             .map(|k| (k.key.as_str(), k.name.as_str(), k.bluetooth))
             .collect();
         assert_eq!(k, vec![("1d50:615e", "Eyelash Corne", false)]);
-        let rows = crate::foxglove::lamp_health::keyboard_rows(&s.keyboard_lamp_arrays);
+        let rows = crate::foxglove::lamp_health::keyboard_rows(&s.keyboard_lamp_arrays, false);
         assert_eq!(rows[0].item, "Eyelash Corne (keyboard) · Found");
     }
 
@@ -2587,6 +2624,7 @@ mod tests {
                 Msg::KeyboardLamp {
                     key: KB.into(),
                     look,
+                    calibration: None,
                 },
                 false,
                 &mut no_wait(),
@@ -2657,6 +2695,7 @@ mod tests {
             Msg::KeyboardLamp {
                 key: KB.into(),
                 look: None,
+                calibration: None,
             },
             true,
             &mut no_wait(),
@@ -2678,6 +2717,63 @@ mod tests {
             w.status.as_deref(),
             Some("The keyboard isn't listed under Dynamic Lighting now")
         );
+    }
+
+    /// #749 b follow-up: the Keyboard card's pick through the keyboard's LampArray goes through
+    /// the keyboard's colour calibration (its key), as its host-link colour does, also when
+    /// Windows gives the lamps back; off stays dark.
+    #[test]
+    fn a_held_keyboards_pick_goes_through_its_calibration() {
+        use foxglove_devices::calibration::{self, Calibration, DeviceCalibration};
+        let cal_key = "1d50:615e:CAL749D";
+        let warm = DeviceCalibration {
+            device: Calibration {
+                gain: [1.0, 0.5, 0.25],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        calibration::global().set_device(cal_key, Some(warm.clone()));
+        let calls = LampCalls::default();
+        let access = Arc::new(Mutex::new(pcl::LampAccess::default()));
+        let opener: LampOpener = {
+            let (calls, access) = (calls.clone(), access.clone());
+            Box::new(move |f: &Found| {
+                Some(Box::new(FakeLamps {
+                    key: f.key.clone(),
+                    count: f.zones.len(),
+                    calls: calls.clone(),
+                    access: access.clone(),
+                }) as Box<dyn pcl::LampHandle>)
+            })
+        };
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(opener);
+        w.scan(&hid_with_corne(), &mut nothing(), false, true);
+        const KB: &str = "1d50:615e";
+        let look = |w: &mut Worker, look: Option<KeyboardLights>| {
+            w.handle(
+                Msg::KeyboardLamp {
+                    key: KB.into(),
+                    look,
+                    calibration: Some(cal_key.into()),
+                },
+                false,
+                &mut no_wait(),
+            );
+        };
+        let drained = || calls.lock().unwrap().drain(..).collect::<Vec<_>>();
+        let yellow = warm.zone(None).apply_rgb(rgb([255, 255, 0]));
+        let yellow = [yellow.r, yellow.g, yellow.b];
+        assert_ne!(yellow, [255, 255, 0], "the calibration changes it");
+        look(&mut w, Some(solid(60)));
+        assert_eq!(drained(), vec![(KB.to_string(), None, yellow)]);
+        // Windows gives the lamps back: the same pick, calibrated as now.
+        w.handle(Msg::LampChanged(KB.into()), false, &mut no_wait());
+        assert_eq!(drained(), vec![(KB.to_string(), None, yellow)]);
+        look(&mut w, None);
+        assert_eq!(drained(), vec![(KB.to_string(), None, [0, 0, 0])]);
+        calibration::global().set_device(cal_key, None);
     }
 
     /// #691: "Match keyboard" on a Dynamic Lighting device follows the keyboard's report (so
