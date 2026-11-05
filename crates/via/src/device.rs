@@ -27,8 +27,11 @@ use crate::vial;
 /// Where a device's definition came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// A definition file loaded for it.
+    /// A VIA definition file loaded for it.
     Loaded,
+    /// A QMK keyboard.json / info.json loaded for it: the physical layout is the named
+    /// `LAYOUT_*`, the layers the board's own keymap read.
+    QmkLayout { layout: String },
     /// The keyboard's own, read from its Vial firmware.
     Vial { protocol: u32 },
     /// None: not a Vial board (`why` is `None`), or a Vial board whose definition couldn't be
@@ -80,7 +83,15 @@ impl<T: Transport> ViaDevice<T> {
         let probe = Client(&link).probe(|v| catalog.scheme(vid, pid, v))?;
         info.firmware = Some(format!("VIA protocol {}", probe.protocol_version));
         let (def, source) = match def {
-            Some(d) => (Some(d), Source::Loaded),
+            Some(d) => {
+                let source = match &d.qmk_layout {
+                    Some(layout) => Source::QmkLayout {
+                        layout: layout.clone(),
+                    },
+                    None => Source::Loaded,
+                };
+                (Some(d), source)
+            }
             None => board_definition(&link, &info)?,
         };
         if let Source::Vial { protocol } = source {
@@ -574,6 +585,36 @@ mod tests {
             .unwrap()
             .iter()
             .any(|r| r[0] == protocol::VIAL_PREFIX));
+    }
+
+    /// A board with no VIA definition anywhere (#74, the K5 Pro case): a loaded QMK
+    /// keyboard.json gives the matrix and layout, the board's own keymap read the layers. Only
+    /// reads go out, and no Vial ones.
+    #[test]
+    fn a_qmk_layout_gives_a_keymap_with_the_boards_own_layers() {
+        let def = crate::qmk::board(&["white", "ansi"]);
+        let fake = leak(FakeQmk {
+            protocol_version: 11,
+            layers: 4,
+            matrix: (2, 4),
+            ..FakeQmk::default()
+        });
+        let dev = open_with(fake, Some(def.clone()), false);
+        assert_eq!(
+            dev.source,
+            Source::QmkLayout {
+                layout: "LAYOUT_7_ansi".into()
+            }
+        );
+        assert!(dev.caps().contains(Caps::KEYMAP));
+        assert!(!dev.caps().contains(Caps::KEYMAP_WRITE));
+        assert_eq!(Keymap::layout(&dev).unwrap(), def.layout);
+        assert_eq!(dev.read_keymap().unwrap().len(), 4 * 2 * 4);
+        assert_eq!(dev.summary().layers, Some(4));
+        foxglove_devices::contract::check_device(&dev).unwrap();
+        let sent = fake.sent.lock().unwrap();
+        assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
+        assert!(!sent.iter().any(|r| r[0] == protocol::VIAL_PREFIX));
     }
 
     #[test]

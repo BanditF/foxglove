@@ -59,7 +59,11 @@ fn draw(ui: &mut egui::Ui, found: &[Found]) {
                     changed = true;
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Add VIA definition (JSON)…").clicked() {
+                    if ui
+                        .button("Add VIA definition (JSON)…")
+                        .on_hover_text("A VIA definition, or a QMK keyboard.json / info.json for a keyboard that has none.")
+                        .clicked()
+                    {
                         state.dialog.pick_file();
                     }
                     if ui.button("Refresh").clicked() {
