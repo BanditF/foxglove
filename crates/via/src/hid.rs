@@ -3,15 +3,18 @@
 //!
 //! The backend opens devices read-only unless built with [`ViaBackend::allow_writes`].
 
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use foxglove_devices::{Backend, BackendId, Device, DeviceError, DeviceInfo, EventSink, Result};
+use foxglove_devices::{
+    Backend, BackendId, Device, DeviceError, DeviceId, DeviceInfo, EventSink, Result,
+};
 use hidapi::{HidApi, HidDevice};
 
 use crate::catalog::Catalog;
 use crate::definition::Definition;
-use crate::device::ViaDevice;
+use crate::device::{Summary, ViaDevice};
 use crate::discovery::{Interface, Rules};
 pub use crate::discovery::{USAGE, USAGE_PAGE};
 use crate::protocol::{Guarded, Report, Transport, REPORT};
@@ -92,6 +95,30 @@ pub struct ViaBackend {
     catalog: Catalog,
     generic: bool,
     writes: bool,
+    opened: Opened,
+}
+
+/// What each board this backend opened turned out to be ([`Summary`]), by device id. A shared
+/// handle: take it with [`ViaBackend::opened`] before the backend goes into a registry.
+#[derive(Clone, Debug, Default)]
+pub struct Opened(Arc<Mutex<HashMap<DeviceId, Summary>>>);
+
+impl Opened {
+    /// The board's summary from when it was last opened.
+    pub fn get(&self, id: &DeviceId) -> Option<Summary> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
+    }
+
+    fn record(&self, id: &DeviceId, summary: Summary) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone(), summary);
+    }
 }
 
 impl ViaBackend {
@@ -101,7 +128,13 @@ impl ViaBackend {
             catalog: Catalog::bundled(),
             generic: false,
             writes: false,
+            opened: Opened::default(),
         }
+    }
+
+    /// What the boards it opens turn out to be, shared (see [`Opened`]).
+    pub fn opened(&self) -> Opened {
+        self.opened.clone()
     }
 
     /// Uses another catalog than the bundled one.
@@ -186,11 +219,8 @@ impl Backend for ViaBackend {
         } else {
             Guarded::read_only(transport)
         };
-        Ok(Box::new(ViaDevice::open(
-            info.clone(),
-            def,
-            link,
-            &self.catalog,
-        )?))
+        let dev = ViaDevice::open(info.clone(), def, link, &self.catalog)?;
+        self.opened.record(&info.id, dev.summary());
+        Ok(Box::new(dev))
     }
 }

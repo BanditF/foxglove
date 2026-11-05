@@ -2354,3 +2354,42 @@ fn health_card_renders() {
     assert!(count(&with, DARK.warn) > 20, "a Warning label");
     assert_eq!(count(&without, DARK.danger), 0);
 }
+
+/// The settings' "Other keyboards (VIA)" group (#74): off (the default), and on with generic
+/// discovery and one board per definition source.
+#[test]
+fn via_settings_render() {
+    use crate::foxglove::theme::DARK;
+    use crate::foxglove::via_host::{tests::sample_found, ViaSettings};
+    let group = |s: ViaSettings, found: Vec<crate::foxglove::via_host::Found>| {
+        render_ui(
+            &preview_ctx(),
+            egui::vec2(760.0, 520.0),
+            DARK.ground,
+            move |ui| {
+                egui::Frame::new()
+                    .fill(DARK.ground)
+                    .inner_margin(egui::Margin::same(16))
+                    .show(ui, |ui| {
+                        crate::foxglove::via_ui::preview(ui, s.clone(), &found);
+                    });
+            },
+        )
+    };
+    let off = group(ViaSettings::default(), vec![]);
+    let on = group(
+        ViaSettings {
+            enabled: true,
+            generic: true,
+            ..Default::default()
+        },
+        sample_found(),
+    );
+    keep("ui-74-via-off.png", &off);
+    keep("ui-74-via-on.png", &on);
+    let lit = |img: &image::RgbaImage| {
+        let g = [DARK.ground.r(), DARK.ground.g(), DARK.ground.b()];
+        img.pixels().filter(|p| p.0[..3] != g).count()
+    };
+    assert!(lit(&on) > lit(&off), "the boards add lines");
+}
