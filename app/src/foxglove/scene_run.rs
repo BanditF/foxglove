@@ -461,10 +461,17 @@ fn gather() -> (foxglove_scene::RoomMap, Vec<CaseTarget>, Vec<LampTarget>) {
     let rows = super::pc_lights::snapshot().devices;
     let cases = rows
         .iter()
-        .filter(|r| matches!(r.control, Control::Driver(_) | Control::OpenRgb))
-        .map(|r| CaseTarget {
-            key: r.key.clone(),
-            zone_ids: r.zone_ids.clone(),
+        .filter_map(|r| {
+            let interval = match r.control {
+                Control::Driver(p) => super::scene_output::case_interval(p.id(), &r.key),
+                Control::OpenRgb => super::scene_output::case_interval("openrgb", &r.key),
+                _ => return None,
+            };
+            Some(CaseTarget {
+                key: r.key.clone(),
+                zone_ids: r.zone_ids.clone(),
+                interval,
+            })
         })
         .collect();
     let lamps = rows.iter().filter_map(lamp_target).collect();

@@ -97,6 +97,29 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         stream: u16,
     },
+    /// What each light can take (#486): a bounded burst of writes, one in flight, to the
+    /// keyboard's frames (SET_FRAME, on the bus the link uses), every catalog board with a driver
+    /// and every LampArray Windows lets the lab drive; per light the sustained accepted rate,
+    /// write latency p50/p95, errors and CPU, and the interval scenes should use. The user's
+    /// lights go back after each burst. Never beside the app. Exit 0 pass, 1 fail, 2 blocked.
+    Rates {
+        /// One JSON object (rows and the rates file's entries) instead of lines.
+        #[arg(long)]
+        json: bool,
+        /// Seconds per light at most (never over 120).
+        #[arg(long, default_value_t = 10)]
+        seconds: u64,
+        /// Writes per light at most.
+        #[arg(long, default_value_t = 400)]
+        writes: u32,
+        /// Which lights: keyboard, case, lamps (comma-separated); all by default.
+        #[arg(long, value_delimiter = ',', value_parser = ["keyboard", "case", "lamps"])]
+        only: Vec<String>,
+        /// The rates file to put the measured entries into (crates/devices/light-rates.toml);
+        /// it is created from the bundled one when missing.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// How each half shows up on USB (no keyboard link needed).
     Usb,
     /// Whether Foxglove would be away on this PC now (#410, #683): the session locked or the
@@ -762,6 +785,114 @@ fn main() -> Result<std::process::ExitCode> {
             }
         }
         return Ok(std::process::ExitCode::from(cases.code()));
+    }
+    if let Command::Rates {
+        json,
+        seconds,
+        writes,
+        only,
+        out,
+    } = &cli.command
+    {
+        use foxglove_lab::rates::{self, Budget, KeyboardFrames, Light, Report};
+        let budget = Budget::bounded(*writes, Duration::from_secs(*seconds));
+        let wants = |what: &str| only.is_empty() || only.iter().any(|o| o == what);
+        let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let cpu = platform::cpu_time;
+        let mut report = Report::default();
+        // Never beside the app: its own scene or Lights page writes would share the lights.
+        match platform::guard(false) {
+            Err(_) => report
+                .blocked
+                .push("the app holds the lights: quit it (tray, Quit), then run again".into()),
+            Ok(_guard) => {
+                let _lab = platform::lab_lock(Duration::from_secs(120))?;
+                if wants("keyboard") {
+                    match connect(cli.product.clone()).and_then(|l| {
+                        let c = l.wait_connected(Duration::from_secs(10))?;
+                        Ok((l, c))
+                    }) {
+                        Err(e) => report.blocked.push(format!("keyboard not measured: {e:#}")),
+                        Ok((link, c)) => {
+                            let caps = c.hello.map_or(0, |h| h.capabilities);
+                            let bus = match c.bus {
+                                foxglove_link::link::Bus::Usb => Some("usb"),
+                                foxglove_link::link::Bus::Bluetooth => Some("ble"),
+                                foxglove_link::link::Bus::Unknown => None,
+                            };
+                            let build = (caps & capabilities::BUILD_INFO != 0)
+                                .then(|| settings::build_info(&link, 0).ok())
+                                .flatten()
+                                .map(|b| foxglove_lab::behaviors::build_key(&b));
+                            match KeyboardFrames::new(&link, caps) {
+                                None => report.blocked.push(
+                                    "keyboard not measured: no SET_FRAME (HELLO bit 14)".into(),
+                                ),
+                                Some(mut w) => {
+                                    let light = Light {
+                                        name: format!(
+                                            "Keyboard frames ({})",
+                                            bus.unwrap_or("bus unknown").to_uppercase()
+                                        ),
+                                        class: foxglove_devices::pc_lighting::rates::KEYBOARD
+                                            .into(),
+                                        device: None,
+                                        transport: bus.map(String::from),
+                                        build,
+                                    };
+                                    report.measure(&light, &mut w, budget, &at, &cpu);
+                                }
+                            }
+                        }
+                    }
+                }
+                if wants("case") {
+                    match rates::case_boards() {
+                        Err(e) => report.blocked.push(format!("case boards not listed: {e}")),
+                        Ok(boards) if boards.is_empty() => report
+                            .blocked
+                            .push("no catalog board with a driver on this PC".into()),
+                        Ok(boards) => {
+                            for (light, mut w) in boards {
+                                report.measure(&light, &mut w, budget, &at, &cpu);
+                            }
+                        }
+                    }
+                }
+                if wants("lamps") {
+                    let (lamps, why) = rates::lamp_arrays();
+                    report.blocked.extend(why);
+                    for (light, mut w) in lamps {
+                        report.measure(&light, &mut w, budget, &at, &cpu);
+                    }
+                }
+            }
+        }
+        if let Some(path) = out {
+            if !report.rates.is_empty() {
+                let text = std::fs::read_to_string(path)
+                    .unwrap_or_else(|_| foxglove_devices::pc_lighting::rates::BUNDLED.into());
+                let mut file = foxglove_devices::pc_lighting::rates::Rates::parse(&text)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+                report.apply(&mut file);
+                let header = foxglove_devices::pc_lighting::rates::header(&text);
+                std::fs::write(path, file.to_toml(&header).map_err(anyhow::Error::msg)?)?;
+                eprintln!(
+                    "{} measured entr{} written to {}",
+                    report.rates.len(),
+                    if report.rates.len() == 1 { "y" } else { "ies" },
+                    path.display()
+                );
+            }
+        }
+        if *json {
+            println!("{}", report.json());
+        } else {
+            for line in report.lines() {
+                println!("{line}");
+            }
+        }
+        return Ok(std::process::ExitCode::from(report.code()));
     }
     let suite_name = if let Command::Run { suite, .. } = &cli.command {
         suite.clone()

@@ -45,6 +45,17 @@ app, back to master and released, a bad request refused, and the knob's health r
 v2). Turns and clicks need a person: one `HUMAN` line, never faked. Exit 0 pass, 1 fail, 2 blocked
 (no HELLO bit 31, no keyboard, the app running). Cases: docs/test-lab/knob-cases.md.
 
+`rates [--seconds N] [--writes N] [--only keyboard,case,lamps] [--out FILE] [--json]` (#486)
+measures what each light can take, for scenes: a bounded burst (default 400 writes or 10 s per
+light, never over 120 s; five failures in a row end it), one write in flight, to the keyboard's
+frames (SET_FRAME, on the bus the link uses: run it on USB and on BLE), every catalog board with a
+driver (the app's own driver and the user's saved colours put back after) and every LampArray
+Windows lets the lab drive (others are BLOCK lines). Per light: the sustained accepted rate,
+write latency p50/p95, errors, the lab's CPU time and the interval scenes should use (the slower
+of p95 and the rate's period, x1.5, never under 34 ms). `--out crates/devices/light-rates.toml`
+puts the measured entries into the rates file scenes read, so the new rates are a data change.
+Never beside the app. Exit 0 pass, 1 fail, 2 blocked.
+
 `--product FILTER`, `--allow-app`, `--keymap PATH` and `--studio-port COMn` apply to all commands.
 `--only CASE` selects names containing CASE; an empty match is an error.
 `--list` validates the whole suite, prints selected cases, and opens no devices.

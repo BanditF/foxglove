@@ -12,7 +12,7 @@
 //! again only after the Lights worker's devices changed), writes only what changed, keeps only
 //! the newest frame per device and, at the scene's end or on pause and away, lets go of every
 //! device (Windows' own lighting comes back). Frames are paced by `scene_output` (at most
-//! [`super::scene_output::LAMP_INTERVAL`]).
+//! [`super::scene_output::lamp_interval`]'s rate, from the rates file, #486).
 //!
 //! The keyboard's own LampArray is one of them while Windows Dynamic Lighting holds the
 //! keyboard's lights (#749 b): the scene output sends it frames under its key like any other,

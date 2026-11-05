@@ -9,6 +9,7 @@ pub mod knob;
 pub mod lights;
 pub mod pc_hold;
 pub mod platform;
+pub mod rates;
 pub mod report;
 pub mod resilience;
 pub mod rgb_latency;
