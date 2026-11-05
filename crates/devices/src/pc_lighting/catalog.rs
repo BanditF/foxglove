@@ -104,6 +104,26 @@ pub struct Conflict {
     pub hint: Option<String>,
 }
 
+/// A starting white balance for the match calibrator (#473): the gains a device's first match
+/// starts from, instead of neutral, so the white step starts close. Only a starting point: it
+/// changes nothing a device shows until the user confirms a match. Named once in the catalog
+/// (`[[calibration_hint]]`) and used by a device class (`kinds`) or a model
+/// (`calibration_hint = "<id>"` on its entry).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalibrationHint {
+    /// What entries name it by.
+    pub id: String,
+    /// Each channel's gain in linear light, as [`Calibration::gain`] (1 = unchanged).
+    pub gain: [f32; 3],
+    /// The device classes that start from it unless their entry names another.
+    #[serde(default)]
+    pub kinds: Vec<DeviceKind>,
+}
+
+/// An entry's `calibration_hint` that opts out of its class's hint.
+pub const NO_HINT: &str = "none";
+
 /// One zone: the board's own zone number and what it lights.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +168,10 @@ pub struct CatalogDevice {
     /// The model's default colour calibration, until the user calibrates their own unit.
     #[serde(default)]
     pub calibration: Option<Calibration>,
+    /// The model's starting gains for its first match (a [`CalibrationHint`] id), over its
+    /// class's; `"none"` for neither. Unset: its class's, if any.
+    #[serde(default)]
+    pub calibration_hint: Option<String>,
     /// The device's front face in millimetres (width, height), for scenes' room map (#483).
     #[serde(default)]
     pub size: Option<[u16; 2]>,
@@ -187,6 +211,7 @@ impl CatalogDevice {
             brightness: false,
             screen: Vec::new(),
             calibration: None,
+            calibration_hint: None,
             size: None,
             local: true,
         }
@@ -249,6 +274,9 @@ impl CatalogDevice {
         if self.kind != DeviceKind::Other {
             out.push_str(&format!("kind = \"{}\"\n", self.kind.id()));
         }
+        if let Some(hint) = &self.calibration_hint {
+            out.push_str(&format!("calibration_hint = {}\n", quote(hint)));
+        }
         if let Some([w, h]) = self.size {
             out.push_str(&format!("size = [{w}, {h}]\n"));
         }
@@ -292,6 +320,9 @@ impl CatalogDevice {
 pub struct Catalog {
     #[serde(default, rename = "device")]
     pub devices: Vec<CatalogDevice>,
+    /// Starting white balances for the match calibrator, by id.
+    #[serde(default, rename = "calibration_hint")]
+    pub hints: Vec<CalibrationHint>,
 }
 
 /// The catalog that ships with Foxglove.
@@ -301,6 +332,21 @@ impl Catalog {
     /// Reads a catalog and checks that every zone id is one its protocol can address.
     pub fn parse(text: &str) -> Result<Self, String> {
         let catalog: Catalog = toml::from_str(text).map_err(|e| e.to_string())?;
+        for (i, h) in catalog.hints.iter().enumerate() {
+            if h.id.trim().is_empty() || h.id == NO_HINT {
+                return Err(format!("calibration hint {:?} needs another id", h.id));
+            }
+            if catalog.hints[..i].iter().any(|o| o.id == h.id) {
+                return Err(format!("calibration hint {} is listed twice", h.id));
+            }
+            if !h
+                .gain
+                .iter()
+                .all(|g| g.is_finite() && (0.0..=2.0).contains(g))
+            {
+                return Err(format!("calibration hint {}: gains go from 0 to 2", h.id));
+            }
+        }
         for d in &catalog.devices {
             for z in &d.zones {
                 let ok = match d.protocol {
@@ -327,9 +373,23 @@ impl Catalog {
         self.devices.iter().find(|d| (d.vid, d.pid) == (vid, pid))
     }
 
+    /// The gains a device's first match starts from: its entry's hint, else its class's, else
+    /// none (neutral). A name no hint has is none too: a local entry can name one the
+    /// bundled catalog dropped.
+    pub fn hint(&self, device: &CatalogDevice) -> Option<&CalibrationHint> {
+        match device.calibration_hint.as_deref() {
+            Some(id) => self.hints.iter().find(|h| h.id == id),
+            None => self.hints.iter().find(|h| h.kinds.contains(&device.kind)),
+        }
+    }
+
     /// The user's own entries over this catalog: a local entry replaces a bundled one for the
-    /// same VID/PID.
+    /// same VID/PID, and a local hint a bundled one with the same id.
     pub fn with_local(mut self, local: &Catalog) -> Self {
+        for h in &local.hints {
+            self.hints.retain(|b| b.id != h.id);
+            self.hints.push(h.clone());
+        }
         for d in &local.devices {
             let mut d = d.clone();
             d.local = true;
@@ -352,6 +412,19 @@ impl Catalog {
             "# Your own lighting devices, added in Foxglove (Lights > PC & peripherals > Add a device).\n\
              # Same format as crates/devices/lighting-catalog.toml: share an entry, or contribute it there.\n",
         );
+        for h in &self.hints {
+            let kinds: Vec<String> = h.kinds.iter().map(|k| quote(k.id())).collect();
+            out.push_str(&format!(
+                "\n[[calibration_hint]]\nid = {}\ngain = [{:?}, {:?}, {:?}]\n",
+                quote(&h.id),
+                h.gain[0],
+                h.gain[1],
+                h.gain[2]
+            ));
+            if !kinds.is_empty() {
+                out.push_str(&format!("kinds = [{}]\n", kinds.join(", ")));
+            }
+        }
         for d in &self.devices {
             out.push('\n');
             out.push_str(&d.to_toml());
@@ -416,6 +489,125 @@ mod tests {
         let tool = &case.conflicts[0];
         assert!(!tool.processes.is_empty() && tool.hint.is_some());
         assert_eq!(c.find(0x03f0, 0x7397).unwrap().kind, DeviceKind::Cooler);
+        // No bundled model starts from a hint: their first matches start neutral, as before.
+        assert!(c.devices.iter().all(|d| c.hint(d).is_none()));
+    }
+
+    #[test]
+    fn the_bundled_hints_are_fastleds_presets() {
+        let c = Catalog::bundled();
+        let gain = |id: &str| c.hints.iter().find(|h| h.id == id).unwrap().gain;
+        let byte = |g: [f32; 3]| g.map(|v| (v * 255.0).round() as u8);
+        assert_eq!(byte(gain("typical-smd5050")), [0xff, 0xb0, 0xf0]);
+        assert_eq!(byte(gain("typical-8mm-pixel")), [0xff, 0xe0, 0x8c]);
+        // A strip with no hint of its own starts from the strip class's.
+        let strip = CatalogDevice {
+            kind: DeviceKind::Strip,
+            ..CatalogDevice::new("Strip".into(), 1, 2, Protocol::None, vec![])
+        };
+        assert_eq!(c.hint(&strip).unwrap().id, "typical-smd5050");
+    }
+
+    #[test]
+    fn hints_come_from_the_model_then_its_class() {
+        let text = r#"
+            [[device]]
+            name = "Strip"
+            vid = 1
+            pid = 2
+            protocol = "none"
+            kind = "strip"
+
+            [[device]]
+            name = "Pixel strip"
+            vid = 1
+            pid = 3
+            protocol = "none"
+            kind = "strip"
+            calibration_hint = "pixel"
+
+            [[device]]
+            name = "Plain strip"
+            vid = 1
+            pid = 4
+            protocol = "none"
+            kind = "strip"
+            calibration_hint = "none"
+
+            [[device]]
+            name = "Case"
+            vid = 1
+            pid = 5
+            protocol = "none"
+            kind = "case"
+
+            [[calibration_hint]]
+            id = "strip"
+            gain = [1.0, 0.7, 0.9]
+            kinds = ["strip"]
+
+            [[calibration_hint]]
+            id = "pixel"
+            gain = [1.0, 0.9, 0.5]
+        "#;
+        let c = Catalog::parse(text).unwrap();
+        let hint = |pid: u16| c.hint(c.find(1, pid).unwrap()).map(|h| h.gain);
+        assert_eq!(hint(2), Some([1.0, 0.7, 0.9]), "its class's");
+        assert_eq!(hint(3), Some([1.0, 0.9, 0.5]), "its own, over its class's");
+        assert_eq!(hint(4), None, "opted out");
+        assert_eq!(hint(5), None, "no hint: neutral, as before");
+        // Discovery carries the gains to the found device.
+        let entry = |pid: u16| super::super::HidEntry {
+            vid: 1,
+            pid,
+            ..Default::default()
+        };
+        let found = super::super::discover(&c, &[entry(3), entry(5)]);
+        assert_eq!(found[0].calibration_hint, Some([1.0, 0.9, 0.5]));
+        assert_eq!(found[1].calibration_hint, None);
+        // Bad hints are refused.
+        let bad = |gain: &str, id: &str| {
+            Catalog::parse(&format!(
+                "[[calibration_hint]]\nid = \"{id}\"\ngain = {gain}\n"
+            ))
+        };
+        assert!(bad("[1.0, 1.0, 1.0]", "ok").is_ok());
+        assert!(bad("[1.0, 3.0, 1.0]", "x").is_err());
+        assert!(bad("[1.0, -0.1, 1.0]", "x").is_err());
+        assert!(bad("[1.0, 1.0]", "x").is_err());
+        assert!(bad("[1.0, 1.0, 1.0]", "none").is_err());
+        assert!(bad("[1.0, 1.0, 1.0]", " ").is_err());
+        let twice =
+            format!("{text}\n[[calibration_hint]]\nid = \"pixel\"\ngain = [1.0, 1.0, 1.0]\n");
+        assert!(Catalog::parse(&twice).unwrap_err().contains("twice"));
+        // The user's own file keeps its hints and an entry's choice, and they win over the
+        // bundled ones with the same id.
+        let mut local = Catalog {
+            hints: vec![CalibrationHint {
+                id: "typical-smd5050".into(),
+                gain: [1.0, 0.5, 0.5],
+                kinds: vec![DeviceKind::Strip, DeviceKind::Peripheral],
+            }],
+            ..Default::default()
+        };
+        let mut mine = CatalogDevice::new("Mine".into(), 9, 9, Protocol::None, vec![]);
+        mine.calibration_hint = Some("typical-8mm-pixel".into());
+        local.put(mine);
+        let back = Catalog::parse(&local.to_toml()).unwrap();
+        assert_eq!(back.hints, local.hints);
+        assert_eq!(
+            back.devices[0].calibration_hint.as_deref(),
+            Some("typical-8mm-pixel")
+        );
+        let merged = Catalog::bundled().with_local(&back);
+        assert_eq!(merged.hints.len(), 2);
+        let mine = merged.find(9, 9).unwrap();
+        assert_eq!(merged.hint(mine).unwrap().gain, [1.0, 0.8784, 0.549]);
+        let strip = CatalogDevice {
+            kind: DeviceKind::Strip,
+            ..CatalogDevice::new("Strip".into(), 1, 2, Protocol::None, vec![])
+        };
+        assert_eq!(merged.hint(&strip).unwrap().gain, [1.0, 0.5, 0.5]);
     }
 
     #[test]
