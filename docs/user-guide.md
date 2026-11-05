@@ -510,7 +510,12 @@ back when the plugin lets go, or at the latest after a minute.
 the overlay, over USB. Foxglove only **reads** them: their keymap, layers and lights. It never
 changes them.
 - **Setup:** tick **Use VIA keyboards** and add the keyboard's VIA definition (the JSON from its
-  maker) with **Add VIA definition (JSON)…**.
+  maker) with **Add VIA definition (JSON)…**. Foxglove uses a definition for the keyboard
+  whose vendor and product id match its `vendorId` and `productId` (a K5 Pro ANSI white is
+  `0x3434` / `0x0253`). Keychron publishes its K Pro definitions on its own site, not in
+  VIA's list. Then press **Refresh**.
+- **No definition:** **Find any VIA or Vial keyboard** still finds it, with its lights but
+  no keymap. Keychron's white (single-colour) boards have no lights over VIA.
 - **Let other apps use it** closes Foxglove's connection to it, so VIA or the maker's
   app can use it without two programs talking at once. **Resume** connects again.
 - **Active layer:** stock firmware doesn't report it, so it shows as unknown.

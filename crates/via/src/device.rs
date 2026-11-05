@@ -44,6 +44,9 @@ pub struct Summary {
     pub firmware: Option<String>,
     /// The lighting channel shown, if any answered.
     pub lighting: Option<Channel>,
+    /// Whether its lighting was asked for: false when the catalog says the model has none
+    /// (`lighting = "none"`), so it never was.
+    pub lighting_asked: bool,
     pub source: Source,
     /// Layers, when it has a keymap.
     pub layers: Option<u8>,
@@ -119,6 +122,7 @@ impl<T: Transport> ViaDevice<T> {
         Summary {
             firmware: self.info.firmware.clone(),
             lighting: self.lighting_channel(),
+            lighting_asked: self.probe.scheme.is_some(),
             source: self.source.clone(),
             layers: self.def.is_some().then_some(self.probe.layers),
         }
@@ -451,6 +455,7 @@ mod tests {
             Summary {
                 firmware: Some("VIA protocol 12".into()),
                 lighting: Some(Channel::RgbMatrix),
+                lighting_asked: true,
                 source: Source::Missing { why: None },
                 layers: None,
             }
@@ -597,6 +602,33 @@ mod tests {
             .unwrap()
             .iter()
             .any(|r| r[..2] == [protocol::CUSTOM_GET_VALUE, 0x09]));
+    }
+
+    /// #74: a K5 Pro white (3434:0253, VIA protocol 11) with the user's VIA definition: matched
+    /// by its vendor and product id, it gets its keymap; the catalog says it has no VIA
+    /// lighting, so no lighting value is ever asked for, and nothing is written.
+    #[test]
+    fn a_k5_pro_white_with_a_loaded_definition_gets_its_keymap_and_no_lighting_reads() {
+        let fake = board(11);
+        let def = Definition::parse(&SAMPLE.replace("0x0250", "0x0253")).unwrap();
+        let dev = open_with(fake, Some(def), false);
+        assert_eq!(dev.source, Source::Loaded);
+        assert_eq!(dev.info().firmware.as_deref(), Some("VIA protocol 11"));
+        assert_eq!(dev.probe.scheme, None);
+        assert!(dev.lighting().is_none());
+        let s = dev.summary();
+        assert_eq!((s.lighting, s.lighting_asked), (None, false));
+        assert_eq!(dev.binding(0, 0, 0).unwrap().params, vec![0x29]);
+        let sent = fake.sent.lock().unwrap();
+        assert!(
+            !sent.iter().any(|r| r[0] == protocol::CUSTOM_GET_VALUE),
+            "{sent:x?}"
+        );
+        assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
+        assert!(
+            !sent.iter().any(|r| (0xA0..=0xAB).contains(&r[0])),
+            "no Keychron command"
+        );
     }
 
     #[test]

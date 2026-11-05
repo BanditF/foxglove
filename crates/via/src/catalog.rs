@@ -108,6 +108,25 @@ mod tests {
         assert_eq!(c.name(0xFEED, 0x0001), "QMK keyboard feed:0001");
     }
 
+    /// #74: the K5 Pro variants from Keychron's fork. The white ones (LED Matrix) have no VIA
+    /// lighting in Keychron's firmware, so they're never asked for it; the RGB ones follow
+    /// their protocol version (11, as the On-call board reports: the legacy ids).
+    #[test]
+    fn k5_pro_white_boards_are_never_asked_for_lighting() {
+        let c = Catalog::bundled();
+        for pid in 0x0253..=0x0255 {
+            assert!(c.name(0x3434, pid).ends_with(", white)"), "{pid:#06x}");
+            assert_eq!(c.scheme(0x3434, pid, 11), None, "{pid:#06x}");
+            assert_eq!(c.scheme(0x3434, pid, 12), None, "{pid:#06x}");
+        }
+        for pid in 0x0250..=0x0252 {
+            assert!(c.name(0x3434, pid).ends_with(", RGB)"), "{pid:#06x}");
+            assert_eq!(c.scheme(0x3434, pid, 11), Some(Scheme::Legacy));
+            assert_eq!(c.scheme(0x3434, pid, 12), Some(Scheme::Custom));
+        }
+        assert_eq!(c.name(0x3434, 0x0253), "Keychron K5 Pro (ANSI, white)");
+    }
+
     #[test]
     fn scheme_follows_the_protocol_version_unless_the_board_says_otherwise() {
         let mut c = Catalog::bundled();

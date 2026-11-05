@@ -21,6 +21,17 @@
 custom_channels_from = 12
 
 [[vendor]]
+# Keychron (#74, from Keychron's QMK fork, GPL-2.0: facts and ids only, no code copied).
+# - Lighting goes through VIA's standard lighting values, never a Keychron VIA channel: VIA
+#   protocol 12+ firmware uses the RGB Matrix channel (3); protocol 11 and older uses QMK's
+#   fixed RGB Light ids (0x80-0x83), RGB Matrix answering as RGB Light. VIA's own Keychron
+#   definitions (the-via/keyboards, GPL-3.0) agree: `qmk_rgblight` (v2) or channel 3 (v3) for RGB
+#   boards, no lighting at all for the white (LED Matrix) ones.
+# - Keychron's own lighting extension (per-key and mixed RGB, for Keychron Launcher) is outside
+#   VIA: Raw HID command 0xA8, found through 0xA0 (its protocol version) and 0xA2 (feature bits,
+#   bit 7 of the first byte = Keychron RGB). Only newer firmware (Keychron's 2025 branches) has
+#   it; the K Pro boards' firmware (bluetooth_playground) answers none of 0xA0-0xA8. Foxglove
+#   doesn't send these: they're not VIA reads, and 0xA8 mixes reads with sets and a save.
 vid = 0x3434
 name = "Keychron"
 
@@ -32,14 +43,42 @@ pid = 0x615E
 skip = true
 reason = "a ZMK keyboard: Foxglove talks to it over its own host link"
 
+# Keychron K5 Pro: ids and lighting from each variant's info.json and rules in Keychron's fork
+# (keyboards/keychron/k5_pro). The RGB ones have RGB Matrix; the white ones LED Matrix, which
+# Keychron's VIA firmware doesn't expose at all (no LED Matrix channel, no legacy id), so their
+# lighting isn't read. Checked on hardware: 0x0253 over USB answers VIA protocol 11 and no
+# lighting value (On-call, 2026-11-05). Its VIA, like every K Pro's, is USB-only: over
+# Bluetooth Classic it has no Raw HID interface.
+
 [[board]]
-# From OpenRGB's Keychron inventory (#74 research); unverified.
 vid = 0x3434
 pid = 0x0250
 name = "Keychron K5 Pro (ANSI, RGB)"
 
 [[board]]
-# From OpenRGB's Keychron inventory (#74 research); unverified.
 vid = 0x3434
 pid = 0x0251
 name = "Keychron K5 Pro (ISO, RGB)"
+
+[[board]]
+vid = 0x3434
+pid = 0x0252
+name = "Keychron K5 Pro (JIS, RGB)"
+
+[[board]]
+vid = 0x3434
+pid = 0x0253
+name = "Keychron K5 Pro (ANSI, white)"
+lighting = "none"
+
+[[board]]
+vid = 0x3434
+pid = 0x0254
+name = "Keychron K5 Pro (ISO, white)"
+lighting = "none"
+
+[[board]]
+vid = 0x3434
+pid = 0x0255
+name = "Keychron K5 Pro (JIS, white)"
+lighting = "none"
