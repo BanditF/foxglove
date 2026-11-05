@@ -168,23 +168,15 @@ impl Wizard {
     }
 
     /// The match to adjust for the colour on show: its saved one, else where the matches so far
-    /// put it (so each match starts from the ones before).
+    /// put it (so each match starts from the ones before), or, before the zone has any, from
+    /// the model's starting hint (#473).
     fn load_current(&mut self) {
         let color = self.color();
         self.current = match self.saved_match(color) {
             Some(i) => self.cal.matches[i].clone(),
-            None => {
-                let zone = self.zone.as_deref();
-                let rgb = rgb(color);
-                let light = self.cal.fit(zone, Side::Light).apply_rgb(rgb);
-                let screen = self.cal.fit(zone, Side::Screen).apply_rgb(rgb);
-                Match {
-                    color,
-                    light: [light.r, light.g, light.b],
-                    screen: [screen.r, screen.g, screen.b],
-                    zone: self.zone.clone(),
-                }
-            }
+            None => self
+                .cal
+                .start_match(color, self.zone.as_deref(), self.target.hint),
         };
     }
 
@@ -992,6 +984,7 @@ pub fn keyboard_target() -> Option<Target> {
         name,
         kind: Kind::Keyboard,
         default: None,
+        hint: None,
     })
 }
 
@@ -1009,6 +1002,7 @@ pub fn lights_target(row: &super::pc_lights::Row) -> Target {
                 .collect(),
         },
         default: row.calibration.clone(),
+        hint: row.calibration_hint,
     }
 }
 

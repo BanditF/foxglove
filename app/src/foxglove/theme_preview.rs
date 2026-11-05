@@ -1913,6 +1913,34 @@ fn calibrate_renders() {
     assert_ne!(master, shots[3]);
 }
 
+/// A strip whose model class has a catalog hint (#473): its first match, White, opens with the
+/// light already warmed by the hint (green and blue down), the screen as is.
+#[test]
+fn calibrate_hinted_renders() {
+    use crate::foxglove::calibrate_ui::{
+        tests::{corne, hinted_strip},
+        View, Wizard,
+    };
+    use crate::foxglove::shell::Page;
+    let mut w = Wizard::new(hinted_strip(), None);
+    w.fresh = false;
+    let sent = w.current.light;
+    let mut s = Samples::full();
+    s.calibrate = Some((
+        View {
+            others: vec![corne()],
+            moving: false,
+        },
+        w,
+    ));
+    let img = shell_preview_with(Page::Lights, &s, 1180.0);
+    keep("ui-calibrate-hinted.png", &img);
+    assert!(
+        img.pixels().filter(|p| p.0[..3] == sent).count() > 2000,
+        "the sent swatch draws the hinted light {sent:?}"
+    );
+}
+
 /// The calibrator's "Adjust" switch on each side, side by side in one image: blue with the light
 /// down 30% and the screen up 5%, both kept.
 #[test]

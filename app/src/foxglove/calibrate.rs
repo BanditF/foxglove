@@ -32,6 +32,9 @@ pub struct Target {
     pub kind: Kind,
     /// The model's default calibration, from the catalog.
     pub default: Option<Calibration>,
+    /// The gains its first match starts from (linear light), from the catalog's hint for its
+    /// model or class (#473); `None` starts as is.
+    pub hint: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
