@@ -25,6 +25,10 @@
 //!   ([`NOTICE`], [`setting_path`]) with a button to the Windows Dynamic Lighting settings
 //!   ([`DL_SETTINGS`]); it goes on the first report saying they're free. The Scenes page only
 //!   names who has them.
+//! - A keyboard that is also a LampArray Windows lists ([`paired_lamp_key`]) is drawn through
+//!   Windows meanwhile (#749 b): by a running scene (`scene_output`) and by the Keyboard card's
+//!   picks (`pc_lights`' worker, [`through_windows`]). The line then says so ([`THROUGH`]).
+//!   The report that frees the lights lets the Keyboard card's LampArray go.
 //! - The pages repaint on the owner's change ([`set_wake`]), not on a timer.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -257,11 +261,17 @@ pub fn attach(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
         let mut s = lock(&state);
         let before = s.owner();
         if s.observe(r) {
+            let now = s.owner();
+            drop(s);
             eprintln!(
                 "Foxglove: lights owner: {} (was {})",
-                byte_words(s.owner()),
+                byte_words(now),
                 byte_words(before)
             );
+            // Windows let go (#749 b): the Lights page lets go of the keyboard's LampArray.
+            if before.is_some_and(Owner::lamp_array) && !now.is_some_and(Owner::lamp_array) {
+                super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
+            }
         }
     });
     *tap = Some((kb.link().clone(), watch));
@@ -392,12 +402,45 @@ pub fn windows_line(device: Option<&str>, scene: Option<&str>) -> String {
     text
 }
 
+/// What Foxglove does meanwhile when the keyboard is also a LampArray (#749 b): it draws through
+/// Windows, which lets an app without package identity do so only while its window is in front.
+pub const THROUGH: &str = "Foxglove draws through it while its window is in front";
+
+/// [`THROUGH`] with package identity (#179): Windows' background order decides, not the window.
+pub const THROUGH_IDENTITY: &str = "Foxglove draws through it";
+
+/// The one line while Windows holds the lights and Foxglove draws through the keyboard's own
+/// LampArray (#749 b): [`NOTICE`], [`THROUGH`] (or [`THROUGH_IDENTITY`]), and the setting that
+/// gives the lights back. No scene waits: a running one draws through Windows too.
+pub fn through_line(device: Option<&str>, identity: bool) -> String {
+    format!(
+        "{NOTICE}; {}. Turn off {} to give them back.",
+        if identity { THROUGH_IDENTITY } else { THROUGH },
+        setting_path(device)
+    )
+}
+
 /// The line for `who`, with the running scene's name and the keyboard's name (for the
-/// Windows setting).
+/// Windows setting). The app draws [`line_through`]; the tests and previews draw this one.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn line(who: &Who, scene: Option<&str>, device: Option<&str>) -> Line {
+    line_through(who, scene, device, None)
+}
+
+/// [`line`], with `through` `Some(identity)` while the keyboard has its own LampArray that
+/// Foxglove draws through as Windows holds the lights (#749 b).
+pub fn line_through(
+    who: &Who,
+    scene: Option<&str>,
+    device: Option<&str>,
+    through: Option<bool>,
+) -> Line {
     if matches!(who, Who::Windows) {
         return Line {
-            text: windows_line(device, scene),
+            text: match through {
+                Some(identity) => through_line(device, identity),
+                None => windows_line(device, scene),
+            },
             warn: true,
         };
     }
@@ -449,11 +492,37 @@ fn who_now(owner: Option<Owner>) -> (Who, Option<String>) {
 pub fn line_now() -> Line {
     let owner = lock(&STATE).owner();
     let (who, scene) = who_now(owner);
-    line(
+    let through = (who == Who::Windows)
+        .then(paired_lamp_key)
+        .flatten()
+        .map(|_| super::scene_lamps::identity());
+    line_through(
         &who,
         scene.as_deref(),
         super::devices::keyboard_name().as_deref(),
+        through,
     )
+}
+
+/// The host-link keyboard's own LampArray as Windows lists it (#749 b), paired by VID/PID
+/// (`scene_output::keyboard_lamp_key`): the key the Lights page and a scene draw it through
+/// while Windows holds its lights. Never blocks or looks for the keyboard.
+pub fn paired_lamp_key() -> Option<String> {
+    let keyboard = super::devices::keyboard_key()?;
+    super::scene_output::keyboard_lamp_key(
+        &keyboard,
+        &super::pc_lights::snapshot().keyboard_lamp_arrays,
+    )
+}
+
+/// While Windows Dynamic Lighting holds the keyboard's lights (the owner report says a
+/// LampArray) and the keyboard has its own LampArray: its key, for the Keyboard card to draw
+/// through (#749 b). Only on the owner's word, never on a timer.
+pub fn through_windows() -> Option<String> {
+    if !lock(&STATE).owner().is_some_and(Owner::lamp_array) {
+        return None;
+    }
+    paired_lamp_key()
 }
 
 #[cfg(test)]
@@ -714,6 +783,40 @@ mod tests {
         // The first reply saying they're free (Foxglove's frame shown) clears it.
         s.observe(&frame_report(3, false));
         assert_eq!(notice(s.owner(), Some("Eyelash Corne")), None);
+    }
+
+    /// #749 b: while Foxglove draws through the keyboard's own LampArray, the notice says so
+    /// (foreground only without package identity) and still names the setting; no scene
+    /// waits. Without a paired LampArray it reads as before; other owners are untouched.
+    #[test]
+    fn the_notice_says_foxglove_draws_through_windows() {
+        let scene = Some("Bandit scanline");
+        let corne = Some("Eyelash Corne");
+        let l = line_through(&Who::Windows, scene, corne, Some(false));
+        assert!(l.warn);
+        assert_eq!(
+            l.text,
+            "Windows Dynamic Lighting holds the keyboard's lights; Foxglove draws through it \
+             while its window is in front. Turn off Settings > Personalization > Dynamic \
+             Lighting > Eyelash Corne > \u{201c}Use Dynamic Lighting on my devices\u{201d} to \
+             give them back."
+        );
+        let id = line_through(&Who::Windows, scene, corne, Some(true)).text;
+        assert!(
+            id.starts_with("Windows Dynamic Lighting holds the keyboard's lights; Foxglove draws through it. Turn off"),
+            "{id}"
+        );
+        assert_eq!(
+            line_through(&Who::Windows, scene, corne, None),
+            line(&Who::Windows, scene, corne)
+        );
+        assert!(line(&Who::Windows, scene, corne)
+            .text
+            .contains("comes back then"));
+        assert_eq!(
+            line_through(&Who::Keyboard, None, corne, Some(false)),
+            line(&Who::Keyboard, None, corne)
+        );
     }
 
     /// #749: the scene output's hold flag is set while Windows has the lights (so it streams

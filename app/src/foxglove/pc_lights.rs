@@ -189,6 +189,17 @@ pub enum Msg {
     /// OpenRGB's push or the connection's end, from the connection it numbers (an older one's
     /// news is dropped).
     OpenRgbEvent(u64, openrgb::Event),
+    /// The Keyboard card's pick while Windows Dynamic Lighting holds the keyboard's lights
+    /// (#749 b), drawn through the keyboard's own LampArray (`key`, from
+    /// `scene_output::keyboard_lamp_key`) like any Dynamic Lighting device; `None` is lights
+    /// off. Not saved: the keyboard keeps its own look over its link.
+    KeyboardLamp {
+        key: String,
+        look: Option<KeyboardLights>,
+    },
+    /// Windows let go of the keyboard's lights (its owner report): the keyboard's LampArray
+    /// is let go too, and the link draws it again.
+    KeyboardLampRelease,
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -468,6 +479,19 @@ pub struct Worker {
     pub openrgb_dirty: bool,
     /// Try connecting to OpenRGB again after this wait (the bounded backoff's next step).
     pub openrgb_retry: Option<Duration>,
+    /// The keyboard's own LampArray, opened for the Keyboard card while Windows Dynamic
+    /// Lighting holds the keyboard's lights (#749 b).
+    keyboard_lamp: Option<KeyboardLamp>,
+}
+
+/// The keyboard's own LampArray as the Lights worker draws it (#749 b): the same host handle as
+/// any Dynamic Lighting device's, opened by the same opener, one colour on every lamp.
+struct KeyboardLamp {
+    key: String,
+    name: String,
+    handle: Box<dyn pcl::LampHandle>,
+    /// What Foxglove last set on it, put back when Windows lets Foxglove drive it again.
+    shown: Option<Rgb>,
 }
 
 impl Worker {
@@ -515,6 +539,7 @@ impl Worker {
             relist: false,
             openrgb_dirty: false,
             openrgb_retry: None,
+            keyboard_lamp: None,
         }
     }
 
@@ -668,6 +693,14 @@ impl Worker {
         self.conflicts = conflicts;
         self.unknown = pcl::unknown(&self.catalog, hid);
         self.keyboard_lamps = pcl::keyboard_lamp_arrays(hid);
+        // The keyboard's LampArray went (unplugged, or another keyboard): let it go.
+        if self
+            .keyboard_lamp
+            .as_ref()
+            .is_some_and(|k| self.keyboard_lamp_array(&k.key).is_none())
+        {
+            self.keyboard_lamp = None;
+        }
         // A LampArray not read yet: read them all once (Windows), then reuse.
         let unread = now.iter().any(|f| {
             f.control == Control::LampArray && !self.lamp_info.contains_key(&(f.vid, f.pid))
@@ -822,6 +855,7 @@ impl Worker {
                 | Msg::OpenRgbSettings(_)
                 | Msg::OpenRgbConnect
                 | Msg::OpenRgbEvent(..)
+                | Msg::KeyboardLampRelease
         );
         if paused && writes {
             self.status = Some(super::pause::REFUSED.replace("the keyboard", "the lights"));
@@ -863,6 +897,16 @@ impl Worker {
             }
             Msg::SceneFrame { key, colors } => self.scene_frame(&key, &colors),
             Msg::LampChanged(key) => self.lamp_changed(&key),
+            Msg::KeyboardLamp { key, look } => self.keyboard_lamp_look(&key, look),
+            Msg::KeyboardLampRelease => {
+                if let Some(k) = self.keyboard_lamp.take() {
+                    eprintln!(
+                        "Foxglove: {}: Windows let go of the keyboard's lights; its Dynamic \
+                         Lighting device is let go",
+                        k.name
+                    );
+                }
+            }
             Msg::SceneEnd => {
                 self.scene_end();
                 scene_ended();
@@ -990,6 +1034,10 @@ impl Worker {
     /// these back) or while Windows still keeps it from Foxglove.
     fn lamp_changed(&mut self, key: &str) {
         if self.scene.is_some() {
+            return;
+        }
+        if self.keyboard_lamp.as_ref().is_some_and(|k| k.key == key) {
+            self.keyboard_lamp_again();
             return;
         }
         let Some(d) = self.drivers.get_mut(key) else {
@@ -1154,6 +1202,117 @@ impl Worker {
                     eprintln!("Foxglove: {}: colours back after the scene: {e}", f.name);
                 }
             }
+        }
+        // The scene drew the held keyboard through Windows too (#749 b): the card's pick again.
+        self.keyboard_lamp_again();
+    }
+
+    /// The keyboard's own LampArray Windows lists for a pairing key (`vvvv:pppp`, #749 b).
+    fn keyboard_lamp_array(&self, key: &str) -> Option<&pcl::KeyboardLampArray> {
+        self.keyboard_lamps
+            .iter()
+            .find(|a| key == format!("{:04x}:{:04x}", a.vid, a.pid))
+    }
+
+    /// The Keyboard card's pick while Windows Dynamic Lighting holds the keyboard's lights
+    /// (#749 b): through the keyboard's own LampArray, opened on the first pick like any
+    /// Dynamic Lighting device. An effect that shows the colour shows it steady (as "Match
+    /// keyboard" copies it); a rainbow the keyboard makes itself has no colour to show, so the
+    /// lamps keep theirs and the status says why.
+    fn keyboard_lamp_look(&mut self, key: &str, look: Option<KeyboardLights>) {
+        if self.keyboard_lamp.as_ref().is_none_or(|k| k.key != key) {
+            // Another keyboard's first: its devices are let go before these are claimed.
+            self.keyboard_lamp = None;
+            let Some(a) = self.keyboard_lamp_array(key).cloned() else {
+                self.status = Some("The keyboard isn't listed under Dynamic Lighting now".into());
+                return;
+            };
+            let found = Found {
+                key: key.to_string(),
+                name: a.name.clone(),
+                vid: a.vid,
+                pid: a.pid,
+                control: Control::LampArray,
+                path: String::new(),
+                zones: Vec::new(),
+                caps: LightCaps::default(),
+                local: false,
+                calibration: None,
+                size: None,
+                kind: pcl::DeviceKind::default(),
+                conflicts: Vec::new(),
+            };
+            let Some(handle) = (self.lamp_opener)(&found) else {
+                self.status = Some(format!(
+                    "{}: Windows has no Dynamic Lighting device for it now",
+                    a.name
+                ));
+                return;
+            };
+            self.keyboard_lamp = Some(KeyboardLamp {
+                key: key.to_string(),
+                name: a.name,
+                handle,
+                shown: None,
+            });
+        }
+        let colour = match look {
+            None => pcl::BLACK,
+            Some(l) => match l.colors(1) {
+                Some(c) => rgb(c[0]),
+                None => {
+                    let name = self.keyboard_lamp.as_ref().map_or("", |k| &k.name);
+                    self.status = Some(format!(
+                        "{name}: {} is a rainbow the keyboard makes itself; through Windows \
+                         Foxglove shows one colour, so the lights keep theirs",
+                        l.effect_label()
+                    ));
+                    return;
+                }
+            },
+        };
+        let Some(k) = self.keyboard_lamp.as_mut() else {
+            return;
+        };
+        let result = k.handle.set_all(colour);
+        let available = k.handle.access().available;
+        if result.is_ok() {
+            k.shown = Some(colour);
+        }
+        let name = k.name.clone();
+        self.status = Some(match &result {
+            Ok(()) if available => format!("{name}: shown through Windows Dynamic Lighting"),
+            Ok(()) => format!(
+                "{name}: set through Windows Dynamic Lighting; it shows while Foxglove's window \
+                 is in front"
+            ),
+            Err(e) => format!("{name}: {e}"),
+        });
+        let apply = match result {
+            Ok(()) => super::lamp_health::Apply::Ok,
+            Err(e) => super::lamp_health::Apply::Failed(e.to_string()),
+        };
+        self.lamp_applies.insert(key.to_string(), apply);
+    }
+
+    /// The card's pick on the keyboard's LampArray again (Windows gave it back, a scene
+    /// ended), while Windows lets Foxglove drive it.
+    fn keyboard_lamp_again(&mut self) {
+        let Some(k) = self.keyboard_lamp.as_mut() else {
+            return;
+        };
+        let Some(colour) = k.shown else {
+            return;
+        };
+        let access = k.handle.access();
+        if !(access.available && access.enabled) {
+            return;
+        }
+        if let Err(e) = k.handle.set_all(colour) {
+            eprintln!(
+                "Foxglove: {}: colour back through Dynamic Lighting: {e}",
+                k.name
+            );
         }
     }
 
@@ -2358,6 +2517,24 @@ mod tests {
         let calls = LampCalls::default();
         let (w, _) = worker(Settings::default());
         let mut w = w.with_lamp_opener(fake_lamps(&calls));
+        w.scan(&hid_with_corne(), &mut nothing(), false, true);
+        let s = w.snapshot();
+        assert!(
+            s.devices.iter().all(|d| d.key != "1d50:615e"),
+            "not driven here"
+        );
+        let k: Vec<_> = s
+            .keyboard_lamp_arrays
+            .iter()
+            .map(|k| (k.key.as_str(), k.name.as_str(), k.bluetooth))
+            .collect();
+        assert_eq!(k, vec![("1d50:615e", "Eyelash Corne", false)]);
+        let rows = crate::foxglove::lamp_health::keyboard_rows(&s.keyboard_lamp_arrays);
+        assert_eq!(rows[0].item, "Eyelash Corne (keyboard) · Found");
+    }
+
+    /// The case's devices and a keyboard that is also a LampArray (#754).
+    fn hid_with_corne() -> Vec<HidEntry> {
         let mut hid = case_hid();
         for (page, usage, path) in [
             (1, 6, "corne-keys"),
@@ -2374,20 +2551,132 @@ mod tests {
                 ..Default::default()
             });
         }
-        w.scan(&hid, &mut nothing(), false, true);
-        let s = w.snapshot();
-        assert!(
-            s.devices.iter().all(|d| d.key != "1d50:615e"),
-            "not driven here"
+        hid
+    }
+
+    /// #749 b: while Windows Dynamic Lighting holds the keyboard's lights, the Keyboard card's
+    /// picks go through the keyboard's own LampArray: opened once by the same opener as any
+    /// Dynamic Lighting device, a colour on every lamp, dark for off, a rainbow left alone.
+    /// Windows giving it back puts the pick back; the lights' release lets it go; nothing is
+    /// saved as a device's colours, and nothing is written while paused.
+    #[test]
+    fn a_held_keyboards_picks_go_through_its_own_lamparray() {
+        let calls = LampCalls::default();
+        let access = Arc::new(Mutex::new(pcl::LampAccess::default()));
+        let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+        let opener: LampOpener = {
+            let (calls, access, opened) = (calls.clone(), access.clone(), opened.clone());
+            Box::new(move |f: &Found| {
+                opened.lock().unwrap().push(f.key.clone());
+                Some(Box::new(FakeLamps {
+                    key: f.key.clone(),
+                    count: f.zones.len(),
+                    calls: calls.clone(),
+                    access: access.clone(),
+                }) as Box<dyn pcl::LampHandle>)
+            })
+        };
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(opener);
+        w.scan(&hid_with_corne(), &mut nothing(), false, true);
+        opened.lock().unwrap().clear();
+        const KB: &str = "1d50:615e";
+        let look = |w: &mut Worker, look: Option<KeyboardLights>| {
+            w.handle(
+                Msg::KeyboardLamp {
+                    key: KB.into(),
+                    look,
+                },
+                false,
+                &mut no_wait(),
+            );
+        };
+        let drained = || calls.lock().unwrap().drain(..).collect::<Vec<_>>();
+        look(&mut w, Some(solid(0)));
+        assert_eq!(drained(), vec![(KB.to_string(), None, [255, 0, 0])]);
+        assert_eq!(*opened.lock().unwrap(), [KB], "opened like any LampArray");
+        assert_eq!(
+            w.status.as_deref(),
+            Some("Eyelash Corne: shown through Windows Dynamic Lighting")
         );
-        let k: Vec<_> = s
-            .keyboard_lamp_arrays
-            .iter()
-            .map(|k| (k.key.as_str(), k.name.as_str(), k.bluetooth))
-            .collect();
-        assert_eq!(k, vec![("1d50:615e", "Eyelash Corne", false)]);
-        let rows = crate::foxglove::lamp_health::keyboard_rows(&s.keyboard_lamp_arrays);
-        assert_eq!(rows[0].item, "Eyelash Corne (keyboard) · Found");
+        // Breathe shows its colour steady; Spectrum has none to show: the lamps keep theirs.
+        look(
+            &mut w,
+            Some(KeyboardLights {
+                effect: 1,
+                ..solid(240)
+            }),
+        );
+        assert_eq!(drained(), vec![(KB.to_string(), None, [0, 0, 255])]);
+        look(
+            &mut w,
+            Some(KeyboardLights {
+                effect: 2,
+                ..solid(0)
+            }),
+        );
+        assert!(drained().is_empty());
+        assert!(
+            w.status
+                .as_deref()
+                .unwrap()
+                .contains("Spectrum is a rainbow"),
+            "{:?}",
+            w.status
+        );
+        look(&mut w, None);
+        assert_eq!(drained(), vec![(KB.to_string(), None, [0, 0, 0])]);
+        assert_eq!(opened.lock().unwrap().len(), 1, "opened once");
+        // Not in front: set, and Windows shows it when Foxglove may again (its event).
+        access.lock().unwrap().available = false;
+        look(&mut w, Some(solid(120)));
+        assert!(w
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("while Foxglove's window is in front"));
+        drained();
+        w.handle(Msg::LampChanged(KB.into()), false, &mut no_wait());
+        assert!(drained().is_empty(), "Windows keeps it: nothing");
+        access.lock().unwrap().available = true;
+        w.handle(Msg::LampChanged(KB.into()), false, &mut no_wait());
+        assert_eq!(drained(), vec![(KB.to_string(), None, [0, 255, 0])]);
+        // Never a device row or saved colours: the keyboard keeps its own look.
+        let s = w.snapshot();
+        assert!(s.devices.iter().all(|d| d.key != KB));
+        assert!(!w.settings.devices.contains_key(KB));
+        assert_eq!(
+            s.lamp_applies.get(KB),
+            Some(&super::super::lamp_health::Apply::Ok)
+        );
+        // Paused (#404): refused.
+        look(&mut w, Some(solid(0)));
+        drained();
+        w.handle(
+            Msg::KeyboardLamp {
+                key: KB.into(),
+                look: None,
+            },
+            true,
+            &mut no_wait(),
+        );
+        assert!(drained().is_empty());
+        // Windows let go: the LampArray goes; Windows giving it back later writes nothing,
+        // and the next hold's pick opens it again.
+        w.handle(Msg::KeyboardLampRelease, false, &mut no_wait());
+        w.handle(Msg::LampChanged(KB.into()), false, &mut no_wait());
+        assert!(drained().is_empty());
+        look(&mut w, Some(solid(0)));
+        assert_eq!(opened.lock().unwrap().len(), 2);
+        // The keyboard unplugged: let go; a pick then says it isn't listed.
+        drained();
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        look(&mut w, Some(solid(0)));
+        assert!(drained().is_empty());
+        assert_eq!(
+            w.status.as_deref(),
+            Some("The keyboard isn't listed under Dynamic Lighting now")
+        );
     }
 
     /// #691: "Match keyboard" on a Dynamic Lighting device follows the keyboard's report (so

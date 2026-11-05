@@ -8,6 +8,11 @@
 //! [`Intent`]s, so the previews and tests draw it with no keyboard. Every change is a click or
 //! a slider release; the lights' state is read on request and after each change, never on a
 //! timer.
+//!
+//! While Windows Dynamic Lighting holds the keyboard's lights and the keyboard is also a
+//! LampArray, the card's picks are drawn through Windows (#749 b): the Lights worker opens the
+//! keyboard's own LampArray with the same handle as any Dynamic Lighting device
+//! ([`through_windows`], `pc_lights::Msg::KeyboardLamp`). Only on the owner's word.
 
 use std::sync::Mutex;
 
@@ -171,11 +176,28 @@ pub fn show(ui: &mut egui::Ui) {
     let view = live_view(ks::rgb_state(&ctx));
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
-    for intent in draw(ui, &view, &mut draft) {
+    let intents = draw(ui, &view, &mut draft);
+    // While Windows Dynamic Lighting holds the keyboard's lights, its own LampArray shows the
+    // pick (#749 b); the keyboard still gets it over its link, for when Windows lets go.
+    let through = if intents.is_empty() {
+        None
+    } else {
+        super::lights_owner::through_windows()
+    };
+    for intent in intents {
         if !matches!(intent, Intent::Refresh | Intent::AskFollow) {
             // The user acted on the lights: while Windows holds them, a running scene tries
             // the keyboard once (#749).
             super::lights_owner::retry("the user changed the keyboard's lights");
+        }
+        if let Some(key) = &through {
+            let left = view.state.map(|s| s.left);
+            if let Some(look) = through_windows(&intent, left.as_ref()) {
+                super::pc_lights::send(super::pc_lights::Msg::KeyboardLamp {
+                    key: key.clone(),
+                    look,
+                });
+            }
         }
         match intent {
             Intent::Lights(on) => ks::set_lights(on, ctx.clone()),
@@ -234,6 +256,34 @@ pub fn half_text(half: Option<&RgbHalf>, age: Option<u8>) -> String {
         text.push_str(&format!(" · {age} s ago"));
     }
     text
+}
+
+/// What a Keyboard card click asks the keyboard's own LampArray to show while Windows Dynamic
+/// Lighting holds the lights (#749 b), from the left half's report (`left`): `Some(None)` is
+/// lights off, `Some(Some(look))` the effect and colour picked. `None`: nothing to draw (the
+/// speed, the switches, Refresh, a pick before the keyboard's first report).
+pub fn through_windows(
+    intent: &Intent,
+    left: Option<&RgbHalf>,
+) -> Option<Option<super::pc_lights::KeyboardLights>> {
+    use super::pc_lights::KeyboardLights;
+    let now = left.map(KeyboardLights::from_half);
+    match *intent {
+        Intent::Lights(false) => Some(None),
+        Intent::Lights(true) => now.map(Some),
+        Intent::Effect(effect) => now.map(|k| Some(KeyboardLights { effect, ..k })),
+        Intent::Apply {
+            hue,
+            sat,
+            brightness,
+        } => Some(Some(KeyboardLights {
+            hue,
+            sat,
+            brightness,
+            effect: now.map_or(0, |k| k.effect),
+        })),
+        _ => None,
+    }
 }
 
 /// A swatch's hue and saturation, as the underglow takes them.
@@ -803,6 +853,52 @@ pub mod tests {
             ..half(true, 0, 1)
         };
         assert!(half_text(Some(&odd), None).contains("other effect"));
+    }
+
+    /// #749 b: while Windows holds the lights, each colour or effect pick becomes a look for
+    /// the keyboard's LampArray, from the keyboard's report; the rest draws nothing there.
+    #[test]
+    fn picks_go_through_windows_as_a_look() {
+        use crate::foxglove::pc_lights::KeyboardLights;
+        let left = half(true, 26, 3);
+        let now = KeyboardLights::from_half(&left);
+        assert_eq!(
+            through_windows(&Intent::Lights(false), Some(&left)),
+            Some(None)
+        );
+        assert_eq!(
+            through_windows(&Intent::Lights(true), Some(&left)),
+            Some(Some(now))
+        );
+        assert_eq!(
+            through_windows(&Intent::Effect(3), Some(&left)),
+            Some(Some(KeyboardLights { effect: 3, ..now }))
+        );
+        let apply = Intent::Apply {
+            hue: 210,
+            sat: 80,
+            brightness: 60,
+        };
+        assert_eq!(
+            through_windows(&apply, Some(&left)),
+            Some(Some(KeyboardLights {
+                hue: 210,
+                sat: 80,
+                brightness: 60,
+                effect: 0
+            }))
+        );
+        assert!(through_windows(&apply, None).is_some(), "a pick is a pick");
+        assert_eq!(through_windows(&Intent::Lights(true), None), None);
+        for other in [
+            Intent::Speed(4),
+            Intent::Refresh,
+            Intent::Accent(true),
+            Intent::Follow(true),
+            Intent::FindLeds,
+        ] {
+            assert_eq!(through_windows(&other, Some(&left)), None, "{other:?}");
+        }
     }
 
     #[test]

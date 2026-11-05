@@ -1462,6 +1462,41 @@ fn dynamic_lighting_notice_renders() {
     );
 }
 
+/// #749 b: Windows Dynamic Lighting holds the keyboard's lights and Foxglove draws through the
+/// keyboard's own LampArray: the same amber notice and settings button, now saying Foxglove
+/// draws through it while its window is in front. Saved as the review image.
+#[test]
+fn dynamic_lighting_through_renders() {
+    use crate::foxglove::lights_owner::{line, line_through, Who, PREVIEW};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let near = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| {
+                let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs();
+                d(p.0[0], c.r()) + d(p.0[1], c.g()) + d(p.0[2], c.b()) < 24
+            })
+            .count()
+    };
+    let device = Some("Eyelash Corne");
+    PREVIEW.set(Some(line_through(&Who::Windows, None, device, Some(false))));
+    let through = shell_preview_with(Page::Lights, &Samples::full(), 980.0);
+    PREVIEW.set(Some(line(&Who::Windows, None, device)));
+    let held = shell_preview_with(Page::Lights, &Samples::full(), 980.0);
+    PREVIEW.set(Some(line(&Who::Keyboard, None, device)));
+    let free = shell_preview_with(Page::Lights, &Samples::full(), 980.0);
+    PREVIEW.set(None);
+    keep("ui-749-dl-through.png", &through);
+    assert_ne!(
+        through, held,
+        "the notice says Foxglove draws through Windows"
+    );
+    assert!(
+        near(&through, DARK.warn) > near(&free, DARK.warn),
+        "still the amber notice"
+    );
+}
+
 /// The Scenes page (#487): the user's room with a scene running (wide and at the window's
 /// default size), a scene being dragged, and an empty room with nothing running.
 #[test]
