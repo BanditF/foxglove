@@ -21,7 +21,8 @@
 //! never sent. At most [`MAX_IN_FLIGHT`] requests of any kind are, too (#739): the keyboard keeps
 //! its replies and its own events in one 4-deep queue, and a connect's burst of requests from
 //! several threads overran it (health: "replies dropped"). Commands after a request held back
-//! wait with it, so nothing overtakes it. The link reconnects by itself; whatever was queued for a
+//! wait with it, so nothing overtakes it. A request's reply timeout starts when it is written,
+//! not while it waits its turn (#755); the wait has its own bound, [`QUEUE_WAIT`]. The link reconnects by itself; whatever was queued for a
 //! lost connection is dropped, never sent to the next one.
 //!
 //! A callback that panics (an event sink, a report observer or a subscriber's filter) is dropped
@@ -66,6 +67,15 @@ const LATE_REPLY_GRACE: Duration = Duration::from_millis(500);
 /// widgets/host_link.c), and its own events (art STATUS, the frames' hand-back, PC_STATE's lease
 /// ask, the lights owner) need the rest.
 pub const MAX_IN_FLIGHT: usize = 2;
+/// How long a request may wait in the link's queue (behind [`MAX_IN_FLIGHT`] or its own
+/// (proto, command)) before it is sent; its reply timeout only starts once it is on the wire
+/// (#755: the art STATUS on connect timed out while queued behind the connect's burst). A request
+/// not sent by then is dropped, never sent, and its caller gets "no reply".
+#[cfg(not(test))]
+pub const QUEUE_WAIT: Duration = Duration::from_secs(5);
+// In tests: past LATE_REPLY_GRACE, as the real one is (a request behind a timed-out key goes).
+#[cfg(test)]
+pub const QUEUE_WAIT: Duration = Duration::from_millis(1000);
 
 pub type Report = [u8; REPORT];
 
@@ -145,8 +155,13 @@ impl Drop for EventSubscription {
 
 struct Request {
     key: (u8, u8),
-    tx: Sender<Report>,
-    /// When the caller stops waiting.
+    /// The reply, or `None` when the link gave up on it (no reply within the timeout, or never
+    /// sent within [`QUEUE_WAIT`]).
+    tx: Sender<Option<Report>>,
+    /// The caller's reply timeout, counted from the write.
+    timeout: Duration,
+    /// When the link stops waiting: while queued, the caller's give-up time (enqueued +
+    /// [`QUEUE_WAIT`] + timeout); once written, the write + timeout (never later than that).
     deadline: Instant,
 }
 
@@ -350,22 +365,27 @@ impl Transport for Link {
 
     fn request(&self, report: &[u8], proto: u8, cmd: u8, timeout: Duration) -> Result<Report> {
         let (tx, rx) = mpsc::channel();
-        let deadline = Instant::now() + timeout;
+        // The timeout runs from the write (#755); the queue before it has its own bound.
+        let wait = timeout + QUEUE_WAIT;
+        let deadline = Instant::now() + wait;
         self.queue(Command {
             report: report.to_vec(),
             reply: Some(Request {
                 key: (proto, cmd),
                 tx,
+                timeout,
                 deadline,
             }),
         })?;
-        rx.recv_timeout(timeout).map_err(|e| match e {
+        match rx.recv_timeout(wait) {
+            Ok(Some(r)) => Ok(r),
+            Ok(None) => Err(anyhow!("no reply from the keyboard")),
             // The link drops a request at its deadline, which can beat our own timeout.
-            RecvTimeoutError::Disconnected if Instant::now() < deadline => {
-                anyhow!("keyboard disconnected")
+            Err(RecvTimeoutError::Disconnected) if Instant::now() < deadline => {
+                Err(anyhow!("keyboard disconnected"))
             }
-            _ => anyhow!("no reply from the keyboard"),
-        })
+            Err(_) => Err(anyhow!("no reply from the keyboard")),
+        }
     }
 }
 
@@ -526,6 +546,7 @@ impl Requests {
                 return true;
             }
             self.held.insert(*key, r.deadline + LATE_REPLY_GRACE);
+            let _ = r.tx.send(None); // its caller hears now, not at the end of its queue allowance
             false
         });
         self.held.retain(|_, until| *until > now);
@@ -546,7 +567,8 @@ impl Requests {
         self.in_flight
             .values()
             .map(|r| r.deadline)
-            .chain(waiting.map(|r| r.deadline))
+            // A queued one's end of QUEUE_WAIT, when the writer tells its caller it gave up.
+            .chain(waiting.map(|r| r.deadline.checked_sub(r.timeout).unwrap_or(r.deadline)))
             .chain(held)
             .min()
     }
@@ -568,8 +590,11 @@ fn write_loop(dev: &dyn RawHid, commands: &Receiver<Message>, shared: &Shared) -
         let mut full = false;
         for c in queued {
             if let Some(r) = &c.reply {
-                if r.deadline <= Instant::now() {
-                    continue; // its caller has given up: never send it
+                // Its caller gave up, or it waited past QUEUE_WAIT (a whole timeout would outlast
+                // the caller's wait): never send it, and say so.
+                if r.deadline <= Instant::now() + r.timeout {
+                    let _ = r.tx.send(None);
+                    continue;
                 }
                 if requests.in_flight.contains_key(&r.key) || requests.held.contains_key(&r.key) {
                     requests.waiting.push_back(c);
@@ -591,7 +616,9 @@ fn write_loop(dev: &dyn RawHid, commands: &Receiver<Message>, shared: &Shared) -
                     continue;
                 }
             }
-            if let Some(r) = c.reply {
+            if let Some(mut r) = c.reply {
+                // The reply timeout starts now, not when the caller queued it (#755).
+                r.deadline = r.deadline.min(Instant::now() + r.timeout);
                 requests.in_flight.insert(r.key, r);
             }
         }
@@ -637,7 +664,7 @@ fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
             return;
         }
         if let Some(req) = requests.in_flight.remove(&key) {
-            let _ = req.tx.send(*r);
+            let _ = req.tx.send(Some(*r));
             return;
         }
         if key != (protocol::ART, protocol::art::STATUS) {
@@ -963,6 +990,7 @@ mod tests {
             Request {
                 key,
                 tx,
+                timeout: WAIT,
                 deadline: Instant::now() + WAIT,
             },
         );
@@ -973,7 +1001,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "the event isn't the reply");
         let reply = report(&[protocol::SETTINGS, 0x8C, 0, 3, 30, 1, 0]);
         dispatch(&reply, &mut requests, &l.shared);
-        assert_eq!(rx.recv_timeout(WAIT).unwrap(), reply);
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), Some(reply));
     }
 
     #[test]
@@ -986,6 +1014,7 @@ mod tests {
             Request {
                 key,
                 tx,
+                timeout: WAIT,
                 deadline: Instant::now() + WAIT,
             },
         );
@@ -1005,7 +1034,7 @@ mod tests {
         );
         let reply = report(&[protocol::SETTINGS, 0x91, 0, 0, 1, 0b1011, 0x58, 2]);
         dispatch(&reply, &mut requests, &l.shared);
-        assert_eq!(rx.recv_timeout(WAIT).unwrap(), reply);
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), Some(reply));
     }
 
     #[test]
@@ -1019,6 +1048,7 @@ mod tests {
             Request {
                 key,
                 tx,
+                timeout: WAIT,
                 deadline: now,
             },
         );
@@ -1425,6 +1455,93 @@ mod tests {
             a.join().unwrap().unwrap();
         }
         assert_eq!(third.join().unwrap().unwrap(), 9);
+    }
+
+    #[test]
+    fn queued_time_does_not_count_against_the_reply_timeout() {
+        // #755: on connect the art STATUS (1 s) queued behind the burst's slow requests and timed
+        // out before it was ever written ("art: no reply from the keyboard").
+        let fake = Fake::default();
+        fake.hold.store(true, Ordering::Relaxed);
+        let l = Arc::new(link(&fake));
+        let slow: Vec<_> = (1..=MAX_IN_FLIGHT as u8)
+            .map(|cmd| {
+                let l = l.clone();
+                std::thread::spawn(move || ask(&l, cmd, WAIT))
+            })
+            .collect();
+        fake.wait_written(MAX_IN_FLIGHT);
+        let timeout = Duration::from_millis(100);
+        let art = std::thread::spawn({
+            let l = l.clone();
+            move || ask(&l, 9, timeout)
+        });
+        // Queued longer than its own timeout, then room on the wire.
+        std::thread::sleep(timeout * 2);
+        assert_eq!(fake.written().len(), MAX_IN_FLIGHT, "still queued");
+        fake.release_one();
+        fake.wait_written(MAX_IN_FLIGHT + 1);
+        assert_eq!(
+            fake.written()[MAX_IN_FLIGHT][1],
+            9,
+            "sent once there was room"
+        );
+        // Answered within its timeout from the write: a reply, not "no reply".
+        while !fake.held.lock().unwrap().is_empty() {
+            fake.release_one();
+        }
+        assert_eq!(art.join().unwrap().unwrap(), 9);
+        for a in slow {
+            a.join().unwrap().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_request_queued_past_the_queue_wait_is_never_sent() {
+        let fake = Fake::default();
+        fake.hold.store(true, Ordering::Relaxed);
+        let l = Arc::new(link(&fake));
+        let slow: Vec<_> = (1..=MAX_IN_FLIGHT as u8)
+            .map(|cmd| {
+                let l = l.clone();
+                std::thread::spawn(move || ask(&l, cmd, WAIT))
+            })
+            .collect();
+        fake.wait_written(MAX_IN_FLIGHT);
+        let started = Instant::now();
+        let err = ask(&l, 9, Duration::from_millis(100)).unwrap_err();
+        assert_eq!(err.to_string(), "no reply from the keyboard");
+        let waited = started.elapsed();
+        assert!(
+            waited >= QUEUE_WAIT && waited < QUEUE_WAIT + Duration::from_millis(100),
+            "told at the end of the queue wait, not its timeout later: {waited:?}"
+        );
+        while !fake.held.lock().unwrap().is_empty() {
+            fake.release_one();
+        }
+        for a in slow {
+            a.join().unwrap().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(fake.written().len(), MAX_IN_FLIGHT, "never sent");
+    }
+
+    #[test]
+    fn a_request_timing_out_on_the_wire_is_told_at_its_timeout() {
+        let fake = Fake::default();
+        fake.silent.store(true, Ordering::Relaxed);
+        let l = link(&fake);
+        let started = Instant::now();
+        assert_eq!(
+            status(&l, 1, Duration::from_millis(50))
+                .unwrap_err()
+                .to_string(),
+            "no reply from the keyboard"
+        );
+        assert!(
+            started.elapsed() < QUEUE_WAIT,
+            "not held for the queue allowance"
+        );
     }
 
     #[test]
