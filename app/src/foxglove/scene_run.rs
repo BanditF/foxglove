@@ -35,7 +35,11 @@
 //!   frames while they show. Copy diagnostics says which path the keyboard got.
 //! - Windows Dynamic Lighting comes first (#491): while the keyboard's owner byte says someone
 //!   else has its lights (a LampArray, `lights_owner`), the keyboard writer sends nothing
-//!   (`Yielding`); the report that frees them asks for the frame or effect again.
+//!   (`Yielding`); the report that frees them asks for the frame or effect again. A keyboard
+//!   that is also a LampArray Windows lists is drawn through Windows meanwhile (#749 b): the
+//!   output gives it `Out::Lamps` for its own LampArray, written by the same LampArray writer
+//!   as any other Dynamic Lighting device (`scene_lamps`). Without package identity Windows
+//!   lets that through only while Foxglove's window is in front.
 //! - The case: the Lights worker keeps each board's colours from before the scene and puts them
 //!   back at its end; Identify still runs (the worker does one thing at a time, and frames that
 //!   wait meanwhile collapse to the newest); colours the user picks meanwhile are what comes back.
@@ -66,7 +70,7 @@ use serde::{Deserialize, Serialize};
 use super::lighting_leases::{Arbiter, Lease, Priority};
 use super::scene_lamps::{LampStatus, LampWriter, Poster};
 use super::scene_output::{
-    CaseTarget, Hsb, KeyboardEffect, KeyboardFrame, LampTarget, Out, Outputs,
+    CaseTarget, Hsb, KeyboardEffect, KeyboardFrame, KeyboardLamps, LampTarget, Out, Outputs,
 };
 
 /// The lighting-lease connection a scene holds the keyboard under (no plugin has it: plugin
@@ -467,6 +471,24 @@ fn gather() -> (foxglove_scene::RoomMap, Vec<CaseTarget>, Vec<LampTarget>) {
     (super::scene_room::room(), cases, lamps)
 }
 
+/// The host-link keyboard's own LampArray (#749 b), paired by VID/PID, with its shape as
+/// Windows last gave it; `None` without a keyboard or when Windows lists no LampArray of it.
+/// Never blocks or looks for the keyboard.
+fn keyboard_lamps() -> Option<KeyboardLamps> {
+    let keyboard = super::devices::keyboard_key()?;
+    let arrays = super::pc_lights::snapshot().keyboard_lamp_arrays;
+    let key = super::scene_output::keyboard_lamp_key(&keyboard, &arrays)?;
+    let a = arrays
+        .iter()
+        .find(|a| format!("{:04x}:{:04x}", a.vid, a.pid) == key)?;
+    let layouts = super::pc_lights::lamp_layouts();
+    let layout = layouts.get(&(a.vid, a.pid));
+    Some(KeyboardLamps::new(
+        key,
+        layout.map(|l| (l.size_mm, l.lamps.as_slice())),
+    ))
+}
+
 /// A Lights page row as a Dynamic Lighting output: any LampArray, by its own attributes.
 fn lamp_target(r: &super::pc_lights::Row) -> Option<LampTarget> {
     (r.control == foxglove_devices::pc_lighting::Control::LampArray).then(|| LampTarget {
@@ -514,6 +536,7 @@ fn control(
         let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
         o.set_keyboard_parts(keyboard_parts());
         o.set_lamps(lamp_targets);
+        o.set_keyboard_lamps(keyboard_lamps());
     }
     // Declared after `give_back`, so dropped before it (a panic too): lets every Dynamic
     // Lighting device go before the end is reported. Package identity is read here once, off
@@ -522,6 +545,11 @@ fn control(
     let lamp_writer = LampWriter::spawn(
         Box::<super::scene_lamps::WindowsLamps>::default(),
         LAMPS.clone(),
+        // A held keyboard tries its host link once when Windows changes who may drive a
+        // LampArray (#749): Windows may have let go.
+        Some(Arc::new(|_: &str| {
+            super::lights_owner::retry("Windows changed a scene LampArray's availability");
+        })),
     );
     let lamp_poster = lamp_writer.poster();
     let (again, effects, held) = {
@@ -596,6 +624,7 @@ fn control(
             o.set_keyboard_parts(keyboard_parts());
             o.set_room(room, cases);
             o.set_lamps(lamp_targets);
+            o.set_keyboard_lamps(keyboard_lamps());
         }
         Ctl::KeyRipple(row, col) => {
             let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
@@ -622,7 +651,14 @@ fn control(
                 .unwrap_or_else(|e| e.into_inner())
                 .set_effect(*effect);
         }
-        Ctl::KeyboardArrived => again.store(true, Ordering::Relaxed),
+        Ctl::KeyboardArrived => {
+            again.store(true, Ordering::Relaxed);
+            // Paired again: the keyboard may be another one, or known only now.
+            outputs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_keyboard_lamps(keyboard_lamps());
+        }
         Ctl::Stop => {}
     });
     give_back.ended = ended;

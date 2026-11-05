@@ -16,6 +16,12 @@
 //!   at the place its own attributes give it in the room; one colour for all until those are
 //!   read. Nothing here depends on the vendor or the kind: the room map places the device by its
 //!   LampArray kind, and the writer (`scene_lamps`) goes through `Windows.Devices.Lights`.
+//! - The keyboard while Windows Dynamic Lighting holds its lights (#749 b): a keyboard that is
+//!   also a LampArray ([`keyboard_lamp_key`] pairs them by VID/PID, never by model) is drawn
+//!   through Windows like any LampArray, each lamp at its own place on the keyboard's rect
+//!   ([`KeyboardLamps`]). Only on the lights owner's word (the "held" flag), never on a timer:
+//!   held, the keyboard gets [`Out::Lamps`] and nothing on the host link; freed, host-link
+//!   frames or its effect again, in full.
 //!
 //! Each output has its own interval (never faster than the scheduler's 30 fps cap): the case
 //! [`CASE_INTERVAL`], the keyboard [`KEYBOARD_INTERVAL`], since its colour goes over the host
@@ -34,6 +40,9 @@ use foxglove_scene::{Ambient, Burst, Bursts, Effect, LightRole, Rgb, RoomMap, Sc
 
 /// The keyboard's output id in [`Pacing`].
 pub const KEYBOARD: &str = "keyboard";
+
+/// The keyboard's own LampArray's output id in [`Pacing`] (#749 b), due only while held.
+const KEYBOARD_LAMPS: &str = "keyboard-lamps";
 
 /// The keyboard gets at most 10 colours a second (host link, then BLE to the right half).
 pub const KEYBOARD_INTERVAL: Duration = Duration::from_millis(100);
@@ -84,6 +93,79 @@ pub(crate) fn lamp_colours(target: &LampTarget, lights: &[(&str, Rgb)]) -> Optio
         }
     }
     Some(out)
+}
+
+/// The keyboard's own LampArray (#749 b), for drawing the keyboard through Windows while
+/// Windows Dynamic Lighting holds its lights.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyboardLamps {
+    /// The writer's key (`vvvv:pppp`: every LampArray interface of the keyboard, USB and BLE)
+    /// and its lamp count.
+    pub target: LampTarget,
+    /// Each lamp's place on the array's bounding box in index order, as fractions (0 at the
+    /// left or top, 1 at the right or bottom); empty when Windows gives no positions (then one
+    /// colour for all).
+    pub places: Vec<[f32; 2]>,
+}
+
+impl KeyboardLamps {
+    /// From the array's shape as Windows gives it (`pc_lights::LampLayout`: its bounding box and
+    /// each lamp's position, mm); `None` before its attributes are read.
+    pub fn new(key: String, shape: Option<([f32; 2], &[[f32; 2]])>) -> Self {
+        let (lamps, places) = match shape {
+            Some(([w, h], at)) => {
+                let placed = w > 0.0 && h > 0.0 && at.iter().any(|&[x, y]| x != 0.0 || y != 0.0);
+                let places = if placed {
+                    at.iter()
+                        .map(|&[x, y]| [(x / w).clamp(0.0, 1.0), (y / h).clamp(0.0, 1.0)])
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (at.len(), places)
+            }
+            None => (0, Vec::new()),
+        };
+        KeyboardLamps {
+            target: LampTarget {
+                key,
+                lamps,
+                min_interval: None,
+            },
+            places,
+        }
+    }
+}
+
+/// `vvvv:pppp[:serial]` as its parts.
+fn key_parts(key: &str) -> Option<(u16, u16, Option<&str>)> {
+    let mut parts = key.splitn(3, ':');
+    let vid = u16::from_str_radix(parts.next()?, 16).ok()?;
+    let pid = u16::from_str_radix(parts.next()?, 16).ok()?;
+    Some((vid, pid, parts.next().filter(|s| !s.is_empty())))
+}
+
+/// The host-link keyboard's own LampArray (#749 b), paired by VID/PID, and by serial when both
+/// keys carry one: the writer's key for it (`vvvv:pppp`, which opens each of its LampArray
+/// interfaces, since Windows gives a LampArray no serial). `keyboard` is the keyboard's key
+/// (`devices::keyboard_key`); `arrays` the keyboards' LampArrays Windows lists
+/// (`pc_lights::Snapshot::keyboard_lamp_arrays`). Any keyboard that is both a Foxglove-link
+/// keyboard and a LampArray pairs this way.
+pub fn keyboard_lamp_key(
+    keyboard: &str,
+    arrays: &[foxglove_devices::pc_lighting::KeyboardLampArray],
+) -> Option<String> {
+    let (vid, pid, serial) = key_parts(keyboard)?;
+    arrays
+        .iter()
+        .filter(|a| (a.vid, a.pid) == (vid, pid))
+        .any(
+            |a| match (serial, key_parts(&a.key).and_then(|(_, _, s)| s)) {
+                (Some(k), Some(l)) => k.trim() == l.trim(),
+                _ => true,
+            },
+        )
+        .then(|| format!("{vid:04x}:{pid:04x}"))
 }
 
 /// A board the Lights worker drives: its key and each zone's id, in the driver's zone order.
@@ -439,6 +521,8 @@ pub struct Outputs {
     /// Someone else (Windows Dynamic Lighting) has the keyboard's lights (#749): no keyboard
     /// frame or effect is made at all, and the next one after goes in full.
     keyboard_held: Arc<AtomicBool>,
+    /// The keyboard's own LampArray (#749 b): while held, the keyboard is drawn through it.
+    keyboard_lamps: Option<KeyboardLamps>,
     /// Rings and sweeps over the scene (#489), drawn by these same frames.
     bursts: Bursts,
     /// Eases the ambient lights (the case's interior light) frame to frame.
@@ -463,6 +547,7 @@ impl Outputs {
             keyboard_effects: Arc::default(),
             keyboard_again: Arc::default(),
             keyboard_held: Arc::default(),
+            keyboard_lamps: None,
             bursts: Bursts::default(),
             ambient: Ambient::new(),
         };
@@ -543,6 +628,17 @@ impl Outputs {
         self.repace();
     }
 
+    /// The keyboard's own LampArray, paired with it ([`keyboard_lamp_key`]), or none (#749 b):
+    /// while Windows Dynamic Lighting holds the keyboard's lights, the keyboard is drawn through
+    /// it instead of the host link. Its next frame goes in full.
+    pub fn set_keyboard_lamps(&mut self, lamps: Option<KeyboardLamps>) {
+        if lamps == self.keyboard_lamps {
+            return;
+        }
+        self.keyboard_lamps = lamps;
+        self.repace();
+    }
+
     /// The Dynamic Lighting devices' next frames go in full: they were let go (pause, away)
     /// and show Windows' own lights until then.
     pub fn redraw_lamps(&mut self) {
@@ -564,6 +660,9 @@ impl Outputs {
         );
         if self.keyboard {
             paced.push((KEYBOARD.into(), Some(KEYBOARD_INTERVAL)));
+            if let Some(k) = &self.keyboard_lamps {
+                paced.push((KEYBOARD_LAMPS.into(), Some(k.target.interval())));
+            }
         }
         self.pacing = Pacing::new(paced);
         self.sent_case.clear();
@@ -591,11 +690,18 @@ impl Outputs {
         }
         let mut due = self.pacing.due(t);
         if self.keyboard_held.load(Ordering::Relaxed) {
-            // Held (#749): the keyboard streams nothing until the lights are free, and then
-            // gets its frame or effect in full.
+            // Held (#749): the keyboard streams nothing over the host link until the lights are
+            // free, and then gets its frame or effect in full. Its own LampArray, when paired,
+            // takes the scene through Windows meanwhile (b).
             due.retain(|id| id != KEYBOARD);
             self.sent_keyboard = None;
             self.effect_sent = false;
+        } else {
+            // Free: the host link only, and the next hold draws the LampArray in full.
+            due.retain(|id| id != KEYBOARD_LAMPS);
+            if let Some(k) = &self.keyboard_lamps {
+                self.sent_lamps.remove(&k.target.key);
+            }
         }
         if due.is_empty() {
             return Vec::new();
@@ -637,6 +743,16 @@ impl Outputs {
         }
         self.ambient.apply(&mut frame, &self.room);
         for id in due {
+            if id == KEYBOARD_LAMPS {
+                let Some((key, colors)) = self.keyboard_lamp_colours(&frame, t, bursting) else {
+                    continue;
+                };
+                if self.sent_lamps.get(&key) != Some(&colors) {
+                    self.sent_lamps.insert(key.clone(), colors.clone());
+                    out.push(Out::Lamps { key, colors });
+                }
+                continue;
+            }
             if id == KEYBOARD {
                 let lights: Vec<(&str, &str, Rgb)> = frame
                     .lights
@@ -695,6 +811,47 @@ impl Outputs {
             });
         }
         out
+    }
+
+    /// The keyboard's colours through its own LampArray (#749 b), with the writer's key: each
+    /// lamp the scene's colour at its place on the keyboard's rect in the room (both halves
+    /// together, as the array's bounding box spans them), a burst drawn over it as on the host
+    /// link. Without positions, one colour for all: the keyboard's lights mixed.
+    fn keyboard_lamp_colours(
+        &self,
+        frame: &foxglove_scene::Frame,
+        t: SceneTime,
+        bursting: bool,
+    ) -> Option<(String, Vec<[u8; 3]>)> {
+        let k = self.keyboard_lamps.as_ref()?;
+        let parts = keyboard_parts(&self.room)?;
+        let (first, rest) = parts.split_first()?;
+        let rect = rest.iter().fold(first.rect, |r, d| r.union(&d.rect));
+        let bounds = &self.room.bounds;
+        let colors = if k.places.is_empty() {
+            let lights: Vec<Rgb> = frame
+                .lights
+                .iter()
+                .filter(|l| l.device.starts_with(KEYBOARD))
+                .map(|l| l.colour)
+                .collect();
+            vec![mixed(&lights)?.0]
+        } else {
+            k.places
+                .iter()
+                .map(|&[fx, fy]| {
+                    let at = foxglove_scene::Point::new(rect.x + fx * rect.w, rect.y + fy * rect.h);
+                    let c = self.effect.colour(at, t, bounds);
+                    let c = if bursting {
+                        self.bursts.over(c, at, t, bounds)
+                    } else {
+                        c
+                    };
+                    c.0
+                })
+                .collect()
+        };
+        Some((k.target.key.clone(), colors))
     }
 }
 
@@ -1285,6 +1442,179 @@ mod tests {
                 assert!(f >= 1 && e == 0, "frames again");
             }
         }
+    }
+
+    fn kb_array(key: &str, bluetooth: bool) -> foxglove_devices::pc_lighting::KeyboardLampArray {
+        let (vid, pid, _) = key_parts(key).unwrap();
+        foxglove_devices::pc_lighting::KeyboardLampArray {
+            key: key.into(),
+            name: "Some keyboard".into(),
+            vid,
+            pid,
+            bluetooth,
+        }
+    }
+
+    /// #749 b: a host-link keyboard pairs with its own LampArray by VID/PID (and serial when
+    /// both say one), whatever the model; the writer's key opens its USB and BLE interfaces.
+    #[test]
+    fn a_link_keyboard_pairs_with_its_own_lamparray_by_vid_pid() {
+        let arrays = [
+            kb_array("1d50:615e:ABC123", false),
+            kb_array("1d50:615e", true),
+        ];
+        assert_eq!(
+            keyboard_lamp_key("1d50:615e", &arrays).as_deref(),
+            Some("1d50:615e")
+        );
+        assert_eq!(
+            keyboard_lamp_key("1d50:615e:ABC123", &arrays).as_deref(),
+            Some("1d50:615e"),
+            "the serial matches the USB interface's"
+        );
+        assert_eq!(
+            keyboard_lamp_key("1d50:615e:OTHER", &[kb_array("1d50:615e:ABC123", false)]),
+            None,
+            "another keyboard of the same model"
+        );
+        assert_eq!(
+            keyboard_lamp_key("1d50:615e:OTHER", &arrays).as_deref(),
+            Some("1d50:615e"),
+            "the BLE interface carries no serial"
+        );
+        assert_eq!(keyboard_lamp_key("feed:0001", &arrays), None, "not its");
+        assert_eq!(keyboard_lamp_key("1d50:615e", &[]), None, "no LampArray");
+        assert_eq!(keyboard_lamp_key("not a key", &arrays), None);
+    }
+
+    #[test]
+    fn keyboard_lamps_take_their_places_from_windows() {
+        let at = [[0.0, 0.0], [100.0, 50.0], [300.0, 100.0]];
+        let k = KeyboardLamps::new("k".into(), Some(([200.0, 100.0], &at[..])));
+        assert_eq!(k.target.lamps, 3);
+        assert_eq!(k.places, [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]);
+        let unplaced = KeyboardLamps::new("k".into(), Some(([200.0, 100.0], &[[0.0; 2]; 4][..])));
+        assert_eq!((unplaced.target.lamps, unplaced.places.len()), (4, 0));
+        let unread = KeyboardLamps::new("k".into(), None);
+        assert_eq!((unread.target.lamps, unread.places.len()), (0, 0));
+        assert_eq!(unread.target.interval(), LAMP_INTERVAL);
+    }
+
+    /// The Corne's LampArray as a firmware might describe it: 42 lamps across a box spanning
+    /// both halves, left to right.
+    fn corne_lamps() -> KeyboardLamps {
+        let at: Vec<[f32; 2]> = (0..42).map(|i| [i as f32 * 7.0, 30.0]).collect();
+        KeyboardLamps::new("1d50:615e".into(), Some(([294.0, 60.0], &at[..])))
+    }
+
+    /// #749 b: held, the keyboard is drawn through its own LampArray (a colour per lamp at its
+    /// place, paced and only on change) with nothing on the host link; freed, the host link
+    /// gets its frame or effect in full and the LampArray nothing; held again, the LampArray
+    /// in full.
+    #[test]
+    fn a_held_keyboard_with_a_lamparray_is_drawn_through_windows() {
+        for effects in [false, true] {
+            let (room, cases) = desk();
+            let sweep = Effect::Sweep {
+                stops: vec![ORANGE, Rgb([0x20, 0x40, 0xf0])],
+                angle_deg: 0.0,
+                period_ms: 2000,
+            };
+            let mut o = Outputs::new(sweep, room, cases);
+            o.keyboard_effects().store(effects, Ordering::Relaxed);
+            o.set_keyboard_lamps(Some(corne_lamps()));
+            let held = o.keyboard_held();
+            // (host link, keyboard LampArray writes with their times, case)
+            let run = |o: &mut Outputs, from: i64, to: i64| {
+                let (mut link, mut lamps, mut case) = (0, Vec::new(), 0);
+                for ms in (from..to).step_by(10) {
+                    for out in o.frame(SceneTime(ms)) {
+                        match out {
+                            Out::Keyboard(_) | Out::KeyboardEffect(_) => link += 1,
+                            Out::Lamps { key, colors } => {
+                                assert_eq!(key, "1d50:615e");
+                                lamps.push((ms, colors));
+                            }
+                            Out::Case { .. } => case += 1,
+                        }
+                    }
+                }
+                (link, lamps, case)
+            };
+            let (link, lamps, _) = run(&mut o, 0, 500);
+            assert!(link > 0 && lamps.is_empty(), "free: the host link only");
+            held.store(true, Ordering::Relaxed);
+            let (link, lamps, case) = run(&mut o, 500, 2500);
+            assert_eq!(link, 0, "held: nothing on the host link");
+            assert!(case > 10, "the case keeps its frames");
+            assert!(
+                lamps.len() > 5,
+                "the scene through Windows: {}",
+                lamps.len()
+            );
+            assert!(
+                lamps.iter().all(|(_, c)| c.len() == 42),
+                "a colour per lamp"
+            );
+            assert!(
+                lamps.windows(2).all(|w| w[1].0 - w[0].0 >= 45),
+                "never faster than LAMP_INTERVAL"
+            );
+            assert!(
+                lamps.iter().any(|(_, c)| c[0] != c[41]),
+                "lamps at their own places"
+            );
+            held.store(false, Ordering::Relaxed);
+            let (link, lamps, _) = run(&mut o, 2500, 2600);
+            assert!(link >= 1, "freed: the host link in full");
+            assert!(lamps.is_empty(), "and nothing through Windows");
+            if effects {
+                assert_eq!(link, 1, "the effect again, once");
+            }
+            held.store(true, Ordering::Relaxed);
+            let (link, lamps, _) = run(&mut o, 2600, 2700);
+            assert_eq!(link, 0);
+            assert!(!lamps.is_empty(), "held again: the LampArray in full");
+        }
+    }
+
+    /// A still look through the keyboard's LampArray: one write, then none until it is freed
+    /// and held again. Without lamp positions: one colour for every lamp.
+    #[test]
+    fn a_held_keyboard_lamparray_gets_only_changes() {
+        let (room, cases) = desk();
+        let still = Effect::Breathe {
+            from: ORANGE,
+            to: ORANGE,
+            period_ms: 4000,
+        };
+        let mut o = Outputs::new(still, room, cases);
+        o.set_keyboard_lamps(Some(KeyboardLamps::new(
+            "1d50:615e".into(),
+            Some(([0.0; 2], &[[0.0; 2]; 42][..])),
+        )));
+        o.keyboard_held().store(true, Ordering::Relaxed);
+        let lamps = |o: &mut Outputs, from: i64| -> Vec<Vec<[u8; 3]>> {
+            (from..from + 1000)
+                .step_by(10)
+                .flat_map(|ms| o.frame(SceneTime(ms)))
+                .filter_map(|out| match out {
+                    Out::Lamps { colors, .. } => Some(colors),
+                    _ => None,
+                })
+                .collect()
+        };
+        let first = lamps(&mut o, 0);
+        assert_eq!(first.len(), 1, "once: {first:?}");
+        assert_eq!(first[0].len(), 1, "one colour for every lamp");
+        assert!(
+            (0..3).all(|i| first[0][0][i].abs_diff(ORANGE.0[i]) <= 1),
+            "{first:?}"
+        );
+        assert!(lamps(&mut o, 1000).is_empty());
+        // No LampArray paired (none listed): held means nothing for the keyboard at all.
+        o.set_keyboard_lamps(None);
+        assert!(lamps(&mut o, 2000).is_empty());
     }
 
     /// A key ripple (#489) over a still scene: the keyboard changes while the ring passes, then
