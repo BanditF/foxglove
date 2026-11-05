@@ -343,7 +343,40 @@ fn build_from_zmk_data(vid: u16, pid: u16, data: ZmkData) -> Result<ZmkLayout, B
     let active_layout = proto_layouts
         .get(active_idx)
         .ok_or_else(|| format!("Invalid active layout index: {active_idx}"))?;
-    let active_keys: Vec<Key> = active_layout
+    let active_keys = physical_keys(active_layout);
+    // Foxglove (#796): the pages draw the same layout the overlay does.
+    crate::foxglove::key_layout::from_keyboard(vid, pid, studio_layouts(&data.physical_layouts));
+    let num_keys = active_keys.len();
+    crate::foxglove::boards::keymap_keys(num_keys);
+
+    let definition = KeyboardDefinition {
+        vid,
+        pid,
+        rows: 1,
+        cols: num_keys,
+        layouts: vec![KeyboardLayout {
+            name: ACTIVE_LAYOUT_NAME.to_string(),
+            keys: active_keys,
+        }],
+    };
+
+    let snapshot = snapshot_from_resolved(&data.resolved_layers, num_keys);
+
+    Ok(ZmkLayout {
+        definition,
+        snapshot: Mutex::new(snapshot),
+        supported_behaviors: data.supported_behaviors,
+        behavior_metadata: data.behavior_metadata,
+    })
+}
+
+/// A ZMK Studio physical layout as the overlay draws it: each key's size and place in key units
+/// (Studio sends hundredths), placed where its centre lands after turning around its pivot; the
+/// turn itself (`r`, degrees clockwise) is applied when it is drawn. Keys in Studio's order.
+pub(crate) fn physical_keys(
+    layout: &zmk_studio_api::proto::zmk::keymap::PhysicalLayout,
+) -> Vec<Key> {
+    layout
         .keys
         .iter()
         .enumerate()
@@ -372,29 +405,37 @@ fn build_from_zmk_data(vid: u16, pid: u16, data: ZmkData) -> Result<ZmkLayout, B
                 r: angle_deg,
             }
         })
-        .collect();
-    let num_keys = active_keys.len();
-    crate::foxglove::boards::keymap_keys(num_keys);
+        .collect()
+}
 
-    let definition = KeyboardDefinition {
-        vid,
-        pid,
-        rows: 1,
-        cols: num_keys,
-        layouts: vec![KeyboardLayout {
-            name: ACTIVE_LAYOUT_NAME.to_string(),
-            keys: active_keys,
-        }],
-    };
-
-    let snapshot = snapshot_from_resolved(&data.resolved_layers, num_keys);
-
-    Ok(ZmkLayout {
-        definition,
-        snapshot: Mutex::new(snapshot),
-        supported_behaviors: data.supported_behaviors,
-        behavior_metadata: data.behavior_metadata,
-    })
+/// Foxglove (#796): every physical layout the keyboard has, for the pages' key layout: the same
+/// keys the overlay draws ([`physical_keys`]), the active one marked.
+pub(crate) fn studio_layouts(
+    layouts: &zmk_studio_api::proto::zmk::keymap::PhysicalLayouts,
+) -> crate::foxglove::key_layout::Supplied {
+    use crate::foxglove::key_layout::{LayoutKey, LayoutSource, Supplied};
+    Supplied {
+        source: LayoutSource::Keyboard,
+        layouts: layouts
+            .layouts
+            .iter()
+            .map(|l| {
+                let keys = physical_keys(l)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, k)| {
+                        LayoutKey::new(
+                            egui::Rect::from_min_size(egui::pos2(k.x, k.y), egui::vec2(k.w, k.h)),
+                            k.r,
+                            i,
+                        )
+                    })
+                    .collect();
+                (l.name.clone(), keys)
+            })
+            .collect(),
+        active: layouts.active_layout_index as usize,
+    }
 }
 
 /// Builds a keymap snapshot from the device's resolved layers. Bindings beyond

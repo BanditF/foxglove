@@ -756,6 +756,7 @@ pub fn connected(vid: u16, pid: u16, product: &str) {
         );
     }
     super::led_map::note_current(board.as_ref());
+    super::key_layout::connected(vid, pid);
     // Its keymap tells its key count again; the last keyboard's doesn't carry over.
     KEYMAP_KEYS.store(0, std::sync::atomic::Ordering::Relaxed);
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = board;
@@ -780,6 +781,11 @@ pub fn keymap_keys(n: usize) {
     KEYMAP_KEYS.store(n, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// How many keys the connected keyboard's keymap has; 0 before a keymap was read.
+pub fn keymap_key_count() -> usize {
+    KEYMAP_KEYS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// What the keymap editor should say about the connected board's Studio build (#580), from its
 /// profile: empty without a profile or a `[studio]` table.
 pub fn studio_notes() -> Vec<String> {
@@ -789,16 +795,15 @@ pub fn studio_notes() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// How a board is drawn: its profile's drawing, else a plain grid of its keymap's keys (#559),
-/// shared out between a split's halves (the drawing is one half).
+/// The board's key order and key units: its profile's drawing, else a plain grid of its keymap's
+/// keys (#559), shared out between a split's halves (the drawing is one half). Zones, LED maps
+/// and saved LED points index this; the pages draw the keys where
+/// [`key_layout`](super::key_layout) puts them (#796), the keyboard's own layout first.
 pub fn drawing(board: Option<&Board>) -> Drawing {
-    plain_or_profile(
-        board,
-        KEYMAP_KEYS.load(std::sync::atomic::Ordering::Relaxed),
-    )
+    plain_or_profile(board, keymap_key_count())
 }
 
-fn plain_or_profile(board: Option<&Board>, keys: usize) -> Drawing {
+pub(super) fn plain_or_profile(board: Option<&Board>, keys: usize) -> Drawing {
     if let Some(d) = board.and_then(|b| b.drawing.clone()) {
         return d;
     }

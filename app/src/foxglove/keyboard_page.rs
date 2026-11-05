@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, CornerRadius, RichText, Sense, Stroke};
 
-use super::boards::Drawing;
+use super::key_layout::KeyLayout;
 use super::keyboard_actions::{self, Action, Group};
 use super::keyboard_settings::{self as ks, Firmware};
 use super::settings_ui::{card, row};
@@ -470,12 +470,14 @@ fn short_label(a: &Action) -> &str {
         .unwrap_or(&a.label)
 }
 
-/// What the board drawing shows (#392): the board's shape from its profile, the left panel's
-/// last frame, the art playing on the right, and the underglow's colour.
+/// What the board drawing shows (#392): the board's keys from its one layout (#796: the
+/// keyboard's own, else its profile's, else a guess), the left panel's last frame, the art
+/// playing on the right, and the underglow's colour.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BoardView {
-    pub drawing: Drawing,
-    /// A split: the drawing is the left half and the right mirrors it. Else one piece (#559).
+    pub layout: KeyLayout,
+    /// A split: the layout's first part is the left half, its second the right. Else one piece
+    /// (#559).
     pub split: bool,
     /// The left panel as the PC last drew it.
     pub panel: Option<super::screens::Frame>,
@@ -497,7 +499,7 @@ pub struct BoardView {
 /// The board drawing's state from the cached keyboard state; nothing here asks the keyboard.
 fn board_view(ctx: &egui::Context) -> BoardView {
     let board = super::boards::current();
-    let drawing = super::boards::drawing(board.as_ref());
+    let layout = super::key_layout::current();
     let parts = super::parts::Parts::of(board.as_ref());
     let snap = super::screens::snapshot();
     let panel = snap
@@ -538,7 +540,7 @@ fn board_view(ctx: &egui::Context) -> BoardView {
     BoardView {
         panel_shape: shape_of(screens.as_deref(), super::screen_roles::Role::Info),
         art_shape: shape_of(screens.as_deref(), super::screen_roles::Role::Art),
-        drawing,
+        layout,
         split: parts.is_split(),
         panel,
         art,
@@ -590,8 +592,9 @@ thread_local! {
     static ART_TEXTURE: std::cell::RefCell<Option<(usize, egui::TextureHandle)>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The board drawing (#392): both halves drawn from the board profile, each with its screen,
-/// keys and underglow. A screen opens Screens and the underglow opens Lights.
+/// The board drawing (#392): both halves drawn from the keyboard's layout (#796), each with its
+/// screen, keys (turned where the layout turns them) and underglow, and the chip saying where
+/// the layout came from. A screen opens Screens and the underglow opens Lights.
 pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
     let p = theme::palette(ui);
     let mut go = None;
@@ -601,10 +604,14 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
         .inner_margin(egui::Margin::same(20))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            let d = &v.drawing;
+            let layout = &v.layout;
+            super::key_layout::source_chip(ui, layout);
+            if let Some(note) = layout.source.note() {
+                ui.weak(note);
+            }
+            ui.add_space(6.0);
             let unit = KEY_UNIT;
-            let (w, h) = d.size();
-            let half = egui::vec2(w * unit, h * unit);
+            let half = layout.size * unit;
             let between = 56.0;
             let height = SCREEN_HEIGHT + 12.0 + half.y + 14.0 + 8.0 + 10.0 + 12.0;
             let (rect, _) =
@@ -717,17 +724,20 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
                     go = Some(Page::Screens);
                 }
                 let keys_top = screen_rect.bottom() + 12.0;
-                for k in d.keys(right) {
+                for k in layout.part(i) {
                     let key = egui::Rect::from_min_size(
-                        egui::pos2(x + k.min.x * unit, keys_top + k.min.y * unit),
-                        k.size() * unit - egui::vec2(GAP, GAP),
+                        egui::pos2(x + k.rect.min.x * unit, keys_top + k.rect.min.y * unit),
+                        k.rect.size() * unit - egui::vec2(GAP, GAP),
                     );
-                    ui.painter().rect(
-                        key,
-                        CornerRadius::same(4),
-                        p.control,
-                        Stroke::new(1.0, p.control_line),
-                        egui::StrokeKind::Inside,
+                    ui.painter().add(
+                        egui::epaint::RectShape::new(
+                            key,
+                            CornerRadius::same(4),
+                            p.control,
+                            Stroke::new(1.0, p.control_line),
+                            egui::StrokeKind::Inside,
+                        )
+                        .with_angle(k.r.to_radians()),
                     );
                     #[cfg(test)]
                     hits.keys.push(key);
@@ -920,7 +930,11 @@ pub mod tests {
         );
         // The drawing: one piece, its whole board in the middle of the card.
         let view = BoardView {
-            drawing: second_desk::board().drawing.unwrap(),
+            layout: crate::foxglove::key_layout::from_drawing(
+                &second_desk::board().drawing.unwrap(),
+                false,
+                crate::foxglove::key_layout::LayoutSource::Profile,
+            ),
             split: false,
             left_label: "KEYBOARD · USB".into(),
             // #560: its 128x32 info screen, drawn in its own shape.
@@ -996,11 +1010,11 @@ pub mod tests {
 
     /// The board as the previews draw it: the Corne's profile, a panel frame, art, orange lights.
     pub fn sample_board() -> BoardView {
-        let corne = crate::foxglove::fixtures::users_desk::board().drawing;
+        let corne = crate::foxglove::fixtures::users_desk::board();
         let (art, library) = super::super::art_ui::tests::sample();
         let (_, image) = super::super::art_ui::showing_now(&art, &library);
         BoardView {
-            drawing: corne.unwrap_or_default(),
+            layout: crate::foxglove::key_layout::resolve(Some(&corne), &[], 0),
             split: true,
             panel: super::super::theme_preview::sample_screens().frame,
             art: image,
@@ -1035,6 +1049,54 @@ pub mod tests {
                 ..Default::default()
             },
             ..Default::default()
+        }
+    }
+
+    /// #796 AC 1: with the keyboard's Studio layout, the page draws each half's keys where the
+    /// overlay draws them (the same offsets between keys, at the page's key size), turned, with
+    /// the "Layout from the keyboard" chip.
+    #[test]
+    fn a_studio_layout_draws_on_the_page_as_on_the_overlay() {
+        use crate::foxglove::key_layout::tests::{corne_from_keyboard, corne_studio};
+        let overlay = crate::protocols::zmk::physical_keys(&corne_studio().layouts[0]);
+        let layout = corne_from_keyboard();
+        let view = BoardView {
+            layout: layout.clone(),
+            ..sample_board()
+        };
+        let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+        board_frame(&ctx, &view, vec![]);
+        let hits = LAST_HITS.take().unwrap();
+        assert_eq!(hits.keys.len(), 42);
+        let mut drawn = hits.keys.iter();
+        for part in &layout.parts {
+            let keys: Vec<&egui::Rect> = drawn.by_ref().take(part.len()).collect();
+            let o = |i: usize| egui::pos2(overlay[part[i].index].x, overlay[part[i].index].y);
+            for i in 0..part.len() {
+                let page = keys[i].min - keys[0].min;
+                let theirs = (o(i) - o(0)) * KEY_UNIT;
+                assert!(
+                    (page - theirs).length() < 0.01,
+                    "key {}: {page:?} vs {theirs:?}",
+                    part[i].index
+                );
+                let size = egui::vec2(overlay[part[i].index].w, overlay[part[i].index].h);
+                assert!(
+                    (keys[i].size() - (size * KEY_UNIT - egui::vec2(GAP, GAP))).length() < 0.01
+                );
+            }
+        }
+        // Without it, the profile's keys exactly as before (#392).
+        board_frame(&ctx, &sample_board(), vec![]);
+        let hits = LAST_HITS.take().unwrap();
+        let d = crate::foxglove::fixtures::users_desk::board()
+            .drawing
+            .unwrap();
+        let first = hits.keys[0].min;
+        for (k, want) in hits.keys.iter().zip(d.keys(false)) {
+            assert!(
+                ((k.min - first) - (want.min - d.keys(false)[0].min) * KEY_UNIT).length() < 0.01
+            );
         }
     }
 

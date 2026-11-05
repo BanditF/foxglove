@@ -894,6 +894,52 @@ fn keyboard_page_renders() {
     assert!(count(&with, DARK.warn) > count(&without, DARK.warn));
 }
 
+/// #796: the Keyboard page drawing from each layout source, each with its chip (the Corne from
+/// its Studio layout with its turned thumbs, from its profile, and a board guessed from 36 keys),
+/// and the zone drawing on the keyboard's layout.
+#[test]
+fn key_layout_renders() {
+    use crate::foxglove::key_layout::{self, tests::corne_from_keyboard};
+    use crate::foxglove::keyboard_page::{board, tests::sample_board, BoardView};
+    let ground = Color32::from_rgb(0x09, 0x0a, 0x0c);
+    // The screens stay dark: their textures are cached per thread, one context's at a time.
+    let sample = || BoardView {
+        panel: None,
+        art: None,
+        ..sample_board()
+    };
+    let draw = |v: BoardView| {
+        render_ui(&preview_ctx(), egui::vec2(980.0, 360.0), ground, |ui| {
+            board(ui, &v);
+        })
+    };
+    let keyboard = draw(BoardView {
+        layout: corne_from_keyboard(),
+        ..sample()
+    });
+    let profile = draw(sample());
+    let guessed = draw(BoardView {
+        layout: key_layout::resolve(None, &[], 36),
+        split: false,
+        ..sample()
+    });
+    keep("ui-796-board-keyboard.png", &keyboard);
+    keep("ui-796-board-profile.png", &profile);
+    keep("ui-796-board-guessed.png", &guessed);
+    assert_ne!(keyboard, profile, "the keyboard's own layout is drawn");
+    assert_ne!(profile, guessed);
+    let corne = crate::foxglove::fixtures::users_desk::board();
+    let drawing = crate::foxglove::boards::drawing(Some(&corne));
+    let zones = crate::foxglove::light_zones::from_profile(&corne, &drawing).unwrap();
+    let line = crate::foxglove::light_zones::line(Some(&zones), &corne_from_keyboard());
+    let zoned = render_ui(&preview_ctx(), egui::vec2(760.0, 420.0), ground, |ui| {
+        crate::foxglove::theme::card(ui).show(ui, |ui| {
+            crate::foxglove::zones_ui::keyboard(ui, &line, true);
+        });
+    });
+    keep("ui-796-zones-keyboard.png", &zoned);
+}
+
 /// The left panel as the preview shows it: a keyboard that answered HELLO, a frame of the
 /// panel drawn from a pattern, and a game in front.
 pub(crate) fn sample_screens() -> crate::foxglove::screens::Snapshot {

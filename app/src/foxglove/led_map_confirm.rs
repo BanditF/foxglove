@@ -89,7 +89,10 @@ pub struct Fix {
 pub struct Confirm {
     pub board: String,
     pub name: String,
+    /// The key order and key units the chain is in (the profile's, #796).
     pub drawing: Drawing,
+    /// Where the keys are drawn: the keyboard's own layout first (#796), in `drawing`'s order.
+    pub layout: super::key_layout::KeyLayout,
     pub halves: u8,
     pub per_half: usize,
     pub source: Source,
@@ -215,6 +218,7 @@ impl Confirm {
             board: board.id.clone(),
             name: board.name.clone(),
             drawing,
+            layout: super::key_layout::of(Some(board)),
             halves,
             per_half,
             source: Source::Guess,

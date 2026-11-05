@@ -1276,8 +1276,8 @@ pub mod tests {
         zones: Option<&foxglove_devices::pc_lighting::Zones>,
     ) -> super::super::light_zones::Line {
         let board = crate::foxglove::fixtures::users_desk::board();
-        let drawing = crate::foxglove::boards::drawing(Some(&board));
-        super::super::light_zones::line(zones, &drawing)
+        let layout = crate::foxglove::key_layout::resolve(Some(&board), &[], 0);
+        super::super::light_zones::line(zones, &layout)
     }
 
     /// The Corne with only its firmware's report: zones unknown (#611).
@@ -1405,7 +1405,10 @@ pub mod tests {
         check.source = foxglove_devices::pc_lighting::ZoneSource::Check;
         board.lighting = None;
         let mine = View {
-            zones: Some(super::super::light_zones::line(Some(&check), &drawing)),
+            zones: Some(super::super::light_zones::line(
+                Some(&check),
+                &crate::foxglove::key_layout::resolve(Some(&board), &[], 0),
+            )),
             ..sample()
         };
         let text = card_text(&mine, true);
@@ -1426,7 +1429,8 @@ pub mod tests {
     pub fn zone_line_of(board: &crate::foxglove::boards::Board) -> super::super::light_zones::Line {
         use super::super::light_zones as lz;
         let drawing = crate::foxglove::boards::drawing(Some(board));
-        lz::line(lz::keyboard(Some(board), &drawing, None).as_ref(), &drawing)
+        let layout = crate::foxglove::key_layout::resolve(Some(board), &[], 0);
+        lz::line(lz::keyboard(Some(board), &drawing, None).as_ref(), &layout)
     }
 
     /// No keyboard: nothing read, no RGB key known.
@@ -1787,7 +1791,10 @@ pub mod tests {
             let mut check = super::super::light_zones::from_profile(&board, &drawing).unwrap();
             check.source = foxglove_devices::pc_lighting::ZoneSource::Check;
             View {
-                zones: Some(super::super::light_zones::line(Some(&check), &drawing)),
+                zones: Some(super::super::light_zones::line(
+                    Some(&check),
+                    &crate::foxglove::key_layout::resolve(Some(&board), &[], 0),
+                )),
                 ..sample()
             }
         };
