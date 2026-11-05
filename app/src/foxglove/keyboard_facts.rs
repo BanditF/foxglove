@@ -211,7 +211,10 @@ impl Sources {
         }
         let firmware = || self.firmware.as_ref().map(Look::of);
         if self.held {
-            self.scene.clone().or_else(|| self.card.clone()).or_else(firmware)
+            self.scene
+                .clone()
+                .or_else(|| self.card.clone())
+                .or_else(firmware)
         } else {
             firmware()
         }
@@ -467,7 +470,12 @@ mod tests {
         s
     }
 
-    fn pick(hue: u16, sat: u8, brightness: u8, effect: u8) -> super::super::pc_lights::KeyboardLights {
+    fn pick(
+        hue: u16,
+        sat: u8,
+        brightness: u8,
+        effect: u8,
+    ) -> super::super::pc_lights::KeyboardLights {
         super::super::pc_lights::KeyboardLights {
             hue,
             sat,
