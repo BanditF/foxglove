@@ -197,11 +197,14 @@ pub enum Msg {
     /// `scene_output::keyboard_lamp_key`) like any Dynamic Lighting device; `None` is lights
     /// off. Not saved: the keyboard keeps its own look over its link. `calibration` is the
     /// keyboard's calibration key (`devices::keyboard_key`): its colour calibration goes on the
-    /// colour, as on the keyboard's own link.
+    /// colour, as on the keyboard's own link. `animated`: the scene engine draws the pick
+    /// (Breathe, Spectrum, Swirl, #768, `scene_card`), so the worker lets the LampArray go
+    /// rather than show a steady colour over it.
     KeyboardLamp {
         key: String,
         look: Option<KeyboardLights>,
         calibration: Option<String>,
+        animated: bool,
     },
     /// Windows let go of the keyboard's lights (its owner report): the keyboard's LampArray
     /// is let go too, and the link draws it again.
@@ -489,6 +492,9 @@ pub struct Worker {
     /// Lighting holds the keyboard's lights (#749 b).
     keyboard_lamp: Option<KeyboardLamp>,
 }
+
+/// The Keyboard card's pick while a scene draws the held keyboard through Windows (#768).
+const SCENE_FIRST: &str = "a scene is running; this look shows when it ends";
 
 /// The keyboard's own LampArray as the Lights worker draws it (#749 b): the same host handle as
 /// any Dynamic Lighting device's, opened by the same opener, one colour on every lamp.
@@ -925,7 +931,8 @@ impl Worker {
                 key,
                 look,
                 calibration,
-            } => self.keyboard_lamp_look(&key, look, calibration),
+                animated,
+            } => self.keyboard_lamp_look(&key, look, calibration, animated),
             Msg::KeyboardLampRelease => {
                 if let Some(k) = self.keyboard_lamp.take() {
                     eprintln!(
@@ -1247,16 +1254,36 @@ impl Worker {
 
     /// The Keyboard card's pick while Windows Dynamic Lighting holds the keyboard's lights
     /// (#749 b): through the keyboard's own LampArray, opened on the first pick like any
-    /// Dynamic Lighting device. An effect that shows the colour shows it steady (as "Match
-    /// keyboard" copies it); a rainbow the keyboard makes itself has no colour to show, so the
-    /// lamps keep theirs and the status says why. The colour goes through the keyboard's
+    /// Dynamic Lighting device. An effect the scene engine animates (`animated`, #768:
+    /// `scene_card` draws it on the scene tick) lets the steady handle go, so the two never
+    /// draw over each other. Otherwise an effect that shows the colour shows it steady (as
+    /// "Match keyboard" copies it); a rainbow with nothing to draw it has no colour to show,
+    /// so the lamps keep theirs and the status says why. A running scene draws the keyboard
+    /// meanwhile: the pick is kept and shows at its end. The colour goes through the keyboard's
     /// calibration (`calibration`, its key).
     fn keyboard_lamp_look(
         &mut self,
         key: &str,
         look: Option<KeyboardLights>,
         calibration: Option<String>,
+        animated: bool,
     ) {
+        if let Some(l) = look.filter(|_| animated) {
+            let Some(name) = self.keyboard_lamp_array(key).map(|a| a.name.clone()) else {
+                self.status = Some("The keyboard isn't listed under Dynamic Lighting now".into());
+                return;
+            };
+            self.keyboard_lamp = None;
+            self.status = Some(if self.scene.is_some() {
+                format!("{name}: {SCENE_FIRST}")
+            } else {
+                format!(
+                    "{name}: {} runs through Windows Dynamic Lighting",
+                    l.effect_label()
+                )
+            });
+            return;
+        }
         if self.keyboard_lamp.as_ref().is_none_or(|k| k.key != key) {
             // Another keyboard's first: its devices are let go before these are claimed.
             self.keyboard_lamp = None;
@@ -1316,6 +1343,12 @@ impl Worker {
         let Some(k) = self.keyboard_lamp.as_mut() else {
             return;
         };
+        if self.scene.is_some() {
+            // The scene draws the keyboard through Windows (#761): its end puts this back.
+            k.shown = Some(colour);
+            self.status = Some(format!("{}: {SCENE_FIRST}", k.name));
+            return;
+        }
         let sent = k.sent(colour);
         let result = k.handle.set_all(sent);
         let available = k.handle.access().available;
@@ -2632,6 +2665,7 @@ mod tests {
                     key: KB.into(),
                     look,
                     calibration: None,
+                    animated: false,
                 },
                 false,
                 &mut no_wait(),
@@ -2703,6 +2737,7 @@ mod tests {
                 key: KB.into(),
                 look: None,
                 calibration: None,
+                animated: false,
             },
             true,
             &mut no_wait(),
@@ -2764,6 +2799,7 @@ mod tests {
                     key: KB.into(),
                     look,
                     calibration: Some(cal_key.into()),
+                    animated: false,
                 },
                 false,
                 &mut no_wait(),
@@ -2781,6 +2817,87 @@ mod tests {
         look(&mut w, None);
         assert_eq!(drained(), vec![(KB.to_string(), None, [0, 0, 0])]);
         calibration::global().set_device(cal_key, None);
+    }
+
+    /// #768: an effect the scene engine animates (`scene_card`) lets the steady handle go and
+    /// writes nothing here, so the two never draw over each other; the status names it. A
+    /// running scene comes first: a steady pick is kept and shows at its end, and an animated
+    /// one says it waits.
+    #[test]
+    fn an_animated_pick_lets_go_and_a_scene_comes_first() {
+        let calls = LampCalls::default();
+        let opened = Arc::new(Mutex::new(0));
+        let opener: LampOpener = {
+            let (calls, opened) = (calls.clone(), opened.clone());
+            Box::new(move |f: &Found| {
+                if f.key == "1d50:615e" {
+                    *opened.lock().unwrap() += 1;
+                }
+                Some(Box::new(FakeLamps {
+                    key: f.key.clone(),
+                    count: f.zones.len(),
+                    calls: calls.clone(),
+                    access: Arc::default(),
+                }) as Box<dyn pcl::LampHandle>)
+            })
+        };
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(opener);
+        w.scan(&hid_with_corne(), &mut nothing(), false, true);
+        const KB: &str = "1d50:615e";
+        let look = |w: &mut Worker, look: Option<KeyboardLights>, animated: bool| {
+            w.handle(
+                Msg::KeyboardLamp {
+                    key: KB.into(),
+                    look,
+                    calibration: None,
+                    animated,
+                },
+                false,
+                &mut no_wait(),
+            );
+        };
+        // The keyboard's writes only (a scene's end puts the other devices back too).
+        let drained = || {
+            calls
+                .lock()
+                .unwrap()
+                .drain(..)
+                .filter(|c| c.0 == KB)
+                .collect::<Vec<_>>()
+        };
+        look(&mut w, Some(solid(0)), false);
+        assert_eq!(drained(), vec![(KB.to_string(), None, [255, 0, 0])]);
+        let spectrum = KeyboardLights {
+            effect: 2,
+            ..solid(0)
+        };
+        look(&mut w, Some(spectrum), true);
+        assert!(drained().is_empty(), "the scene engine draws it");
+        assert_eq!(
+            w.status.as_deref(),
+            Some("Eyelash Corne: Spectrum runs through Windows Dynamic Lighting")
+        );
+        // Let go: Windows giving the lamps back puts no steady colour over the effect.
+        w.handle(Msg::LampChanged(KB.into()), false, &mut no_wait());
+        assert!(drained().is_empty());
+        // A scene runs: a steady pick is kept for its end; an animated one waits too.
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        look(&mut w, Some(solid(240)), false);
+        assert!(drained().is_empty(), "the scene draws the keyboard");
+        let waits = "Eyelash Corne: a scene is running; this look shows when it ends";
+        assert_eq!(w.status.as_deref(), Some(waits));
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        assert_eq!(drained(), vec![(KB.to_string(), None, [0, 0, 255])]);
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        look(&mut w, Some(spectrum), true);
+        assert_eq!(w.status.as_deref(), Some(waits));
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        assert!(
+            drained().is_empty(),
+            "the effect comes back from scene_card"
+        );
+        assert_eq!(*opened.lock().unwrap(), 2, "opened again after the let-go");
     }
 
     /// #691: "Match keyboard" on a Dynamic Lighting device follows the keyboard's report (so

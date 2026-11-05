@@ -164,6 +164,7 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 /// effect it is showing when the user ticked "Keep running on the keyboard".
 pub fn quit() {
     end(true);
+    super::scene_card::quit();
 }
 
 /// A keyboard connected (the device bus's Connected, after the lease arbiter's own reconnect):
@@ -173,6 +174,8 @@ pub fn quit() {
 pub fn keyboard_connected() {
     // "Find my LEDs" lights its LED again on the keyboard that came back.
     super::led_map::keyboard_connected();
+    // The Keyboard card's look through Windows pairs the keyboard again (#768).
+    super::scene_card::devices_changed();
     if running().is_some() {
         ARRIVED.store(true, Ordering::Relaxed);
         tell(Ctl::KeyboardArrived);
@@ -350,6 +353,9 @@ pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
     if running.as_ref().is_some_and(|r| !r.thread.is_finished()) {
         return false;
     }
+    // The scene draws the held keyboard: the Keyboard card's look through Windows waits for
+    // its end (#768).
+    super::scene_card::scene_starting();
     let (tx, rx) = mpsc::channel();
     let own = tx.clone();
     let shown = name.to_string();
@@ -441,6 +447,7 @@ pub fn layer_sweep(colour: Rgb) {
 /// Foxglove paused or resumed (#404).
 pub fn pause_changed(paused: bool) {
     tell(Ctl::Paused(paused));
+    super::scene_card::pause_changed(paused);
 }
 
 /// The Lights worker found a different set of boards, or the user moved a device on the
@@ -448,6 +455,7 @@ pub fn pause_changed(paused: bool) {
 pub fn devices_changed() {
     super::scene_room::changed();
     tell(Ctl::Devices);
+    super::scene_card::devices_changed();
 }
 
 /// The keyboard's LEDs by part now: its firmware's, else its board profile's (#561).
@@ -481,7 +489,7 @@ fn gather() -> (foxglove_scene::RoomMap, Vec<CaseTarget>, Vec<LampTarget>) {
 /// The host-link keyboard's own LampArray (#749 b), paired by VID/PID, with its shape as
 /// Windows last gave it and the keyboard's colour calibration; `None` without a keyboard or when Windows lists no LampArray of it.
 /// Never blocks or looks for the keyboard.
-fn keyboard_lamps() -> Option<KeyboardLamps> {
+pub(super) fn keyboard_lamps() -> Option<KeyboardLamps> {
     let keyboard = super::devices::keyboard_key()?;
     let arrays = super::pc_lights::snapshot().keyboard_lamp_arrays;
     let key = super::scene_output::keyboard_lamp_key(&keyboard, &arrays)?;
@@ -725,6 +733,9 @@ impl Drop for GiveBack {
         if let Some(ctx) = PAGE.get() {
             ctx.request_repaint();
         }
+        // The Keyboard card's look through Windows again, while Windows holds the keyboard
+        // (#768); not when Foxglove quits.
+        super::scene_card::scene_ended(QUITTING.load(Ordering::Relaxed));
     }
 }
 
