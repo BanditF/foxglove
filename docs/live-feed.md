@@ -45,7 +45,7 @@ offer the sub-protocols `foxglove-live.v1, <token>`.
 | `t` | Direction | Body |
 |---|---|---|
 | `hello` | → wallpaper | `v`, `topics`, `board` (`name`, `keys`: `[x, y, w, h, r]` in key units, rotation about the key's centre), `state`, `quiet` |
-| `state` | → wallpaper | `layer` (`index`, `name`), `art`, `battery` (`left`, `right`), `link` (`connected`, `output`, `profile`) |
+| `state` | → wallpaper | `layer` (`index`, `name`), `art`, `battery` (`left`, `right`), `link` (`connected`, `output`, `profile`), `lights` (below) |
 | `keys` | → wallpaper | `e`: `[index, 1 down / 0 up, ms since the batch's first]` |
 | `board` | → wallpaper | the geometry changed |
 | `quiet` | → wallpaper | `why`: `paused`, `away` or `fullscreen`; nothing follows until `live` |
@@ -53,7 +53,15 @@ offer the sub-protocols `foxglove-live.v1, <token>`.
 | `hi` | → Foxglove | `wallpaper`: its name |
 | `paused` | → Foxglove | `paused`: Wallpaper Engine paused the wallpaper (`setPaused`) |
 
-A client ignores any `t` it doesn't know. The reserved topics `stats` (PC stats) and `notes`
+`lights` (#40) is the keyboard's lights as it reports them, left out until it has: `on`,
+`color` (`#rrggbb`: the chosen colour at full brightness, so a dim keyboard still gives a
+usable accent), `brightness` (0-100), `effect` (its name, such as `Solid` or `Breathe`) and
+`rainbow` (true for an effect that makes its own colours, such as Spectrum, so `color` isn't
+what the keyboard shows). A wallpaper can take `color` as its accent while `on` and not
+`rainbow`, so the wallpaper matches the keyboard. It comes from the `keyboard.lighting.*`
+facts (docs/local-api.md) and changes only when the keyboard reports a change.
+
+A client ignores any `t` it doesn't know, and any field it doesn't know. The reserved topics `stats` (PC stats) and `notes`
 (notifications) come later without a new version.
 
 ## Privacy and gates
