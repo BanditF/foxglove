@@ -250,7 +250,7 @@ void art_local_sim_driver(void) {
     note("push with a wrong CRC: error 5, store 3");
     send_set(144, 112, 1);
     PC(0xD6, 0x03);
-    note("too big (65535 > 32768): error 2, store 5");
+    note("too big (65535 over 32768): error 2, store 5");
     begin(0xFFFF, 0);
     note("data past the announced length: error 4");
     begin(4, 0);

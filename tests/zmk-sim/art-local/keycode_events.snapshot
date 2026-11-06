@@ -37,7 +37,7 @@ artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32
 artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
 artlocal: pc sends D6 03
 artlocal: reply 83 failed error 5, 0/20, link 2; v10 store 3 received 20 of 32768, set -1 of 2, slots 2 used 0x00
-artlocal: -- too big (65535 > 32768): error 2, store 5
+artlocal: -- too big (65535 over 32768): error 2, store 5
 artlocal: pc sends D6 01 FF FF 00 00 00 00
 artlocal: reply 81 failed error 2, 0/65535, link 2; v10 store 5 received 0 of 32768, set -1 of 2, slots 2 used 0x00
 artlocal: -- data past the announced length: error 4
