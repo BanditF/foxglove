@@ -347,6 +347,22 @@ pub fn result(place: &Place) -> Option<Status> {
         .and_then(|s| s.results.iter().find(|r| &r.place == place).cloned())
 }
 
+/// The first device row `is` picks, with whether the worker is busy: the keyboard card's lights
+/// for a focused LampArray keyboard and the switcher's tint (#825), without cloning the whole
+/// list each frame. `None` before the first scan or with no such row.
+pub fn find_row(is: impl Fn(&Row) -> bool) -> Option<(Row, bool)> {
+    SNAPSHOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|s| {
+            s.devices
+                .iter()
+                .find(|r| is(r))
+                .map(|r| (r.clone(), s.busy))
+        })
+}
+
 /// Queues a request; a no-op before [`start`].
 pub fn send(msg: Msg) {
     queue(msg);

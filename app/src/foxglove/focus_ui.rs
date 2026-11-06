@@ -59,6 +59,14 @@ impl Focused {
     }
 }
 
+/// The colours a keyboard reached through Windows Dynamic Lighting shows (#825): its Lights
+/// row's last write (`device_thumb::Tint::of_row`), from the worker's cache; `None` without a
+/// row (a VIA keyboard's own LampArray is left to its link, #754).
+pub fn lamp_tint(k: &Keyboard) -> Option<Tint> {
+    super::pc_lights::find_row(|r| super::other_keyboards::is_row_of(k, r))
+        .map(|(row, _)| Tint::of_row(&row))
+}
+
 /// The card title for `focus`: its name, else `fallback` (no keyboard found yet).
 pub fn title<'a>(focus: Option<&'a Focused>, fallback: &'a str) -> &'a str {
     focus
@@ -165,6 +173,10 @@ impl Switcher {
             .find(|r| r.focused && r.connected && r.read_only.is_none())
         {
             row.tint = tint;
+        } else if let Some(row) = s.rows.iter_mut().find(|r| r.focused && r.connected) {
+            // A keyboard whose lights go through Windows (#825): its lights row's last write,
+            // from the Lights worker's cache, as its Other devices row was tinted.
+            row.tint = kf::current().and_then(|k| lamp_tint(&k));
         }
         s
     }

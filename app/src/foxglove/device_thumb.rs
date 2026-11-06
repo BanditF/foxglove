@@ -165,8 +165,9 @@ impl Tint {
         Tint::through(&row.key, &zones)
     }
 
-    /// Part `i` of `n`'s colour: `None` when unknown, black when off.
-    fn colour(&self, i: usize, n: usize) -> Option<Color32> {
+    /// Part `i` of `n`'s colour: `None` when unknown, black when off. The keyboard card's lamp
+    /// drawing spreads them the same way (#825).
+    pub fn colour(&self, i: usize, n: usize) -> Option<Color32> {
         match self {
             Tint::Lit(cs) if !cs.is_empty() => {
                 Some(cs[(i * cs.len() / n.max(1)).min(cs.len() - 1)])
