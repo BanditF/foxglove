@@ -29,17 +29,20 @@ use foxglove_devices::pc_lighting::{
     self as pc_lighting, openrgb, CatalogDevice, Control, Protocol,
 };
 
+use super::other_keyboards::{self as others, Keyboards};
 use super::pc_lights::{self, Msg, Place, Row, Snapshot, Status, Tone};
 use super::pc_lights_add::{self as add, Wizard};
 use super::theme;
 
-/// What the card shows: the worker's snapshot. The keyboard isn't listed: it has the page's
-/// Keyboard card (#533).
+/// What the card shows: the worker's snapshot. The focused keyboard isn't listed: it has the
+/// page's Keyboard card (#533); the others are, with "Show in Foxglove" (#820).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct View {
     pub pc: Snapshot,
     /// Each LampArray's kind and lamp positions by VID/PID, for the thumbnails (#804).
     pub lamps: BTreeMap<(u16, u16), pc_lights::LampLayout>,
+    /// The keyboards the focus knows (#820).
+    pub keyboards: Keyboards,
 }
 
 /// What a click asks for.
@@ -75,6 +78,8 @@ pub enum Intent {
     OpenRgbConnect,
     /// Open Windows' Dynamic Lighting settings (another app has a device's lights, #795 O10).
     OpenDynamicLighting,
+    /// "Show in Foxglove": make this keyboard (by its focus key) the focus (#820).
+    Show(String),
 }
 
 /// The colours being picked per device (by key), until Apply.
@@ -125,8 +130,10 @@ pub fn show(ui: &mut egui::Ui) {
         return;
     }
     pc_lights::page_shown(ui.ctx());
+    let pc = pc_lights::snapshot();
     let view = View {
-        pc: pc_lights::snapshot(),
+        keyboards: Keyboards::now(&pc.devices),
+        pc,
         lamps: pc_lights::lamp_layouts(),
     };
     let mut guard = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
@@ -198,6 +205,8 @@ pub fn show(ui: &mut egui::Ui) {
             Intent::OpenDynamicLighting => {
                 super::notifications_ui::open_settings_page(super::lights_owner::DL_SETTINGS)
             }
+            // The switcher's own pick: C1 saves and announces it, and the pages follow.
+            Intent::Show(key) => super::focus_ui::pick(ui.ctx(), &key),
         }
     }
 }
@@ -271,15 +280,27 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
             ui.add_space(2.0);
             status_here(ui, st, None);
         }
-        if s.devices.is_empty() {
+        // The keyboards that aren't the focus and have no device row, first (#820); the focused
+        // one's own row isn't listed again.
+        let keyboards = v.keyboards.own_rows(&s.devices);
+        let listed: Vec<&Row> = s.devices.iter().filter(|r| v.keyboards.listed(r)).collect();
+        if listed.is_empty() && keyboards.is_empty() {
             ui.add_space(4.0);
             ui.label(RichText::new("No PC or peripheral lights found.").color(p.muted));
         }
-        for row in &s.devices {
+        for k in keyboards {
+            ui.add_space(4.0);
+            let detail = v.keyboards.detail(k);
+            if others::row(ui, k, &detail, v.keyboards.layouts.get(&k.key)) {
+                out.push(Intent::Show(k.key.clone()));
+            }
+        }
+        for row in listed {
             ui.add_space(4.0);
             let status = placed(&s.results, &Place::Row(row.key.clone()));
             let lamps = super::scene_room::vid_pid(&row.key).and_then(|k| v.lamps.get(&k));
-            device(ui, row, status, lamps, s.busy, draft, &mut out);
+            let focus = v.keyboards.row_focus(row);
+            device(ui, row, status, lamps, focus, s.busy, draft, &mut out);
         }
         ui.add_space(4.0);
         ui.separator();
@@ -778,11 +799,16 @@ pub fn row_note(row: &Row) -> String {
 /// Identify where the row has Identify, the same request as the button. On a row too narrow
 /// for it, it gives way (the battery list's size, then none: [`thumb::row_size`]) from what the
 /// row's other contents needed last pass.
+///
+/// A keyboard that isn't the focus (`focus`, #820) has "Show in Foxglove" at the row's end; the
+/// focused LampArray-only keyboard, still listed for its colours, a muted "shown in Foxglove" chip.
+#[allow(clippy::too_many_arguments)]
 fn device(
     ui: &mut egui::Ui,
     row: &Row,
     status: Option<&Status>,
     lamps: Option<&pc_lights::LampLayout>,
+    focus: others::RowFocus<'_>,
     busy: bool,
     draft: &mut Draft,
     out: &mut Vec<Intent>,
@@ -850,6 +876,9 @@ fn device(
             if let Some(chip) = lamp {
                 theme::hint_chip(ui, chip.text, Some(chip.hover), Some(chip.dot));
             }
+            if focus == others::RowFocus::Shown {
+                others::shown_chip(ui);
+            }
             // What the last click on this device did: on its row, open or closed.
             if let Some(st) = status.filter(|st| st.tone == Tone::Done) {
                 done_chip(ui, st, Some(&row.name));
@@ -858,6 +887,12 @@ fn device(
                 .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Room for the buttons' outline at the row's clipped edge.
                     ui.add_space(2.0);
+                    if let others::RowFocus::Show(k) = focus {
+                        // At the end, where a keyboard's own row has it.
+                        if others::link(ui, k) {
+                            asked.push(Intent::Show(k.key.clone()));
+                        }
+                    }
                     if let Some(entry) = &row.entry {
                         more(ui, row, entry, &mut removing, &mut asked);
                     }
@@ -1401,6 +1436,7 @@ pub mod tests {
             },
             // The mouse's two lamps where Windows places them (#804's thumbnail).
             lamps: crate::foxglove::fixtures::users_desk::lamps(),
+            keyboards: Default::default(),
         }
     }
 
@@ -1412,6 +1448,7 @@ pub mod tests {
                 ..Default::default()
             },
             lamps: Default::default(),
+            keyboards: Default::default(),
         }
     }
 
@@ -1439,6 +1476,7 @@ pub mod tests {
                 ..Default::default()
             },
             lamps: desk::lamps(),
+            keyboards: Default::default(),
         }
     }
 
@@ -1944,7 +1982,7 @@ pub mod tests {
     }
 
     /// The card as the casual viewer sees it: every device row and More sources closed.
-    fn shown(v: &View) -> String {
+    pub fn shown(v: &View) -> String {
         frame_text(
             v,
             &mut Draft::default(),

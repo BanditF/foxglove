@@ -23,6 +23,15 @@ pub const READ_ONLY: &str = "read-only";
 /// The list's title.
 pub const LIST_TITLE: &str = "Keyboard shown in Foxglove";
 
+/// The action that makes a keyboard the focus: Other devices' link on a keyboard that isn't
+/// shown (#820). Its hover, [`show_hover`], is the list rows' hover here.
+pub const SHOW: &str = "Show in Foxglove";
+
+/// "Show {name} in Foxglove": a list row's hover and Other devices' link's.
+pub fn show_hover(name: &str) -> String {
+    format!("Show {name} in Foxglove")
+}
+
 /// The ▾ after the focused keyboard's name, from the icon font every face falls back to.
 pub const CARET: &str = egui_phosphor::regular::CARET_DOWN;
 
@@ -370,7 +379,7 @@ fn list_row(ui: &mut egui::Ui, row: &Row) -> egui::Response {
     if row.focused {
         response
     } else {
-        response.on_hover_text(format!("Show {} in Foxglove", row.name))
+        response.on_hover_text(show_hover(&row.name))
     }
 }
 
