@@ -1,5 +1,6 @@
-//! Foxglove's own notifications to the user (low battery on a half or another device): the one
-//! place they go out.
+//! Foxglove's own notifications to the user: the one place they go out. Today: low battery on a
+//! half or another device (`battery`, `peripherals`), a firmware update done or failed
+//! (`firmware_update`), and a new health warning or failure (`health_notice`).
 //!
 //! - **On the wallpaper first:** while a paired live wallpaper is connected, not paused, and
 //!   said `caps: ["notify"]` in its `hi`, the notification goes to it over the live feed
@@ -23,19 +24,47 @@ pub struct Note {
     pub level: Level,
 }
 
+/// What a notification is about, for its log line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Battery,
+    Firmware,
+    Health,
+}
+
 /// Shows a notification: on the wallpaper when one is there to show it, else as a Windows
 /// notification.
-pub fn show(title: &str, body: &str, level: Level) {
+pub fn show(kind: Kind, title: &str, body: &str, level: Level) {
     let note = Note {
         title: title.to_string(),
         body: body.to_string(),
         level,
     };
-    // Every notice so far is a battery one; the sitting checks look for this line
-    // (tests/sitting-parity.toml), whichever way it then goes.
-    eprintln!("Foxglove: battery notice: {title}");
-    if let Err(note) = super::live_feed::notify(note) {
+    // The sitting checks look for `battery notice: ` (tests/sitting-parity.toml), whichever way
+    // it then goes.
+    match kind {
+        Kind::Battery => eprintln!("Foxglove: battery notice: {title}"),
+        Kind::Firmware => eprintln!("Foxglove: firmware notice: {title}"),
+        Kind::Health => eprintln!("Foxglove: health notice: {title}"),
+    }
+    if let Err(note) = route(note) {
         toast(&note);
+    }
+}
+
+#[cfg(not(test))]
+fn route(note: Note) -> Result<(), Note> {
+    super::live_feed::notify(note)
+}
+
+/// Tests go straight to the fake sink unless the thread asked for the live feed (its end-to-end
+/// test), so a test running beside it never sees its notes routed.
+#[cfg(test)]
+fn route(note: Note) -> Result<(), Note> {
+    if test_toasts::ROUTE.get() {
+        super::live_feed::notify(note)
+    } else {
+        Err(note)
     }
 }
 
@@ -55,15 +84,28 @@ pub fn toast(note: &Note) {
 #[cfg(test)]
 pub mod test_toasts {
     use super::Note;
+    use std::cell::{Cell, RefCell};
     use std::sync::Mutex;
 
     static SHOWN: Mutex<Vec<Note>> = Mutex::new(Vec::new());
+    thread_local! {
+        /// This thread's toasts (tests run in parallel, each on its own thread).
+        static MINE: RefCell<Vec<Note>> = const { RefCell::new(Vec::new()) };
+        /// This thread's notes go through the live feed (the end-to-end test).
+        pub static ROUTE: Cell<bool> = const { Cell::new(false) };
+    }
 
     pub fn record(note: &Note) {
         SHOWN
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(note.clone());
+        MINE.with(|m| m.borrow_mut().push(note.clone()));
+    }
+
+    /// The toasts this thread showed, taken.
+    pub fn take_mine() -> Vec<Note> {
+        MINE.with(|m| std::mem::take(&mut *m.borrow_mut()))
     }
 
     /// The recorded toasts whose title starts with `prefix` (tests run in parallel, so each

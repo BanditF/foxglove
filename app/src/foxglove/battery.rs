@@ -312,7 +312,12 @@ pub fn start() {
                 if let Some(threshold) = alerts.level(part, *percent) {
                     if notices_on() {
                         let (title, text) = notice(part, threshold, *percent);
-                        super::notice::show(&title, &text, level_for(threshold));
+                        super::notice::show(
+                            super::notice::Kind::Battery,
+                            &title,
+                            &text,
+                            level_for(threshold),
+                        );
                     }
                 }
             }

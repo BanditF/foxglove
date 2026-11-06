@@ -11,6 +11,11 @@ works and what doesn't, so a change doesn't need a flash of its own to be checke
   failed, with a reason in plain words); the thresholds are data
   (`crates/foxglove-link/data/health.toml`).
 - Announced by HELLO capability bit 28 (`HOST_LINK_CAP_HEALTH`).
+- Notifications (#814, `app/src/foxglove/health_notice.rs`): a WARN or FAIL row (the keyboard's or
+  a feature's) that wasn't there at the previous read is a notification ("<item>: warning" or
+  "<item> failed", the reason, "See Keyboard health on the App page."), through `notice::show`, so
+  a live wallpaper may show it. At most once a day per subsystem and item; the last day is kept in
+  the store's `[health_notices]` section. Raw HID refusals and "not tested" rows stay on the card.
 
 Nothing runs on its own: counters move when their subsystem's event happens, and the boot
 self-test and the live values are worked out when the block is read. No timer, no boot work.

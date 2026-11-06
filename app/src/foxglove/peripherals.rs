@@ -460,7 +460,7 @@ impl Output for AppOutput {
 
     fn notice(&mut self, title: &str, text: &str, level: super::live_wire::Level) {
         if super::battery::device_notices_on() {
-            super::notice::show(title, text, level);
+            super::notice::show(super::notice::Kind::Battery, title, text, level);
         }
     }
 

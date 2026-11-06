@@ -44,6 +44,7 @@ pub mod focus;
 pub mod foreground;
 pub mod gpu_reset;
 pub mod health;
+pub mod health_notice;
 pub mod identity;
 pub mod key_layout;
 pub mod keyboard_actions;

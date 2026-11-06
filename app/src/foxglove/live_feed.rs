@@ -1821,12 +1821,18 @@ mod tests {
 
         // The stand-in declares `notify`: Foxglove's notification goes to it. Its ack holds the
         // toast; a second it ignores falls back to the (fake) toast sink.
+        crate::foxglove::notice::test_toasts::ROUTE.set(true);
         w.say(r#"{"t":"hi","wallpaper":"stand-in","caps":["notify"]}"#);
         let mut sent = None;
         let mut tries = 0;
         for _ in 0..50 {
             tries += 1;
-            crate::foxglove::notice::show("LiveE2E acked", "drawn", wire::Level::Warn);
+            crate::foxglove::notice::show(
+                crate::foxglove::notice::Kind::Battery,
+                "LiveE2E acked",
+                "drawn",
+                wire::Level::Warn,
+            );
             while let Some(m) = w.next(Duration::from_millis(100)) {
                 if m.starts_with(r#"{"t":"notify""#) {
                     sent = Some(m);
@@ -1841,7 +1847,12 @@ mod tests {
         assert!(sent.contains(r#""title":"LiveE2E acked","body":"drawn","level":"warn""#));
         let v: serde_json::Value = serde_json::from_str(&sent).unwrap();
         w.say(&format!(r#"{{"t":"notified","id":{}}}"#, v["id"]));
-        crate::foxglove::notice::show("LiveE2E ignored", "not drawn", wire::Level::Info);
+        crate::foxglove::notice::show(
+            crate::foxglove::notice::Kind::Battery,
+            "LiveE2E ignored",
+            "not drawn",
+            wire::Level::Info,
+        );
         let deadline = Instant::now() + wire::ACK_LIMIT + Duration::from_secs(3);
         while crate::foxglove::notice::test_toasts::titled("LiveE2E ignored").is_empty()
             && Instant::now() < deadline

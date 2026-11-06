@@ -103,7 +103,7 @@ without a new version.
 
 ## Notifications
 
-Foxglove's own notifications (a low battery on a half or on another device; `app/src/foxglove/notice.rs`)
+Foxglove's own notifications (a low battery on a half or on another device, a firmware update done or failed, a new health warning or failure; `app/src/foxglove/notice.rs`)
 go to the wallpaper first when Settings → Live wallpaper → "Show notifications on the wallpaper
 when it's on screen" is on (the default) and at least one connected, unpaused client said
 `caps: ["notify"]` in its `hi`. Any wallpaper or program may declare it.

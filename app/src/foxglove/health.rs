@@ -6,6 +6,8 @@
 //!   "Check now", and `health.read`. One read at a time; nothing polls.
 //! - The log gets one line per connect (the summary) and one whenever the set of failed rows
 //!   changes.
+//! - A WARN or FAIL that wasn't there at the previous read is a notification, at most once a day
+//!   per kind (`health_notice`).
 //! - Features register a function that returns their rows ([`register`]); the card and the API
 //!   show them under the keyboard's. The row type is `foxglove_link::health::HealthRow` (the art
 //!   keys #701, LampArray, lighting zones and colour-aware effects use the same one).
@@ -122,6 +124,10 @@ pub fn read_now(why: Why) -> Option<Vec<HealthRow>> {
     if let Some(line) = log_line(why, &before, &rows) {
         eprintln!("{line}");
     }
+    // A new warning or failure, the keyboard's or a feature's, as a notification (#814).
+    let mut all = rows.clone();
+    all.extend(feature_rows());
+    super::health_notice::check(&all);
     Some(rows)
 }
 
