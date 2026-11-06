@@ -517,6 +517,14 @@ impl<'a, D: Device> Runner<'a, D> {
             );
             Ok(())
         };
+        // An app killed mid-run (the lab's own app restarts) never sends its D7 0D 00 on quit,
+        // and the opt-in it left would send these presses to the host. Nothing reads the
+        // opt-in back, so there's no found state to restore: off is the board's own state, and
+        // the step leaves it off.
+        let cleared = !k.subscribed && !k.keep_found_opt_in;
+        if cleared {
+            subscribe(self, false)?;
+        }
         let before = fresh(self)?;
         let events = self
             .device
@@ -566,8 +574,10 @@ impl<'a, D: Device> Runner<'a, D> {
                 let after = fresh(self)?;
                 if after.right_set != before.right_set {
                     return Ok(format!(
-                        "the board stepped the art: set {} -> {} ({after})",
-                        before.right_set, after.right_set
+                        "{}the board stepped the art: set {} -> {} ({after})",
+                        if cleared { "D7 0D 00 sent first; " } else { "" },
+                        before.right_set,
+                        after.right_set
                     ));
                 }
                 ensure!(
