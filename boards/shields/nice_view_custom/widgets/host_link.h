@@ -57,14 +57,21 @@
  *                                   rotation (quarter turns cw), format (0 = 1 bit; 1 RGB565 and
  *                                   2 2-bit grey reserved), ops u16 (bit 0 D5 rows, 1 D7 06/07
  *                                   readback, 2 D6 art, 3 D6 slots, 4 D5 07 rows-at), stride u16,
- *                                   rows per report, readback half (0xff none), version (1), 0 0 0
+ *                                   rows per report, readback half (0xff none), version, then
+ *                                   3 bytes that version 1 leaves 0.
+ *      Descriptor version 2 (#832), art targets only: stride is the largest blob in bytes, and the
+ *      3 bytes are the flash slots (0 none), the refresh class (0 fast, 1 e-paper with partial
+ *      refresh, 2 e-paper full refresh only) and the shortest frame interval in 100 ms units
+ *      (0 no limit). A board whose art target leaves all four 0 (and every other kind) sends
+ *      version 1, so an app reads it as before; an app from before v2 ignores the bytes. The PC
+ *      takes these over its board profile's values (foxglove_link::protocol::ArtLimits).
  *   07 ROWS_AT y u16, offset u16, n u8 (<= 25), n bytes      no reply (#289)
  *      Writes n bytes at y * stride + offset of the panel's back buffer (offset < stride; n may run
  *      on into the next rows), for rows wider than a report and panels taller than 255 rows.
  *      Out-of-range writes are dropped. ROWS, ROWS_AT and FILL all write the same back buffer, so
  *      one frame may mix them freely; the next PRESENT shows the result, last write wins per byte.
  *      The Corne: 0 left display 160x68 rot 1; 1 panel 64x52 at (2,106) on 0 (D5 02-05 address it);
- *      2 right display; 3 right art area 68x140 at (0,20) on 2.
+ *      2 right display; 3 right art area 68x140 at (0,20) on 2 (v2: 16384 B, 8 slots, fast, 0).
  *   08 CAPS                         reply D5 88: n words (u8), then n u32 LE capability words
  *                                   from word 2 on (bytes 3-6 word 2, 7-10 word 3, ... at most 7)
  *      HELLO v2 (foxglove_link::hello_v2 has the PC side): the HELLO reply is one full
@@ -547,7 +554,10 @@ enum { SCREEN_OP_ROWS = 1 << 0, SCREEN_OP_READBACK = 1 << 1, SCREEN_OP_ART = 1 <
 // The descriptor's format. Only formats the board draws are advertised; 1 and 2 are reserved
 // until a board with such a display exists (#289: Toucan2 and Halcyon are 1-bit too).
 enum { SCREEN_FMT_1BIT = 0, SCREEN_FMT_RGB565 = 1, SCREEN_FMT_GRAY2 = 2 };
+// Version 1, or 2 for an art target that fills in its limits (#832; screens_reply).
 #define SCREEN_DESCRIPTOR_VERSION 1
+#define SCREEN_DESCRIPTOR_VERSION_ART 2
+enum { SCREEN_REFRESH_FAST = 0, SCREEN_REFRESH_EPAPER_PARTIAL = 1, SCREEN_REFRESH_EPAPER_FULL = 2 };
 #define SCREEN_UNSET 0xff
 
 struct screen_descriptor {
@@ -557,11 +567,14 @@ struct screen_descriptor {
     uint8_t rotation;       // region -> parent as seen (displays: native -> as seen), quarter turns
     uint8_t format;         // 0 = 1 bit, MSB first, 1 = ink as seen
     uint16_t ops;
-    uint16_t stride;
+    uint16_t stride; // row bytes; for an art target (v2) its largest blob in bytes
     uint8_t rows_per_report;
     uint8_t readback_half; // D7 06's half for a display, 0xff otherwise
-    uint8_t version;
-    uint8_t reserved[3];
+    uint8_t version;       // set by screens_reply; tables leave it 0
+    // v2, art targets only (#832); 0 elsewhere. Bytes 21-23 (v1's reserved bytes).
+    uint8_t art_slots;           // flash slots, 0 none
+    uint8_t art_refresh;         // SCREEN_REFRESH_*
+    uint8_t art_min_frame_100ms; // shortest frame interval in 100 ms units, 0 no limit
 } __attribute__((packed));
 
 extern const struct screen_descriptor foxglove_screens[];

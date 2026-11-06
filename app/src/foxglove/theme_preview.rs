@@ -1309,6 +1309,8 @@ fn screens_art_for_another_board_renders() {
         rotation: 0,
         refresh: Default::default(),
         min_frame_ms: 0,
+        max_blob: None,
+        slots: None,
     }]));
     let target = ArtTarget::resolve();
     let mut samples = Samples::full();

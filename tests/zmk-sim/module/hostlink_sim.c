@@ -194,8 +194,9 @@ static void driver(void) {
     note("hello v2: the capability words past HELLO's (D5 08)");
     SEND(0xD5, 0x08);
 
+    // The Corne's four (the right's two as with the relay): the art target is v2 (#832).
     note("screens: the descriptors, then one past the end");
-    for (uint8_t i = 0; i <= 2; i++) {
+    for (uint8_t i = 0; i <= 4; i++) {
         SEND(0xD5, 0x06, i);
     }
 

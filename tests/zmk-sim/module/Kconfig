@@ -24,6 +24,11 @@ config NICE_VIEW_HOST_PANEL_TIMEOUT_S
     int
     default 0
 
+# The shield's symbol (Kconfig.defconfig): the art target's largest blob in screens_corne.c (#832).
+config NICE_VIEW_ART_RELAY_MAX_SIZE
+    int
+    default 16384
+
 config FOXGLOVE_SIM_ART_KEYS
     bool "Simulator: build &art_next / &art_prev (art_keys.c), with a printing board-side step"
 

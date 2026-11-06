@@ -181,3 +181,22 @@ firmware from before it described its screens (HELLO `SCREENS`) and LEDs (lamp p
 A keyboard whose firmware describes neither, and that has no profile, is taken to have that
 board's screens and LEDs: the info panel's and art screen's sizes, and the LEDs by part. Only the
 built-in profiles are read for it, and one of them (the Eyelash Corne's) says so.
+
+### Screens: the profile and the firmware
+
+A profile's `[[screens]]` give each screen its kind, size, format, rotation, name, and how it
+redraws: `refresh` (`fast`, the default, `epaper-partial` or `epaper-full`) and `min_frame_ms`
+(the shortest time between two frames; 0, the default, is no limit). Firmware that describes its
+screens (D5 06 SCREENS, `host_link.h`) wins over the profile for what it says:
+
+| What | Descriptor v1 | Descriptor v2 (art targets, #832) | Else |
+|---|---|---|---|
+| size, rotation, format | yes | yes | the profile |
+| refresh class | | byte 22: 0 fast, 1 e-paper partial, 2 e-paper full | the profile's `refresh` |
+| shortest frame interval | | byte 23, in 100 ms units (0 no limit) | the profile's `min_frame_ms` |
+| largest piece | | `stride` (bytes 16-17), in bytes | the art status's buffer, then 16 KiB |
+| kept places | | byte 21 (0 hides the places) | the art status's count |
+
+A board whose art target leaves all four v2 fields 0 sends version 1, and an app from before v2
+reads a v2 descriptor as a v1 one, so old firmware with a new app and new firmware with an old app
+both work as before. The Corne's art target is v2: 16384 bytes, 8 places, fast, no limit.

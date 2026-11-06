@@ -95,8 +95,9 @@ pub struct Screen {
     pub min_frame_ms: u32,
 }
 
-/// How a screen redraws (#833, the profile's `refresh`). The firmware's descriptor will win
-/// when it says (#340 design note §3); until then the profile's word stands.
+/// How a screen redraws (#833, the profile's `refresh`). An art target's v2 descriptor wins
+/// when the firmware sends one (#832, `screen_roles::of_descriptors`); else the profile's word
+/// stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Refresh {

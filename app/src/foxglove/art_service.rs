@@ -59,6 +59,9 @@ pub struct Snapshot {
     pub background: bool,
     /// Counts claims on `busy`, so a background job sees that a user's command took it over.
     pub claim: u64,
+    /// The art screen's limits from its firmware's v2 descriptor (#832), read when the snapshot
+    /// is taken; `None` from older firmware (the art status and the defaults stand).
+    pub target: Option<protocol::ArtLimits>,
 }
 
 /// What a job does, for the strip's words (`art_words`).
@@ -306,7 +309,9 @@ pub struct Handle {
 
 impl Handle {
     pub fn snapshot(&self) -> Snapshot {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        s.target = super::screens::art_target();
+        s
     }
 
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {

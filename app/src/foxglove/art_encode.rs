@@ -1066,6 +1066,8 @@ mod target_tests {
             rotation,
             refresh: Refresh::Fast,
             min_frame_ms: 0,
+            max_blob: None,
+            slots: None,
         }
     }
 
@@ -1349,6 +1351,7 @@ mod pace_tests {
             rows_per_report: 0,
             readback_half: None,
             version: 1,
+            art: None,
         }];
         let s = of_descriptors(&described, Some(&b));
         assert_eq!(
