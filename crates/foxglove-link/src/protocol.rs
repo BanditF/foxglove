@@ -222,6 +222,11 @@ pub mod art {
     pub const ERASE: u8 = 0x08;
     /// In place of COMMIT (#522): the right keeps the blob in a flash slot without showing it.
     pub const STORE: u8 = 0x09;
+    /// The user's "animate on e-paper" (#842, HELLO v2 `ART_PACE`): flags u8, bit 0
+    /// [`ANIMATE_EPAPER`]. Replies like STATUS; changes no op's state.
+    pub const ANIMATE: u8 = 0x0A;
+    /// ANIMATE's bit 0: art may animate on an e-paper art target (held to its shortest frame).
+    pub const ANIMATE_EPAPER: u8 = 1 << 0;
     /// The right's status version with STORE (art_relay.h `ART_RELAY_STORE_STATUS_VERSION`).
     pub const STORE_RIGHT_VERSION: u8 = 10;
     pub const DATA_MAX: usize = 27;
@@ -465,6 +470,16 @@ pub fn art_select(set: i8) -> Vec<u8> {
 
 pub fn art_status() -> Vec<u8> {
     vec![ART, art::STATUS]
+}
+
+/// D6 0A ANIMATE (#842): whether art may animate on an e-paper art target. Only to firmware with
+/// HELLO v2's `ART_PACE` ([`crate::hello_v2::capabilities::art_pace`]).
+pub fn art_animate(epaper: bool) -> Vec<u8> {
+    vec![
+        ART,
+        art::ANIMATE,
+        if epaper { art::ANIMATE_EPAPER } else { 0 },
+    ]
 }
 
 /// The part of `name` a flash slot keeps: at most [`art::NAME_LEN`] bytes, cut on a character

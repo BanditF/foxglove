@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "art_relay.h"
@@ -49,8 +50,12 @@ BUILD_ASSERT(ART_STORE_W <= 255 && ART_STORE_H <= 255, "NVA1 sizes are u8");
 // The drawer, as peripheral_status.h has it: art_play runs on the display work queue; art_hold
 // (freeze the current frame until the next art_play) and art_redraw_all from any thread;
 // art_builtin_index is the built-in set to use for index (a random one when out of range).
+// The drawer plays every set, built-in, kept or pushed, at the target's pace (art_pace.h, #842):
+// a frame every art_pace_frame_ms(set), or the first frame only when that is 0; art_repace (display
+// queue) times the set on screen again after the pace changed.
 struct custom_art_set;
 void art_play(const struct custom_art_set *set);
+void art_repace(void);
 void art_hold(void);
 void art_redraw_all(void);
 int art_builtin_index(int index);
@@ -76,6 +81,10 @@ int art_store_save(uint8_t slot, const char name[16]);
 int art_store_store(uint8_t slot, const char name[16]);
 int art_store_erase(uint8_t slot);
 
+// D6 0A ANIMATE (#842): the PC lets art animate on an e-paper target (on) or not. A change re-times
+// the set on screen (art_repace); a fast target plays as before either way.
+void art_store_animate(bool on);
+
 // The store's state now: struct art_relay_status without its version (the front end's) and the
 // underglow (rgb: the relay's). Any thread.
 void art_store_status(struct art_relay_status *out);
@@ -94,6 +103,8 @@ int art_local_store(uint8_t slot, const uint8_t name[16]);
 int art_local_select(int8_t set);
 int art_local_save(uint8_t slot, const uint8_t name[16]);
 int art_local_erase(uint8_t slot);
+// D6 0A ANIMATE flags u8 (bit 0: animate on e-paper; the rest 0): done in the reply.
+int art_local_animate(uint8_t flags);
 // D6 07: sends D6 87 at once (status 0, or 4 for a slot the board doesn't have).
 int art_local_slot(uint8_t slot);
 void art_local_report(uint8_t out[ART_RELAY_REPORT_SIZE]);

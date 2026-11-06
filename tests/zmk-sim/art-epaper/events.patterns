@@ -1,0 +1,7 @@
+# E-paper art pace (#842): word 2's ART_PACE and the target's v2 descriptor (e-paper 1, 10 x
+# 100 ms); built-in, pushed and kept sets show their first frame only until D6 0A 01, then play
+# held to 1 s; a still set stays still; a repeat of the same ANIMATE re-times nothing; D6 0A 00
+# stills the set on screen; ANIMATE mid-push leaves the receive alone.
+/^artlocal: /p
+/^art: /p
+/^hostlink: rx D5 86/p

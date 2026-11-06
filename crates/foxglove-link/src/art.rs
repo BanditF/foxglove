@@ -149,6 +149,13 @@ pub fn store(
     finish_slot_op(t, st, "store")
 }
 
+/// The user's "animate on e-paper" to firmware that paces its own art (#842, HELLO v2
+/// `ART_PACE`; ask [`crate::hello_v2::capabilities::art_pace`] first: other firmware doesn't
+/// answer). Its reply is the art status, which it leaves as it was.
+pub fn animate(t: &impl Transport, epaper: bool) -> Result<ArtStatus> {
+    command(t, &protocol::art_animate(epaper))
+}
+
 /// Before the one retry of a SELECT whose relay write failed: the left's request in the way (a
 /// timed-out one, still out on the link) gets this long to end. Newer firmware waits for it
 /// itself (#618); this covers a left without that.
@@ -492,6 +499,19 @@ mod tests {
             push_cancellable(&t, b"NVA1", |_| cancelled.set(true), || cancelled.get()).is_err()
         );
         assert_eq!(t.sent.borrow().last().unwrap()[1], art::COMMIT);
+    }
+
+    /// D6 0A ANIMATE (#842): the bytes the art-epaper sim case sends, and its reply is read.
+    #[test]
+    fn animate_sends_d6_0a_with_bit_0() {
+        assert_eq!(protocol::art_animate(true), vec![0xD6, 0x0A, 0x01]);
+        assert_eq!(protocol::art_animate(false), vec![0xD6, 0x0A, 0x00]);
+        let t = Mock::default();
+        t.replies
+            .borrow_mut()
+            .push_back(reply(art::ANIMATE, left_state::DONE));
+        assert_eq!(animate(&t, true).unwrap().state, left_state::DONE);
+        assert_eq!(t.sent.borrow()[0], vec![0xD6, 0x0A, 0x01]);
     }
 
     /// The select's reply still names the old set; the status after it names the new one.

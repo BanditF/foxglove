@@ -24,6 +24,8 @@ struct custom_art_set;
 // (freeze the current frame until the next art_play) from any thread.
 void art_play(const struct custom_art_set *set);
 void art_hold(void);
+// The art target's pace changed (art_pace.h, #842): the set on screen timed again. Display queue.
+void art_repace(void);
 // Rewrite every pixel of the panel soon (#613): after anything that may have switched its power
 // back on, and after an art change. Any thread.
 void art_redraw_all(void);

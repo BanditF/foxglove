@@ -9,7 +9,7 @@
 //! | D5 81 HELLO reply | 2 | version: **2** from HELLO v2 firmware on (1 before); the rest as before |
 //! | D5 08 CAPS (PC) | 0-1 | `D5 08`, nothing else |
 //! | D5 88 CAPS reply | 2 | n: the words that follow (1 today, at most [`MAX_WORDS`]) |
-//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`) |
+//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`) |
 //! | | 7-30 | words 3-8, when n says so |
 //!
 //! Both ways stay compatible:
@@ -50,6 +50,20 @@ pub mod capabilities {
     /// Whether the art push goes straight to the store: HELLO's word 1 and D5 88's word 2.
     pub fn art_local(word1: u32, word2: u32) -> bool {
         word1 & crate::protocol::capabilities::ART_RELAY != 0 && word2 & ART_LOCAL != 0
+    }
+
+    /// Capability 33 (#842): the firmware plays its own art (built-in sets, sets kept in flash
+    /// slots, pushed sets) at its art target's pace, the v2 descriptor's refresh class and
+    /// shortest frame interval (#832), and takes D6 0A ANIMATE
+    /// ([`crate::protocol::art_animate`]): the user's "animate on e-paper". Without the PC's go,
+    /// an e-paper target shows each set's first frame only; the choice is RAM only, so the PC
+    /// sends it on each connect. Only with HELLO's art push bit; firmware without it (the Corne,
+    /// which relays) doesn't answer D6 0A.
+    pub const ART_PACE: u32 = 1 << 1;
+
+    /// Whether D6 0A ANIMATE is taken: HELLO's word 1 and D5 88's word 2.
+    pub fn art_pace(word1: u32, word2: u32) -> bool {
+        word1 & crate::protocol::capabilities::ART_RELAY != 0 && word2 & ART_PACE != 0
     }
 }
 
@@ -375,6 +389,26 @@ mod tests {
         let old = Hello::parse(&hello_reply(1));
         let w2 = read(&Board::new(vec![]), &old).word2();
         assert!(!capabilities::art_local(c::ART_RELAY, w2));
+    }
+
+    /// ART_PACE (#842): capability 33, only with HELLO's art push bit. The art-local and
+    /// art-epaper sim cases' D5 88 (one word, ART_LOCAL and ART_PACE) says both; the Corne's
+    /// (word 2 = 0) neither.
+    #[test]
+    fn art_pace_is_capability_33() {
+        use crate::protocol::capabilities as c;
+        assert_eq!(capabilities::ART_PACE, 2, "capability 33 is word 2's bit 1");
+        let h = Hello::parse(&hello_reply(2));
+        let board = Board::new(vec![Ok(caps_reply(&[0xD5, 0x88, 1, 3]))]);
+        let w2 = read(&board, &h).word2();
+        assert!(capabilities::art_pace(c::ART_RELAY, w2));
+        assert!(capabilities::art_local(c::ART_RELAY, w2));
+        assert!(!capabilities::art_pace(c::PANEL, w2), "no art push");
+        assert!(!capabilities::art_pace(c::ART_RELAY, 0), "the Corne");
+        assert!(!capabilities::art_pace(
+            c::ART_RELAY,
+            capabilities::ART_LOCAL
+        ));
     }
 
     /// Word 1 by name: every bit, a few, none, and no HELLO.

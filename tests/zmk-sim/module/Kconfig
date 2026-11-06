@@ -152,6 +152,10 @@ config FOXGLOVE_SIM_ART_LOCAL
     depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS && !FOXGLOVE_SIM_RGB_STATE && !FOXGLOVE_SIM_PC_STATE && !FOXGLOVE_SIM_POLARITY && !FOXGLOVE_SIM_HEALTH && !FOXGLOVE_SIM_KNOB
     select CRC
 
+config FOXGLOVE_SIM_ART_EPAPER
+    bool "Simulator: the local art target is e-paper, 1 s shortest frame (art-epaper case, #842)"
+    depends on FOXGLOVE_SIM_ART_LOCAL
+
 # The foxglove_link shield's symbols (its Kconfig.defconfig), for every source that asks: a
 # Toucan2-sized target, 144 x 112 native, 32 KiB sets.
 config FOXGLOVE_ART_LOCAL

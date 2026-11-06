@@ -3,6 +3,7 @@
 # a set of the target's size plays, the Corne's size is a bad blob and the screen keeps its set; CRC,
 # size and range errors; SAVE, SLOT (D6 87 at once), playing a slot, STORE without showing,
 # STORE onto the slot on screen refused, ERASE of the slot on screen back to a built-in.
+# A fast target (#842): word 2 has ART_PACE too, and every set plays at 1000 / fps.
 /^artlocal: /p
 /^art: /p
 /^hostlink: rx D5 86/p

@@ -270,6 +270,9 @@ enum Command {
     },
     /// Foxglove paused or resumed (#404): it holds the art keys only while it runs.
     ArtKeys,
+    /// The "Animate on e-paper" switch changed (#839): tell a keyboard that paces its own art
+    /// (HELLO v2 `ART_PACE`, #842).
+    Animate(bool),
     /// A user's job that can't run after all: it ends with this error.
     Refused(String),
     /// The playlist stepped, was changed, or a keyboard connected (#522): stage its next piece
@@ -422,6 +425,12 @@ impl Handle {
     /// Foxglove paused or resumed (#404): the art keys go back to the keyboard while paused.
     pub fn pause_changed(&self) {
         let _ = self.commands.send(Command::ArtKeys);
+    }
+
+    /// The "Animate on e-paper" switch changed (#839): the connected keyboard is told too when it
+    /// paces its own art (#842, D6 0A); others play what the PC sends them.
+    pub fn tell_animate(&self, on: bool) {
+        let _ = self.commands.send(Command::Animate(on));
     }
 
     /// Foxglove resumed (#404): the art held back while paused shows now.
@@ -738,7 +747,9 @@ struct ArtSettings {
 
 /// Whether the user lets art play on an e-paper art screen (#833, "may ghost"); off by default,
 /// when art there shows its first frame only. No effect on a fast screen. The store's
-/// `[art] animate_epaper`, set by the Screens page's "Animate on e-paper" switch.
+/// `[art] animate_epaper`, set by the Screens page's "Animate on e-paper" switch. Firmware that
+/// paces its own art (HELLO v2 `ART_PACE`, #842) is told on each connect and when the switch
+/// changes (D6 0A, `Handle::tell_animate`).
 pub fn animate_epaper() -> bool {
     load_art_settings().animate_epaper
 }
@@ -755,6 +766,19 @@ fn with_animate_epaper(settings: ArtSettings, on: bool) -> ArtSettings {
         animate_epaper: on,
         ..settings
     }
+}
+
+/// Tells a keyboard that paces its own art (`has_pace`: HELLO v2 `ART_PACE`, #842) the user's
+/// "Animate on e-paper" (D6 0A); sends nothing to one that doesn't (it wouldn't answer). Whether
+/// it was sent.
+fn tell_animate(link: &impl Transport, has_pace: bool, on: bool) -> bool {
+    if !has_pace {
+        return false;
+    }
+    if let Err(e) = art::animate(link, on) {
+        eprintln!("Foxglove: art: animate on e-paper: {e:#}");
+    }
+    true
 }
 
 /// A pinned built-in, followed by name to its index on this firmware (`None` when the
@@ -1278,6 +1302,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     // The current keyboard has the art keys (HELLO bit 16), and what it was last told (#60).
     let mut has_art_keys = false;
     let mut art_keys_told: Option<bool> = None;
+    // The current keyboard paces its own art and takes D6 0A (HELLO v2 ART_PACE, #842).
+    let mut has_pace = false;
     // The current keyboard can keep a piece without showing it (HELLO bit 30; false once a STORE
     // found a right before it), and when the playlist last wrote each place (#522, flash wear).
     let mut can_store: Option<bool> = None;
@@ -1395,6 +1421,12 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 if let Some((id, _)) = current {
                     let want = !super::pause::paused();
                     art_keys_told = sync_art_keys(&links[id].0, has_art_keys, want, art_keys_told);
+                }
+                continue;
+            }
+            Command::Animate(on) => {
+                if let Some((id, _)) = current {
+                    tell_animate(links[id].0.as_ref(), has_pace, on);
                 }
                 continue;
             }
@@ -1695,6 +1727,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     // The keyboard takes its art keys back on a USB disconnect itself; the next
                     // connect takes them again.
                     (has_art_keys, art_keys_told) = (false, None);
+                    has_pace = false;
                     held_art_keys(None);
                     art_keys_health::note(|a| a.disconnected());
                     can_store = None;
@@ -1723,15 +1756,18 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 current = Some((id, state.generation));
                 let hello = super::link::ask_hello(link);
                 let caps = hello.map_or(0, |hello| hello.capabilities);
-                // The direct path only when the firmware says so (#834): D5 08's word 2, asked
-                // only of a keyboard with art push and HELLO v2.
-                let direct = hello.is_some_and(|hello| {
-                    caps & protocol::capabilities::ART_RELAY != 0
-                        && foxglove_link::hello_v2::capabilities::art_local(
-                            caps,
-                            foxglove_link::hello_v2::read(link.as_ref(), &hello).word2(),
-                        )
-                });
+                // D5 08's word 2, asked only of a keyboard with art push and HELLO v2.
+                let word2 = hello
+                    .filter(|_| caps & protocol::capabilities::ART_RELAY != 0)
+                    .map_or(0, |hello| {
+                        foxglove_link::hello_v2::read(link.as_ref(), &hello).word2()
+                    });
+                // The direct path only when the firmware says so (#834).
+                let direct = foxglove_link::hello_v2::capabilities::art_local(caps, word2);
+                // Firmware that paces its own art (#842) gets the user's e-paper choice on each
+                // connect: it keeps it in RAM only, and starts with the first frame only.
+                has_pace = foxglove_link::hello_v2::capabilities::art_pace(caps, word2);
+                tell_animate(link.as_ref(), has_pace, animate_epaper());
                 let wake_events = caps & protocol::capabilities::RGB_STATE_EVENT != 0;
                 // Taken on each connect: the keyboard drops them on a USB disconnect or an
                 // endpoint change, and keeps no keep-alive.
@@ -2529,6 +2565,44 @@ mod tests {
         };
         let back: ArtSettings = toml::from_str(&toml::to_string(&on).unwrap()).unwrap();
         assert!(back.animate_epaper);
+    }
+
+    /// #842: the "Animate on e-paper" switch reaches a keyboard that paces its own art as D6 0A
+    /// with bit 0 its new value; one without HELLO v2 `ART_PACE` (the Corne) is sent nothing.
+    #[test]
+    fn the_epaper_switch_tells_a_pacing_keyboard_only() {
+        #[derive(Default)]
+        struct Keyboard {
+            asked: std::cell::RefCell<Vec<Vec<u8>>>,
+        }
+        impl Transport for Keyboard {
+            fn send(&self, r: &[u8]) -> anyhow::Result<()> {
+                self.asked.borrow_mut().push(r.to_vec());
+                Ok(())
+            }
+            fn request(
+                &self,
+                r: &[u8],
+                _: u8,
+                _: u8,
+                _: Duration,
+            ) -> anyhow::Result<[u8; protocol::REPORT]> {
+                self.asked.borrow_mut().push(r.to_vec());
+                let mut reply = [0u8; protocol::REPORT];
+                reply[..3].copy_from_slice(&[protocol::ART, 0x80 | r[1], 3]);
+                Ok(reply)
+            }
+        }
+        let pacing = Keyboard::default();
+        assert!(tell_animate(&pacing, true, true));
+        assert!(tell_animate(&pacing, true, false));
+        assert_eq!(
+            *pacing.asked.borrow(),
+            vec![vec![0xD6, 0x0A, 0x01], vec![0xD6, 0x0A, 0x00]]
+        );
+        let corne = Keyboard::default();
+        assert!(!tell_animate(&corne, false, true));
+        assert!(corne.asked.borrow().is_empty(), "the Corne isn't asked");
     }
 
     /// #833: the Screens page's switch changes only its own key; the pin stays, and switching
