@@ -90,6 +90,56 @@ impl DeviceKind {
     }
 }
 
+/// How a device's thumbnail is drawn (#803), when the catalog says (`shape = "mouse"`). Unset,
+/// the thumbnail follows what Windows says the device is (its LampArray kind), then the entry's
+/// [`DeviceKind`]. A class, never a product: no entry gets its own drawing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Shape {
+    /// Keys: the keyboard's own layout when Foxglove knows it, else a plain board.
+    Keyboard,
+    /// A case's front: a ring per fan zone, a bar per strip zone.
+    Case,
+    /// One ring (a pump head).
+    Cooler,
+    /// A bar with a dot per LED.
+    Strip,
+    Mouse,
+    Headset,
+    /// A game controller.
+    Controller,
+    /// Only its lamps, each where it sits.
+    Lamps,
+}
+
+impl Shape {
+    /// Every shape, in the catalog's order.
+    pub const ALL: [Shape; 8] = [
+        Shape::Keyboard,
+        Shape::Case,
+        Shape::Cooler,
+        Shape::Strip,
+        Shape::Mouse,
+        Shape::Headset,
+        Shape::Controller,
+        Shape::Lamps,
+    ];
+
+    /// The catalog's name for it.
+    pub fn id(self) -> &'static str {
+        match self {
+            Shape::Keyboard => "keyboard",
+            Shape::Case => "case",
+            Shape::Cooler => "cooler",
+            Shape::Strip => "strip",
+            Shape::Mouse => "mouse",
+            Shape::Headset => "headset",
+            Shape::Controller => "controller",
+            Shape::Lamps => "lamps",
+        }
+    }
+}
+
 /// Another app that drives the same device and may put its own colours back over Foxglove's
 /// (a vendor's lighting tool). Its processes are checked only with a scan, never on a timer.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -150,6 +200,9 @@ pub struct CatalogDevice {
     /// What it is (`kind = "case"`); "other" when unset.
     #[serde(default)]
     pub kind: DeviceKind,
+    /// How its thumbnail is drawn (`shape = "strip"`), when its kind doesn't say it well.
+    #[serde(default)]
+    pub shape: Option<Shape>,
     /// Apps that may fight Foxglove over its lights (`[[device.conflict]]`).
     #[serde(default, rename = "conflict")]
     pub conflicts: Vec<Conflict>,
@@ -204,6 +257,7 @@ impl CatalogDevice {
             pid,
             protocol,
             kind: DeviceKind::Other,
+            shape: None,
             conflicts: Vec::new(),
             zones,
             color: None,
@@ -273,6 +327,9 @@ impl CatalogDevice {
         );
         if self.kind != DeviceKind::Other {
             out.push_str(&format!("kind = \"{}\"\n", self.kind.id()));
+        }
+        if let Some(shape) = self.shape {
+            out.push_str(&format!("shape = \"{}\"\n", shape.id()));
         }
         if let Some(hint) = &self.calibration_hint {
             out.push_str(&format!("calibration_hint = {}\n", quote(hint)));
@@ -608,6 +665,25 @@ mod tests {
             ..CatalogDevice::new("Strip".into(), 1, 2, Protocol::None, vec![])
         };
         assert_eq!(merged.hint(&strip).unwrap().gain, [1.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn shape_is_read_written_and_optional() {
+        let entry = |shape: &str| {
+            format!("[[device]]\nname = \"Thing\"\nvid = 1\npid = 2\nprotocol = \"none\"\n{shape}")
+        };
+        for shape in Shape::ALL {
+            let c = Catalog::parse(&entry(&format!("shape = \"{}\"\n", shape.id())))
+                .expect("a shape parses");
+            assert_eq!(c.devices[0].shape, Some(shape));
+            let back = Catalog::parse(&c.devices[0].to_toml()).expect("written back");
+            assert_eq!(back.devices[0].shape, Some(shape), "{}", shape.id());
+        }
+        let none = Catalog::parse(&entry("")).unwrap();
+        assert_eq!(none.devices[0].shape, None);
+        assert!(!none.devices[0].to_toml().contains("shape"));
+        // A class, never a product.
+        assert!(Catalog::parse(&entry("shape = \"proteus\"\n")).is_err());
     }
 
     #[test]

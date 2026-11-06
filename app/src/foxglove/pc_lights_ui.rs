@@ -1231,6 +1231,7 @@ pub mod tests {
             zone_positions: vec![],
             zone_roles: vec![],
             kind: foxglove_devices::pc_lighting::DeviceKind::Case,
+            shape: None,
             lamp_access: None,
             calibration_hint: None,
         }
@@ -1277,6 +1278,7 @@ pub mod tests {
                         zone_positions: vec![],
                         zone_roles: vec![],
                         kind: Default::default(),
+                        shape: None,
                         lamp_access: None,
                         calibration_hint: None,
                     },
@@ -1303,6 +1305,7 @@ pub mod tests {
                         zone_positions: vec![],
                         zone_roles: vec![],
                         kind: Default::default(),
+                        shape: None,
                         lamp_access: Some(Default::default()),
                         calibration_hint: None,
                     },
@@ -1405,6 +1408,7 @@ pub mod tests {
             zone_positions: vec![],
             zone_roles: vec![],
             kind: Default::default(),
+            shape: None,
             lamp_access: None,
             calibration_hint: None,
         }

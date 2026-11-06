@@ -214,6 +214,7 @@ pub fn found(source: &Source) -> Found {
         calibration_hint: None,
         size: None,
         kind: source.kind,
+        shape: None,
         conflicts: Vec::new(),
     }
 }

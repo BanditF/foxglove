@@ -24,6 +24,10 @@
 # user saves one.
 # `kind` = "case" | "cooler" | "strip" | "peripheral" | "other" (the default): what the device
 # is, for scenes' room map and the page. The catalog says it, not the driver.
+# `shape` = "keyboard" | "case" | "cooler" | "strip" | "mouse" | "headset" | "controller" |
+# "lamps", optional: how the device's thumbnail is drawn (#803), when its `kind` (or the kind
+# Windows reports for a Dynamic Lighting device) doesn't say it well. A class, never a product:
+# no device gets its own drawing.
 # [[device.conflict]] tables, optional, one per app that drives the same device and may put its
 # own colours back over Foxglove's (a vendor's lighting tool): `app` (its name on the page),
 # `processes` (its exe names, matched exactly in any case; checked only with a scan) and an

@@ -37,7 +37,8 @@ use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{
-    CalibrationHint, Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec,
+    CalibrationHint, Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, Shape, ZoneRole,
+    ZoneSpec,
 };
 pub use lamp_array::{Lamp, LampAccess, LampArrayDesc, LampArrayDriver, LampHandle};
 pub use zones::{HealthLevel, Kind as ZoneKind, Zone, ZoneHealth, ZoneKey, ZoneSource, Zones};
@@ -98,6 +99,8 @@ pub struct Found {
     pub size: Option<[u16; 2]>,
     /// What it is, from the catalog ("other" for a LampArray: Windows says its kind).
     pub kind: DeviceKind,
+    /// How its thumbnail is drawn, when the catalog says (#803).
+    pub shape: Option<Shape>,
     /// Apps that may fight Foxglove over its lights, from the catalog.
     pub conflicts: Vec<Conflict>,
 }
@@ -213,6 +216,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
                 calibration_hint: catalog.hint(known).map(|h| h.gain),
                 size: known.size,
                 kind: known.kind,
+                shape: known.shape,
                 conflicts: known.conflicts.clone(),
             });
         }
@@ -245,6 +249,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
             calibration_hint: None,
             size: None,
             kind: DeviceKind::Other,
+            shape: None,
             conflicts: Vec::new(),
         });
     }

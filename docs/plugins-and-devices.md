@@ -126,6 +126,14 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
 - **Vendor quirks are data (#558):** `kind` (case, cooler, strip, peripheral, other) says what a
   device is for scenes and the page, and `[[device.conflict]]` names apps that fight Foxglove
   over it (`app`, `processes`, optional `hint`). No vendor's name or process is in the code.
+- **Thumbnails (#803):** the optional `shape` (keyboard, case, cooler, strip, mouse, headset,
+  controller, lamps) says how a device's low-fi thumbnail is drawn when its `kind` doesn't say
+  it well. Unset, `device_thumb` picks the shape from the data in order: a key layout (a
+  keyboard is its own layout, shrunk), `shape`, the `LampArrayKind` Windows reports, `kind`,
+  the Bluetooth category, the lamps where Windows places them, else "unknown". It is tinted
+  with the device's current colours through its calibration: dark when off, a grey outline
+  when Foxglove can't read or drive its lights. A class, never a product: no device has its
+  own drawing.
 - **Adding a board** that speaks a known protocol is a catalog entry. A new protocol is a new
   driver module and a `Protocol` variant.
 - **Capabilities** (`pc_lighting::caps::LightCaps`): every found device says how sophisticated

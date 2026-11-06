@@ -81,6 +81,8 @@ pub struct Row {
     pub zone_roles: Vec<foxglove_devices::pc_lighting::ZoneRole>,
     /// What it is, from the catalog.
     pub kind: foxglove_devices::pc_lighting::DeviceKind,
+    /// How its thumbnail is drawn, when the catalog says (#803).
+    pub shape: Option<foxglove_devices::pc_lighting::Shape>,
     /// A Dynamic Lighting device Foxglove drives: whether Windows lets it now (#691).
     pub lamp_access: Option<pcl::LampAccess>,
 }
@@ -1461,6 +1463,7 @@ impl Worker {
                 calibration_hint: None,
                 size: None,
                 kind: pcl::DeviceKind::default(),
+                shape: None,
                 conflicts: Vec::new(),
             };
             let Some(handle) = (self.lamp_opener)(&found) else {
@@ -1701,6 +1704,7 @@ impl Worker {
                     zone_positions: f.zones.iter().map(|z| z.position).collect(),
                     zone_roles: f.zones.iter().map(|z| z.role).collect(),
                     kind: f.kind,
+                    shape: f.shape,
                     lamp_access: self.drivers.get(&f.key).and_then(|d| d.lamp_access()),
                 }
             })
