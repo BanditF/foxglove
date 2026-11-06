@@ -37,6 +37,39 @@ config FOXGLOVE_PANEL_H
 
 endif
 
+config FOXGLOVE_ART_LOCAL
+    bool "An art target on this half: D6 art pushes go straight to the art store (#834)"
+    depends on !ZMK_SPLIT || ZMK_SPLIT_ROLE_CENTRAL
+    select CRC
+    help
+      For a single-screen board: the PC's art pushes (D6) reach the art store (art_store.c) on the
+      host-link half itself, with no relay (art_local.c; HELLO v2 capability 32). The board's port
+      supplies the drawer (peripheral_status.h's art_play, art_hold, art_redraw_all,
+      art_builtin_index; custom_art_sets) and its SCREENS art target on half 0, and an
+      art_partition for flash slots if it wants them. Off until a board has its port: Toucan2's
+      target is decided on the board (#340).
+
+if FOXGLOVE_ART_LOCAL
+
+config FOXGLOVE_ART_MAX_SIZE
+    int "Largest pushed art set, in bytes (two RAM slots of it; a flash slot is this plus 32, in whole pages)"
+    default 32768
+    range 1024 65535
+
+config FOXGLOVE_ART_W
+    int "The art target's native width (NVA1 w; up to 255)"
+    default 144 if SHIELD_TOUCAN_LEFT
+    default 140
+    range 8 255
+
+config FOXGLOVE_ART_H
+    int "The art target's native height (NVA1 h; up to 255)"
+    default 112 if SHIELD_TOUCAN_LEFT
+    default 68
+    range 8 255
+
+endif
+
 config ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING
     default y if ZMK_SPLIT_ROLE_CENTRAL
 

@@ -34,6 +34,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "host_link.h"
 #include "screen_snap.h"
 #include "art_relay.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
+#include "art_slots.h"
+#include "art_store.h"
+#endif
 #include "rgb_idle.h"
 #include "battery_dim.h"
 #include "behavior_safety.h"
@@ -247,6 +251,13 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT | HOST_LINK_CAP_ART_SLOTS;
     caps |= HOST_LINK_CAP_ACTIVITY_RELAY; // activity_relay.c is built with the relay
     caps |= HOST_LINK_CAP_ART_STORE;      // D6 09 (#522); the right's status version says too
+#elif IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
+    // Bit 1 is "art push" (#834): the target is in SCREENS, here on this half (D5 08's word 2 has
+    // ART_LOCAL). Slots when the board has any; STORE with them.
+    caps |= HOST_LINK_CAP_ART_RELAY;
+    if (art_slots_count() > 0) {
+        caps |= HOST_LINK_CAP_ART_SLOTS | HOST_LINK_CAP_ART_STORE;
+    }
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     caps |= HOST_LINK_CAP_SETTINGS_RGB | HOST_LINK_CAP_RGB_STATE_EVENT | HOST_LINK_CAP_RGB_SHOWN;
@@ -312,10 +323,13 @@ static void hello_reply(void) {
 }
 
 /* D5 08 CAPS (HELLO v2): the capability words past HELLO's full word 1, from word 2 on. Bit n of
- * word 2 is capability 32 + n; none is defined yet, so word 2 is 0 on every build. */
+ * word 2 is capability 32 + n (HOST_LINK_CAPS2_*). */
 
 static uint32_t caps_word2(void) {
     uint32_t caps = 0;
+#if IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
+    caps |= HOST_LINK_CAPS2_ART_LOCAL; // D6 goes to the art store on this half (#834)
+#endif
     return caps;
 }
 
@@ -406,40 +420,49 @@ static void panel_command(const uint8_t *d) {
     }
 }
 
+/* D6: the art target's ops. A split board relays them to the far half (art_relay_central.c); a
+ * board whose art target is on this half (CONFIG_FOXGLOVE_ART_LOCAL, #834) hands them straight to
+ * its art store (art_local.c). Both answer with the same report. */
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+#define ART_OPS(op) art_relay_##op
+#elif IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
+#define ART_OPS(op) art_local_##op
+#endif
+
 static void art_command(const uint8_t *d) {
     uint8_t r[2 + ART_RELAY_REPORT_SIZE] = {HOST_LINK_ART, 0x80 | d[1]};
-#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+#if defined(ART_OPS)
     int err = 0;
     switch (d[1]) {
     case ART_BEGIN:
-        err = art_relay_begin(sys_get_le16(&d[2]), sys_get_le32(&d[4]));
+        err = ART_OPS(begin)(sys_get_le16(&d[2]), sys_get_le32(&d[4]));
         break;
     case ART_DATA:
-        err = art_relay_data(sys_get_le16(&d[2]), &d[5], MIN(d[4], REPORT_SIZE - 5));
+        err = ART_OPS(data)(sys_get_le16(&d[2]), &d[5], MIN(d[4], REPORT_SIZE - 5));
         if (err == 0) {
             return;
         }
         break;
     case ART_COMMIT:
-        err = art_relay_commit();
+        err = ART_OPS(commit)();
         break;
     case ART_SELECT:
-        err = art_relay_select((int8_t)d[2]);
+        err = ART_OPS(select)((int8_t)d[2]);
         break;
     case ART_STATUS:
         break;
     case ART_SAVE:
-        err = art_relay_save(d[2], &d[3]);
+        err = ART_OPS(save)(d[2], &d[3]);
         break;
     case ART_ERASE:
-        err = art_relay_erase(d[2]);
+        err = ART_OPS(erase)(d[2]);
         break;
     case ART_STORE:
-        err = art_relay_store(d[2], &d[3]);
+        err = ART_OPS(store)(d[2], &d[3]);
         break;
     case ART_SLOT:
-        if (art_relay_slot(d[2]) == 0) {
-            return; // D6 87 comes from the relay
+        if (ART_OPS(slot)(d[2]) == 0) {
+            return; // D6 87 comes from the relay (or, local, has gone already)
         }
         r[2] = 1; // busy
         r[3] = d[2];
@@ -449,7 +472,7 @@ static void art_command(const uint8_t *d) {
         return;
     }
     ARG_UNUSED(err); // the error is in the report
-    art_relay_report(&r[2]);
+    ART_OPS(report)(&r[2]);
 #else
     r[2] = ART_LEFT_FAILED;
     r[3] = ART_ERR_NO_LINK;

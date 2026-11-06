@@ -9,7 +9,7 @@
 //! | D5 81 HELLO reply | 2 | version: **2** from HELLO v2 firmware on (1 before); the rest as before |
 //! | D5 08 CAPS (PC) | 0-1 | `D5 08`, nothing else |
 //! | D5 88 CAPS reply | 2 | n: the words that follow (1 today, at most [`MAX_WORDS`]) |
-//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n (none defined yet) |
+//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`) |
 //! | | 7-30 | words 3-8, when n says so |
 //!
 //! Both ways stay compatible:
@@ -37,9 +37,21 @@ pub const CAPS: u8 = 0x08;
 /// Words a D5 88 reply can hold (bytes 3-30).
 pub const MAX_WORDS: usize = (REPORT - 3) / 4;
 
-/// Capability bits of word 2: bit n here is capability 32 + n. None is defined yet; a feature that
-/// takes one adds it here and in host_link.h (`HOST_LINK_CAPS2_*`).
-pub mod capabilities {}
+/// Capability bits of word 2: bit n here is capability 32 + n. A feature that takes one adds it
+/// here and in host_link.h (`HOST_LINK_CAPS2_*`).
+pub mod capabilities {
+    /// Capability 32 (#834): the art target is on the host-link half (a single-screen board) and
+    /// D6 goes straight to its art store, no relay. The art replies keep the relay's layout, but
+    /// link is always 2 and each reply is final when it comes (never "pushing"), so the PC may skip
+    /// waiting for a relay. Only with HELLO's `ART_RELAY` ("art push") bit; firmware without it
+    /// relays, or has no art.
+    pub const ART_LOCAL: u32 = 1 << 0;
+
+    /// Whether the art push goes straight to the store: HELLO's word 1 and D5 88's word 2.
+    pub fn art_local(word1: u32, word2: u32) -> bool {
+        word1 & crate::protocol::capabilities::ART_RELAY != 0 && word2 & ART_LOCAL != 0
+    }
+}
 
 /// The PC's request: D5 08.
 pub fn request() -> Vec<u8> {
@@ -339,6 +351,30 @@ mod tests {
         ]);
         assert_eq!(read(&board, &h).word2(), 7, "the second try is read");
         assert_eq!(row(None).detail, "no keyboard connected");
+    }
+
+    /// ART_LOCAL (#834): only with HELLO's art push bit; a keyboard without HELLO v2 (word 2 is 0)
+    /// or a relaying one never takes the direct path.
+    #[test]
+    fn art_local_needs_both_words() {
+        use crate::protocol::capabilities as c;
+        let local = capabilities::ART_LOCAL;
+        assert_eq!(local, 1, "capability 32 is word 2's bit 0");
+        assert!(capabilities::art_local(c::PANEL | c::ART_RELAY, local));
+        assert!(
+            !capabilities::art_local(c::PANEL | c::ART_RELAY, 0),
+            "the Corne: relayed"
+        );
+        assert!(!capabilities::art_local(c::PANEL, local), "no art push");
+        // The art-local sim case's D5 88 (tests/zmk-sim/art-local): one word, ART_LOCAL.
+        let h = Hello::parse(&hello_reply(2));
+        let board = Board::new(vec![Ok(caps_reply(&[0xD5, 0x88, 1, 1]))]);
+        let w2 = read(&board, &h).word2();
+        assert!(capabilities::art_local(c::ART_RELAY, w2));
+        // Firmware before HELLO v2: never asked, never local.
+        let old = Hello::parse(&hello_reply(1));
+        let w2 = read(&Board::new(vec![]), &old).word2();
+        assert!(!capabilities::art_local(c::ART_RELAY, w2));
     }
 
     /// Word 1 by name: every bit, a few, none, and no HELLO.

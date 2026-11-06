@@ -1,9 +1,11 @@
 /*
- * Right half: art sets saved in flash. Layout and wire in art_relay.h; design in #121.
+ * The art store's flash slots (art_store.h): art sets saved in flash. Layout and wire in
+ * art_relay.h; design in #121.
  * SPDX-License-Identifier: MIT
  *
- * Each slot is SLOT_SIZE bytes (whole erase pages) in art_partition: a 32-byte header, then the
- * blob. The header goes in last, so a write that stops halfway leaves an empty slot, never a
+ * Each slot is SLOT_SIZE bytes in art_partition: a 32-byte header, then the blob. SLOT_SIZE is the
+ * board's largest blob plus the header, rounded up to whole erase pages (#834): 20 KiB on the
+ * Corne (16 KiB blobs), 36 KiB for 32 KiB blobs. The header goes in last, so a write that stops halfway leaves an empty slot, never a
  * broken one. Flash only changes on an explicit SAVE or ERASE from the PC, on a work queue of
  * its own so keyscan and the split link keep going while pages erase.
  */
@@ -19,18 +21,29 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "art_slots.h"
+#include "art_store.h"
 
 #define ART_NODE DT_NODELABEL(art_partition)
 
 #if DT_NODE_EXISTS(ART_NODE)
 
-#define SLOT_SIZE (20 * 1024)
 #define SLOT_HEADER 32
+// The flash's erase page (4 KiB on the nRF52840).
+#if DT_HAS_CHOSEN(zephyr_flash) && DT_NODE_HAS_PROP(DT_CHOSEN(zephyr_flash), erase_block_size)
+#define SLOT_PAGE DT_PROP(DT_CHOSEN(zephyr_flash), erase_block_size)
+#else
+#define SLOT_PAGE 4096
+#endif
+#define SLOT_SIZE ROUND_UP(SLOT_HEADER + ART_STORE_MAX_SIZE, SLOT_PAGE)
 #define SLOT_MAGIC "NVS1"
 #define SLOTS MIN(ART_RELAY_FLASH_SLOTS, DT_REG_SIZE(ART_NODE) / SLOT_SIZE)
 #define FLASH_AREA FIXED_PARTITION_ID(art_partition)
 
-BUILD_ASSERT(SLOT_HEADER + CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE <= SLOT_SIZE, "slot too small");
+BUILD_ASSERT(SLOT_HEADER + ART_STORE_MAX_SIZE <= SLOT_SIZE, "slot too small");
+// The Corne's slots stay where 0.3 put them, so sets kept before the split still read back.
+BUILD_ASSERT(!IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) || ART_STORE_MAX_SIZE != 16384 ||
+                 SLOT_SIZE == 20 * 1024,
+             "the Corne's slot layout moved");
 
 // Header: magic[4], version u8, 0, len u16, crc32 u32, writes u32, name[16]
 struct slot_header {
@@ -52,7 +65,7 @@ static const struct slot_header *header(int slot) {
 static bool valid(int slot) {
     const struct slot_header *h = header(slot);
     if (memcmp(h->magic, SLOT_MAGIC, 4) != 0 || h->version != 1 || h->len == 0 ||
-        h->len > CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE) {
+        h->len > ART_STORE_MAX_SIZE) {
         return false;
     }
     return crc32_ieee((const uint8_t *)h + SLOT_HEADER, h->len) == h->crc;
@@ -153,7 +166,7 @@ static K_WORK_DEFINE(job_work, job_cb);
 static int start(int slot, const uint8_t *blob, uint16_t len, const char *name,
                  void (*done)(int err)) {
     if (slot < 0 || slot >= SLOTS || (blob != NULL && (len == 0 ||
-                                                         len > CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE))) {
+                                                         len > ART_STORE_MAX_SIZE))) {
         return -EINVAL;
     }
     if (!atomic_cas(&busy, 0, 1)) {

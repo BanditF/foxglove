@@ -61,10 +61,14 @@
  * goes dark on its own while the left is held lit; a right on USB power that the PC state holds
  * shows byte 13 instead. The right ignores bytes it doesn't know, so the op can grow.
  * The right half receives into a spare slot and keeps playing what it shows until a blob passes
- * its CRC and header checks; a failed or abandoned push leaves the screen alone.
+ * its CRC and header checks; a failed or abandoned push leaves the screen alone. Since #834 the
+ * right's art ops go to the art store (art_store.h), which a single-screen board also uses without
+ * the relay (art_local.c); this wire is unchanged by that split.
  *
  * Blob, all little endian (scripts/flipper_art.py writes it for OUT.bin):
  *   "NVA1", w u8 (140), h u8 (68), fps u8, flags u8, unique u16, frames u16
+ *   w and h are the target's native size (the Corne's right: 140 x 68); the store refuses any
+ *   other as BAD_BLOB (art_store.c).
  *   flags bit 0 (ART_RELAY_FLAG_INK, #610): a set bit is ink, drawn in the theme's foreground.
  *   Blobs from before #610 have flags 0 and the background bits set; a right since #610 plays
  *   them inverted, so they look the same. A right before #610 ignores the byte, and its palette

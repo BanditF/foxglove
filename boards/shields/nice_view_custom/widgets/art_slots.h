@@ -1,5 +1,6 @@
 /*
- * Right half: art sets saved in flash (art_partition, 0xAD000), so pushed art survives a reboot.
+ * The art store's flash slots (art_store.h; art_partition, 0xAD000 on the Corne's right), so pushed
+ * art survives a reboot. A slot is the board's largest blob plus a header, in whole erase pages.
  * SPDX-License-Identifier: MIT
  */
 

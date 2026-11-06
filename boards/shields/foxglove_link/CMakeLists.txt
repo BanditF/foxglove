@@ -10,6 +10,11 @@ if(NOT CONFIG_ZMK_SPLIT OR CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     zephyr_library_compile_definitions(FOXGLOVE_HAS_PANEL)
     zephyr_library_sources(panel_lvgl.c)
   endif()
+  if(CONFIG_FOXGLOVE_ART_LOCAL)
+    # The art store on this half, D6 straight to it (#834). The board's port adds its drawer.
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_store.c ${FOXGLOVE_WIDGETS}/art_local.c
+                           ${FOXGLOVE_WIDGETS}/art_slots.c)
+  endif()
   if(CONFIG_SHIELD_TOUCAN_LEFT)
     zephyr_library_sources(screens_toucan2.c)
   else()
