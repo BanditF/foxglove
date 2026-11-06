@@ -50,17 +50,24 @@ pub fn qmk_read_snapshot(
     })
 }
 
-/// Foxglove (#581): whether VIA/Vial keymap writes are on. One flag for the app and the VIA
-/// backend: the `via-writes` feature, off in 0.2 ("Foxglove never writes to these keyboards").
-pub const WRITES_ENABLED: bool = foxglove_via::WRITES_ENABLED;
+/// Foxglove (#581, #723): whether VIA/Vial keymap writes are on. One switch for the app and the
+/// VIA backend: a `via-writes` build with the hidden dev switch `FOXGLOVE_VIA_WRITES=1`, for the
+/// real-board test only. Off by default ("Foxglove never writes to these keyboards").
+pub fn writes_enabled() -> bool {
+    foxglove_via::writes_enabled()
+}
 
 /// Foxglove (#581): what a write answers while writes are off.
-pub const WRITES_OFF: &str = "Foxglove 0.2 only reads VIA/Vial keyboards; it doesn't write to them";
+pub const WRITES_OFF: &str = "Foxglove only reads VIA/Vial keyboards; it doesn't write to them";
 
 /// Foxglove (#581): the VIA/Vial adapters' write support. `None` while writes are off, so the
 /// keymap editor offers no write controls for these keyboards.
 pub fn qmk_write_support() -> super::WriteSupport {
-    if WRITES_ENABLED {
+    write_support_if(writes_enabled())
+}
+
+fn write_support_if(on: bool) -> super::WriteSupport {
+    if on {
         super::WriteSupport::Immediate
     } else {
         super::WriteSupport::None
@@ -85,18 +92,55 @@ impl QmkKeyLink for KeyboardApi {
 }
 
 /// Writes a key binding to a QMK keyboard. Refused before anything is sent while VIA/Vial
-/// writes are off (#581).
+/// writes are off (#581), outside the definition's matrix, or for a bootloader, reboot or
+/// EEPROM-clear keycode (#723).
 pub fn qmk_set_key(
     api: &impl QmkKeyLink,
+    definition: &super::KeyboardDefinition,
     layer_index: usize,
     row: usize,
     col: usize,
     action: &KeyAction,
 ) -> Result<(), Box<dyn Error>> {
-    if !WRITES_ENABLED {
+    set_key_if(
+        writes_enabled(),
+        api,
+        (definition.rows, definition.cols),
+        layer_index,
+        row,
+        col,
+        action,
+    )
+}
+
+/// [`qmk_set_key`] with the switch given, for the tests.
+fn set_key_if(
+    on: bool,
+    api: &impl QmkKeyLink,
+    (rows, cols): (usize, usize),
+    layer_index: usize,
+    row: usize,
+    col: usize,
+    action: &KeyAction,
+) -> Result<(), Box<dyn Error>> {
+    if !on {
         return Err(WRITES_OFF.into());
     }
+    if layer_index > usize::from(u8::MAX) || row >= rows || col >= cols || rows > 256 || cols > 256
+    {
+        return Err(format!(
+            "layer {layer_index}, row {row}, column {col} is outside this keyboard's {rows}x{cols} \
+             matrix"
+        )
+        .into());
+    }
     match action {
+        KeyAction::Qmk(code) if foxglove_via::protocol::FORBIDDEN_KEYCODES.contains(code) => {
+            Err(format!(
+                "Foxglove doesn't put {code:#06x} (bootloader, reboot or EEPROM clear) on a key"
+            )
+            .into())
+        }
         KeyAction::Qmk(code) => qmk_set_key_with_retry(api, layer_index, row, col, *code),
         KeyAction::Zmk(_) => Err("Cannot apply a ZMK behavior to a QMK keyboard".into()),
     }
@@ -158,12 +202,15 @@ mod tests {
     #[derive(Default)]
     struct MockVia {
         sent: std::sync::Mutex<Vec<u8>>,
+        takes_writes: bool,
     }
+
+    const MATRIX: (usize, usize) = (4, 12);
 
     impl MockVia {
         fn send(&self, opcode: u8) {
             assert!(
-                WRITES_ENABLED || !foxglove_via::protocol::is_write(&[opcode]),
+                self.takes_writes || !foxglove_via::protocol::is_write(&[opcode]),
                 "write {opcode:#04x} went out with VIA/Vial writes off"
             );
             self.sent.lock().unwrap().push(opcode);
@@ -181,32 +228,76 @@ mod tests {
         }
     }
 
-    /// #581: with writes off (0.2), the VIA/Vial adapters offer no writes, and a key write is
-    /// refused before any command reaches the keyboard.
-    #[cfg(not(feature = "via-writes"))]
+    /// #581/#723: with writes off (the default), the VIA/Vial adapters offer no writes, and a
+    /// key write is refused before any command reaches the keyboard.
     #[test]
     fn writes_off_no_key_write_reaches_a_via_keyboard() {
-        assert_eq!(qmk_write_support(), super::super::WriteSupport::None);
+        if !foxglove_via::WRITES_BUILT {
+            assert!(
+                !writes_enabled(),
+                "no switch turns writes on without the feature"
+            );
+            assert_eq!(qmk_write_support(), super::super::WriteSupport::None);
+        }
+        assert_eq!(write_support_if(false), super::super::WriteSupport::None);
         let kb = MockVia::default();
         for action in [
             KeyAction::Qmk(Keycode::KC_A as u16),
             KeyAction::Qmk(Keycode::KC_NO as u16),
         ] {
-            let err = qmk_set_key(&kb, 0, 1, 2, &action).unwrap_err();
+            let err = set_key_if(false, &kb, MATRIX, 0, 1, 2, &action).unwrap_err();
             assert_eq!(err.to_string(), WRITES_OFF);
         }
         assert!(kb.sent.lock().unwrap().is_empty(), "nothing was sent");
     }
 
-    #[cfg(feature = "via-writes")]
     #[test]
     fn writes_on_a_key_write_goes_out() {
-        assert_eq!(qmk_write_support(), super::super::WriteSupport::Immediate);
-        let kb = MockVia::default();
-        qmk_set_key(&kb, 0, 1, 2, &KeyAction::Qmk(Keycode::KC_A as u16)).unwrap();
+        assert_eq!(
+            write_support_if(true),
+            super::super::WriteSupport::Immediate
+        );
+        let kb = MockVia {
+            takes_writes: true,
+            ..MockVia::default()
+        };
+        set_key_if(
+            true,
+            &kb,
+            MATRIX,
+            0,
+            1,
+            2,
+            &KeyAction::Qmk(Keycode::KC_A as u16),
+        )
+        .unwrap();
         assert_eq!(
             *kb.sent.lock().unwrap(),
             [foxglove_via::protocol::DYNAMIC_KEYMAP_SET_KEYCODE]
         );
+    }
+
+    /// #723, writes on: a key outside the matrix, past 255 layers, or a bootloader, reboot or
+    /// EEPROM-clear keycode is refused before anything goes out.
+    #[test]
+    fn writes_on_bounds_and_forbidden_keycodes_are_refused() {
+        let kb = MockVia {
+            takes_writes: true,
+            ..MockVia::default()
+        };
+        let a = KeyAction::Qmk(Keycode::KC_A as u16);
+        for (layer, row, col) in [(0, 4, 0), (0, 0, 12), (256, 0, 0)] {
+            assert!(set_key_if(true, &kb, MATRIX, layer, row, col, &a).is_err());
+        }
+        assert!(set_key_if(true, &kb, (300, 1), 0, 0, 0, &a).is_err());
+        for code in [
+            Keycode::QK_BOOTLOADER as u16,
+            Keycode::QK_REBOOT as u16,
+            Keycode::QK_CLEAR_EEPROM as u16,
+        ] {
+            assert!(foxglove_via::protocol::FORBIDDEN_KEYCODES.contains(&code));
+            assert!(set_key_if(true, &kb, MATRIX, 0, 0, 0, &KeyAction::Qmk(code)).is_err());
+        }
+        assert!(kb.sent.lock().unwrap().is_empty(), "nothing was sent");
     }
 }

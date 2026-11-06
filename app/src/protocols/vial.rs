@@ -159,7 +159,7 @@ impl KeyboardProtocol for VialProtocol {
     }
 
     fn write_support(&self) -> WriteSupport {
-        // Foxglove (#581): `None` while VIA/Vial writes are off (0.2).
+        // Foxglove (#581, #723): `None` while VIA/Vial writes are off (the default).
         qmk_write_support()
     }
 
@@ -171,7 +171,7 @@ impl KeyboardProtocol for VialProtocol {
         col: usize,
         action: &KeyAction,
     ) -> Result<(), Box<dyn Error>> {
-        qmk_set_key(&self.api, layer_index, row, col, action)
+        qmk_set_key(&self.api, &self.definition, layer_index, row, col, action)
     }
 
     fn subscription_sender(&self) -> Result<Option<Box<dyn SubscriptionSender>>, Box<dyn Error>> {

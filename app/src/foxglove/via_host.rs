@@ -304,6 +304,11 @@ pub fn rescan() {
         if s.generic {
             backend = backend.generic();
         }
+        // #723: only the hidden dev switch (a via-writes build with FOXGLOVE_VIA_WRITES=1) opens
+        // boards for writes; no setting does.
+        if foxglove_via::writes_enabled() {
+            backend = backend.allow_writes();
+        }
         let summaries = backend.opened();
         let _ = registry.add_backend(Box::new(backend));
         let report = registry.discover();
@@ -524,19 +529,30 @@ pub fn board_rows(found: &[Found]) -> Vec<super::health::HealthRow> {
 /// "VIA/Vial writes: off (0.2)", then one per open board ([`board_rows`]). Registered with
 /// `health::register` as "via_writes".
 pub fn health_rows() -> Vec<super::health::HealthRow> {
-    use super::health::{HealthRow, Level};
-    let detail = if foxglove_via::WRITES_ENABLED {
-        "on (test build)"
-    } else {
-        "off (0.2)"
-    };
-    let mut rows = vec![HealthRow::new("via", "VIA/Vial writes", Level::Ok, detail)];
+    let mut rows = vec![writes_row(foxglove_via::writes_enabled())];
     rows.extend(board_rows(&found()));
     rows
 }
 
-/// Opens the configured VIA keyboards at start-up, if turned on.
+/// "VIA/Vial writes: off (0.2)", or a warning while the hidden dev switch has them on (#723).
+fn writes_row(on: bool) -> super::health::HealthRow {
+    use super::health::{HealthRow, Level};
+    if on {
+        HealthRow::new(
+            "via",
+            "VIA/Vial writes",
+            Level::Warn,
+            "ON: dev test switch FOXGLOVE_VIA_WRITES=1 (#723), not for daily use",
+        )
+    } else {
+        HealthRow::new("via", "VIA/Vial writes", Level::Ok, "off (0.2)")
+    }
+}
+
+/// Opens the configured VIA keyboards at start-up, if turned on. Asks the write switch first,
+/// so the log says at start-up when the dev switch has writes on (#723).
 pub fn start() {
+    foxglove_via::writes_enabled();
     if settings().enabled && !super::repaint_trace::disabled("via") {
         rescan();
     }
@@ -755,6 +771,29 @@ pub(crate) mod tests {
         let rows = health_rows();
         assert_eq!(rows[0].line(), "VIA/Vial writes: off (0.2)");
         assert_eq!(rows[0].level, super::super::health::Level::Ok);
+    }
+
+    /// #723: with the dev switch on, the health view warns.
+    #[test]
+    fn the_health_view_warns_while_the_dev_switch_has_writes_on() {
+        let row = writes_row(true);
+        assert_eq!(row.level, super::super::health::Level::Warn);
+        assert!(
+            row.line().contains("FOXGLOVE_VIA_WRITES=1"),
+            "{}",
+            row.line()
+        );
+        assert_eq!(writes_row(false).line(), "VIA/Vial writes: off (0.2)");
+    }
+
+    /// #723: writes can't be turned on from the settings: `[via]` has no writes key, and one
+    /// written into the store by hand is ignored (dropped on the next save).
+    #[test]
+    fn no_setting_turns_writes_on() {
+        let s: ViaSettings = toml::from_str("enabled = true\nwrites = true\n").unwrap();
+        assert!(s.enabled);
+        let saved = toml::to_string(&s).unwrap();
+        assert!(!saved.contains("writes"), "{saved}");
     }
 
     /// Boards a generic scan finds (#74), one per definition source, for the tests and the
@@ -1254,12 +1293,24 @@ pub(crate) mod tests {
         };
         let handing = body("pub fn layout_of(", "/// Loads the definitions");
         let scan = body("pub fn rescan()", "/// Runs `f` on an open VIA keyboard");
-        for code in [handing, scan] {
+        // #723: the scan asks for writes only behind the hidden dev switch, never a setting.
+        let gated = "if foxglove_via::writes_enabled() {\n            backend = backend.allow_writes();\n        }";
+        let scan = scan.replace('\r', "");
+        assert_eq!(scan.matches("allow_writes").count(), 1);
+        assert!(
+            scan.contains(gated),
+            "allow_writes only behind the dev switch"
+        );
+        let scan = scan.replace(gated, "");
+        for code in [handing, scan.as_str()] {
             for write in [
                 "set_binding",
                 "set_effect",
                 "set_color",
+                "set_speed",
                 "set_value",
+                "set_layout_options",
+                "save_lighting",
                 "allow_writes",
                 "with_writes",
                 ".send(",

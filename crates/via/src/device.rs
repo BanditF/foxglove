@@ -9,8 +9,13 @@
 //! - lighting: the best lighting channel the keyboard answers (RGB Matrix, RGB Light, LED Matrix
 //!   or backlight), through VIA's lighting values in the scheme its protocol version uses.
 //!
-//! Lighting changes are not saved to the keyboard's EEPROM (no CUSTOM_SAVE): they last until
-//! the keyboard restarts, so experiments can't wear or overwrite the stored settings.
+//! Lighting changes through the device layer are not saved to the keyboard's EEPROM (no
+//! CUSTOM_SAVE): they last until the keyboard restarts, so experiments can't wear or overwrite
+//! the stored settings. Only [`ViaDevice::save_lighting`], called on purpose, saves.
+//!
+//! Every write needs a link opened with writes on ([`Guarded::with_writes`]: a `via-writes`
+//! build and the dev switch, #723), and is checked here before it goes out: keycodes against the
+//! layers and matrix, layout options against the definition.
 
 use foxglove_devices::calibration;
 use foxglove_devices::{
@@ -19,7 +24,7 @@ use foxglove_devices::{
 };
 
 use crate::catalog::Catalog;
-use crate::client::{Channel, Client, Probe, Scheme};
+use crate::client::{Channel, ChannelState, Client, Probe, Scheme};
 use crate::definition::Definition;
 use crate::protocol::{self, Guarded, Transport};
 use crate::vial;
@@ -154,9 +159,83 @@ impl<T: Transport> ViaDevice<T> {
 
     fn set_value(&self, value: u8, data: &[u8]) -> Result<()> {
         let (scheme, channel) = self.light.ok_or(DeviceError::Unsupported)?;
-        let (mut report, _) = channel.request(scheme, protocol::CUSTOM_SET_VALUE, value)?;
-        report.extend_from_slice(data);
-        self.link.send(&report).map(|_| ())
+        Client(&self.link).set_lighting_value(scheme, channel, value, data)
+    }
+
+    /// Stores the shown channel's current lighting in the keyboard's EEPROM (`CUSTOM_SAVE`).
+    /// The device layer's lighting never calls this (its changes last until a restart); only
+    /// an explicit save does. Needs writes on.
+    pub fn save_lighting(&self) -> Result<()> {
+        let (scheme, channel) = self.light.ok_or(DeviceError::Unsupported)?;
+        Client(&self.link).save_lighting(scheme, channel)
+    }
+
+    /// The shown channel's lighting as the keyboard has it (QMK's 0-255 values), for an exact
+    /// snapshot: the device layer's [`Lighting::state`] is in percent and degrees, which
+    /// rounds.
+    pub fn raw_lighting(&self) -> Result<ChannelState> {
+        let (scheme, channel) = self.light.ok_or(DeviceError::Unsupported)?;
+        Client(&self.link).lighting(scheme, channel)
+    }
+
+    /// Puts a [`ViaDevice::raw_lighting`] snapshot back exactly (RAM only, no save): colour,
+    /// speed, effect, then brightness. Needs writes on.
+    pub fn restore_raw_lighting(&self, s: &ChannelState) -> Result<()> {
+        let (_, channel) = self.light.ok_or(DeviceError::Unsupported)?;
+        if s.channel != channel {
+            return Err(DeviceError::Denied(format!(
+                "a {} snapshot doesn't go on {}",
+                s.channel.label(),
+                channel.label()
+            )));
+        }
+        if let Some((h, sat)) = s.color {
+            self.set_value(COLOR, &[h, sat])?;
+        }
+        if let Some(speed) = s.speed {
+            self.set_value(EFFECT_SPEED, &[speed])?;
+        }
+        self.set_value(EFFECT, &[s.effect])?;
+        self.set_value(BRIGHTNESS, &[s.brightness])
+    }
+
+    /// The layout options the keyboard reports now (a fresh read, not the one from the open).
+    pub fn read_layout_options(&self) -> Result<u32> {
+        Client(&self.link).layout_options()
+    }
+
+    /// Sets the keyboard's layout options (#723). Needs writes on, a definition with layout
+    /// options, and a value it can mean ([`Definition::valid_layout_options`]). The keyboard
+    /// stores it; the drawn layout follows on the next open.
+    pub fn set_layout_options(&self, value: u32) -> Result<()> {
+        if !self.link.writes() {
+            return Err(DeviceError::Unsupported);
+        }
+        let def = self.def.as_ref().ok_or(DeviceError::Unsupported)?;
+        if def.options.is_empty() || self.probe.layout_options.is_none() {
+            return Err(DeviceError::Unsupported);
+        }
+        if !def.valid_layout_options(value) {
+            return Err(DeviceError::Denied(format!(
+                "layout options {value:#x} aren't ones this keyboard's definition has"
+            )));
+        }
+        Client(&self.link).set_layout_options(value)
+    }
+
+    /// Layer, row and column as bytes, checked against the keyboard's layers and the
+    /// definition's matrix: a write outside them would land in another key's (or another
+    /// setting's) EEPROM bytes.
+    fn position(&self, layer: u32, row: u16, col: u16) -> Result<(u8, u8, u8)> {
+        let def = self.def.as_ref().ok_or(DeviceError::Unsupported)?;
+        if layer >= u32::from(self.probe.layers) || row >= def.rows || col >= def.cols {
+            return Err(DeviceError::Denied(format!(
+                "layer {layer}, row {row}, column {col} is outside this keyboard's {} layers \
+                 of {}x{}",
+                self.probe.layers, def.rows, def.cols
+            )));
+        }
+        Ok((byte(layer)?, byte(row.into())?, byte(col.into())?))
     }
 }
 
@@ -193,6 +272,7 @@ fn board_definition<T: Transport>(
 /// Value ids within a lighting channel.
 const BRIGHTNESS: u8 = 1;
 const EFFECT: u8 = 2;
+const EFFECT_SPEED: u8 = 3;
 const COLOR: u8 = 4;
 
 /// 0-255 (QMK) to 0-100 (the device layer) and back.
@@ -272,18 +352,8 @@ impl<T: Transport> Keymap for ViaDevice<T> {
             ("qmk", [code]) => u16::try_from(*code).map_err(|_| DeviceError::Unsupported)?,
             _ => return Err(DeviceError::Unsupported),
         };
-        let [hi, lo] = code.to_be_bytes();
-        let (layer, row, col) = (byte(layer)?, byte(row.into())?, byte(col.into())?);
-        self.link
-            .send(&[
-                protocol::DYNAMIC_KEYMAP_SET_KEYCODE,
-                layer,
-                row,
-                col,
-                hi,
-                lo,
-            ])
-            .map(|_| ())
+        let (layer, row, col) = self.position(layer, row, col)?;
+        Client(&self.link).set_keycode(layer, row, col, code)
     }
 }
 
@@ -349,6 +419,15 @@ impl<T: Transport> Lighting for ViaDevice<T> {
             }
             self.set_value(BRIGHTNESS, &[from_percent(brightness)])
         })
+    }
+
+    /// The effect speed, 0-255 as QMK has it; a channel without one (backlight) has none.
+    fn set_speed(&self, speed: u8) -> Result<()> {
+        let (_, channel) = self.light.ok_or(DeviceError::Unsupported)?;
+        if !channel.has_speed() {
+            return Err(DeviceError::Unsupported);
+        }
+        self.set_value(EFFECT_SPEED, &[speed])
     }
 
     fn release(&self) -> Result<()> {
@@ -423,6 +502,44 @@ mod tests {
         let fake = board(12);
         let def = Definition::parse(SAMPLE).unwrap();
         (open_with(fake, Some(def), writes), fake)
+    }
+
+    /// Writes on whatever the build (the write-path tests, #723), on a fake that takes them.
+    fn open_writable(
+        protocol_version: u16,
+        def: Definition,
+        layout_options: Option<u32>,
+    ) -> (ViaDevice<&'static FakeQmk>, &'static FakeQmk) {
+        let fake = board(protocol_version);
+        // `board` leaks a fake that takes no writes; this one does, with the same contents.
+        let fake = leak(FakeQmk {
+            protocol_version,
+            layers: fake.layers,
+            layout_options,
+            matrix: fake.matrix,
+            keymap: std::sync::Mutex::new(fake.keymap.lock().unwrap().clone()),
+            custom: std::sync::Mutex::new(fake.custom.lock().unwrap().clone()),
+            legacy: std::sync::Mutex::new(fake.legacy.lock().unwrap().clone()),
+            accept_writes: true,
+            ..FakeQmk::default()
+        });
+        let info = info(def.vendor_id, def.product_id);
+        let dev = ViaDevice::open(
+            info,
+            Some(def),
+            Guarded::writable(fake),
+            &Catalog::bundled(),
+        )
+        .unwrap();
+        (dev, fake)
+    }
+
+    fn qmk(code: u32) -> Binding {
+        Binding {
+            kind: "qmk".into(),
+            params: vec![code],
+            label: None,
+        }
     }
 
     #[test]
@@ -692,13 +809,19 @@ mod tests {
         foxglove_devices::contract::check_device(&dev).unwrap();
     }
 
-    /// #581: with `via-writes` off (0.2), a device opened asking for writes is read-only: no
-    /// keymap write support, every keycode and lighting write refused, reads still answered, and
-    /// the fake keyboard (which fails on any write opcode) never sees one.
-    #[cfg(not(feature = "via-writes"))]
+    /// #581/#723: with writes off (the default: no `via-writes` build, or no dev switch), a
+    /// device opened asking for writes is read-only: no keymap write support, every keycode,
+    /// lighting, save and layout-option write refused, reads still answered, and the fake
+    /// keyboard (which fails on any write opcode) never sees one.
     #[test]
     fn writes_off_nothing_is_written_even_when_writes_are_asked_for() {
+        if protocol::writes_enabled() {
+            return; // a dev running the tests with the switch on
+        }
         let (dev, fake) = open(true);
+        assert!(dev.save_lighting().is_err());
+        assert!(dev.set_layout_options(0).is_err());
+        assert!(dev.lighting().unwrap().set_speed(10).is_err());
         assert!(!dev.caps().contains(Caps::KEYMAP_WRITE));
         assert_eq!(Keymap::write_support(&dev), WriteSupport::None);
         foxglove_devices::contract::check_device(&dev).unwrap();
@@ -735,10 +858,12 @@ mod tests {
         assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
     }
 
-    #[cfg(feature = "via-writes")]
     #[test]
     fn writable_device_writes_keycodes_and_lighting_without_saving() {
-        let (dev, fake) = open(true);
+        let (dev, fake) = open_writable(12, Definition::parse(SAMPLE).unwrap(), Some(0));
+        assert!(dev.caps().contains(Caps::KEYMAP_WRITE));
+        assert_eq!(Keymap::write_support(&dev), WriteSupport::Immediate);
+        foxglove_devices::contract::check_device(&dev).unwrap();
         foxglove_devices::contract::check_binding(
             &dev,
             1,
@@ -772,6 +897,210 @@ mod tests {
                 .iter()
                 .any(|r| r[0] == protocol::CUSTOM_SAVE),
             "nothing persisted"
+        );
+    }
+
+    /// #723: a keycode write outside the keyboard's layers or the definition's matrix, a
+    /// bootloader keycode, or a binding that isn't one QMK keycode never goes out.
+    #[test]
+    fn keycode_writes_are_bounded() {
+        let (dev, fake) = open_writable(12, Definition::parse(SAMPLE).unwrap(), Some(0));
+        let def = Definition::parse(SAMPLE).unwrap();
+        let (rows, cols) = (def.rows, def.cols);
+        let sent_before = fake.sent.lock().unwrap().len();
+        for (layer, row, col) in [(4, 0, 0), (0, rows, 0), (0, 0, cols), (300, 0, 0)] {
+            assert!(
+                matches!(
+                    dev.set_binding(layer, row, col, qmk(4)),
+                    Err(DeviceError::Denied(_))
+                ),
+                "{layer},{row},{col}"
+            );
+        }
+        for &code in protocol::FORBIDDEN_KEYCODES {
+            assert!(matches!(
+                dev.set_binding(0, 0, 0, qmk(u32::from(code))),
+                Err(DeviceError::Denied(_))
+            ));
+        }
+        for b in [
+            qmk(0x1_0000),
+            Binding {
+                kind: "zmk".into(),
+                params: vec![4],
+                label: None,
+            },
+            Binding {
+                kind: "qmk".into(),
+                params: vec![4, 5],
+                label: None,
+            },
+        ] {
+            assert_eq!(dev.set_binding(0, 0, 0, b), Err(DeviceError::Unsupported));
+        }
+        assert_eq!(
+            fake.sent.lock().unwrap().len(),
+            sent_before,
+            "none went out"
+        );
+        // The last key of the last layer is in bounds.
+        dev.set_binding(3, rows - 1, cols - 1, qmk(4)).unwrap();
+        assert_eq!(dev.binding(3, rows - 1, cols - 1).unwrap().params, vec![4]);
+    }
+
+    /// #723: a raw snapshot comes back exactly, where the device layer's percent would round
+    /// (brightness 200 is 78 %, which is 199 again).
+    #[test]
+    fn a_raw_lighting_snapshot_restores_exactly() {
+        let (dev, fake) = open_writable(12, Definition::parse(SAMPLE).unwrap(), Some(0));
+        fake.custom.lock().unwrap().insert((3, 1), [200, 0]);
+        let before = dev.raw_lighting().unwrap();
+        assert_eq!(before.brightness, 200);
+        let lighting = dev.lighting().unwrap();
+        lighting.set_color(10, 20, 30).unwrap();
+        lighting.set_speed(7).unwrap();
+        lighting
+            .set_effect(Effect {
+                id: "1".into(),
+                params: vec![],
+            })
+            .unwrap();
+        assert_ne!(dev.raw_lighting().unwrap(), before);
+        dev.restore_raw_lighting(&before).unwrap();
+        assert_eq!(dev.raw_lighting().unwrap(), before);
+        assert!(!fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r[0] == protocol::CUSTOM_SAVE));
+        let other = ChannelState {
+            channel: Channel::Backlight,
+            ..before
+        };
+        assert!(matches!(
+            dev.restore_raw_lighting(&other),
+            Err(DeviceError::Denied(_))
+        ));
+    }
+
+    /// #723: speed and an explicit save; the save names the shown channel.
+    #[test]
+    fn speed_and_an_explicit_save() {
+        let (dev, fake) = open_writable(12, Definition::parse(SAMPLE).unwrap(), Some(0));
+        let lighting = dev.lighting().unwrap();
+        let before = lighting.state().unwrap().speed;
+        lighting.set_speed(200).unwrap();
+        assert_eq!(lighting.state().unwrap().speed, 200);
+        lighting.set_speed(before).unwrap();
+        assert_eq!(lighting.state().unwrap().speed, before);
+        dev.save_lighting().unwrap();
+        let saves: Vec<_> = fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r[0] == protocol::CUSTOM_SAVE)
+            .map(|r| r[1])
+            .collect();
+        assert_eq!(saves, vec![Channel::RgbMatrix.id()]);
+    }
+
+    /// Legacy firmware (and Vial): lighting writes go to QMK's fixed ids; a backlight has no
+    /// speed.
+    #[test]
+    fn legacy_lighting_writes_use_the_fixed_ids() {
+        let (dev, fake) = open_writable(9, Definition::parse(SAMPLE).unwrap(), None);
+        assert_eq!(dev.lighting_channel(), Some(Channel::Backlight));
+        let lighting = dev.lighting().unwrap();
+        lighting.set_color(0, 0, 50).unwrap();
+        assert_eq!(lighting.state().unwrap().brightness, 50);
+        assert_eq!(lighting.set_speed(1), Err(DeviceError::Unsupported));
+        assert!(fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r[..3] == [protocol::CUSTOM_SET_VALUE, 0x09, from_percent(50)]));
+    }
+
+    /// #723: the layout options are written only as a value the definition can mean, and only
+    /// to a keyboard that reported them.
+    #[test]
+    fn layout_option_writes_are_checked_against_the_definition() {
+        let def = Definition::parse(crate::definition::OPTIONS).unwrap();
+        let (dev, fake) = open_writable(12, def.clone(), Some(0));
+        let before = dev.read_layout_options().unwrap();
+        dev.set_layout_options(0b1101).unwrap();
+        assert_eq!(dev.read_layout_options().unwrap(), 0b1101);
+        for bad in [0b0110, 0b1_0000] {
+            assert!(matches!(
+                dev.set_layout_options(bad),
+                Err(DeviceError::Denied(_))
+            ));
+        }
+        dev.set_layout_options(before).unwrap();
+        assert_eq!(dev.read_layout_options().unwrap(), before);
+        let writes = fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r[0] == protocol::SET_KEYBOARD_VALUE)
+            .count();
+        assert_eq!(writes, 2);
+
+        // No options in the definition, or none reported: nothing to set.
+        let mut no_options = Definition::parse(SAMPLE).unwrap();
+        no_options.options.clear();
+        let (plain, _) = open_writable(12, no_options, Some(0));
+        assert_eq!(plain.set_layout_options(0), Err(DeviceError::Unsupported));
+        let (silent, _) = open_writable(12, def, None);
+        assert_eq!(silent.set_layout_options(0), Err(DeviceError::Unsupported));
+    }
+
+    /// #723: a Vial board with writes on gets keycode writes, and never a Vial command that
+    /// isn't a definition read (unlock, settings): the fake fails the test on one.
+    #[test]
+    fn a_writable_vial_board_is_never_sent_unlock() {
+        let json = crate::definition::OPTIONS;
+        let fake = leak(FakeQmk {
+            protocol_version: 9,
+            layers: 2,
+            layout_options: Some(0),
+            matrix: (3, 4),
+            vial: Some(FakeVial {
+                protocol: 6,
+                uid: *b"BANDIT01",
+                blob: crate::vial::xz(json),
+            }),
+            accept_writes: true,
+            ..FakeQmk::default()
+        });
+        let dev = ViaDevice::open(
+            info(0xFEED, 0x0001),
+            None,
+            Guarded::writable(fake),
+            &Catalog::bundled(),
+        )
+        .unwrap();
+        assert_eq!(dev.source, Source::Vial { protocol: 6 });
+        let before = dev.binding(1, 2, 3).unwrap();
+        dev.set_binding(1, 2, 3, qmk(4)).unwrap();
+        assert_eq!(dev.binding(1, 2, 3).unwrap().params, vec![4]);
+        dev.set_binding(1, 2, 3, before.clone()).unwrap();
+        assert_eq!(dev.binding(1, 2, 3).unwrap(), before);
+        let vial: Vec<u8> = fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r[0] == protocol::VIAL_PREFIX)
+            .map(|r| r[1])
+            .collect();
+        assert!(
+            vial.iter().all(|c| protocol::VIAL_READS.contains(c)),
+            "{vial:x?}"
         );
     }
 }
