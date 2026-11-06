@@ -810,19 +810,21 @@ fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
                 (Choice::File(_), Showing::Sent) => s.showing_file().is_some(),
                 _ => false,
             });
-            match art_words::after_restart(now, remembered) {
-                Some(line) => ui.weak(line),
-                None => ui.weak(art_words::right_state_words(st.right_state)),
-            };
-            ui.add_space(4.0);
             let keep = match (now, s.showing_file()) {
                 (Showing::Sent, Some(file)) if art_pieces::places(s) > 0 => {
                     Some(Act::KeepFile(file.clone()))
                 }
                 _ => None,
             };
-            // The same bytes kept already: a second place would hold a copy, so no Keep.
+            // The same bytes kept already: a second place would hold a copy, so no Keep. The
+            // refusal takes the restart line's place: "Not kept on the keyboard" would be wrong.
             let refused = keep.as_ref().and_then(|k| refusal(art, k));
+            match (&refused, art_words::after_restart(now, remembered)) {
+                (Some(why), _) => ui.weak(why).on_hover_text(ALREADY_KEPT_TIP),
+                (None, Some(line)) => ui.weak(line),
+                (None, None) => ui.weak(art_words::right_state_words(st.right_state)),
+            };
+            ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.add_enabled_ui(!s.busy, |ui| {
                     if ui.button("‹ Previous").clicked() {
@@ -841,9 +843,6 @@ fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
                     }
                 });
             });
-            if let Some(why) = refused {
-                ui.weak(why).on_hover_text(ALREADY_KEPT_TIP);
-            }
         });
     });
     // Under the picture, across the column, so "may ghost" stays beside the switch.
@@ -2196,7 +2195,8 @@ pub mod tests {
         assert_eq!(refusal(&art, &Act::Remove(3)), None);
     }
 
-    /// Showing now offers no Keep for a sent piece that is kept already: it says where.
+    /// Showing now offers no Keep for a sent piece that is kept already: it says where, in place
+    /// of the "Not kept on the keyboard" restart line.
     #[test]
     fn showing_now_says_already_kept_instead_of_keep() {
         use crate::foxglove::theme::headless;
@@ -2214,6 +2214,10 @@ pub mod tests {
             "{t:?}"
         );
         assert!(!t.iter().any(|t| t == "Keep on keyboard"), "{t:?}");
+        assert!(
+            !t.iter().any(|t| t.starts_with("Not kept on the keyboard")),
+            "no restart line that says it isn't kept: {t:?}"
+        );
     }
 
     /// The KEPT list: a place with no file here says why it has no picture on hover; the
