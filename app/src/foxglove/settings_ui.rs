@@ -157,11 +157,34 @@ fn style(title: &str) -> Style {
 
 /// A card as the canvas draws it: a surface, a line around it, its title in the HUD face.
 pub fn card<R>(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    card_inner(ui, title, None, add_contents)
+}
+
+/// [`card`] whose title carries `hover`: what the card is for, in place of a muted line under
+/// the title (#795, rule 3: card titles carry their text on hover, with no ⓘ).
+pub fn card_with_hover<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    hover: &str,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    card_inner(ui, title, Some(hover), add_contents)
+}
+
+fn card_inner<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    hover: Option<&str>,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     super::theme::card(ui)
         .inner_margin(egui::Margin::symmetric(18, 14))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(super::theme::heading(ui, title));
+            let t = ui.label(super::theme::heading(ui, title));
+            if let Some(hover) = hover {
+                t.on_hover_text(hover);
+            }
             ui.add_space(6.0);
             add_contents(ui)
         })
@@ -243,7 +266,6 @@ pub struct Expander<R> {
     /// The header row: clicked (or Enter/Space) when it opened or closed.
     pub header: egui::Response,
     /// What the contents returned, when open.
-    #[cfg_attr(not(test), allow(dead_code))] // Other devices takes it up in #795.
     pub body: Option<R>,
 }
 

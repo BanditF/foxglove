@@ -125,20 +125,21 @@ pub fn pages_text(pages: &[u16]) -> String {
         .join(" · ")
 }
 
-/// Paints the wizard (or its button) at the foot of the card.
+/// What "Add a device…" is for: its hover (#795 O29).
+pub const ADD_TIP: &str = "For lighting gear Foxglove doesn't recognise yet.";
+
+/// Paints the wizard (or its button) in the card's More sources.
 pub fn draw(ui: &mut egui::Ui, s: &Snapshot, w: &mut Wizard, out: &mut Vec<Intent>) {
     let p = theme::palette(ui);
     match w.step {
         Step::Closed => {
-            ui.horizontal(|ui| {
-                if ui.button("Add a device…").clicked() {
-                    *w = Wizard {
-                        step: Step::Pick,
-                        ..Wizard::default()
-                    };
-                }
-                ui.weak("For lighting gear Foxglove doesn't recognise yet.");
-            });
+            // #795 O29: the sentence is the button's hover.
+            if ui.button("Add a device…").on_hover_text(ADD_TIP).clicked() {
+                *w = Wizard {
+                    step: Step::Pick,
+                    ..Wizard::default()
+                };
+            }
         }
         Step::Pick => {
             ui.label(

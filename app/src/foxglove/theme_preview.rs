@@ -2794,3 +2794,131 @@ fn lights_keyboard_card_1105_renders() {
     assert!(near_warn(&windows) > near_warn(&dark) + 20, "the amber dot");
     assert!(near_warn(&through) > near_warn(&dark) + 20, "the amber dot");
 }
+
+/// The Lights page's Other devices card alone (#795), `width` points wide, in `choice`, with
+/// the expanders `open` open; and the card's height in points.
+fn other_devices_card(
+    choice: crate::foxglove::theme::Choice,
+    pc: &crate::foxglove::pc_lights_ui::View,
+    open: &[String],
+    width: f32,
+) -> (image::RgbaImage, f32) {
+    use crate::foxglove::pc_lights_add::Wizard;
+    use crate::foxglove::pc_lights_ui::{draw, Draft};
+    use crate::foxglove::theme::{self, Choice, DARK, LIGHT};
+    let ctx = preview_ctx();
+    theme::apply_choice(&ctx, choice);
+    for key in open {
+        crate::foxglove::settings_ui::set_expander_open(&ctx, key, true);
+    }
+    let p = if choice == Choice::Dark {
+        *DARK
+    } else {
+        *LIGHT
+    };
+    let height = std::cell::Cell::new(0.0f32);
+    let pad = 16.0;
+    let img = render_ui(
+        &ctx,
+        egui::vec2(width + 2.0 * pad, 2400.0),
+        p.ground,
+        |ui| {
+            egui::Frame::new()
+                .fill(p.ground)
+                .inner_margin(egui::Margin::same(pad as i8))
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    let r = ui
+                        .scope(|ui| {
+                            draw(ui, pc, &mut Draft::default(), &mut Wizard::default());
+                        })
+                        .response
+                        .rect;
+                    height.set(r.height());
+                });
+        },
+    );
+    let h = height.get();
+    let px = |v: f32| (v * PPP).round() as u32;
+    let crop =
+        image::imageops::crop_imm(&img, 0, 0, img.width(), px(h + 2.0 * pad).min(img.height()))
+            .to_image();
+    (crop, h)
+}
+
+/// #795: the Other devices card at 980 points with 1, 3 (a vendor app running: the conflict)
+/// and 7 devices, OpenRGB on and not answering (amber), dark and light; and the 45L (a device
+/// with zones) and More sources opened.
+#[test]
+fn lights_other_devices_1105_renders() {
+    use crate::foxglove::pc_lights_ui::tests::{
+        sample, sample_one, sample_openrgb_down, sample_seven,
+    };
+    use crate::foxglove::theme::Choice;
+    let width = 980.0;
+    let none: Vec<String> = Vec::new();
+    let (one, h_one) = other_devices_card(Choice::Dark, &sample_one(), &none, width);
+    let (one_light, _) = other_devices_card(Choice::Light, &sample_one(), &none, width);
+    let (three, h_three) = other_devices_card(Choice::Dark, &sample(), &none, width);
+    let (three_light, _) = other_devices_card(Choice::Light, &sample(), &none, width);
+    let (seven, h_seven) = other_devices_card(Choice::Dark, &sample_seven(), &none, width);
+    let (down, h_down) = other_devices_card(Choice::Dark, &sample_openrgb_down(), &none, width);
+    let (down_light, _) = other_devices_card(Choice::Light, &sample_openrgb_down(), &none, width);
+    let open = vec![
+        format!("pc-device:{}", sample().pc.devices[0].key),
+        "pc-more-sources".to_string(),
+    ];
+    let (expanded, h_expanded) = other_devices_card(Choice::Dark, &sample(), &open, width);
+    let (expanded_light, _) = other_devices_card(Choice::Light, &sample(), &open, width);
+    eprintln!(
+        "Foxglove: #795 Other devices at {width} pt: 1 device {h_one} pt, 3 devices and a \
+         conflict {h_three} pt, 7 devices {h_seven} pt, OpenRGB down {h_down} pt, the 45L and \
+         More sources open {h_expanded} pt"
+    );
+    keep("ui-1105-lights-other-1.png", &one);
+    keep("ui-1105-lights-other-1-light.png", &one_light);
+    keep("ui-1105-lights-other-3.png", &three);
+    keep("ui-1105-lights-other-3-light.png", &three_light);
+    keep("ui-1105-lights-other-7.png", &seven);
+    keep("ui-1105-lights-other-openrgb-down.png", &down);
+    keep("ui-1105-lights-other-openrgb-down-light.png", &down_light);
+    keep("ui-1105-lights-other-expanded.png", &expanded);
+    keep("ui-1105-lights-other-expanded-light.png", &expanded_light);
+    assert_ne!(one, one_light);
+    assert_ne!(three, expanded);
+    // Shorter than before the declutter, measured at 980 points on the A2 base (509a2375) with
+    // the same samples: 364.3 points with 1 device, 703.6 with 3 and a conflict, 1452.7 with 7,
+    // 619.8 with OpenRGB down.
+    for (what, h, before) in [
+        ("1 device", h_one, 364.0),
+        ("3 devices", h_three, 703.0),
+        ("7 devices", h_seven, 1452.0),
+        ("OpenRGB down", h_down, 619.0),
+    ] {
+        assert!(h < before, "{what}: {h} points, not shorter than {before}");
+    }
+    // Amber stays on screen: the conflict bar, and OpenRGB's chip on the closed More sources.
+    let near_warn = |img: &image::RgbaImage| {
+        let c = crate::foxglove::theme::DARK.warn;
+        img.pixels()
+            .filter(|p| {
+                let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs();
+                d(p.0[0], c.r()) + d(p.0[1], c.g()) + d(p.0[2], c.b()) < 24
+            })
+            .count()
+    };
+    let (calm, _) = other_devices_card(
+        Choice::Dark,
+        &crate::foxglove::pc_lights_ui::tests::sample_second_desk(),
+        &none,
+        width,
+    );
+    assert!(
+        near_warn(&down) > near_warn(&calm) + 20,
+        "OpenRGB's amber dot"
+    );
+    assert!(
+        near_warn(&three) > near_warn(&one) + 20,
+        "the conflict's amber dot"
+    );
+}
