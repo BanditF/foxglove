@@ -22,7 +22,8 @@ use foxglove_scene::{
     DeviceInfo, DeviceKind, Layout, LightRole, LightSpec, MonitorInfo, Point, RoomMap,
 };
 
-use super::boards::{Board, Drawing};
+use super::boards::Board;
+use super::key_layout::KeyLayout;
 use super::pc_lights::{LampLayout, Row};
 
 /// The store section with the user's drags and the case's side.
@@ -106,14 +107,13 @@ pub fn devices(
     out
 }
 
-/// The keyboard: both halves of a split, or the one piece, sized from the board's drawing
-/// (#559). With no profile it is one piece, a plain grid of its keymap's keys, as the Keyboard
-/// page draws it.
+/// The keyboard: both halves of a split, or the one piece, sized from the keyboard's layout as
+/// the Keyboard page draws it (#559, #796: the keyboard's own, else its profile's, else a plain
+/// grid of its keymap's keys).
 fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
     let name = board.map_or("Keyboard", |b| b.name.as_str());
-    let drawing = super::boards::drawing(board);
-    let (w, h) = Drawing::size(&drawing);
-    let half = Point::new(w * KEY_MM, h * KEY_MM);
+    let drawing = super::key_layout::of(board);
+    let half = Point::new(drawing.size.x * KEY_MM, drawing.size.y * KEY_MM);
     if !super::parts::Parts::of(board).is_split() {
         // A one-piece board's drawing is the whole board (#559).
         let mut one = DeviceInfo::whole("keyboard", name, DeviceKind::Keyboard).with_size(half);
@@ -151,7 +151,7 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
 /// LED that drives a group of keys sits at their centre, and a dead one has no light, so the
 /// frame leaves it dark (#608). `None` (one light for the part) without such a map, or when it
 /// names a key the drawing hasn't.
-fn leds(board: Option<&Board>, drawing: &Drawing, part: usize) -> Option<Vec<LightSpec>> {
+fn leds(board: Option<&Board>, drawing: &KeyLayout, part: usize) -> Option<Vec<LightSpec>> {
     let b = board?;
     let l = b.lighting.as_ref()?;
     if !l.led_map_usable() {
@@ -164,7 +164,7 @@ fn leds(board: Option<&Board>, drawing: &Drawing, part: usize) -> Option<Vec<Lig
     let lamps = l
         .part_keys(&parts, part)
         .filter(|k| k.iter().any(|lamp| !lamp.dead()))?;
-    let keys = drawing.keys(part == 1);
+    let keys = drawing.rects(part);
     lamps
         .iter()
         .enumerate()
@@ -179,14 +179,14 @@ fn leds(board: Option<&Board>, drawing: &Drawing, part: usize) -> Option<Vec<Lig
         .collect()
 }
 
-/// One part's LEDs where "Find my LEDs" saw them (points on the part's drawing, key units),
-/// numbered in strip order. One the user couldn't see sits in the part's centre, so it takes
+/// One part's LEDs where "Find my LEDs" saw them (points on the part's profile drawing, key
+/// units, moved onto the keyboard's layout, #796), numbered in strip order. One the user couldn't see sits in the part's centre, so it takes
 /// the colour of the middle of the part rather than a random spot, unless the profile's map
 /// says it lights nothing: that one has no light (#608).
 fn found_leds(
     l: &super::boards::Lighting,
     parts: &foxglove_link::lamps::LampParts,
-    drawing: &Drawing,
+    drawing: &KeyLayout,
     part: usize,
 ) -> Option<Vec<LightSpec>> {
     let points = l.led_points.get(parts.range(part))?;
@@ -195,14 +195,14 @@ fn found_leds(
             .and_then(|lamps| lamps.get(i))
             .is_some_and(super::boards::Lamp::dead)
     };
-    let (w, h) = drawing.size();
+    let (w, h) = (drawing.size.x, drawing.size.y);
     Some(
         points
             .iter()
             .enumerate()
             .filter(|&(i, p)| !(p.is_none() && dead(i)))
             .map(|(i, p)| {
-                let [x, y] = p.unwrap_or([w / 2.0, h / 2.0]);
+                let [x, y] = p.map_or([w / 2.0, h / 2.0], |p| drawing.point_from_profile(part, p));
                 LightSpec::point(i.to_string(), Some(Point::new(x * KEY_MM, y * KEY_MM)))
             })
             .collect(),

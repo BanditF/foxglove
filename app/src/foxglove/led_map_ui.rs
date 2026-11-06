@@ -25,7 +25,7 @@ use std::sync::Mutex;
 
 use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
-use super::boards::Drawing;
+use super::key_layout::{KeyLayout, LayoutKey};
 use super::led_map::{self, MapState, Status, Wizard, Worker};
 use super::led_map_confirm::{self as confirm, Answer, Confirm, Source};
 use super::parts::{upper_first, Parts};
@@ -87,9 +87,8 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    pub fn new(drawing: &Drawing, halves: u8, within: Rect) -> Geometry {
-        let (w, h) = drawing.size();
-        let (area, areas) = (Vec2::new(w, h), if halves == 1 { 1 } else { 2 });
+    pub fn new(layout: &KeyLayout, halves: u8, within: Rect) -> Geometry {
+        let (area, areas) = (layout.size, if halves == 1 { 1 } else { 2 });
         let total = Vec2::new(
             area.x * areas as f32 + GAP * (areas - 1) as f32 + MARGIN * 2.0,
             area.y + MARGIN * 2.0,
@@ -131,9 +130,22 @@ impl Geometry {
         ])
     }
 
-    /// Area `a`'s keys, in key units from its corner.
-    pub fn keys(&self, drawing: &Drawing, a: usize) -> Vec<Rect> {
-        drawing.keys(self.areas > 1 && a == 1)
+    /// Area `a`'s keys, in key units from its corner (#796: the keyboard's layout, turned
+    /// where it turns them).
+    pub fn keys<'a>(&self, layout: &'a KeyLayout, a: usize) -> &'a [LayoutKey] {
+        layout.part(if self.areas > 1 { a } else { 0 })
+    }
+
+    /// A key on screen, turned: `fill` and `line` as the caller paints it.
+    pub fn key_shape(&self, a: usize, k: &LayoutKey, fill: Color32, line: Stroke) -> egui::Shape {
+        let r = Rect::from_min_max(
+            self.screen(a, [k.rect.min.x, k.rect.min.y]),
+            self.screen(a, [k.rect.max.x, k.rect.max.y]),
+        )
+        .shrink(self.scale * 0.06);
+        egui::epaint::RectShape::new(r, 3.0, fill, line, egui::StrokeKind::Inside)
+            .with_angle(k.r.to_radians())
+            .into()
     }
 }
 
@@ -250,8 +262,8 @@ fn status_line(ui: &mut egui::Ui, v: &View, w: &Wizard) {
     }
 }
 
-/// The key of a part's drawing (`keys`) under `at` (key units), if any.
-pub fn key_at(keys: &[Rect], at: [f32; 2]) -> Option<u8> {
+/// The key of a part's drawing (`keys`) under `at` (key units), if any, turned keys as drawn.
+pub fn key_at(keys: &[LayoutKey], at: [f32; 2]) -> Option<u8> {
     let at = Pos2::new(at[0], at[1]);
     keys.iter()
         .position(|k| k.contains(at))
@@ -273,7 +285,7 @@ fn board(ui: &mut egui::Ui, w: &mut Wizard) {
     let (rect, response) = ui.allocate_exact_size(size, sense);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 6.0, p.well);
-    let g = Geometry::new(&w.drawing, w.halves, rect.shrink(12.0));
+    let g = Geometry::new(&w.layout, w.halves, rect.shrink(12.0));
     let active = step.map(|s| s.half);
     let areas = usize::from(w.halves.clamp(1, 2));
     let hover = step.and_then(|s| {
@@ -300,7 +312,7 @@ fn board(ui: &mut egui::Ui, w: &mut Wizard) {
         } else {
             p.line
         };
-        let keys = g.keys(&w.drawing, a);
+        let keys = g.keys(&w.layout, a);
         // What the lamps before lit on this part.
         let before: Vec<u8> = w
             .keys
@@ -311,13 +323,8 @@ fn board(ui: &mut egui::Ui, w: &mut Wizard) {
             .collect();
         let hovered = hover
             .filter(|(h, _)| *h == a)
-            .and_then(|(_, at)| key_at(&keys, at));
+            .and_then(|(_, at)| key_at(keys, at));
         for (i, k) in keys.iter().enumerate() {
-            let r = Rect::from_min_max(
-                g.screen(a, [k.min.x, k.min.y]),
-                g.screen(a, [k.max.x, k.max.y]),
-            )
-            .shrink(g.scale * 0.06);
             let i = u8::try_from(i).ok();
             let picked = lit && i.is_some_and(|i| w.picked.contains(&i));
             let fill = if picked {
@@ -332,34 +339,32 @@ fn board(ui: &mut egui::Ui, w: &mut Wizard) {
             } else {
                 key_line
             };
-            painter.rect(
-                r,
-                3.0,
-                fill,
-                Stroke::new(1.0, line),
-                egui::StrokeKind::Inside,
-            );
+            painter.add(g.key_shape(a, k, fill, Stroke::new(1.0, line)));
         }
     }
-    // The lamps placed between keys so far.
+    // The lamps placed between keys so far (in the profile's key units, #796).
     for (i, a) in w.answers.iter().enumerate() {
         let Some(at) = a else { continue };
         if w.keys.get(i).is_some_and(|k| !k.is_empty()) {
             continue;
         }
-        let half = w.part_of(i);
-        painter.circle_filled(g.screen(half.min(areas - 1), *at), 4.0, p.accent);
+        let a = w.part_of(i).min(areas - 1);
+        painter.circle_filled(
+            g.screen(a, w.layout.point_from_profile(a, *at)),
+            4.0,
+            p.accent,
+        );
     }
     let Some(s) = step else {
         return;
     };
     let half = s.half.min(areas - 1);
     if let Some(at) = w.point {
-        let c = g.screen(half, at);
+        let c = g.screen(half, w.layout.point_from_profile(half, at));
         painter.circle(c, 5.0, Color32::WHITE, Stroke::new(1.5, p.accent));
     }
     if let Some((_, at)) = hover {
-        if key_at(&g.keys(&w.drawing, half), at).is_none() {
+        if key_at(g.keys(&w.layout, half), at).is_none() {
             painter.circle_stroke(g.screen(half, at), 6.0, Stroke::new(1.0, p.accent));
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         } else {
@@ -371,9 +376,9 @@ fn board(ui: &mut egui::Ui, w: &mut Wizard) {
             .interact_pointer_pos()
             .and_then(|pos| g.at(half, pos))
         {
-            match key_at(&g.keys(&w.drawing, half), at) {
+            match key_at(g.keys(&w.layout, half), at) {
                 Some(k) => w.toggle(k),
-                None => w.pick_point(at),
+                None => w.pick_point(w.layout.point_to_profile(half, at)),
             }
         }
     }
@@ -892,33 +897,30 @@ fn check_board(ui: &mut egui::Ui, v: &CheckView, c: &Confirm) {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 6.0, p.well);
-    let g = Geometry::new(&c.drawing, c.halves, rect.shrink(12.0));
+    let g = Geometry::new(&c.layout, c.halves, rect.shrink(12.0));
     let areas = usize::from(c.halves.clamp(1, 2));
     for a in 0..areas {
-        for k in g.keys(&c.drawing, a) {
-            let r = Rect::from_min_max(
-                g.screen(a, [k.min.x, k.min.y]),
-                g.screen(a, [k.max.x, k.max.y]),
-            )
-            .shrink(g.scale * 0.06);
-            painter.rect_stroke(r, 3.0, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+        for k in g.keys(&c.layout, a) {
+            painter.add(g.key_shape(a, k, Color32::TRANSPARENT, Stroke::new(1.0, p.line)));
         }
     }
+    // The chain's points are in the profile's key units; they land on the same keys here (#796).
+    let screen = |a: usize, at: [f32; 2]| g.screen(a, c.layout.point_from_profile(a, at));
     for h in 0..usize::from(c.halves) {
         let a = h.min(areas - 1);
         let points: Vec<Pos2> = (0..c.per_half)
             .filter_map(|i| c.point(h, i))
-            .map(|at| g.screen(a, at))
+            .map(|at| screen(a, at))
             .collect();
         painter.add(egui::Shape::line(points.clone(), Stroke::new(1.5, p.muted)));
         for pt in &points {
             painter.circle_filled(*pt, 2.5, p.muted);
         }
         if let Some(first) = c.point(h, 0) {
-            painter.circle_stroke(g.screen(a, first), 7.0, Stroke::new(1.5, p.accent));
+            painter.circle_stroke(screen(a, first), 7.0, Stroke::new(1.5, p.accent));
         }
         if let Some(at) = v.step.and_then(|i| c.point(h, c.lamp_at(i)?)) {
-            let at = g.screen(a, at);
+            let at = screen(a, at);
             painter.circle_filled(at, 8.0, p.accent.gamma_multiply(0.35));
             painter.circle(at, 5.0, Color32::WHITE, Stroke::new(1.5, p.accent));
         }
@@ -1185,7 +1187,7 @@ pub mod tests {
     fn the_geometry_maps_clicks_on_the_lit_half_only() {
         let (_, w) = sample(0);
         let g = Geometry::new(
-            &w.drawing,
+            &w.layout,
             2,
             Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 230.0)),
         );
@@ -1201,8 +1203,13 @@ pub mod tests {
         let edge = g.at(0, left.left_center() - Vec2::X * 3.0).unwrap();
         assert!(edge[0] < 0.0 && edge[0] >= -MARGIN);
         // A one-piece board is one area, its whole drawing (#559).
-        let one = Geometry::new(&w.drawing, 1, g.rect(0).union(g.rect(1)));
-        assert_eq!(one.keys(&w.drawing, 0), w.drawing.keys(false));
+        let one = Geometry::new(&w.layout, 1, g.rect(0).union(g.rect(1)));
+        assert_eq!(one.keys(&w.layout, 0), w.layout.part(0));
+        assert_eq!(
+            w.layout.rects(0),
+            w.drawing.keys(false),
+            "the profile's keys (#796)"
+        );
     }
 
     /// Draws the wizard on `ctx` for one frame with `events`; what it asked, and the drawing's
@@ -1301,7 +1308,7 @@ pub mod tests {
         ] {
             assert!(text.contains(want), "{want}: {text}");
         }
-        let g = Geometry::new(&w.drawing, 2, drawing.expect("the drawing").shrink(12.0));
+        let g = Geometry::new(&w.layout, 2, drawing.expect("the drawing").shrink(12.0));
         let k = w.drawing.keys(false)[4].center();
         let on_key = g.screen(0, [k.x, k.y]);
         clicked(&ctx, &v, &mut w, on_key);

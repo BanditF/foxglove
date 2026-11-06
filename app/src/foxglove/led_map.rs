@@ -278,7 +278,10 @@ pub struct Wizard {
     /// The board profile's id, the map's key in the store.
     pub board: String,
     pub name: String,
+    /// The key order and key units the answers are in (the profile's, #796).
     pub drawing: Drawing,
+    /// Where the keys are drawn: the keyboard's own layout first (#796), in `drawing`'s order.
+    pub layout: super::key_layout::KeyLayout,
     /// 1 for a one-piece board, else 2.
     pub halves: u8,
     /// The board's LEDs by part, in frame order (#561).
@@ -322,6 +325,7 @@ impl Wizard {
             board: board.id.clone(),
             name: board.name.clone(),
             drawing: super::boards::drawing(Some(board)),
+            layout: super::key_layout::of(Some(board)),
             halves,
             parts,
             answers: Vec::new(),

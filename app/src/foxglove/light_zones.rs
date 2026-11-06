@@ -47,8 +47,9 @@ pub struct Line {
     pub source: Option<String>,
     /// "15 more lamps per half light nothing; Foxglove leaves them out."
     pub dead: Option<String>,
-    /// The board's drawing, one part (the second is its mirror image).
-    pub drawing: Drawing,
+    /// Where the zone drawing puts the keys (#796): the keyboard's own layout first, in the
+    /// profile's key order the zones index.
+    pub layout: super::key_layout::KeyLayout,
 }
 
 /// A key of the drawing as a zone key: its column and row when the drawing is a grid and the
@@ -172,10 +173,10 @@ fn lamps_text(counts: &[u32]) -> String {
     format!("{n} {}{each}", if n == 1 { "lamp" } else { "lamps" })
 }
 
-/// The Keyboard card's line for `zones`, on `drawing`. Lamp counts alone (the keyboard's
+/// The Keyboard card's line for `zones`, drawn on `layout`. Lamp counts alone (the keyboard's
 /// report) say how many lamps there are, not which keys each lights, so the zones are unknown
 /// then.
-pub fn line(found: Option<&Zones>, drawing: &Drawing) -> Line {
+pub fn line(found: Option<&Zones>, layout: &super::key_layout::KeyLayout) -> Line {
     let mut out = Line {
         summary: "Lighting zones unknown".to_string(),
         chip: "Zones unknown".to_string(),
@@ -184,7 +185,7 @@ pub fn line(found: Option<&Zones>, drawing: &Drawing) -> Line {
         zones: None,
         source: None,
         dead: None,
-        drawing: drawing.clone(),
+        layout: layout.clone(),
     };
     match found {
         Some(z) if z.source != ZoneSource::Reported => {
@@ -237,7 +238,7 @@ pub fn current() -> Option<Line> {
     let drawing = super::boards::drawing(board.as_ref());
     Some(line(
         keyboard(board.as_ref(), &drawing, firmware.as_ref()).as_ref(),
-        &drawing,
+        &super::key_layout::current(),
     ))
 }
 
@@ -270,6 +271,11 @@ mod tests {
         Board::parse(include_str!("../../resources/boards/eyelash-corne.toml")).unwrap()
     }
 
+    fn lay(d: &Drawing) -> crate::foxglove::key_layout::KeyLayout {
+        use crate::foxglove::key_layout::{from_drawing, LayoutSource};
+        from_drawing(d, true, LayoutSource::Profile)
+    }
+
     fn drawing(b: &Board) -> Drawing {
         b.drawing.clone().unwrap_or_default()
     }
@@ -288,7 +294,7 @@ mod tests {
         assert_eq!(z.list[0].keys.len(), 4);
         assert!(z.list[0].keys[..3].iter().all(|k| k.column == Some(5)));
         assert_eq!(z.list[0].keys[3].column, None);
-        let l = line(Some(&z), &d);
+        let l = line(Some(&z), &lay(&d));
         assert_eq!(l.summary, "6 lighting zones per half, by column");
         assert_eq!(l.details, [TIP]);
         assert_eq!(l.kind, ZoneKind::Zones);
@@ -314,7 +320,7 @@ mod tests {
         assert_eq!(z.reported, None);
         let only = keyboard(None, &d, Some(&report)).unwrap();
         assert_eq!(only.source, ZoneSource::Reported);
-        let l = line(Some(&only), &d);
+        let l = line(Some(&only), &lay(&d));
         assert_eq!(l.summary, "Lighting zones unknown");
         assert_eq!((l.kind, l.zones.is_none()), (ZoneKind::Unknown, true));
         assert_eq!(
@@ -322,7 +328,7 @@ mod tests {
             "The keyboard reports 21 lamps per half; which keys each one lights isn't known yet."
         );
         assert_eq!(keyboard(None, &d, None), None);
-        assert_eq!(line(None, &d).summary, "Lighting zones unknown");
+        assert_eq!(line(None, &lay(&d)).summary, "Lighting zones unknown");
         // A provisional map isn't used by scenes: not a source.
         let mut provisional = corne();
         provisional.lighting.as_mut().unwrap().led_map = "provisional".into();
@@ -355,7 +361,7 @@ mod tests {
             4,
             "the whole group, not the key under its centre"
         );
-        let l = line(Some(&z), &d);
+        let l = line(Some(&z), &lay(&d));
         assert_eq!(l.summary, "6 lighting zones per half, by column");
         assert_eq!(l.source.as_deref(), Some("From your check"));
     }
@@ -391,7 +397,7 @@ mod tests {
         let b = Board::parse(crate::foxglove::fixtures::second_desk::PLANK3).unwrap();
         let d = drawing(&b);
         let z = keyboard(Some(&b), &d, None).unwrap();
-        let l = line(Some(&z), &d);
+        let l = line(Some(&z), &lay(&d));
         assert_eq!(l.summary, "Per-key lighting, 61 keys");
         assert_eq!(l.kind, ZoneKind::PerLed);
         assert!(!l.source.unwrap().contains("half"));

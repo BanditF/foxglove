@@ -168,6 +168,12 @@ pub fn mirrored(z: &Zones) -> bool {
 /// The drawing's title on the Keyboard card.
 pub const TITLE: &str = "Zones";
 
+/// Under the header when the keyboard's layout and the profile's drawing differ in key count
+/// (#796): the keyboard's layout is drawn, with the profile's zones on it.
+pub const MISMATCH: &str = "Zones from the profile may not match this layout";
+const MISMATCH_HOVER: &str = "The keyboard's own layout has another key count than its board \
+     profile's drawing; the keyboard's is drawn, with the profile's zones on it.";
+
 /// The keyboard's drawing under its summary line: a header (its title, with how per-key looks
 /// land on zones on hover, and the source as a chip, #794 K7/K9), board, zone list and footer.
 /// `check` says Check zones… can run on the connected keyboard.
@@ -182,6 +188,14 @@ pub fn keyboard(ui: &mut egui::Ui, line: &Line, check: bool) -> Option<Ask> {
             theme::hint_chip(ui, source, None, None);
         }
     });
+    // #796: the keyboard's own layout has another key count than the profile's drawing.
+    if line.layout.mismatch {
+        let p = theme::palette(ui);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(MISMATCH).color(p.muted).size(12.5));
+            theme::info_dot(ui, MISMATCH_HOVER);
+        });
+    }
     ui.add_space(4.0);
     let per_key = line.kind == ZoneKind::PerLed;
     board(ui, line, z, per_key);
@@ -204,11 +218,11 @@ fn board(ui: &mut egui::Ui, line: &Line, z: &Zones, per_key: bool) {
     if halves == 2 {
         within.min.y += 16.0;
     }
-    let g = Geometry::new(&line.drawing, halves, within);
+    let g = Geometry::new(&line.layout, halves, within);
     let parts = Parts::halves(halves);
     let same = mirrored(z);
     for a in 0..usize::from(halves) {
-        let keys = g.keys(&line.drawing, a);
+        let keys = g.keys(&line.layout, a);
         let zones = on_part(z, a);
         let mut owner: Vec<Option<usize>> = vec![None; keys.len()];
         for (i, zone) in zones.iter().enumerate() {
@@ -226,29 +240,21 @@ fn board(ui: &mut egui::Ui, line: &Line, z: &Zones, per_key: bool) {
             .shrink(g.scale * 0.06)
         };
         for (k, owner) in keys.iter().zip(&owner) {
-            let r = on_screen(k);
-            match owner {
+            let shape = match owner {
                 Some(i) => {
                     let t = if per_key { p.accent } else { tint(*i) };
-                    painter.rect(
-                        r,
-                        3.0,
-                        t.gamma_multiply(0.45),
-                        Stroke::new(1.0, t),
-                        egui::StrokeKind::Inside,
-                    );
+                    g.key_shape(a, k, t.gamma_multiply(0.45), Stroke::new(1.0, t))
                 }
-                None => {
-                    painter.rect_stroke(r, 3.0, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
-                }
-            }
+                None => g.key_shape(a, k, Color32::TRANSPARENT, Stroke::new(1.0, p.line)),
+            };
+            painter.add(shape);
         }
         if !per_key {
             for (i, zone) in zones.iter().enumerate() {
                 let top = zone
                     .keys
                     .iter()
-                    .filter_map(|k| keys.get(usize::from(k.index)))
+                    .filter_map(|k| keys.get(usize::from(k.index)).map(|k| &k.rect))
                     .min_by(|x, y| {
                         x.min
                             .y
