@@ -691,7 +691,7 @@ fn status_strip(ui: &mut egui::Ui, s: &StripState) {
             }
             let read_only = s.switcher.focused().and_then(|r| r.read_only.clone());
             if let Some(why) = &read_only {
-                super::focus_ui::read_only_chip(ui, why);
+                super::focus_ui::read_only_chip_in(ui, theme::ChipStyle::STRIP, why);
             }
             for c in chips(s) {
                 // The host link's chips describe its keyboard, not a read-only one in focus;
@@ -714,11 +714,13 @@ fn status_strip(ui: &mut egui::Ui, s: &StripState) {
 }
 
 /// One chip, sized before it's placed so the strip can wrap it to the next row.
-fn chip(ui: &mut egui::Ui, c: &Chip) {
+fn chip(ui: &mut egui::Ui, c: &Chip) -> egui::Rect {
     let p = theme::palette(ui);
     let warn = c.tone == Some(Tone::Warn);
     let mut job = egui::text::LayoutJob::default();
-    let font = theme::body(13.0);
+    // The strip's one chip size (#800): the switcher's flat and clickable chips take it too.
+    let style = theme::ChipStyle::STRIP;
+    let font = theme::body(style.text);
     if !c.name.is_empty() {
         job.append(
             &c.name,
@@ -736,7 +738,7 @@ fn chip(ui: &mut egui::Ui, c: &Chip) {
         if c.name.is_empty() { 0.0 } else { 6.0 },
         egui::TextFormat::simple(font, color),
     );
-    let pad = egui::vec2(10.0, 6.0);
+    let pad = style.pad;
     let dot = if c.tone.is_some() { 14.0 } else { 0.0 };
     // One row, cut with "…" at the strip's width: a chip wider than the strip would widen the
     // settings window when the keyboard connects. The hover then gives the whole text.
@@ -789,6 +791,7 @@ fn chip(ui: &mut egui::Ui, c: &Chip) {
     if let Some(h) = hover {
         response.on_hover_text(h.trim_start());
     }
+    rect
 }
 
 #[cfg(test)]
@@ -1092,6 +1095,48 @@ mod tests {
         assert_eq!(left_link(Some(false), Some("BLE")), "on Bluetooth");
         assert_eq!(left_link(Some(false), None), "on Bluetooth");
         assert_eq!(left_link(None, Some("BLE")), "connected");
+    }
+
+    /// #800: the switcher's chips (flat with one keyboard, clickable with more) and the strip's
+    /// part chips are one height, their text on one line, so the strip's row is level.
+    #[test]
+    fn the_strips_chips_are_one_height() {
+        use crate::foxglove::focus_ui::CARET;
+        let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+        let part = Chip {
+            tone: Some(Tone::Ok),
+            name: "Left".into(),
+            text: "on USB · 0.1.0 · e255d32".into(),
+            hover: None,
+        };
+        let mut rects = Vec::new();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                let style = theme::ChipStyle::STRIP;
+                let switch = format!("Eyelash Corne {CARET}");
+                rects.push(theme::hint_chip_in(ui, style, "Eyelash Corne", None, None).rect);
+                rects.push(theme::click_chip_in(ui, style, &switch, None, None).rect);
+                let muted = Some(theme::Dot::Muted);
+                rects.push(theme::hint_chip_in(ui, style, "read-only", None, muted).rect);
+                rects.push(chip(ui, &part));
+            });
+        });
+        out.textures_delta.clear();
+        let tops: Vec<f32> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.pos.y),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rects.len(), 4);
+        for r in &rects {
+            assert!((r.height() - rects[3].height()).abs() < 0.01, "{rects:?}");
+            assert!((r.top() - rects[3].top()).abs() < 0.01, "{rects:?}");
+        }
+        assert!(tops.len() >= 4);
+        assert!(tops.iter().all(|y| (y - tops[0]).abs() < 0.01), "{tops:?}");
     }
 
     #[test]

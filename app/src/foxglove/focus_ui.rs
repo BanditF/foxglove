@@ -78,9 +78,18 @@ pub fn read_only_hover(source: Source) -> Option<String> {
     })
 }
 
-/// The muted "read-only" chip (flat, a grey dot); `hover` says why.
+/// The muted "read-only" chip (flat, a grey dot) in a card; `hover` says why.
 pub fn read_only_chip(ui: &mut egui::Ui, hover: &str) -> egui::Response {
-    theme::hint_chip(ui, READ_ONLY, Some(hover), Some(theme::Dot::Muted))
+    read_only_chip_in(ui, theme::ChipStyle::CARD, hover)
+}
+
+/// [`read_only_chip`] in `style`: [`theme::ChipStyle::STRIP`] on the status strip.
+pub fn read_only_chip_in(
+    ui: &mut egui::Ui,
+    style: theme::ChipStyle,
+    hover: &str,
+) -> egui::Response {
+    theme::hint_chip_in(ui, style, READ_ONLY, Some(hover), Some(theme::Dot::Muted))
 }
 
 /// One row of the list.
@@ -189,7 +198,8 @@ thread_local! {
     pub static LAST_ROWS: std::cell::RefCell<Vec<egui::Rect>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The switcher at the head of the status strip; returns the key of a keyboard picked from its
+/// The switcher at the head of the status strip, in the strip's chip size and fill
+/// ([`theme::ChipStyle::STRIP`]: one height with the part chips after it); returns the key of a keyboard picked from its
 /// list. Nothing with no keyboard; a flat chip with one; a clickable chip with ▾ and its list
 /// with more.
 pub fn switcher(ui: &mut egui::Ui, s: &Switcher) -> Option<String> {
@@ -201,16 +211,18 @@ pub fn switcher(ui: &mut egui::Ui, s: &Switcher) -> Option<String> {
         " · not connected".to_string()
     };
     if !s.can_switch() {
-        theme::hint_chip(
+        theme::hint_chip_in(
             ui,
+            theme::ChipStyle::STRIP,
             &focused.name,
             Some(&format!("{}{gone}", focused.detail)),
             dot,
         );
         return None;
     }
-    let chip = theme::click_chip(
+    let chip = theme::click_chip_in(
         ui,
+        theme::ChipStyle::STRIP,
         &format!("{} {CARET}", focused.name),
         Some(&format!("{}{gone}", switch_hover(s))),
         dot,

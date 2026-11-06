@@ -29,6 +29,9 @@ pub struct Palette {
     pub line: Color32,
     /// Read-only status chips (#793): between `surface` and `control`, with no outline.
     pub chip_fill: Color32,
+    /// The same chips on the status strip, which sits on `ground` (#800): visibly apart from
+    /// it in both themes, with `text` and `muted` still reading on it.
+    pub strip_chip_fill: Color32,
     /// Buttons and other controls.
     pub control: Color32,
     pub control_line: Color32,
@@ -74,6 +77,7 @@ pub fn dark(roles: &Roles) -> Palette {
         well: hex(0x0a0d0c),
         line: hex(0x2a3330),
         chip_fill: hex(0x1c2321),
+        strip_chip_fill: hex(0x1c2321),
         control: hex(0x232b28),
         control_line: hex(0x34403b),
         text: hex(0xd9e0dc),
@@ -100,6 +104,7 @@ pub fn light(roles: &Roles) -> Palette {
         well: hex(0xf8faf9),
         line: hex(0xcfd8d3),
         chip_fill: hex(0xf0f3f1),
+        strip_chip_fill: hex(0xdde4df),
         control: hex(0xe8ede9),
         control_line: hex(0xb9c4be),
         text: hex(0x26302c),
@@ -127,6 +132,7 @@ impl Palette {
             ("well", self.well),
             ("line", self.line),
             ("chip_fill", self.chip_fill),
+            ("strip_chip_fill", self.strip_chip_fill),
             ("control", self.control),
             ("control_line", self.control_line),
             ("text", self.text),
@@ -457,46 +463,80 @@ pub fn bar_fill(p: &Palette, level: Level) -> Color32 {
     )
 }
 
-const CHIP_PAD: egui::Vec2 = egui::vec2(8.0, 3.0);
 const CHIP_RADIUS: u8 = 6;
 const CHIP_DOT: f32 = 3.5;
 /// The room the dot takes before the text.
 const CHIP_DOT_ROOM: f32 = 12.0;
+
+/// A chip's size and fill. Every chip of one place is one height: [`ChipStyle::CARD`] in the
+/// cards, [`ChipStyle::STRIP`] on the status strip, whose part chips (`shell::chip`) take the
+/// same padding and text size, so the strip's row is level whatever its chips are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChipStyle {
+    /// Around the text.
+    pub pad: egui::Vec2,
+    /// The text's size in the body face.
+    pub text: f32,
+    strip: bool,
+}
+
+impl ChipStyle {
+    /// The chips in a card, on `surface`.
+    pub const CARD: ChipStyle = ChipStyle {
+        pad: egui::vec2(8.0, 3.0),
+        text: 12.5,
+        strip: false,
+    };
+    /// The status strip's chips, on `ground` (#800).
+    pub const STRIP: ChipStyle = ChipStyle {
+        pad: egui::vec2(10.0, 6.0),
+        text: 13.0,
+        strip: true,
+    };
+
+    /// The flat fill on what the chip sits on.
+    pub fn fill(self, p: &Palette) -> Color32 {
+        if self.strip {
+            p.strip_chip_fill
+        } else {
+            p.chip_fill
+        }
+    }
+}
 
 /// Places a chip and paints its face: the muted fill, the leading dot and the text, cut to one
 /// row at the room left. Read-only chips stop here, so this function never outlines anything
 /// (the flat-chip rule; a source test checks it). Whether the row cut the text.
 fn chip_face(
     ui: &mut egui::Ui,
+    style: ChipStyle,
     text: &str,
     dot: Option<Dot>,
     sense: egui::Sense,
 ) -> (egui::Rect, egui::Response, bool) {
     let p = palette(ui);
+    let pad = style.pad;
     let dot_room = if dot.is_some() { CHIP_DOT_ROOM } else { 0.0 };
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), body(12.5), p.text);
+    let mut job =
+        egui::text::LayoutJob::simple_singleline(text.to_owned(), body(style.text), p.text);
     job.wrap = egui::text::TextWrapping {
-        max_width: (ui.available_width() - CHIP_PAD.x * 2.0 - dot_room).max(40.0),
+        max_width: (ui.available_width() - pad.x * 2.0 - dot_room).max(40.0),
         max_rows: 1,
         break_anywhere: true,
         overflow_character: Some('…'),
     };
     let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
     let elided = galley.elided;
-    let size = egui::vec2(dot_room + galley.size().x, galley.size().y) + CHIP_PAD * 2.0;
+    let size = egui::vec2(dot_room + galley.size().x, galley.size().y) + pad * 2.0;
     let (rect, response) = ui.allocate_exact_size(size, sense);
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(CHIP_RADIUS), p.chip_fill);
+        painter.rect_filled(rect, CornerRadius::same(CHIP_RADIUS), style.fill(p));
         if let Some(dot) = dot {
-            let center = egui::pos2(rect.left() + CHIP_PAD.x + CHIP_DOT, rect.center().y);
+            let center = egui::pos2(rect.left() + pad.x + CHIP_DOT, rect.center().y);
             painter.circle_filled(center, CHIP_DOT, dot.color(p));
         }
-        painter.galley(
-            rect.min + CHIP_PAD + egui::vec2(dot_room, 0.0),
-            galley,
-            p.text,
-        );
+        painter.galley(rect.min + pad + egui::vec2(dot_room, 0.0), galley, p.text);
     }
     (rect, response, elided)
 }
@@ -520,7 +560,18 @@ pub fn hint_chip(
     hover: Option<&str>,
     dot: Option<Dot>,
 ) -> egui::Response {
-    let (_, response, elided) = chip_face(ui, text, dot, egui::Sense::hover());
+    hint_chip_in(ui, ChipStyle::CARD, text, hover, dot)
+}
+
+/// [`hint_chip`] in `style`: [`ChipStyle::STRIP`] on the status strip.
+pub fn hint_chip_in(
+    ui: &mut egui::Ui,
+    style: ChipStyle,
+    text: &str,
+    hover: Option<&str>,
+    dot: Option<Dot>,
+) -> egui::Response {
+    let (_, response, elided) = chip_face(ui, style, text, dot, egui::Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     match chip_hover(text, hover, elided) {
         Some(h) => response.on_hover_text(h),
@@ -531,13 +582,26 @@ pub fn hint_chip(
 /// A chip that opens something when clicked (such as the status strip's focus switcher): the
 /// [`hint_chip`] face plus the outline every clickable thing has, the accent on hover and the
 /// focus ring on keyboard focus. Enter and Space click it, as they click a button.
+// No card has a clickable chip yet; the strip's switcher uses `click_chip_in`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn click_chip(
     ui: &mut egui::Ui,
     text: &str,
     hover: Option<&str>,
     dot: Option<Dot>,
 ) -> egui::Response {
-    let (rect, response, elided) = chip_face(ui, text, dot, egui::Sense::click());
+    click_chip_in(ui, ChipStyle::CARD, text, hover, dot)
+}
+
+/// [`click_chip`] in `style`: [`ChipStyle::STRIP`] for the status strip's switcher (#800).
+pub fn click_chip_in(
+    ui: &mut egui::Ui,
+    style: ChipStyle,
+    text: &str,
+    hover: Option<&str>,
+    dot: Option<Dot>,
+) -> egui::Response {
+    let (rect, response, elided) = chip_face(ui, style, text, dot, egui::Sense::click());
     let line = if response.hovered() || response.has_focus() {
         ui.style().interact(&response).bg_stroke
     } else {
@@ -817,11 +881,12 @@ mod widget_tests {
     }
 
     /// The flat-chip rule (rule 2): nothing a read-only chip runs outlines it. An outline is
-    /// only for clickable things, so it lives in `click_chip` alone.
+    /// only for clickable things, so it lives in `click_chip_in` alone.
     #[test]
     fn read_only_chips_and_bars_have_no_stroke_in_their_source() {
         for name in [
             "hint_chip",
+            "hint_chip_in",
             "chip_face",
             "chip_hover",
             "info_bar",
@@ -830,7 +895,7 @@ mod widget_tests {
             let code = body(name).to_lowercase();
             assert!(!code.contains("stroke"), "{name} outlines something");
         }
-        assert!(body("click_chip").contains("rect_stroke"));
+        assert!(body("click_chip_in").contains("rect_stroke"));
         // Amber is never collapsed (rule 5).
         assert!(!body("info_bar").to_lowercase().contains("collaps"));
     }
@@ -1161,6 +1226,7 @@ mod tests {
                 p.surface_raised,
                 p.control,
                 p.chip_fill,
+                p.strip_chip_fill,
             ]
             .into_iter()
             .chain(bars)
@@ -1173,6 +1239,15 @@ mod tests {
             assert!(
                 contrast(p.accent, p.surface) >= 4.5,
                 "links (dark {})",
+                p.dark
+            );
+            // A flat chip on the strip has no outline: its fill alone sets it off the ground,
+            // at least as far as a card's surface stands off it (#800).
+            let card = contrast(p.surface, p.ground);
+            let chip = contrast(p.strip_chip_fill, p.ground);
+            assert!(
+                chip >= 1.15 && chip >= card,
+                "a strip chip on the ground (dark {}): {chip:.3}, a card {card:.3}",
                 p.dark
             );
             assert!(
