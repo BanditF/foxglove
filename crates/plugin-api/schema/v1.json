@@ -1,5 +1,5 @@
 {
-  "api": "1.11",
+  "api": "1.12",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -902,6 +902,232 @@
       "result": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Empty",
+        "type": "object"
+      }
+    },
+    "focus.get": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$defs": {
+          "FocusKeyboard": {
+            "description": "One keyboard the focus knows (API 1.12, #799): every keyboard Foxglove found this run, a gone\none greyed (`connected` false) until the app restarts.",
+            "properties": {
+              "connected": {
+                "type": "boolean"
+              },
+              "device": {
+                "description": "Its id in `devices.list`, when the device layer has one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "key": {
+                "description": "Stable across replugs; what `focus.set` takes.",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "read_only": {
+                "description": "Foxglove can't change its keymap or firmware.",
+                "type": "boolean"
+              },
+              "source": {
+                "description": "`host_link` (Foxglove's own link), `via` (read-only) or `lamp_array` (lights only).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "name",
+              "source",
+              "connected",
+              "read_only"
+            ],
+            "type": "object"
+          },
+          "FocusPins": {
+            "description": "The views that may pin their own keyboard (API 1.12): `null` follows the focus.",
+            "properties": {
+              "feed": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "overlay": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The keyboard Foxglove shows (API 1.12, #799): the focus's key (`null` before any keyboard was\nfound), every keyboard it can be, the pins, and \"follow the keyboard I type on\".",
+        "properties": {
+          "follow_typing": {
+            "type": "boolean"
+          },
+          "keyboard": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "keyboards": {
+            "items": {
+              "$ref": "#/$defs/FocusKeyboard"
+            },
+            "type": "array"
+          },
+          "pins": {
+            "$ref": "#/$defs/FocusPins"
+          }
+        },
+        "required": [
+          "keyboards",
+          "pins",
+          "follow_typing"
+        ],
+        "title": "Focus",
+        "type": "object"
+      }
+    },
+    "focus.set": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "FocusView": {
+            "description": "A view that may pin a keyboard (API 1.12).",
+            "enum": [
+              "overlay",
+              "feed"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Picks the focused keyboard by its key (API 1.12). With `view`, pins that view to `keyboard`\ninstead, or (`keyboard` null) lets it follow the focus again.",
+        "properties": {
+          "keyboard": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "view": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FocusView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "SetFocusParams",
+        "type": "object"
+      },
+      "permission": "focus.write",
+      "result": {
+        "$defs": {
+          "FocusKeyboard": {
+            "description": "One keyboard the focus knows (API 1.12, #799): every keyboard Foxglove found this run, a gone\none greyed (`connected` false) until the app restarts.",
+            "properties": {
+              "connected": {
+                "type": "boolean"
+              },
+              "device": {
+                "description": "Its id in `devices.list`, when the device layer has one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "key": {
+                "description": "Stable across replugs; what `focus.set` takes.",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "read_only": {
+                "description": "Foxglove can't change its keymap or firmware.",
+                "type": "boolean"
+              },
+              "source": {
+                "description": "`host_link` (Foxglove's own link), `via` (read-only) or `lamp_array` (lights only).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "name",
+              "source",
+              "connected",
+              "read_only"
+            ],
+            "type": "object"
+          },
+          "FocusPins": {
+            "description": "The views that may pin their own keyboard (API 1.12): `null` follows the focus.",
+            "properties": {
+              "feed": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "overlay": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The keyboard Foxglove shows (API 1.12, #799): the focus's key (`null` before any keyboard was\nfound), every keyboard it can be, the pins, and \"follow the keyboard I type on\".",
+        "properties": {
+          "follow_typing": {
+            "type": "boolean"
+          },
+          "keyboard": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "keyboards": {
+            "items": {
+              "$ref": "#/$defs/FocusKeyboard"
+            },
+            "type": "array"
+          },
+          "pins": {
+            "$ref": "#/$defs/FocusPins"
+          }
+        },
+        "required": [
+          "keyboards",
+          "pins",
+          "follow_typing"
+        ],
+        "title": "Focus",
         "type": "object"
       }
     },

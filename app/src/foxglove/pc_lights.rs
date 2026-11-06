@@ -1848,13 +1848,20 @@ pub fn start() {
                     eprintln!("Foxglove: can't save the PC lighting settings: {e}");
                 }
             }
-            *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(worker.snapshot());
+            let snapshot = worker.snapshot();
+            // The keyboards among the devices found, for the focus (#799).
+            let lamp_keyboards = scanned
+                .then(|| super::keyboard_focus::lamp_array_keyboards(&snapshot, &lamp_layouts()));
+            *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(snapshot);
             if let Some(ctx) = CTX.get() {
                 ctx.request_repaint();
             }
             // A running scene places the boards found now (#485).
             if scanned {
                 super::scene_run::devices_changed();
+            }
+            if let Some(seen) = lamp_keyboards {
+                super::keyboard_focus::report(super::keyboard_focus::Source::LampArray, seen);
             }
         }
     });

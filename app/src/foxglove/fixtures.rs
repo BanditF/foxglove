@@ -47,7 +47,7 @@ pub(crate) fn row(d: &CatalogDevice, control: Control) -> Row {
 }
 
 /// A LampArray's row before its attributes are read: no zones, no catalog entry.
-fn lamp_array_row(key: &str, name: &str) -> Row {
+pub(crate) fn lamp_array_row(key: &str, name: &str) -> Row {
     Row {
         key: key.into(),
         name: name.into(),

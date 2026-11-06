@@ -644,6 +644,47 @@ pub fn save<T: Serialize>(section: &str, value: &T) -> std::io::Result<()> {
     save_at(&path, section, value, false)
 }
 
+/// Read-modify-write of one machine section (not a [`PROFILED`] one) under the store's lock:
+/// `change` gets the section as it is on disk now (its defaults when missing), and what it
+/// leaves is saved, so two writers of different keys in the section can't lose each other's
+/// change. A store that can't be read is left alone (`Err`): defaults never overwrite it.
+pub fn update<T: DeserializeOwned + Serialize + Default>(
+    section: &str,
+    change: impl FnOnce(&mut T),
+) -> std::io::Result<T> {
+    let path = path().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    update_at(&path, section, change)
+}
+
+fn update_at<T: DeserializeOwned + Serialize + Default>(
+    path: &Path,
+    section: &str,
+    change: impl FnOnce(&mut T),
+) -> std::io::Result<T> {
+    if PROFILED.contains(&section) {
+        return Err(std::io::Error::other(format!(
+            "[{section}] is profiled: save it with `save`"
+        )));
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = upgrade(read(path).map_err(std::io::Error::other)?);
+    let mut value: T = match get(&table, section) {
+        Some(v) => v
+            .clone()
+            .try_into()
+            .map_err(|e: toml::de::Error| std::io::Error::other(format!("[{section}]: {e}")))?,
+        None => T::default(),
+    };
+    change(&mut value);
+    set(
+        &mut table,
+        section,
+        Value::try_from(&value).map_err(std::io::Error::other)?,
+    );
+    write(path, &table)?;
+    Ok(value)
+}
+
 /// A feature's section. The first time it's missing, `migrate` imports the feature's old
 /// settings and names the files it read; they're saved here and renamed `*.migrated`. With
 /// nothing to import, the defaults.
@@ -1000,5 +1041,27 @@ keep = true
         );
         assert!(get(&fresh, "profiles.list.Default").is_none());
         assert_eq!(rules_in(&fresh).1[0].profile, "Default (imported)");
+    }
+
+    /// `update` reads the section under the lock, so each writer's key survives the other's
+    /// save; a profiled section is refused, and an unreadable store is never overwritten.
+    #[test]
+    fn update_is_read_modify_write_and_leaves_a_broken_store_alone() {
+        let dir = temp("update");
+        let path = dir.join("foxglove.toml");
+        save_at(&path, "screens", &Demo { on: true, n: 4 }, false).unwrap();
+        let a: Demo = update_at(&path, "machine", |d: &mut Demo| d.n = 7).unwrap();
+        assert_eq!(a, Demo { on: false, n: 7 });
+        let b: Demo = update_at(&path, "machine", |d: &mut Demo| d.on = true).unwrap();
+        assert_eq!(b, Demo { on: true, n: 7 }, "the first writer's key is kept");
+        assert_eq!(
+            try_load_at::<Demo>(&path, "screens").unwrap(),
+            Some(Demo { on: true, n: 4 }),
+            "other sections untouched"
+        );
+        assert!(update_at(&path, "screens", |_: &mut Demo| {}).is_err());
+        std::fs::write(&path, "not [valid").unwrap();
+        assert!(update_at(&path, "machine", |d: &mut Demo| d.n = 1).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not [valid");
     }
 }

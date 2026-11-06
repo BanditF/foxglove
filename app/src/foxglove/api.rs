@@ -710,6 +710,12 @@ impl Devices for AppDevices {
                 }
                 overlay_window(super::overlay_restore::window_state())
             }
+            "focus.get" => Ok(json!(focus_now())),
+            "focus.set" => {
+                let p: methods::SetFocusParams = params(_params)?;
+                focus_set(&p)?;
+                Ok(json!(focus_now()))
+            }
             "profiles.list" => {
                 let (names, active) = super::store::profiles();
                 Ok(json!(methods::Profiles { names, active }))
@@ -743,6 +749,67 @@ impl Devices for AppDevices {
                 data: None,
             }),
         }
+    }
+}
+
+/// `focus.get` (#799, API 1.12): the focused keyboard, every keyboard it can be, and the pins.
+fn focus_now() -> methods::Focus {
+    use super::keyboard_focus as kf;
+    let pins = kf::pins();
+    focus_view(
+        kf::current().map(|k| k.key),
+        &kf::keyboards(),
+        methods::FocusPins {
+            overlay: pins.overlay,
+            feed: pins.feed,
+        },
+        kf::follow_typing(),
+    )
+}
+
+fn focus_view(
+    keyboard: Option<String>,
+    keyboards: &[super::keyboard_focus::Keyboard],
+    pins: methods::FocusPins,
+    follow_typing: bool,
+) -> methods::Focus {
+    methods::Focus {
+        keyboard,
+        keyboards: keyboards
+            .iter()
+            .map(|k| methods::FocusKeyboard {
+                key: k.key.clone(),
+                name: k.name.clone(),
+                source: k.source.as_str().into(),
+                connected: k.connected,
+                read_only: k.read_only(),
+                device: k.device.clone(),
+            })
+            .collect(),
+        pins,
+        follow_typing,
+    }
+}
+
+/// `focus.set`: picks the focus, or with `view` pins that view (`keyboard` null: follow the
+/// focus). An unknown keyboard is invalid params.
+fn focus_set(p: &methods::SetFocusParams) -> Result<(), Error> {
+    use super::keyboard_focus::{self as kf, View};
+    let invalid = |message: String| Error {
+        code: code::INVALID_PARAMS,
+        message,
+        data: None,
+    };
+    match (p.view, p.keyboard.as_deref()) {
+        (Some(view), key) => {
+            let view = match view {
+                methods::FocusView::Overlay => View::Overlay,
+                methods::FocusView::Feed => View::Feed,
+            };
+            kf::pin(view, key).map_err(invalid)
+        }
+        (None, Some(key)) => kf::set(key).map(|_| ()).map_err(invalid),
+        (None, None) => Err(invalid("name a keyboard".into())),
     }
 }
 
@@ -1587,6 +1654,45 @@ mod tests {
             caps(Caps::LAYERS | Caps::SCREENS),
             vec!["layers", "screens"]
         );
+    }
+
+    /// `focus.get` lists the keyboards the focus knows (a fake one here, no device), and
+    /// `focus.set` refuses an unknown keyboard or a missing one as invalid params (#799).
+    #[test]
+    fn focus_get_and_set_over_the_api() {
+        use super::super::keyboard_focus::{self as kf, Seen, Source};
+        kf::report(
+            Source::Via,
+            vec![Seen {
+                key: "via-k5".into(),
+                name: "K5 Pro".into(),
+                vid: 0x3434,
+                pid: 0x0250,
+                device: Some("dev-k5".into()),
+            }],
+        );
+        let got: methods::Focus =
+            serde_json::from_value(AppDevices.call_from(0, "focus.get", json!({})).unwrap())
+                .unwrap();
+        assert_eq!(got.keyboard.as_deref(), Some("via-k5"));
+        assert_eq!(got.keyboards.len(), 1);
+        let k = &got.keyboards[0];
+        assert_eq!(
+            (k.source.as_str(), k.read_only, k.connected),
+            ("via", true, true)
+        );
+        assert_eq!(k.device.as_deref(), Some("dev-k5"));
+        assert!(!got.follow_typing);
+        for params in [
+            json!({}),
+            json!({"keyboard": "nobody"}),
+            json!({"keyboard": "nobody", "view": "overlay"}),
+        ] {
+            let e = AppDevices
+                .call_from(0, "focus.set", params.clone())
+                .unwrap_err();
+            assert_eq!(e.code, code::INVALID_PARAMS, "{params}");
+        }
     }
 
     /// A keyboard's lights in memory: every write it took, in order.
