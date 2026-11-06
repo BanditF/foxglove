@@ -1168,7 +1168,9 @@ mod widget_tests {
     /// plays…" read the label twice). Every `with_info` in the app, with the text it is given.
     #[test]
     fn no_tooltip_starts_with_its_controls_label() {
-        use crate::foxglove::{art_encode, art_ui, battery_dim_ui, lights_page, pc_lights_ui};
+        use crate::foxglove::{
+            art_encode, art_ui, battery_dim_ui, follow_typing, lights_page, pc_lights_ui,
+        };
         assert!(repeats_label(
             "Animate on e-paper",
             "Animate on e-paper: plays…"
@@ -1217,6 +1219,11 @@ mod widget_tests {
                 pc_lights_ui::OPENRGB_SHORT.to_string(),
                 pc_lights_ui::OPENRGB_TIP.to_string(),
             ),
+            (follow_typing::LABEL.to_string(), follow_typing::hover(true)),
+            (
+                follow_typing::LABEL.to_string(),
+                follow_typing::hover(false),
+            ),
         ];
         for (label, hover) in pairs {
             assert!(
@@ -1228,13 +1235,14 @@ mod widget_tests {
         let calls: usize = [
             include_str!("art_ui.rs"),
             include_str!("battery_dim_ui.rs"),
+            include_str!("follow_typing.rs"),
             include_str!("lights_page.rs"),
             include_str!("pc_lights_ui.rs"),
         ]
         .iter()
         .map(|s| s.matches("theme::with_info(").count())
         .sum();
-        assert_eq!(calls, 8, "with_info calls outside this test's list");
+        assert_eq!(calls, 9, "with_info calls outside this test's list");
     }
 }
 
