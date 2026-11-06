@@ -374,6 +374,41 @@ pub struct Line {
     pub text: String,
     /// A scene is waiting for the lights.
     pub warn: bool,
+    /// Who drives them (the Keyboard card's chip takes its dot from it, #794).
+    pub who: Who,
+    /// The Keyboard card's short form (#794): the chip's text, or while Windows holds the
+    /// lights the info bar's one line (60 characters or less); `text` is its hover and ⓘ.
+    pub short: String,
+}
+
+/// The info bar's line while Windows holds the lights (#794, K2), with the waiting scene's name
+/// cut to fit the bar's 60 characters.
+fn windows_short(scene: Option<&str>) -> String {
+    const HELD: &str = "Windows has the keyboard's lights";
+    let Some(name) = scene else {
+        return HELD.to_string();
+    };
+    let room = super::theme::BAR_MAX_CHARS
+        - HELD.chars().count()
+        - " · \u{201c}\u{201d} waits".chars().count();
+    let name: String = if name.chars().count() > room {
+        name.chars().take(room - 1).chain(['…']).collect()
+    } else {
+        name.to_string()
+    };
+    format!("{HELD} · \u{201c}{name}\u{201d} waits")
+}
+
+/// The info bar's line while Foxglove draws through Windows (#794, K3).
+fn through_short(identity: bool) -> String {
+    format!(
+        "Windows has the lights · {}",
+        if identity {
+            "Foxglove draws through it"
+        } else {
+            "Foxglove draws through it in front"
+        }
+    )
 }
 
 pub const TIP: &str = "Who drives the keyboard's lights, as the keyboard says. Windows Dynamic \
@@ -446,17 +481,23 @@ pub fn line_through(
     through: Option<bool>,
 ) -> Line {
     if matches!(who, Who::Windows) {
+        let (text, short) = match through {
+            Some(identity) => (through_line(device, identity), through_short(identity)),
+            None => (windows_line(device, scene), windows_short(scene)),
+        };
         return Line {
-            text: match through {
-                Some(identity) => through_line(device, identity),
-                None => windows_line(device, scene),
-            },
+            text,
             warn: true,
+            who: who.clone(),
+            short,
         };
     }
+    let text = format!("Lights now: {}", who.words());
     Line {
-        text: format!("Lights now: {}", who.words()),
+        short: text.clone(),
+        text,
         warn: false,
+        who: who.clone(),
     }
 }
 
@@ -547,35 +588,65 @@ pub const DL_SETTINGS: &str = "ms-settings:personalization-lighting";
 /// The button after the notice that opens [`DL_SETTINGS`].
 pub const DL_BUTTON: &str = "Open Dynamic Lighting settings";
 
-/// Draws the owner line (the Lights page's Keyboard card, the Scenes page) after `space` points;
-/// true when it drew one. With `notice` (the Lights page only, #749), Windows holding the lights
-/// is the amber notice and a button to its settings; without, the line only names Windows.
-pub fn show_line(ui: &mut egui::Ui, space: f32, notice: bool) -> bool {
+/// The owner line now, for the pages to draw; `None` in tests without a preview line (they never
+/// read the app's state).
+pub fn current(ctx: &egui::Context) -> Option<Line> {
     #[cfg(test)]
-    let line = match PREVIEW.with_borrow(|l| l.clone()) {
-        Some(l) => l,
-        None => return false,
-    };
+    {
+        let _ = ctx;
+        PREVIEW.with_borrow(|l| l.clone())
+    }
     #[cfg(not(test))]
-    let line = {
-        set_wake(ui.ctx());
-        line_now()
+    {
+        set_wake(ctx);
+        Some(line_now())
+    }
+}
+
+/// Draws the Scenes page's owner line after `space` points; true when it drew one. Windows
+/// holding the lights is only named there: the Lights page's Keyboard card has the notice.
+pub fn show_line(ui: &mut egui::Ui, space: f32) -> bool {
+    let Some(line) = current(ui.ctx()) else {
+        return false;
     };
     let p = super::theme::palette(ui);
     ui.add_space(space);
-    if line.warn && !notice {
-        let text = format!("Lights now: {}", Who::Windows.words());
-        ui.add(egui::Label::new(egui::RichText::new(text).color(p.text)).wrap())
-            .on_hover_text(TIP);
-        return true;
-    }
-    let color = if line.warn { p.warn } else { p.text };
-    ui.add(egui::Label::new(egui::RichText::new(line.text).color(color)).wrap())
+    let text = if line.warn {
+        format!("Lights now: {}", Who::Windows.words())
+    } else {
+        line.text
+    };
+    ui.add(egui::Label::new(egui::RichText::new(text).color(p.text)).wrap())
         .on_hover_text(TIP);
-    if line.warn && ui.small_button(DL_BUTTON).clicked() {
+    true
+}
+
+/// The Keyboard card's amber notice while Windows holds the lights (#749, #794 K2/K3): one info
+/// bar with the short line, the whole sentence (and what the owner line means, [`TIP`]) on its
+/// ⓘ, and the button to the Windows setting. Never collapsed.
+pub fn notice_bar(ui: &mut egui::Ui, line: &Line) {
+    let full = format!("{}\n\n{TIP}", line.text);
+    let bar = super::theme::info_bar(
+        ui,
+        super::theme::Level::Warn,
+        &line.short,
+        &full,
+        Some(DL_BUTTON),
+    );
+    if bar.clicked() {
         super::notifications_ui::open_settings_page(DL_SETTINGS);
     }
-    true
+}
+
+/// The Keyboard card's owner chip (#794 K1): "Lights now: Foxglove" with a green dot while
+/// Foxglove (or one of its scenes) drives the lights, grey otherwise; [`TIP`] on hover.
+pub fn chip(ui: &mut egui::Ui, line: &Line) -> egui::Response {
+    use super::theme::Dot;
+    let dot = match line.who {
+        Who::Foxglove | Who::Scene(_) => Dot::Ok,
+        _ => Dot::Muted,
+    };
+    super::theme::hint_chip(ui, &line.short, Some(TIP), Some(dot))
 }
 
 /// The health view's row now (registered with `health::register` as "lights_owner").
@@ -753,6 +824,47 @@ mod tests {
             "no name yet: {}",
             w.text
         );
+    }
+
+    /// #794: the Keyboard card's short forms. The chip says who; the info bar's line names the
+    /// problem in 60 characters or less, a long scene name cut to fit (it is whole in `text`).
+    #[test]
+    fn the_short_lines_fit_the_info_bar() {
+        use super::super::theme::BAR_MAX_CHARS;
+        let long = "A scene with a very long name indeed, longer than the bar";
+        let lines = [
+            line(&Who::Windows, Some(long), None),
+            line(&Who::Windows, Some("Desk"), None),
+            line(&Who::Windows, None, None),
+            line_through(&Who::Windows, None, None, Some(false)),
+            line_through(&Who::Windows, None, None, Some(true)),
+        ];
+        for l in &lines {
+            assert!(l.short.chars().count() <= BAR_MAX_CHARS, "{}", l.short);
+            assert!(l.warn && l.who == Who::Windows);
+        }
+        assert_eq!(
+            lines[1].short,
+            "Windows has the keyboard's lights · \u{201c}Desk\u{201d} waits"
+        );
+        assert!(
+            lines[0].short.ends_with("…\u{201d} waits"),
+            "{}",
+            lines[0].short
+        );
+        assert!(lines[0].text.contains(long));
+        assert_eq!(lines[2].short, "Windows has the keyboard's lights");
+        assert_eq!(
+            lines[3].short,
+            "Windows has the lights · Foxglove draws through it in front"
+        );
+        assert_eq!(
+            lines[4].short,
+            "Windows has the lights · Foxglove draws through it"
+        );
+        let mine = line(&Who::Foxglove, None, None);
+        assert_eq!(mine.short, "Lights now: Foxglove");
+        assert_eq!(mine.short, mine.text);
     }
 
     /// #749: the notice names the Windows setting for the keyboard as Windows lists it, shows

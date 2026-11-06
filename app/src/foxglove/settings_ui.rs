@@ -221,7 +221,6 @@ pub fn pair(ui: &mut egui::Ui, name_width: f32, name: &str, value: impl FnOnce(&
     });
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 fn expander_id(key: &str) -> egui::Id {
     egui::Id::new(("foxglove-expander", key))
 }
@@ -229,24 +228,22 @@ fn expander_id(key: &str) -> egui::Id {
 /// Whether the expander `key` is open: closed until the user opens it, then remembered for the
 /// session only (rule 6, as the zone drawings' "Show zones" is). With egui's "everything is
 /// visible" (the tests that look for every sentence) it is open.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn expander_open(ctx: &egui::Context, key: &str) -> bool {
     ctx.memory(|m| m.everything_is_visible())
         || ctx.data(|d| d.get_temp::<bool>(expander_id(key))) == Some(true)
 }
 
 /// Opens or closes the expander `key` (the previews and tests open it).
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn set_expander_open(ctx: &egui::Context, key: &str, open: bool) {
     ctx.data_mut(|d| d.insert_temp(expander_id(key), open));
 }
 
 /// What an [`expander`] drew this frame.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub struct Expander<R> {
     /// The header row: clicked (or Enter/Space) when it opened or closed.
     pub header: egui::Response,
     /// What the contents returned, when open.
+    #[cfg_attr(not(test), allow(dead_code))] // Other devices takes it up in #795.
     pub body: Option<R>,
 }
 
@@ -254,7 +251,6 @@ pub struct Expander<R> {
 /// chevron, the `header` and a muted one-line `summary`, and `add_contents` under it once
 /// opened. `key` names it for the session's memory ([`expander_open`]), so give each device row
 /// its own.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn expander<R>(
     ui: &mut egui::Ui,
     key: &str,
@@ -268,7 +264,6 @@ pub fn expander<R>(
 /// [`expander`] with `header_extra` drawn after the summary in the header row, such as a
 /// status chip that keeps amber on screen while the section is closed. It sits on the row: a
 /// click on it opens or closes the section too.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn expander_with<R>(
     ui: &mut egui::Ui,
     key: &str,

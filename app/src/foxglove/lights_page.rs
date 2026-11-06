@@ -298,6 +298,24 @@ pub fn half_text(half: Option<&RgbHalf>, age: Option<u8>) -> String {
     text
 }
 
+/// A half's lights in short, as the card shows them (#794 K21): "Solid · 80%", "off", "no data
+/// yet"; a stale report keeps its "· 12 s ago" (staleness is state). [`half_text`] is the hover.
+pub fn half_short(half: Option<&RgbHalf>, age: Option<u8>) -> String {
+    let Some(h) = half else {
+        return "no data yet".into();
+    };
+    let mut text = if h.on {
+        let effect = effect(h.effect).map_or("other effect", |e| e.name);
+        format!("{effect} · {}%", h.brightness)
+    } else {
+        "off".to_string()
+    };
+    if let Some(age) = age.filter(|a| *a > super::keyboard_settings::STALE_AFTER_S) {
+        text.push_str(&format!(" · {age} s ago"));
+    }
+    text
+}
+
 /// What a Keyboard card click asks the keyboard's own LampArray to show while Windows Dynamic
 /// Lighting holds the lights (#749 b), from the left half's report (`left`): `Some(None)` is
 /// lights off, `Some(Some(look))` the effect and colour picked. `None`: nothing to draw (the
@@ -368,16 +386,32 @@ pub(crate) fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
 }
 
 /// Paints the page; returns what was asked for this frame.
+///
+/// The Keyboard card (#794, docs/design/device-focus-layouts-thumbnails-lights-declutter.md
+/// section 4): amber in one bar while Windows holds the lights, then a header row of flat
+/// chips (who drives the lights, the zones with Show zones, calibrated, the part being dimmed),
+/// then the controls and the halves. Every sentence the card had is still on it, as a chip's or
+/// a control's hover, an ⓘ, or inside "Adjust levels…".
 pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
     card(ui, "Keyboard", |ui| {
         // Who drives the lights now (#491): a scene, Windows Dynamic Lighting, another app.
-        if super::lights_owner::show_line(ui, 0.0, true) {
+        let owner = super::lights_owner::current(ui.ctx());
+        // Amber is never collapsed (rule 5): one bar while Windows holds the lights.
+        if let Some(line) = owner.as_ref().filter(|l| l.warn) {
+            super::lights_owner::notice_bar(ui, line);
             ui.add_space(6.0);
         }
-        if let Some(line) = &v.zones {
-            zone_line(ui, v, line, &mut out);
+        let zones_open = header(ui, v, owner.as_ref().filter(|l| !l.warn), &mut out);
+        if let (true, Some(line)) = (zones_open, &v.zones) {
+            ui.add_space(4.0);
+            match super::zones_ui::keyboard(ui, line, v.leds.0) {
+                Some(super::zones_ui::Ask::Check) => out.push(Intent::FindLeds),
+                Some(super::zones_ui::Ask::Forget) => out.push(Intent::ForgetCheck),
+                None => {}
+            }
         }
+        ui.add_space(8.0);
         let gap = 24.0;
         let width = ui.available_width();
         // Wide, the card has two columns: the colour controls, and the halves' state with the
@@ -385,6 +419,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
         if width >= TWO_COLUMNS {
             let left_w = ((width - gap) * 0.6).floor();
             let right_w = width - left_w - gap;
+            let spacing = ui.spacing().item_spacing;
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
                 for (w, controls) in [(left_w, true), (right_w, false)] {
@@ -393,6 +428,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.set_width(w);
+                            // The gap is between the columns, not between a column's items.
+                            ui.spacing_mut().item_spacing = spacing;
                             if controls {
                                 underglow(ui, v, draft, &mut out);
                             } else {
@@ -415,39 +452,48 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
 /// The keyboard's key for its zone drawing's open state (session only).
 pub const ZONES_KEY: &str = "keyboard";
 
-/// The keyboard's lighting resolution (#611): one line under the card's title with what it
-/// means on hover, then **Show zones** (the drawing, docs/lighting-zones.md section 2) or,
-/// while the zones are unknown, **Check zones…**. The probe is offered nowhere else on the card.
-fn zone_line(ui: &mut egui::Ui, v: &View, line: &super::light_zones::Line, out: &mut Vec<Intent>) {
+/// The card's header row of flat chips (#794): who drives the lights (`owner`, K1), the
+/// lighting resolution with **Show zones** or, while the zones are unknown, **Check zones…**
+/// (K4, K5; the probe is offered nowhere else on the card), "calibrated" (K23), the part being
+/// dimmed on battery (K27), and the LED map for a keyboard without a zone line (K32). Whether
+/// the zone drawing is open.
+fn header(
+    ui: &mut egui::Ui,
+    v: &View,
+    owner: Option<&super::lights_owner::Line>,
+    out: &mut Vec<Intent>,
+) -> bool {
     use super::zones_ui;
-    let p = theme::palette(ui);
     let mut open = false;
     ui.horizontal_wrapped(|ui| {
-        ui.add(egui::Label::new(RichText::new(&line.summary).color(p.text)).wrap())
-            .on_hover_text(line.details.join("\n"));
-        if line.kind == foxglove_devices::pc_lighting::ZoneKind::Unknown {
-            if v.leds.0 {
-                ui.label(RichText::new("·").color(p.muted));
-                if zones_ui::check_link(ui, true).clicked() {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if let Some(line) = owner {
+            super::lights_owner::chip(ui, line);
+        }
+        if let Some(line) = &v.zones {
+            theme::hint_chip(ui, &line.chip, Some(&line.chip_hover()), None);
+            if line.kind == foxglove_devices::pc_lighting::ZoneKind::Unknown {
+                if v.leds.0 && zones_ui::check_link(ui, true).clicked() {
                     out.push(Intent::FindLeds);
                 }
+            } else {
+                open = zones_ui::toggle(ui, ZONES_KEY, line.kind);
             }
-        } else {
-            open = zones_ui::toggle(ui, ZONES_KEY, line.kind);
+        }
+        if v.calibration == Some(true) {
+            theme::hint_chip(ui, "calibrated", None, Some(theme::Dot::Ok));
+        }
+        super::battery_dim_ui::chip(ui);
+        // The zone line has the probe (#611); a keyboard without one keeps the old entry.
+        if v.zones.is_none() && super::led_map_ui::entry(ui, v.leds.0, v.leds.1) {
+            out.push(Intent::FindLeds);
         }
     });
-    if open {
-        match zones_ui::keyboard(ui, line, v.leds.0) {
-            Some(zones_ui::Ask::Check) => out.push(Intent::FindLeds),
-            Some(zones_ui::Ask::Forget) => out.push(Intent::ForgetCheck),
-            None => {}
-        }
-    }
-    ui.add_space(8.0);
+    open
 }
 
 /// The Keyboard card's other column: both halves as the keyboard reports them, with Refresh
-/// and Calibrate…, then the switches that are saved on the keyboard.
+/// and Calibrate…, then the switches: the colour's sources, and those saved on the keyboard.
 fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     let right = v.state.and_then(|s| s.right);
     let parts = v.parts.clone().seen(if right.is_some() { 2 } else { 1 });
@@ -465,7 +511,9 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
             if let Some(h) = half {
                 preview_chip(ui, &h, colour_effects);
             }
-            ui.add(egui::Label::new(half_text(half.as_ref(), age)).wrap());
+            // The state in short; the whole line on hover (K21).
+            ui.add(egui::Label::new(half_short(half.as_ref(), age)).wrap())
+                .on_hover_text(half_text(half.as_ref(), age));
         });
     }
     ui.add_space(2.0);
@@ -481,35 +529,73 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         {
             out.push(Intent::Refresh);
         }
-        if let Some(calibrated) = v.calibration {
-            if ui
+        // "calibrated" is a chip in the header row (K23).
+        if v.calibration.is_some()
+            && ui
                 .button("Calibrate…")
                 .on_hover_text(
                     "Match how the keyboard shows colours to your screen or another device: \
                      white, red, green, blue and grey, about a minute",
                 )
                 .clicked()
-            {
-                out.push(Intent::Calibrate);
-            }
-            if calibrated {
-                ui.label(RichText::new("calibrated").color(theme::palette(ui).muted));
-            }
+        {
+            out.push(Intent::Calibrate);
         }
     });
     ui.add_space(6.0);
+    sources(ui, v, out);
     // Only a split has a second part to follow the first (#559).
     if parts.is_split() {
         follow_row(ui, v, &parts, out);
     }
     // Dimming on battery (firmware D7 0E).
-    ui.add_space(4.0);
     super::battery_dim_ui::show(ui);
-    ui.add_space(4.0);
-    // The zone line has the probe (#611); a keyboard without one keeps the old entry.
-    if v.zones.is_none() && super::led_map_ui::entry(ui, v.leds.0, v.leds.1) {
-        out.push(Intent::FindLeds);
-    }
+}
+
+/// "Follow the Windows accent colour"'s hover, after its whole label (K18).
+pub const ACCENT_TIP: &str = "The underglow takes the accent colour's hue and saturation whenever \
+                              it changes in Windows, and when the keyboard connects. The \
+                              brightness stays the board's.";
+
+/// "Lights follow the wallpaper"'s hover, after its whole label (K19).
+pub const WALLPAPER_TIP: &str =
+    "The underglow, and the lights set to match the keyboard, take the \
+                                 accent of the wallpaper on screen whenever it changes. It comes \
+                                 from the wallpaper's Foxglove palette (foxglove.json), else from \
+                                 its picture; a grey picture gives the Windows accent colour. A \
+                                 running scene keeps the lights until it ends.";
+
+/// Where the colour comes from besides a pick: the Windows accent and the wallpaper, each a
+/// short checkbox and an ⓘ whose text starts with the switch's whole name (K18, K19).
+fn sources(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    let m = Model::new(v);
+    ui.add_enabled_ui(v.controls && !v.busy, |ui| {
+        // The accent sets a hue: only for an effect that shows one (#670).
+        if m.accent {
+            let mut accent = v.accent;
+            let changed = ui
+                .horizontal(|ui| {
+                    let c = ui.checkbox(&mut accent, "Follow Windows accent");
+                    let tip = format!("Follow the Windows accent colour: {ACCENT_TIP}");
+                    theme::with_info(ui, c, &tip).changed()
+                })
+                .inner;
+            if changed {
+                out.push(Intent::Accent(accent));
+            }
+        }
+        let mut wallpaper = v.wallpaper;
+        let changed = ui
+            .horizontal(|ui| {
+                let c = ui.checkbox(&mut wallpaper, "Follow the wallpaper");
+                let tip = format!("Lights follow the wallpaper: {WALLPAPER_TIP}");
+                theme::with_info(ui, c, &tip).changed()
+            })
+            .inner;
+        if changed {
+            out.push(Intent::Wallpaper(wallpaper));
+        }
+    });
 }
 
 /// What the Keyboard card's colour controls show (#670, #674): the one view-model the page draws
@@ -537,6 +623,8 @@ pub struct Model {
     pub accent: bool,
     /// "The keyboard shows X; Foxglove saved Y. Pick … to change it.", when shown.
     pub note: Option<String>,
+    /// The saved look `Y` of the note, for its chip ("Saved: Solid, amber", #794 K12).
+    pub saved: Option<String>,
 }
 
 impl Model {
@@ -545,20 +633,20 @@ impl Model {
     pub fn new(v: &View) -> Model {
         let showing = Showing::new(v.state.as_ref());
         let controls = showing.controls;
-        let note = showing
+        let differs = showing
             .effect
-            .zip(showing.differs(v.state.as_ref(), v.saved.as_ref()))
-            .map(|(shown, saved)| {
-                let pick = if shown.uses_colour() {
-                    "an effect or a colour"
-                } else {
-                    "an effect"
-                };
-                format!(
-                    "The keyboard shows {}; Foxglove saved {saved}. Pick {pick} to change it.",
-                    shown.name
-                )
-            });
+            .zip(showing.differs(v.state.as_ref(), v.saved.as_ref()));
+        let note = differs.as_ref().map(|(shown, saved)| {
+            let pick = if shown.uses_colour() {
+                "an effect or a colour"
+            } else {
+                "an effect"
+            };
+            format!(
+                "The keyboard shows {}; Foxglove saved {saved}. Pick {pick} to change it.",
+                shown.name
+            )
+        });
         Model {
             effect: showing.effect.map(|e| e.name),
             colour_label: if controls.colour() {
@@ -575,6 +663,7 @@ impl Model {
             speed: controls.speed,
             accent: controls.hue,
             note,
+            saved: differs.map(|(_, saved)| saved),
         }
     }
 }
@@ -604,20 +693,21 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     let left = v.state.map(|s| s.left);
     ui.add_enabled_ui(v.controls && !v.busy, |ui| {
         let on = left.map(|l| l.on);
-        super::settings_ui::split_row(
-            ui,
-            |ui| {
-                if theme::pill(ui, on == Some(false), "Off").clicked() {
-                    out.push(Intent::Lights(false));
-                }
-                if theme::pill(ui, on == Some(true), "On").clicked() {
-                    out.push(Intent::Lights(true));
-                }
-            },
-            |ui| {
-                ui.label(theme::caps_label(ui, "Effect"));
-            },
-        );
+        ui.horizontal(|ui| {
+            if theme::pill(ui, on == Some(false), "Off").clicked() {
+                out.push(Intent::Lights(false));
+            }
+            if theme::pill(ui, on == Some(true), "On").clicked() {
+                out.push(Intent::Lights(true));
+            }
+        });
+        // What the keyboard shows decides the controls and the preview, never the saved
+        // look (#670); the saved one is only named when they differ. One model for the page
+        // and the API's lights.page (#674).
+        let m = Model::new(v);
+        // Every group's caps label on its own line above it (rule 4): EFFECT, as COLOUR.
+        ui.add_space(4.0);
+        ui.label(theme::caps_label(ui, "Effect"));
         ui.horizontal_wrapped(|ui| {
             let current = left.map(|l| l.effect);
             for (i, e) in (0u8..).zip(&EFFECT_TABLE) {
@@ -630,14 +720,11 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     out.push(Intent::Effect(i));
                 }
             }
+            // The look Foxglove saved, when the keyboard shows another (K12).
+            if let Some(saved) = &m.saved {
+                theme::hint_chip(ui, &format!("Saved: {saved}"), m.note.as_deref(), None);
+            }
         });
-        // What the keyboard shows decides the controls and the preview, never the saved
-        // look (#670); the saved one is only named when they differ. One model for the page
-        // and the API's lights.page (#674).
-        let m = Model::new(v);
-        if let Some(note) = &m.note {
-            ui.weak(note);
-        }
         ui.add_space(4.0);
         ui.label(theme::caps_label(ui, m.colour_label));
         let picked = draft.color;
@@ -676,34 +763,43 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             }
         }
         if m.rainbow {
-            // An effect that makes its own colours: a rainbow where the picker was, and why
-            // (#616, #670). Hue and saturation are hidden; brightness and speed stay.
+            // An effect that makes its own colours: a rainbow where the picker was, and why on
+            // its hover (#616, #670, #794 K14). Hue and saturation are hidden; brightness and
+            // speed stay.
             let w = ui.available_width().min(360.0);
-            super::effect_controls::rainbow(ui, egui::vec2(w, 18.0));
+            let band = super::effect_controls::rainbow(ui, egui::vec2(w, 18.0));
             if let Some(name) = m.effect {
-                ui.weak(format!(
+                band.on_hover_text(format!(
                     "{name} is a rainbow: it doesn't use the colour yet. Brightness and speed still apply."
                 ));
             }
         }
         if m.band {
             // The colour Swirl (#626): the band of hues it moves through, around the colour
-            // being picked.
+            // being picked, and how far as a chip at its end (#794 K15).
             ui.add_space(4.0);
-            let w = ui.available_width().min(360.0);
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 18.0), Sense::hover());
-            super::effect_controls::paint_band(
-                ui.painter(),
-                rect,
-                (*hue, *sat, 100), // the hues at full level, like the swatches
-                shown_color,
-            );
-            if let Some(name) = m.effect {
-                ui.weak(format!(
-                    "{name} moves a band of hues around this colour, {}° either way.",
-                    super::effect_controls::BAND
-                ));
-            }
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - 64.0).min(360.0);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 18.0), Sense::hover());
+                super::effect_controls::paint_band(
+                    ui.painter(),
+                    rect,
+                    (*hue, *sat, 100), // the hues at full level, like the swatches
+                    shown_color,
+                );
+                let how = m.effect.map(|name| {
+                    format!(
+                        "{name} moves a band of hues around this colour, {}° either way.",
+                        super::effect_controls::BAND
+                    )
+                });
+                theme::hint_chip(
+                    ui,
+                    &format!("±{}°", super::effect_controls::BAND),
+                    how.as_deref(),
+                    None,
+                );
+            });
         }
         if m.brightness {
             ui.add_space(4.0);
@@ -725,52 +821,20 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             }
         }
         ui.add_space(4.0);
-        let mut accent = v.accent;
-        let mut wallpaper = v.wallpaper;
         let mut apply = false;
-        super::settings_ui::split_row(
-            ui,
-            |ui| {
-                let label = if m.swatches {
-                    "Apply colour"
-                } else {
-                    "Apply brightness"
-                };
-                apply = ui.add(theme::primary_button(ui, label)).clicked();
-                // The colour Apply sends; an effect without a hue has none to show (#670).
-                if m.accent {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
-                    ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
-                }
-            },
-            |ui| {
-                // The accent sets a hue: only for an effect that shows one (#670).
-                if m.accent
-                    && ui
-                    .checkbox(&mut accent, "Follow the Windows accent colour")
-                    .on_hover_text(
-                        "The underglow takes the accent colour's hue and saturation whenever it changes in Windows, \
-                         and when the keyboard connects. The brightness stays the board's.",
-                    )
-                    .changed()
-                {
-                    out.push(Intent::Accent(accent));
-                }
-                if ui
-                    .checkbox(&mut wallpaper, "Lights follow the wallpaper")
-                    .on_hover_text(
-                        "The underglow, and the lights set to match the keyboard, take the accent of the \
-                         wallpaper on screen whenever it changes. It comes from the wallpaper's Foxglove \
-                         palette (foxglove.json), else from its picture; a grey picture gives the \
-                         Windows accent colour. \
-                         A running scene keeps the lights until it ends.",
-                    )
-                    .changed()
-                {
-                    out.push(Intent::Wallpaper(wallpaper));
-                }
-            },
-        );
+        ui.horizontal(|ui| {
+            let label = if m.swatches {
+                "Apply colour"
+            } else {
+                "Apply brightness"
+            };
+            apply = ui.add(theme::primary_button(ui, label)).clicked();
+            // The colour Apply sends; an effect without a hue has none to show (#670).
+            if m.accent {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
+                ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
+            }
+        });
         // A swatch, slider or Custom change holds the pick until Apply; Apply hands the page
         // back to the keyboard's report (#624).
         if picked != Some((*hue, *sat, *brightness)) {
@@ -782,8 +846,14 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         }
     });
     if !v.controls {
-        ui.add_space(2.0);
-        ui.weak("The controls need an RGB key (&rgb_ug) somewhere in the keymap.");
+        ui.add_space(4.0);
+        theme::info_bar(
+            ui,
+            theme::Level::Info,
+            "Needs an RGB key in the keymap",
+            "The controls need an RGB key (&rgb_ug) somewhere in the keymap.",
+            None,
+        );
     }
 }
 
@@ -793,6 +863,15 @@ pub fn follow_label(parts: &super::parts::Parts) -> String {
     format!(
         "{}'s lights follow the {}",
         parts.name(1),
+        super::parts::lower_first(&parts.short(0))
+    )
+}
+
+/// [`follow_label`] in short, on the card (#794 K24): "Right follows left".
+pub fn follow_short(parts: &super::parts::Parts) -> String {
+    format!(
+        "{} follows {}",
+        parts.short(1),
         super::parts::lower_first(&parts.short(0))
     )
 }
@@ -814,32 +893,43 @@ fn follow_tip(parts: &super::parts::Parts) -> String {
     )
 }
 
-/// "Right half's lights follow the left", saved on the keyboard.
+/// "Right follows left" and its ⓘ, saved on the keyboard; greyed with a short chip while its
+/// state isn't known, the whole line on hover (#794 K24, K25).
 fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mut Vec<Intent>) {
     let label = follow_label(parts);
+    let short = follow_short(parts);
+    let greyed = |ui: &mut egui::Ui, chip: &str, line: &str| {
+        ui.add_enabled(false, egui::Checkbox::new(&mut false, short.as_str()))
+            .on_disabled_hover_text(line);
+        theme::hint_chip(ui, chip, Some(line), Some(theme::Dot::Muted));
+    };
     ui.horizontal_wrapped(|ui| {
         match v.sync {
             RgbSync::Known { on } => {
                 let mut follow = on;
-                if ui
-                    .checkbox(&mut follow, &label)
-                    .on_hover_text(follow_tip(parts))
-                    .changed()
-                {
+                let c = ui.checkbox(&mut follow, &short);
+                let tip = format!("{label}. {}", follow_tip(parts));
+                if theme::with_info(ui, c, &tip).changed() {
                     out.push(Intent::Follow(follow));
                 }
             }
             RgbSync::Unknown | RgbSync::Asking => {
                 ui.spinner();
-                ui.weak("Asking the keyboard…");
+                greyed(ui, "Asking the keyboard…", &label);
             }
             RgbSync::NoKeyboard => {
-                ui.weak(format!(
-                    "{label}: needs a keyboard with Foxglove's firmware"
-                ));
+                greyed(
+                    ui,
+                    "needs Foxglove firmware",
+                    &format!("{label}: needs a keyboard with Foxglove's firmware"),
+                );
             }
             RgbSync::NotSupported => {
-                ui.weak(format!("{label}: needs newer keyboard firmware"));
+                greyed(
+                    ui,
+                    "needs newer firmware",
+                    &format!("{label}: needs newer keyboard firmware"),
+                );
             }
         }
         if !matches!(v.sync, RgbSync::Unknown | RgbSync::Asking)
@@ -1199,11 +1289,12 @@ pub mod tests {
         }
     }
 
-    /// The Keyboard card's text with the zone drawing open or closed.
+    /// The Keyboard card's text with the zone drawing closed (as the casual viewer sees it), or
+    /// open with everything reachable from it (its title's hover too).
     fn card_text(v: &View, open: bool) -> String {
         use crate::foxglove::zones_ui::PREVIEW_OPEN;
         PREVIEW_OPEN.set(if open { vec![ZONES_KEY.into()] } else { vec![] });
-        let text = page_text(v);
+        let text = if open { reachable(v) } else { page_text(v) };
         PREVIEW_OPEN.set(vec![]);
         text
     }
@@ -1220,7 +1311,9 @@ pub mod tests {
         let gone = ["Check LED map", "Find my LEDs", "LED map:", "LED positions"];
         // Zones, with keys: the Corne's profile.
         let closed = card_text(&sample(), false);
-        assert!(closed.contains("6 lighting zones per half, by column") && closed.contains(SHOW));
+        // #794 K4: a chip, its summary on hover.
+        assert!(closed.contains("6 zones per half") && closed.contains(SHOW));
+        assert!(reachable(&sample()).contains("6 lighting zones per half, by column"));
         for not in [HIDE, CHECK, "From the board's profile", ZONE_LOOKS] {
             assert!(!closed.contains(not), "closed: {not}: {closed}");
         }
@@ -1241,7 +1334,17 @@ pub mod tests {
         }
         assert!(!open.contains(FORGET), "not the user's check: {open}");
         // The list shows each zone once: mirrored halves list once.
-        assert_eq!(open.matches("column 6 + 1 thumb key").count(), 1, "{open}");
+        let drawn = {
+            crate::foxglove::zones_ui::PREVIEW_OPEN.set(vec![ZONES_KEY.into()]);
+            let text = page_text(&sample());
+            crate::foxglove::zones_ui::PREVIEW_OPEN.set(vec![]);
+            text
+        };
+        assert_eq!(
+            drawn.matches("column 6 + 1 thumb key").count(),
+            1,
+            "{drawn}"
+        );
         for not in gone {
             assert!(!open.contains(not), "{not}: {open}");
         }
@@ -1381,15 +1484,17 @@ pub mod tests {
         assert!(!text.to_lowercase().contains("half"), "{text}");
         assert!(!text.contains("follow"), "{text}");
         let corne = draw_text(&sample());
-        assert!(
-            corne.contains("Right half's lights follow the left"),
-            "{corne}"
-        );
-        // #611, #608: the Corne's 6 column groups per half, not 21 per-key lamps.
-        assert!(
-            corne.contains("6 lighting zones per half, by column"),
-            "{corne}"
-        );
+        assert!(corne.contains("Right follows left"), "{corne}");
+        // #611, #608: the Corne's 6 column groups per half, not 21 per-key lamps; the whole
+        // label and summary on hover (#794).
+        assert!(corne.contains("6 zones per half"), "{corne}");
+        let corne = reachable(&sample());
+        for want in [
+            "Right half's lights follow the left",
+            "6 lighting zones per half, by column",
+        ] {
+            assert!(corne.contains(want), "{want}: {corne}");
+        }
         // No keyboard: no line.
         let none = draw_text(&sample_none());
         assert!(!none.contains("lighting zone"), "{none}");
@@ -1424,11 +1529,13 @@ pub mod tests {
             s.left.effect = 3;
         }
         let text = draw_text(&swirl);
+        assert!(text.contains("Swirl · 80%"), "{text}");
+        let all = reachable(&swirl);
         assert!(
-            text.contains("Swirl is a rainbow: it doesn't use the colour yet"),
-            "{text}"
+            all.contains("Swirl is a rainbow: it doesn't use the colour yet"),
+            "{all}"
         );
-        assert!(text.contains("on · Swirl · 80%"), "{text}");
+        assert!(all.contains("on · Swirl · 80%"), "{all}");
         assert!(!text.contains("colour not used yet"), "{text}");
         let text = draw_text(&sample());
         assert!(!text.contains("doesn't use the colour"), "{text}");
@@ -1491,6 +1598,8 @@ pub mod tests {
         assert!(!m.rainbow && m.band && m.swatches);
         assert!(m.hue && m.sat && m.brightness && m.speed && m.accent);
         let text = page_text(&sample_colour_swirl(39, 70));
+        assert!(text.contains("±30°"), "{text}");
+        let text = reachable(&sample_colour_swirl(39, 70));
         assert!(
             text.contains("Swirl moves a band of hues around this colour"),
             "{text}"
@@ -1514,9 +1623,25 @@ pub mod tests {
     }
 
     fn page_text(v: &View) -> String {
+        frame_text(&super::super::pc_lights_ui::tests::test_ctx(), v)
+    }
+
+    /// Everything the Keyboard card puts within one hover or one click for `v` (#794): what
+    /// the casual viewer sees, plus a frame with egui's "everything is visible", where every
+    /// tooltip shows and every expander and zone drawing is open.
+    pub fn reachable(v: &View) -> String {
         let ctx = super::super::pc_lights_ui::tests::test_ctx();
+        let mut text = frame_text(&ctx, v);
+        ctx.memory_mut(|m| m.set_everything_is_visible(true));
+        text.push_str(&frame_text(&ctx, v));
+        text
+    }
+
+    /// The text of the card's last frame of three (a new tooltip's first frame only measures
+    /// it), with Custom open.
+    fn frame_text(ctx: &egui::Context, v: &View) -> String {
         let mut text = String::new();
-        for _ in 0..2 {
+        for _ in 0..3 {
             let mut draft = Draft::default();
             draft.settle(v.state.as_ref());
             draft.custom_open = true;
@@ -1558,20 +1683,18 @@ pub mod tests {
         for gone in ["Custom", "Hue", "Saturation", "Apply colour"] {
             assert!(!swirl.contains(gone), "Swirl has no {gone}: {swirl}");
         }
-        for want in [
-            "Brightness",
-            "Speed",
-            "Apply brightness",
-            "Swirl is a rainbow",
-            "LOOKS LIKE",
-        ] {
+        for want in ["Brightness", "Speed", "Apply brightness", "LOOKS LIKE"] {
             assert!(swirl.contains(want), "Swirl has {want}: {swirl}");
         }
+        // The rainbow's sentence is its hover (#794 K14).
+        let swirl_all = reachable(&sample_effect(3, 26, 76));
+        assert!(swirl_all.contains("Swirl is a rainbow"), "{swirl_all}");
         // The user's tweaks: no hue, so no accent switch; "Looks like" over the rainbow; the
         // halves say just "Swirl".
         assert!(
-            !swirl.contains("Follow the Windows accent colour"),
-            "{swirl}"
+            !swirl_all.contains("Follow the Windows accent colour")
+                && !swirl.contains("Follow Windows accent"),
+            "{swirl_all}"
         );
         assert!(
             !swirl.contains(
@@ -1580,7 +1703,8 @@ pub mod tests {
             ) && !swirl.contains("colour not used yet"),
             "{swirl}"
         );
-        assert!(swirl.contains("on · Swirl · 42%"), "{swirl}");
+        assert!(swirl.contains("Swirl · 42%"), "{swirl}");
+        assert!(swirl_all.contains("on · Swirl · 42%"), "{swirl_all}");
         for colour in [&breathe, &solid] {
             assert!(
                 colour.contains(
@@ -1589,11 +1713,9 @@ pub mod tests {
                 ) && !colour.contains("LOOKS LIKE"),
                 "{colour}"
             );
-            assert!(
-                colour.contains("Follow the Windows accent colour"),
-                "{colour}"
-            );
+            assert!(colour.contains("Follow Windows accent"), "{colour}");
         }
+        assert!(reachable(&sample_effect(0, 26, 76)).contains("Follow the Windows accent colour"));
     }
 
     /// #670: the board shows Swirl while Foxglove saved Solid amber. The page shows Swirl's
@@ -1601,6 +1723,12 @@ pub mod tests {
     #[test]
     fn the_board_wins_and_the_saved_look_is_named() {
         let text = page_text(&sample_board_differs());
+        assert!(text.contains("Saved: Solid, amber"), "{text}");
+        assert!(
+            !text.contains("The keyboard shows Swirl"),
+            "the sentence is the chip's hover: {text}"
+        );
+        let text = reachable(&sample_board_differs());
         assert!(
             text.contains("The keyboard shows Swirl; Foxglove saved Solid, amber."),
             "{text}"
@@ -1616,6 +1744,465 @@ pub mod tests {
             }),
             ..sample_effect(3, 39, 70)
         };
-        assert!(!page_text(&agree).contains("Foxglove saved"));
+        assert!(!reachable(&agree).contains("Foxglove saved"));
+        assert!(!page_text(&agree).contains("Saved:"));
+    }
+
+    /// A state of the card for the inventory test: the view, who drives the lights, and the
+    /// battery dim.
+    struct Case {
+        what: &'static str,
+        view: View,
+        owner: Option<crate::foxglove::lights_owner::Line>,
+        dim: crate::foxglove::battery_dim_ui::DimState,
+        /// The sentences the card had in this state (docs/design/...-declutter.md, K1–K32).
+        wants: Vec<String>,
+    }
+
+    /// #794: nothing is removed. Every sentence the Keyboard card showed before the declutter
+    /// (the inventory's rows K1–K32, in the old words) still renders somewhere in its state:
+    /// on the card, or as hover text in a headless frame with everything visible (tooltips,
+    /// the ⓘ, "Adjust levels…" and the zone drawing). The only words that went are the old
+    /// "Adjust…"/"Hide levels" toggle, which is now the "Adjust levels…" expander (K30).
+    #[test]
+    fn every_keyboard_card_sentence_is_still_reachable() {
+        use crate::foxglove::battery_dim_ui::{self as dim, DimState};
+        use crate::foxglove::led_map::MapState;
+        use crate::foxglove::lights_owner::{self as owner, line, line_through, Who};
+        use crate::foxglove::zones_ui::{CHECK, FORGET, SHOW};
+        use foxglove_devices::pc_lighting::zones::ZONE_LOOKS;
+        let corne = Some("Eyelash Corne");
+        let parts = crate::foxglove::fixtures::users_desk::board().parts();
+        let s = |v: &[&str]| v.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let known = |f: &dyn Fn(&mut foxglove_link::protocol::BatteryDim)| {
+            let DimState::Known(mut d) = dim::tests::sample() else {
+                unreachable!()
+            };
+            f(&mut d);
+            DimState::Known(d)
+        };
+        let mut user_check = {
+            let board = crate::foxglove::fixtures::users_desk::board();
+            let drawing = crate::foxglove::boards::drawing(Some(&board));
+            let mut check = super::super::light_zones::from_profile(&board, &drawing).unwrap();
+            check.source = foxglove_devices::pc_lighting::ZoneSource::Check;
+            View {
+                zones: Some(super::super::light_zones::line(Some(&check), &drawing)),
+                ..sample()
+            }
+        };
+        user_check.leds.0 = true;
+        let stale = View {
+            state: Some(RgbState {
+                left: half(true, 26, 3),
+                right: Some((half(true, 26, 3), 12)),
+                colour_effects: None,
+            }),
+            ..sample()
+        };
+        let no_leds = |state| View {
+            zones: None,
+            leds: (true, state),
+            ..sample()
+        };
+        let rainbow_hovers: Vec<String> = EFFECT_TABLE
+            .iter()
+            .filter(|e| e.note.is_some())
+            .map(|e| e.label())
+            .collect();
+        let cases = vec![
+            Case {
+                what: "Foxglove drives the lights",
+                view: sample(),
+                owner: Some(line(&Who::Foxglove, None, corne)),
+                dim: dim::tests::sample(),
+                wants: [
+                    // K1
+                    s(&["Lights now: Foxglove", owner::TIP]),
+                    // K4, K7–K10
+                    s(&[
+                        "6 lighting zones per half, by column",
+                        super::super::light_zones::TIP,
+                        SHOW,
+                        "From the board's profile · not checked on yours yet",
+                        "15 more lamps per half light nothing; Foxglove leaves them out.",
+                        ZONE_LOOKS,
+                        "Not right?",
+                        CHECK,
+                        "Light one lamp at a time and click the keys it lights",
+                    ]),
+                    // K11
+                    rainbow_hovers.clone(),
+                    // K16, K17
+                    s(&["EFFECT", "COLOUR", "Brightness", "80%", "Apply colour", "Custom"]),
+                    // K18, K19: the whole labels and their hovers.
+                    s(&[
+                        "Follow the Windows accent colour",
+                        ACCENT_TIP,
+                        "Lights follow the wallpaper",
+                        WALLPAPER_TIP,
+                    ]),
+                    // K21–K24
+                    s(&[
+                        "BOTH HALVES NOW",
+                        "on · Solid · 80% · speed 3",
+                        "Refresh",
+                        "Ask both halves for their lights again",
+                        "Calibrate…",
+                        "Match how the keyboard shows colours to your screen or another device: \
+                         white, red, green, blue and grey, about a minute",
+                        "calibrated",
+                    ]),
+                    vec![follow_label(&parts), follow_tip(&parts)],
+                    // K26, K27, K30
+                    s(&[
+                        dim::LABEL,
+                        dim::TIP,
+                        "Right half on battery · 80%",
+                        "Left half on USB · 100%",
+                        dim::LEVELS,
+                        dim::LEVELS_TIP,
+                        "On power",
+                        "Of your brightness, on USB",
+                        "On battery",
+                        "Of your brightness, on battery",
+                        "Low battery",
+                        "Of your brightness, below the threshold",
+                        "Low battery threshold",
+                        "The charge where the low level starts",
+                        "Defaults",
+                        "100% on power, 80% on battery, 12% below 20% charge",
+                    ]),
+                ]
+                .concat(),
+            },
+            Case {
+                what: "a scene runs",
+                view: sample(),
+                owner: Some(line(&Who::Scene("Bandit scanline".into()), None, corne)),
+                dim: dim::tests::sample(),
+                wants: vec![format!(
+                    "Lights now: {}",
+                    Who::Scene("Bandit scanline".into()).words()
+                )],
+            },
+            Case {
+                what: "the keyboard's own effect",
+                view: sample(),
+                owner: Some(line(&Who::Keyboard, None, corne)),
+                dim: dim::tests::sample(),
+                wants: s(&["Lights now: the keyboard itself (its own effect)"]),
+            },
+            Case {
+                // K2
+                what: "Windows holds the lights, a scene waits",
+                view: sample(),
+                owner: Some(line(&Who::Windows, Some("Bandit scanline"), corne)),
+                dim: dim::tests::sample(),
+                wants: vec![
+                    owner::windows_line(corne, Some("Bandit scanline")),
+                    owner::DL_BUTTON.into(),
+                    owner::TIP.into(),
+                ],
+            },
+            Case {
+                // K3
+                what: "Foxglove draws through Windows",
+                view: sample(),
+                owner: Some(line_through(&Who::Windows, None, corne, Some(false))),
+                dim: dim::tests::sample(),
+                wants: vec![owner::through_line(corne, false), owner::DL_BUTTON.into()],
+            },
+            Case {
+                what: "Foxglove draws through Windows, with package identity",
+                view: sample(),
+                owner: Some(line_through(&Who::Windows, None, corne, Some(true))),
+                dim: dim::tests::sample(),
+                wants: vec![owner::through_line(corne, true)],
+            },
+            Case {
+                // K5, K6
+                what: "zones unknown",
+                view: sample_zones_unknown(),
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&[
+                    "Lighting zones unknown",
+                    super::super::light_zones::TIP,
+                    "The keyboard reports 21 lamps per half; which keys each one lights isn't known yet.",
+                    CHECK,
+                    "Light one lamp at a time and click the keys it lights",
+                ]),
+            },
+            Case {
+                // K7, K10: the user's check, and Forget my check.
+                what: "the user's own check",
+                view: user_check,
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&[
+                    "From your check",
+                    FORGET,
+                    "Go back to the board's profile, or what the keyboard reports",
+                ]),
+            },
+            Case {
+                // K10: the probe can't run.
+                what: "zones, no probe",
+                view: View {
+                    leds: (false, MapState::Shipped),
+                    ..sample()
+                },
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&[
+                    CHECK,
+                    "Needs keyboard firmware that lights one lamp at a time, and a board profile",
+                ]),
+            },
+            Case {
+                // K12
+                what: "the keyboard shows another look than saved",
+                view: sample_board_differs(),
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&[
+                    "The keyboard shows Swirl; Foxglove saved Solid, amber. Pick an effect to change it.",
+                ]),
+            },
+            Case {
+                // K13
+                what: "no colour read yet",
+                view: View {
+                    state: None,
+                    ..sample()
+                },
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&["Waiting for the keyboard's colour…", "no data yet"]),
+            },
+            Case {
+                // K14, K16, K17
+                what: "a rainbow effect",
+                view: sample_effect(3, 26, 76),
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&[
+                    "Swirl is a rainbow: it doesn't use the colour yet. Brightness and speed still apply.",
+                    "LOOKS LIKE",
+                    "Speed",
+                    "Apply brightness",
+                    "on · Swirl · 42% · speed 3",
+                ]),
+            },
+            Case {
+                // K15
+                what: "a colour Swirl",
+                view: sample_colour_swirl(39, 70),
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&["Swirl moves a band of hues around this colour, 30° either way."]),
+            },
+            Case {
+                // K20
+                what: "no RGB key in the keymap",
+                view: View {
+                    controls: false,
+                    ..sample()
+                },
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&["The controls need an RGB key (&rgb_ug) somewhere in the keymap."]),
+            },
+            Case {
+                // K21
+                what: "the right half's report is old",
+                view: stale,
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&["on · Solid · 80% · speed 3 · 12 s ago"]),
+            },
+            Case {
+                // K25, K31: asking.
+                what: "asking the keyboard",
+                view: View {
+                    sync: RgbSync::Asking,
+                    ..sample()
+                },
+                owner: None,
+                dim: DimState::Asking,
+                wants: s(&["Asking the keyboard…", "Save battery: asking the keyboard…"]),
+            },
+            Case {
+                // K25, K31: no Foxglove firmware.
+                what: "a keyboard without Foxglove's firmware",
+                view: View {
+                    sync: RgbSync::NoKeyboard,
+                    ..sample()
+                },
+                owner: None,
+                dim: DimState::NoKeyboard,
+                wants: vec![
+                    format!(
+                        "{}: needs a keyboard with Foxglove's firmware",
+                        follow_label(&parts)
+                    ),
+                    "Save battery: dim lights on battery: needs a keyboard with Foxglove's firmware"
+                        .into(),
+                ],
+            },
+            Case {
+                // K25, K31: older firmware.
+                what: "older firmware",
+                view: View {
+                    sync: RgbSync::NotSupported,
+                    ..sample()
+                },
+                owner: None,
+                dim: DimState::NotSupported,
+                wants: vec![
+                    format!("{}: needs newer keyboard firmware", follow_label(&parts)),
+                    "Save battery: dim lights on battery: needs newer keyboard firmware".into(),
+                    "Refresh".into(),
+                ],
+            },
+            Case {
+                // K31
+                what: "the keyboard didn't answer",
+                view: sample(),
+                owner: None,
+                dim: DimState::NoAnswer,
+                wants: s(&["Save battery: dim lights on battery: the keyboard didn't answer"]),
+            },
+            Case {
+                // K28
+                what: "dimming off",
+                view: sample(),
+                owner: None,
+                dim: known(&|d| d.config.enabled = false),
+                wants: s(&[dim::LABEL, dim::OFF]),
+            },
+            Case {
+                // K29
+                what: "the right half has yet to take the levels",
+                view: sample(),
+                owner: None,
+                dim: known(&|d| d.right_synced = false),
+                wants: s(&["The right half takes these levels when it next connects."]),
+            },
+            Case {
+                // K32
+                what: "no zone line, LED map shipped",
+                view: no_leds(MapState::Shipped),
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&[
+                    "LED map: shipped, not checked yet",
+                    CHECK,
+                    "A dot runs along the LEDs; say whether it follows the drawing",
+                ]),
+            },
+            Case {
+                what: "no zone line, LED map checked",
+                view: no_leds(MapState::Checked),
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&["LED map: checked"]),
+            },
+            Case {
+                what: "no zone line, LEDs not placed",
+                view: no_leds(MapState::Unknown),
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&[
+                    "LED positions: not placed yet",
+                    "Show Foxglove where each LED is, so scenes light every LED in its place",
+                ]),
+            },
+            Case {
+                what: "no zone line, no probe",
+                view: View {
+                    leds: (false, MapState::Unknown),
+                    ..no_leds(MapState::Unknown)
+                },
+                owner: None,
+                dim: dim::tests::sample(),
+                wants: s(&[
+                    "Needs keyboard firmware that lights one LED at a time, and a board profile",
+                ]),
+            },
+        ];
+        for case in cases {
+            owner::PREVIEW.set(case.owner.clone());
+            dim::PREVIEW.set(Some((case.dim, Default::default())));
+            let text = reachable(&case.view);
+            owner::PREVIEW.set(None);
+            dim::PREVIEW.set(None);
+            for want in &case.wants {
+                assert!(
+                    text.contains(want.as_str()),
+                    "{}: {want:?} is no longer on the card or in its hovers:\n{text}",
+                    case.what
+                );
+            }
+        }
+    }
+
+    /// #794: the casual viewer sees state and controls; the explanations are one hover away.
+    /// Amber stays on screen in one short line, with its button.
+    #[test]
+    fn the_card_shows_state_and_keeps_the_explanations_for_hover() {
+        use crate::foxglove::battery_dim_ui as dim;
+        use crate::foxglove::lights_owner::{self as owner, line, Who};
+        let corne = Some("Eyelash Corne");
+        owner::PREVIEW.set(Some(line(&Who::Foxglove, None, corne)));
+        dim::PREVIEW.set(Some((dim::tests::sample(), Default::default())));
+        let casual = page_text(&sample());
+        owner::PREVIEW.set(Some(line(&Who::Windows, Some("Bandit scanline"), corne)));
+        let windows = page_text(&sample());
+        owner::PREVIEW.set(None);
+        dim::PREVIEW.set(None);
+        for chip in [
+            "Lights now: Foxglove",
+            "6 zones per half",
+            "calibrated",
+            "Right on battery · dims to 80%",
+            "Follow Windows accent",
+            "Follow the wallpaper",
+            "Right follows left",
+            "Dim on battery",
+            "Adjust levels…",
+            "Solid · 80%",
+        ] {
+            assert!(casual.contains(chip), "{chip}: {casual}");
+        }
+        for hidden in [
+            owner::TIP,
+            ACCENT_TIP,
+            WALLPAPER_TIP,
+            dim::TIP,
+            "6 lighting zones per half, by column",
+            "Right half on battery · 80%",
+            "on · Solid · 80% · speed 3",
+            "On power",
+        ] {
+            assert!(
+                !casual.contains(hidden),
+                "{hidden} is on the card: {casual}"
+            );
+        }
+        // EFFECT on its own line above the effect pills, like COLOUR above the swatches.
+        assert!(casual.contains("EFFECT\nSolid\n"), "{casual}");
+        assert!(casual.contains("COLOUR\n"), "{casual}");
+        // Amber: the short line and the button, the sentence on its ⓘ.
+        assert!(
+            windows.contains(
+                "Windows has the keyboard's lights · \u{201c}Bandit scanline\u{201d} waits"
+            ),
+            "{windows}"
+        );
+        assert!(windows.contains(owner::DL_BUTTON), "{windows}");
+        assert!(!windows.contains("Lights now:"), "{windows}");
+        assert!(!windows.contains("Turn off Settings"), "{windows}");
     }
 }

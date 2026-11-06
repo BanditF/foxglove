@@ -1005,44 +1005,27 @@ pub fn pause_changed(paused: bool) {
     }
 }
 
-/// The Keyboard card's entry for a keyboard without a zone line: "Check zones…" and how far
-/// the map is known. True when clicked.
+/// The Keyboard card's entry for a keyboard without a zone line, in the card's header row
+/// (#794 K32): how far the map is known as a chip, and "Check zones…" beside it. True when
+/// clicked.
 pub fn entry(ui: &mut egui::Ui, available: bool, state: MapState) -> bool {
-    let p = theme::palette(ui);
-    let mut clicked = false;
-    split_row(
-        ui,
-        |ui| {
-            let (label, hint) = match (available, state) {
-                (false, _) => (
-                    "Check zones…",
-                    "Needs keyboard firmware that lights one LED at a time, and a board profile",
-                ),
-                (true, MapState::Unknown) => (
-                    "Check zones…",
-                    "Show Foxglove where each LED is, so scenes light every LED in its place",
-                ),
-                (true, _) => (
-                    "Check zones…",
-                    "A dot runs along the LEDs; say whether it follows the drawing",
-                ),
-            };
-            clicked = ui
-                .add_enabled(available, egui::Button::new(label))
-                .on_hover_text(hint)
-                .on_disabled_hover_text(hint)
-                .clicked();
-        },
-        |ui| {
-            let (text, color) = match state {
-                MapState::Checked => ("LED map: checked", p.ok),
-                MapState::Shipped => ("LED map: shipped, not checked yet", p.text),
-                MapState::Unknown => ("LED positions: not placed yet", p.muted),
-            };
-            ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
-        },
-    );
-    clicked
+    let (text, dot) = match state {
+        MapState::Checked => ("LED map: checked", theme::Dot::Ok),
+        MapState::Shipped => ("LED map: shipped, not checked yet", theme::Dot::Muted),
+        MapState::Unknown => ("LED positions: not placed yet", theme::Dot::Muted),
+    };
+    theme::hint_chip(ui, text, None, Some(dot));
+    let hint = match (available, state) {
+        (false, _) => "Needs keyboard firmware that lights one LED at a time, and a board profile",
+        (true, MapState::Unknown) => {
+            "Show Foxglove where each LED is, so scenes light every LED in its place"
+        }
+        (true, _) => "A dot runs along the LEDs; say whether it follows the drawing",
+    };
+    ui.add_enabled(available, egui::Link::new(super::zones_ui::CHECK))
+        .on_hover_text(hint)
+        .on_disabled_hover_text(hint)
+        .clicked()
 }
 
 #[cfg(test)]

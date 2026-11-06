@@ -862,7 +862,7 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     // Who drives the keyboard's lights (#491), while no scene runs: a running one's status says
     // it (running, or paused for Windows).
     if v.running.is_none() {
-        super::lights_owner::show_line(ui, 4.0, false);
+        super::lights_owner::show_line(ui, 4.0);
     }
     if v.keyboard_frames && !v.leds_placed {
         let (label, hint, text, color) = if v.leds_shipped {

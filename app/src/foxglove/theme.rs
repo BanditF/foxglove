@@ -399,15 +399,14 @@ pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
 // on screen as one short bar. Outlines are only for clickable things.
 
 /// The coloured state in a chip's leading dot: ok green, muted grey or warn amber.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dot {
     Ok,
     Muted,
+    #[cfg_attr(not(test), allow(dead_code))] // Other devices takes it up in #795.
     Warn,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 impl Dot {
     fn color(self, p: &Palette) -> Color32 {
         match self {
@@ -419,15 +418,14 @@ impl Dot {
 }
 
 /// How loud an [`info_bar`] is (WinUI's `InfoBar` severities).
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     Info,
     Warn,
+    #[cfg_attr(not(test), allow(dead_code))] // Other devices takes it up in #795.
     Danger,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 impl Level {
     fn color(self, p: &Palette) -> Color32 {
         match self {
@@ -439,11 +437,9 @@ impl Level {
 }
 
 /// The longest short line an [`info_bar`] takes (rule 5: 60 characters or less).
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub const BAR_MAX_CHARS: usize = 60;
 
 /// An info bar's fill: its level's colour mixed into `surface`, opaque.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn bar_fill(p: &Palette, level: Level) -> Color32 {
     let amount = match (level, p.dark) {
         (Level::Info, _) => 0.10,
@@ -460,20 +456,15 @@ pub fn bar_fill(p: &Palette, level: Level) -> Color32 {
     )
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 const CHIP_PAD: egui::Vec2 = egui::vec2(8.0, 3.0);
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 const CHIP_RADIUS: u8 = 6;
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 const CHIP_DOT: f32 = 3.5;
 /// The room the dot takes before the text.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 const CHIP_DOT_ROOM: f32 = 12.0;
 
 /// Places a chip and paints its face: the muted fill, the leading dot and the text, cut to one
 /// row at the room left. Read-only chips stop here, so this function never outlines anything
 /// (the flat-chip rule; a source test checks it). Whether the row cut the text.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 fn chip_face(
     ui: &mut egui::Ui,
     text: &str,
@@ -510,7 +501,6 @@ fn chip_face(
 }
 
 /// A chip's hover: `hover`, with the whole text first when the row cut it.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 fn chip_hover(text: &str, hover: Option<&str>, elided: bool) -> Option<String> {
     match (hover, elided) {
         (Some(h), true) => Some(format!("{text}\n{h}")),
@@ -523,7 +513,6 @@ fn chip_hover(text: &str, hover: Option<&str>, elided: bool) -> Option<String> {
 /// A read-only status chip (rule 2): 1 to 4 words of state on a muted fill with no outline,
 /// and a leading `dot` when the state has a colour. The text stays `text`, not coloured. The
 /// sentence that explains it is `hover`, word for word; a chip never gets an ⓘ.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn hint_chip(
     ui: &mut egui::Ui,
     text: &str,
@@ -541,7 +530,7 @@ pub fn hint_chip(
 /// A chip that opens something when clicked (such as the status strip's focus switcher): the
 /// [`hint_chip`] face plus the outline every clickable thing has, the accent on hover and the
 /// focus ring on keyboard focus. Enter and Space click it, as they click a button.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #795 and the focus switcher (#800).
 pub fn click_chip(
     ui: &mut egui::Ui,
     text: &str,
@@ -577,7 +566,6 @@ thread_local! {
 /// shows `hover`, exactly. It takes keyboard focus, and Enter or Space (or a click) shows the
 /// text until pressed again, Escape, or the focus moves on. Nothing ever highlights it on its
 /// own: no first-run glow, no "new" mark (decision 6).
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn info_dot(ui: &mut egui::Ui, hover: &str) -> egui::Response {
     let p = palette(ui);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
@@ -620,7 +608,6 @@ pub fn info_dot(ui: &mut egui::Ui, hover: &str) -> egui::Response {
 
 /// A control and its ⓘ (rule 3): `hover` goes on the control too, so the ⓘ only says there is
 /// more. Call it in the control's row, right after adding the control; returns its response.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn with_info(ui: &mut egui::Ui, control: egui::Response, hover: &str) -> egui::Response {
     let control = control.on_hover_text(hover);
     info_dot(ui, hover);
@@ -628,15 +615,14 @@ pub fn with_info(ui: &mut egui::Ui, control: egui::Response, hover: &str) -> egu
 }
 
 /// What an [`info_bar`] did this frame.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub struct BarResponse {
     /// The whole bar.
+    #[cfg_attr(not(test), allow(dead_code))] // Other devices takes it up in #795.
     pub response: egui::Response,
     /// Its action button, when it has one.
     pub action: Option<egui::Response>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 impl BarResponse {
     /// Whether the action button was clicked.
     pub fn clicked(&self) -> bool {
@@ -648,7 +634,6 @@ impl BarResponse {
 /// level's colour, the `short` line that names the problem (60 characters or less, hover =
 /// `full`), an ⓘ with the `full` sentence, and the `action` button. It is never collapsed: on a
 /// narrow card it wraps.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
 pub fn info_bar(
     ui: &mut egui::Ui,
     level: Level,

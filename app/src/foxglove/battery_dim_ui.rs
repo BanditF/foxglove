@@ -1,5 +1,6 @@
-//! "Save battery: dim lights on battery" on the Lights page: one switch, the halves' state in
-//! a line, and the levels behind "Adjust…". The keyboard does the dimming itself (firmware
+//! "Save battery: dim lights on battery" on the Lights page: one switch ("Dim on battery" and
+//! an ⓘ), the part being dimmed as a chip in the Keyboard card's header ([`chip`], #794 K27),
+//! and the levels behind the "Adjust levels…" expander, collapsed. The keyboard does the dimming itself (firmware
 //! battery_dim.c, D7 0E): each half caps its underglow by its own cable and charge, on top of the
 //! brightness the user picked, so it works without the app. Defaults: 100% on USB, 80% on
 //! battery, 12% below 20% charge.
@@ -38,11 +39,37 @@ pub enum Intent {
     Ask,
 }
 
-/// The levels being dragged but not sent yet, and whether "Adjust…" is open.
+/// The levels being dragged but not sent yet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Draft {
     pub config: Option<BatteryDimConfig>,
+    /// The previews show "Adjust levels…" open.
+    #[cfg(test)]
     pub open: bool,
+}
+
+/// The switch's whole name; its short label is [`SHORT`].
+pub const LABEL: &str = "Save battery: dim lights on battery";
+/// The switch's label on the card (#794 K26).
+pub const SHORT: &str = "Dim on battery";
+/// What the switch does: its hover and ⓘ, after [`LABEL`].
+pub const TIP: &str = "Each half dims its own lights while it runs on battery, and a lot more \
+                       when its battery is low. On USB it shows your brightness. Saved on the \
+                       keyboard, so it works without Foxglove.";
+/// The switch off, in its hover (#794 K28).
+pub const OFF: &str = "Off: your brightness on battery too.";
+/// "Adjust levels…"'s session memory, its header and its hover.
+pub const LEVELS_KEY: &str = "battery-dim-levels";
+pub const LEVELS: &str = "Adjust levels…";
+pub const LEVELS_TIP: &str = "The brightness on power, on battery and on low battery";
+
+/// The switch's hover: the whole label, what it does, and what off means while it is off.
+pub fn hover(on: bool) -> String {
+    if on {
+        format!("{LABEL}: {TIP}")
+    } else {
+        format!("{LABEL}: {TIP}\n{OFF}")
+    }
 }
 
 impl Draft {
@@ -59,6 +86,7 @@ impl Draft {
 static STATE: Mutex<(Option<u64>, DimState)> = Mutex::new((None, DimState::Unknown));
 static DRAFT: Mutex<Draft> = Mutex::new(Draft {
     config: None,
+    #[cfg(test)]
     open: false,
 });
 /// The report tap on the keyboard's link, for its unsolicited D7 8E and HELLO.
@@ -228,6 +256,9 @@ fn state(ctx: &egui::Context) -> DimState {
 pub fn show(ui: &mut egui::Ui) {
     #[cfg(test)]
     if let Some((s, mut d)) = PREVIEW.with_borrow(|v| *v) {
+        if d.open {
+            super::settings_ui::set_expander_open(ui.ctx(), LEVELS_KEY, true);
+        }
         draw(ui, &s, &mut d);
         return;
     }
@@ -259,8 +290,54 @@ pub fn half_text(name: &str, h: &BatteryDimHalf) -> String {
     format!("{name} {power} · {}%", h.level)
 }
 
-/// The parts' state under the switch, the one on battery first (that's the one being dimmed).
-/// A one-piece board has one line (#559).
+/// The Keyboard card's header chip while dimming is on (#794 K27), from the cached state: the
+/// part being dimmed ("Right on battery · dims to 80%"), else "On USB · 100%"; every part's
+/// line on its hover.
+pub fn chip(ui: &mut egui::Ui) {
+    #[cfg(test)]
+    let s = match PREVIEW.with_borrow(|v| *v) {
+        Some((s, _)) => s,
+        None => return,
+    };
+    #[cfg(not(test))]
+    let s = state(ui.ctx());
+    let DimState::Known(d) = s else { return };
+    let config = DRAFT.lock().unwrap_or_else(|e| e.into_inner()).config;
+    if !config.unwrap_or(d.config).enabled {
+        return;
+    }
+    let parts = super::parts::Parts::current();
+    let lines = status_lines(&d, &parts);
+    theme::hint_chip(
+        ui,
+        &chip_text(&d, &parts),
+        Some(&lines.join("\n")),
+        Some(theme::Dot::Muted),
+    );
+}
+
+/// [`chip`]'s words: the first part on battery and the level it dims to, in its short name.
+pub fn chip_text(d: &BatteryDim, parts: &super::parts::Parts) -> String {
+    let parts = parts.clone().seen(if d.right.is_some() { 2 } else { 1 });
+    let mut halves = vec![(parts.short(0), d.left)];
+    if let Some((h, _)) = d.right.filter(|_| parts.is_split()) {
+        halves.push((parts.short(1), h));
+    }
+    match halves.into_iter().find(|(_, h)| !h.usb) {
+        Some((name, h)) => {
+            let power = if h.low {
+                "on low battery"
+            } else {
+                "on battery"
+            };
+            format!("{name} {power} · dims to {}%", h.level)
+        }
+        None => format!("On USB · {}%", d.left.level),
+    }
+}
+
+/// The parts' state, the one on battery first (that's the one being dimmed). A one-piece board
+/// has one line (#559). The last line says when the right half still has to take the levels.
 pub fn status_lines(d: &BatteryDim, parts: &super::parts::Parts) -> Vec<String> {
     let parts = parts.clone().seen(if d.right.is_some() { 2 } else { 1 });
     let mut halves = vec![(parts.name(0), Some(d.left))];
@@ -275,13 +352,26 @@ pub fn status_lines(d: &BatteryDim, parts: &super::parts::Parts) -> Vec<String> 
             None => format!("{name}: no data yet"),
         })
         .collect();
-    if d.right.is_some() && !d.right_synced {
-        lines.push(format!(
+    lines.extend(pending_line(d, &parts));
+    lines
+}
+
+/// "The right half takes these levels when it next connects.", while it does.
+fn pending_line(d: &BatteryDim, parts: &super::parts::Parts) -> Option<String> {
+    (d.right.is_some() && !d.right_synced).then(|| {
+        format!(
             "{} takes these levels when it next connects.",
             super::parts::upper_first(&parts.the(1))
-        ));
-    }
-    lines
+        )
+    })
+}
+
+/// The switch greyed while its state isn't known (#794 K31): a disabled "Dim on battery", a
+/// short chip, and the whole line on both their hovers.
+fn greyed(ui: &mut egui::Ui, chip: &str, line: &str) {
+    ui.add_enabled(false, egui::Checkbox::new(&mut false, SHORT))
+        .on_disabled_hover_text(line);
+    theme::hint_chip(ui, chip, Some(line), Some(theme::Dot::Muted));
 }
 
 /// Paints the switch, the state and "Adjust…"; returns what was asked for this frame.
@@ -290,26 +380,40 @@ pub fn draw(ui: &mut egui::Ui, s: &DimState, draft: &mut Draft) -> Vec<Intent> {
     let d = match s {
         DimState::Known(d) => *d,
         DimState::Unknown | DimState::Asking => {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.spinner();
-                ui.weak("Save battery: asking the keyboard…");
+                greyed(
+                    ui,
+                    "asking the keyboard…",
+                    "Save battery: asking the keyboard…",
+                );
             });
             return out;
         }
         DimState::NoKeyboard => {
-            ui.weak(
-                "Save battery: dim lights on battery: needs a keyboard with Foxglove's firmware",
-            );
+            ui.horizontal_wrapped(|ui| {
+                greyed(
+                    ui,
+                    "needs Foxglove firmware",
+                    "Save battery: dim lights on battery: needs a keyboard with Foxglove's firmware",
+                );
+            });
             return out;
         }
         DimState::NotSupported | DimState::NoAnswer => {
-            let text = if *s == DimState::NotSupported {
-                "Save battery: dim lights on battery: needs newer keyboard firmware"
+            let (chip, text) = if *s == DimState::NotSupported {
+                (
+                    "needs newer firmware",
+                    "Save battery: dim lights on battery: needs newer keyboard firmware",
+                )
             } else {
-                "Save battery: dim lights on battery: the keyboard didn't answer"
+                (
+                    "no answer",
+                    "Save battery: dim lights on battery: the keyboard didn't answer",
+                )
             };
             ui.horizontal_wrapped(|ui| {
-                ui.weak(text);
+                greyed(ui, chip, text);
                 if ui.small_button("↻").on_hover_text("Refresh").clicked() {
                     out.push(Intent::Ask);
                 }
@@ -319,44 +423,30 @@ pub fn draw(ui: &mut egui::Ui, s: &DimState, draft: &mut Draft) -> Vec<Intent> {
     };
     let mut config = draft.config.unwrap_or(d.config);
     let mut on = config.enabled;
-    if ui
-        .checkbox(&mut on, "Save battery: dim lights on battery")
-        .on_hover_text(
-            "Each half dims its own lights while it runs on battery, and a lot more when its \
-             battery is low. On USB it shows your brightness. Saved on the keyboard, so it \
-             works without Foxglove.",
-        )
-        .changed()
-    {
+    let changed = ui
+        .horizontal(|ui| {
+            let c = ui.checkbox(&mut on, SHORT);
+            theme::with_info(ui, c, &hover(config.enabled)).changed()
+        })
+        .inner;
+    if changed {
         config.enabled = on;
         draft.config = Some(config);
         out.push(Intent::Set(config));
     }
-    let muted = theme::palette(ui).muted;
-    ui.indent("battery-dim-state", |ui| {
-        if config.enabled {
-            for line in status_lines(&d, &super::parts::Parts::current()) {
-                ui.label(RichText::new(line).color(muted));
-            }
-        } else {
-            ui.label(RichText::new("Off: your brightness on battery too.").color(muted));
+    // The right half behind on the levels is state: it stays on screen (K29).
+    if config.enabled {
+        if let Some(line) = pending_line(&d, &super::parts::Parts::current()) {
+            ui.indent("battery-dim-state", |ui| {
+                ui.label(RichText::new(line).color(theme::palette(ui).muted));
+            });
         }
-        let label = if draft.open {
-            "Hide levels"
-        } else {
-            "Adjust…"
-        };
-        if ui
-            .small_button(label)
-            .on_hover_text("The brightness on power, on battery and on low battery")
-            .clicked()
-        {
-            draft.open = !draft.open;
-        }
-        if draft.open {
-            adjust(ui, &mut config, draft, &mut out);
-        }
+    }
+    let summary = format!("{}% · {}% · {}%", config.power, config.battery, config.low);
+    let e = super::settings_ui::expander(ui, LEVELS_KEY, LEVELS, &summary, |ui| {
+        adjust(ui, &mut config, draft, &mut out);
     });
+    e.header.on_hover_text(LEVELS_TIP);
     out
 }
 
@@ -501,6 +591,16 @@ pub mod tests {
             status_lines(&no_right, &plank),
             vec!["Keyboard on USB · 100%"]
         );
+        // #794 K27: the Keyboard card's header chip names the part being dimmed.
+        assert_eq!(chip_text(&d, &corne), "Right on battery · dims to 80%");
+        let DimState::Known(low) = sample_low() else {
+            unreachable!()
+        };
+        assert_eq!(
+            chip_text(&low, &corne),
+            "Right on low battery · dims to 12%"
+        );
+        assert_eq!(chip_text(&no_right, &plank), "On USB · 100%");
     }
 
     #[test]
@@ -530,7 +630,7 @@ pub mod tests {
 
     /// Draws one frame headless and returns what it asked for.
     fn frame(s: DimState, draft: &mut Draft, click: Option<egui::Pos2>) -> Vec<Intent> {
-        let ctx = egui::Context::default();
+        let ctx = crate::foxglove::theme::headless::ctx(crate::foxglove::theme::Choice::Dark);
         let mut out = Vec::new();
         for i in 0..2 {
             let mut raw = egui::RawInput {

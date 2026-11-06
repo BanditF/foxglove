@@ -2660,3 +2660,137 @@ fn disclosure_widgets_render() {
     keep("ui-793-widgets-light.png", &light);
     assert_ne!(dark, light);
 }
+
+/// The Lights page's Keyboard card alone (#794), `width` points wide, in `choice`, with the
+/// owner line `owner` and the battery dim `dim`; and the card's height in points.
+fn keyboard_card(
+    choice: crate::foxglove::theme::Choice,
+    lights: &crate::foxglove::lights_page::View,
+    owner: Option<crate::foxglove::lights_owner::Line>,
+    dim: crate::foxglove::battery_dim_ui::DimState,
+    width: f32,
+) -> (image::RgbaImage, f32) {
+    use crate::foxglove::theme::{self, Choice, DARK, LIGHT};
+    let ctx = preview_ctx();
+    theme::apply_choice(&ctx, choice);
+    let p = if choice == Choice::Dark {
+        *DARK
+    } else {
+        *LIGHT
+    };
+    crate::foxglove::lights_owner::PREVIEW.set(owner);
+    crate::foxglove::battery_dim_ui::PREVIEW.set(Some((dim, Default::default())));
+    let height = std::cell::Cell::new(0.0f32);
+    let pad = 16.0;
+    let img = render_ui(
+        &ctx,
+        egui::vec2(width + 2.0 * pad, 1100.0),
+        p.ground,
+        |ui| {
+            egui::Frame::new()
+                .fill(p.ground)
+                .inner_margin(egui::Margin::same(pad as i8))
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    let mut draft = crate::foxglove::lights_page::Draft::default();
+                    draft.settle(lights.state.as_ref());
+                    let r = ui
+                        .scope(|ui| {
+                            crate::foxglove::lights_page::draw(ui, lights, &mut draft);
+                        })
+                        .response
+                        .rect;
+                    // The card, without the gap the page leaves under it.
+                    height.set(r.height() - 10.0);
+                });
+        },
+    );
+    crate::foxglove::lights_owner::PREVIEW.set(None);
+    crate::foxglove::battery_dim_ui::PREVIEW.set(None);
+    let h = height.get();
+    let px = |v: f32| (v * PPP).round() as u32;
+    let crop =
+        image::imageops::crop_imm(&img, 0, 0, img.width(), px(h + 2.0 * pad).min(img.height()))
+            .to_image();
+    (crop, h)
+}
+
+/// #794: the Keyboard card at 980 points, dark and light, with Foxglove driving the lights;
+/// Windows Dynamic Lighting holding them (a scene waiting) and Foxglove drawing through it
+/// (amber, in one short bar); zones unknown; and older firmware (the follow and battery
+/// switches greyed with a short chip).
+#[test]
+fn lights_keyboard_card_1105_renders() {
+    use crate::foxglove::battery_dim_ui::{tests as dim, DimState};
+    use crate::foxglove::keyboard_settings::RgbSync;
+    use crate::foxglove::lights_owner::{line, line_through, Who};
+    use crate::foxglove::lights_page::tests::{sample, sample_zones_unknown};
+    use crate::foxglove::theme::Choice;
+    let corne = Some("Eyelash Corne");
+    let foxglove = || Some(line(&Who::Foxglove, None, corne));
+    let width = 980.0;
+    let (dark, h_dark) = keyboard_card(Choice::Dark, &sample(), foxglove(), dim::sample(), width);
+    let (light, _) = keyboard_card(Choice::Light, &sample(), foxglove(), dim::sample(), width);
+    let windows_line = Some(line(&Who::Windows, Some("Bandit scanline"), corne));
+    let (windows, h_windows) = keyboard_card(
+        Choice::Dark,
+        &sample(),
+        windows_line.clone(),
+        dim::sample(),
+        width,
+    );
+    let (windows_light, _) =
+        keyboard_card(Choice::Light, &sample(), windows_line, dim::sample(), width);
+    let through_line = Some(line_through(&Who::Windows, None, corne, Some(false)));
+    let (through, _) = keyboard_card(Choice::Dark, &sample(), through_line, dim::sample(), width);
+    let (unknown, _) = keyboard_card(
+        Choice::Dark,
+        &sample_zones_unknown(),
+        foxglove(),
+        dim::sample(),
+        width,
+    );
+    let old = crate::foxglove::lights_page::View {
+        sync: RgbSync::NotSupported,
+        ..sample()
+    };
+    let (old_firmware, _) = keyboard_card(
+        Choice::Dark,
+        &old,
+        foxglove(),
+        DimState::NotSupported,
+        width,
+    );
+    eprintln!("Foxglove: #794 Keyboard card at {width} pt: {h_dark} pt tall, {h_windows} pt with Windows holding the lights");
+    keep("ui-1105-lights-keyboard.png", &dark);
+    keep("ui-1105-lights-keyboard-light.png", &light);
+    keep("ui-1105-lights-keyboard-windows.png", &windows);
+    keep("ui-1105-lights-keyboard-windows-light.png", &windows_light);
+    keep("ui-1105-lights-keyboard-through.png", &through);
+    keep("ui-1105-lights-keyboard-unknown-zones.png", &unknown);
+    keep("ui-1105-lights-keyboard-old-firmware.png", &old_firmware);
+    assert_ne!(dark, light);
+    assert_ne!(dark, windows);
+    // Shorter than before the declutter, measured at 980 points on origin/main cf7d6a90's card
+    // with the same samples: 323.1 points, 362.8 with Windows holding the lights.
+    assert!(
+        h_dark < 323.0,
+        "the card is {h_dark} points tall, not shorter"
+    );
+    assert!(
+        h_windows < 362.0,
+        "with Windows: {h_windows} points, not shorter"
+    );
+    // Amber stays on screen while Windows holds the lights, drawn through it or not.
+    let near_warn = |img: &image::RgbaImage| {
+        let c = crate::foxglove::theme::DARK.warn;
+        img.pixels()
+            .filter(|p| {
+                let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs();
+                d(p.0[0], c.r()) + d(p.0[1], c.g()) + d(p.0[2], c.b()) < 24
+            })
+            .count()
+    };
+    assert!(near_warn(&windows) > near_warn(&dark) + 20, "the amber dot");
+    assert!(near_warn(&through) > near_warn(&dark) + 20, "the amber dot");
+}

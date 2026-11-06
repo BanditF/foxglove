@@ -33,6 +33,9 @@ const NEAR: f32 = 0.5;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     pub summary: String,
+    /// The Keyboard card's chip (#794 K4/K5): "6 zones per half", "Zones unknown"; its hover is
+    /// [`Line::chip_hover`].
+    pub chip: String,
     /// The summary's tooltip: what it means (and, while the zones are unknown, what the
     /// keyboard reports).
     pub details: Vec<String>,
@@ -175,6 +178,7 @@ fn lamps_text(counts: &[u32]) -> String {
 pub fn line(found: Option<&Zones>, drawing: &Drawing) -> Line {
     let mut out = Line {
         summary: "Lighting zones unknown".to_string(),
+        chip: "Zones unknown".to_string(),
         details: vec![TIP.to_string()],
         kind: ZoneKind::Unknown,
         zones: None,
@@ -188,6 +192,12 @@ pub fn line(found: Option<&Zones>, drawing: &Drawing) -> Line {
                 out.summary = summary;
             }
             out.kind = zones::kind(Color::PerZone, 0, Some(z), true);
+            // A few zones in the Scenes page's words; per key or one zone, the summary.
+            out.chip = match out.kind {
+                ZoneKind::Zones => zones::scene_words(Color::PerZone, 0, Some(z), true),
+                _ => None,
+            }
+            .unwrap_or_else(|| out.summary.clone());
             out.source = Some(zones::source_line(z, true));
             out.dead = zones::dead_line(z);
             out.zones = Some(z.clone());
@@ -199,6 +209,19 @@ pub fn line(found: Option<&Zones>, drawing: &Drawing) -> Line {
         None => {}
     }
     out
+}
+
+impl Line {
+    /// The chip's hover: the summary, then what it means (every word of the old line, #794).
+    pub fn chip_hover(&self) -> String {
+        std::iter::once(self.summary.as_str())
+            .chain(self.details.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
+    }
 }
 
 /// The connected keyboard's line, from the caches: its profile (with the user's check applied),
