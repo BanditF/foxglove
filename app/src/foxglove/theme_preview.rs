@@ -21,6 +21,10 @@ mod layout;
 mod overlay;
 
 thread_local! { static LEGACY: Cell<bool> = const { Cell::new(false) }; }
+thread_local! {
+    /// Where the pointer rests in the frames [`run_frames`] runs (a hover's tooltip), if set.
+    static POINTER: Cell<Option<Pos2>> = const { Cell::new(None) };
+}
 
 /// True while a "before #384" preview is drawn on this thread.
 pub fn legacy() -> bool {
@@ -73,6 +77,12 @@ fn run_frames(
             time: Some(frame as f64),
             predicted_dt: 1.0,
             focused: true,
+            // Moved in once, then still, so a tooltip comes up.
+            events: POINTER
+                .get()
+                .filter(|_| frame == 1)
+                .map(|p| vec![egui::Event::PointerMoved(p)])
+                .unwrap_or_default(),
             ..Default::default()
         };
         raw.viewports

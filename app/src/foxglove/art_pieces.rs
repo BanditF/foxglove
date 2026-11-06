@@ -5,7 +5,8 @@
 //! Pieces on this PC come from the library folder, the sets bundled with the app (the lighting
 //! presets' and the plugins' art) and the source folders of frames (`art_sources`). The same
 //! bytes in two places are one piece. A kept place can't be read back from the keyboard (its
-//! report has a name and a length), so a place matches a PC piece by both.
+//! report has a name and a length, not its CRC or a frame), so a place matches a PC piece by
+//! both, and two places that match the same piece hold the same bytes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -355,6 +356,85 @@ pub fn kept(s: &Snapshot, pcs: &[PcPiece]) -> Vec<Option<Kept>> {
             })
         })
         .collect()
+}
+
+/// Whether a kept place is the user's: places lent to the playlist (#522) change under it, so
+/// they never count as keeping a piece.
+fn yours(s: &Snapshot, k: &Kept) -> bool {
+    !s.cycle.places.contains(&k.slot)
+}
+
+/// The kept place that already holds PC piece `index` (the same bytes: a place matches a piece
+/// by name and length, and the same bytes on this PC are one piece), so Keep refuses a second.
+pub fn kept_as<'a>(s: &Snapshot, kept: &'a [Option<Kept>], index: usize) -> Option<&'a Kept> {
+    kept.iter()
+        .flatten()
+        .find(|k| k.piece == Some(index) && yours(s, k))
+}
+
+/// The PC piece whose bytes come from `file` (a library file, or a folder of frames).
+pub fn piece_of_file(pcs: &[PcPiece], file: &Path) -> Option<usize> {
+    pcs.iter().position(|p| {
+        p.origins.iter().any(|o| match o {
+            Origin::Library(f) | Origin::Source(f) => f == file,
+            Origin::Bundled(_) => false,
+        })
+    })
+}
+
+/// A kept place holding the same piece as another: `slot` can be freed, `of_slot` stays kept.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Duplicate {
+    pub slot: u8,
+    pub name: String,
+    pub of_slot: u8,
+    pub of_name: String,
+}
+
+/// Whether kept place `slot` is in use: on the screen now, shown after a restart, or a layer's
+/// art.
+fn in_use(s: &Snapshot, slot: u8) -> bool {
+    s.pinned == Some(Choice::Slot(slot))
+        || s.cycle
+            .layers
+            .iter()
+            .any(|l| l.art == super::art_cycle::Item::Slot(slot))
+        || s.status.is_some_and(|st| showing(&st) == Showing::Kept(slot))
+}
+
+/// The user's kept places that hold a piece another of them already holds. Of each set the one
+/// in use stays (else the first); the rest are duplicates, each with the place that stays.
+pub fn duplicates(s: &Snapshot, kept: &[Option<Kept>]) -> Vec<Duplicate> {
+    let mine: Vec<&Kept> = kept
+        .iter()
+        .flatten()
+        .filter(|k| k.piece.is_some() && yours(s, k))
+        .collect();
+    let mut out = Vec::new();
+    let mut seen = Vec::new();
+    for k in &mine {
+        if seen.contains(&k.piece) {
+            continue;
+        }
+        seen.push(k.piece);
+        let same: Vec<&&Kept> = mine.iter().filter(|o| o.piece == k.piece).collect();
+        let stays = same
+            .iter()
+            .find(|o| in_use(s, o.slot))
+            .unwrap_or(&same[0]);
+        out.extend(
+            same.iter()
+                .filter(|o| o.slot != stays.slot)
+                .map(|o| Duplicate {
+                    slot: o.slot,
+                    name: o.name.clone(),
+                    of_slot: stays.slot,
+                    of_name: stays.name.clone(),
+                }),
+        );
+    }
+    out.sort_by_key(|d| d.slot);
+    out
 }
 
 /// "Kept: used of total places", from the keyboard's report (the bits of `flash_used`).
@@ -763,6 +843,68 @@ pub mod tests {
             ..s
         };
         assert_eq!(showing_picture(&s, &pcs).map(|p| p.0), Some(7));
+    }
+
+    /// Two kept places holding the same bytes (hearth-moongarden and moon-garden, one piece on
+    /// this PC): Keep finds the piece already kept, and the second place is the duplicate
+    /// unless only it is in use. A place lent to the playlist never counts.
+    #[test]
+    fn the_same_bytes_kept_twice_are_a_duplicate() {
+        let pcs = pc_pieces(
+            vec![
+                found(lib("hearth-moongarden"), "hearth-moongarden", 7, 3281),
+                found(lib("moon-garden"), "moon-garden", 7, 3281),
+                found(lib("Radar"), "Radar", 1, 3000),
+            ],
+            &|_| false,
+        );
+        let s = Snapshot {
+            status: Some(status(0b111)),
+            slots: vec![
+                slot(0, "hearth-moongarde", 3281),
+                slot(1, "Radar", 3000),
+                slot(2, "moon-garden", 3281),
+            ],
+            ..Default::default()
+        };
+        let k = kept(&s, &pcs);
+        assert_eq!(kept_as(&s, &k, 0).map(|k| k.slot), Some(0));
+        assert_eq!(kept_as(&s, &k, 1).map(|k| k.slot), Some(1));
+        assert_eq!(
+            piece_of_file(&pcs, Path::new("art/moon-garden.bin")),
+            Some(0)
+        );
+        assert_eq!(piece_of_file(&pcs, Path::new("art/other.bin")), None);
+        let dup = Duplicate {
+            slot: 2,
+            name: "moon-garden".into(),
+            of_slot: 0,
+            of_name: "hearth-moongarde".into(),
+        };
+        assert_eq!(duplicates(&s, &k), [dup]);
+
+        // Only the second is used (after a restart): the first is the one to free.
+        let pinned = Snapshot {
+            pinned: Some(Choice::Slot(2)),
+            ..s.clone()
+        };
+        let d = duplicates(&pinned, &kept(&pinned, &pcs));
+        assert_eq!((d[0].slot, d[0].of_slot), (0, 2));
+
+        // Lent to the playlist: not the user's, so no duplicate and nothing kept by it.
+        let mut lent = s.clone();
+        lent.cycle.places = vec![0];
+        let k = kept(&lent, &pcs);
+        assert!(duplicates(&lent, &k).is_empty());
+        assert_eq!(kept_as(&lent, &k, 0).map(|k| k.slot), Some(2));
+
+        // Different bytes under different names are no duplicate.
+        let one = Snapshot {
+            slots: vec![slot(0, "moon-garden", 3281), slot(1, "Radar", 3000)],
+            status: Some(status(0b11)),
+            ..Default::default()
+        };
+        assert!(duplicates(&one, &kept(&one, &pcs)).is_empty());
     }
 
     /// The meter and the free place come from the keyboard's report, never a guess.

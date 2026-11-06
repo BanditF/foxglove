@@ -46,6 +46,8 @@ struct UiState {
     replace: Option<Replace>,
     /// The kept place whose Remove waits for the answer.
     remove: Option<u8>,
+    /// The duplicate kept place whose Free waits for the answer.
+    free: Option<u8>,
     /// A copy or add that failed, in words.
     message: Option<String>,
 }
@@ -206,6 +208,37 @@ fn epaper_switch(ui: &mut egui::Ui, pace: super::art_encode::Pace, acts: &mut Ve
     });
 }
 
+/// A kept place's hover when this PC has no file for it, so its tile shows "ART".
+pub const NO_PREVIEW_TIP: &str =
+    "Kept on the keyboard; its file isn't on this PC, so there's no preview";
+
+/// The refusal's hover.
+pub const ALREADY_KEPT_TIP: &str =
+    "It's on the keyboard already; keeping it again would fill a second place with the same piece.";
+
+/// Keep's refusal of a piece a place already holds.
+pub fn already_kept(name: &str) -> String {
+    format!("Already kept as {name}")
+}
+
+/// Why Keep won't run `act`: the piece is already kept in another place (the same bytes).
+fn refusal(art: &Art, act: &Act) -> Option<String> {
+    let (piece, into) = match act {
+        Act::KeepPiece(i) => (Some(*i), None),
+        Act::KeepFile(p) => (art_pieces::piece_of_file(&art.pcs, p), None),
+        Act::KeepIn(p, slot) => (art_pieces::piece_of_file(&art.pcs, p), Some(*slot)),
+        _ => return None,
+    };
+    let k = art_pieces::kept_as(&art.s, &art.kept, piece?).filter(|k| Some(k.slot) != into)?;
+    Some(already_kept(&k.name))
+}
+
+/// Opens (or closes) the free-duplicate choice for the previews.
+#[cfg(test)]
+pub fn preview_free(slot: Option<u8>) {
+    UI.with_borrow_mut(|u| u.free = slot);
+}
+
 /// Opens (or closes) the full-keyboard choice for the previews.
 #[cfg(test)]
 pub fn preview_replace(file: Option<(&str, Option<u8>)>) {
@@ -319,6 +352,10 @@ fn act(art: &Art, acts: Vec<Act>) {
         }
     };
     for a in acts {
+        if let Some(why) = refusal(art, &a) {
+            UI.with_borrow_mut(|u| u.message = Some(why));
+            continue;
+        }
         match a {
             Act::Show(c) => {
                 let _ = match c {
@@ -778,6 +815,14 @@ fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
                 None => ui.weak(art_words::right_state_words(st.right_state)),
             };
             ui.add_space(4.0);
+            let keep = match (now, s.showing_file()) {
+                (Showing::Sent, Some(file)) if art_pieces::places(s) > 0 => {
+                    Some(Act::KeepFile(file.clone()))
+                }
+                _ => None,
+            };
+            // The same bytes kept already: a second place would hold a copy, so no Keep.
+            let refused = keep.as_ref().and_then(|k| refusal(art, k));
             ui.horizontal_wrapped(|ui| {
                 ui.add_enabled_ui(!s.busy, |ui| {
                     if ui.button("‹ Previous").clicked() {
@@ -786,17 +831,19 @@ fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
                     if ui.button("Next ›").clicked() {
                         acts.push(Act::Next);
                     }
-                    if let (Showing::Sent, Some(file)) = (now, s.showing_file()) {
-                        if art_pieces::places(s) > 0
-                            && ui
-                                .add(theme::primary_button(ui, "Keep on keyboard"))
-                                .clicked()
+                    if let Some(keep) = keep.filter(|_| refused.is_none()) {
+                        if ui
+                            .add(theme::primary_button(ui, "Keep on keyboard"))
+                            .clicked()
                         {
-                            acts.push(Act::KeepFile(file.clone()));
+                            acts.push(keep);
                         }
                     }
                 });
             });
+            if let Some(why) = refused {
+                ui.weak(why).on_hover_text(ALREADY_KEPT_TIP);
+            }
         });
     });
     // Under the picture, across the column, so "may ghost" stays beside the switch.
@@ -1225,6 +1272,9 @@ fn draw_keyboard(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut V
         ));
     }
     let now = art_words::showing(&st);
+    let dups = art_pieces::duplicates(s, &art.kept);
+    #[cfg(test)]
+    KEPT_TILES.with_borrow_mut(Vec::clear);
     if !art.kept.is_empty() {
         ui.add_space(6.0);
         ui.label(theme::caps_label(ui, "Kept on the keyboard (yours)"));
@@ -1239,27 +1289,42 @@ fn draw_keyboard(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut V
                 let t = piece.map(|p| texture(ui.ctx(), p.key, true, &p.image));
                 let on = now == Showing::Kept(n as u8);
                 let r = tile(ui, t.as_ref(), &k.name, on, None);
+                #[cfg(test)]
+                KEPT_TILES.with_borrow_mut(|t| t.push((k.slot, r.rect)));
                 if r.clicked() && !on && !s.busy {
                     acts.push(Act::Show(Choice::Slot(k.slot)));
                 }
-                let hover = if piece.is_some() {
-                    "Click to show it. Right-click for more."
-                } else {
-                    "Click to show it. This PC has no copy of it. Right-click for more."
-                };
-                r.on_hover_text(hover).context_menu(|ui| {
-                    if ui.button("Show now").clicked() {
-                        acts.push(Act::Show(Choice::Slot(k.slot)));
-                        ui.close();
-                    }
-                    if ui.button("Remove from keyboard…").clicked() {
-                        state.remove = Some(k.slot);
-                        ui.close();
-                    }
-                    stand_in_menu(ui, s, k.slot, acts);
-                });
+                let dup = dups.iter().find(|d| d.slot == k.slot);
+                r.on_hover_text(kept_tip(piece.is_some(), dup))
+                    .context_menu(|ui| {
+                        if ui.button("Show now").clicked() {
+                            acts.push(Act::Show(Choice::Slot(k.slot)));
+                            ui.close();
+                        }
+                        if dup.is_some() && ui.button(FREE_BUTTON).clicked() {
+                            state.free = Some(k.slot);
+                            ui.close();
+                        }
+                        if ui.button("Remove from keyboard…").clicked() {
+                            state.remove = Some(k.slot);
+                            ui.close();
+                        }
+                        stand_in_menu(ui, s, k.slot, acts);
+                    });
             }
         });
+        // The same piece in two places: offer the copy's place back.
+        for d in &dups {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(theme::palette(ui).warn, same_piece_line(d));
+                if ui
+                    .add_enabled(!s.busy, egui::Button::new(FREE_BUTTON).small())
+                    .clicked()
+                {
+                    state.free = Some(d.slot);
+                }
+            });
+        }
     }
     let built_ins = s.built_ins();
     if !built_ins.is_empty() {
@@ -1287,7 +1352,88 @@ fn draw_keyboard(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut V
     ui.add_space(4.0);
     ui.weak("Click a piece to show it. Right-click a kept one to remove it.");
     remove_dialog(ui, art, state, acts);
+    free_dialog(ui, art, &dups, state, acts);
     replace_dialog(ui, art, state, acts);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Where the kept tiles were drawn last frame, by place, so a preview can hover one.
+    pub static KEPT_TILES: std::cell::RefCell<Vec<(u8, egui::Rect)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The duplicate's button and menu entry.
+pub const FREE_BUTTON: &str = "Free this place…";
+
+/// A kept tile's hover: how to use it, and why it has no picture or what it copies.
+pub fn kept_tip(has_file: bool, dup: Option<&art_pieces::Duplicate>) -> String {
+    let act = "Click to show it. Right-click for more.";
+    match dup {
+        Some(d) => format!("The same piece as {}. {act}", d.of_name),
+        None if has_file => act.to_string(),
+        None => format!("{NO_PREVIEW_TIP}.\n{act}"),
+    }
+}
+
+/// The line under the kept tiles for a duplicate.
+pub fn same_piece_line(d: &art_pieces::Duplicate) -> String {
+    format!("{} is the same piece as {}.", d.name, d.of_name)
+}
+
+/// Free this place asks first; it goes through the same erase as Remove, and the piece stays
+/// kept in the other place.
+fn free_dialog(
+    ui: &mut egui::Ui,
+    art: &Art,
+    dups: &[art_pieces::Duplicate],
+    state: &mut UiState,
+    acts: &mut Vec<Act>,
+) {
+    let Some(slot) = state.free else {
+        return;
+    };
+    let Some(d) = dups.iter().find(|d| d.slot == slot) else {
+        state.free = None;
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(free_title(d))
+        .id(egui::Id::new("art-free"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            ui.label(free_body(d));
+            if let Some(line) = used_for(&art.s, d.slot) {
+                ui.colored_label(theme::palette(ui).warn, line);
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add(theme::primary_button(ui, "Free the place")).clicked() {
+                    acts.push(Act::Remove(slot));
+                    state.free = None;
+                }
+                if ui.button("Cancel").clicked() {
+                    state.free = None;
+                }
+            });
+        });
+    if !open {
+        state.free = None;
+    }
+}
+
+pub fn free_title(d: &art_pieces::Duplicate) -> String {
+    format!("Free {}'s place?", d.name)
+}
+
+pub fn free_body(d: &art_pieces::Duplicate) -> String {
+    format!(
+        "It's the same piece as {}, which stays kept, so nothing is lost.",
+        d.of_name
+    )
 }
 
 /// "Use instead of a built-in": a kept place shown wherever that built-in is chosen (a pin, a
@@ -2005,6 +2151,130 @@ pub mod tests {
             "3 pieces can't go on the art screen."
         );
         assert!(super::FITTED_NOTE.chars().count() <= 60);
+    }
+
+    /// The sample with moon-garden sent from this PC (place 4 keeps it), and hearth-moongarde
+    /// in place 1: a library copy of moon-garden's bytes under another name.
+    fn garden_twice() -> Art {
+        let (mut s, mut l) = sample();
+        let garden = l
+            .entries
+            .iter()
+            .find(|e| e.path.ends_with("moon-garden.bin"))
+            .unwrap()
+            .clone();
+        l.entries.push(art_library::Entry {
+            path: "art/hearth-moongarden.bin".into(),
+            ..garden.clone()
+        });
+        s.slots[0].name = "hearth-moongarde".into();
+        s.slots[0].len = garden.bytes as u16;
+        s.sent = Some(("art/moon-garden.bin".into(), 0));
+        Art::new(s, l)
+    }
+
+    /// Keep refuses a piece a place already holds, by any of its files, and says which place;
+    /// replacing that same place is no second copy.
+    #[test]
+    fn keep_refuses_a_piece_already_kept() {
+        let art = garden_twice();
+        let garden = PathBuf::from("art/moon-garden.bin");
+        let first = Some("Already kept as hearth-moongarde".to_string());
+        assert_eq!(refusal(&art, &Act::KeepFile(garden.clone())), first);
+        assert_eq!(
+            refusal(&art, &Act::KeepFile("art/hearth-moongarden.bin".into())),
+            first
+        );
+        let i = art_pieces::piece_of_file(&art.pcs, &garden).unwrap();
+        assert_eq!(refusal(&art, &Act::KeepPiece(i)), first);
+        assert_eq!(refusal(&art, &Act::KeepIn(garden.clone(), 0)), None);
+        assert_eq!(refusal(&art, &Act::KeepIn(garden, 6)), first);
+        assert_eq!(refusal(&art, &Act::KeepFile("art/hearth.bin".into())), None);
+        assert_eq!(refusal(&art, &Act::Remove(3)), None);
+    }
+
+    /// Showing now offers no Keep for a sent piece that is kept already: it says where.
+    #[test]
+    fn showing_now_says_already_kept_instead_of_keep() {
+        use crate::foxglove::theme::headless;
+        let art = garden_twice();
+        let ctx = headless::ctx(crate::foxglove::theme::Choice::Dark);
+        let mut shapes = Vec::new();
+        for t in 0..2 {
+            shapes = headless::frame(&ctx, f64::from(t), vec![], |ui| {
+                draw_now_right(ui, &art, &mut Vec::new());
+            });
+        }
+        let t = headless::texts(&shapes);
+        assert!(t.iter().any(|t| t == "Already kept as hearth-moongarde"), "{t:?}");
+        assert!(!t.iter().any(|t| t == "Keep on keyboard"), "{t:?}");
+    }
+
+    /// The KEPT list: a place with no file here says why it has no picture on hover; the
+    /// duplicate gets its line and Free this place…, whose confirm erases only that place.
+    #[test]
+    fn kept_list_explains_missing_files_and_frees_duplicates() {
+        use crate::foxglove::theme::headless;
+        assert_eq!(
+            NO_PREVIEW_TIP,
+            "Kept on the keyboard; its file isn't on this PC, so there's no preview"
+        );
+        assert!(kept_tip(false, None).starts_with(NO_PREVIEW_TIP));
+        assert!(!kept_tip(true, None).contains("preview"));
+
+        let art = garden_twice();
+        let ctx = headless::ctx(crate::foxglove::theme::Choice::Dark);
+        let mut state = UiState::default();
+        let at = std::cell::Cell::new(None);
+        let run = |t: f64, events: Vec<egui::Event>, state: &mut UiState| {
+            let mut acts = Vec::new();
+            let shapes = headless::frame(&ctx, t, events, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    draw_keyboard(ui, &art, state, &mut acts);
+                });
+            });
+            // Where "Free the place" was painted, for the click.
+            at.set(shapes.iter().find_map(|s| match s {
+                egui::epaint::Shape::Text(t) if t.galley.text() == "Free the place" => {
+                    Some(t.pos + t.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            }));
+            (headless::texts(&shapes), acts)
+        };
+        let (t, _) = run(0.0, vec![], &mut state);
+        let line = "moon-garden is the same piece as hearth-moongarde.";
+        assert!(t.iter().any(|t| t == line), "{t:?}");
+        // Hover bandit-radar (place 3): no file on this PC.
+        let radar = KEPT_TILES.with_borrow(|t| t.iter().find(|(n, _)| *n == 2).unwrap().1);
+        run(1.0, headless::hover(radar.center()), &mut state);
+        run(2.0, vec![], &mut state);
+        let (t, _) = run(2.5, vec![], &mut state);
+        assert!(t.iter().any(|t| t.starts_with(NO_PREVIEW_TIP)), "{t:?}");
+
+        // Free this place… asks first; Free the place erases place 4 only.
+        state.free = Some(3);
+        // A new window lays itself out unseen first.
+        run(3.0, vec![], &mut state);
+        let (t, acts) = run(3.5, vec![], &mut state);
+        assert!(acts.is_empty());
+        assert!(t.iter().any(|t| t == "Free moon-garden's place?"), "{t:?}");
+        assert!(
+            t.iter().any(|t| t
+                == "It's the same piece as hearth-moongarde, which stays kept, so nothing is lost."),
+            "{t:?}"
+        );
+        let button = at.get().expect("Free the place was drawn");
+        let (_, acts) = run(4.0, headless::click(button), &mut state);
+        assert_eq!(acts, [Act::Remove(3)], "the existing erase, for place 4 only");
+        assert_eq!(state.free, None);
+        // A non-duplicate place never gets the confirm.
+        let mut other = UiState {
+            free: Some(1),
+            ..Default::default()
+        };
+        run(5.0, vec![], &mut other);
+        assert_eq!(other.free, None);
     }
 
     fn bundled(name: &str) -> Vec<u8> {
