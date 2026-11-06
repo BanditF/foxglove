@@ -402,6 +402,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
             super::lights_owner::notice_bar(ui, line);
             ui.add_space(6.0);
         }
+        // What the last pick drawn through Windows did (#749 b), on this card, not Other
+        // devices'.
+        super::pc_lights_ui::keyboard_status(ui);
         let zones_open = header(ui, v, owner.as_ref().filter(|l| !l.warn), &mut out);
         if let (true, Some(line)) = (zones_open, &v.zones) {
             ui.add_space(4.0);

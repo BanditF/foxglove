@@ -29,7 +29,7 @@ use foxglove_devices::pc_lighting::{
     self as pc_lighting, openrgb, CatalogDevice, Control, Protocol,
 };
 
-use super::pc_lights::{self, Msg, Row, Snapshot};
+use super::pc_lights::{self, Msg, Place, Row, Snapshot, Status, Tone};
 use super::pc_lights_add::{self as add, Wizard};
 use super::theme;
 
@@ -262,29 +262,95 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
             ui.add_space(2.0);
             conflict_bar(ui, c);
         }
+        // A result with nowhere narrower to go (your own catalog file that can't be saved): the
+        // top of the card, where amber goes.
+        if let Some(st) = placed(&s.results, &Place::Card) {
+            ui.add_space(2.0);
+            status_here(ui, st, None);
+        }
         if s.devices.is_empty() {
             ui.add_space(4.0);
             ui.label(RichText::new("No PC or peripheral lights found.").color(p.muted));
         }
         for row in &s.devices {
             ui.add_space(4.0);
-            device(ui, row, s.busy, draft, &mut out);
+            let status = placed(&s.results, &Place::Row(row.key.clone()));
+            device(ui, row, status, s.busy, draft, &mut out);
         }
         ui.add_space(4.0);
         ui.separator();
         more_sources(ui, s, draft, wizard, &mut out);
-        if let Some(status) = &s.status {
-            // The worker's last word (#795 O31): one line, the whole of it on hover.
-            ui.add_space(4.0);
-            ui.add(
-                egui::Label::new(RichText::new(status).color(p.muted).font(theme::mono(12.0)))
-                    .truncate()
-                    .show_tooltip_when_elided(false),
-            )
-            .on_hover_text(status);
-        }
     });
     out
+}
+
+/// `place`'s own result while it's shown: a confirmation fades after
+/// [`pc_lights::DONE_FOR`], a note or a problem stays until the next result for that place.
+pub fn placed<'a>(results: &'a [Status], place: &Place) -> Option<&'a Status> {
+    results.iter().find(|st| &st.place == place && st.shown())
+}
+
+/// What a result says where it shows: without the device's name when the row already shows
+/// it ("HP OMEN 45L case lights: colours set" on that row is "Colours set"), and at most
+/// [`theme::BAR_MAX_CHARS`] characters, cut at a word with "…" (the whole of it is the hover).
+pub fn status_short(text: &str, name: Option<&str>) -> String {
+    let text = name
+        .and_then(|n| text.strip_prefix(n))
+        .and_then(|t| t.strip_prefix(": "))
+        .unwrap_or(text);
+    let mut chars = text.chars();
+    let first = chars.next().map(|c| c.to_uppercase().collect::<String>());
+    let text = format!("{}{}", first.unwrap_or_default(), chars.as_str());
+    if text.chars().count() <= theme::BAR_MAX_CHARS {
+        return text;
+    }
+    let room: String = text.chars().take(theme::BAR_MAX_CHARS - 1).collect();
+    let cut = room.rfind(' ').filter(|&i| i > 0).unwrap_or(room.len());
+    format!("{}…", room[..cut].trim_end_matches([',', ';', ':']))
+}
+
+/// A confirmation, beside what was clicked: a flat chip with a green dot (rule 2: status chips
+/// are never outlined), the whole line on hover. It fades: one repaint is asked for when it's
+/// due to go, not a timer (as the art strip's, #511).
+pub fn done_chip(ui: &mut egui::Ui, st: &Status, name: Option<&str>) {
+    let short = status_short(&st.text, name);
+    theme::hint_chip(ui, &short, Some(&st.text), Some(theme::Dot::Ok));
+    ui.ctx()
+        .request_repaint_after(pc_lights::DONE_FOR.saturating_sub(st.at.elapsed()));
+}
+
+/// A note (muted) or a problem (amber), under what was clicked: an info bar that stays until
+/// the next result (rule 5: amber is never collapsed), the whole line on its ⓘ.
+pub fn status_bar(ui: &mut egui::Ui, st: &Status, name: Option<&str>) {
+    let level = match st.tone {
+        Tone::Problem => theme::Level::Warn,
+        Tone::Note | Tone::Done => theme::Level::Info,
+    };
+    theme::info_bar(ui, level, &status_short(&st.text, name), &st.text, None);
+}
+
+/// A result in its place: a fading chip for a confirmation, else a bar that stays.
+pub fn status_here(ui: &mut egui::Ui, st: &Status, name: Option<&str>) {
+    if st.tone == Tone::Done {
+        ui.horizontal(|ui| done_chip(ui, st, name));
+    } else {
+        status_bar(ui, st, name);
+    }
+}
+
+/// The keyboard card's own results (its picks drawn through Windows, #749 b), at the card's top.
+pub fn keyboard_status(ui: &mut egui::Ui) {
+    #[cfg(test)]
+    let status = PREVIEW.with_borrow(|v| {
+        v.as_ref()
+            .and_then(|(v, _)| placed(&v.pc.results, &Place::Keyboard).cloned())
+    });
+    #[cfg(not(test))]
+    let status = pc_lights::result(&Place::Keyboard);
+    if let Some(st) = status.as_ref().filter(|st| st.shown()) {
+        status_here(ui, st, None);
+        ui.add_space(6.0);
+    }
 }
 
 /// A vendor app that may override a device's colours (#558, #795 O2): one amber bar, the
@@ -342,6 +408,7 @@ fn more_sources(
     }
     let summary = openrgb_summary(s);
     let down = o.settings.enabled && !o.connected;
+    let said = placed(&s.results, &Place::Sources);
     let ex = super::settings_ui::expander_with(
         ui,
         MORE_SOURCES,
@@ -356,6 +423,11 @@ fn more_sources(
                     Some(theme::Dot::Warn),
                 );
             }
+            // Add a device's and your entries' results, on the header, so a saved entry still
+            // says so once the flow closes.
+            if let Some(st) = said.filter(|st| st.tone == Tone::Done) {
+                done_chip(ui, st, None);
+            }
         },
         |ui| {
             let mut asked = Vec::new();
@@ -367,6 +439,9 @@ fn more_sources(
         },
     );
     out.extend(ex.body.into_iter().flatten());
+    if let Some(st) = said.filter(|st| st.tone != Tone::Done) {
+        status_bar(ui, st, None);
+    }
 }
 
 /// More sources' summary: "OpenRGB off", "OpenRGB: 2 devices", or "OpenRGB on" while it isn't
@@ -696,7 +771,14 @@ pub fn row_note(row: &Row) -> String {
 /// keyboard, Calibrate…, Off and Apply.
 ///
 /// The row leaves the room before the name for the device's thumbnail (D2, #804).
-fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
+fn device(
+    ui: &mut egui::Ui,
+    row: &Row,
+    status: Option<&Status>,
+    busy: bool,
+    draft: &mut Draft,
+    out: &mut Vec<Intent>,
+) {
     let p = theme::palette(ui);
     let driven = driven(row);
     let identity = super::scene_lamps::identity();
@@ -734,6 +816,10 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
             if let Some(chip) = lamp {
                 theme::hint_chip(ui, chip.text, Some(chip.hover), Some(chip.dot));
             }
+            // What the last click on this device did: on its row, open or closed.
+            if let Some(st) = status.filter(|st| st.tone == Tone::Done) {
+                done_chip(ui, st, Some(&row.name));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Room for the buttons' outline at the row's clipped edge.
                 ui.add_space(2.0);
@@ -770,6 +856,10 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
     );
     out.extend(asked);
     out.extend(ex.body.into_iter().flatten());
+    // A note or a problem stays under the row, closed or open (amber is never collapsed).
+    if let Some(st) = status.filter(|st| st.tone != Tone::Done) {
+        status_bar(ui, st, Some(&row.name));
+    }
     if removing.is_some() {
         draft.removing = removing;
     }
@@ -1223,7 +1313,17 @@ pub mod tests {
                     key: "103c:84fd".into(),
                     hint: Some("Settings > Apps > Installed apps > OMEN Light Studio".into()),
                 }],
-                status: Some("HP OMEN 45L case lights: colours set".into()),
+                // The last click: Apply on the case's row.
+                status: Some(Status::new(
+                    Place::Row("103c:84fd".into()),
+                    Tone::Done,
+                    "HP OMEN 45L case lights: colours set",
+                )),
+                results: vec![Status::new(
+                    Place::Row("103c:84fd".into()),
+                    Tone::Done,
+                    "HP OMEN 45L case lights: colours set",
+                )],
                 busy: false,
                 unknown: vec![
                     unknown_strip(),
@@ -1335,6 +1435,7 @@ pub mod tests {
         v.pc.devices.truncate(1);
         v.pc.conflicts.clear();
         v.pc.status = None;
+        v.pc.results.clear();
         v
     }
 
@@ -2217,7 +2318,7 @@ pub mod tests {
             "Identify",
             "More sources",
             "OpenRGB off",
-            "HP OMEN 45L case lights: colours set",
+            "Colours set",
         ] {
             assert!(casual.contains(want), "{want}: {casual}");
         }
@@ -2271,6 +2372,150 @@ pub mod tests {
             &ctx,
             MORE_SOURCES
         ));
+    }
+
+    /// A3b: a result is short where it shows: no device name its row already shows, a capital
+    /// first, and at most the info bar's 60 characters, cut at a word.
+    #[test]
+    fn a_result_reads_short_on_its_row() {
+        let name = Some("HP OMEN 45L case lights");
+        assert_eq!(
+            status_short("HP OMEN 45L case lights: colours set", name),
+            "Colours set"
+        );
+        assert_eq!(
+            status_short("That device isn't connected now", name),
+            "That device isn't connected now"
+        );
+        assert_eq!(
+            status_short("Zone 3: blinked, back to its colour", None),
+            "Zone 3: blinked, back to its colour"
+        );
+        let long = "Match keyboard: the keyboard plays Swirl, which HP OMEN 45L case lights \
+                    can't match from Foxglove, so it keeps its colours";
+        let short = status_short(long, name);
+        assert!(short.chars().count() <= theme::BAR_MAX_CHARS, "{short}");
+        assert!(
+            short.ends_with('…') && short.starts_with("Match keyboard: the keyboard plays Swirl"),
+            "{short}"
+        );
+        assert!(!short.contains(" …"), "cut at a word: {short}");
+    }
+
+    /// A3b: a confirmation fades after DONE_FOR; a note or a problem stays until the next
+    /// result; each shows only in its own place.
+    #[test]
+    fn confirmations_fade_and_problems_stay() {
+        let row = Place::Row("103c:84fd".into());
+        let mut done = Status::new(row.clone(), Tone::Done, "x: colours set");
+        assert!(placed(std::slice::from_ref(&done), &row).is_some());
+        assert!(
+            placed(std::slice::from_ref(&done), &Place::Card).is_none(),
+            "only on its row"
+        );
+        assert!(placed(std::slice::from_ref(&done), &Place::Row("other".into())).is_none());
+        let Some(old) = std::time::Instant::now()
+            .checked_sub(pc_lights::DONE_FOR + std::time::Duration::from_secs(1))
+        else {
+            return; // a clock this young can't go back that far
+        };
+        done.at = old;
+        assert!(
+            placed(std::slice::from_ref(&done), &row).is_none(),
+            "a confirmation fades"
+        );
+        for tone in [Tone::Note, Tone::Problem] {
+            let mut st = Status::new(row.clone(), tone, "x: not connected");
+            st.at = old;
+            assert!(
+                placed(std::slice::from_ref(&st), &row).is_some(),
+                "{tone:?} stays"
+            );
+        }
+    }
+
+    /// A3b: the result shows next to what was clicked. A confirmation is a chip on the device's
+    /// row (closed rows too), a problem an amber bar under it; neither is a loose line at the
+    /// card's foot, and the card-wide ones go to its top.
+    #[test]
+    fn results_show_on_the_row_that_acted() {
+        let mut v = sample();
+        let case = "103c:84fd".to_string();
+        let casual = shown(&v);
+        let chip = casual
+            .find("Colours set")
+            .expect("the chip on the case's row");
+        let mouse = casual.find("G502").expect("the mouse's row");
+        assert!(
+            chip < mouse,
+            "on the case's row, before the next row: {casual}"
+        );
+        assert!(
+            !casual.contains("HP OMEN 45L case lights: colours set"),
+            "the hover only"
+        );
+
+        v.pc.said(Status::new(
+            Place::Row(case.clone()),
+            Tone::Problem,
+            "HP OMEN 45L case lights: not connected",
+        ));
+        let casual = shown(&v);
+        let bar = casual
+            .find("Not connected")
+            .expect("the bar under the case's row");
+        assert!(bar < casual.find("G502").unwrap(), "{casual}");
+        let reach = reachable(&v);
+        assert!(
+            reach.contains("HP OMEN 45L case lights: not connected"),
+            "the ⓘ has it all"
+        );
+
+        // Faded: nothing left anywhere on the card.
+        if let Some(old) = std::time::Instant::now()
+            .checked_sub(pc_lights::DONE_FOR + std::time::Duration::from_secs(1))
+        {
+            let mut st = Status::new(
+                Place::Row(case),
+                Tone::Done,
+                "HP OMEN 45L case lights: colours set",
+            );
+            st.at = old;
+            v.pc.said(st);
+            assert!(!reachable(&v).contains("olours set"), "faded");
+        }
+
+        // Card-wide: above the first row, after the conflicts.
+        v.pc.said(Status::new(
+            Place::Card,
+            Tone::Problem,
+            "Can't save C:\\x\\lighting-catalog.local.toml: access denied",
+        ));
+        let casual = shown(&v);
+        let save = casual.find("Can't save").expect("the card's bar");
+        let first_row = casual.find("Built-in support").expect("the case's row");
+        assert!(save < first_row, "above the first row: {casual}");
+
+        // Add a device's result: on More sources' header, open or closed.
+        v.pc.said(Status::new(
+            Place::Sources,
+            Tone::Done,
+            "Desk strip: saved as your own device",
+        ));
+        let casual = shown(&v);
+        assert!(
+            casual.contains("Desk strip: saved as your own device"),
+            "{casual}"
+        );
+        assert!(casual.find("Desk strip: saved").unwrap() > casual.find("More sources").unwrap());
+
+        // The keyboard card's own results don't land on Other devices.
+        v.pc.said(Status::new(
+            Place::Keyboard,
+            Tone::Done,
+            "Eyelash Corne: shown through Windows Dynamic Lighting",
+        ));
+        assert!(!reachable(&v).contains("shown through Windows"));
     }
 
     /// The conflict bar's line fits the bar's 60 characters, a long name cut with "…".

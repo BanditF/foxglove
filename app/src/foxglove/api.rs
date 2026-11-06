@@ -1008,7 +1008,7 @@ fn pc_devices(s: &super::pc_lights::Snapshot) -> methods::PcDevices {
                     .collect(),
             })
             .collect(),
-        status: s.status.clone(),
+        status: s.status.as_ref().map(|st| st.text.clone()),
         conflicts: s
             .conflicts
             .iter()
@@ -1120,7 +1120,8 @@ fn zone_readback(
         code: code::BACKEND,
         message: s
             .status
-            .clone()
+            .as_ref()
+            .map(|st| st.text.clone())
             .unwrap_or_else(|| "the zone didn't take the colour".into()),
         data: None,
     })
