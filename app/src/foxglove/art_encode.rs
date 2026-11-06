@@ -315,7 +315,8 @@ pub fn variant(folder: &Path, target: ArtTarget) -> Option<std::path::PathBuf> {
 }
 
 /// The folder's frames encoded as one pushable blob for `target`, its ink normalised to
-/// `polarity` (#666).
+/// `polarity` (#666). The app uses [`encode_set`]; the tests check the blob alone.
+#[cfg(test)]
 pub fn encode_folder(
     folder: &Path,
     target: ArtTarget,

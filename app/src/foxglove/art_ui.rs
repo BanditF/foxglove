@@ -1503,7 +1503,7 @@ fn tile_picture_size(size: [usize; 2]) -> egui::Vec2 {
 
 /// A size in KiB as the art words say it: "16 KiB", "12.5 KiB".
 pub fn kib(bytes: usize) -> String {
-    if bytes % 1024 == 0 {
+    if bytes.is_multiple_of(1024) {
         format!("{} KiB", bytes / 1024)
     } else {
         format!("{:.1} KiB", bytes as f32 / 1024.0)
