@@ -21,9 +21,9 @@ pub const SECTION: &str = "overlay_shown";
 /// The checkbox, and the name the API docs use.
 pub const LABEL: &str = "Show layer overlay";
 
-/// The checkbox's hover and ⓘ: starts with the label (design rule 3).
-pub const TIP: &str = "Show layer overlay: the active layer's keys pop up on screen while you \
-                       hold or turn on a layer. Off hides it and keeps the settings below.";
+/// The checkbox's hover and ⓘ: what it does, without repeating the label beside it (#839).
+pub const TIP: &str = "The active layer's keys pop up on screen while you hold or turn on a \
+                       layer. Off hides it and keeps the settings below.";
 
 /// `[overlay_shown]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,11 +147,22 @@ pub fn row(ui: &mut egui::Ui) {
     }
 }
 
-/// Mutes the rest of `ui` (greyed, not hidden) while the overlay is off.
+/// Mutes the rest of `ui` while the overlay is off: slider fills and check marks in the muted
+/// token instead of the accent, everything at the theme's disabled alpha. The rows stay
+/// operable, so the overlay can be set up before it's turned back on.
 pub fn mute_if_off(ui: &mut egui::Ui) {
-    if !on() {
-        ui.disable();
+    if on() {
+        return;
     }
+    let muted = super::theme::palette(ui).muted;
+    let v = ui.visuals_mut();
+    v.selection.bg_fill = muted;
+    let w = &mut v.widgets;
+    for state in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        state.fg_stroke.color = muted;
+    }
+    let alpha = ui.visuals().disabled_alpha();
+    ui.multiply_opacity(alpha);
 }
 
 #[cfg(test)]
@@ -245,31 +256,64 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn the_row_mutes_what_follows_while_off() {
-        for shown in [true, false] {
-            PREVIEW.set(Some(shown));
-            let ctx = egui::Context::default();
-            let mut fonts = egui::FontDefinitions::default();
-            crate::foxglove::theme::add_fonts(&mut fonts);
-            ctx.set_fonts(fonts);
-            let mut enabled = None;
-            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                egui::Grid::new("t").num_columns(2).show(ui, |ui| {
-                    row(ui);
-                    mute_if_off(ui);
-                    enabled = Some(ui.checkbox(&mut true, "Fit long labels").enabled());
-                    ui.end_row();
-                });
-            });
-            out.textures_delta.clear(); // nothing is painted here
-            assert_eq!(enabled, Some(shown), "shown: {shown}");
+    /// The card's rows as drawn with the setting `shown`: whether a checkbox below the row can
+    /// still be used, and every fill colour painted.
+    fn draw_rows(shown: bool) -> (bool, Vec<egui::Color32>) {
+        fn fills(shape: &egui::Shape, out: &mut Vec<egui::Color32>) {
+            match shape {
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| fills(s, out)),
+                egui::Shape::Rect(r) => out.push(r.fill),
+                egui::Shape::Circle(c) => out.push(c.fill),
+                _ => {}
+            }
         }
+        PREVIEW.set(Some(shown));
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        crate::foxglove::theme::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
+        crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
+        let mut enabled = false;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::Grid::new("t").num_columns(2).show(ui, |ui| {
+                row(ui);
+                mute_if_off(ui);
+                ui.label("Opacity");
+                ui.add(egui::Slider::new(&mut 60u8, 0..=100));
+                ui.end_row();
+                enabled = ui.checkbox(&mut true, "Fit long labels").enabled();
+                ui.end_row();
+            });
+        });
+        out.textures_delta.clear(); // nothing is painted here
         PREVIEW.set(None);
+        let mut colours = Vec::new();
+        for clipped in &out.shapes {
+            fills(&clipped.shape, &mut colours);
+        }
+        (enabled, colours)
     }
 
     #[test]
-    fn the_tip_starts_with_the_label() {
-        assert!(crate::foxglove::theme::repeats_label(LABEL, TIP));
+    fn off_mutes_the_rows_but_keeps_them_operable() {
+        let accent = crate::foxglove::theme::DARK.accent;
+        let (on_enabled, on_fills) = draw_rows(true);
+        assert!(on_enabled);
+        assert!(
+            on_fills.contains(&accent),
+            "on: the slider's fill is the accent"
+        );
+        let (off_enabled, off_fills) = draw_rows(false);
+        assert!(off_enabled, "off: the rows stay operable");
+        let half = accent.gamma_multiply(0.5);
+        assert!(
+            !off_fills.iter().any(|c| *c == accent || *c == half),
+            "off: no slider fill in the accent colour"
+        );
+    }
+
+    #[test]
+    fn the_tip_does_not_repeat_the_label() {
+        assert!(!crate::foxglove::theme::repeats_label(LABEL, TIP));
     }
 }

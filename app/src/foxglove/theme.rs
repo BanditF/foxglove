@@ -1169,7 +1169,8 @@ mod widget_tests {
     #[test]
     fn no_tooltip_starts_with_its_controls_label() {
         use crate::foxglove::{
-            art_encode, art_ui, battery_dim_ui, follow_typing, lights_page, pc_lights_ui,
+            art_encode, art_ui, battery_dim_ui, follow_typing, lights_page, overlay_shown,
+            pc_lights_ui,
         };
         assert!(repeats_label(
             "Animate on e-paper",
@@ -1224,6 +1225,10 @@ mod widget_tests {
                 follow_typing::LABEL.to_string(),
                 follow_typing::hover(false),
             ),
+            (
+                overlay_shown::LABEL.to_string(),
+                overlay_shown::TIP.to_string(),
+            ),
         ];
         for (label, hover) in pairs {
             assert!(
@@ -1237,12 +1242,13 @@ mod widget_tests {
             include_str!("battery_dim_ui.rs"),
             include_str!("follow_typing.rs"),
             include_str!("lights_page.rs"),
+            include_str!("overlay_shown.rs"),
             include_str!("pc_lights_ui.rs"),
         ]
         .iter()
         .map(|s| s.matches("theme::with_info(").count())
         .sum();
-        assert_eq!(calls, 9, "with_info calls outside this test's list");
+        assert_eq!(calls, 10, "with_info calls outside this test's list");
     }
 }
 
