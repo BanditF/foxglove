@@ -280,7 +280,11 @@ No per-product art ships, and a board without a layout gets the plain Keyboard s
 3. **ⓘ only on controls** (a checkbox, a button) **and on amber info bars.** Hovering the
    control's label shows the same text, so the ⓘ is a hint that there is more, not a second place
    for it. Chips, plain labels and card titles carry their hover text directly, with no ⓘ. There
-   is no first-run highlight on the ⓘ.
+   is no first-run highlight on the ⓘ. A tooltip never repeats its control's label, which is
+   right beside it: it says what the control does. The four exceptions are K18, K19, K24 and
+   K26, where the card shows a short label and the tooltip leads with the switch's whole name,
+   since that name is said nowhere else. A test in `theme.rs` holds every `with_info` call to
+   this rule.
 4. **Caps labels sit above their group,** never to the side: OFF/ON, then EFFECT over the effect
    pills, then COLOUR over the swatches.
 5. **Amber is never collapsed.** It becomes one InfoBar line of 60 characters or less that names
@@ -334,15 +338,15 @@ Sources: `lights_page.rs`, `lights_owner.rs`, `light_zones.rs`, `zones_ui.rs`,
 | K15 | "{name} moves a band of hues around this colour, {30}° either way." | Chip "±30°" at the band's end + hover = the sentence *(moved)* |
 | K16 | Labels "Effect", "Colour"/"Looks like", "Brightness", "Speed", values | Visible |
 | K17 | "Apply colour" / "Apply brightness" + preview swatch | Visible |
-| K18 | "Follow the Windows accent colour" + hover "The underglow takes the accent colour's hue … The brightness stays the board's." | Checkbox "Follow Windows accent" + ⓘ; hover unchanged, starting "Follow the Windows accent colour:" so the full label survives |
-| K19 | "Lights follow the wallpaper" + hover "The underglow, and the lights set to match … A running scene keeps the lights until it ends." | Checkbox "Follow the wallpaper" + ⓘ; hover unchanged |
+| K18 | "Follow the Windows accent colour" + hover "The underglow takes the accent colour's hue … The brightness stays the board's." | Checkbox "Follow Windows accent" + ⓘ; hover starts with the whole name "Follow the Windows accent colour:", which the short label drops (an approved exception to rule 3) |
+| K19 | "Lights follow the wallpaper" + hover "The underglow, and the lights set to match … A running scene keeps the lights until it ends." | Checkbox "Follow the wallpaper" + ⓘ; hover starts with the whole name "Lights follow the wallpaper:", which the short label drops (an approved exception to rule 3) |
 | K20 | "The controls need an RGB key (&rgb_ug) somewhere in the keymap." | Visible, shortened: "Needs an RGB key in the keymap" + ⓘ with the full sentence (the `&rgb_ug` name lives only in the tooltip) |
 | K21 | "{Both halves} now" + per part "on · Solid · 80% · speed 3" / "off" / "no data yet" / "· {n} s ago" | Visible "Solid · 80%" / "off" / "no data yet"; the full line on hover; "· {n} s ago" stays visible (staleness is state) |
 | K22 | "Refresh" (hover "Ask {both halves} for their lights again") | Visible, as now |
 | K23 | "Calibrate…" (hover "Match how the keyboard shows colours … about a minute") + "calibrated" | Button as now; "calibrated" becomes a chip in the header row |
-| K24 | "{Right half}'s lights follow the {left}" + hover follow_tip ("On: … Saved on the keyboard.") | Checkbox "Right follows left" + ⓘ; hover starts with the full label, then the tip |
+| K24 | "{Right half}'s lights follow the {left}" + hover follow_tip ("On: … Saved on the keyboard.") | Checkbox "Right follows left" + ⓘ; hover starts with the whole name, which the short label drops (an approved exception to rule 3), then the tip |
 | K25 | "Asking the keyboard…" / "{label}: needs a keyboard with Foxglove's firmware" / "{label}: needs newer keyboard firmware" + ↻ | Disabled checkbox + muted chip "needs newer firmware" / "needs Foxglove firmware"; the full line is the hover; ↻ stays |
-| K26 | "Save battery: dim lights on battery" + hover "Each half dims its own lights … works without Foxglove." | Checkbox "Dim on battery" + ⓘ; hover starts with the full label |
+| K26 | "Save battery: dim lights on battery" + hover "Each half dims its own lights … works without Foxglove." | Checkbox "Dim on battery" + ⓘ; hover starts with the whole name, which the short label drops (an approved exception to rule 3) |
 | K27 | Status lines "Right half on battery · 80%", "Left half on USB · 100%" | Header chip "Right on battery · dims to 80%" (grey dot; the part being dimmed); both lines on its hover *(moved)* |
 | K28 | "Off: your brightness on battery too." | Hover of the unchecked "Dim on battery" *(moved)* |
 | K29 | "{The right half} takes these levels when it next connects." | Visible muted line under the checkbox (pending state) |
