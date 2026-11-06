@@ -38,6 +38,9 @@
 //!   thread starts (its command line would start it). The worker starts the first time Wallpaper
 //!   Engine shows a wallpaper that supports one of the properties.
 //! - **Game mode:** a layer named GAME... is active (the GAME / GAME+ layers, docs/layers.md).
+//! - **Which keyboard (#801):** the feed's (its pin, else the focus; `focus_pins`). The layer and
+//!   game mode are the host-link keyboard's, so they go out only while it is that keyboard; for
+//!   a VIA or LampArray keyboard the wallpapers hear no layer.
 //!
 //! Stage 2 (#499): the live socket (`live_feed`) carries key presses and, later, PC stats and
 //! notifications. This path only tells the wallpapers its port (`foxglove_live`).
@@ -656,6 +659,21 @@ fn start_worker() {
             }
         }
     });
+    // The feed's keyboard changed (#801): its layer, or none.
+    let feed = facts.subscribe("focus.feed");
+    let forward = tx.clone();
+    super::services::spawn_named("wallpaper-sync-keyboard", move || {
+        for _ in feed {
+            let facts = super::devices::bus().facts();
+            set_layers(match facts.get("keyboard.layers") {
+                Some(foxglove_devices::facts::Value::Bytes(b)) => Some(b),
+                _ => None,
+            });
+            if forward.send(Wake::Layer).is_err() {
+                break;
+            }
+        }
+    });
     super::services::spawn_named("wallpaper-sync", move || {
         run(
             &rx,
@@ -669,6 +687,8 @@ fn start_worker() {
 }
 
 fn set_layers(active: Option<Vec<u8>>) {
+    // Another keyboard than the host link's in the feed: its layers aren't these.
+    let active = active.filter(|_| super::focus_pins::feed_is_host_link());
     let names = super::layer_names::remembered();
     with(|s| {
         s.state.layer = active.as_deref().and_then(|a| layer_name(a, &names));

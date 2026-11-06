@@ -45,7 +45,7 @@ offer the sub-protocols `foxglove-live.v1, <token>`.
 | `t` | Direction | Body |
 |---|---|---|
 | `hello` | → wallpaper | `v`, `topics`, `board` (`name`, `keys`: `[x, y, w, h, r]` in key units, rotation about the key's centre), `state`, `quiet` |
-| `state` | → wallpaper | `layer` (`index`, `name`), `art`, `battery` (`left`, `right`), `link` (`connected`, `output`, `profile`, `profile_connected`), `lights` (below) |
+| `state` | → wallpaper | `layer` (`index`, `name`), `art`, `battery` (`left`, `right`), `link` (`connected`, `output`, `profile`, `profile_connected`), `lights` (below), `keyboard` (`name`, `source`, `connected`; below) |
 | `art` | → wallpaper | `art`: `name` (as `state.art`), `nva` (the piece's frames, below, or `null`); or `art: null` |
 | `panel` | → wallpaper | `panel`: `w`, `h`, `bits` (the left screen's PC panel, below), or `null` |
 | `keys` | → wallpaper | `e`: `[index, 1 down / 0 up, ms since the batch's first]` |
@@ -64,6 +64,17 @@ usable accent), `brightness` (0-100), `effect` (its name, such as `Solid` or `Br
 what the keyboard shows). A wallpaper can take `color` as its accent while `on` and not
 `rainbow`, so the wallpaper matches the keyboard. It comes from the `keyboard.lighting.*`
 facts (docs/local-api.md) and changes only when the keyboard reports a change.
+
+`keyboard` (#801) names the keyboard the feed is about: `name` (as Foxglove shows it, such as
+`Eyelash Corne`), `source` (`host_link`, `via` or `lamp_array`) and `connected`. It is the
+keyboard picked at the start of Foxglove's status strip, or the one picked in Settings → Live
+wallpaper → Keyboard, which keeps the wallpaper on that keyboard whatever the strip shows.
+It is left out before Foxglove found any keyboard. For a `host_link` keyboard (Foxglove's own
+firmware) everything above and below follows it: the layer, battery, link, lights, art, the
+board and the keys. For any other keyboard Foxglove can't read those, so `state` carries only
+`keyboard` and `link.connected`, `board` is the keyboard's own shape (from its layout, or a
+guess from its key count), and no `keys` are sent. A change of keyboard sends a new `board` and
+`state`. The keyboard's name is all that identifies it: never a serial number or a device path.
 
 `art` (code: `live_art.rs`) carries the right screen's piece, so a wallpaper can draw the literal art:
 - **Format:** `nva` is an NVA1 blob in base64, re-encoded **upright** (as the art is drawn, 68x140 on

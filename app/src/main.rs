@@ -64,6 +64,7 @@ fn main() {
     foxglove::knob::start(); // Foxglove (#719): the knob on master or an app's volume
     foxglove::devices::start(); // Foxglove: find the host-link keyboard whenever a link connects
     foxglove::keyboard_facts::start();
+    foxglove::focus_pins::start(); // Foxglove (#801): views follow the focused keyboard
     foxglove::battery::start(); // Foxglove (#372, #373)
     foxglove::peripherals::start(); // Foxglove (#504): Bluetooth and controller batteries
     foxglove::live_feed::start(); // Foxglove (#499): the live wallpaper feed, when turned on

@@ -1,7 +1,8 @@
 //! The focused keyboard (#799, C1; docs/design/device-focus-layouts-thumbnails-lights-declutter.md
 //! section 1): one keyboard the whole app shows, picked from every keyboard the device layer
-//! knows. Not `focus.rs`, which is window focus (#618). The model only: the switcher, the pages
-//! and the pins' cards come later (C2, C3), and "follow the keyboard I type on" is C4.
+//! knows. Not `focus.rs`, which is window focus (#618). The model only: the switcher and the pages
+//! are `focus_ui` (C2), the pins' cards `focus_pins` (C3), and "follow the keyboard I type on"
+//! is C4.
 //!
 //! - **The keyboards:** the device layer reports what each source sees, on its own events: the
 //!   host-link keyboard on its link's State events (`devices::start`), VIA/Vial keyboards on each
@@ -18,7 +19,7 @@
 //! - **A new keyboard never steals the focus**, except when nothing was focused.
 //! - **A picked focus stays**, greyed when its keyboard goes, and a replug keeps it.
 //! - **Pins:** the overlay and the wallpaper feed may each pin a keyboard (`[focus.pins]`); an
-//!   unpinned view follows the focus. Data only here; C3 builds their cards.
+//!   unpinned view follows the focus. Their cards and the views' following are `focus_pins` (C3).
 //! - **Events:** every change sets the `focus.*` facts on the app's bus ([`subscribe`]), which
 //!   the pages and the local API's `facts.subscribe` get; `focus.get` / `focus.set` read and
 //!   change it over the local API (API 1.12).
@@ -525,8 +526,6 @@ fn publish(facts: Vec<(&'static str, Option<Value>)>) {
 }
 
 /// Every change to the focus, its keyboards or the pins, as `focus.*` fact changes.
-// C2-C4 read it (#800, #801, #802); C1 builds the model only.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn subscribe() -> Receiver<Change> {
     super::devices::bus().facts().subscribe("focus.*")
 }
@@ -543,8 +542,6 @@ pub fn keyboards() -> Vec<Keyboard> {
 }
 
 /// The keyboard `view` shows: its pin, else the focus.
-// C2-C4 read it (#800, #801, #802); C1 builds the model only.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn for_view(view: View) -> Option<Keyboard> {
     with(|m| m.for_view(view).cloned())
 }

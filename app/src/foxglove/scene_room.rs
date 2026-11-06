@@ -5,7 +5,10 @@
 //!   light per half, or one per LED once the profile's LED map is checked on the board (#529);
 //! - the lighting devices the Lights page found: catalog zones with their positions and the
 //!   kind the catalog gives, LampArrays with their lamps and the kind Windows gives, and
-//!   devices added by hand.
+//!   devices added by hand;
+//! - every other keyboard the focus knows (#801): a VIA keyboard, connected, drawn from its
+//!   layout and lit by nothing (a LampArray keyboard is already there as a lighting device). The
+//!   Scenes page rings the focused keyboard ([`focused_ids`]).
 //!
 //! The user's drags live in the store's `[scene]` section ([`foxglove_scene::Layout`]).
 //!
@@ -55,12 +58,75 @@ pub fn layout() -> Layout {
 
 /// The room as it is now.
 pub fn room() -> RoomMap {
-    let devices = devices(
+    let rows = super::pc_lights::snapshot().devices;
+    let mut devices = devices(
         super::boards::current().as_ref(),
-        &super::pc_lights::snapshot().devices,
+        &rows,
         &super::pc_lights::lamp_layouts(),
     );
+    let keyboards = super::keyboard_focus::keyboards();
+    devices.extend(other_keyboards(&keyboards, &rows, |k| {
+        super::keyboard_focus::layout(k)
+    }));
     RoomMap::build(&monitors(), &devices, &layout())
+}
+
+/// A keyboard's room id when it is drawn on its own (a VIA keyboard).
+pub fn keyboard_id(key: &str) -> String {
+    format!("{OTHER_KEYBOARD}{key}")
+}
+
+const OTHER_KEYBOARD: &str = "other-keyboard:";
+
+/// The keyboards the room has no device for yet (#801): connected VIA keyboards without a
+/// LampArray of their own in `rows`, each as wide as its layout and lit by nothing (the scene
+/// can't light them; Foxglove only reads them).
+pub fn other_keyboards(
+    keyboards: &[super::keyboard_focus::Keyboard],
+    rows: &[Row],
+    layout: impl Fn(&super::keyboard_focus::Keyboard) -> KeyLayout,
+) -> Vec<DeviceInfo> {
+    use super::keyboard_focus::Source;
+    keyboards
+        .iter()
+        .filter(|k| k.source == Source::Via && k.connected)
+        .filter(|k| !rows.iter().any(|r| vid_pid(&r.key) == Some((k.vid, k.pid))))
+        .map(|k| {
+            let l = layout(k);
+            let parts = l.parts.len().max(1) as f32;
+            DeviceInfo {
+                lights: Vec::new(),
+                ..DeviceInfo::whole(keyboard_id(&k.key), k.name.clone(), DeviceKind::Other)
+                    .with_size(Point::new(
+                        (l.size.x * parts + (parts - 1.0)) * KEY_MM,
+                        l.size.y * KEY_MM,
+                    ))
+            }
+        })
+        .collect()
+}
+
+/// The room ids of `focus`'s devices, for the Scenes page's ring: the host-link keyboard's
+/// halves (or its one piece), a keyboard drawn on its own, and a lighting device with its
+/// VID/PID (its LampArray).
+pub fn focused_ids(room: &RoomMap, focus: Option<&super::keyboard_focus::Keyboard>) -> Vec<String> {
+    use super::keyboard_focus::Source;
+    let Some(k) = focus else {
+        return Vec::new();
+    };
+    let own = keyboard_id(&k.key);
+    room.devices
+        .iter()
+        .filter(|d| {
+            (k.source == Source::HostLink && d.id.starts_with(super::scene_output::KEYBOARD))
+                || d.id == own
+                || d.id
+                    .strip_prefix("light:")
+                    .and_then(vid_pid)
+                    .is_some_and(|ids| ids == (k.vid, k.pid))
+        })
+        .map(|d| d.id.clone())
+        .collect()
 }
 
 /// The displays, read once and again after each display change.
@@ -481,6 +547,82 @@ pub(crate) mod tests {
 
     /// The case's room id in [`sample_room`].
     pub(crate) const SAMPLE_CASE: &str = "light:103c:84fd";
+
+    /// The Corne over the host link and a K5 Pro over VIA, as C1's model lists them.
+    pub(crate) fn two_keyboards() -> Vec<super::super::keyboard_focus::Keyboard> {
+        use super::super::keyboard_focus::{Keyboard, Source};
+        vec![
+            Keyboard {
+                key: "zmk-1d50:615e".into(),
+                name: "Eyelash Corne".into(),
+                source: Source::HostLink,
+                vid: 0x1d50,
+                pid: 0x615e,
+                device: None,
+                connected: true,
+            },
+            Keyboard {
+                key: "via-k5".into(),
+                name: "K5 Pro".into(),
+                source: Source::Via,
+                vid: 0x3434,
+                pid: 0x0250,
+                device: None,
+                connected: true,
+            },
+        ]
+    }
+
+    /// [`sample_room`] with the K5 Pro beside the Corne (#801): two keyboards.
+    pub(crate) fn sample_room_two_keyboards() -> RoomMap {
+        let rows = [
+            users_desk::catalog_row(users_desk::CASE),
+            users_desk::mouse_row(),
+        ];
+        let board = users_desk::board();
+        let mut all = devices(Some(&board), &rows, &users_desk::lamps());
+        // No VIA definition drawn yet (B2): the K5 Pro's keys are B1's guess from its keymap.
+        all.extend(other_keyboards(&two_keyboards(), &rows, |_| {
+            crate::foxglove::key_layout::resolve(None, &[], 104)
+        }));
+        RoomMap::build(&users_desk::monitors(), &all, &Layout::default())
+    }
+
+    /// #801: every keyboard is in the room, and the ring goes on the focused one's devices.
+    #[test]
+    fn the_room_has_every_keyboard_and_rings_the_focused_one() {
+        let room = sample_room_two_keyboards();
+        let [corne, k5] = two_keyboards().try_into().unwrap();
+        let k5_id = keyboard_id(&k5.key);
+        let placed = room.device(&k5_id).expect("the K5 Pro is in the room");
+        assert_eq!(placed.name, "K5 Pro");
+        assert!(placed.lights.is_empty(), "shown only: no scene lights it");
+        assert!(placed.rect.w > 200.0, "as wide as its keys");
+        assert_eq!(
+            focused_ids(&room, Some(&corne)),
+            ["keyboard:left", "keyboard:right"]
+        );
+        assert_eq!(focused_ids(&room, Some(&k5)), std::slice::from_ref(&k5_id));
+        assert!(focused_ids(&room, None).is_empty());
+
+        // A gone VIA keyboard isn't drawn; one with its own LampArray is that lighting device.
+        let gone = super::super::keyboard_focus::Keyboard {
+            connected: false,
+            ..k5.clone()
+        };
+        let guess = |_: &super::super::keyboard_focus::Keyboard| {
+            crate::foxglove::key_layout::resolve(None, &[], 104)
+        };
+        assert!(other_keyboards(&[gone], &[], guess).is_empty());
+        let mut lamp = users_desk::mouse_row();
+        lamp.key = "3434:0250".into();
+        assert!(other_keyboards(std::slice::from_ref(&k5), &[lamp], guess).is_empty());
+        assert_eq!(
+            other_keyboards(&[corne], &[], guess),
+            [],
+            "the host link is \"keyboard\""
+        );
+    }
 
     /// The second desk's devices: Plank 3, the other vendor's case and the lightbar.
     fn second_desk_devices() -> Vec<DeviceInfo> {
