@@ -40,8 +40,12 @@ fn kind(r: &HealthRow) -> String {
     format!("{}|{}", r.subsystem, r.item)
 }
 
-/// A row's notification: title and body.
+/// A row's notification: title and body. A row's own (`HealthRow::notice`) wins over the
+/// default "<item>: warning" / "<item> failed" and its detail.
 pub fn text(r: &HealthRow) -> (String, String) {
+    if let Some(own) = &r.notice {
+        return own.clone();
+    }
     let title = match r.level {
         Level::Fail => format!("{} failed", r.item),
         _ => format!("{}: warning", r.item),
@@ -246,6 +250,49 @@ mod tests {
             text(&row("x", "Right screen", Level::Warn, "")).1,
             "See Keyboard health on the App page."
         );
+    }
+
+    /// A row's own notice text replaces the default; a row without one keeps the default.
+    #[test]
+    fn a_rows_own_notice_text_wins() {
+        let own = row(
+            "live_feed",
+            "Live wallpaper pairing",
+            Level::Warn,
+            "a wallpaper is using an old pairing token",
+        )
+        .with_notice("Short title", "The body.");
+        assert_eq!(
+            text(&own),
+            ("Short title".to_string(), "The body.".to_string())
+        );
+        let plain = row(
+            "live_feed",
+            "Live wallpaper pairing",
+            Level::Warn,
+            "a wallpaper is using an old pairing token",
+        );
+        assert_eq!(
+            text(&plain),
+            (
+                "Live wallpaper pairing: warning".to_string(),
+                "a wallpaper is using an old pairing token. See Keyboard health on the App page."
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            text(&relay(Level::Warn)).0,
+            "Link to the right half: warning"
+        );
+        // The once-per-kind-per-day rule doesn't look at the text.
+        let mut sent = Sent::default();
+        assert_eq!(
+            due(None, std::slice::from_ref(&own), &mut sent, "2026-11-06")
+                .0
+                .len(),
+            1
+        );
+        assert!(due(None, &[own], &mut sent, "2026-11-06").0.is_empty());
     }
 
     /// The section round-trips through the store alone, and a check sends through the (fake)

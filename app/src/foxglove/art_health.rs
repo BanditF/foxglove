@@ -74,6 +74,7 @@ pub fn restore_rows(r: &RestoreHealth) -> Vec<HealthRow> {
         item: "Art after a firmware update · Restored".into(),
         level,
         detail,
+        notice: None,
     }]
 }
 
@@ -202,6 +203,7 @@ pub fn rows_of(h: &PlaylistHealth, now: Instant) -> Vec<HealthRow> {
         item: format!("Art playlist · {what}"),
         level,
         detail,
+        notice: None,
     };
     if !h.on {
         return vec![row(
