@@ -13,12 +13,17 @@ vid = 0x1d50
 pid = 0x615e
 product = "Halcyon Corne"
 
+# E-paper with partial refresh, a frame a second at most (#833): art plays at no more than 1 fps,
+# and only its first frame unless animation is switched on. Screens say `refresh = "fast"`
+# (the default), `epaper-partial` or `epaper-full`, and `min_frame_ms` (0, the default: no limit).
 [[screens]]
 kind = "display"
 half = "left"
 width = 88
 height = 184
 format = "1bit"
+refresh = "epaper-partial"
+min_frame_ms = 1000
 
 [[screens]]
 kind = "display"
@@ -26,3 +31,5 @@ half = "right"
 width = 88
 height = 184
 format = "1bit"
+refresh = "epaper-partial"
+min_frame_ms = 1000

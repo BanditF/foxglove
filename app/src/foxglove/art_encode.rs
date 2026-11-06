@@ -20,6 +20,8 @@ use std::path::Path;
 use image::{imageops, GrayImage, Luma};
 use serde::{Deserialize, Serialize};
 
+use super::boards::Refresh;
+
 /// Header byte 7 (art_relay.h `ART_RELAY_FLAG_INK`, #610): set bits are ink. Blobs without it
 /// (from before #610) have the background bits set; the keyboard and `art_preview` invert them.
 pub const FLAG_INK: u8 = 0x01;
@@ -234,6 +236,126 @@ impl ArtTarget {
         } else {
             (self.width, self.height)
         }
+    }
+}
+
+/// How fast art may play on an art screen (#833), from its profile's `refresh` and
+/// `min_frame_ms`: a set's frames a second are clamped to `1000 / min_frame_ms`, and on e-paper
+/// only its first frame goes unless the user lets art play there. A fast screen with no limit
+/// (the Corne's) leaves every blob as it is, byte for byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pace {
+    pub refresh: Refresh,
+    pub min_frame_ms: u32,
+    /// The user let art play on e-paper ("may ghost"); off by default.
+    pub animate_epaper: bool,
+}
+
+impl Pace {
+    /// The pace of `screen`, with the user's e-paper choice.
+    pub fn of(screen: &super::screen_roles::Screen, animate_epaper: bool) -> Pace {
+        Pace {
+            refresh: screen.refresh,
+            min_frame_ms: screen.min_frame_ms,
+            animate_epaper,
+        }
+    }
+
+    /// The connected keyboard's art screen's pace (the firmware's screens, else its profile's;
+    /// with no art screen said, the older firmware's), with the user's e-paper choice.
+    pub fn current() -> Pace {
+        #[cfg(test)]
+        if let Some(screens) = TEST_SCREENS.with_borrow(|s| s.clone()) {
+            return Self::in_screens(Some(&screens), super::art_service::animate_epaper);
+        }
+        Self::in_screens(
+            super::screen_roles::current().as_deref(),
+            super::art_service::animate_epaper,
+        )
+    }
+
+    /// The pace of the art screen in `screens` (else the older firmware's); the user's e-paper
+    /// choice is read only for an e-paper screen.
+    fn in_screens(
+        screens: Option<&[super::screen_roles::Screen]>,
+        animate: impl FnOnce() -> bool,
+    ) -> Pace {
+        use super::screen_roles::{first, old_firmware, Role};
+        let old = old_firmware();
+        let Some(screen) = screens
+            .and_then(|s| first(s, Role::Art))
+            .or_else(|| first(&old, Role::Art))
+        else {
+            return Pace::default();
+        };
+        let animate = screen.refresh.is_epaper() && animate();
+        Pace::of(screen, animate)
+    }
+
+    /// Whether art on this screen shows its first frame only.
+    pub fn still(self) -> bool {
+        self.refresh.is_epaper() && !self.animate_epaper
+    }
+
+    /// A set's frames a second on this screen: at most `1000 / min_frame_ms` (at least 1, the
+    /// least a blob's rate byte says; the firmware keeps its own interval past that). 0, a still
+    /// set, stays 0.
+    pub fn fps(self, fps: u8) -> u8 {
+        if fps == 0 || self.min_frame_ms == 0 {
+            return fps;
+        }
+        let most = u8::try_from((1000 / self.min_frame_ms).max(1)).unwrap_or(u8::MAX);
+        fps.min(most)
+    }
+
+    /// Whether this pace leaves every blob as it is.
+    fn untouched(self) -> bool {
+        self.min_frame_ms == 0 && !self.still()
+    }
+
+    /// An animation paced for this screen: its rate clamped, and on still e-paper its first
+    /// frame only.
+    pub fn stored(self, mut s: super::live_art::Stored) -> super::live_art::Stored {
+        if self.untouched() {
+            return s;
+        }
+        s.fps = self.fps(s.fps);
+        if self.still() {
+            s.order.truncate(1);
+        }
+        s
+    }
+
+    /// An NVA1 blob paced for this screen (#833). Untouched on a fast screen with no limit;
+    /// else its rate byte clamped, and on still e-paper encoded again with its first frame
+    /// only. A blob that doesn't decode goes as it is, for the push to refuse.
+    pub fn blob(self, blob: Vec<u8>) -> Vec<u8> {
+        if self.untouched() {
+            return blob;
+        }
+        let Ok(s) = super::live_art::Stored::from_blob(&blob) else {
+            return blob;
+        };
+        if self.still() && s.order.len() > 1 {
+            let first = s.order.first().and_then(|&i| s.unique.get(usize::from(i)));
+            if let Some(frame) = first {
+                let target = ArtTarget {
+                    width: s.width as u32,
+                    height: s.height as u32,
+                    rotation: 0,
+                };
+                // The stored frame as it is: same size, same bits, same flags.
+                if let Ok(mut still) = encode(std::slice::from_ref(frame), self.fps(s.fps), target)
+                {
+                    still[7] = blob[7];
+                    return still;
+                }
+            }
+            return blob;
+        }
+        let mut blob = blob;
+        blob[6] = self.fps(s.fps);
+        blob
     }
 }
 
@@ -942,6 +1064,8 @@ mod target_tests {
             height: h,
             format: format.into(),
             rotation,
+            refresh: Refresh::Fast,
+            min_frame_ms: 0,
         }
     }
 
@@ -1090,5 +1214,208 @@ mod target_tests {
         // The Corne has no 68x140 folder in it: its own frames, as made.
         assert_eq!(variant(&d, ArtTarget::FIRMWARE), None);
         let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+#[cfg(test)]
+mod pace_tests {
+    use super::*;
+    use crate::foxglove::boards::Board;
+    use crate::foxglove::fixtures::{second_desk, users_desk};
+    use crate::foxglove::live_art::Stored;
+    use crate::foxglove::screen_roles::{first, of_board, of_descriptors, Role};
+
+    /// Plank 3 with `extra` under its art screen's `[[screens]]` entry.
+    fn plank_with(extra: &str) -> Result<Board, String> {
+        let text = second_desk::PLANK3.replace(
+            "kind = \"art\"\nhalf = \"middle\"",
+            &format!("kind = \"art\"\nhalf = \"middle\"\n{extra}"),
+        );
+        assert_ne!(text, second_desk::PLANK3, "the art screen's entry found");
+        Board::parse(&text)
+    }
+
+    /// A set of two different 16x8 frames played a, b, a at `fps`.
+    fn two_frames(fps: u8) -> Vec<u8> {
+        let target = ArtTarget {
+            width: 16,
+            height: 8,
+            rotation: 0,
+        };
+        let a = vec![0x0f; 16];
+        let b = vec![0xf0; 16];
+        encode(&[a.clone(), b, a], fps, target).unwrap()
+    }
+
+    fn epaper(min_frame_ms: u32, animate_epaper: bool) -> Pace {
+        Pace {
+            refresh: Refresh::EpaperPartial,
+            min_frame_ms,
+            animate_epaper,
+        }
+    }
+
+    fn fast(min_frame_ms: u32) -> Pace {
+        Pace {
+            refresh: Refresh::Fast,
+            min_frame_ms,
+            animate_epaper: false,
+        }
+    }
+
+    /// #833: the Corne's profile says nothing of refresh, so its art screen is fast with no
+    /// limit, and every blob it is sent stays byte for byte as it was. The user's e-paper
+    /// choice isn't even read.
+    #[test]
+    fn the_cornes_art_goes_byte_identical() {
+        let corne = of_board(&users_desk::board());
+        let art = first(&corne, Role::Art).unwrap();
+        assert_eq!((art.refresh, art.min_frame_ms), (Refresh::Fast, 0));
+        let not_asked = || -> bool { panic!("a fast screen doesn't read the e-paper choice") };
+        let pace = Pace::in_screens(Some(&corne), not_asked);
+        assert_eq!(pace, Pace::default());
+        // No screens said: the older firmware's (the Corne's) pace, the same.
+        assert_eq!(Pace::in_screens(None, not_asked), Pace::default());
+        assert!(!pace.still());
+        let art_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/lighting/art");
+        let mut seen = 0;
+        for e in std::fs::read_dir(art_dir).unwrap().flatten() {
+            if e.path().extension().is_some_and(|x| x == "bin") {
+                let blob = std::fs::read(e.path()).unwrap();
+                assert_eq!(pace.blob(blob.clone()), blob, "{}", e.path().display());
+                if let Ok(s) = Stored::from_blob(&blob) {
+                    assert_eq!(pace.stored(s.clone()), s);
+                }
+                seen += 1;
+            }
+        }
+        assert!(seen > 0, "the bundled art read");
+        assert_eq!(pace.blob(two_frames(8)), two_frames(8));
+        assert_eq!(pace.fps(30), 30);
+    }
+
+    /// #833: `refresh` and `min_frame_ms` read from a profile's `[[screens]]`, default to a
+    /// fast screen with no limit, and a refresh word Foxglove doesn't know is refused.
+    #[test]
+    fn a_profile_says_its_screens_refresh_and_frame_limit() {
+        let plank = of_board(&second_desk::board());
+        assert!(plank
+            .iter()
+            .all(|s| s.refresh == Refresh::Fast && s.min_frame_ms == 0));
+        for (word, refresh) in [
+            ("fast", Refresh::Fast),
+            ("epaper-partial", Refresh::EpaperPartial),
+            ("epaper-full", Refresh::EpaperFull),
+        ] {
+            let b = plank_with(&format!("refresh = \"{word}\"\nmin_frame_ms = 1000")).unwrap();
+            let s = of_board(&b);
+            let art = first(&s, Role::Art).unwrap();
+            assert_eq!((art.refresh, art.min_frame_ms), (refresh, 1000), "{word}");
+            assert_eq!(refresh.is_epaper(), word != "fast");
+            // The panel and the display keep the defaults.
+            assert!(s
+                .iter()
+                .filter(|s| s.role != Role::Art)
+                .all(|s| s.refresh == Refresh::Fast && s.min_frame_ms == 0));
+        }
+        assert!(plank_with("refresh = \"slow\"").is_err());
+        // The built-in e-paper profile says it of both its screens.
+        let halcyon = Board::parse(include_str!(
+            "../../resources/boards/halcyon-corne-epaper.toml"
+        ))
+        .unwrap();
+        assert!(halcyon
+            .screens
+            .iter()
+            .all(|s| s.refresh == Refresh::EpaperPartial && s.min_frame_ms == 1000));
+        // The firmware's descriptors don't carry them yet: the profile's art screen says.
+        let b = plank_with("refresh = \"epaper-full\"\nmin_frame_ms = 2000").unwrap();
+        let described = [foxglove_link::protocol::ScreenDescriptor {
+            count: 1,
+            index: 0,
+            id: 4,
+            kind: foxglove_link::protocol::ScreenKind::Art,
+            half: 0,
+            parent: None,
+            width: 160,
+            height: 80,
+            x: 0,
+            y: 0,
+            rotation: 0,
+            format: 0,
+            ops: 0,
+            stride: 0,
+            rows_per_report: 0,
+            readback_half: None,
+            version: 1,
+        }];
+        let s = of_descriptors(&described, Some(&b));
+        assert_eq!(
+            (s[0].refresh, s[0].min_frame_ms),
+            (Refresh::EpaperFull, 2000)
+        );
+        let bare = of_descriptors(&described, None);
+        assert_eq!((bare[0].refresh, bare[0].min_frame_ms), (Refresh::Fast, 0));
+    }
+
+    /// #833: a 4 fps set on a 1000 ms screen plays at 1 fps, pushed (the blob's rate byte, the
+    /// rest untouched) and in the live feed; a still set stays still.
+    #[test]
+    fn a_4_fps_set_plays_at_1_fps_on_a_1000_ms_screen() {
+        let pace = epaper(1000, true);
+        assert_eq!(pace.fps(4), 1);
+        let blob = two_frames(4);
+        let paced = pace.blob(blob.clone());
+        assert_eq!(paced[6], 1);
+        assert_eq!(paced[..6], blob[..6]);
+        assert_eq!(paced[7..], blob[7..], "frames and order as they were");
+        let s = pace.stored(Stored::from_blob(&blob).unwrap());
+        assert_eq!((s.fps, s.order.clone()), (1, vec![0, 1, 0]));
+        // The bound is 1000 / min_frame_ms, at least 1 (the least the rate byte says).
+        assert_eq!(fast(250).fps(4), 4);
+        assert_eq!(fast(250).fps(8), 4);
+        assert_eq!(fast(3000).fps(8), 1);
+        assert_eq!(fast(1).fps(200), 200);
+        assert_eq!(fast(1000).fps(0), 0, "still stays still");
+        // A fast screen with a limit still animates.
+        assert!(!fast(1000).still());
+        let slowed = Stored::from_blob(&fast(1000).blob(blob)).unwrap();
+        assert_eq!((slowed.fps, slowed.order.len()), (1, 3));
+    }
+
+    /// #833: on e-paper only a set's first frame goes, at the clamped rate, unless the user
+    /// lets art play there; the stored bits and flags are the first frame's as they were.
+    #[test]
+    fn epaper_art_is_still_unless_the_user_lets_it_play() {
+        let blob = two_frames(4);
+        let full = Stored::from_blob(&blob).unwrap();
+        let still = epaper(1000, false);
+        assert!(still.still());
+        let one = Stored::from_blob(&still.blob(blob.clone())).unwrap();
+        assert_eq!(one.order, vec![0]);
+        assert_eq!(one.unique, vec![full.unique[0].clone()]);
+        assert_eq!(
+            (one.width, one.height, one.ink, one.fps),
+            (16, 8, full.ink, 1)
+        );
+        assert_eq!(still.stored(full.clone()).order, vec![0]);
+        // E-paper with no limit: still all the same.
+        assert_eq!(
+            Stored::from_blob(&epaper(0, false).blob(blob.clone()))
+                .unwrap()
+                .order,
+            vec![0]
+        );
+        // Allowed: every frame plays, at the screen's limit.
+        let plays = Stored::from_blob(&epaper(1000, true).blob(blob.clone())).unwrap();
+        assert_eq!(plays.order, full.order);
+        // The choice comes from the user's setting, read for e-paper only.
+        let b = plank_with("refresh = \"epaper-partial\"\nmin_frame_ms = 1000").unwrap();
+        let screens = of_board(&b);
+        assert!(Pace::in_screens(Some(&screens), || false).still());
+        assert!(!Pace::in_screens(Some(&screens), || true).still());
+        // A blob that doesn't decode goes as it is, for the push to refuse.
+        assert_eq!(still.blob(b"not art".to_vec()), b"not art".to_vec());
     }
 }

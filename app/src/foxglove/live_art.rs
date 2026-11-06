@@ -167,8 +167,13 @@ fn stored(src: &Source) -> Option<Stored> {
 }
 
 /// The feed's `art` body for a piece by `name` from `src`: its upright frames, or none.
+/// It plays at the art screen's pace (#833), as the keyboard plays it: a built-in or a kept
+/// piece too, whose bytes the app didn't send.
 pub fn art(src: &Source, name: String) -> wire::Art {
-    let nva = stored(src).and_then(|s| encoded(&s));
+    let pace = super::art_encode::Pace::current();
+    let nva = stored(src)
+        .map(|s| pace.stored(s))
+        .and_then(|s| encoded(&s));
     wire::Art { name, nva }
 }
 
