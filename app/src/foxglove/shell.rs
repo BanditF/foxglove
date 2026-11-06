@@ -501,6 +501,8 @@ pub struct StripState {
     pub unplug_warning: Option<String>,
     /// The board's parts (#559): a chip each, named from its profile.
     pub parts: super::parts::Parts,
+    /// The keyboard switcher at the strip's head (#800): every keyboard and the focused one.
+    pub switcher: super::focus_ui::Switcher,
 }
 
 impl StripState {
@@ -671,6 +673,7 @@ pub fn strip_state(ctx: &egui::Context) -> StripState {
         this_pc: link.this_pc,
         unplug_warning: link.unplug_warning,
         parts: super::parts::Parts::current(),
+        switcher: super::focus_ui::Switcher::now(),
     }
 }
 
@@ -682,7 +685,21 @@ fn status_strip(ui: &mut egui::Ui, s: &StripState) {
         let wrap = Layout::left_to_right(Align::Center).with_main_wrap(true);
         ui.allocate_ui_with_layout(egui::vec2(chips_width, 0.0), wrap, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+            // The focused keyboard first (#800): the chips after it describe that keyboard.
+            if let Some(key) = super::focus_ui::switcher(ui, &s.switcher) {
+                super::focus_ui::pick(ui.ctx(), &key);
+            }
+            let read_only = s.switcher.focused().and_then(|r| r.read_only.clone());
+            if let Some(why) = &read_only {
+                super::focus_ui::read_only_chip(ui, why);
+            }
             for c in chips(s) {
+                // The host link's chips describe its keyboard, not a read-only one in focus;
+                // the unplug warning stays whatever is shown.
+                let unplug = c.name.is_empty() && c.tone == Some(Tone::Warn);
+                if read_only.is_some() && !unplug {
+                    continue;
+                }
                 chip(ui, &c);
             }
         });
@@ -1024,6 +1041,7 @@ mod tests {
             unplug_warning: None,
             host_link: Some("USB"),
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
+            switcher: Default::default(),
         };
         let c = chips(&s);
         assert_eq!(c[0].text, "on USB · 0.1.0 · e255d32 · battery 95%");

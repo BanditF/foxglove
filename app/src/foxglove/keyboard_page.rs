@@ -65,6 +65,9 @@ pub struct View {
     pub device_notice: bool,
     /// "Read Logitech batteries" is on (#505).
     pub logitech: bool,
+    /// The focused keyboard (#800): muted cards with a read-only chip for one Foxglove can't
+    /// change. `None` before any keyboard was found.
+    pub focus: Option<super::focus_ui::Focused>,
 }
 
 /// What a click on the page asks for.
@@ -164,8 +167,23 @@ fn armed() -> Option<String> {
         .map(|(label, _)| label.clone())
 }
 
-/// The page's state from the cached keyboard state (the services keep it current).
+/// The page's state from the cached keyboard state (the services keep it current). A focused
+/// keyboard Foxglove can't change (#800) gets [`read_only`]'s cards; the batteries of the other
+/// devices stay.
 pub fn view(ctx: &egui::Context) -> View {
+    let focus = super::focus_ui::Focused::now();
+    if let Some(f) = focus.clone().filter(|f| f.read_only.is_some()) {
+        let link = super::focus_ui::Switcher::now()
+            .focused()
+            .map(|r| r.detail.clone())
+            .unwrap_or_default();
+        return View {
+            devices: super::peripherals::list(),
+            device_notice: super::battery::device_notices_on(),
+            logitech: super::battery::logitech_on(),
+            ..read_only(f, BoardView::default(), link)
+        };
+    }
     let parts = super::parts::Parts::current();
     let (halves, firmware_note, can_ask_again) = firmware_lines(&ks::firmware(ctx), &parts);
     View {
@@ -184,6 +202,43 @@ pub fn view(ctx: &egui::Context) -> View {
         devices: super::peripherals::list(),
         device_notice: super::battery::device_notices_on(),
         logitech: super::battery::logitech_on(),
+        focus,
+    }
+}
+
+/// The firmware card's line for a keyboard Foxglove can't change.
+pub const READ_ONLY_FIRMWARE: &str = "Foxglove reads the firmware of keyboards running its own.";
+/// The key actions card's line for one.
+pub const READ_ONLY_ACTIONS: &str = "Key actions need Foxglove's firmware on the keyboard.";
+
+/// The page for a focused keyboard Foxglove can't change (#800): the same cards, muted, each
+/// with the read-only chip; `board` its drawing ([`read_only_board`]), `link` how it was found
+/// ("VIA · USB · read-only").
+pub fn read_only(focus: super::focus_ui::Focused, board: BoardView, link: String) -> View {
+    View {
+        firmware_note: Some((READ_ONLY_FIRMWARE.into(), Tone::Muted)),
+        link: super::connection::Plain {
+            rows: vec![("Found over".into(), link)],
+            unplug_fix: None,
+        },
+        parts: super::parts::Parts::of(None),
+        board,
+        focus: Some(focus),
+        ..Default::default()
+    }
+}
+
+/// The board drawing of a focused keyboard Foxglove can't change: its own layout (B1's ladder,
+/// `keyboard_focus::layout`), with no screens or underglow of Foxglove's firmware.
+pub fn read_only_board(focus: &super::focus_ui::Focused, layout: KeyLayout) -> BoardView {
+    BoardView {
+        split: layout.parts.len() > 1,
+        layout,
+        left_label: "KEYBOARD".into(),
+        right_label: String::new(),
+        title: focus.name.clone(),
+        read_only: focus.read_only.clone(),
+        ..Default::default()
     }
 }
 
@@ -265,6 +320,33 @@ fn tone_color(ui: &egui::Ui, tone: Tone) -> Color32 {
 /// Paints the page's cards; returns the click, if any.
 pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     let mut intent = None;
+    let read_only = v.focus.as_ref().and_then(|f| f.read_only.as_deref());
+    if let Some(why) = read_only {
+        ui.columns(2, |cols| {
+            for (col, title, line) in [
+                (0, "Firmware", READ_ONLY_FIRMWARE),
+                (1, "Key actions", READ_ONLY_ACTIONS),
+            ] {
+                card(&mut cols[col], title, |ui| {
+                    super::focus_ui::read_only_chip(ui, why);
+                    ui.add_space(2.0);
+                    ui.weak(line);
+                });
+            }
+        });
+        ui.add_space(10.0);
+        card(ui, "Connection", |ui| {
+            for (what, how) in &v.link.rows {
+                row(ui, what, how.as_str());
+            }
+        });
+        ui.add_space(10.0);
+        if let Some(i) = devices(ui, v) {
+            intent = Some(i);
+        }
+        ui.add_space(6.0);
+        return intent;
+    }
     ui.columns(2, |cols| {
         card(&mut cols[0], "Firmware", |ui| {
             for h in &v.halves {
@@ -500,10 +582,23 @@ pub struct BoardView {
     /// takes the firmware's.
     pub panel_shape: Option<egui::Vec2>,
     pub art_shape: Option<egui::Vec2>,
+    /// The focused keyboard's name, over the drawing (#800); empty draws no title.
+    pub title: String,
+    /// A keyboard Foxglove can't change: the read-only chip's hover. Its drawing has no screens
+    /// or underglow.
+    pub read_only: Option<String>,
 }
 
-/// The board drawing's state from the cached keyboard state; nothing here asks the keyboard.
+/// The board drawing's state from the cached keyboard state; nothing here asks the keyboard. A
+/// focused keyboard Foxglove can't change is drawn from its own layout (#800).
 fn board_view(ctx: &egui::Context) -> BoardView {
+    let focused = super::keyboard_focus::current();
+    let focus = focused.as_ref().map(super::focus_ui::Focused::of);
+    if let (Some(k), Some(f)) = (&focused, &focus) {
+        if f.read_only.is_some() {
+            return read_only_board(f, super::keyboard_focus::layout(k));
+        }
+    }
     let board = super::boards::current();
     let layout = super::key_layout::current();
     let parts = super::parts::Parts::of(board.as_ref());
@@ -554,6 +649,8 @@ fn board_view(ctx: &egui::Context) -> BoardView {
         glow_rainbow,
         left_label,
         right_label,
+        title: focus.map(|f| f.name).unwrap_or_default(),
+        read_only: None,
     }
 }
 
@@ -611,7 +708,19 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             let layout = &v.layout;
-            super::key_layout::source_chip(ui, layout);
+            if !v.title.is_empty() {
+                // The focused keyboard's name (#800).
+                ui.label(theme::heading(ui, &v.title))
+                    .on_hover_text(super::focus_ui::TITLE_HOVER);
+                ui.add_space(4.0);
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                super::key_layout::source_chip(ui, layout);
+                if let Some(why) = &v.read_only {
+                    super::focus_ui::read_only_chip(ui, why);
+                }
+            });
             if let Some(note) = layout.source.note() {
                 ui.weak(note);
             }
@@ -619,7 +728,13 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
             let unit = KEY_UNIT;
             let half = layout.size * unit;
             let between = 56.0;
-            let height = SCREEN_HEIGHT + 12.0 + half.y + 14.0 + 8.0 + 10.0 + 12.0;
+            // A keyboard without Foxglove's firmware has no screens or underglow to show.
+            let firmware = v.read_only.is_none();
+            let height = if firmware {
+                SCREEN_HEIGHT + 12.0 + half.y + 14.0 + 8.0 + 10.0 + 12.0
+            } else {
+                half.y + 14.0 + 12.0
+            };
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::hover());
             let left_x = rect.center().x - between / 2.0 - half.x;
@@ -632,6 +747,36 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
             for (i, x) in places.into_iter().enumerate() {
                 let right = i == 1;
                 let top = rect.top();
+                if !firmware {
+                    for k in layout.part(i) {
+                        let key = egui::Rect::from_min_size(
+                            egui::pos2(x + k.rect.min.x * unit, top + k.rect.min.y * unit),
+                            k.rect.size() * unit - egui::vec2(GAP, GAP),
+                        );
+                        ui.painter().add(
+                            egui::epaint::RectShape::new(
+                                key,
+                                CornerRadius::same(4),
+                                p.control,
+                                Stroke::new(1.0, p.control_line),
+                                egui::StrokeKind::Inside,
+                            )
+                            .with_angle(k.r.to_radians()),
+                        );
+                        #[cfg(test)]
+                        hits.keys.push(key);
+                    }
+                    if i == 0 {
+                        ui.painter().text(
+                            egui::pos2(x + half.x / 2.0, top + half.y + 2.0),
+                            egui::Align2::CENTER_TOP,
+                            &v.left_label,
+                            theme::mono(11.0),
+                            p.muted,
+                        );
+                    }
+                    continue;
+                }
                 // The screen sits over the inner columns, as on the Corne, shaped like what it shows.
                 let shape = if right {
                     v.art_shape
@@ -810,7 +955,9 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
     #[cfg(test)]
     LAST_HITS.set(Some(hits));
     ui.add_space(2.0);
-    ui.vertical_centered(|ui| ui.weak("Click a screen or the lights to jump to its page."));
+    if v.read_only.is_none() {
+        ui.vertical_centered(|ui| ui.weak("Click a screen or the lights to jump to its page."));
+    }
     ui.add_space(6.0);
     go
 }
@@ -1011,6 +1158,7 @@ pub mod tests {
             devices: super::super::peripherals::tests::sample(),
             device_notice: true,
             logitech: false,
+            focus: None,
         }
     }
 
@@ -1030,6 +1178,8 @@ pub mod tests {
             right_label: "RIGHT · HEARTH".into(),
             panel_shape: None,
             art_shape: None,
+            title: String::new(),
+            read_only: None,
         }
     }
 

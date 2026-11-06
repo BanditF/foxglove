@@ -90,6 +90,9 @@ pub struct View {
     /// Its real lighting resolution (#611): "6 lighting zones per half, by column"; `None` with
     /// no keyboard or none Foxglove knows lights of.
     pub zones: Option<super::light_zones::Line>,
+    /// The focused keyboard (#800): the card's title, and for one Foxglove can't change, muted
+    /// controls with a read-only chip. `None` titles the card "Keyboard".
+    pub focus: Option<super::focus_ui::Focused>,
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
@@ -179,6 +182,12 @@ pub fn show(ui: &mut egui::Ui) {
         ks::ask_rgb_sync(None, ctx.clone());
     }
     let view = live_view(ks::rgb_state(&ctx));
+    if view.read_only().is_some() {
+        // A keyboard Foxglove can't change (#800): nothing to draft, nothing its controls send.
+        draw(ui, &view, &mut Draft::default());
+        super::pc_lights_ui::show(ui);
+        return;
+    }
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
     let intents = draw(ui, &view, &mut draft);
@@ -394,9 +403,17 @@ pub(crate) fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
 /// a control's hover, an ⓘ, or inside "Adjust levels…".
 pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
-    card(ui, "Keyboard", |ui| {
-        // Who drives the lights now (#491): a scene, Windows Dynamic Lighting, another app.
-        let owner = super::lights_owner::current(ui.ctx());
+    // The card is the focused keyboard's (#800): its title names it.
+    let title = super::focus_ui::title(v.focus.as_ref(), "Keyboard");
+    let hover = v.focus.as_ref().map(|_| super::focus_ui::TITLE_HOVER);
+    let body = |ui: &mut egui::Ui| {
+        // Who drives the lights now (#491): a scene, Windows Dynamic Lighting, another app. Of
+        // the host link's keyboard only: not one Foxglove can't change.
+        let owner = if v.read_only().is_some() {
+            None
+        } else {
+            super::lights_owner::current(ui.ctx())
+        };
         // Amber is never collapsed (rule 5): one bar while Windows holds the lights.
         if let Some(line) = owner.as_ref().filter(|l| l.warn) {
             super::lights_owner::notice_bar(ui, line);
@@ -447,10 +464,43 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
             ui.add_space(8.0);
             keyboard_side(ui, v, &mut out);
         }
-    });
+    };
+    match hover {
+        Some(h) => super::settings_ui::card_with_hover(ui, title, h, body),
+        None => card(ui, title, body),
+    }
     ui.add_space(10.0);
     out
 }
+
+impl View {
+    /// The read-only chip's hover, for a focused keyboard Foxglove can't change.
+    pub fn read_only(&self) -> Option<&str> {
+        self.focus.as_ref().and_then(|f| f.read_only.as_deref())
+    }
+}
+
+/// The card for a focused keyboard Foxglove can't change (#800): its name, a read-only chip,
+/// its zone line drawn on its own layout, and every control muted.
+pub fn read_only_view(focus: super::focus_ui::Focused, zones: super::light_zones::Line) -> View {
+    View {
+        state: None,
+        sync: RgbSync::NoKeyboard,
+        accent: false,
+        wallpaper: false,
+        controls: false,
+        busy: false,
+        leds: (false, super::led_map::MapState::Unknown),
+        calibration: None,
+        parts: super::parts::Parts::of(None),
+        saved: None,
+        zones: Some(zones),
+        focus: Some(focus),
+    }
+}
+
+/// The colour line of a keyboard whose colour isn't read.
+pub const NOT_READ: &str = "Foxglove doesn't read this keyboard's colour.";
 
 /// The keyboard's key for its zone drawing's open state (session only).
 pub const ZONES_KEY: &str = "keyboard";
@@ -470,6 +520,9 @@ fn header(
     let mut open = false;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
+        if let Some(why) = v.read_only() {
+            super::focus_ui::read_only_chip(ui, why);
+        }
         if let Some(line) = owner {
             super::lights_owner::chip(ui, line);
         }
@@ -486,7 +539,9 @@ fn header(
         if v.calibration == Some(true) {
             theme::hint_chip(ui, "calibrated", None, Some(theme::Dot::Ok));
         }
-        super::battery_dim_ui::chip(ui);
+        if v.read_only().is_none() {
+            super::battery_dim_ui::chip(ui);
+        }
         // The zone line has the probe (#611); a keyboard without one keeps the old entry.
         if v.zones.is_none() && super::led_map_ui::entry(ui, v.leds.0, v.leds.1) {
             out.push(Intent::FindLeds);
@@ -498,6 +553,18 @@ fn header(
 /// The Keyboard card's other column: both halves as the keyboard reports them, with Refresh
 /// and Calibrate…, then the switches: the colour's sources, and those saved on the keyboard.
 fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    if v.read_only().is_some() {
+        // Muted, never blank (#800): the same rows with nothing Foxglove can send.
+        ui.add_enabled_ui(false, |ui| keyboard_rows(ui, v, out));
+        return;
+    }
+    keyboard_rows(ui, v, out);
+    // Dimming on battery (firmware D7 0E).
+    super::battery_dim_ui::show(ui);
+}
+
+/// The halves' state, Refresh and Calibrate…, and the switches.
+fn keyboard_rows(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     let right = v.state.and_then(|s| s.right);
     let parts = v.parts.clone().seen(if right.is_some() { 2 } else { 1 });
     ui.label(theme::caps_label(
@@ -551,8 +618,6 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     if parts.is_split() {
         follow_row(ui, v, &parts, out);
     }
-    // Dimming on battery (firmware D7 0E).
-    super::battery_dim_ui::show(ui);
 }
 
 /// "Follow the Windows accent colour"'s hover, after its whole label (K18).
@@ -672,7 +737,17 @@ impl Model {
 }
 
 /// The page as it shows now, from the app's caches, with `state` the keyboard's last report.
+/// The card is the focused keyboard's (#800): one Foxglove can't change gets
+/// [`read_only_view`], its zones on its own layout (`key_layout::of_keyboard`).
 pub fn live_view(state: Option<RgbState>) -> View {
+    let focused = super::keyboard_focus::current();
+    let focus = focused.as_ref().map(super::focus_ui::Focused::of);
+    if let (Some(k), Some(f)) = (&focused, &focus) {
+        if f.read_only.is_some() {
+            let layout = super::keyboard_focus::layout(k);
+            return read_only_view(f.clone(), super::light_zones::line(None, &layout));
+        }
+    }
     View {
         state,
         sync: ks::rgb_sync(),
@@ -689,6 +764,7 @@ pub fn live_view(state: Option<RgbState>) -> View {
         parts: super::parts::Parts::current(),
         saved: super::devices::keyboard_id().and_then(|id| super::lighting_leases::saved(&id)),
         zones: super::light_zones::current(),
+        focus,
     }
 }
 
@@ -733,7 +809,11 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         let picked = draft.color;
         let edited = &mut draft.edited;
         let Some((hue, sat, brightness)) = draft.color.as_mut() else {
-            ui.weak("Waiting for the keyboard's colour…");
+            ui.weak(if v.read_only().is_some() {
+                NOT_READ
+            } else {
+                "Waiting for the keyboard's colour…"
+            });
             return;
         };
         let custom_open = &mut draft.custom_open;
@@ -848,7 +928,8 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             *edited = false;
         }
     });
-    if !v.controls {
+    // A read-only keyboard (#800) says why in its chip: its keymap is not the point.
+    if !v.controls && v.read_only().is_none() {
         ui.add_space(4.0);
         theme::info_bar(
             ui,
@@ -1271,6 +1352,7 @@ pub mod tests {
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
             saved: None,
             zones: Some(zone_line_of(&crate::foxglove::fixtures::users_desk::board())),
+            focus: None,
         }
     }
 
@@ -1450,6 +1532,7 @@ pub mod tests {
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
             saved: None,
             zones: None,
+            focus: None,
         }
     }
 

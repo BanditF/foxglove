@@ -499,7 +499,6 @@ pub fn of(board: Option<&Board>) -> KeyLayout {
 /// over for it, else `board`'s profile, else a guess. Only the connected host-link keyboard's
 /// keymap key count is known, so another keyboard without either gets the default grid, never
 /// the host keyboard's count. Asks the keyboard nothing.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn of_keyboard(vid: u16, pid: u16, board: Option<&Board>) -> KeyLayout {
     let (supplied, connected) = with_store(|s| {
         let supplied: Vec<Supplied> = s

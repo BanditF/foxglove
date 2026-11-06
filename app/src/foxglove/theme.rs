@@ -531,7 +531,6 @@ pub fn hint_chip(
 /// A chip that opens something when clicked (such as the status strip's focus switcher): the
 /// [`hint_chip`] face plus the outline every clickable thing has, the accent on hover and the
 /// focus ring on keyboard focus. Enter and Space click it, as they click a button.
-#[cfg_attr(not(test), allow(dead_code))] // The focus switcher takes it up (#800).
 pub fn click_chip(
     ui: &mut egui::Ui,
     text: &str,
