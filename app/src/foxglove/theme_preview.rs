@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use egui::{Color32, Pos2, Rect, TextureId};
 
 mod art_flow;
+mod device_rows;
 mod device_thumbs;
 mod keymap_session;
 mod knob_mockup;
@@ -685,7 +686,18 @@ fn shell_preview_with(
     samples: &Samples,
     height: f32,
 ) -> image::RgbaImage {
+    shell_preview_in(page, samples, height, crate::foxglove::theme::Choice::Dark)
+}
+
+/// [`shell_preview_with`] in the theme `choice`.
+fn shell_preview_in(
+    page: crate::foxglove::shell::Page,
+    samples: &Samples,
+    height: f32,
+    choice: crate::foxglove::theme::Choice,
+) -> image::RgbaImage {
     let ctx = preview_ctx();
+    crate::foxglove::theme::apply_choice(&ctx, choice);
     show_samples(page, samples);
     let size = egui::vec2(1072.0, height + 40.0);
     let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {

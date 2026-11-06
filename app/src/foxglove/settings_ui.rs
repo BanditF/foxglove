@@ -294,10 +294,35 @@ pub fn expander_with<R>(
     header_extra: impl FnOnce(&mut egui::Ui),
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> Expander<R> {
+    expander_lead(
+        ui,
+        key,
+        0.0,
+        |_| {},
+        header,
+        summary,
+        header_extra,
+        add_contents,
+    )
+}
+
+/// [`expander_with`] with `lead` drawn before the header (a device's thumbnail, #804) in a
+/// header row at least `min_height` tall.
+#[allow(clippy::too_many_arguments)]
+pub fn expander_lead<R>(
+    ui: &mut egui::Ui,
+    key: &str,
+    min_height: f32,
+    lead: impl FnOnce(&mut egui::Ui),
+    header: &str,
+    summary: &str,
+    header_extra: impl FnOnce(&mut egui::Ui),
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> Expander<R> {
     use super::theme;
     let p = theme::palette(ui);
     let mut open = expander_open(ui.ctx(), key);
-    let height = ui.spacing().interact_size.y + 6.0;
+    let height = (ui.spacing().interact_size.y + 6.0).max(min_height);
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), height),
         egui::Sense::click(),
@@ -359,6 +384,7 @@ pub fn expander_with<R>(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     row.set_clip_rect(inner.intersect(ui.clip_rect()));
+    lead(&mut row);
     row.add(
         egui::Label::new(egui::RichText::new(header).color(p.text_strong))
             .truncate()

@@ -33,6 +33,7 @@ use foxglove_devices::hidpp;
 use foxglove_devices::pc_lighting::HidEntry;
 
 use super::battery::Alerts;
+use super::device_thumb::BtCategory;
 
 /// The slowest a controller's level goes stale while it's on screen.
 pub const CONTROLLER_REFRESH: Duration = Duration::from_secs(60);
@@ -63,6 +64,9 @@ pub struct Peripheral {
     pub kind: Kind,
     pub percent: u8,
     pub charging: bool,
+    /// What it is, for its thumbnail (#804): Windows' Bluetooth category, a game controller's
+    /// own; `None` when nothing says.
+    pub category: Option<BtCategory>,
 }
 
 /// What a source knows of one device.
@@ -77,6 +81,40 @@ pub struct Record {
     pub percent: Option<u8>,
     pub connected: bool,
     pub charging: bool,
+    /// What it is ([`category`]); one of a device's parts may say it for all of them.
+    pub category: Option<BtCategory>,
+}
+
+/// A Bluetooth device's category from what Windows keeps for it: the Class of Device of a
+/// classic device (`DEVPKEY_Bluetooth_ClassOfDevice`), else a Low Energy device's Appearance.
+/// `None` when neither names a keyboard, mouse, headset or gamepad.
+pub fn category(class_of_device: Option<u32>, appearance: Option<u16>) -> Option<BtCategory> {
+    let from_cod = class_of_device.and_then(|cod| {
+        let major = (cod >> 8) & 0x1f;
+        let minor = (cod >> 2) & 0x3f;
+        match major {
+            // Peripheral: bits 6-7 keyboard / pointing / combo, bits 2-5 joystick, gamepad.
+            0x05 => match (minor >> 4, minor & 0x0f) {
+                (1 | 3, _) => Some(BtCategory::Keyboard),
+                (2, _) => Some(BtCategory::Mouse),
+                (_, 1 | 2) => Some(BtCategory::Gamepad),
+                _ => None,
+            },
+            // Audio/video: wearable headset, hands-free, headphones.
+            0x04 => matches!(minor, 1 | 2 | 6).then_some(BtCategory::Headset),
+            _ => None,
+        }
+    });
+    let from_appearance = appearance.and_then(|a| match (a >> 6, a & 0x3f) {
+        // HID: keyboard, mouse, joystick, gamepad.
+        (0x0f, 1) => Some(BtCategory::Keyboard),
+        (0x0f, 2) => Some(BtCategory::Mouse),
+        (0x0f, 3 | 4) => Some(BtCategory::Gamepad),
+        // Wearable audio (earbuds, headsets, headphones).
+        (0x25, _) => Some(BtCategory::Headset),
+        _ => None,
+    });
+    from_cod.or(from_appearance)
 }
 
 /// A change from a source.
@@ -145,6 +183,13 @@ impl List {
     /// The list: connected devices with a level, once per physical device, without the ones
     /// in `hidden` (the keyboard), Bluetooth first, then by name.
     pub fn shown(&self, hidden: &[String]) -> Vec<(String, Peripheral)> {
+        // A device's category, from whichever of its parts says it.
+        let mut categories = BTreeMap::new();
+        for r in self.records.values() {
+            if let Some(c) = r.category {
+                categories.entry(r.group.clone()).or_insert(c);
+            }
+        }
         let mut seen = BTreeMap::new();
         for r in self.records.values() {
             let Some(percent) = r.percent.filter(|p| *p <= 100) else {
@@ -160,6 +205,7 @@ impl List {
                     kind: r.kind,
                     percent,
                     charging: r.charging,
+                    category: categories.get(&r.group).copied(),
                 },
             );
         }
@@ -274,6 +320,7 @@ pub fn hidpp_records(hid: &[HidEntry], open: &mut HidppOpener) -> Vec<(String, R
                         f.battery.charge,
                         ChargeState::Charging | ChargeState::ChargingSlow
                     ),
+                    category: None,
                 },
             ));
         }
@@ -535,6 +582,10 @@ mod imp {
     const BATTERY: &str = "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2";
     const CONNECTED: &str = "{83DA6326-97A6-4088-9453-A1923F573B29} 15";
     const CONTAINER: &str = "System.Devices.ContainerId";
+    /// `DEVPKEY_Bluetooth_ClassOfDevice` (a classic device's class) and a Low Energy device's
+    /// Appearance, for its thumbnail (#804).
+    const CLASS: &str = "{2BD67D8B-8BEB-48D5-87E0-6CDA3428040A} 10";
+    const APPEARANCE: &str = "{995EF0B0-7EB3-4A8B-B9CE-068BB3F4AF69} 1";
     /// Present devices of the Bluetooth class: PnP device nodes, so no radio scan (#100).
     const QUERY: &str = r#"System.Devices.ClassGuid:="{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}" AND System.Devices.Present:=System.StructuredQueryType.Boolean#True"#;
 
@@ -557,6 +608,13 @@ mod imp {
         value(props, CONNECTED).and_then(|v| v.GetBoolean().ok())
     }
 
+    fn category(props: &IMapView<HSTRING, IInspectable>) -> Option<super::BtCategory> {
+        super::category(
+            value(props, CLASS).and_then(|v| v.GetUInt32().ok()),
+            value(props, APPEARANCE).and_then(|v| v.GetUInt16().ok()),
+        )
+    }
+
     /// Keeps the watch running; stops it when dropped.
     pub struct Watch(DeviceWatcher);
 
@@ -569,16 +627,20 @@ mod imp {
     /// The Bluetooth watch and the controllers' arrival events, each sending to `tx`. The
     /// controller events stay registered for the process's life.
     pub fn watch(tx: Sender<Msg>) -> windows::core::Result<Watch> {
-        let properties = windows_collections::IIterable::from(vec![
-            HSTRING::from(BATTERY),
-            HSTRING::from(CONNECTED),
-            HSTRING::from(CONTAINER),
-        ]);
-        let watcher = DeviceInformation::CreateWatcherWithKindAqsFilterAndAdditionalProperties(
-            &HSTRING::from(QUERY),
-            &properties,
-            DeviceInformationKind::Device,
-        )?;
+        let create = |keys: &[&str]| {
+            let properties = windows_collections::IIterable::from(
+                keys.iter().map(|k| HSTRING::from(*k)).collect::<Vec<_>>(),
+            );
+            DeviceInformation::CreateWatcherWithKindAqsFilterAndAdditionalProperties(
+                &HSTRING::from(QUERY),
+                &properties,
+                DeviceInformationKind::Device,
+            )
+        };
+        // The category keys are only for the thumbnail: should Windows refuse them, the
+        // batteries are watched without.
+        let watcher = create(&[BATTERY, CONNECTED, CONTAINER, CLASS, APPEARANCE])
+            .or_else(|_| create(&[BATTERY, CONNECTED, CONTAINER]))?;
         let added = tx.clone();
         watcher.Added(&TypedEventHandler::<DeviceWatcher, DeviceInformation>::new(
             move |_, info| {
@@ -599,6 +661,7 @@ mod imp {
                     percent: percent(&props),
                     connected: connected(&props).unwrap_or(false),
                     charging: false,
+                    category: category(&props),
                 };
                 let _ = added.send(Msg::Change(Change::Seen(info.Id()?.to_string(), record)));
                 Ok(())
@@ -682,6 +745,7 @@ mod imp {
                             percent,
                             connected: true,
                             charging: status == Some(BatteryStatus::Charging),
+                            category: Some(super::BtCategory::Gamepad),
                         },
                     ));
                 }
@@ -719,6 +783,7 @@ pub mod tests {
             percent,
             connected,
             charging: false,
+            category: None,
         }
     }
 
@@ -732,6 +797,7 @@ pub mod tests {
                 percent,
                 connected: true,
                 charging,
+                category: Some(BtCategory::Gamepad),
             },
         )
     }
@@ -1050,6 +1116,38 @@ pub mod tests {
         assert_eq!(controller_percent(Some(-1), Some(10)), None);
     }
 
+    /// #804: the category from Windows' Class of Device or a Low Energy Appearance, and one
+    /// part of a device saying it for the part with the battery.
+    #[test]
+    fn the_category_comes_from_the_class_or_the_appearance() {
+        // Classic: peripheral keyboard 0x0540, mouse 0x0580, combo 0x05C0, gamepad 0x0508;
+        // audio headset 0x0404, headphones 0x0418, loudspeaker 0x0414 (none).
+        assert_eq!(category(Some(0x0540), None), Some(BtCategory::Keyboard));
+        assert_eq!(category(Some(0x2580), None), Some(BtCategory::Mouse));
+        assert_eq!(category(Some(0x05C0), None), Some(BtCategory::Keyboard));
+        assert_eq!(category(Some(0x0508), None), Some(BtCategory::Gamepad));
+        assert_eq!(category(Some(0x240404), None), Some(BtCategory::Headset));
+        assert_eq!(category(Some(0x0418), None), Some(BtCategory::Headset));
+        assert_eq!(category(Some(0x0414), None), None);
+        // Low Energy: HID keyboard 0x03C1, mouse 0x03C2, gamepad 0x03C4, earbud 0x0941.
+        assert_eq!(category(None, Some(0x03C1)), Some(BtCategory::Keyboard));
+        assert_eq!(category(None, Some(0x03C2)), Some(BtCategory::Mouse));
+        assert_eq!(category(None, Some(0x03C4)), Some(BtCategory::Gamepad));
+        assert_eq!(category(None, Some(0x0941)), Some(BtCategory::Headset));
+        assert_eq!(category(None, Some(0x00C0)), None, "a watch");
+        assert_eq!(category(None, None), None);
+        // The mouse's HID part says it is a mouse; its battery part says nothing.
+        let mut l = List::default();
+        let mut hid = bt("m", "MX Master 3", None, true);
+        hid.category = Some(BtCategory::Mouse);
+        l.apply(Change::Seen("mouse-hid".into(), hid));
+        l.apply(Change::Seen(
+            "mouse-le".into(),
+            bt("m", "MX Master 3", Some(80), true),
+        ));
+        assert_eq!(l.shown(&[])[0].1.category, Some(BtCategory::Mouse));
+    }
+
     #[test]
     fn a_level_over_100_is_not_a_level() {
         let mut l = List::default();
@@ -1097,18 +1195,21 @@ pub mod tests {
                 kind: Kind::Bluetooth,
                 percent: 80,
                 charging: false,
+                category: Some(BtCategory::Mouse),
             },
             Peripheral {
                 name: "WH-1000XM4".into(),
                 kind: Kind::Bluetooth,
                 percent: 64,
                 charging: true,
+                category: Some(BtCategory::Headset),
             },
             Peripheral {
                 name: "Xbox Wireless Controller".into(),
                 kind: Kind::Controller,
                 percent: 12,
                 charging: false,
+                category: Some(BtCategory::Gamepad),
             },
         ]
     }
@@ -1123,6 +1224,7 @@ pub mod tests {
                 kind: Kind::Hidpp,
                 percent: 40,
                 charging: false,
+                category: None,
             },
         );
         out
