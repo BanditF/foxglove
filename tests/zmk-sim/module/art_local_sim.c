@@ -32,15 +32,18 @@
 
 BUILD_ASSERT(sizeof(struct screen_descriptor) == 24, "descriptor layout");
 
+#define SIM_SLOTS 2 // the board's flash slots (faked in RAM below)
+
 const struct screen_descriptor foxglove_screens[] = {
     {.id = 0, .kind = SCREEN_DISPLAY, .half = 0, .parent = SCREEN_UNSET, .width = 144,
      .height = 168, .stride = 18, .readback_half = SCREEN_UNSET},
     {.id = 1, .kind = SCREEN_PANEL, .half = 0, .parent = 0, .width = 144, .height = 56, .y = 112,
      .ops = SCREEN_OP_ROWS | SCREEN_OP_ROWS_AT, .stride = 18, .rows_per_report = 1,
      .readback_half = SCREEN_UNSET},
+    // v2 (#832): the local store's largest blob and its slots, a fast screen with no frame limit.
     {.id = 2, .kind = SCREEN_ART, .half = 0, .parent = 0, .width = ART_STORE_W,
-     .height = ART_STORE_H, .ops = SCREEN_OP_ART | SCREEN_OP_SLOTS,
-     .readback_half = SCREEN_UNSET},
+     .height = ART_STORE_H, .ops = SCREEN_OP_ART | SCREEN_OP_SLOTS, .stride = ART_STORE_MAX_SIZE,
+     .readback_half = SCREEN_UNSET, .art_slots = SIM_SLOTS, .art_refresh = SCREEN_REFRESH_FAST},
 };
 const uint8_t foxglove_screen_count = ARRAY_SIZE(foxglove_screens);
 
@@ -65,7 +68,6 @@ int art_builtin_index(int index) { return index >= 0 && index < custom_art_set_c
 
 /* Flash slots, in RAM: two of them. A write ends 50 ms later on the system queue. */
 
-#define SIM_SLOTS 2
 static uint8_t flash[SIM_SLOTS][ART_STORE_MAX_SIZE];
 static struct art_relay_slot_info info[SIM_SLOTS];
 static int job_slot;
@@ -227,7 +229,7 @@ static void store(uint8_t slot, const char *name) {
 }
 
 void art_local_sim_driver(void) {
-    note("hello: the art bits, word 2's ART_LOCAL, the screens (art target on half 0)");
+    note("hello: the art bits, word 2's ART_LOCAL, the screens (art target on half 0, v2)");
     PC(0xD5, 0x01, 0x01);
     PC(0xD5, 0x08);
     for (uint8_t i = 0; i <= 3; i++) {
