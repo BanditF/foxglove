@@ -1288,6 +1288,64 @@ fn screens_page_renders() {
     );
 }
 
+/// The Screens page on a made-up board with an 88x184 upright art screen (#340): the bundled
+/// Corne art fitted to it (centred, marked "Not made for this board"), and a piece that can't
+/// go on it listed with the reason. Beside it, the Corne's page as it was.
+#[test]
+fn screens_art_for_another_board_renders() {
+    use crate::foxglove::art_encode::{for_screen, ArtTarget, DOES_NOT_FIT, TEST_SCREENS};
+    use crate::foxglove::screen_roles::{Role, Screen};
+    use crate::foxglove::shell::Page;
+    let corne = shell_preview_with(Page::Screens, &Samples::full(), 1500.0);
+    keep("ui-340-screens-corne.png", &corne);
+    TEST_SCREENS.set(Some(vec![Screen {
+        id: 0,
+        role: Role::Art,
+        name: "Art screen".into(),
+        width: 88,
+        height: 184,
+        format: "1bit".into(),
+        rotation: 0,
+    }]));
+    let target = ArtTarget::resolve();
+    let mut samples = Samples::full();
+    let (_, lib) = samples.art.as_mut().expect("art sample");
+    for e in &mut lib.entries {
+        let raw = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/lighting/art")
+                .join(e.path.file_name().unwrap()),
+        )
+        .unwrap();
+        let (bytes, fit) = for_screen(&raw, &target).unwrap();
+        e.preview = crate::foxglove::art_preview::first_frame(&bytes)
+            .map(std::sync::Arc::new)
+            .map_err(str::to_owned);
+        e.bytes = bytes.len();
+        e.hash = crate::foxglove::art_library::blob_hash(&bytes);
+        e.fit = fit;
+    }
+    lib.sources.push(crate::foxglove::art_library::Source {
+        folder: "art-src/Bandit_wide".into(),
+        blob: Err(format!(
+            "{DOES_NOT_FIT}70412 bytes is more than a blob can hold"
+        )),
+        preview: None,
+        fit: None,
+    });
+    let other = shell_preview_with(Page::Screens, &samples, 1500.0);
+    TEST_SCREENS.set(None);
+    keep("ui-340-screens-other-board.png", &other);
+    assert_ne!(corne, other);
+    let lit = Color32::from_rgb(0xe8, 0xea, 0xe9);
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    assert!(count(&other, lit) > 300, "fitted art thumbnails");
+}
+
 /// The Screens page with the art playlist on (#522): its pieces in order (Rotation's piece now
 /// in bold), the places lent to it, Add a piece…, and the keyboard card's lent-places line.
 #[test]

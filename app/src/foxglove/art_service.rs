@@ -1067,7 +1067,10 @@ pub(crate) fn pushed_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
     std::fs::File::open(path)
         .and_then(|f| f.take(65536).read_to_end(&mut blob))
         .map_err(|e| format!("reading {}: {e}", path.display()))?;
-    Ok(super::art_polarity::blob(path, &blob))
+    let blob = super::art_polarity::blob(path, &blob);
+    // Made for the connected keyboard's art screen (#340); the Corne's own art goes as it is.
+    let target = super::art_encode::ArtTarget::resolve();
+    super::art_encode::for_screen(&blob, &target).map(|(blob, _)| blob)
 }
 
 /// Keep on keyboard (#517): send `file` unless the right half plays these very bytes from

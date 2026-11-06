@@ -145,6 +145,8 @@ pub enum Problem {
     RightAsleep,
     Busy,
     TooBig,
+    /// Can't be made for this board's art screen (#340); the error says why.
+    DoesNotFit,
     Damaged,
     /// The keyboard stopped answering partway.
     LinkLost,
@@ -187,6 +189,9 @@ pub fn problem(error: &str, status: Option<&ArtStatus>) -> Problem {
     }
     if has("saving pinned art") {
         return Problem::NotRemembered;
+    }
+    if e.starts_with(super::art_encode::DOES_NOT_FIT) {
+        return Problem::DoesNotFit;
     }
     if has("not an art blob") {
         return Problem::NotArt;
@@ -296,7 +301,18 @@ impl Problem {
                     "{name} is too big for {}.",
                     super::screen_roles::the(super::screen_roles::Role::Art)
                 ),
-                Some("A piece can be at most 16 KiB.".into()),
+                Some(format!(
+                    "A piece can be at most {}.",
+                    super::art_ui::kib(super::art_pieces::DEFAULT_CAPACITY)
+                )),
+                None,
+            ),
+            Problem::DoesNotFit => (
+                format!(
+                    "{name} can't go on {}.",
+                    super::screen_roles::the(super::screen_roles::Role::Art)
+                ),
+                None,
                 None,
             ),
             Problem::Damaged => (
@@ -445,7 +461,23 @@ pub fn strip(s: &Snapshot) -> Option<Strip> {
         }
         Err(error) => {
             let cause = problem(error, s.status.as_ref());
-            let (text, detail, button) = cause.words(&outcome.job);
+            let (text, mut detail, button) = cause.words(&outcome.job);
+            match cause {
+                // #340: the reason it can't be made for the art screen.
+                Problem::DoesNotFit => {
+                    detail = error
+                        .strip_prefix(super::art_encode::DOES_NOT_FIT)
+                        .map(str::to_owned)
+                }
+                // The most the keyboard says it takes.
+                Problem::TooBig => {
+                    detail = Some(format!(
+                        "A piece can be at most {}.",
+                        super::art_ui::kib(super::art_pieces::capacity(s))
+                    ))
+                }
+                _ => {}
+            }
             Some(Strip {
                 tone: match cause {
                     Problem::Cancelled | Problem::Paused | Problem::NotRemembered => Tone::Warn,

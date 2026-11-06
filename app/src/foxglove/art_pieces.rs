@@ -74,6 +74,8 @@ pub struct PcPiece {
     /// One of the wallpaper looks (`wallpapers.json` names it).
     pub wallpaper: bool,
     pub plugin: bool,
+    /// Not made for this board's art screen (#340): the rule that fitted it.
+    pub fitted: Option<String>,
 }
 
 impl PcPiece {
@@ -105,12 +107,33 @@ pub struct Found {
     pub bytes: usize,
     pub key: u64,
     pub plugin: bool,
+    /// Not made for this board's art screen (#340): the rule that fitted it.
+    pub fitted: Option<String>,
 }
 
-/// Every library, bundled and source piece the scan read, plus the names it couldn't read.
-pub fn found(library: &art_library::Library) -> (Vec<Found>, Vec<String>) {
+/// What the scan read: the pieces, the names it couldn't read, and the pieces that can't go on
+/// the art screen with the reason (#340).
+pub struct Scanned {
+    pub found: Vec<Found>,
+    pub unreadable: Vec<String>,
+    pub refused: Vec<(String, String)>,
+}
+
+/// Every library, bundled and source piece the scan read, plus what it couldn't use.
+pub fn found(library: &art_library::Library) -> Scanned {
+    found_for(library, &super::art_encode::ArtTarget::resolve())
+}
+
+/// [`found`] for the art screen `target`.
+pub fn found_for(
+    library: &art_library::Library,
+    target: &Result<super::art_encode::ArtTarget, String>,
+) -> Scanned {
+    use super::art_encode::{Fit, DOES_NOT_FIT};
+    let note = |fit: Fit| target.as_ref().ok().and_then(|t| fit.note(*t));
     let mut out = Vec::new();
     let mut unreadable = Vec::new();
+    let mut refused = Vec::new();
     for e in &library.entries {
         if !art_library::is_right_art_file(&e.path) {
             continue;
@@ -124,58 +147,105 @@ pub fn found(library: &art_library::Library) -> (Vec<Found>, Vec<String>) {
                 bytes: e.bytes,
                 key: e.hash,
                 plugin: false,
+                fitted: note(e.fit),
             }),
-            Err(_) => unreadable.push(name),
+            Err(why) => match why.strip_prefix(DOES_NOT_FIT) {
+                Some(why) => refused.push((name, why.to_string())),
+                None => unreadable.push(name),
+            },
         }
     }
-    for (i, image, key) in bundled() {
-        let (file, bytes, plugin) = BUNDLED[*i];
-        out.push(Found {
-            origin: Origin::Bundled(*i),
-            name: file.trim_end_matches(".bin").to_string(),
-            image: image.clone(),
-            bytes: bytes.len(),
-            key: *key,
-            plugin,
-        });
+    for b in bundled(target).iter() {
+        let (file, _, plugin) = BUNDLED[b.index];
+        let name = file.trim_end_matches(".bin").to_string();
+        match &b.made {
+            Ok((image, key, bytes, fit)) => out.push(Found {
+                origin: Origin::Bundled(b.index),
+                name,
+                image: image.clone(),
+                bytes: *bytes,
+                key: *key,
+                plugin,
+                fitted: note(*fit),
+            }),
+            Err(why) => refused.push((name, why.clone())),
+        }
     }
     for src in &library.sources {
+        let name = src
+            .folder
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        if let Err(why) = &src.blob {
+            if let Some(why) = why.strip_prefix(DOES_NOT_FIT) {
+                refused.push((name, why.to_string()));
+            }
+            continue;
+        }
         let (Ok(blob), Some(image)) = (&src.blob, &src.preview) else {
             continue;
         };
         out.push(Found {
             origin: Origin::Source(src.folder.clone()),
-            name: src
-                .folder
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
+            name,
             image: image.clone(),
             bytes: blob.len(),
             key: art_library::blob_hash(blob),
             plugin: false,
+            fitted: src.fit.and_then(note),
         });
     }
-    (out, unreadable)
+    Scanned {
+        found: out,
+        unreadable,
+        refused,
+    }
 }
 
-/// The bundled sets' pictures, decoded once.
-fn bundled() -> &'static [(usize, Arc<egui::ColorImage>, u64)] {
-    static DECODED: std::sync::OnceLock<Vec<(usize, Arc<egui::ColorImage>, u64)>> =
-        std::sync::OnceLock::new();
-    DECODED.get_or_init(|| {
+/// A bundled set as made for the art screen: its picture, hash, size and fit, or why it can't.
+struct Bundled {
+    index: usize,
+    made: Result<(Arc<egui::ColorImage>, u64, usize, super::art_encode::Fit), String>,
+}
+
+type Target = Result<super::art_encode::ArtTarget, String>;
+
+/// The bundled sets' pictures, made for `target` once (again when the art screen changes).
+fn bundled(target: &Target) -> Arc<Vec<Bundled>> {
+    static MADE: std::sync::Mutex<Option<(Target, Arc<Vec<Bundled>>)>> =
+        std::sync::Mutex::new(None);
+    let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, sets)) = made.as_ref().filter(|(t, _)| t == target) {
+        return sets.clone();
+    }
+    let sets: Arc<Vec<Bundled>> = Arc::new(
         BUNDLED
             .iter()
             .enumerate()
-            .filter_map(|(i, (_, bytes, _))| {
-                // As a library copy of it shows (Auto, #666), so the two are one piece.
+            .filter_map(|(index, (_, bytes, _))| {
+                // As a library copy of it shows (Auto, #666), so the two are one piece; made for
+                // the art screen as a library copy is (#340).
                 let bytes = super::art_encode::normalise_blob(bytes, Default::default());
-                let image = super::art_preview::first_frame(&bytes).ok()?;
-                Some((i, Arc::new(image), art_library::blob_hash(&bytes)))
+                let made = match super::art_encode::for_screen(&bytes, target) {
+                    Ok((bytes, fit)) => Ok((
+                        Arc::new(super::art_preview::first_frame(&bytes).ok()?),
+                        art_library::blob_hash(&bytes),
+                        bytes.len(),
+                        fit,
+                    )),
+                    Err(why) => Err(why
+                        .strip_prefix(super::art_encode::DOES_NOT_FIT)
+                        .unwrap_or(&why)
+                        .to_string()),
+                };
+                Some(Bundled { index, made })
             })
-            .collect()
-    })
+            .collect(),
+    );
+    *made = Some((target.clone(), sets.clone()));
+    sets
 }
 
 /// The library files `wallpapers.json` names (the wallpaper looks), read again only when the
@@ -226,6 +296,7 @@ pub fn pc_pieces(found: Vec<Found>, is_wallpaper: &dyn Fn(&str) -> bool) -> Vec<
                 key: f.key,
                 bytes: f.bytes,
                 plugin: f.plugin,
+                fitted: f.fitted,
             }),
         }
     }
@@ -280,12 +351,15 @@ pub fn first_free(s: &Snapshot) -> Option<u8> {
         .find(|n| st.flash_used & (1 << n) == 0 && !s.cycle.places.contains(n))
 }
 
-/// The most a piece can be: the right screen's buffer, as the keyboard reports it.
+/// The art buffer of firmware that doesn't report one (the art relay's 16 KiB).
+pub const DEFAULT_CAPACITY: usize = 16 * 1024;
+
+/// The most a piece can be: the art screen's buffer, as the keyboard reports it.
 pub fn capacity(s: &Snapshot) -> usize {
     s.status
         .map(|st| usize::from(st.right_capacity))
         .filter(|c| *c > 0)
-        .unwrap_or(16 * 1024)
+        .unwrap_or(DEFAULT_CAPACITY)
 }
 
 /// Whether the job running now sends or keeps this piece.
@@ -494,6 +568,7 @@ pub mod tests {
             image: image(),
             bytes,
             key,
+            fitted: None,
         }
     }
 
@@ -662,5 +737,39 @@ pub mod tests {
         let k = kept(&s, &pcs);
         assert!(on_screen(&s, &pcs[0], &k, 0), "Orbit sent from this PC");
         assert_eq!(showing_name(&s), "Orbit");
+    }
+
+    /// #340: on another board's art screen the bundled (Corne-made) sets are fitted and marked
+    /// "not made for this board"; on the Corne they aren't; on a screen that can't take art they
+    /// are listed with the reason instead.
+    #[test]
+    fn bundled_art_is_made_for_the_board() {
+        use super::super::art_encode::ArtTarget;
+        let lib = art_library::Library::default();
+        let corne = found_for(&lib, &Ok(ArtTarget::FIRMWARE));
+        assert_eq!(corne.found.len(), BUNDLED.len());
+        assert!(corne.found.iter().all(|f| f.fitted.is_none()));
+        assert!(corne.found.iter().all(|f| f.image.size == [140, 68]));
+        assert_eq!(corne.found[0].bytes, BUNDLED[0].1.len(), "untouched");
+
+        let tall = ArtTarget {
+            width: 88,
+            height: 184,
+            rotation: 0,
+        };
+        let other = found_for(&lib, &Ok(tall));
+        assert_eq!(other.found.len(), BUNDLED.len());
+        assert!(other.found.iter().all(|f| f.image.size == [88, 184]));
+        assert!(other
+            .found
+            .iter()
+            .all(|f| f.fitted.as_deref().is_some_and(|n| n.contains("88x184"))));
+        assert!(other.refused.is_empty());
+
+        let why = "The art screen is 320x80; art can be at most 255x255.".to_string();
+        let none = found_for(&lib, &Err(why.clone()));
+        assert!(none.found.is_empty());
+        assert_eq!(none.refused.len(), BUNDLED.len());
+        assert!(none.refused.iter().all(|(_, w)| *w == why));
     }
 }
