@@ -24,6 +24,9 @@ pub const FOLLOW: &str = "Follow focus";
 /// The row's name.
 pub const LABEL: &str = "Keyboard";
 
+/// The box's width in both cards, so the overlay's and the feed's rows match.
+pub const COMBO_WIDTH: f32 = 220.0;
+
 /// After a keyboard that went this run.
 pub const GONE: &str = "not connected";
 
@@ -101,7 +104,7 @@ fn view_now(view: View) -> PinView {
 }
 
 /// The box and its list; a pick is `Some(new pin)`: `Some(None)` follows the focus again.
-fn pick(ui: &mut egui::Ui, view: View, v: &PinView, width: f32) -> Option<Option<String>> {
+fn pick(ui: &mut egui::Ui, view: View, v: &PinView) -> Option<Option<String>> {
     let mut out = None;
     let salt = ("foxglove-focus-pin", view);
     #[cfg(test)]
@@ -111,7 +114,7 @@ fn pick(ui: &mut egui::Ui, view: View, v: &PinView, width: f32) -> Option<Option
         egui::Popup::open_id(ui.ctx(), button.with("popup"));
     }
     egui::ComboBox::from_id_salt(salt)
-        .width(width)
+        .width(COMBO_WIDTH)
         .selected_text(v.selected())
         .show_ui(ui, |ui| {
             if ui
@@ -159,8 +162,7 @@ pub fn overlay_row(ui: &mut egui::Ui) {
     let mut picked = None;
     ui.vertical(|ui| {
         ui.horizontal(|ui| {
-            let width = (ui.available_width() - 24.0).max(120.0);
-            picked = pick(ui, View::Overlay, &v, width);
+            picked = pick(ui, View::Overlay, &v);
             theme::info_dot(ui, OVERLAY_HOVER);
         });
         if v.limited {
@@ -179,7 +181,7 @@ pub fn feed_row(ui: &mut egui::Ui) {
     let mut picked = None;
     ui.horizontal(|ui| {
         ui.label(LABEL);
-        picked = pick(ui, View::Feed, &v, 220.0);
+        picked = pick(ui, View::Feed, &v);
         theme::info_dot(ui, FEED_HOVER);
     });
     if v.limited {
