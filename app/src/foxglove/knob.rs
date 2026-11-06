@@ -5,8 +5,9 @@
 //! unpaused it holds the knob (D7 14 KNOB, HELLO bit 31; `foxglove_link::protocol::knob`), as it
 //! holds the art keys:
 //!
-//! - **click:** the next app with an active audio session, in Windows' order; past the last one,
-//!   back to master;
+//! - **click:** the next app with an active audio session that has played sound during this run
+//!   (#854: a background helper holding a silent stream isn't offered), in the order first heard;
+//!   past the last one, back to master;
 //! - **turn** (only while an app is the target; on master the keyboard sends the volume keys):
 //!   that app's level, 2 % a detent, through Windows' own session volume (ISimpleAudioVolume,
 //!   the Volume Mixer's);
@@ -18,15 +19,20 @@
 //! volume keys intercepted. Polling: none. Start events: a link's connect, a knob event from the
 //! keyboard, a session change from Windows, pause/resume, quit. Each sends at most one report;
 //! the thread sleeps on its channel between them.
+//!
+//! Which sessions have played (#854): Windows has no event for sound, so the knob reads the
+//! sessions' peak meters, and only in its per-app mode: once on each click, and while an app is
+//! the target every [`LISTEN_EVERY`] for at most [`LISTEN_FOR`] after the last knob event (so a
+//! session that starts playing meanwhile is there on the next click). On master: no reads.
 
 use std::sync::{mpsc, Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use foxglove_link::link::{Event, EventSubscription, Link};
 use foxglove_link::protocol::knob::{self as wire, EventKind, Target as WireTarget};
 use foxglove_link::protocol::{self, capabilities};
 use foxglove_link::Transport;
-use foxglove_panel::sessions::{Change, Sessions};
+use foxglove_panel::sessions::{Change, Heard, Sessions};
 
 use super::knob_health::{self, LastLevel};
 use super::knob_popup::{self, Card};
@@ -61,7 +67,14 @@ pub struct Cycle {
     /// The popup the last event calls for, and for how long (`knob_popup.rs`); the service
     /// takes it.
     pub popup: Option<(Card, Duration)>,
+    /// The sessions heard during this run: the only ones a click offers (#854).
+    pub heard: Heard,
 }
+
+/// How often the knob reads the peaks while an app is its target.
+pub const LISTEN_EVERY: Duration = Duration::from_millis(250);
+/// For how long after the last knob event it keeps reading them.
+pub const LISTEN_FOR: Duration = Duration::from_secs(30);
 
 impl Cycle {
     /// The target as the keyboard knows it.
@@ -87,11 +100,22 @@ impl Cycle {
         }
     }
 
-    /// A click: the next active session after the target, in Windows' order; the first from
-    /// master; master again after the last (and when nothing plays).
+    /// Notes the sessions playing now (one peak read each).
+    pub fn listen(&mut self, sessions: &dyn Sessions) {
+        match sessions.peaks() {
+            Ok(peaks) => {
+                self.heard.note(&peaks);
+            }
+            Err(e) => eprintln!("Foxglove: knob: no audio peaks: {e}"),
+        }
+    }
+
+    /// A click: the next heard active session after the target, in the order first heard; the
+    /// first from master; master again after the last (and when nothing plays).
     pub fn click(&mut self, sessions: &dyn Sessions) -> Tell {
+        self.listen(sessions);
         let list = match sessions.active() {
-            Ok(list) => list,
+            Ok(list) => self.heard.offer(list),
             Err(e) => {
                 eprintln!("Foxglove: knob: no audio sessions: {e}");
                 return Tell::Nothing;
@@ -220,6 +244,7 @@ impl Cycle {
 
     /// Windows says session `id` expired or disconnected: if it was the target, back to master.
     pub fn gone(&mut self, id: &str) -> Tell {
+        self.heard.forget(id);
         let Some(app) = self.target.as_ref().filter(|a| a.id == id) else {
             return Tell::Nothing;
         };
@@ -404,7 +429,30 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
     // The link the knob is held on now, and the last event's sequence number.
     let mut current: Option<Weak<Link>> = None;
     let mut last_seq: Option<u8> = None;
-    for work in rx {
+    // While an app is the target: when to stop reading the peaks (#854).
+    let mut listen_until: Option<Instant> = None;
+    loop {
+        let work = match listen_until {
+            Some(until) => {
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() || cycle.target.is_none() || super::pause::paused() {
+                    listen_until = None;
+                    continue;
+                }
+                match rx.recv_timeout(LISTEN_EVERY.min(left)) {
+                    Ok(work) => work,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        cycle.listen(sessions);
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            None => match rx.recv() {
+                Ok(work) => work,
+                Err(_) => break,
+            },
+        };
         seen.retain(|(l, _, _)| l.strong_count() > 0);
         match work {
             Work::Link(link) => {
@@ -485,6 +533,7 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                 if let Tell::Target(t) = cycle.event(sessions, ev.kind) {
                     tell(&weak, true, t);
                 }
+                listen_until = cycle.target.is_some().then(|| Instant::now() + LISTEN_FOR);
                 if matches!(ev.kind, EventKind::HandedBack) {
                     held_link(None);
                     knob_health::note(|h| h.held = false);
@@ -546,11 +595,13 @@ mod tests {
     use std::sync::Mutex;
 
     /// Windows' sessions, as a test lays them out: (id, name, level %, muted), in Windows' order;
-    /// only the active ones are listed.
+    /// only the active ones are listed. Each plays sound (its peak is 0.5) unless it is silent.
     #[derive(Default)]
     struct FakeSessions {
         list: Mutex<Vec<(String, String, i32, bool)>>,
         steps: Mutex<Vec<(String, i32)>>,
+        silent: Mutex<Vec<String>>,
+        peak_reads: Mutex<u32>,
     }
 
     impl FakeSessions {
@@ -561,6 +612,22 @@ mod tests {
                 .map(|(id, name, level)| (id.to_string(), name.to_string(), *level, false))
                 .collect();
             s
+        }
+
+        /// Session `id` sends nothing (or starts playing: `false`).
+        fn silent(&self, id: &str, silent: bool) {
+            let mut s = self.silent.lock().unwrap();
+            s.retain(|i| i != id);
+            if silent {
+                s.push(id.to_string());
+            }
+        }
+
+        fn start(&self, id: &str, name: &str) {
+            self.list
+                .lock()
+                .unwrap()
+                .push((id.to_string(), name.to_string(), 50, false));
         }
 
         fn end(&self, id: &str) {
@@ -591,6 +658,18 @@ mod tests {
                     icon: None,
                     pid: 1,
                 })
+                .collect())
+        }
+
+        fn peaks(&self) -> Result<Vec<(String, f32)>, String> {
+            *self.peak_reads.lock().unwrap() += 1;
+            let silent = self.silent.lock().unwrap();
+            Ok(self
+                .list
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, ..)| (id.clone(), if silent.contains(id) { 0.0 } else { 0.5 }))
                 .collect())
         }
 
@@ -880,6 +959,89 @@ mod tests {
         c.event(&s, EventKind::Click);
         assert_eq!(c.event(&s, EventKind::HandedBack), Tell::Nothing);
         assert_eq!(target(&c), None);
+    }
+
+    fn names(c: &mut Cycle, s: &FakeSessions, clicks: usize) -> Vec<String> {
+        (0..clicks)
+            .map(|_| {
+                c.event(s, EventKind::Click);
+                target(c).unwrap_or("master").to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_session_that_never_played_is_not_offered() {
+        // #854: a background helper holds an active but silent stream.
+        let s = FakeSessions::with(&[("bg", "LightStudio-background", 100), ("a", "Spotify", 40)]);
+        s.silent("bg", true);
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        assert_eq!(target(&c), Some("Spotify"));
+        assert!(matches!(
+            popup(&mut c),
+            Some((
+                Card::App {
+                    place: Some((1, 1)),
+                    ..
+                },
+                _
+            ))
+        ));
+        assert_eq!(names(&mut c, &s, 2), ["master", "Spotify"]);
+        // Only silence, ever: master, as when nothing plays.
+        let quiet = FakeSessions::with(&[("bg", "LightStudio-background", 100)]);
+        quiet.silent("bg", true);
+        let mut c = Cycle::default();
+        assert_eq!(c.event(&quiet, EventKind::Click), Tell::Nothing);
+        assert_eq!(target(&c), None);
+    }
+
+    #[test]
+    fn a_session_once_heard_stays_and_keeps_its_place() {
+        let s = FakeSessions::with(&[("a", "Spotify", 40), ("b", "Discord", 80)]);
+        s.silent("a", true);
+        let mut c = Cycle::default();
+        assert_eq!(names(&mut c, &s, 2), ["Discord", "master"]);
+        // Spotify plays: it goes after Discord, in the order first heard, not Windows'.
+        s.silent("a", false);
+        assert_eq!(names(&mut c, &s, 3), ["Discord", "Spotify", "master"]);
+        // Both quiet again (paused, or muted from the knob): still offered, same order.
+        s.silent("a", true);
+        s.silent("b", true);
+        assert_eq!(names(&mut c, &s, 3), ["Discord", "Spotify", "master"]);
+        // An ended session is forgotten; the rest keep their order.
+        s.end("b");
+        c.gone("b");
+        assert!(!c.heard.has("b"));
+        assert_eq!(names(&mut c, &s, 2), ["Spotify", "master"]);
+    }
+
+    #[test]
+    fn listening_on_an_app_finds_a_new_player_for_the_next_click() {
+        let s = FakeSessions::with(&[("a", "Spotify", 40)]);
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        s.start("g", "Game");
+        // The service's bounded listening while an app is the target.
+        c.listen(&s);
+        s.silent("g", true); // between sounds when the click comes
+        assert_eq!(names(&mut c, &s, 2), ["Game", "master"]);
+    }
+
+    #[test]
+    fn peaks_are_read_only_on_a_click_and_not_on_master() {
+        let s = FakeSessions::with(&[("a", "Spotify", 40)]);
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Turn(1));
+        c.event(&s, EventKind::Double);
+        c.event(&s, EventKind::Hold);
+        c.gone("a");
+        assert_eq!(*s.peak_reads.lock().unwrap(), 0);
+        c.event(&s, EventKind::Click);
+        assert_eq!(*s.peak_reads.lock().unwrap(), 1);
+        c.event(&s, EventKind::Turn(1));
+        assert_eq!(*s.peak_reads.lock().unwrap(), 1);
     }
 
     #[test]

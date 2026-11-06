@@ -4,18 +4,21 @@
 //!
 //! - [`start`]: one thread owns the COM objects. It learns of sessions from Windows' events:
 //!   IAudioSessionNotification (a session created), IAudioSessionEvents (a session's state, its
-//!   disconnect) and IMMNotificationClient (another default device). Polling: none, and no peak
-//!   metering: the thread sleeps on its channel between events and requests.
+//!   disconnect) and IMMNotificationClient (another default device). Polling: none: the thread
+//!   sleeps on its channel between events and requests. Peaks (IAudioMeterInformation) are read
+//!   only when the knob asks ([`Sessions::peaks`]), one read per active session.
 //! - [`Sessions`]: what the knob asks of it: the sessions in the Active state, in Windows' order,
-//!   a level step and a mute.
-//! - [`step_level`], [`display_name`]: the pure parts, tested everywhere.
+//!   their peaks now, a level step and a mute.
+//! - [`Heard`] (#854): the sessions heard during this run, the only ones the knob offers. An
+//!   Active session that never sends sound (a background helper holding a silent stream) isn't.
+//! - [`step_level`], [`display_name`], [`Heard`]: the pure parts, tested everywhere.
 
 /// One app's session as the Volume Mixer shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     /// The session instance id (unique per session, for its lifetime).
     pub id: String,
-    /// Its display name, else the program's name (as the Volume Mixer falls back).
+    /// Its display name, else the program's description, else its name ([`display_name`]).
     pub name: String,
     /// Its icon: the session's IconPath, else the program's path (the icon is the exe's).
     pub icon: Option<String>,
@@ -37,6 +40,8 @@ pub enum Change {
 pub trait Sessions: Send + Sync {
     /// The sessions in the Active state, in Windows' order.
     fn active(&self) -> Result<Vec<Session>, String>;
+    /// Each Active session's peak now (0.0-1.0; one meter read each), by session id.
+    fn peaks(&self) -> Result<Vec<(String, f32)>, String>;
     /// Moves session `id`'s level by `steps` of [`STEP`]; the new level in percent.
     fn step(&self, id: &str, steps: i32) -> Result<u8, String>;
     /// Mutes or unmutes session `id`; whether it is muted now.
@@ -58,9 +63,56 @@ pub fn step_level(level: f32, steps: i32) -> f32 {
     moved.clamp(0, 100) as f32 / 100.0
 }
 
-/// The name the Volume Mixer shows: the session's display name, else the program's file name
-/// without ".exe", else "System sounds" for that session, else the process id.
-pub fn display_name(display: &str, exe_path: Option<&str>, system: bool, pid: u32) -> String {
+/// A peak at or under this (-80 dB) is silence: a stream that is open but sends nothing.
+pub const AUDIBLE: f32 = 1e-4;
+
+/// The sessions heard during this run, in the order first heard (#854). The knob offers only
+/// these: an Active session whose peak never rose above [`AUDIBLE`] (a background helper holding
+/// a silent stream open) isn't offered. Once heard a session stays offered (a pause or a mute
+/// doesn't drop it) until it ends, and its place never moves: a new one goes last.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Heard(Vec<String>);
+
+impl Heard {
+    /// Notes the sessions audible in `peaks`; whether any was new.
+    pub fn note(&mut self, peaks: &[(String, f32)]) -> bool {
+        let mut new = false;
+        for (id, peak) in peaks {
+            if *peak > AUDIBLE && !self.has(id) {
+                self.0.push(id.clone());
+                new = true;
+            }
+        }
+        new
+    }
+
+    pub fn has(&self, id: &str) -> bool {
+        self.0.iter().any(|h| h == id)
+    }
+
+    /// Session `id` ended: it is forgotten (its id never comes back).
+    pub fn forget(&mut self, id: &str) {
+        self.0.retain(|h| h != id);
+    }
+
+    /// Of `active`, the heard sessions, in the order first heard.
+    pub fn offer(&self, mut active: Vec<Session>) -> Vec<Session> {
+        active.retain(|s| self.has(&s.id));
+        active.sort_by_key(|s| self.0.iter().position(|h| *h == s.id));
+        active
+    }
+}
+
+/// The name to show: the session's display name, else "System sounds" for that session, else
+/// the program's description (its version resource's FileDescription, as Task Manager shows),
+/// else its file name without ".exe", else the process id.
+pub fn display_name(
+    display: &str,
+    exe_path: Option<&str>,
+    description: Option<&str>,
+    system: bool,
+    pid: u32,
+) -> String {
     let display = display.trim();
     // A resource reference ("@%SystemRoot%\...,-123") is the system sounds' own name.
     if system && (display.is_empty() || display.starts_with('@')) {
@@ -68,6 +120,9 @@ pub fn display_name(display: &str, exe_path: Option<&str>, system: bool, pid: u3
     }
     if !display.is_empty() && !display.starts_with('@') {
         return display.to_string();
+    }
+    if let Some(d) = description.map(str::trim).filter(|d| !d.is_empty()) {
+        return d.to_string();
     }
     if let Some(stem) = exe_path
         .and_then(|p| p.rsplit(['\\', '/']).next())
@@ -94,8 +149,12 @@ mod imp {
     use windows::Win32::Foundation::{CloseHandle, MAX_PATH, PROPERTYKEY, S_OK};
     use windows::Win32::Media::Audio::Endpoints::{
         IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
+        IAudioMeterInformation,
     };
     use windows::Win32::Media::Audio::*;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
     };
@@ -118,6 +177,7 @@ mod imp {
 
     enum Req {
         Active(SyncSender<std::result::Result<Vec<Session>, String>>),
+        Peaks(SyncSender<std::result::Result<Vec<(String, f32)>, String>>),
         Step(String, i32, SyncSender<std::result::Result<u8, String>>),
         Mute(String, SyncSender<std::result::Result<bool, String>>),
         Level(String, SyncSender<std::result::Result<(u8, bool), String>>),
@@ -245,6 +305,49 @@ mod imp {
         }
     }
 
+    /// The program's FileDescription from its version resource (what Task Manager shows), in
+    /// the file's own language first, else US English.
+    fn file_description(path: &str) -> Option<String> {
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let file = PCWSTR(wide.as_ptr());
+        // SAFETY: Win32 calls on a buffer of the size Windows asked for; every pointer
+        // VerQueryValueW returns points into `data` and is read only while `data` lives.
+        unsafe {
+            let size = GetFileVersionInfoSizeW(file, None);
+            if size == 0 {
+                return None;
+            }
+            let mut data = vec![0u8; size as usize];
+            GetFileVersionInfoW(file, None, size, data.as_mut_ptr().cast()).ok()?;
+            let block = data.as_ptr().cast();
+            // A value as u16s: `len` counts bytes for binary values and characters for strings.
+            let query = |key: &str, bytes: bool| -> Option<Vec<u16>> {
+                let key: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
+                let mut ptr = std::ptr::null_mut();
+                let mut len = 0u32;
+                let found =
+                    VerQueryValueW(block, PCWSTR(key.as_ptr()), &mut ptr, &mut len).as_bool();
+                let len = if bytes { len / 2 } else { len } as usize;
+                (found && !ptr.is_null() && len > 0)
+                    .then(|| std::slice::from_raw_parts(ptr as *const u16, len).to_vec())
+            };
+            // The translations: (language, code page) pairs of u16s.
+            let mut langs: Vec<(u16, u16)> = query("\\VarFileInfo\\Translation", true)
+                .map(|t| t.as_chunks::<2>().0.iter().map(|&[l, c]| (l, c)).collect())
+                .unwrap_or_default();
+            langs.extend([(0x0409, 0x04B0), (0x0409, 0x04E4)]);
+            langs.into_iter().find_map(|(lang, cp)| {
+                let text = query(
+                    &format!("\\StringFileInfo\\{lang:04x}{cp:04x}\\FileDescription"),
+                    false,
+                )?;
+                let end = text.iter().position(|&c| c == 0).unwrap_or(text.len());
+                let text = String::from_utf16_lossy(&text[..end]).trim().to_string();
+                (!text.is_empty()).then_some(text)
+            })
+        }
+    }
+
     /// Master's level in percent and its mute.
     fn master_level(e: &IAudioEndpointVolume) -> Result<(u8, bool)> {
         // SAFETY: COM calls on the sessions' MTA thread.
@@ -259,27 +362,45 @@ mod imp {
         control: IAudioSessionControl,
         events: IAudioSessionEvents,
         state: AudioSessionState,
+        /// Its meter (#854), read only when the knob asks for peaks.
+        meter: Option<IAudioMeterInformation>,
+        pid: u32,
+        system: bool,
+        /// The program's path and description, read once (a session's process never changes).
+        exe: Option<String>,
+        description: Option<String>,
     }
 
     impl Tracked {
         fn session(&self) -> Session {
             // SAFETY: COM calls on an MTA object from an MTA thread.
-            unsafe {
-                let c2 = self.control.cast::<IAudioSessionControl2>().ok();
-                let pid = c2.as_ref().and_then(|c| c.GetProcessId().ok()).unwrap_or(0);
-                let system = c2
-                    .as_ref()
-                    .is_some_and(|c| c.IsSystemSoundsSession() == S_OK);
-                let display = take(self.control.GetDisplayName());
-                let icon = take(self.control.GetIconPath());
-                let exe = exe_path(pid);
-                Session {
-                    id: self.id.clone(),
-                    name: display_name(&display, exe.as_deref(), system, pid),
-                    icon: Some(icon).filter(|i| !i.is_empty()).or(exe),
-                    pid,
-                }
+            let (display, icon) = unsafe {
+                (
+                    take(self.control.GetDisplayName()),
+                    take(self.control.GetIconPath()),
+                )
+            };
+            Session {
+                id: self.id.clone(),
+                name: display_name(
+                    &display,
+                    self.exe.as_deref(),
+                    self.description.as_deref(),
+                    self.system,
+                    self.pid,
+                ),
+                icon: Some(icon).filter(|i| !i.is_empty()).or(self.exe.clone()),
+                pid: self.pid,
             }
+        }
+
+        /// The session's peak now (0.0 when it has no meter).
+        fn peak(&self) -> f32 {
+            // SAFETY: COM call on an MTA object from an MTA thread.
+            self.meter
+                .as_ref()
+                .and_then(|m| unsafe { m.GetPeakValue() }.ok())
+                .unwrap_or(0.0)
         }
 
         fn volume(&self) -> std::result::Result<ISimpleAudioVolume, String> {
@@ -397,8 +518,15 @@ mod imp {
                 if let Err(e) = control.RegisterAudioSessionNotification(&events) {
                     eprintln!("Foxglove: audio sessions: no events for a session: {e}");
                 }
+                let pid = c2.GetProcessId().unwrap_or(0);
+                let exe = exe_path(pid);
                 self.sessions.push(Tracked {
                     id,
+                    meter: control.cast::<IAudioMeterInformation>().ok(),
+                    system: c2.IsSystemSoundsSession() == S_OK,
+                    description: exe.as_deref().and_then(file_description),
+                    exe,
+                    pid,
                     control,
                     events,
                     state,
@@ -423,6 +551,15 @@ mod imp {
                         .map(Tracked::session)
                         .collect();
                     let _ = reply.send(Ok(list));
+                }
+                Req::Peaks(reply) => {
+                    let peaks = self
+                        .sessions
+                        .iter()
+                        .filter(|t| t.state == AudioSessionStateActive)
+                        .map(|t| (t.id.clone(), t.peak()))
+                        .collect();
+                    let _ = reply.send(Ok(peaks));
                 }
                 Req::Step(id, steps, reply) => {
                     let r = self.find(&id).and_then(|t| t.volume()).and_then(|v| {
@@ -515,6 +652,9 @@ mod imp {
         fn active(&self) -> std::result::Result<Vec<Session>, String> {
             self.ask(Req::Active)
         }
+        fn peaks(&self) -> std::result::Result<Vec<(String, f32)>, String> {
+            self.ask(Req::Peaks)
+        }
         fn step(&self, id: &str, steps: i32) -> std::result::Result<u8, String> {
             self.ask(|r| Req::Step(id.to_string(), steps, r))
         }
@@ -597,21 +737,79 @@ mod tests {
     }
 
     #[test]
-    fn names_fall_back_as_the_volume_mixer_does() {
-        assert_eq!(display_name("Spotify", None, false, 4), "Spotify");
+    fn names_are_the_display_name_then_the_description_then_the_file() {
+        let firefox = Some(r"C:\Program Files\Mozilla Firefox\firefox.exe");
+        assert_eq!(
+            display_name("Spotify", None, Some("Spotify Desktop"), false, 4),
+            "Spotify"
+        );
+        assert_eq!(
+            display_name("", firefox, Some("Firefox"), false, 9),
+            "Firefox"
+        );
+        assert_eq!(
+            display_name("@res.dll,-5", firefox, Some(" Mozilla Firefox "), false, 9),
+            "Mozilla Firefox",
+            "a resource reference isn't a name"
+        );
+        assert_eq!(display_name("", firefox, Some("  "), false, 9), "firefox");
+        assert_eq!(display_name("", firefox, None, false, 9), "firefox");
         assert_eq!(
             display_name(
-                "",
-                Some(r"C:\Program Files\Mozilla Firefox\firefox.exe"),
-                false,
-                9
+                "@%SystemRoot%\\System32\\AudioSrv.Dll,-202",
+                None,
+                Some("Host Process for Windows Services"),
+                true,
+                0
             ),
-            "firefox"
-        );
-        assert_eq!(
-            display_name("@%SystemRoot%\\System32\\AudioSrv.Dll,-202", None, true, 0),
             "System sounds"
         );
-        assert_eq!(display_name("  ", None, false, 77), "App 77");
+        assert_eq!(display_name("  ", None, None, false, 77), "App 77");
+    }
+
+    fn session(id: &str) -> Session {
+        Session {
+            id: id.into(),
+            name: id.into(),
+            icon: None,
+            pid: 1,
+        }
+    }
+
+    fn ids(list: &[Session]) -> Vec<&str> {
+        list.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    fn peaks(p: &[(&str, f32)]) -> Vec<(String, f32)> {
+        p.iter().map(|(id, v)| (id.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn only_heard_sessions_are_offered_and_they_stay() {
+        let mut h = Heard::default();
+        let active = || vec![session("game"), session("helper"), session("music")];
+        // A background helper's open stream is silent (or only dither): never offered.
+        assert!(h.note(&peaks(&[
+            ("game", 0.0),
+            ("helper", 0.00005),
+            ("music", 0.3)
+        ])));
+        assert_eq!(ids(&h.offer(active())), ["music"]);
+        // The game plays later: it goes last, the music keeps its place.
+        assert!(h.note(&peaks(&[("game", 0.6), ("helper", 0.0), ("music", 0.0)])));
+        assert_eq!(ids(&h.offer(active())), ["music", "game"]);
+        // Peaks again, in any order: nothing moves.
+        assert!(!h.note(&peaks(&[("music", 0.9), ("game", 0.1)])));
+        assert_eq!(ids(&h.offer(active())), ["music", "game"]);
+        // Both silent now (paused, muted): still offered while active.
+        assert!(!h.note(&peaks(&[("game", 0.0), ("music", 0.0)])));
+        assert_eq!(ids(&h.offer(active())), ["music", "game"]);
+        // Inactive: not offered; active again: back in its place.
+        assert_eq!(ids(&h.offer(vec![session("game")])), ["game"]);
+        assert_eq!(ids(&h.offer(active())), ["music", "game"]);
+        // Ended: forgotten.
+        h.forget("music");
+        assert!(!h.has("music"));
+        assert_eq!(ids(&h.offer(active())), ["game"]);
     }
 }

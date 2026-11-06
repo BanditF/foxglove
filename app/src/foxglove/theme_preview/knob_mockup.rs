@@ -599,7 +599,7 @@ fn knob_mockup_c_keyboard_first() {
 /// under the master tab. Kept as `knob-a-real.png`.
 #[test]
 fn knob_a_real_renders() {
-    use crate::foxglove::knob_popup::{paint, spot, Card};
+    use crate::foxglove::knob_popup::{spot, Card};
     let cards: Vec<(&str, Card)> = vec![
         (
             "Click: the next app, 1 of 3",
@@ -650,7 +650,68 @@ fn knob_a_real_renders() {
         ),
         ("On master: the tab over Windows' flyout", Card::MasterTab),
     ];
-    let work = vec2(480.0, 150.0);
+    let img = cards_sheet(
+        "knob-a-real.png",
+        "Knob popup A, as built: the overlay's card in Windows' flyout spot",
+        &cards,
+    );
+    // The first card sits in the flyout's spot: its middle isn't the wallpaper.
+    let first = Rect::from_min_size(pos2(GAP, 40.0), CARDS_WORK);
+    let s = spot(first);
+    let at = |x: f32, y: f32| img.get_pixel((x * PPP) as u32, (y * PPP) as u32).0;
+    assert_ne!(
+        at(s.center().x, s.center().y),
+        at(first.left() + 6.0, first.top() + 6.0)
+    );
+}
+
+/// #854: the click's card with the names the knob shows now: the program's description when
+/// the session has no display name, and only sessions that played (the place counts those).
+#[test]
+fn knob_names_854_renders() {
+    use crate::foxglove::knob_popup::Card;
+    let app = |name: &str, place: Option<(usize, usize)>, level: u8| Card::App {
+        name: name.into(),
+        place,
+        level: Some(level),
+        muted: false,
+    };
+    let cards: Vec<(&str, Card)> = vec![
+        (
+            "Click: Firefox's description, not \"firefox\"; 1 of 2 (a silent helper isn't counted)",
+            app("Firefox", Some((1, 2)), 42),
+        ),
+        (
+            "Click: the session's own display name wins",
+            app("Spotify", Some((2, 2)), 64),
+        ),
+        (
+            "A long description",
+            app("Steam Client WebHelper", Some((1, 3)), 30),
+        ),
+        (
+            "No description: the file name, as before",
+            app("retro-arcade", Some((3, 3)), 80),
+        ),
+    ];
+    cards_sheet(
+        "knob-854-names.png",
+        "Knob (#854): friendly names, only apps that played",
+        &cards,
+    );
+}
+
+/// The work area each card of [`cards_sheet`] is drawn on (a 1080p display's bottom strip).
+const CARDS_WORK: egui::Vec2 = vec2(480.0, 150.0);
+
+/// The real `knob_popup::paint` for each card, two to a row, each captioned; kept as `file`.
+fn cards_sheet(
+    file: &str,
+    title: &str,
+    cards: &[(&str, crate::foxglove::knob_popup::Card)],
+) -> image::RgbaImage {
+    use crate::foxglove::knob_popup::{paint, spot, Card};
+    let work = CARDS_WORK;
     let cols = 2;
     let rows = cards.len().div_ceil(cols);
     let size = vec2(
@@ -659,7 +720,7 @@ fn knob_a_real_renders() {
     );
     let ctx = preview_ctx();
     let img = render(&ctx, size, SHEET, |ctx| {
-        egui::Area::new(egui::Id::new("knob-a-real"))
+        egui::Area::new(egui::Id::new(("knob-cards", file)))
             .fixed_pos(Pos2::ZERO)
             .show(ctx, |ui| {
                 ui.set_min_size(size);
@@ -667,7 +728,7 @@ fn knob_a_real_renders() {
                 p.text(
                     pos2(GAP, 20.0),
                     Align2::LEFT_CENTER,
-                    "Knob popup A, as built: the overlay's card in Windows' flyout spot",
+                    title,
                     FontId::proportional(15.0),
                     TEXT,
                 );
@@ -723,15 +784,8 @@ fn knob_a_real_renders() {
                 }
             });
     });
-    keep("knob-a-real.png", &img);
-    // The first card sits in the flyout's spot: its middle isn't the wallpaper.
-    let first = Rect::from_min_size(pos2(GAP, 40.0), work);
-    let s = spot(first);
-    let at = |x: f32, y: f32| img.get_pixel((x * PPP) as u32, (y * PPP) as u32).0;
-    assert_ne!(
-        at(s.center().x, s.center().y),
-        at(first.left() + 6.0, first.top() + 6.0)
-    );
+    keep(file, &img);
+    img
 }
 
 /// The left screen's volume line with the knob's target (cheap: drawn, not the panel's renderer).

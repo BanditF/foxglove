@@ -152,7 +152,6 @@ pub fn spot(work: Rect) -> Rect {
 const CARD: Color32 = Color32::from_rgb(0x2c, 0x2c, 0x2e);
 const EDGE: Color32 = Color32::from_rgb(0x3c, 0x3c, 0x40);
 const TRACK: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5e);
-const ACCENT: Color32 = Color32::from_rgb(0x4c, 0xc2, 0xff);
 const TEXT: Color32 = Color32::from_rgb(0xf2, 0xf2, 0xf2);
 const DIM: Color32 = Color32::from_rgb(0xa8, 0xa8, 0xae);
 const GREY: Color32 = Color32::from_rgb(0x60, 0x60, 0x66);
@@ -293,7 +292,12 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
                 pos2(s.right() - 44.0, s.top() + 35.0),
             ),
             level,
-            if muted { TRACK } else { ACCENT },
+            if muted {
+                TRACK
+            } else {
+                // The level is Foxglove's own: the palette's accent, as on the other surfaces.
+                super::theme::DARK.accent
+            },
         );
         p.text(
             pos2(s.right() - 12.0, s.top() + 33.0),
