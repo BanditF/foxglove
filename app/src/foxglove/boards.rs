@@ -85,6 +85,35 @@ pub struct Screen {
     /// an art screen mounted on its side is 90.
     #[serde(default)]
     pub rotate: u16,
+    /// How the screen redraws (#833): `fast` (a memory LCD or OLED, the default),
+    /// `epaper-partial` or `epaper-full`.
+    #[serde(default)]
+    pub refresh: Refresh,
+    /// The shortest time between two frames the screen takes, in ms (#833); 0, the default, is
+    /// no limit.
+    #[serde(default)]
+    pub min_frame_ms: u32,
+}
+
+/// How a screen redraws (#833, the profile's `refresh`). The firmware's descriptor will win
+/// when it says (#340 design note §3); until then the profile's word stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Refresh {
+    /// Redraws a frame at once (Sharp memory LCD, nice!view, OLED).
+    #[default]
+    Fast,
+    /// E-paper that can redraw part of itself.
+    EpaperPartial,
+    /// E-paper that redraws only whole.
+    EpaperFull,
+}
+
+impl Refresh {
+    /// E-paper of either kind: art there is still unless the user lets it play (#833).
+    pub fn is_epaper(self) -> bool {
+        self != Refresh::Fast
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]

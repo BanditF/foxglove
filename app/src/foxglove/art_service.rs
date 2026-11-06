@@ -722,6 +722,16 @@ struct ArtSettings {
     /// A pinned built-in's manifest name (#521): indexes change between firmware builds.
     #[serde(skip_serializing_if = "Option::is_none")]
     built_in: Option<String>,
+    /// Art plays on an e-paper art screen (#833): off, the first frame only, by default.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    animate_epaper: bool,
+}
+
+/// Whether the user lets art play on an e-paper art screen (#833, "may ghost"); off by default,
+/// when art there shows its first frame only. No effect on a fast screen. The store's
+/// `[art] animate_epaper`; its switch on the Screens page follows #831.
+pub fn animate_epaper() -> bool {
+    load_art_settings().animate_epaper
 }
 
 /// A pinned built-in, followed by name to its index on this firmware (`None` when the
@@ -770,6 +780,7 @@ fn save_pin(h: &Handle, choice: &Choice) -> Result<(), String> {
         &ArtSettings {
             pinned: Some(choice.clone()),
             built_in,
+            ..load_art_settings()
         },
     )
     .map_err(|e| format!("saving pinned art: {e}"))
@@ -903,7 +914,7 @@ fn load_art_settings() -> ArtSettings {
         Some((
             ArtSettings {
                 pinned: Some(pinned),
-                built_in: None,
+                ..ArtSettings::default()
             },
             vec![json],
         ))
@@ -1070,7 +1081,10 @@ pub(crate) fn pushed_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
     let blob = super::art_polarity::blob(path, &blob);
     // Made for the connected keyboard's art screen (#340); the Corne's own art goes as it is.
     let target = super::art_encode::ArtTarget::resolve();
-    super::art_encode::for_screen(&blob, &target).map(|(blob, _)| blob)
+    let (blob, _) = super::art_encode::for_screen(&blob, &target)?;
+    // At the screen's pace (#833): clamped to its frame interval, still on e-paper unless the
+    // user lets it play. A fast screen with no limit (the Corne's) gets the bytes as they are.
+    Ok(super::art_encode::Pace::current().blob(blob))
 }
 
 /// Keep on keyboard (#517): send `file` unless the right half plays these very bytes from
@@ -2453,10 +2467,20 @@ mod tests {
             let a = ArtSettings {
                 pinned: Some(pinned),
                 built_in: Some("Bandit_Gem".into()),
+                animate_epaper: false,
             };
-            let back: ArtSettings = toml::from_str(&toml::to_string(&a).unwrap()).unwrap();
+            let text = toml::to_string(&a).unwrap();
+            // Off is the default and isn't written (#833): the Corne's store reads as before.
+            assert!(!text.contains("animate_epaper"), "{text}");
+            let back: ArtSettings = toml::from_str(&text).unwrap();
             assert_eq!(back, a);
         }
+        let on = ArtSettings {
+            animate_epaper: true,
+            ..ArtSettings::default()
+        };
+        let back: ArtSettings = toml::from_str(&toml::to_string(&on).unwrap()).unwrap();
+        assert!(back.animate_epaper);
     }
 
     #[test]

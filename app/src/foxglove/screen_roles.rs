@@ -9,7 +9,7 @@
 
 use foxglove_link::protocol::{ScreenDescriptor, ScreenKind};
 
-use super::boards::Board;
+use super::boards::{Board, Refresh};
 
 /// What a screen is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -75,6 +75,10 @@ pub struct Screen {
     pub format: String,
     /// 90-degree steps clockwise from upright to how it is stored.
     pub rotation: u8,
+    /// How it redraws (#833): the profile's `refresh`, `Fast` when it doesn't say.
+    pub refresh: Refresh,
+    /// The shortest time between two frames, in ms (#833); 0 is no limit.
+    pub min_frame_ms: u32,
 }
 
 impl Screen {
@@ -113,6 +117,8 @@ pub fn of_board(board: &Board) -> Vec<Screen> {
                 height: s.height,
                 format: s.format.clone(),
                 rotation: u8::try_from((s.rotate / 90) % 4).unwrap_or(0),
+                refresh: s.refresh,
+                min_frame_ms: s.min_frame_ms,
             })
         })
         .collect()
@@ -188,6 +194,10 @@ pub fn of_descriptors(described: &[ScreenDescriptor], board: Option<&Board>) -> 
                     d.format_name().to_string()
                 },
                 rotation,
+                // The descriptor doesn't carry them yet (#833): the profile's screen of that
+                // role says, else a fast screen with no limit.
+                refresh: profile.map_or(Refresh::Fast, |s| s.refresh),
+                min_frame_ms: profile.map_or(0, |s| s.min_frame_ms),
             })
         })
         .collect()

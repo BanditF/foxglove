@@ -1306,6 +1306,8 @@ fn screens_art_for_another_board_renders() {
         height: 184,
         format: "1bit".into(),
         rotation: 0,
+        refresh: Default::default(),
+        min_frame_ms: 0,
     }]));
     let target = ArtTarget::resolve();
     let mut samples = Samples::full();
