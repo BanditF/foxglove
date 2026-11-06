@@ -12,6 +12,8 @@
 
 use egui::{CornerRadius, Sense, Stroke};
 
+use super::device_thumb::{self, Thumb, Tint};
+use super::key_layout::KeyLayout;
 use super::keyboard_focus::{self as kf, Keyboard, Source};
 use super::theme;
 
@@ -104,6 +106,11 @@ pub struct Row {
     pub focused: bool,
     /// The read-only chip's hover, for a keyboard Foxglove can't change.
     pub read_only: Option<String>,
+    /// Its keys for the thumbnail (#819); `None` looks them up when the list opens
+    /// (`keyboard_focus::layout`), so a closed switcher resolves no layout.
+    pub layout: Option<KeyLayout>,
+    /// The colours it shows now, for the focused host-link keyboard; `None` is unknown (grey).
+    pub tint: Option<Tint>,
 }
 
 /// The switcher: every keyboard known this run, in the order first found.
@@ -126,19 +133,31 @@ impl Switcher {
                     connected: k.connected,
                     focused: focus == Some(k.key.as_str()),
                     read_only: read_only_hover(k.source),
+                    layout: None,
+                    tint: None,
                 })
                 .collect(),
         }
     }
 
-    /// The switcher as the caches have it now; asks no device.
-    pub fn now() -> Switcher {
+    /// The switcher as the caches have it now; asks no device. `tint` is the colour the host
+    /// link's keyboard last reported (the strip has it from the keyboard's cached state): the
+    /// focused row's thumbnail shows it when that keyboard is the focus.
+    pub fn now(tint: Option<Tint>) -> Switcher {
         let focus = kf::current().map(|k| k.key);
-        Switcher::new(
+        let mut s = Switcher::new(
             &kf::keyboards(),
             focus.as_deref(),
             super::devices::host_link(),
-        )
+        );
+        if let Some(row) = s
+            .rows
+            .iter_mut()
+            .find(|r| r.focused && r.connected && r.read_only.is_none())
+        {
+            row.tint = tint;
+        }
+        s
     }
 
     pub fn focused(&self) -> Option<&Row> {
@@ -251,9 +270,31 @@ pub fn switcher(ui: &mut egui::Ui, s: &Switcher) -> Option<String> {
     picked
 }
 
-/// A list row's size, and the thumbnail's slot at its left (D2 #804 draws the device there).
+/// A list row's size; its thumbnail is D2's small one (#819).
 const ROW: egui::Vec2 = egui::vec2(320.0, 46.0);
-const THUMB: egui::Vec2 = egui::vec2(44.0, 30.0);
+const THUMB: egui::Vec2 = device_thumb::SMALL;
+
+/// A row's thumbnail (#819): its keyboard's own layout shrunk (`layout`), tinted with the
+/// colours it shows now, grey when they are unknown or it went.
+pub fn thumb(row: &Row, layout: KeyLayout) -> Thumb {
+    let tint = row
+        .tint
+        .clone()
+        .filter(|_| row.connected)
+        .unwrap_or(Tint::Unknown);
+    Thumb::keyboard(layout, tint)
+}
+
+/// `row`'s keys: its own, else its keyboard's from the focus model, else B1's guess.
+fn layout_of(row: &Row) -> KeyLayout {
+    row.layout.clone().unwrap_or_else(|| {
+        kf::keyboards()
+            .iter()
+            .find(|k| k.key == row.key)
+            .map(kf::layout)
+            .unwrap_or_else(|| super::key_layout::resolve(None, &[], 0))
+    })
+}
 
 /// One keyboard in the list: its thumbnail, its name and "protocol · link · what Foxglove can
 /// do"; the focused one on the selected fill with a check, a gone one greyed.
@@ -288,7 +329,14 @@ fn list_row(ui: &mut egui::Ui, row: &Row) -> egui::Response {
             egui::pos2(rect.left() + 8.0, rect.center().y - THUMB.y / 2.0),
             THUMB,
         );
-        keyboard_glyph(painter, thumb, p, row.connected);
+        // D2's painter, not `row_thumb`: that widget's id is the device's, and a keyboard can be
+        // a row under Other devices too while this list is open. Held while the window is behind,
+        // as `row_thumb` holds it.
+        let drawn = super::focus_ui::thumb(row, layout_of(row));
+        let id = device_thumb::id(&row.key).with("focus-switcher");
+        let front = ui.ctx().input(|i| i.focused);
+        let tint = device_thumb::held(ui.ctx(), id, front, drawn.tint.clone());
+        device_thumb::paint(painter, thumb, &Thumb { tint, ..drawn }, p);
         let (name, detail) = if row.connected {
             (p.text_strong, p.muted)
         } else {
@@ -323,35 +371,6 @@ fn list_row(ui: &mut egui::Ui, row: &Row) -> egui::Response {
         response
     } else {
         response.on_hover_text(format!("Show {} in Foxglove", row.name))
-    }
-}
-
-/// The thumbnail's place until D2 (#804) draws each device: a plain keyboard, outlined, with
-/// three rows of keys; grey when the keyboard went.
-fn keyboard_glyph(painter: &egui::Painter, rect: egui::Rect, p: &theme::Palette, lit: bool) {
-    let line = if lit {
-        p.control_line
-    } else {
-        p.control_line.gamma_multiply(0.6)
-    };
-    painter.rect_stroke(
-        rect,
-        CornerRadius::same(4),
-        Stroke::new(1.0, line),
-        egui::StrokeKind::Inside,
-    );
-    let inner = rect.shrink2(egui::vec2(5.0, 6.0));
-    let (cols, rows) = (6, 3);
-    let key = egui::vec2(inner.width() / cols as f32, inner.height() / rows as f32);
-    for r in 0..rows {
-        for c in 0..cols {
-            let min = inner.min + egui::vec2(c as f32 * key.x, r as f32 * key.y);
-            painter.rect_filled(
-                egui::Rect::from_min_size(min, key - egui::vec2(1.5, 1.5)),
-                CornerRadius::same(1),
-                line,
-            );
-        }
     }
 }
 

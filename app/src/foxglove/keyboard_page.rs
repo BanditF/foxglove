@@ -173,7 +173,7 @@ fn armed() -> Option<String> {
 pub fn view(ctx: &egui::Context) -> View {
     let focus = super::focus_ui::Focused::now();
     if let Some(f) = focus.clone().filter(|f| f.read_only.is_some()) {
-        let link = super::focus_ui::Switcher::now()
+        let link = super::focus_ui::Switcher::now(None)
             .focused()
             .map(|r| r.detail.clone())
             .unwrap_or_default();

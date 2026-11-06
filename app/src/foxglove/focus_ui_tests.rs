@@ -37,9 +37,11 @@ pub fn two_keyboards() {
     kf::report(Source::Via, vec![seen(K5, "K5 Pro", 0x3434, 0x0250)]);
 }
 
-/// The switcher the previews show: the Corne and a read-only K5 Pro, `focus` focused.
+/// The switcher the previews show: the Corne (lit orange when focused) and a read-only K5 Pro,
+/// `focus` focused, each with its own layout.
 pub fn sample(focus: &str) -> Switcher {
-    Switcher::new(
+    let corne = crate::foxglove::fixtures::users_desk::board();
+    let mut s = Switcher::new(
         &[
             Keyboard {
                 vid: 0x1d50,
@@ -50,7 +52,13 @@ pub fn sample(focus: &str) -> Switcher {
         ],
         Some(focus),
         Some("USB"),
-    )
+    );
+    s.rows[0].layout = Some(crate::foxglove::key_layout::resolve(Some(&corne), &[], 0));
+    s.rows[1].layout = Some(crate::foxglove::key_layout::resolve(None, &[], 0));
+    if focus == CORNE {
+        s.rows[0].tint = Some(Tint::lit(vec![egui::Color32::from_rgb(0xf0, 0x8a, 0x3c)]));
+    }
+    s
 }
 
 pub const SAMPLE_CORNE: &str = CORNE;
@@ -120,7 +128,7 @@ fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> egui::Rect {
     };
     let mut chip = egui::Rect::NOTHING;
     let mut out = ctx.run_ui(raw, |ui| {
-        let s = Switcher::now();
+        let s = Switcher::now(None);
         if let Some(key) = switcher(ui, &s) {
             pick(ui.ctx(), &key);
         }
@@ -187,12 +195,12 @@ fn one_keyboard_has_no_caret_and_no_list() {
         Source::HostLink,
         vec![seen(CORNE, "Eyelash Corne", 0x1d50, 0x615e)],
     );
-    let s = Switcher::now();
+    let s = Switcher::now(None);
     assert!(!s.can_switch());
     let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
     let text = |ctx: &egui::Context| {
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            switcher(ui, &Switcher::now());
+            switcher(ui, &Switcher::now(None));
         });
         out.textures_delta.clear();
         let mut text = String::new();
@@ -230,7 +238,7 @@ fn switching_repaints_from_the_caches() {
     assert_eq!(focus.name, "K5 Pro");
     assert!(focus.read_only.is_some());
     assert_eq!(
-        Switcher::now().focused().map(|r| r.detail.as_str()),
+        Switcher::now(None).focused().map(|r| r.detail.as_str()),
         Some("VIA · USB · read-only")
     );
     let k5 = kf::current().unwrap();
@@ -245,6 +253,46 @@ fn switching_repaints_from_the_caches() {
     let board = crate::foxglove::keyboard_page::read_only_board(&focus, kf::layout(&k5));
     assert_eq!(board.title, "K5 Pro");
     assert!(board.panel.is_none() && board.glow.is_none());
+}
+
+/// #819: each row's thumbnail is its keyboard's own layout, shrunk; the focused host-link
+/// keyboard in its live colour, the others (and a gone one) grey.
+#[test]
+fn rows_draw_their_keyboards_thumbnails() {
+    use crate::foxglove::device_thumb::Shape;
+    two_keyboards();
+    let lit = Tint::lit(vec![egui::Color32::from_rgb(0xf0, 0x8a, 0x3c)]);
+    let s = Switcher::now(Some(lit.clone()));
+    let corne = &s.rows[0];
+    let k5 = &s.rows[1];
+    let k5_keyboard = kf::keyboards().into_iter().find(|k| k.key == K5).unwrap();
+    let drawn = thumb(k5, layout_of(k5));
+    assert_eq!(drawn.keys.as_ref(), Some(&kf::layout(&k5_keyboard)));
+    assert_eq!(drawn.tint, Some(Tint::Unknown), "not the focus: grey");
+    assert_eq!(drawn.shape(), Shape::Keyboard);
+    assert_eq!(thumb(corne, layout_of(corne)).tint, Some(lit.clone()));
+    // A gone keyboard is grey whatever it showed.
+    let gone = Row {
+        connected: false,
+        ..corne.clone()
+    };
+    assert_eq!(thumb(&gone, layout_of(&gone)).tint, Some(Tint::Unknown));
+    // A read-only keyboard in focus never takes the host link's colour.
+    crate::foxglove::store::test_config_dir();
+    kf::TEST_SECTION.set(Some("focus-test-thumbs"));
+    kf::set(K5).unwrap();
+    let s = Switcher::now(Some(lit));
+    assert!(s.rows.iter().all(|r| r.tint.is_none()));
+    // The list draws each one at D2's small size.
+    let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+    PREVIEW_OPEN.set(true);
+    for _ in 0..2 {
+        frame(&ctx, vec![]);
+    }
+    PREVIEW_OPEN.set(false);
+    let rows = LAST_ROWS.take();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.height() >= THUMB.y));
 }
 
 /// The switcher reads caches only: no device call, no wait, no thread.

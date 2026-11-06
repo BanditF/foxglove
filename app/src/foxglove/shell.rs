@@ -673,8 +673,24 @@ pub fn strip_state(ctx: &egui::Context) -> StripState {
         this_pc: link.this_pc,
         unplug_warning: link.unplug_warning,
         parts: super::parts::Parts::current(),
-        switcher: super::focus_ui::Switcher::now(),
+        switcher: super::focus_ui::Switcher::now(focus_tint(ctx)),
     }
+}
+
+/// The host link's keyboard's colours for the switcher's thumbnail (#819), from its cached
+/// report: lit, off, or `None` before one.
+fn focus_tint(ctx: &egui::Context) -> Option<super::device_thumb::Tint> {
+    use super::device_thumb::Tint;
+    let left = super::keyboard_settings::rgb_state(ctx)?.left;
+    Some(if left.on {
+        Tint::lit(vec![super::lights_page::shown_color(
+            left.hue,
+            left.sat,
+            left.brightness,
+        )])
+    } else {
+        Tint::Off
+    })
 }
 
 fn status_strip(ui: &mut egui::Ui, s: &StripState) {
