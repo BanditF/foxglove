@@ -45,8 +45,9 @@ offer the sub-protocols `foxglove-live.v1, <token>`.
 | `t` | Direction | Body |
 |---|---|---|
 | `hello` | → wallpaper | `v`, `topics`, `board` (`name`, `keys`: `[x, y, w, h, r]` in key units, rotation about the key's centre), `state`, `quiet` |
-| `state` | → wallpaper | `layer` (`index`, `name`), `art`, `battery` (`left`, `right`), `link` (`connected`, `output`, `profile`), `lights` (below) |
+| `state` | → wallpaper | `layer` (`index`, `name`), `art`, `battery` (`left`, `right`), `link` (`connected`, `output`, `profile`, `profile_connected`), `lights` (below) |
 | `art` | → wallpaper | `art`: `name` (as `state.art`), `nva` (the piece's frames, below, or `null`); or `art: null` |
+| `panel` | → wallpaper | `panel`: `w`, `h`, `bits` (the left screen's PC panel, below), or `null` |
 | `keys` | → wallpaper | `e`: `[index, 1 down / 0 up, ms since the batch's first]` |
 | `board` | → wallpaper | the geometry changed |
 | `quiet` | → wallpaper | `why`: `paused`, `away` or `fullscreen`; nothing follows until `live` |
@@ -79,8 +80,21 @@ facts (docs/local-api.md) and changes only when the keyboard reports a change.
 - **What has frames:** a library file the right half plays, a built-in (from the firmware's own
   `custom_art.c`, when its manifest matches the keyboard), and a kept place when the library has
   a file of the same name and size. Otherwise `nva` is `null`, and the wallpaper draws a stand-in.
-- **The left screen:** it shows the firmware's own status panel, not art, so the feed doesn't
-  describe it.
+- **The left screen:** it shows the firmware's own status panel, not art. A wallpaper draws it
+  from `state` (layer, `battery.left`, `link`) and `panel` below.
+
+`link.profile_connected` says whether the active Bluetooth profile's host is connected (the left
+screen's LINKED or SEARCH, and its BT label struck through when not); it is left out until the
+keyboard said. `link.connected` is Foxglove's own link to the keyboard.
+
+`panel` is the part of the left screen Foxglove draws (`screens.rs`; on the Corne 64x52 at x 2,
+y 106 of the 68x160 screen): the clock, volume and media, as Foxglove last sent it, rows MSB
+first in whole bytes, a set bit for ink, base64. `null` while the firmware draws its own (its WPM
+chart: Foxglove paused, away, the panel off or the keyboard gone). It goes out after the hello,
+when it changes, at most one frame every 250 ms (an animated panel: the latest frame at the end
+of each window), and at most 1024 bytes of bits. It shows what the keyboard shows, so a
+notification Foxglove puts on the left screen is in it too; like everything else here it reaches
+only a wallpaper with the pairing token.
 
 A client ignores any `t` it doesn't know, and any field it doesn't know. The reserved topics `stats` (PC stats) and `notes`
 (notifications) come later without a new version.
