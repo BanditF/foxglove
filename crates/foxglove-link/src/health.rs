@@ -71,6 +71,9 @@ pub struct HealthRow {
     pub level: Level,
     /// The reason, in plain words: "2 art pushes failed (relay timeout)".
     pub detail: String,
+    /// The notification's own title and body, for a row whose default "<item>: warning" says
+    /// too little (the app's health notices, #814). `None` keeps the default.
+    pub notice: Option<(String, String)>,
 }
 
 impl HealthRow {
@@ -85,7 +88,14 @@ impl HealthRow {
             item: item.into(),
             level,
             detail: detail.into(),
+            notice: None,
         }
+    }
+
+    /// The same row, with its own notification title and body.
+    pub fn with_notice(mut self, title: impl Into<String>, body: impl Into<String>) -> HealthRow {
+        self.notice = Some((title.into(), body.into()));
+        self
     }
 
     /// "Right screen: 2 art pushes failed (relay timeout)".

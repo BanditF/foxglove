@@ -475,6 +475,10 @@ fn refusal_rows(warns: bool) -> Vec<super::health::HealthRow> {
         "Live wallpaper pairing",
         super::health::Level::Warn,
         "a wallpaper is using an old pairing token",
+    )
+    .with_notice(
+        "Wallpaper needs the new pairing token",
+        "Copy it from App › Live wallpaper and paste it into the wallpaper's Foxglove pairing token.",
     )]
 }
 
@@ -1624,6 +1628,14 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].level, super::super::health::Level::Warn);
         assert_eq!(rows[0].detail, "a wallpaper is using an old pairing token");
+        assert_eq!(
+            super::super::health_notice::text(&rows[0]),
+            (
+                "Wallpaper needs the new pairing token".to_string(),
+                "Copy it from App › Live wallpaper and paste it into the wallpaper's Foxglove pairing token."
+                    .to_string()
+            )
+        );
     }
 
     /// #587: a hub that panics drops its tap, which moves the shared generation on, so the old
