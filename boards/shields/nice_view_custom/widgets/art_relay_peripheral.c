@@ -55,9 +55,11 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 // (config in RGB, state after build), 7: SET_FRAME's ART_RELAY_LAMPS / LAMP_HOST (#272), 8:
 // SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490), 9: ART_RELAY_EFFECT takes the whole wire, with
 // the PC's LED points (#550), 10: ART_RELAY_STORE keeps a received set in flash without showing it
-// (#522)). The rest of struct art_relay_status is the art store's.
+// (#522), 11: the slot CRC characteristic (#863)). The rest of struct art_relay_status is the art
+// store's. Builds without host effects have the CRC characteristic too, but the left reads it only
+// from version 11 on.
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
-#define STATUS_VERSION ART_RELAY_STORE_STATUS_VERSION
+#define STATUS_VERSION ART_RELAY_SLOT_CRC_STATUS_VERSION
 #elif IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
 #define STATUS_VERSION 7
 #else
@@ -430,6 +432,17 @@ static ssize_t screen_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
     return n < 0 ? BT_GATT_ERR(BT_ATT_ERR_UNLIKELY) : n;
 }
 
+// The slots' CRCs (#863, ART_RELAY_SLOT_CRC_UUID): the header words, no blob read, so a read
+// costs no more than the slot table's.
+static ssize_t slot_crc_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
+                             uint16_t len, uint16_t offset) {
+    uint8_t value[ART_RELAY_FLASH_SLOTS * sizeof(uint32_t)];
+    for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
+        sys_put_le32(art_slots_crc(i), &value[i * sizeof(uint32_t)]);
+    }
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
+}
+
 BT_GATT_SERVICE_DEFINE(
     art_relay_svc, BT_GATT_PRIMARY_SERVICE(BT_UUID_DECLARE_128(ART_RELAY_SERVICE_UUID)),
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_DATA_UUID),
@@ -443,7 +456,10 @@ BT_GATT_SERVICE_DEFINE(
                                                                           NULL)}),
                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_ENCRYPT),
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_SCREEN_UUID), BT_GATT_CHRC_READ,
-                           BT_GATT_PERM_READ_ENCRYPT, screen_read, NULL, NULL), );
+                           BT_GATT_PERM_READ_ENCRYPT, screen_read, NULL, NULL),
+    // Right after the screen value (ART_RELAY_SLOT_CRC_HANDLE_STEP): the left reads it there.
+    BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_SLOT_CRC_UUID), BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ_ENCRYPT, slot_crc_read, NULL, NULL), );
 
 /* The doorbell (#478): this half's underglow on/off or power source changed (following the left,
  * its own idle with sync off, a key, the cable, new levels). One notify of the status value, the bits of what changed;

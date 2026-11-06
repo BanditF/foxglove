@@ -62,7 +62,7 @@ pub fn push_cancellable(
     );
     let st = command(
         t,
-        &protocol::art_begin(blob.len() as u16, crc32fast::hash(blob)),
+        &protocol::art_begin(blob.len() as u16, protocol::blob_crc(blob)),
     )?;
     if st.state != left_state::RECEIVING {
         bail!("the left half refused the blob: {st}");
@@ -118,7 +118,7 @@ pub fn store(
     );
     let st = command(
         t,
-        &protocol::art_begin(blob.len() as u16, crc32fast::hash(blob)),
+        &protocol::art_begin(blob.len() as u16, protocol::blob_crc(blob)),
     )?;
     if st.state != left_state::RECEIVING {
         bail!("the left half refused the blob: {st}");

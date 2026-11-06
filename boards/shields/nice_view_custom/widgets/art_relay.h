@@ -98,6 +98,12 @@
 #define ART_RELAY_SCREEN_UUID \
     BT_UUID_128_ENCODE(0x6e766172, 0x7403, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 #define ART_RELAY_STATUS_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7402, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
+// The flash slots' CRCs (#863): ART_RELAY_FLASH_SLOTS x crc32 u32 LE, the CRC each slot header
+// keeps (art_slots.c; 0 for an empty slot). Right after the screen characteristic, so its value
+// handle is the screen value's + 2; the left reads it there only from a right whose status
+// version is >= ART_RELAY_SLOT_CRC_STATUS_VERSION, and discovery still stops at the screen.
+#define ART_RELAY_SLOT_CRC_UUID                                                                        BT_UUID_128_ENCODE(0x6e766172, 0x7404, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
+#define ART_RELAY_SLOT_CRC_HANDLE_STEP 2 // from the screen value: the CRC declaration, its value
 
 enum art_relay_op {
     ART_RELAY_BEGIN = 1,
@@ -144,6 +150,8 @@ enum art_relay_op {
 
 // The right status version that has ART_RELAY_STORE (#522).
 #define ART_RELAY_STORE_STATUS_VERSION 10
+// The right status version with the slot CRC characteristic (#863, ART_RELAY_SLOT_CRC_UUID).
+#define ART_RELAY_SLOT_CRC_STATUS_VERSION 11
 
 // The right rings on every CCC write that turns notify on (#618), not only when Zephyr's CCC value
 // changes: for the bonded left, Zephyr restores that value at encryption, ~15 s before the left

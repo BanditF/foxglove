@@ -15,7 +15,7 @@ One grid of every piece of right-screen art Foxglove knows about, from five sour
 | source | where | id |
 |---|---|---|
 | **Built-in** | compiled into the right half's firmware (`custom_art.json` manifest; one set since #671, `Bandit_Emblem`) | manifest name, e.g. `Bandit_Gem` |
-| **Saved on the keyboard** | flash slots on the right half (`art_slots`, count from the firmware, 20 KiB each) | slot number + the name in its header |
+| **Saved on the keyboard** | flash slots on the right half (`art_slots`, count from the firmware, 20 KiB each) | slot number + the name in its header; matched to library pieces by the header's CRC (#863), by name and length on older firmware |
 | **Library** | `%APPDATA%\Foxglove\config\art\*.bin`, including the wallpaper sets and `wallpapers.json` | file name |
 | **Bundled** | sets that ship with the app: the lighting presets' art (`app/resources/lighting/art/`), the plugin art (`assets/plugins/*/`) | resource path |
 | **Sources** (optional) | folders the user adds, e.g. `art-src\bandit\out` (Flipper-style frame folders) | folder path; built on demand with `flipper_art.py`'s converter |

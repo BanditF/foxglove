@@ -11,6 +11,9 @@ pub struct Entry {
     /// in two places once (#59).
     pub bytes: usize,
     pub hash: u64,
+    /// The CRCs a kept place reports for these bytes (#863, `SlotInfo::crc`): as made for the
+    /// art screen, and as paced for it when that differs (`art_encode::Pace`, at scan time).
+    pub crcs: Vec<u32>,
     /// How it was made for the art screen (#340): a blob made for another screen is fitted.
     pub fit: super::art_encode::Fit,
 }
@@ -21,6 +24,19 @@ pub fn blob_hash(bytes: &[u8]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut h);
     h.finish()
+}
+
+/// The CRCs a kept place holding `bytes` (as made for the art screen) can report (#863): the
+/// bytes' own, and, when `pace` changes them, those of the bytes as sent (`pushed_bytes`).
+pub fn blob_crcs(bytes: &[u8], pace: super::art_encode::Pace) -> Vec<u32> {
+    use foxglove_link::protocol::blob_crc;
+    let made = blob_crc(bytes);
+    let paced = blob_crc(&pace.blob(bytes.to_vec()));
+    if paced == made {
+        vec![made]
+    } else {
+        vec![made, paced]
+    }
 }
 /// A set folder under one of the library's source folders, encoded on the scan thread.
 #[derive(Clone)]
@@ -90,6 +106,8 @@ fn scan(state: Arc<Mutex<Library>>) {
         .name("foxglove-art-library".into())
         .spawn(move || {
             let mut library = Library::default();
+            // As Keep would send them now (#863: the CRCs a kept place reports).
+            let pace = super::art_encode::Pace::current();
             let result = (|| -> Result<(), String> {
                 let folder = folder().ok_or("No settings directory")?;
                 std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
@@ -109,11 +127,10 @@ fn scan(state: Arc<Mutex<Library>>) {
                         })
                         .map_err(|e| e.to_string())
                         .and_then(|b| super::art_encode::for_screen(&b, &target));
-                    let (bytes, hash, fit) = read
-                        .as_ref()
-                        .map_or((0, 0, super::art_encode::Fit::AsMade), |(b, fit)| {
-                            (b.len(), blob_hash(b), *fit)
-                        });
+                    let (bytes, hash, crcs, fit) = read.as_ref().map_or(
+                        (0, 0, Vec::new(), super::art_encode::Fit::AsMade),
+                        |(b, fit)| (b.len(), blob_hash(b), blob_crcs(b, pace), *fit),
+                    );
                     let preview = read.and_then(|(b, _)| {
                         super::art_preview::first_frame(&b)
                             .map(Arc::new)
@@ -124,6 +141,7 @@ fn scan(state: Arc<Mutex<Library>>) {
                         preview,
                         bytes,
                         hash,
+                        crcs,
                         fit,
                     });
                 }

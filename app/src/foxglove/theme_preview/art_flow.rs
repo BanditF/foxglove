@@ -70,6 +70,7 @@ fn art_flow_pages_render() {
             writes: 1,
             len: 4000,
             name: name.into(),
+            crc: None,
         });
     }
     art_ui::preview_replace(Some(("hearth", Some(2))));
@@ -250,6 +251,7 @@ fn kept_place_under_a_merged_name_renders() {
         writes: 1,
         len: garden.bytes as u16,
         name: "hearth-moongarde".into(),
+        crc: None,
     };
     let art = art_ui::Art::new(s.clone(), l.clone());
     let piece = art.kept[0].as_ref().and_then(|k| k.piece);
@@ -316,6 +318,7 @@ fn kept_missing_and_duplicates_render() {
             writes: 1,
             len: garden.bytes as u16,
             name: "hearth-moongarde".into(),
+            crc: None,
         };
         (s, l)
     };

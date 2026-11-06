@@ -52,12 +52,19 @@ extern const struct bt_conn_cb art_relay_conn_cb;
 #define H_CCC 0x0025
 #define H_SCREEN_DECL 0x0026
 #define H_SCREEN 0x0027
-#define H_END 0x0027
+// The slot CRCs (#863), on a right with status version >= ART_RELAY_SLOT_CRC_STATUS_VERSION only.
+#define H_SLOT_CRC_DECL 0x0028
+#define H_SLOT_CRC 0x0029
+#define H_END_OLD 0x0027
+#define H_END_CRC 0x0029
+BUILD_ASSERT(H_SLOT_CRC == H_SCREEN + ART_RELAY_SLOT_CRC_HANDLE_STEP, "art_relay.h");
+static bool right_has_crc(void) { return sim_right.version >= ART_RELAY_SLOT_CRC_STATUS_VERSION; }
 
 static const struct bt_uuid_128 svc_uuid = BT_UUID_INIT_128(ART_RELAY_SERVICE_UUID);
 static const struct bt_uuid_128 data_uuid = BT_UUID_INIT_128(ART_RELAY_DATA_UUID);
 static const struct bt_uuid_128 status_uuid = BT_UUID_INIT_128(ART_RELAY_STATUS_UUID);
 static const struct bt_uuid_128 screen_uuid = BT_UUID_INIT_128(ART_RELAY_SCREEN_UUID);
+static const struct bt_uuid_128 slot_crc_uuid = BT_UUID_INIT_128(ART_RELAY_SLOT_CRC_UUID);
 
 int bt_uuid_cmp(const struct bt_uuid *a, const struct bt_uuid *b) {
     if (a->type != b->type) {
@@ -479,7 +486,7 @@ static void disc_rsp(struct req *r, struct pdu *p) {
     }
     if (r->kind == P_REQ_DISC_PRIM) {
         svc.uuid = &svc_uuid.uuid;
-        svc.end_handle = H_END;
+        svc.end_handle = right_has_crc() ? H_END_CRC : H_END_OLD;
         attr.uuid = &svc_uuid.uuid;
         attr.handle = H_SVC;
         attr.user_data = &svc;
@@ -492,7 +499,8 @@ static void disc_rsp(struct req *r, struct pdu *p) {
     chrc.value_handle = decl + 1;
     chrc.uuid = decl == H_DATA_DECL     ? &data_uuid.uuid
                 : decl == H_STATUS_DECL ? &status_uuid.uuid
-                                        : &screen_uuid.uuid;
+                : decl == H_SCREEN_DECL ? &screen_uuid.uuid
+                                        : &slot_crc_uuid.uuid;
     attr.handle = decl;
     attr.user_data = &chrc;
     if (dp->func(link, &attr, dp) == BT_GATT_ITER_STOP) {
@@ -1009,6 +1017,17 @@ static void right_rx_cb(struct k_work *w) {
                 }
                 memcpy(value, frozen, SCREEN_SNAP_WIRE);
                 n = SCREEN_SNAP_WIRE;
+            } else if (p->handle == H_SLOT_CRC) { // art_relay_peripheral.c slot_crc_read
+                if (!right_has_crc()) {
+                    respond(BT_ATT_ERR_INVALID_HANDLE, NULL, 0); // a right before #863
+                    break;
+                }
+                sim_bt_stats.crc_reads++;
+                for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
+                    const struct sim_flash_slot *f = &sim_right.flash[i];
+                    sys_put_le32(f->used ? f->crc : 0, value + i * 4);
+                }
+                n = ART_RELAY_FLASH_SLOTS * 4;
             } else {
                 n = status_value(value);
             }
@@ -1026,6 +1045,7 @@ static void right_rx_cb(struct k_work *w) {
             uint16_t decl = p->handle <= H_DATA_DECL     ? H_DATA_DECL
                             : p->handle <= H_STATUS_DECL ? H_STATUS_DECL
                             : p->handle <= H_SCREEN_DECL ? H_SCREEN_DECL
+                            : p->handle <= H_SLOT_CRC_DECL && right_has_crc() ? H_SLOT_CRC_DECL
                                                          : 0;
             uint8_t v[2];
             sys_put_le16(decl, v);
@@ -1317,7 +1337,7 @@ void sim_bt_init(void) {
     k_work_init_delayable(&att_timeout_work, att_timeout_cb);
     att_timeout_work.target = &k_sys_work_q;
     sim_right.set = 0;
-    sim_right.version = ART_RELAY_STORE_STATUS_VERSION;
+    sim_right.version = ART_RELAY_SLOT_CRC_STATUS_VERSION;
     sim_right.polarity = -1;
     sim_right.follow = true;
     sim_right.rgb_on = true;

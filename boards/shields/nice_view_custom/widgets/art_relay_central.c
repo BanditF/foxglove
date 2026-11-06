@@ -656,16 +656,21 @@ static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_pa
 }
 
 // A read of the status value at offset, from relay_q; func takes the chunks.
-static int read_value(struct bt_conn *conn, bt_gatt_read_func_t func, uint16_t offset) {
+static int read_at(struct bt_conn *conn, bt_gatt_read_func_t func, uint16_t handle,
+                   uint16_t offset) {
     struct relay_req *r = req_new();
     if (r == NULL) {
         return -EBUSY;
     }
     r->read.func = func;
     r->read.handle_count = 1;
-    r->read.single.handle = status_handle;
+    r->read.single.handle = handle;
     r->read.single.offset = offset;
     return req_wait(r, bt_gatt_read(conn, &r->read));
+}
+
+static int read_value(struct bt_conn *conn, bt_gatt_read_func_t func, uint16_t offset) {
+    return read_at(conn, func, status_handle, offset);
 }
 
 static int read_status(struct bt_conn *conn) { return read_value(conn, read_cb, 0); }
@@ -916,9 +921,13 @@ int art_relay_erase(uint8_t slot) {
     return start_slot_op(op, sizeof(op));
 }
 
-// D6 07 SLOT: one entry of the right's slot table, by an offset read of the status value.
+// D6 07 SLOT: one entry of the right's slot table, by an offset read of the status value, then
+// (#863) its CRC from the slot CRC characteristic, from a right with it. One read each, no retry:
+// a failed CRC read still answers, without the CRC (the app matches by name and length then).
 static uint8_t slot_index;
 static uint8_t slot_info[sizeof(struct art_relay_slot_info)];
+static uint8_t slot_crc[sizeof(uint32_t)];
+BUILD_ASSERT(4 + sizeof(slot_info) == HOST_LINK_SLOT_CRC_AT, "host_link.h");
 static atomic_t slot_busy;
 // Where an offset read of the status value lands (one at a time: they run on relay_q; a let-go
 // read's chunks land nowhere, see slot_read_cb).
@@ -950,6 +959,7 @@ static uint8_t slot_read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_re
 
 static void slot_read_job(struct k_work *work) {
     uint8_t status = 2;
+    bool crc = false;
     struct bt_conn *conn = job_conn();
     if (conn != NULL) {
         status = 4; // the right's firmware has no slots
@@ -963,11 +973,23 @@ static void slot_read_job(struct k_work *work) {
                          ? 3
                          : 0;
         }
+        uint16_t screen = screen_handle; // 0 once the link has gone (drop_peer)
+        if (status == 0 && right.version >= ART_RELAY_SLOT_CRC_STATUS_VERSION && screen != 0) {
+            slot_got = 0;
+            ofs_buf = slot_crc;
+            ofs_len = sizeof(slot_crc);
+            crc = read_at(conn, slot_read_cb, screen + ART_RELAY_SLOT_CRC_HANDLE_STEP,
+                          slot_index * sizeof(slot_crc)) == 0;
+        }
         bt_conn_unref(conn);
     }
-    uint8_t r[4 + sizeof(slot_info)] = {HOST_LINK_ART, 0x87, status, slot_index};
+    uint8_t r[HOST_LINK_SLOT_CRC_AT + 5] = {HOST_LINK_ART, 0x87, status, slot_index};
     if (status == 0) {
         memcpy(&r[4], slot_info, sizeof(slot_info));
+    }
+    if (status == 0 && crc) {
+        r[HOST_LINK_SLOT_CRC_AT] = HOST_LINK_SLOT_CRC_V1;
+        memcpy(&r[HOST_LINK_SLOT_CRC_AT + 1], slot_crc, sizeof(slot_crc)); // LE on the wire too
     }
     host_link_send(r, sizeof(r));
     atomic_clear(&slot_busy);

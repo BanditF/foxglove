@@ -214,6 +214,7 @@ mod tests {
             writes,
             len,
             name: name.into(),
+            crc: None,
         }
     }
 
