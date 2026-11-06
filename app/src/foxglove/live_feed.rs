@@ -1406,8 +1406,7 @@ mod tests {
     #[test]
     fn no_token_is_handed_out_while_the_settings_are_unreadable() {
         use crate::foxglove::store;
-        let dir =
-            std::env::temp_dir().join(format!("foxglove-live-unreadable-{}", std::process::id()));
+        let dir = store::test_config_dir().join("live-unreadable");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("foxglove.toml");
@@ -1467,7 +1466,7 @@ mod tests {
     #[test]
     fn the_pairing_token_survives_a_failed_read_and_a_restart() {
         use crate::foxglove::store;
-        let dir = std::env::temp_dir().join(format!("foxglove-live-token-{}", std::process::id()));
+        let dir = store::test_config_dir().join("live-token");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("foxglove.toml");

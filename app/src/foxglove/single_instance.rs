@@ -130,7 +130,11 @@ mod imp {
 /// Takes the guard at startup. False when another Foxglove already holds it; that one has been
 /// asked to show itself, and this process should exit 0.
 pub fn claim() -> bool {
-    imp::claim(std::env::var_os("FOXGLOVE_CONFIG_DIR").as_deref())
+    match super::store::test_sandbox() {
+        // A test build gets names of its own folder, never the shared ones.
+        Some(dir) => imp::claim(Some(dir.as_os_str())),
+        None => imp::claim(std::env::var_os("FOXGLOVE_CONFIG_DIR").as_deref()),
+    }
 }
 
 /// Lets go of the guard just before this process hands over to a fresh copy (#346).

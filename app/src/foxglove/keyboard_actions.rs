@@ -319,10 +319,9 @@ mod safety_tests {
             u16::from_str_radix(vid, 16).unwrap(),
             u16::from_str_radix(pid, 16).unwrap(),
         );
-        let dir = std::env::temp_dir().join(format!("foxglove-learn-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::copy(&src, dir.join(&name)).unwrap();
-        std::env::set_var("FOXGLOVE_CONFIG_DIR", &dir);
+        // Copied into the test settings folder, where the cache looks in a test build.
+        let copy = crate::foxglove::store::test_config_dir().join(&name);
+        std::fs::copy(&src, &copy).unwrap();
         // Trusted only for the build it was read from (#633); an FXK1 copy has none.
         let build = super::super::keymap_cache::replay(vid, pid).and_then(|(_, b)| b);
         let Some(build) = build else {
@@ -330,7 +329,7 @@ mod safety_tests {
                 !learn_cached(vid, pid, Some("any")),
                 "an old copy isn't trusted"
             );
-            let _ = std::fs::remove_dir_all(dir);
+            let _ = std::fs::remove_file(copy);
             return;
         };
         assert!(
@@ -339,7 +338,7 @@ mod safety_tests {
         );
         assert!(underglow_behavior().is_some(), "found &rgb_ug");
         assert!(!learn_cached(vid, pid, Some(&build)), "only once");
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_file(copy);
     }
 
     #[test]

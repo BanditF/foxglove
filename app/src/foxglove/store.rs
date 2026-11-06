@@ -29,8 +29,11 @@ static LOCK: Mutex<()> = Mutex::new(());
 
 /// `%APPDATA%\Foxglove\foxglove.toml` (the folder above KeyPeek's `config`), or inside
 /// `FOXGLOVE_CONFIG_DIR` when that's set, so a test run never shares or touches a store
-/// outside its own folder.
+/// outside its own folder. In a test build always inside [`test_sandbox`], set up or not.
 pub fn path() -> Option<PathBuf> {
+    if let Some(dir) = test_sandbox() {
+        return Some(dir.join("foxglove.toml"));
+    }
     path_for(
         std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from),
         crate::settings::Settings::config_file_path(),
@@ -91,6 +94,7 @@ fn read(path: &Path) -> Result<Table, String> {
 }
 
 fn read_once(path: &Path) -> std::io::Result<String> {
+    assert_sandboxed(path);
     #[cfg(test)]
     if FAIL_READS
         .lock()
@@ -181,6 +185,7 @@ fn rows_for(unread: &[(String, String)]) -> Vec<super::health::HealthRow> {
 }
 
 fn write(path: &Path, table: &Table) -> std::io::Result<()> {
+    assert_sandboxed(path);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -732,9 +737,43 @@ fn load_or_migrate_at<T: DeserializeOwned + Serialize + Default>(
     }
 }
 
+/// Test builds: the per-process test settings folder ([`test_config_dir`], set up on first
+/// use); `None` in the app. Every path Foxglove resolves under its settings folder or
+/// `%LOCALAPPDATA%\Foxglove` asks this first, so a test reaches only its own temp folder,
+/// whether it called `test_config_dir()` or not. A test once wrote into the user's real
+/// `foxglove.toml` because it saved before setting the folder up; that can't happen any more.
+#[inline]
+pub fn test_sandbox() -> Option<&'static Path> {
+    #[cfg(test)]
+    {
+        Some(test_config_dir())
+    }
+    #[cfg(not(test))]
+    {
+        None
+    }
+}
+
+/// Test builds: panics on a store read or write outside [`test_sandbox`], the backstop for a
+/// path built some other way. Nothing in the app.
+#[inline]
+fn assert_sandboxed(path: &Path) {
+    if let Some(dir) = test_sandbox() {
+        assert!(
+            path.starts_with(dir),
+            "a test touched {}, outside the test settings folder {}; build test paths under \
+             store::test_config_dir()",
+            path.display(),
+            dir.display()
+        );
+    }
+}
+
 /// One temp settings folder for every test in this process. FOXGLOVE_CONFIG_DIR is
 /// process-wide and tests run in parallel, so they share one folder (each its own sections)
-/// instead of racing to point it elsewhere. Never the user's real settings.
+/// instead of racing to point it elsewhere. Never the user's real settings. Code that resolves
+/// a settings path sets it up itself ([`test_sandbox`]); a test calls this only to get the
+/// folder.
 #[cfg(test)]
 pub fn test_config_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -762,8 +801,7 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("foxglove-store-{name}-{}", std::process::id()));
+        let dir = test_config_dir().join(format!("store-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -813,9 +851,7 @@ mod tests {
 
     #[test]
     fn kits_section_reads_as_plugins() {
-        let dir =
-            std::env::temp_dir().join(format!("foxglove-store-rename-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp("rename");
         let path = dir.join("foxglove.toml");
         std::fs::write(&path, "schema = 1\n[kits.installed.\"com.example.a\"]\nenabled = true\n[kits.trust]\nsequence = 3\n").unwrap();
         let v: Option<toml::Value> = try_load_at(&path, "plugins.trust").unwrap();
@@ -1063,5 +1099,80 @@ keep = true
         std::fs::write(&path, "not [valid").unwrap();
         assert!(update_at(&path, "machine", |d: &mut Demo| d.n = 1).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not [valid");
+    }
+
+    /// A real-looking settings folder: `%APPDATA%\Foxglove` as a fake, never the user's.
+    fn fake_appdata() -> PathBuf {
+        PathBuf::from(if cfg!(windows) {
+            r"C:\Users\u\AppData\Roaming"
+        } else {
+            "/home/u/.config"
+        })
+        .join("Foxglove")
+    }
+
+    /// A test that saves without setting anything up lands in the test folder: the guard in
+    /// `path()` doesn't depend on FOXGLOVE_CONFIG_DIR having been set by someone first.
+    /// Fails if the guard is removed: `test_sandbox()` must be the test folder in a test build.
+    #[test]
+    fn a_save_with_no_setup_lands_in_the_test_folder() {
+        let sandbox = test_sandbox().expect("a test build always has its sandbox");
+        let root = std::env::temp_dir().join(format!("foxglove-tests-{}", std::process::id()));
+        assert!(sandbox.starts_with(&root), "{}", sandbox.display());
+        let path = path().unwrap();
+        assert_eq!(path, sandbox.join("foxglove.toml"));
+        assert!(!path.starts_with(fake_appdata()));
+        save("guard_probe", &Demo { on: true, n: 41 }).unwrap();
+        assert_eq!(
+            try_load_at::<Demo>(&path, "guard_probe").unwrap(),
+            Some(Demo { on: true, n: 41 })
+        );
+    }
+
+    /// Every path Foxglove builds under its settings folder or `%LOCALAPPDATA%\Foxglove`
+    /// resolves inside the test folder in a test build (or to nothing).
+    #[test]
+    fn every_settings_path_stays_in_the_test_folder() {
+        let sandbox = test_sandbox().unwrap();
+        let inside = |what: &str, p: Option<PathBuf>| {
+            let p = p.unwrap_or_else(|| panic!("{what}: no path"));
+            assert!(p.starts_with(sandbox), "{what}: {}", p.display());
+        };
+        inside(
+            "settings.ini",
+            crate::settings::Settings::config_file_path(),
+        );
+        inside("foxglove.toml", path());
+        inside("logs", crate::foxglove::app_log::dir());
+        inside("plugins", crate::foxglove::plugin_install::plugins_dir());
+        inside(
+            "plugin catalog cache",
+            crate::foxglove::plugin_trust::cache_dir(),
+        );
+        inside("art library", crate::foxglove::art_library::folder());
+        assert_eq!(
+            crate::foxglove::app_log::fallback_dir(),
+            None,
+            "log fallback"
+        );
+    }
+
+    /// The backstop: a store read or write outside the test folder panics in a test build,
+    /// even when the path was built by hand (here a fake `%APPDATA%`, never touched).
+    #[test]
+    #[should_panic(expected = "outside the test settings folder")]
+    fn a_store_write_outside_the_test_folder_panics() {
+        let _ = save_at(
+            &fake_appdata().join("foxglove.toml"),
+            "guard_probe",
+            &Demo::default(),
+            true,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the test settings folder")]
+    fn a_store_read_outside_the_test_folder_panics() {
+        let _ = try_load_at::<Demo>(&fake_appdata().join("foxglove.toml"), "guard_probe");
     }
 }

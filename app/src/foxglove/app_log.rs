@@ -177,9 +177,10 @@ pub const BACKOFF: [Duration; 5] = [
 ];
 
 /// The folder tried when the settings folder's log won't open: `%LOCALAPPDATA%\Foxglove\logs`.
-/// None in a test run (`FOXGLOVE_CONFIG_DIR`), which never writes outside its own folder.
+/// None in a test run (`FOXGLOVE_CONFIG_DIR`, or any test build), which never writes outside
+/// its own folder.
 pub fn fallback_dir() -> Option<PathBuf> {
-    if std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some() {
+    if super::store::test_sandbox().is_some() || std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some() {
         return None;
     }
     Some(

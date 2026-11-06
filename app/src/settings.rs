@@ -284,7 +284,11 @@ impl Settings {
     pub fn config_file_path() -> Option<PathBuf> {
         // Foxglove: FOXGLOVE_CONFIG_DIR points every settings file elsewhere (tests, the Test
         // lab), since the system folder lookup ignores APPDATA. The store (foxglove.toml) and
-        // plugins go in it too.
+        // plugins go in it too. A test build is always in the test folder, set up or not, so
+        // no test can reach the user's settings (store::test_sandbox).
+        if let Some(dir) = crate::foxglove::store::test_sandbox() {
+            return Some(dir.join("settings.ini"));
+        }
         if let Some(dir) = std::env::var_os("FOXGLOVE_CONFIG_DIR") {
             return Some(PathBuf::from(dir).join("settings.ini"));
         }
@@ -297,7 +301,9 @@ impl Settings {
 
     /// Where KeyPeek kept its settings; read until Foxglove saves its own.
     fn keypeek_file_path() -> Option<PathBuf> {
-        if std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some() {
+        if crate::foxglove::store::test_sandbox().is_some()
+            || std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some()
+        {
             return None;
         }
         ProjectDirs::from("dev", "srwi", "KeyPeek")

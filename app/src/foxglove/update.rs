@@ -90,9 +90,15 @@ fn startup_enabled() -> bool {
     .check_at_startup
 }
 fn folder() -> Result<PathBuf> {
-    let p = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?)
-        .join("Foxglove")
-        .join("updates");
+    let p = match super::store::test_sandbox() {
+        // A test build stays in its own folder, never %LOCALAPPDATA%\Foxglove.
+        Some(dir) => dir.join("updates"),
+        None => {
+            PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?)
+                .join("Foxglove")
+                .join("updates")
+        }
+    };
     std::fs::create_dir_all(&p)?;
     Ok(p)
 }
@@ -336,4 +342,18 @@ pub fn helper_entry() -> bool {
         let _ = std::process::Command::new(exe).spawn();
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    /// A test build's update folder is in the test folder, never %LOCALAPPDATA%\Foxglove.
+    #[test]
+    fn the_update_folder_stays_in_the_test_folder() {
+        let p = super::folder().unwrap();
+        assert!(
+            p.starts_with(crate::foxglove::store::test_sandbox().unwrap()),
+            "{}",
+            p.display()
+        );
+    }
 }
