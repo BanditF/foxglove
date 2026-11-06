@@ -1058,6 +1058,8 @@ fn definition_layouts_render() {
                 split: false,
                 panel: None,
                 art: None,
+                // A board drawn from its definition describes no screens (#822).
+                screens: Vec::new(),
                 ..sample_board()
             };
             let img = render_ui(&ctx, egui::vec2(980.0, 360.0), ground, |ui| {
@@ -1069,6 +1071,78 @@ fn definition_layouts_render() {
     }
     assert_ne!(shots[0], shots[1], "the chips differ");
     assert_ne!(shots[0], shots[2], "dark and light");
+}
+
+/// #822: the board drawing's screens come from the board, dark and light: the Corne's two (as
+/// before), none on a one-piece K5 Pro drawn from its VIA definition, and a one-piece board's
+/// info and art screens where its profile puts them.
+#[test]
+fn screens_per_board_render() {
+    use crate::foxglove::key_layout::{from_drawing, resolve, LayoutSource};
+    use crate::foxglove::keyboard_page::{board, board_screens, tests::sample_board, BoardView};
+    use crate::foxglove::parts::Parts;
+    use crate::foxglove::screen_roles::of_board;
+    use crate::foxglove::theme::{Choice, DARK, LIGHT};
+    use crate::foxglove::via_host::{layout_of, tests::k5_pro_opened};
+    let (via, layout) = k5_pro_opened(1);
+    let via = resolve(None, &[layout_of(&via, &layout).unwrap()], 0);
+    let plank = crate::foxglove::fixtures::second_desk::board();
+    let mut shots = Vec::new();
+    for (choice, theme, ground) in [
+        (Choice::Dark, "dark", DARK.ground),
+        (Choice::Light, "light", LIGHT.ground),
+    ] {
+        // The screens stay dark: their textures are cached per thread, one context's at a time.
+        let views = [
+            (
+                "corne",
+                BoardView {
+                    panel: None,
+                    art: None,
+                    ..sample_board()
+                },
+            ),
+            (
+                "via",
+                BoardView {
+                    layout: via.clone(),
+                    split: false,
+                    panel: None,
+                    art: None,
+                    // No profile and nothing described: no screens.
+                    screens: board_screens(&[], None, &Parts::of(None)),
+                    ..sample_board()
+                },
+            ),
+            (
+                "plank",
+                BoardView {
+                    layout: from_drawing(
+                        plank.drawing.as_ref().unwrap(),
+                        false,
+                        LayoutSource::Profile,
+                    ),
+                    split: false,
+                    panel: None,
+                    art: None,
+                    left_label: "KEYBOARD · USB".into(),
+                    screens: board_screens(&of_board(&plank), Some(&plank), &plank.parts()),
+                    ..sample_board()
+                },
+            ),
+        ];
+        for (name, v) in views {
+            let ctx = preview_ctx();
+            crate::foxglove::theme::apply_choice(&ctx, choice);
+            let img = render_ui(&ctx, egui::vec2(980.0, 360.0), ground, |ui| {
+                board(ui, &v);
+            });
+            keep(&format!("ui-822-after-{name}-{theme}.png"), &img);
+            shots.push(img);
+        }
+    }
+    assert_ne!(shots[0], shots[1]);
+    assert_ne!(shots[0], shots[3], "dark and light");
 }
 
 /// The left panel as the preview shows it: a keyboard that answered HELLO, a frame of the
