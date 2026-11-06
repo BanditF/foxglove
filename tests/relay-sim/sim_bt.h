@@ -111,6 +111,11 @@ struct sim_right {
     // The status version it reports: ART_RELAY_STORE_STATUS_VERSION has STORE (#522); a lower
     // one ignores the op as a right before it does.
     uint8_t version;
+    uint8_t set_count; // built-in sets (0: 1, the Bandit_Emblem since #671)
+    // A right before #851: a SELECT of a built-in shows in the status only builtin_lag_us later
+    // (its display queue's play_cb); until then the status keeps set_before. 0: at once.
+    int64_t builtin_lag_us, builtin_shown_at_us;
+    int8_t set_before;
     // Flash slots (art_slots.c): what SAVE and STORE wrote. crc is the blob's, for the checks.
     struct sim_flash_slot {
         bool used;

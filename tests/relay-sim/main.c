@@ -1225,6 +1225,45 @@ static void art_step_toast(void) {
     wait_relay(40);
     debug_line("at the end");
 }
+
+// The wrap (#851): M = 2 built-ins and N = 4 kept places (0-3), so the step list is sets 0-5.
+// From the last set, two full laps with &art_next and then two with &art_prev, Foxglove quit (no
+// STATUS reads between presses), a press a little over a second after the last one landed. Each
+// press must land on the next set round the list, the wrap included, with the toast's n/6.
+// With lag, the right is one before #851: a built-in shows in its status 2 s after its SELECT
+// (its display queue), so the left's read right after the SELECT still holds the set before.
+// The left stepped from that set again (to the set already on screen): the stall at the wrap.
+static void art_step_cycles(bool lag) {
+    sim_right.set_count = 2;
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    for (int i = 0; i < 4; i++) {
+        sim_right.flash[i].used = true;
+    }
+    const int total = 6, last = total - 1;
+    char why[200];
+    check("start-on-last", lab_select((int8_t)last, why, sizeof(why)), "%s", why);
+    sim_right.builtin_lag_us = lag ? 2000000 : 0;
+    app_on = false;
+    int fails = 0;
+    for (int lap = 0; lap < 4; lap++) {
+        int8_t dir = lap < 2 ? 1 : -1;
+        for (int i = 0; i < total; i++) {
+            int8_t want = (int8_t)(((sim_right.set + dir) % total + total) % total);
+            bool ok = board_step(dir, want, why, sizeof(why));
+            ok = ok && sim_left.toast_index == want && sim_left.toast_total == total &&
+                 sim_left.toast_dir == dir && sim_left.toast_kept == (want >= 2);
+            if (!ok || (want == 0 && dir > 0) || (want == last && dir < 0)) {
+                char name[24];
+                snprintf(name, sizeof(name), "lap-%d-%s-%d", lap, dir > 0 ? "next" : "prev", want);
+                check(name, ok, "want %d/%d: %s", want + 1, total, why); // the wraps, and any miss
+            }
+            fails += !ok;
+        }
+    }
+    check("four-laps", fails == 0, "%d of %d presses missed", fails, 4 * total);
+    debug_line("at the end");
+}
 #endif
 
 static bool lab_done;
@@ -1265,6 +1304,10 @@ static void lab_thread(void *arg) {
 #if __has_include("art_toast.h")
     } else if (!strcmp(scenario, "art-step-toast")) {
         art_step_toast();
+    } else if (!strcmp(scenario, "art-step-cycles")) {
+        art_step_cycles(false);
+    } else if (!strcmp(scenario, "art-step-cycles-lag")) {
+        art_step_cycles(true);
 #endif
 #ifdef SIM_HEALTH
     } else if (!strcmp(scenario, "health")) {

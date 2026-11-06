@@ -872,6 +872,13 @@ static void select_cb(struct k_work *work) {
         fail(ART_ERR_BLE);
         return;
     }
+    // A right before #851 names a built-in in its status only once its display queue has played
+    // it, so the read just now may still hold the set before. The SELECT it took (IDLE, no ATT
+    // error) is the set on screen: keep that, so the next on-board step starts from it and not
+    // from the old one (which stepped to the same set again: the stall at the wrap).
+    if (select_set >= 0 && select_set < right.set_count && right.state == ART_RIGHT_IDLE) {
+        right.set = select_set;
+    }
     done();
 }
 static K_WORK_DEFINE(select_work, select_cb);
