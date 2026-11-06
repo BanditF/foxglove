@@ -245,6 +245,18 @@ impl Definition {
         out
     }
 
+    /// Whether a layout options value is one this definition can mean, for a write (#723): no
+    /// bits above its groups, and each group's choice one it has. Without options only 0 is.
+    pub fn valid_layout_options(&self, value: u32) -> bool {
+        let mut shift = 0u32;
+        let mut rebuilt = 0u64;
+        for (o, c) in self.options.iter().zip(self.choices(value)).rev() {
+            rebuilt |= u64::from(c) << shift;
+            shift += o.bits().min(8);
+        }
+        shift <= 32 && rebuilt == u64::from(value)
+    }
+
     /// The chosen layout options in words, for a layout options value: a toggle that is on by
     /// its name ("Split Backspace"), a group with choices as "name: choice" ("Enter: 2u"). Off
     /// toggles are left out.
@@ -521,6 +533,21 @@ mod tests {
             [0, 0, 0],
             "bits above the groups are ignored"
         );
+    }
+
+    /// #723: a layout options write must be a value the definition can mean.
+    #[test]
+    fn only_meaningful_layout_options_values_are_valid() {
+        let d = Definition::parse(OPTIONS).unwrap();
+        for v in [0, 0b0001, 0b0010, 0b0100, 0b1101, 0b1000] {
+            assert!(d.valid_layout_options(v), "{v:#b}");
+        }
+        for v in [0b0110, 0b1110, 0b1_0000, 0xFFFF_FFF0, u32::MAX] {
+            assert!(!d.valid_layout_options(v), "{v:#b}");
+        }
+        let mut none = Definition::parse(SAMPLE).unwrap();
+        none.options.clear();
+        assert!(none.valid_layout_options(0) && !none.valid_layout_options(1));
     }
 
     fn keys(l: &Layout) -> Vec<(u16, u16, f32, f32, f32)> {

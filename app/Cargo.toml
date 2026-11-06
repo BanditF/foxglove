@@ -9,9 +9,10 @@ version = "0.3.0"
 edition = "2021"
 
 [features]
-# Foxglove (#581): VIA/Vial writes (keymap, lighting). Off in 0.2; one flag for the VIA backend
-# and the KeyPeek VIA/Vial adapters (`foxglove_via::WRITES_ENABLED`). For 0.3, after a test on a
-# real VIA/Vial board.
+# Foxglove (#581, #723): VIA/Vial writes (keymap, lighting, layout options). Off by default; one
+# switch for the VIA backend and the KeyPeek VIA/Vial adapters (`foxglove_via::writes_enabled()`).
+# Even in a build with it, writes stay off unless the hidden dev switch FOXGLOVE_VIA_WRITES=1 is
+# set, for the real-board test (docs/test-lab/via-writes-real-board.md).
 via-writes = ["foxglove-via/via-writes"]
 
 [dependencies]

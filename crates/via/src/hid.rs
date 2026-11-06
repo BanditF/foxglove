@@ -1,7 +1,8 @@
 //! The hidapi transport and the device layer backend: QMK keyboards on their Raw HID interface
 //! (usage page 0xFF60, usage 0x61), over USB; which ones is [`crate::discovery`]'s call.
 //!
-//! The backend opens devices read-only unless built with [`ViaBackend::allow_writes`].
+//! The backend opens devices read-only unless built with [`ViaBackend::allow_writes`] and
+//! [`crate::writes_enabled`].
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -153,8 +154,8 @@ impl ViaBackend {
     }
 
     /// Opens devices with keycode and lighting writes allowed. Off by default: turn on only
-    /// with the user's OK for that keyboard. Has no effect without the `via-writes` feature
-    /// (off in 0.2, #581).
+    /// with the user's OK for that keyboard. Has no effect unless [`crate::writes_enabled`] (a
+    /// `via-writes` build and `FOXGLOVE_VIA_WRITES=1`, #581/#723).
     pub fn allow_writes(mut self) -> Self {
         self.writes = true;
         self
@@ -198,6 +199,14 @@ impl Backend for ViaBackend {
     }
 
     fn open(&self, info: &DeviceInfo, _sink: EventSink) -> Result<Box<dyn Device>> {
+        Ok(Box::new(self.open_via(info)?))
+    }
+}
+
+impl ViaBackend {
+    /// [`Backend::open`], as the VIA device itself: for the real-board write test (#723), which
+    /// needs its explicit lighting save and layout options next to the device layer's calls.
+    pub fn open_via(&self, info: &DeviceInfo) -> Result<ViaDevice<HidTransport>> {
         let rules = self.rules();
         let def = rules.definition(info.id.vid, info.id.pid).cloned();
         if def.is_none() && !self.generic {
@@ -221,6 +230,6 @@ impl Backend for ViaBackend {
         };
         let dev = ViaDevice::open(info.clone(), def, link, &self.catalog)?;
         self.opened.record(&info.id, dev.summary());
-        Ok(Box::new(dev))
+        Ok(dev)
     }
 }

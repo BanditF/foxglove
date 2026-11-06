@@ -19,9 +19,11 @@
 //! - `hid` (feature `hid`): the hidapi transport and backend
 //!
 //! Safety first: only allowlisted commands reach the keyboard. Reading is always allowed;
-//! writes (keycodes, lighting) only when the crate is built with the `via-writes` feature (off
-//! in 0.2, #581) and the device was opened with writes enabled; reset, EEPROM reset, bootloader
-//! and Keychron's 0xAA-0xAB factory/DFU commands never.
+//! writes (keycodes, lighting values and saves, layout options) only when the crate is built
+//! with the `via-writes` feature (off by default, #581), the hidden dev switch
+//! `FOXGLOVE_VIA_WRITES=1` is set (#723, for the real-board test), and the device was opened with
+//! writes; reset, EEPROM reset, bootloader, Vial unlock and Keychron's 0xAA-0xAB factory/DFU
+//! commands never.
 
 pub mod catalog;
 pub mod client;
@@ -40,4 +42,4 @@ pub mod vial;
 pub use catalog::Catalog;
 pub use definition::Definition;
 pub use device::{Source, Summary, ViaDevice};
-pub use protocol::{Guarded, Transport, WRITES_ENABLED};
+pub use protocol::{writes_enabled, Guarded, Transport, WRITES_BUILT, WRITES_ENV};
