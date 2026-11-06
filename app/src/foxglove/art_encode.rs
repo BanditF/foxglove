@@ -683,6 +683,23 @@ mod tests {
         assert_eq!(blob[7], FLAG_INK);
     }
 
+    /// #835: `flipper_art.py --size 144x112` and this encoder fit and write the same blob for
+    /// another art screen (144x112 upright, not turned; the fixture is scaled down to fit). The
+    /// Python side checks the same file in `scripts/test_flipper_art.py`.
+    #[test]
+    fn the_script_and_the_app_fit_another_screen_the_same() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/art");
+        let target = ArtTarget {
+            width: 144,
+            height: 112,
+            rotation: 0,
+        };
+        let blob = encode_folder(&root.join("ink-fixture"), target, Polarity::Auto).unwrap();
+        let script = std::fs::read(root.join("ink-fixture-144x112.bin")).unwrap();
+        assert_eq!(&blob[..6], b"NVA1\x90\x70");
+        assert_eq!(blob, script);
+    }
+
     fn fixture(name: &str, polarity: Polarity) -> Vec<u8> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/art");
         encode_folder(&root.join(name), ArtTarget::FIRMWARE, polarity).unwrap()

@@ -45,3 +45,29 @@ first frame as the lab reads it back; `right_art_goldens_match_the_firmware_art`
 `crates/foxglove-lab/tests/offline.rs` checks it).
 
 The run also writes `widgets/custom_art.json`, which Foxglove uses to name the built-in sets.
+
+## Art for other screens (#835)
+
+Foxglove fits any set to the connected board's art screen by one rule: art too big is scaled
+down evenly until it fits, smaller art keeps its size, and either way it is centred on the field.
+It is never stretched or scaled up. When a set has a folder drawn for that screen, Foxglove uses
+the folder instead: `<set>/<w>x<h>/`, named by the art's upright size, as drawn (for example
+`Bandit_emblem/144x112/`), with its own `meta.txt` and `frame_N.png` (#831).
+
+`--size WxH[:ROT]` makes a set for such a screen. `W x H` is the upright size, and `ROT` is how
+many quarter turns clockwise the art is stored turned (0 by default). It fits the art by the
+app's rule and filter, so the app and the script make the same blob
+(`tests/art/ink-fixture-144x112.bin` is checked on both sides). `--variant SET` also writes the
+fitted frames as `SET/<W>x<H>/`, upright, ink black on a white field:
+
+```
+python scripts/flipper_art.py emblem-144x112.bin ../art-src/bandit/out/Bandit_emblem --size 144x112 --variant ../art-src/bandit/out/Bandit_emblem
+```
+
+`--size` writes a `.bin` (one set, pushable with `hostpanel push-art`). The firmware's built-ins
+(`custom_art.c`) stay the Corne's 140x68. `:landscape` doesn't go with `--size`, because `ROT`
+replaces it. `--size 68x140:1` is the Corne's own format. Without `--size` the output is exactly
+as before.
+
+The script and the app both fit art the same way, but drawing a folder at the screen's size is
+still worth it: thin lines that scaling would blur or drop can be redrawn by hand there.

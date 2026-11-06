@@ -159,6 +159,111 @@ class Polarity(unittest.TestCase):
         self.assertEqual(fa.should_invert([light], False, "invert"), True)
 
 
+SIZED = os.path.join(ROOT, "tests", "art", "ink-fixture-144x112.bin")
+
+
+def sized_blob(spec, size):
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "out.bin")
+        fa.write_blob(path, fa.load_input(spec, fa.parse_size(size)))
+        with open(path, "rb") as f:
+            return f.read()
+
+
+def first_frame(blob):
+    """(width, height, the first unique frame's rows) of an ink-flagged blob of any size."""
+    w, h = blob[4], blob[5]
+    unique = blob[8] | blob[9] << 8
+    count = blob[10] | blob[11] << 8
+    at = 12 + count
+    start = blob[at] | blob[at + 1] << 8
+    end = blob[at + 2] | blob[at + 3] << 8 if unique > 1 else len(blob)
+    buf = bytearray(((w + 7) // 8) * h)
+    fa.unrle_xor(blob[start:end], buf)
+    return w, h, bytes(buf)
+
+
+def lit(frame, x, y):
+    w, _, data = frame
+    return bool(data[y * ((w + 7) // 8) + x // 8] & (0x80 >> (x % 8)))
+
+
+class Size(unittest.TestCase):
+    """#835: --size WxH[:ROT] makes a set for another art screen, fitted as the app fits it."""
+
+    def test_the_corne_default_is_unchanged(self):
+        with open(FIXTURE + ".bin", "rb") as f:
+            corne = f.read()
+        self.assertEqual(blob_of(FIXTURE), corne, "no --size: as before")
+        self.assertEqual(sized_blob(FIXTURE, "68x140:1"), corne, "the Corne's format by size")
+
+    def test_the_script_and_the_app_fit_another_screen_the_same(self):
+        # app/src/foxglove/art_encode.rs encodes the same folder for a 144x112 screen and checks
+        # the same file: both fit (scale down evenly, centre) and encode byte for byte.
+        blob = sized_blob(FIXTURE, "144x112")
+        with open(SIZED, "rb") as f:
+            self.assertEqual(blob, f.read())
+        self.assertEqual(blob[4:8], bytes([144, 112, 2, fa.FLAG_INK]))
+
+    def test_the_parse(self):
+        self.assertEqual(fa.parse_size("144x112"), fa.Target(144, 112, 0))
+        self.assertEqual(fa.parse_size("68x140:1"), fa.FIRMWARE, "stored turned: 140x68")
+        self.assertEqual(fa.parse_size("88X184:2"), fa.Target(88, 184, 2))
+        for bad in ("144", "0x10", "256x10", "10x10:4", "10x10:-1", "axb"):
+            with self.assertRaises(Exception, msg=bad):
+                fa.parse_size(bad)
+        with self.assertRaises(SystemExit):
+            fa.load_input(FIXTURE + ":landscape", fa.parse_size("144x112"))
+
+    def test_the_fit_rule(self):
+        from PIL import Image
+
+        # Smaller art keeps its size, centred: an 8x6 black box on 20x10, upright.
+        src = Image.new("L", (8, 6), 0)
+        frame = first_frame(sized_blob_of_image(src, "20x10"))
+        self.assertEqual(frame[:2], (20, 10))
+        on = {(x, y) for y in range(10) for x in range(20) if lit(frame, x, y)}
+        self.assertEqual(on, {(x, y) for x in range(6, 14) for y in range(2, 8)})
+        # Bigger art is scaled down evenly, never stretched: 40x10 into 20x20 is 20x5, centred.
+        frame = first_frame(sized_blob_of_image(Image.new("L", (40, 10), 0), "20x20"))
+        on = {(x, y) for y in range(20) for x in range(20) if lit(frame, x, y)}
+        self.assertEqual(on, {(x, y) for x in range(20) for y in range(7, 12)})
+        # Turned: upright (0..8, 0..6) of a 20x10 stored one quarter turn clockwise is 10x20,
+        # upright (x, y) at stored column 9 - y, row x.
+        corner = Image.new("L", (20, 10), 255)
+        corner.paste(0, (0, 0, 8, 6))
+        frame = first_frame(sized_blob_of_image(corner, "20x10:1"))
+        self.assertEqual(frame[:2], (10, 20))
+        on = {(x, y) for y in range(20) for x in range(10) if lit(frame, x, y)}
+        self.assertEqual(on, {(9 - y, x) for x in range(8) for y in range(6)})
+
+    def test_the_variant_folder_makes_the_same_blob(self):
+        blob = sized_blob(FIXTURE, "144x112")
+        with tempfile.TemporaryDirectory() as d:
+            sets = fa.load_input(FIXTURE, fa.parse_size("144x112"))
+            folder = fa.write_variant(d, sets)
+            self.assertEqual(folder, os.path.join(d, "144x112"))
+            self.assertEqual(sorted(os.listdir(folder)), ["frame_0.png", "frame_1.png", "meta.txt"])
+            meta = fa.parse_meta(os.path.join(folder, "meta.txt"))
+            self.assertEqual((meta["Width"], meta["Height"]), ("144", "112"))
+            self.assertEqual(meta["Frames order"], "0 1 1 0")
+            self.assertEqual(meta["Frame rate"], "2")
+            # Drawn at the screen's size, the folder encodes as it is: the same blob again.
+            self.assertEqual(sized_blob(folder, "144x112"), blob)
+            # Turned screens name the folder upright.
+            sets = fa.load_input(FIXTURE, fa.parse_size("112x144:1"))
+            self.assertEqual(fa.write_variant(d, sets), os.path.join(d, "112x144"))
+            with self.assertRaises(SystemExit):
+                fa.write_variant(d, fa.load_input(FIXTURE))
+
+
+def sized_blob_of_image(img, size):
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "src.png")
+        img.save(src)
+        return sized_blob(src + ":polarity=as-is", size)  # all-black sources: black is ink
+
+
 class BuiltIns(unittest.TestCase):
     def test_built_in_art_is_ink_bits(self):
         src = open(BUILTINS, encoding="utf-8").read()
