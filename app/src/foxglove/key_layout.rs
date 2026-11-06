@@ -59,7 +59,9 @@ impl LayoutSource {
             LayoutSource::Definition(DefinitionFormat::Via) => {
                 "Layout from its VIA definition".into()
             }
-            LayoutSource::Definition(DefinitionFormat::QmkInfo) => "Layout from a QMK layout".into(),
+            LayoutSource::Definition(DefinitionFormat::QmkInfo) => {
+                "Layout from a QMK layout".into()
+            }
             LayoutSource::Definition(DefinitionFormat::Kle) => "Layout from its KLE file".into(),
             LayoutSource::Profile => "Layout from Foxglove's board profile".into(),
             LayoutSource::Guessed(n) => format!("Shape guessed from {n} keys"),

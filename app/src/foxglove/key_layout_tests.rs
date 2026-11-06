@@ -301,7 +301,11 @@ pub(crate) fn connected_now() -> Option<(u16, u16)> {
 /// its own step is withdrawn.
 #[test]
 fn a_definition_is_kept_beside_the_connected_keyboard_and_can_be_withdrawn() {
-    set_for_test(0x1d50, 0x615e, Some(crate::protocols::zmk::studio_layouts(&corne_studio())));
+    set_for_test(
+        0x1d50,
+        0x615e,
+        Some(crate::protocols::zmk::studio_layouts(&corne_studio())),
+    );
     let mut via = crate::protocols::zmk::studio_layouts(&corne_studio());
     via.source = LayoutSource::Definition(DefinitionFormat::Via);
     from_definition(0x3434, 0x0250, via.clone());
@@ -310,7 +314,11 @@ fn a_definition_is_kept_beside_the_connected_keyboard_and_can_be_withdrawn() {
     assert_eq!(supplied_now().len(), 1, "the connected keyboard's own only");
     withdraw(0x3434, 0x0250, LayoutSource::Keyboard);
     assert_eq!(handed_for(0x3434, 0x0250), vec![via], "another step stays");
-    withdraw(0x3434, 0x0250, LayoutSource::Definition(DefinitionFormat::QmkInfo));
+    withdraw(
+        0x3434,
+        0x0250,
+        LayoutSource::Definition(DefinitionFormat::QmkInfo),
+    );
     assert!(handed_for(0x3434, 0x0250).is_empty());
     assert_eq!(handed_for(0x1d50, 0x615e).len(), 1);
 }

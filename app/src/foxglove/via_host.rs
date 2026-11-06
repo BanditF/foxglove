@@ -1150,7 +1150,11 @@ pub(crate) mod tests {
         assert_eq!(drawn.source.chip(), "Layout from its VIA definition");
         assert!(matches!(drawn.source, LayoutSource::Definition(_)));
         assert_eq!(drawn.source.dot(), Some(crate::foxglove::theme::Dot::Ok));
-        assert!(drawn.size.x > 22.0 && drawn.size.x < 23.0, "{:?}", drawn.size);
+        assert!(
+            drawn.size.x > 22.0 && drawn.size.x < 23.0,
+            "{:?}",
+            drawn.size
+        );
         assert!((drawn.size.y - 6.25).abs() < 0.01, "{:?}", drawn.size);
         assert_eq!(drawn.name.as_deref(), Some("Keychron K5 Pro"));
         // Split Backspace on: two 1u keys where the 2u one was.
@@ -1163,11 +1167,16 @@ pub(crate) mod tests {
             Some("Keychron K5 Pro \u{b7} Split Backspace")
         );
         let hover = crate::foxglove::key_layout::hover(&split);
-        assert!(hover.starts_with("Drawn from the VIA definition you loaded"), "{hover}");
+        assert!(
+            hover.starts_with("Drawn from the VIA definition you loaded"),
+            "{hover}"
+        );
         let backspace = |l: &crate::foxglove::key_layout::KeyLayout| {
             let mut row: Vec<(f32, f32)> = l.parts[0]
                 .iter()
-                .filter(|k| (k.rect.min.y - 1.25).abs() < 0.01 && k.rect.min.x > 12.5 && k.rect.min.x < 15.0)
+                .filter(|k| {
+                    (k.rect.min.y - 1.25).abs() < 0.01 && k.rect.min.x > 12.5 && k.rect.min.x < 15.0
+                })
                 .map(|k| (k.rect.min.x, k.rect.width()))
                 .collect();
             row.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -1176,7 +1185,10 @@ pub(crate) mod tests {
         assert_eq!(backspace(&drawn), [(13.0, 2.0)]);
         assert_eq!(backspace(&split), [(13.0, 1.0), (14.0, 1.0)]);
         // The ladder: the definition beats the guess, and the keyboard beats it.
-        assert_eq!(drawn.size, split.size, "the split keys sit in the 2u key's place");
+        assert_eq!(
+            drawn.size, split.size,
+            "the split keys sit in the 2u key's place"
+        );
     }
 
     /// A loaded QMK keyboard.json says "from a QMK layout", named by its `LAYOUT_*`; a Vial
