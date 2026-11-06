@@ -348,6 +348,9 @@ pub struct SettingsWindow {
     /// The handle wasn't found this opening (said once in the log).
     #[cfg(target_os = "windows")]
     lost: bool,
+    /// The frame after an opening's show checks, once, that the window really is visible.
+    #[cfg(target_os = "windows")]
+    check_shown: bool,
 }
 
 impl Default for SettingsWindow {
@@ -360,6 +363,8 @@ impl Default for SettingsWindow {
             hwnd: None,
             #[cfg(target_os = "windows")]
             lost: false,
+            #[cfg(target_os = "windows")]
+            check_shown: false,
         }
     }
 }
@@ -407,6 +412,8 @@ impl SettingsWindow {
                 self.hwnd = imp::find(LOOKUP_TITLE);
                 if let Some(hwnd) = self.hwnd {
                     imp::hook(hwnd);
+                    // A tray request on another thread can show it straight away.
+                    super::settings_open::publish(Some(hwnd));
                     // Found by its own name: now it can take the app's.
                     ctx.send_viewport_cmd(egui::ViewportCommand::Title(TITLE.into()));
                 }
@@ -423,8 +430,20 @@ impl SettingsWindow {
             let overlay_monitor = under_mouse.as_str();
             match self.hwnd {
                 Some(hwnd) => {
+                    // The opening was shown last frame: if it's still hidden (the one show at
+                    // sign-in didn't take), show it again, once. Nothing else hides it while
+                    // it's open (minimizing closes it).
+                    if std::mem::take(&mut self.check_shown) && !imp::visible(hwnd) {
+                        eprintln!(
+                            "Foxglove: the Settings window was still hidden after opening; \
+                             showing it again"
+                        );
+                        imp::show(ctx, Some(hwnd));
+                    }
+                    let opening = !self.memory.placed;
                     let mut window = imp::Win32Window { hwnd, ctx };
                     self.memory.frame(&mut window, &monitors, overlay_monitor);
+                    self.check_shown |= opening;
                 }
                 None => {
                     // Not found (it should be): show it where Windows put it.
@@ -445,6 +464,22 @@ impl SettingsWindow {
         ctx.input(|i| i.viewport().minimized) == Some(true)
     }
 
+    /// Settings is already open and asked for again (tray, second launch): show it, whatever
+    /// state it's in: un-minimized, made visible (through winit and, on Windows, at once) and
+    /// brought to the front. Before, only the first and last ran, and a window made but hidden
+    /// stayed hidden however often the tray asked. Runs in the root's frame.
+    pub fn reshow(&mut self, ctx: &egui::Context) {
+        let id = id();
+        ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Visible(true));
+        #[cfg(target_os = "windows")]
+        imp::show_now(self.hwnd);
+        super::focus::bring_to_front(ctx, id, self.hwnd());
+        super::settings_open::shown("reopened", false);
+        // Its frame draws it now.
+        ctx.request_repaint_of(id);
+    }
+
     /// The window closed: remember where it was, and end an open colour calibrator.
     pub fn closed(&mut self) {
         super::calibrate_ui::cancel();
@@ -456,6 +491,8 @@ impl SettingsWindow {
         {
             self.hwnd = None;
             self.lost = false;
+            self.check_shown = false;
+            super::settings_open::publish(None);
         }
     }
 }
@@ -622,11 +659,19 @@ mod imp {
         }
     }
 
+    /// Shown in its own frame (an opening's first): through winit and at once, then fronted.
     pub fn show(ctx: &egui::Context, hwnd: Option<isize>) {
         // Through winit, so it knows the window is visible.
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         // Shown now as well, so it can take the foreground in this frame, without the fake Alt
         // press winit's focus makes (#618, focus.rs).
+        show_now(hwnd);
+        crate::foxglove::focus::bring_to_front(ctx, ctx.viewport_id(), hwnd);
+        crate::foxglove::settings_open::shown("opened", true);
+    }
+
+    /// `ShowWindow(SW_SHOW)` on the Settings window, on the UI thread (its own).
+    pub fn show_now(hwnd: Option<isize>) {
         if let Some(h) = hwnd {
             // SAFETY: shows the Settings window, which belongs to this thread.
             unsafe {
@@ -636,7 +681,17 @@ mod imp {
                 );
             }
         }
-        crate::foxglove::focus::bring_to_front(ctx, ctx.viewport_id(), hwnd);
+    }
+
+    /// Whether the window is visible (`WS_VISIBLE`).
+    pub fn visible(hwnd: isize) -> bool {
+        // SAFETY: a plain query on a window handle; a stale one reads false.
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(HWND(
+                hwnd as *mut core::ffi::c_void,
+            ))
+        }
+        .as_bool()
     }
 
     pub struct Win32Window<'a> {
@@ -1094,6 +1149,65 @@ pub mod tests {
         };
         assert!(!close(false));
         assert!(close(true));
+    }
+
+    /// "Open Foxglove" with Settings already open but its window hidden (the 795014f autostart
+    /// run): the root's frame asks for it visible and un-minimized, and wakes its viewport.
+    /// Before, only the un-minimize went out, which shows no hidden window. No window here.
+    #[test]
+    fn asking_again_for_an_open_settings_window_makes_it_visible() {
+        crate::foxglove::store::test_config_dir();
+        // On a thread of its own: the fake backend's immediate-viewport renderer is per thread.
+        std::thread::spawn(|| {
+            // A fake backend with immediate viewports, as eframe's: it runs the viewport's pass.
+            egui::Context::set_immediate_viewport_renderer(|ctx, viewport| {
+                let mut input = egui::RawInput {
+                    viewport_id: viewport.ids.this,
+                    ..Default::default()
+                };
+                input
+                    .viewports
+                    .insert(viewport.ids.this, Default::default());
+                input
+                    .viewports
+                    .insert(egui::ViewportId::ROOT, Default::default());
+                let mut cb = viewport.viewport_ui_cb;
+                let mut out = ctx.run_ui(input, |ui| cb(ui));
+                out.textures_delta.clear();
+            });
+            let ctx = egui::Context::default();
+            ctx.set_embed_viewports(false); // as eframe's, with native windows
+            let woken = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            ctx.set_request_repaint_callback({
+                let woken = woken.clone();
+                move |info| woken.lock().unwrap().push(info.viewport_id)
+            });
+            let mut window = SettingsWindow::default();
+            let mut input = egui::RawInput::default();
+            input.viewports.insert(id(), Default::default());
+            input
+                .viewports
+                .insert(egui::ViewportId::ROOT, Default::default());
+            let mut out = ctx.run_ui(input, |ui| {
+                window.reshow(ui.ctx());
+                // As `draw_settings_window` right after, in the same frame.
+                ui.ctx().show_viewport_immediate(id(), builder(), |_, _| {});
+            });
+            out.textures_delta.clear();
+            let commands: Vec<_> = out
+                .viewport_output
+                .get(&id())
+                .map(|o| o.commands.clone())
+                .unwrap_or_default();
+            assert!(
+                commands.contains(&egui::ViewportCommand::Visible(true)),
+                "{commands:?}"
+            );
+            assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+            assert!(woken.lock().unwrap().contains(&id()), "its frame runs");
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

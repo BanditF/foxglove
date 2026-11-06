@@ -119,6 +119,7 @@ mod screens_settings;
 pub mod screens_ui;
 mod screens_watch;
 pub mod services;
+pub mod settings_open;
 pub mod settings_ui;
 pub mod settings_window;
 pub mod shell;
