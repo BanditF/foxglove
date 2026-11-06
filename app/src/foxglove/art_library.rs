@@ -109,10 +109,11 @@ fn scan(state: Arc<Mutex<Library>>) {
                         })
                         .map_err(|e| e.to_string())
                         .and_then(|b| super::art_encode::for_screen(&b, &target));
-                    let (bytes, hash, fit) = read.as_ref().map_or(
-                        (0, 0, super::art_encode::Fit::AsMade),
-                        |(b, fit)| (b.len(), blob_hash(b), *fit),
-                    );
+                    let (bytes, hash, fit) = read
+                        .as_ref()
+                        .map_or((0, 0, super::art_encode::Fit::AsMade), |(b, fit)| {
+                            (b.len(), blob_hash(b), *fit)
+                        });
                     let preview = read.and_then(|(b, _)| {
                         super::art_preview::first_frame(&b)
                             .map(Arc::new)

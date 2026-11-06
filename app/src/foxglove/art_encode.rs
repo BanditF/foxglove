@@ -400,9 +400,7 @@ pub fn for_screen(
     if super::art_preview::decode(blob).is_err() {
         return Ok((blob.to_vec(), Fit::AsMade));
     }
-    let target = target
-        .as_ref()
-        .map_err(|e| format!("{DOES_NOT_FIT}{e}"))?;
+    let target = target.as_ref().map_err(|e| format!("{DOES_NOT_FIT}{e}"))?;
     fit_blob(blob, *target).map_err(|e| format!("{DOES_NOT_FIT}{e}"))
 }
 
@@ -452,7 +450,12 @@ pub fn fit_blob(blob: &[u8], target: ArtTarget) -> Result<(Vec<u8>, Fit), String
     let frames: Vec<Vec<u8>> = stored
         .order
         .iter()
-        .map(|&i| unique.get(usize::from(i)).cloned().ok_or("a frame past the set"))
+        .map(|&i| {
+            unique
+                .get(usize::from(i))
+                .cloned()
+                .ok_or("a frame past the set")
+        })
         .collect::<Result<_, _>>()?;
     Ok((
         encode(&frames, stored.fps, target)?,
@@ -950,8 +953,12 @@ mod target_tests {
                 (blob.clone(), Fit::AsMade)
             );
         }
-        let (blob, fit) = encode_set(&root.join("ink-fixture"), ArtTarget::FIRMWARE, Polarity::Auto)
-            .unwrap();
+        let (blob, fit) = encode_set(
+            &root.join("ink-fixture"),
+            ArtTarget::FIRMWARE,
+            Polarity::Auto,
+        )
+        .unwrap();
         assert_eq!(blob, std::fs::read(root.join("ink-fixture.bin")).unwrap());
         assert_eq!(fit, Fit::AsMade);
         assert_eq!(fit.note(ArtTarget::FIRMWARE), None);
@@ -961,9 +968,15 @@ mod target_tests {
     #[test]
     fn a_screen_that_cant_take_art_says_why() {
         let wide = ArtTarget::resolve_in(Some(&[screen(320, 80, 0, "1bit")])).unwrap_err();
-        assert!(wide.contains("320x80") && wide.contains("255x255"), "{wide}");
+        assert!(
+            wide.contains("320x80") && wide.contains("255x255"),
+            "{wide}"
+        );
         let colour = ArtTarget::resolve_in(Some(&[screen(80, 160, 0, "rgb565")])).unwrap_err();
-        assert!(colour.contains("rgb565") && colour.contains("1-bit"), "{colour}");
+        assert!(
+            colour.contains("rgb565") && colour.contains("1-bit"),
+            "{colour}"
+        );
         let fury = super::super::art_pieces::BUNDLED[0].1;
         let refused = for_screen(fury, &Err(wide.clone())).unwrap_err();
         assert_eq!(refused, format!("{DOES_NOT_FIT}{wide}"));
@@ -988,7 +1001,10 @@ mod target_tests {
         assert_eq!(&blob[..6], b"NVA1\x90\x70");
         assert_eq!(fit, Fit::ScaledDown { from: (68, 140) });
         let note = fit.note(target).unwrap();
-        assert!(note.contains("68x140") && note.contains("144x112"), "{note}");
+        assert!(
+            note.contains("68x140") && note.contains("144x112"),
+            "{note}"
+        );
         // The bundled Corne art, fitted the same way: the screen's size, the same play order.
         let fury = super::super::art_encode::normalise_blob(
             super::super::art_pieces::BUNDLED[0].1,
