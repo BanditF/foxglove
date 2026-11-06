@@ -36,6 +36,19 @@ the real check.
   property through Wallpaper Engine's command line (`wallpaper_sync`), and sends `0` when it
   stops. The wallpaper connects when that property changes, so nothing retries on a timer. A
   client outside Wallpaper Engine uses the configured port.
+- **A wrong or old token:** a browser can't see the HTTP status of a refused upgrade (its
+  `onclose` only says 1006), so for a local client (Origin `null`, `file://` or none) with a
+  wrong or missing token the upgrade completes, Foxglove sends `{"t":"refused","why":"token"}`
+  and closes with code `4001` (reason `token`). That is all the client learns: no `hello`,
+  nothing about the right token. The wallpaper should then stop its fast retry and ask for the
+  new token (the Bandit wallpapers retry at most once a minute, or at once when the token
+  property changes). A web origin still gets a plain HTTP 403 and no WebSocket.
+- **In the log and health view:** the first refusal is logged in full (`live feed refused a
+  connection: wrong or missing token`), then at most one line every 10 minutes, written with
+  the next refusal: `live feed refused N connections: wrong token` (N since the last line).
+  While they keep coming, Keyboard health shows a WARN, "Live wallpaper pairing: a wallpaper is
+  using an old pairing token". It clears when a wallpaper pairs, or 10 minutes after the last
+  refusal. Nothing runs on a timer for either.
 
 ## Messages
 
@@ -53,6 +66,7 @@ offer the sub-protocols `foxglove-live.v1, <token>`.
 | `quiet` | → wallpaper | `why`: `paused`, `away` or `fullscreen`; nothing follows until `live` |
 | `live` | → wallpaper | sending again (a `state` follows) |
 | `notify` | → wallpaper | `id`, `title`, `body`, `level` (`info` or `warn`): one of Foxglove's notifications; only to a client whose `hi` had `caps: ["notify"]` |
+| `refused` | → wallpaper | `why`: `token`; the only message to a client with a wrong or missing token, then a close `4001` |
 | `hi` | → Foxglove | `wallpaper`: its name; `caps`: what it can do beyond the feed (`notify`) |
 | `paused` | → Foxglove | `paused`: Wallpaper Engine paused the wallpaper (`setPaused`) |
 | `notified` | → Foxglove | `id`: it drew that notification |
