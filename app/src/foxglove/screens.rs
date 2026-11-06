@@ -76,6 +76,17 @@ pub fn snapshot() -> Snapshot {
     SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// The art screen's own limits, when its firmware sends a version 2 descriptor (#832); `None`
+/// from older firmware and before the keyboard described its screens. Cheap: no clone.
+pub fn art_target() -> Option<protocol::ArtLimits> {
+    SNAPSHOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .screens
+        .iter()
+        .find_map(|d| d.art)
+}
+
 fn update_snapshot(f: impl FnOnce(&mut Snapshot)) {
     f(&mut SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()));
 }

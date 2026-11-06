@@ -2,12 +2,14 @@
 //! never which side it sits on. The firmware's own descriptors (HELLO capability SCREENS) win;
 //! the board profile's `[[screens]]` fill in what the firmware doesn't say, and give each screen
 //! its name (`name`, else the role's: "Info screen" for the panel the PC draws, "Art screen" for
-//! where art plays, "Display" for one the firmware draws itself).
+//! where art plays, "Display" for one the firmware draws itself). An art screen's limits (largest
+//! piece, kept places, refresh, frame interval) come from a version 2 descriptor when the firmware
+//! sends one (#832), else from the profile.
 //!
 //! Every string that names a screen comes from here, so a board with one screen, or three of
 //! different sizes, reads right.
 
-use foxglove_link::protocol::{ScreenDescriptor, ScreenKind};
+use foxglove_link::protocol::{ArtLimits, ScreenDescriptor, ScreenKind};
 
 use super::boards::{Board, Refresh};
 
@@ -79,6 +81,10 @@ pub struct Screen {
     pub refresh: Refresh,
     /// The shortest time between two frames, in ms (#833); 0 is no limit.
     pub min_frame_ms: u32,
+    /// The largest piece an art screen takes, in bytes, when its firmware says (#832).
+    pub max_blob: Option<usize>,
+    /// How many pieces an art screen keeps in flash, when its firmware says (#832); 0 is none.
+    pub slots: Option<u8>,
 }
 
 impl Screen {
@@ -119,6 +125,8 @@ pub fn of_board(board: &Board) -> Vec<Screen> {
                 rotation: u8::try_from((s.rotate / 90) % 4).unwrap_or(0),
                 refresh: s.refresh,
                 min_frame_ms: s.min_frame_ms,
+                max_blob: None,
+                slots: None,
             })
         })
         .collect()
@@ -194,13 +202,32 @@ pub fn of_descriptors(described: &[ScreenDescriptor], board: Option<&Board>) -> 
                     d.format_name().to_string()
                 },
                 rotation,
-                // The descriptor doesn't carry them yet (#833): the profile's screen of that
-                // role says, else a fast screen with no limit.
-                refresh: profile.map_or(Refresh::Fast, |s| s.refresh),
-                min_frame_ms: profile.map_or(0, |s| s.min_frame_ms),
+                // A v2 art descriptor's own word wins (#832); else the profile's screen of that
+                // role says (#833), else a fast screen with no limit.
+                refresh: d
+                    .art
+                    .and_then(|a| refresh_of_class(a.refresh))
+                    .or(profile.map(|s| s.refresh))
+                    .unwrap_or(Refresh::Fast),
+                min_frame_ms: d
+                    .art
+                    .map_or_else(|| profile.map_or(0, |s| s.min_frame_ms), |a| a.min_frame_ms),
+                max_blob: d.art.map(|a| usize::from(a.max_blob)).filter(|b| *b > 0),
+                slots: d.art.map(|a| a.slots),
             })
         })
         .collect()
+}
+
+/// A v2 descriptor's refresh class (#832); `None` for a class this app doesn't know, so the
+/// profile's word stands.
+fn refresh_of_class(class: u8) -> Option<Refresh> {
+    match class {
+        ArtLimits::REFRESH_FAST => Some(Refresh::Fast),
+        ArtLimits::REFRESH_EPAPER_PARTIAL => Some(Refresh::EpaperPartial),
+        ArtLimits::REFRESH_EPAPER_FULL => Some(Refresh::EpaperFull),
+        _ => None,
+    }
 }
 
 /// The connected keyboard's screens: the firmware's, else its profile's. `None` while nothing
@@ -345,6 +372,7 @@ mod tests {
             rows_per_report: 0,
             readback_half: None,
             version: 1,
+            art: None,
         };
         // The Corne's own descriptors (screens_corne.c): two displays, each holding a region;
         // the art region described upright. The regions are the screens.
@@ -378,5 +406,72 @@ mod tests {
         let wide = [display(5, None, ScreenKind::Art, 160, 80, 0)];
         let w = &of_descriptors(&wide, None)[0];
         assert_eq!((w.width, w.height, w.rotation), (160, 80, 0));
+        // v1 firmware says nothing of the art screen's limits.
+        assert_eq!((s[1].max_blob, s[1].slots), (None, None));
+    }
+
+    /// #832: a v2 art descriptor's limits win over the profile's; v1 leaves the profile's.
+    #[test]
+    fn a_v2_art_descriptor_wins_over_the_profile() {
+        let mut b = users_desk::board();
+        let art = b.screens.iter_mut().find(|s| s.kind == "art").unwrap();
+        art.refresh = Refresh::EpaperPartial;
+        art.min_frame_ms = 2000;
+        let target = |art| ScreenDescriptor {
+            count: 1,
+            index: 0,
+            id: 3,
+            kind: ScreenKind::Art,
+            half: 1,
+            parent: None,
+            width: 68,
+            height: 140,
+            x: 0,
+            y: 0,
+            rotation: 0,
+            format: 0,
+            ops: ScreenDescriptor::OP_ART | ScreenDescriptor::OP_SLOTS,
+            stride: art.map_or(0, |a: ArtLimits| a.max_blob),
+            rows_per_report: 0,
+            readback_half: None,
+            version: if art.is_some() { 2 } else { 1 },
+            art,
+        };
+        // v1: the profile's refresh and frame interval, no limits of the firmware's.
+        let old = &of_descriptors(&[target(None)], Some(&b))[0];
+        assert_eq!(
+            (old.refresh, old.min_frame_ms, old.max_blob, old.slots),
+            (Refresh::EpaperPartial, 2000, None, None)
+        );
+        // v2 (the Corne's own): fast, no limit, 16 KiB, 8 places, whatever the profile says.
+        let corne = ArtLimits {
+            max_blob: 16384,
+            slots: 8,
+            refresh: ArtLimits::REFRESH_FAST,
+            min_frame_ms: 0,
+        };
+        let new = &of_descriptors(&[target(Some(corne))], Some(&b))[0];
+        assert_eq!(
+            (new.refresh, new.min_frame_ms, new.max_blob, new.slots),
+            (Refresh::Fast, 0, Some(16384), Some(8))
+        );
+        // E-paper with no places; an unknown refresh class leaves the profile's word.
+        let epaper = ArtLimits {
+            max_blob: 32768,
+            slots: 0,
+            refresh: ArtLimits::REFRESH_EPAPER_FULL,
+            min_frame_ms: 1500,
+        };
+        let e = &of_descriptors(&[target(Some(epaper))], None)[0];
+        assert_eq!(
+            (e.refresh, e.min_frame_ms, e.max_blob, e.slots),
+            (Refresh::EpaperFull, 1500, Some(32768), Some(0))
+        );
+        let odd = ArtLimits {
+            refresh: 9,
+            ..epaper
+        };
+        let o = &of_descriptors(&[target(Some(odd))], Some(&b))[0];
+        assert_eq!((o.refresh, o.min_frame_ms), (Refresh::EpaperPartial, 1500));
     }
 }

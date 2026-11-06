@@ -313,13 +313,20 @@ pub struct Kept {
     pub piece: Option<usize>,
 }
 
+/// How many kept places the keyboard has: its art report's count (at most 8), and never more
+/// than the art screen's descriptor says (#832: 0 there hides the places). 0 without a report.
+pub fn places(s: &Snapshot) -> u8 {
+    let reported = s.status.map_or(0, |st| st.flash_slots.min(8));
+    s.target.map_or(reported, |t| reported.min(t.slots))
+}
+
 /// The keyboard's kept places, from its own report: `None` for a free one. Empty on firmware
 /// without places.
 pub fn kept(s: &Snapshot, pcs: &[PcPiece]) -> Vec<Option<Kept>> {
-    let Some(st) = s.status else {
+    if s.status.is_none() {
         return Vec::new();
-    };
-    (0..st.flash_slots.min(8))
+    }
+    (0..places(s))
         .map(|n| {
             let info = s.slots.iter().find(|i| i.slot == n && i.used)?;
             let piece = pcs.iter().position(|p| {
@@ -337,8 +344,8 @@ pub fn kept(s: &Snapshot, pcs: &[PcPiece]) -> Vec<Option<Kept>> {
 
 /// "Kept: used of total places", from the keyboard's report (the bits of `flash_used`).
 pub fn meter(s: &Snapshot) -> Option<(usize, usize)> {
-    let st = s.status.filter(|st| st.flash_slots > 0)?;
-    let total = usize::from(st.flash_slots.min(8));
+    let st = s.status.filter(|_| places(s) > 0)?;
+    let total = usize::from(places(s));
     let used = (0..total).filter(|n| st.flash_used & (1 << n) != 0).count();
     Some((used, total))
 }
@@ -346,19 +353,24 @@ pub fn meter(s: &Snapshot) -> Option<(usize, usize)> {
 /// The first free place, `None` when the keyboard is full (or has none). Places lent to the
 /// playlist (#522) are its own, never offered.
 pub fn first_free(s: &Snapshot) -> Option<u8> {
-    let st = s.status.filter(|st| st.flash_slots > 0)?;
-    (0..st.flash_slots.min(8))
-        .find(|n| st.flash_used & (1 << n) == 0 && !s.cycle.places.contains(n))
+    let st = s.status.filter(|_| places(s) > 0)?;
+    (0..places(s)).find(|n| st.flash_used & (1 << n) == 0 && !s.cycle.places.contains(n))
 }
 
 /// The art buffer of firmware that doesn't report one (the art relay's 16 KiB).
 pub const DEFAULT_CAPACITY: usize = 16 * 1024;
 
-/// The most a piece can be: the art screen's buffer, as the keyboard reports it.
+/// The most a piece can be: the art screen's largest blob from its descriptor (#832), else the
+/// buffer the art status reports, else [`DEFAULT_CAPACITY`].
 pub fn capacity(s: &Snapshot) -> usize {
-    s.status
-        .map(|st| usize::from(st.right_capacity))
+    s.target
+        .map(|t| usize::from(t.max_blob))
         .filter(|c| *c > 0)
+        .or_else(|| {
+            s.status
+                .map(|st| usize::from(st.right_capacity))
+                .filter(|c| *c > 0)
+        })
         .unwrap_or(DEFAULT_CAPACITY)
 }
 
@@ -704,6 +716,63 @@ pub mod tests {
         assert_eq!(meter(&old), None);
         assert_eq!(first_free(&old), None);
         assert_eq!(meter(&Snapshot::default()), None, "no keyboard");
+    }
+
+    /// #832: the art screen's descriptor wins: its largest blob over the status's buffer, and
+    /// 0 places there hides them (the meter, the list, the free place).
+    #[test]
+    fn the_descriptor_sets_capacity_and_places() {
+        use foxglove_link::protocol::ArtLimits;
+        let pcs = pc_pieces(
+            vec![
+                found(lib("Radar"), "Radar", 1, 20000),
+                found(lib("Orbit"), "Orbit", 2, 40000),
+            ],
+            &|_| false,
+        );
+        let target = |max_blob, slots| {
+            Some(ArtLimits {
+                max_blob,
+                slots,
+                refresh: ArtLimits::REFRESH_FAST,
+                min_frame_ms: 0,
+            })
+        };
+        let mut s = Snapshot {
+            status: Some(status(0b1)),
+            ..Default::default()
+        };
+        // v1 firmware: the status's 16 KiB.
+        assert_eq!(capacity(&s), 16384);
+        assert_eq!(super::super::art_ui::kib(capacity(&s)), "16 KiB");
+        // A synthetic 32 KiB target: a 20 000-byte piece fits, a 40 000-byte one is over 32 KiB.
+        s.target = target(32768, 8);
+        assert_eq!(capacity(&s), 32768);
+        assert_eq!(super::super::art_ui::kib(capacity(&s)), "32 KiB");
+        let k = kept(&s, &pcs);
+        // Sorted: Orbit, Radar.
+        assert_eq!(badge(&s, &pcs[0], &k, 0), Badge::TooBig);
+        assert_eq!(badge(&s, &pcs[1], &k, 1), Badge::ThisPc);
+        // A blob of 0 says nothing: the status's buffer, then the default.
+        s.target = target(0, 8);
+        assert_eq!(capacity(&s), 16384);
+        s.status = Some(ArtStatus {
+            right_capacity: 0,
+            ..status(0)
+        });
+        assert_eq!(capacity(&s), DEFAULT_CAPACITY);
+
+        // Places: the report's 8, unless the descriptor says fewer.
+        s.status = Some(status(0b1));
+        s.target = target(16384, 8);
+        assert_eq!((places(&s), kept(&s, &pcs).len()), (8, 8));
+        assert_eq!(meter(&s), Some((1, 8)));
+        s.target = target(16384, 0);
+        assert_eq!(places(&s), 0);
+        assert!(kept(&s, &pcs).is_empty(), "no places: the list is hidden");
+        assert_eq!((meter(&s), first_free(&s)), (None, None));
+        s.target = None;
+        assert_eq!(places(&s), 8);
     }
 
     #[test]

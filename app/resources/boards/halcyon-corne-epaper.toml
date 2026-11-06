@@ -16,6 +16,7 @@ product = "Halcyon Corne"
 # E-paper with partial refresh, a frame a second at most (#833): art plays at no more than 1 fps,
 # and only its first frame unless animation is switched on. Screens say `refresh = "fast"`
 # (the default), `epaper-partial` or `epaper-full`, and `min_frame_ms` (0, the default: no limit).
+# Firmware with a v2 art descriptor (#832) says its own, which wins (docs/profiles.md).
 [[screens]]
 kind = "display"
 half = "left"

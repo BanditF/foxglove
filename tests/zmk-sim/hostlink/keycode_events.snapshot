@@ -6,11 +6,15 @@ hostlink: tx D5 08
 hostlink: rx D5 88 01
 hostlink: -- screens: the descriptors, then one past the end
 hostlink: tx D5 06
-hostlink: rx D5 86 00 02 00 00 00 00 FF A0 00 44 00 00 00 00 00 01 00 02 00 14 00 00 00 01
+hostlink: rx D5 86 00 04 00 00 00 00 FF A0 00 44 00 00 00 00 00 01 00 02 00 14 00 00 00 01
 hostlink: tx D5 06 01
-hostlink: rx D5 86 00 02 01 01 01 00 00 40 00 34 00 02 00 6A 00 00 00 11 00 08 00 03 FF 01
+hostlink: rx D5 86 00 04 01 01 01 00 00 40 00 34 00 02 00 6A 00 00 00 11 00 08 00 03 FF 01
 hostlink: tx D5 06 02
-hostlink: rx D5 86 05 02 02
+hostlink: rx D5 86 00 04 02 02 00 01 FF A0 00 44 00 00 00 00 00 01 00 02 00 14 00 00 01 01
+hostlink: tx D5 06 03
+hostlink: rx D5 86 00 04 03 03 02 01 02 44 00 8C 00 00 00 14 00 00 00 0C 00 00 40 00 FF 02 08
+hostlink: tx D5 06 04
+hostlink: rx D5 86 05 04 04
 hostlink: -- build info: left, right (no relay here), bad half
 hostlink: tx D7 09
 hostlink: rx D7 89 00 00 00 03 00 00 73 69 6D 74 65 73 74

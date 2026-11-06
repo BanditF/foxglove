@@ -340,6 +340,30 @@ pub struct ScreenDescriptor {
     pub rows_per_report: u8,
     pub readback_half: Option<u8>,
     pub version: u8,
+    /// What an art target says of itself (descriptor version 2, #832); `None` for v1 firmware
+    /// and for every other kind, where the profile's values stand.
+    pub art: Option<ArtLimits>,
+}
+
+/// An art target's own limits, from a version 2 descriptor (#832): bytes 16-17 (`stride`, unused
+/// by art in v1) and the three bytes v1 left 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArtLimits {
+    /// The largest blob it takes, in bytes.
+    pub max_blob: u16,
+    /// Its flash slots (kept places); 0 is none.
+    pub slots: u8,
+    /// How it redraws: [`ArtLimits::REFRESH_FAST`], [`ArtLimits::REFRESH_EPAPER_PARTIAL`],
+    /// [`ArtLimits::REFRESH_EPAPER_FULL`], or a class this app doesn't know.
+    pub refresh: u8,
+    /// The shortest time between two frames, in ms (the wire's 100 ms units); 0 is no limit.
+    pub min_frame_ms: u32,
+}
+
+impl ArtLimits {
+    pub const REFRESH_FAST: u8 = 0;
+    pub const REFRESH_EPAPER_PARTIAL: u8 = 1;
+    pub const REFRESH_EPAPER_FULL: u8 = 2;
 }
 
 impl ScreenDescriptor {
@@ -352,6 +376,9 @@ impl ScreenDescriptor {
     pub const FORMAT_1BIT: u8 = 0;
     pub const FORMAT_RGB565: u8 = 1;
     pub const FORMAT_GREY2: u8 = 2;
+
+    /// The descriptor version that adds an art target's limits ([`ArtLimits`], #832).
+    pub const VERSION_ART_LIMITS: u8 = 2;
 
     /// Its format in words, for the settings; reserved and unknown ones aren't drawn.
     pub fn format_name(&self) -> &'static str {
@@ -372,16 +399,26 @@ impl ScreenDescriptor {
         let d = &r[5..29];
         let u16_at = |i: usize| u16::from_le_bytes([d[i], d[i + 1]]);
         let opt = |b: u8| if b == 0xff { None } else { Some(b) };
+        let kind = match d[1] {
+            0 => ScreenKind::Display,
+            1 => ScreenKind::Panel,
+            2 => ScreenKind::Art,
+            k => ScreenKind::Other(k),
+        };
+        let version = d[20];
+        // v1 firmware sends 0 in bytes 21-23 and an art target's stride: it says nothing here.
+        let art =
+            (kind == ScreenKind::Art && version >= Self::VERSION_ART_LIMITS).then(|| ArtLimits {
+                max_blob: u16_at(16),
+                slots: d[21],
+                refresh: d[22],
+                min_frame_ms: u32::from(d[23]) * 100,
+            });
         Ok(ScreenDescriptor {
             count: r[3],
             index: r[4],
             id: d[0],
-            kind: match d[1] {
-                0 => ScreenKind::Display,
-                1 => ScreenKind::Panel,
-                2 => ScreenKind::Art,
-                k => ScreenKind::Other(k),
-            },
+            kind,
             half: d[2],
             parent: opt(d[3]),
             width: u16_at(4),
@@ -394,7 +431,8 @@ impl ScreenDescriptor {
             stride: u16_at(16),
             rows_per_report: d[18],
             readback_half: opt(d[19]),
-            version: d[20],
+            version,
+            art,
         })
     }
 }
@@ -2441,9 +2479,59 @@ mod tests {
             (s.ops, s.stride, s.rows_per_report),
             (ScreenDescriptor::OP_ROWS, 8, 3)
         );
-        assert_eq!((s.readback_half, s.version), (None, 1));
+        assert_eq!((s.readback_half, s.version, s.art), (None, 1, None));
         r[2] = 5;
         assert_eq!(ScreenDescriptor::parse(&r), Err(5));
+    }
+
+    /// #832: an art target's v2 descriptor carries its largest blob (bytes 16-17), slots, refresh
+    /// class and shortest frame interval (bytes 21-23, 100 ms units); v1 says none of it.
+    #[test]
+    fn parses_art_descriptor_versions() {
+        // The Corne's right art area as screens_corne.c sends it (tests/zmk-sim/hostlink).
+        let mut r = [0u8; REPORT];
+        r[..5].copy_from_slice(&[0xD5, 0x86, 0, 4, 3]);
+        r[5..29].copy_from_slice(&[
+            3, 2, 1, 2, 68, 0, 140, 0, 0, 0, 20, 0, 0, 0, 0x0c, 0, 0x00, 0x40, 0, 0xff, 2, 8, 0, 0,
+        ]);
+        let v2 = ScreenDescriptor::parse(&r).unwrap();
+        assert_eq!((v2.kind, v2.version), (ScreenKind::Art, 2));
+        assert_eq!(
+            v2.art,
+            Some(ArtLimits {
+                max_blob: 16384,
+                slots: 8,
+                refresh: ArtLimits::REFRESH_FAST,
+                min_frame_ms: 0,
+            })
+        );
+        // An e-paper target: full refresh only, a frame at most every 1.5 s, no slots.
+        r[5 + 21..5 + 24].copy_from_slice(&[0, ArtLimits::REFRESH_EPAPER_FULL, 15]);
+        let epaper = ScreenDescriptor::parse(&r).unwrap().art.unwrap();
+        assert_eq!(
+            (epaper.slots, epaper.refresh, epaper.min_frame_ms),
+            (0, ArtLimits::REFRESH_EPAPER_FULL, 1500)
+        );
+
+        // The same area from v1 firmware (stride and bytes 21-23 are 0): nothing to say.
+        r[5 + 16..5 + 18].copy_from_slice(&[0, 0]);
+        r[5 + 20..5 + 24].copy_from_slice(&[1, 0, 0, 0]);
+        let v1 = ScreenDescriptor::parse(&r).unwrap();
+        assert_eq!(
+            (v1.version, v1.art, v1.width, v1.height),
+            (1, None, 68, 140)
+        );
+        // A newer version keeps the v2 fields where they are.
+        r[5 + 20..5 + 24].copy_from_slice(&[3, 4, 1, 2]);
+        r[5 + 16..5 + 18].copy_from_slice(&32768u16.to_le_bytes());
+        let v3 = ScreenDescriptor::parse(&r).unwrap().art.unwrap();
+        assert_eq!(
+            (v3.max_blob, v3.slots, v3.refresh, v3.min_frame_ms),
+            (32768, 4, 1, 200)
+        );
+        // A panel's stride stays its row bytes, never an art limit, whatever the version.
+        r[5 + 1] = 1;
+        assert_eq!(ScreenDescriptor::parse(&r).unwrap().art, None);
     }
 
     #[test]

@@ -699,7 +699,7 @@ fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
                         acts.push(Act::Next);
                     }
                     if let (Showing::Sent, Some(file)) = (now, s.showing_file()) {
-                        if st.flash_slots > 0
+                        if art_pieces::places(s) > 0
                             && ui
                                 .add(theme::primary_button(ui, "Keep on keyboard"))
                                 .clicked()

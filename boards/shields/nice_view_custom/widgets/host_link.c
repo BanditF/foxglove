@@ -335,7 +335,10 @@ static void screens_reply(uint8_t index) {
                                                        foxglove_screen_count, index};
     if (index < foxglove_screen_count) {
         struct screen_descriptor s = foxglove_screens[index];
-        s.version = SCREEN_DESCRIPTOR_VERSION;
+        // v2 only for an art target that says something (#832): all 0 stays v1, as before.
+        bool art_v2 = s.kind == SCREEN_ART &&
+                      (s.stride || s.art_slots || s.art_refresh || s.art_min_frame_100ms);
+        s.version = art_v2 ? SCREEN_DESCRIPTOR_VERSION_ART : SCREEN_DESCRIPTOR_VERSION;
         r[2] = 0;
         memcpy(&r[5], &s, sizeof(s));
     }

@@ -1370,6 +1370,7 @@ mod tests {
             rows_per_report: 1,
             readback_half: None,
             version: 1,
+            art: None,
         };
         let h = Hello {
             width: 160,
