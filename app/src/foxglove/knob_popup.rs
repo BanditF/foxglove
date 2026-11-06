@@ -225,16 +225,17 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
             level,
             muted,
         } => (
-            name.chars()
-                .next()
-                .map(|c| c.to_uppercase().to_string())
-                .unwrap_or_default(),
-            tint(name),
+            // Muted: the slash takes the badge; the title stays plain.
             if *muted {
-                format!("{name} {}", icon::SPEAKER_SLASH)
+                icon::SPEAKER_SLASH.to_string()
             } else {
-                name.clone()
+                name.chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_default()
             },
+            tint(name),
+            name.clone(),
             if *muted {
                 "muted".to_string()
             } else {
@@ -246,14 +247,15 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
             *muted,
         ),
         Card::Master { level, note, muted } => (
-            icon::SPEAKER_HIGH.to_string(),
-            GREY,
-            // Muted as an app's card says it (#855).
+            // Muted as an app's card shows it: slash in the badge (#855).
             if *muted {
-                format!("Master volume {}", icon::SPEAKER_SLASH)
+                icon::SPEAKER_SLASH
             } else {
-                "Master volume".to_string()
-            },
+                icon::SPEAKER_HIGH
+            }
+            .to_string(),
+            GREY,
+            "Master volume".to_string(),
             if *muted {
                 "muted".to_string()
             } else {
