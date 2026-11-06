@@ -8,9 +8,15 @@
 //!   old file is imported and renamed `*.migrated` (kept, so an older Foxglove can be pointed
 //!   back at it by hand).
 //! - KeyPeek's `settings.ini` stays where it is; upstream code owns that file.
+//! - A read that fails (the file held by another program, broken, or no settings folder) never
+//!   turns into defaults that get saved (#741): it's retried briefly, and while it fails the
+//!   section is "unread" and a save of it is refused, until a read of that section succeeds.
+//!   A missing file is a genuine first run: defaults, saved as usual.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -53,15 +59,125 @@ fn renamed(mut table: Table) -> Table {
     table
 }
 
+/// The waits before each retry of a read the file system refused (#741): a few tries over
+/// about half a second, only when a read fails.
+const READ_RETRIES: [Duration; 3] = [
+    Duration::from_millis(50),
+    Duration::from_millis(150),
+    Duration::from_millis(300),
+];
+
+/// The store's table; a missing file is an empty one. A read the file system refuses (another
+/// program holds the file) is tried again a few times; a broken file isn't.
 fn read(path: &Path) -> Result<Table, String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .parse::<Table>()
-            .map(renamed)
-            .map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Table::new()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+    let mut waits = READ_RETRIES.iter();
+    loop {
+        match read_once(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                let Some(wait) = waits.next() else {
+                    return Err(format!("{}: {e}", path.display()));
+                };
+                std::thread::sleep(*wait);
+            }
+            Err(_) => return Ok(Table::new()),
+            Ok(text) => {
+                return text
+                    .parse::<Table>()
+                    .map(renamed)
+                    .map_err(|e| format!("{}: {e}", path.display()))
+            }
+        }
     }
+}
+
+fn read_once(path: &Path) -> std::io::Result<String> {
+    #[cfg(test)]
+    if FAIL_READS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(path)
+    {
+        return Err(std::io::Error::other(
+            "the process cannot access the file (test fake)",
+        ));
+    }
+    std::fs::read_to_string(path)
+}
+
+/// Tests: reads of these files fail, as one another program holds would.
+#[cfg(test)]
+pub static FAIL_READS: Mutex<std::collections::BTreeSet<PathBuf>> =
+    Mutex::new(std::collections::BTreeSet::new());
+
+/// Sections whose last read failed, by store file: saving one would write over settings that
+/// were never read, so it's refused until a read of it succeeds (#741).
+/// The value is the failed read's error.
+static UNREAD: Mutex<BTreeMap<(PathBuf, String), String>> = Mutex::new(BTreeMap::new());
+
+fn mark_unread(path: &Path, section: &str, why: &str) {
+    let fresh = UNREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((path.to_path_buf(), section.to_string()), why.to_string())
+        .is_none();
+    if fresh {
+        eprintln!(
+            "Foxglove: settings: can't read [{section}] ({why}); it won't be saved until a read succeeds"
+        );
+    }
+}
+
+fn mark_read(path: &Path, section: &str) {
+    UNREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(path.to_path_buf(), section.to_string()));
+}
+
+fn is_unread(path: &Path, section: &str) -> bool {
+    UNREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&(path.to_path_buf(), section.to_string()))
+}
+
+/// The sections of the store at `path` whose read is failing, with the last error.
+fn unread_at(path: &Path) -> Vec<(String, String)> {
+    UNREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|((p, _), _)| p == path)
+        .map(|((_, s), why)| (s.clone(), why.clone()))
+        .collect()
+}
+
+/// The health view's row (registered as "settings", #741): a warning while any section's read
+/// is failing, from the store's own state; nothing otherwise.
+pub fn health_rows() -> Vec<super::health::HealthRow> {
+    path().map(|p| rows_for(&unread_at(&p))).unwrap_or_default()
+}
+
+/// Tests: the health row for the store at `path`.
+#[cfg(test)]
+pub fn rows_for_test(path: &Path) -> Vec<super::health::HealthRow> {
+    rows_for(&unread_at(path))
+}
+
+fn rows_for(unread: &[(String, String)]) -> Vec<super::health::HealthRow> {
+    let Some((_, why)) = unread.last() else {
+        return vec![];
+    };
+    let sections: Vec<String> = unread.iter().map(|(s, _)| format!("[{s}]")).collect();
+    vec![super::health::HealthRow::new(
+        "app",
+        "Settings",
+        super::health::Level::Warn,
+        format!(
+            "settings unreadable: {why} (not saved until read: {})",
+            sections.join(", ")
+        ),
+    )]
 }
 
 fn write(path: &Path, table: &Table) -> std::io::Result<()> {
@@ -110,10 +226,23 @@ fn set(table: &mut Table, section: &str, value: Value) {
     t.insert(last.into(), value);
 }
 
-/// A section from the store at `path`: `Err` when the file can't be read now (locked by a
-/// writer, or broken), `Ok(None)` when the section isn't there.
-fn try_load_at<T: DeserializeOwned>(path: &Path, section: &str) -> Result<Option<T>, String> {
-    let table = read(path)?;
+/// A section from the store at `path`: `Err` when the file can't be read now (held by another
+/// program, or broken), `Ok(None)` when the section isn't there. A failed read leaves the
+/// section unread (no saves of it) until a read succeeds.
+pub(crate) fn try_load_at<T: DeserializeOwned>(
+    path: &Path,
+    section: &str,
+) -> Result<Option<T>, String> {
+    let table = match read(path) {
+        Ok(t) => {
+            mark_read(path, section);
+            t
+        }
+        Err(e) => {
+            mark_unread(path, section, &e);
+            return Err(e);
+        }
+    };
     effective(&table, section)
         .map(|v| {
             v.try_into()
@@ -194,13 +323,20 @@ fn diff(base: &Table, new: &Table) -> Table {
 
 /// Saves a section. While a profile is active, a profiled section's changes go into that
 /// profile (only what differs from the base), so editing settings edits the profile in use.
-/// Migrations always write the base (`to_base`).
-fn save_at<T: Serialize>(
+/// Migrations always write the base (`to_base`). A section whose last read failed isn't saved
+/// (#741): the value would be defaults standing in for settings that were never read.
+pub(crate) fn save_at<T: Serialize>(
     path: &Path,
     section: &str,
     value: &T,
     to_base: bool,
 ) -> std::io::Result<()> {
+    if is_unread(path, section) {
+        return Err(std::io::Error::other(format!(
+            "[{section}] wasn't read from {}, so it isn't saved over",
+            path.display()
+        )));
+    }
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let table = read(path).map_err(std::io::Error::other)?;
     let mut table = upgrade(table);
@@ -490,9 +626,16 @@ pub fn init_profiles() {
     announce(profiles().1.as_deref());
 }
 
-/// A section, or `None` when the store can't be read right now (keep what you have).
+/// A section, or `None` when it isn't there or the store can't be read right now (keep what
+/// you have). A caller that caches the result should use [`load`], so a failed read isn't kept.
 pub fn try_load<T: DeserializeOwned>(section: &str) -> Option<T> {
-    try_load_at(&path()?, section).ok().flatten()
+    load(section).ok().flatten()
+}
+
+/// A section: `Ok(None)` when it isn't there (defaults are right), `Err` when the store can't be
+/// read (don't keep defaults in its place; saves of the section are refused meanwhile).
+pub fn load<T: DeserializeOwned>(section: &str) -> Result<Option<T>, String> {
+    try_load_at(&path().ok_or("no settings folder")?, section)
 }
 
 /// Saves one section, leaving the others as they are.
@@ -661,6 +804,47 @@ mod tests {
         assert!(!old.exists() && dir.join("screens.ini.migrated").exists());
         let again: Demo = load_or_migrate_at(&path, "screens", || unreachable!("already migrated"));
         assert_eq!(again, v);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #741: a read that fails at start must not become defaults that a later save writes over
+    /// the real section; a missing file still means defaults that save as usual.
+    #[test]
+    fn a_failed_read_never_becomes_saved_defaults() {
+        let dir = temp("failed-read");
+        let path = dir.join("foxglove.toml");
+        std::fs::write(&path, "schema = 1\n[screens]\non = true\nn = 7\n").unwrap();
+        FAIL_READS.lock().unwrap().insert(path.clone());
+        assert!(try_load_at::<Demo>(&path, "screens").is_err());
+        // What a caching feature would hold: the defaults.
+        let held: Demo = load_or_migrate_at(&path, "screens", || unreachable!("never migrate"));
+        assert_eq!(held, Demo::default());
+        // Its save is refused, even once the file reads again, until the section is read.
+        assert!(save_at(&path, "screens", &held, false).is_err());
+        FAIL_READS.lock().unwrap().remove(&path);
+        let err = save_at(&path, "screens", &held, false).unwrap_err();
+        assert!(err.to_string().contains("[screens] wasn't read"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "schema = 1\n[screens]\non = true\nn = 7\n",
+            "the real settings are untouched"
+        );
+        // Other sections were read fine and save as usual, keeping [screens].
+        assert_eq!(try_load_at::<Demo>(&path, "art").unwrap(), None);
+        save_at(&path, "art", &Demo { on: true, n: 1 }, false).unwrap();
+        // A real read of the section lifts the hold.
+        let real = try_load_at::<Demo>(&path, "screens").unwrap().unwrap();
+        assert_eq!(real, Demo { on: true, n: 7 });
+        save_at(&path, "screens", &Demo { n: 8, ..real }, false).unwrap();
+        assert_eq!(
+            try_load_at::<Demo>(&path, "screens").unwrap(),
+            Some(Demo { on: true, n: 8 })
+        );
+
+        // A missing file is a first run: no hold.
+        let fresh = dir.join("fresh.toml");
+        assert_eq!(try_load_at::<Demo>(&fresh, "screens").unwrap(), None);
+        save_at(&fresh, "screens", &Demo::default(), false).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -108,7 +108,7 @@ the half has built in.
 | 106 | 2 | Raw HID Bluetooth notifications queued |
 | 108 | 2 | Raw HID Bluetooth notifies refused on a link where the PC listens |
 | 110 | 2 | Raw HID Bluetooth reports skipped: nobody listens (no link on the active profile, the PC hasn't turned the report's notifications on, or the link isn't encrypted yet). Normal while the PC uses USB: the health row says it as information (OK), never a warning; byte 56's refusals stay a warning (`hid_failed` in `data/health.toml`) |
-| 112 | 2 | int16: the error code of the last report the USB driver refused (version 4; the module's `raw_hid/stats.h` version 3, else 0): a negative errno, 0 while it refused none |
+| 112 | 2 | int16: the error code of the last report the USB driver refused (version 4; the module's `raw_hid/stats.h` version 3, else 0): a negative errno, 0 while it refused none. When it's -11 (EAGAIN: the PC hadn't configured the keyboard, as during a PC restart, sleep or replug) the USB refusals are said as information (OK), not counted towards `hid_failed`'s warning (#741) |
 | 114 | 2 | int16: the same for Bluetooth: the last notify refused on a link where the PC listens (-12 ENOMEM: no buffer free) |
 
 ### Boot self-test (bytes 24-27)

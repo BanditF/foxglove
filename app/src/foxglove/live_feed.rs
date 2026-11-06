@@ -80,13 +80,29 @@ impl Default for LiveSettings {
 
 static SETTINGS: Mutex<Option<LiveSettings>> = Mutex::new(None);
 
-/// The settings, read from the store once and then kept in step by [`save`].
+/// The settings, read from the store once and then kept in step by [`save`]. A read that
+/// fails isn't kept (#741): the next call reads again, so the defaults' empty token never
+/// stands in for the saved one.
 pub fn settings() -> LiveSettings {
-    SETTINGS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(|| super::store::try_load(SECTION).unwrap_or_default())
-        .clone()
+    cached(
+        &mut SETTINGS.lock().unwrap_or_else(|e| e.into_inner()),
+        || super::store::load(SECTION),
+    )
+}
+
+/// The cache's settings, reading them with `load` when there are none yet; a failed read gives
+/// the defaults without keeping them.
+fn cached(
+    cache: &mut Option<LiveSettings>,
+    load: impl FnOnce() -> Result<Option<LiveSettings>, String>,
+) -> LiveSettings {
+    if let Some(s) = cache {
+        return s.clone();
+    }
+    match load() {
+        Ok(saved) => cache.insert(saved.unwrap_or_default()).clone(),
+        Err(_) => LiveSettings::default(),
+    }
 }
 
 fn save(s: &LiveSettings) -> Result<(), String> {
@@ -499,7 +515,30 @@ pub fn start() {
     if super::repaint_trace::disabled("live") {
         return;
     }
-    let s = settings();
+    if let Ok(saved) = super::store::load::<LiveSettings>(SECTION) {
+        return start_with(saved.unwrap_or_default());
+    }
+    // The settings can't be read yet (#741): no feed and no token until they can. Tried again
+    // a few times on a thread of its own (about 30 s), then left for the Settings card.
+    let _ = std::thread::Builder::new()
+        .name("live-settings".into())
+        .spawn(|| {
+            let mut last = String::new();
+            for wait in super::app_log::BACKOFF {
+                std::thread::sleep(wait);
+                match super::store::load::<LiveSettings>(SECTION) {
+                    Ok(saved) => return start_with(saved.unwrap_or_default()),
+                    Err(e) => last = e,
+                }
+            }
+            eprintln!("Foxglove: live feed: settings unreadable ({last}); not started");
+            set_status(format!("settings unreadable: {last}"));
+        });
+}
+
+/// Starts the feed with settings just read from the store, if they say it's on.
+fn start_with(s: LiveSettings) {
+    *SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
     if s.enabled {
         if let Err(e) = listen(&s) {
             set_status(e);
@@ -1132,31 +1171,104 @@ pub(super) fn fullscreen_now() -> bool {
 
 // ------------------------------------------------------------------------------ settings
 
+/// Why the pairing token changed, for the log line (never the token itself).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TokenReason {
+    /// Turned on for the first time: no saved section yet.
+    FirstEnable,
+    /// "New token" was clicked.
+    NewToken,
+    /// Turned on with a saved section but no token in it.
+    EmptyOnEnable,
+}
+
+impl TokenReason {
+    fn words(self) -> &'static str {
+        match self {
+            TokenReason::FirstEnable => "first enable",
+            TokenReason::NewToken => "New token",
+            TokenReason::EmptyOnEnable => "empty on enable",
+        }
+    }
+}
+
+/// The settings turned on or off. Turning on makes a token when there is none, and says why:
+/// `saved` is whether the store has the section.
+fn turned(
+    mut s: LiveSettings,
+    on: bool,
+    saved: bool,
+) -> Result<(LiveSettings, Option<TokenReason>), String> {
+    s.enabled = on;
+    if !(on && s.token.is_empty()) {
+        return Ok((s, None));
+    }
+    s.token = wire::new_token().ok_or("no random source for the pairing token")?;
+    let why = if saved {
+        TokenReason::EmptyOnEnable
+    } else {
+        TokenReason::FirstEnable
+    };
+    Ok((s, Some(why)))
+}
+
+fn token_line(why: TokenReason) -> String {
+    format!("Foxglove: live feed: new pairing token ({})", why.words())
+}
+
+/// A change from the Settings card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Change {
+    Turn(bool),
+    NewToken,
+}
+
+/// Applies a change to the settings as the store has them now: `load` reads them first, and
+/// when it fails nothing happens (no token made, nothing saved or started; #741). `store`
+/// saves the result before it's answered, so a token handed out is always the saved one.
+fn change(
+    what: Change,
+    load: impl FnOnce() -> Result<Option<LiveSettings>, String>,
+    store: impl FnOnce(&LiveSettings) -> Result<(), String>,
+) -> Result<(LiveSettings, Option<TokenReason>), String> {
+    let saved = load().map_err(|e| format!("settings unreadable: {e}; try again in a moment"))?;
+    let present = saved.is_some();
+    let current = saved.unwrap_or_default();
+    let (s, why) = match what {
+        Change::Turn(on) => turned(current, on, present)?,
+        Change::NewToken => {
+            let mut s = current;
+            s.token = wire::new_token().ok_or("no random source for the pairing token")?;
+            (s, Some(TokenReason::NewToken))
+        }
+    };
+    store(&s)?;
+    Ok((s, why))
+}
+
+fn apply(what: Change) -> Result<(), String> {
+    let (s, why) = change(what, || super::store::load(SECTION), save)?;
+    if let Some(why) = why {
+        eprintln!("{}", token_line(why));
+    }
+    match (what, s.enabled) {
+        (Change::Turn(false), _) => {
+            stop();
+            Ok(())
+        }
+        (_, true) => listen(&s),
+        (_, false) => Ok(()),
+    }
+}
+
 /// Turns the feed on or off; turning it on makes the token the first time.
 fn set_enabled(on: bool) -> Result<(), String> {
-    let mut s = settings();
-    s.enabled = on;
-    if on && s.token.is_empty() {
-        s.token = wire::new_token().ok_or("no random source for the pairing token")?;
-    }
-    save(&s)?;
-    if on {
-        listen(&s)
-    } else {
-        stop();
-        Ok(())
-    }
+    apply(Change::Turn(on))
 }
 
 /// A new token: wallpapers paired with the old one are let go.
 fn new_token() -> Result<(), String> {
-    let mut s = settings();
-    s.token = wire::new_token().ok_or("no random source for the pairing token")?;
-    save(&s)?;
-    if s.enabled {
-        listen(&s)?;
-    }
-    Ok(())
+    apply(Change::NewToken)
 }
 
 /// What the settings card says the feed sends.
@@ -1191,8 +1303,9 @@ pub fn group(ui: &mut egui::Ui) {
             error = set_enabled(on).err();
         }
         ui.weak(EXPLAINER);
-        if on {
-            let s = settings();
+        // What the store holds: a refused change shows no token (#741).
+        let s = settings();
+        if s.enabled {
             ui.horizontal(|ui| {
                 ui.label("Pairing token");
                 let mut shown = s.token.clone();
@@ -1286,6 +1399,126 @@ mod tests {
             },
             vec![(0, 0), (0, 1), (0, 2)],
         )
+    }
+
+    /// #741 (pid 34688): with the store unreadable, turning the feed on makes no token and
+    /// starts nothing; once it reads, the token made is saved and is the one the feed admits.
+    #[test]
+    fn no_token_is_handed_out_while_the_settings_are_unreadable() {
+        use crate::foxglove::store;
+        let dir =
+            std::env::temp_dir().join(format!("foxglove-live-unreadable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foxglove.toml");
+        let old = LiveSettings {
+            enabled: false,
+            token: "the-saved-one".into(),
+            ..LiveSettings::default()
+        };
+        store::save_at(&path, SECTION, &old, false).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let load = || store::try_load_at::<LiveSettings>(&path, SECTION);
+        let save =
+            |s: &LiveSettings| store::save_at(&path, SECTION, s, false).map_err(|e| e.to_string());
+
+        store::FAIL_READS.lock().unwrap().insert(path.clone());
+        for what in [Change::Turn(true), Change::NewToken] {
+            let mut saved = false;
+            let err = change(what, load, |_| {
+                saved = true;
+                Ok(())
+            })
+            .unwrap_err();
+            assert!(err.starts_with("settings unreadable: "), "{err}");
+            assert!(!saved, "nothing to save, no token made");
+        }
+        // The store's health row says so meanwhile.
+        let rows = store::rows_for_test(&path);
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].detail.starts_with("settings unreadable: ")
+                && rows[0]
+                    .detail
+                    .ends_with("(not saved until read: [live_wallpaper])"),
+            "{}",
+            rows[0].detail
+        );
+        store::FAIL_READS.lock().unwrap().remove(&path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+        // The read recovers: enabling keeps the saved token, saves it, and the feed admits it.
+        let (s, why) = change(Change::Turn(true), load, save).unwrap();
+        assert_eq!((s.token.as_str(), why), ("the-saved-one", None));
+        assert!(store::rows_for_test(&path).is_empty());
+        // A new token: saved before it's shown, and the one admitted.
+        let (s, why) = change(Change::NewToken, load, save).unwrap();
+        assert_eq!(why, Some(TokenReason::NewToken));
+        let on_disk = load().unwrap().unwrap();
+        assert_eq!(on_disk.token, s.token);
+        assert!(on_disk.enabled);
+        assert!(wire::admit(None, Some(&on_disk.token), &s.token).is_ok());
+        assert!(wire::admit(None, Some("the-saved-one"), &s.token).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #741: the token survives unrelated saves, a failed read at start followed by an enable,
+    /// and a restart. A temp store file, never the user's.
+    #[test]
+    fn the_pairing_token_survives_a_failed_read_and_a_restart() {
+        use crate::foxglove::store;
+        let dir = std::env::temp_dir().join(format!("foxglove-live-token-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foxglove.toml");
+        let load = || store::try_load_at::<LiveSettings>(&path, SECTION);
+
+        // First enable: no section yet, so a token, said as the first enable.
+        let mut cache = None;
+        let (s, why) = turned(cached(&mut cache, load), true, false).unwrap();
+        assert_eq!(why, Some(TokenReason::FirstEnable));
+        assert_eq!(
+            token_line(why.unwrap()),
+            "Foxglove: live feed: new pairing token (first enable)"
+        );
+        store::save_at(&path, SECTION, &s, false).unwrap();
+        let token = s.token.clone();
+        assert!(!token.is_empty());
+
+        // Unrelated sections saved after it leave it alone.
+        store::save_at(&path, "screens", &toml::Table::new(), false).unwrap();
+        store::save_at(&path, "art", &toml::Table::new(), false).unwrap();
+        assert_eq!(load().unwrap().unwrap().token, token);
+
+        // A start whose read fails: defaults, not kept.
+        store::FAIL_READS.lock().unwrap().insert(path.clone());
+        let mut cache = None;
+        let at_start = cached(&mut cache, load);
+        assert!(at_start.token.is_empty() && cache.is_none());
+        // Turning it on then would make a token, but the store refuses to save it.
+        let (s, why) = turned(at_start, true, true).unwrap();
+        assert_eq!(why, Some(TokenReason::EmptyOnEnable));
+        assert!(store::save_at(&path, SECTION, &s, false).is_err());
+        store::FAIL_READS.lock().unwrap().remove(&path);
+        assert!(
+            store::save_at(&path, SECTION, &s, false).is_err(),
+            "still refused until the section is read"
+        );
+        // The next look reads the store again and gets the saved token; turning on keeps it.
+        let s = cached(&mut cache, load);
+        assert_eq!(s.token, token);
+        let (s, why) = turned(s, true, true).unwrap();
+        assert_eq!((s.token.as_str(), why), (token.as_str(), None));
+        store::save_at(&path, SECTION, &s, false).unwrap();
+
+        // A restart: a fresh cache reads the same token.
+        let mut restarted = None;
+        assert_eq!(cached(&mut restarted, load).token, token);
+        assert_eq!(
+            token_line(TokenReason::NewToken),
+            "Foxglove: live feed: new pairing token (New token)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -9,11 +9,20 @@
 //! pipe. Values that look like secrets (`token=…`, `password: …`) are masked before writing.
 //!
 //! No timers: the reader wakes only when there is something to write.
+//!
+//! #741: at a sign-in start the file once couldn't be opened, and that run had no log at all.
+//! Now a failed first open is retried on a thread of its own (a bounded backoff, about 30 s),
+//! then `%LOCALAPPDATA%\Foxglove\logs` is tried; lines from meanwhile wait in memory and go into
+//! whichever log opens. One line says where the log went and why, and the health view warns
+//! while logging is off.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
+
+use super::health::{HealthRow, Level};
 
 /// One file rolls at this size; two files at most.
 pub const MAX_BYTES: u64 = 1_000_000;
@@ -84,10 +93,194 @@ fn now() -> u64 {
         .unwrap_or_default()
 }
 
-/// Writes a line to the log, if it's open.
+/// Writes a line to the log, if it's open. While the log is still being opened (#741) the line
+/// waits in memory, up to [`PENDING_MAX`] lines.
 pub fn line(text: &str) {
-    if let Some(log) = LOG.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-        log.write_line(now(), text);
+    let mut log = LOG.lock().unwrap_or_else(|e| e.into_inner());
+    match log.as_mut() {
+        Some(log) => log.write_line(now(), text),
+        None => wait(now(), text),
+    }
+}
+
+/// Keeps a line for the log that's still being opened.
+fn wait(at: u64, text: &str) {
+    let mut p = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    if p.open && p.lines.len() < PENDING_MAX {
+        p.lines.push((at, text.to_string()));
+    }
+}
+
+/// Lines kept in memory while the log is being opened; past that they're dropped.
+pub const PENDING_MAX: usize = 500;
+
+/// Lines waiting for the log, and whether waiting is still worth it (not once logging is off).
+struct Pending {
+    open: bool,
+    lines: Vec<(u64, String)>,
+}
+
+static PENDING: Mutex<Pending> = Mutex::new(Pending {
+    open: false,
+    lines: Vec::new(),
+});
+
+/// Where the log went (#741).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum State {
+    /// Not started (tests, or before `start`).
+    NotStarted,
+    /// The first opens failed and another try is coming; the last error.
+    Retrying(String),
+    /// Open in the settings folder.
+    Main(PathBuf),
+    /// Open in the fallback folder, because the settings folder's failed.
+    Fallback(PathBuf, String),
+    /// No log this run, and why.
+    Off(String),
+}
+
+static STATE: Mutex<State> = Mutex::new(State::NotStarted);
+
+fn set_state(state: State) {
+    *STATE.lock().unwrap_or_else(|e| e.into_inner()) = state;
+}
+
+/// Where the log went.
+pub fn state() -> State {
+    STATE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The health view's rows (registered as "app_log"): a warning while logging is off or
+/// somewhere else.
+pub fn health_rows() -> Vec<HealthRow> {
+    rows_for(&state())
+}
+
+fn rows_for(state: &State) -> Vec<HealthRow> {
+    let row = |detail: String| vec![HealthRow::new("app", "Log file", Level::Warn, detail)];
+    match state {
+        State::NotStarted | State::Main(_) => vec![],
+        State::Retrying(why) => row(format!("logging is off: {why} (trying again)")),
+        State::Off(why) => row(format!("logging is off: {why}")),
+        State::Fallback(dir, why) => row(format!("logging to {} instead: {why}", dir.display())),
+    }
+}
+
+/// The waits before each retry of the settings folder's log: six tries over about 30 s.
+pub const BACKOFF: [Duration; 5] = [
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+    Duration::from_secs(6),
+    Duration::from_secs(9),
+    Duration::from_secs(11),
+];
+
+/// The folder tried when the settings folder's log won't open: `%LOCALAPPDATA%\Foxglove\logs`.
+/// None in a test run (`FOXGLOVE_CONFIG_DIR`), which never writes outside its own folder.
+pub fn fallback_dir() -> Option<PathBuf> {
+    if std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some() {
+        return None;
+    }
+    Some(
+        PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+            .join("Foxglove")
+            .join("logs"),
+    )
+}
+
+/// What opening came to: the log (if any), where it went, and the line that says so.
+pub struct Opened {
+    pub log: Option<Log>,
+    pub state: State,
+    pub line: String,
+}
+
+fn open_error(dir: &Path, e: &std::io::Error) -> String {
+    format!("can't open {}: {e}", dir.join(FILE).display())
+}
+
+/// After a first try of `main` that failed with `first`: waits each of `backoff` and tries
+/// `main` again, then tries `fallback` once. `open` and `sleep` are the real ones in the app
+/// and fakes in the tests; `retrying` hears each failure that another try follows.
+pub fn retry_open(
+    main: Option<&Path>,
+    first: String,
+    fallback: Option<&Path>,
+    backoff: &[Duration],
+    mut open: impl FnMut(&Path) -> std::io::Result<Log>,
+    mut sleep: impl FnMut(Duration),
+    mut retrying: impl FnMut(&str),
+) -> Opened {
+    let mut why = first;
+    let tries = backoff.len() + 1;
+    if let Some(dir) = main {
+        for (i, wait) in backoff.iter().enumerate() {
+            retrying(&why);
+            sleep(*wait);
+            match open(dir) {
+                Ok(log) => {
+                    return Opened {
+                        log: Some(log),
+                        state: State::Main(dir.to_path_buf()),
+                        line: format!(
+                            "Foxglove: logging to {} (opened on try {} of {tries}; before: {why})",
+                            dir.display(),
+                            i + 2
+                        ),
+                    }
+                }
+                Err(e) => why = open_error(dir, &e),
+            }
+        }
+        why = format!("{why} ({tries} tries)");
+    }
+    if let Some(dir) = fallback.filter(|f| Some(*f) != main) {
+        match open(dir) {
+            Ok(log) => {
+                return Opened {
+                    log: Some(log),
+                    line: format!(
+                        "Foxglove: logging to {} instead of the settings folder: {why}",
+                        dir.display()
+                    ),
+                    state: State::Fallback(dir.to_path_buf(), why),
+                }
+            }
+            Err(e) => why = format!("{why}; the fallback too: {}", open_error(dir, &e)),
+        }
+    }
+    Opened {
+        log: None,
+        line: format!("Foxglove: logging is off: {why}"),
+        state: State::Off(why),
+    }
+}
+
+/// Puts an opened log in place: the lines that waited go in first, then the line saying where.
+fn install(opened: Opened) {
+    let mut log = LOG.lock().unwrap_or_else(|e| e.into_inner());
+    let waiting = {
+        let mut p = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        p.open = false;
+        std::mem::take(&mut p.lines)
+    };
+    set_state(opened.state);
+    match opened.log {
+        Some(mut l) => {
+            for (at, text) in &waiting {
+                l.write_line(*at, text);
+            }
+            l.write_line(now(), &opened.line);
+            *log = Some(l);
+        }
+        None => {
+            drop(log);
+            // No file: the reason still reaches a console run.
+            if !imp::capturing() {
+                eprintln!("{}", opened.line);
+            }
+        }
     }
 }
 
@@ -216,12 +409,51 @@ pub fn early(text: &str) {
     }
 }
 
-/// Opens the log and points stderr and panics at it. Call once, first in `main`.
+/// Opens the log and points stderr and panics at it. Call once, first in `main`. When the first
+/// open fails, the retries run on a thread of their own (#741) so start-up goes on; lines wait
+/// in memory until a log opens.
 pub fn start() {
-    let Some(dir) = dir() else { return };
-    match Log::open(&dir) {
-        Ok(log) => *LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(log),
-        Err(_) => return, // no log rather than no Foxglove
+    super::health::register("app_log", health_rows); // #741
+    PENDING.lock().unwrap_or_else(|e| e.into_inner()).open = true;
+    let main = dir();
+    let first = match &main {
+        Some(d) => Log::open(d).map_err(|e| open_error(d, &e)),
+        None => Err("no settings folder".to_string()),
+    };
+    match first {
+        Ok(log) => {
+            let d = main.clone().unwrap_or_default();
+            install(Opened {
+                log: Some(log),
+                line: format!("Foxglove: logging to {}", d.display()),
+                state: State::Main(d),
+            });
+        }
+        Err(why) => {
+            set_state(State::Retrying(why.clone()));
+            let fallback = fallback_dir();
+            let spawned = std::thread::Builder::new()
+                .name("app-log-open".into())
+                .spawn(move || {
+                    install(retry_open(
+                        main.as_deref(),
+                        why,
+                        fallback.as_deref(),
+                        &BACKOFF,
+                        Log::open,
+                        std::thread::sleep,
+                        |why| set_state(State::Retrying(why.to_string())),
+                    ));
+                });
+            if spawned.is_err() {
+                let why = "no thread to retry opening the log".to_string();
+                install(Opened {
+                    log: None,
+                    line: format!("Foxglove: logging is off: {why}"),
+                    state: State::Off(why),
+                });
+            }
+        }
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     line(&started_line(
@@ -249,11 +481,11 @@ pub fn start() {
         );
         // try_lock: a panic inside a log write must not deadlock on the log's own lock.
         match LOG.try_lock() {
-            Ok(mut guard) => {
-                if let Some(log) = guard.as_mut() {
-                    log.write_line(now(), &text);
-                }
-            }
+            Ok(mut guard) => match guard.as_mut() {
+                Some(log) => log.write_line(now(), &text),
+                // Still opening (#741): it waits with the other lines.
+                None => wait(now(), &text),
+            },
             Err(std::sync::TryLockError::Poisoned(p)) => {
                 if let Some(log) = p.into_inner().as_mut() {
                     log.write_line(now(), &text);
@@ -510,6 +742,158 @@ mod tests {
             "{lines:?}"
         );
         let _ = std::fs::remove_dir_all(&d);
+
+        // #741, in the same test (the log is process-wide): lines from while the log was being
+        // opened wait, then go in first, followed by the line that says where the log went.
+        let d = temp("waiting");
+        PENDING.lock().unwrap_or_else(|e| e.into_inner()).open = true;
+        line("Foxglove 0.3.0 started (pid 7, 83 s after boot)");
+        install(Opened {
+            log: Some(Log::open(&d).unwrap()),
+            state: State::Main(d.clone()),
+            line: "Foxglove: logging to here (opened on try 2 of 6; before: held)".into(),
+        });
+        line("Foxglove: after");
+        *LOG.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        set_state(State::NotStarted);
+        let lines: Vec<String> = recent_in(&d, 50)
+            .into_iter()
+            .map(|l| l[21..].to_string())
+            .collect();
+        assert_eq!(
+            lines,
+            vec![
+                "Foxglove 0.3.0 started (pid 7, 83 s after boot)",
+                "Foxglove: logging to here (opened on try 2 of 6; before: held)",
+                "Foxglove: after",
+            ]
+        );
+        assert!(
+            !PENDING.lock().unwrap_or_else(|e| e.into_inner()).open,
+            "no more waiting"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A fake open: fails `fails` times (as a file another program holds would), then opens a
+    /// real log in the folder asked for. Counts its calls.
+    fn flaky(
+        fails: usize,
+        calls: &std::cell::Cell<usize>,
+    ) -> impl FnMut(&Path) -> std::io::Result<Log> + '_ {
+        move |dir| {
+            calls.set(calls.get() + 1);
+            if calls.get() <= fails {
+                Err(std::io::Error::other("held by another program"))
+            } else {
+                Log::open(dir)
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_open_is_retried_with_a_bounded_backoff() {
+        let d = temp("retry");
+        let calls = std::cell::Cell::new(0);
+        let mut slept = Vec::new();
+        let mut heard = 0;
+        // The first try (in `start`) failed; two retries fail, the third opens.
+        let opened = retry_open(
+            Some(&d),
+            "can't open x: held by another program".into(),
+            None,
+            &BACKOFF,
+            flaky(2, &calls),
+            |w| slept.push(w),
+            |_| heard += 1,
+        );
+        assert!(opened.log.is_some());
+        assert_eq!(opened.state, State::Main(d.clone()));
+        assert_eq!(calls.get(), 3);
+        assert_eq!(slept, BACKOFF[..3].to_vec());
+        assert_eq!(heard, 3);
+        assert!(
+            opened
+                .line
+                .contains("(opened on try 4 of 6; before: can't open "),
+            "{}",
+            opened.line
+        );
+        assert!(
+            opened.line.ends_with("held by another program)"),
+            "{}",
+            opened.line
+        );
+        // About 30 s at most, never forever.
+        assert!(BACKOFF.iter().sum::<Duration>() <= Duration::from_secs(31));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_fallback_folder_takes_over_and_health_says_so() {
+        let (main, fallback) = (temp("main-fails"), temp("fallback"));
+        let calls = std::cell::Cell::new(0);
+        let mut open = flaky(BACKOFF.len() + 1, &calls);
+        let opened = retry_open(
+            Some(&main),
+            "can't open x: held by another program".into(),
+            Some(&fallback),
+            &BACKOFF,
+            |dir: &Path| {
+                if dir == main.as_path() {
+                    open(dir)
+                } else {
+                    Log::open(dir)
+                }
+            },
+            |_| {},
+            |_| {},
+        );
+        assert!(opened.log.is_some());
+        let State::Fallback(dir, why) = &opened.state else {
+            panic!("{:?}", opened.state)
+        };
+        assert_eq!(dir, &fallback);
+        assert!(why.ends_with("held by another program (6 tries)"), "{why}");
+        assert!(
+            opened.line.contains("instead of the settings folder"),
+            "{}",
+            opened.line
+        );
+        let rows = rows_for(&opened.state);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].level, Level::Warn);
+        assert!(
+            rows[0].detail.starts_with("logging to "),
+            "{}",
+            rows[0].detail
+        );
+        let _ = std::fs::remove_dir_all(&main);
+        let _ = std::fs::remove_dir_all(&fallback);
+    }
+
+    #[test]
+    fn with_nowhere_to_log_the_health_view_warns() {
+        let opened = retry_open(
+            None,
+            "no settings folder".into(),
+            None,
+            &BACKOFF,
+            |_: &Path| -> std::io::Result<Log> { unreachable!("nothing to open") },
+            |_| unreachable!("no waits without a folder"),
+            |_| {},
+        );
+        assert!(opened.log.is_none());
+        assert_eq!(opened.state, State::Off("no settings folder".into()));
+        assert_eq!(opened.line, "Foxglove: logging is off: no settings folder");
+        let rows = rows_for(&opened.state);
+        assert_eq!(rows[0].detail, "logging is off: no settings folder");
+        assert_eq!(rows[0].level, Level::Warn);
+        assert_eq!(
+            rows_for(&State::Retrying("can't open x: denied".into()))[0].detail,
+            "logging is off: can't open x: denied (trying again)"
+        );
+        assert!(rows_for(&State::Main(PathBuf::from("x"))).is_empty());
     }
 
     #[test]

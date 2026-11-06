@@ -603,7 +603,7 @@ sluggish after sleep:
    and firmware versions, the connection, plugins, Windows and the graphics card, and the last
    200 log lines. Your user name, PC name and passwords are left out.
 2. Paste it into the issue or message.
-3. The full log is in `%APPDATA%\Foxglove\logs\foxglove.log` (**App → Troubleshooting → Open log folder**, or the tray menu's **Open log folder**).
+3. The full log is in `%APPDATA%\Foxglove\logs\foxglove.log` (**App → Troubleshooting → Open log folder**, or the tray menu's **Open log folder**). If that folder couldn't be opened at start, the log goes to `%LOCALAPPDATA%\Foxglove\logs\` instead, and Keyboard health says so.
 
 ## Where things are kept
 

@@ -178,6 +178,10 @@ pub struct HidTransport {
     pub ble_last_err: i16,
 }
 
+/// The code Zephyr's USB HID driver gives a report while the PC hasn't configured the device
+/// (`-EAGAIN`, "not configured"): the PC is restarting, asleep or re-enumerating (#741).
+pub const USB_NOT_CONFIGURED: i16 = -11;
+
 /// A Zephyr error code as the health rows say it: "-12 ENOMEM, no buffer free".
 pub fn errno_words(err: i16) -> String {
     let what = match -i32::from(err) {
@@ -988,17 +992,27 @@ fn half_rows(b: &Block, t: &Thresholds, out: &mut Vec<HealthRow>) {
                     )
                 ),
             );
+            // USB refusals whose last code is -EAGAIN came while the PC hadn't configured the
+            // keyboard: Zephyr's `hid_int_ep_write` says "not configured" during a PC restart,
+            // sleep or replug, when nobody reads the reports. Information, like Bluetooth's
+            // skipped reports, not a warning (#741).
+            let usb_not_ready = b
+                .hid_transport
+                .filter(|h| h.usb_failed > 0 && h.usb_last_err == USB_NOT_CONFIGURED)
+                .map_or(0, |h| h.usb_failed);
+            let counted = u32::from(b.hid_failed).saturating_sub(u32::from(usb_not_ready));
             let failed_words = match b.hid_transport {
                 Some(h) => {
+                    let usb = h.usb_failed - usb_not_ready;
                     let mut words = format!(
                         "{}: {} by USB, {} by Bluetooth",
-                        plural(u32::from(b.hid_failed), "report refused", "reports refused"),
-                        h.usb_failed,
+                        plural(counted, "report refused", "reports refused"),
+                        usb,
                         h.ble_failed
                     );
                     // Version 4: why, as the last refusal on each transport said it.
                     for (n, err, by) in [
-                        (h.usb_failed, h.usb_last_err, "USB"),
+                        (usb, h.usb_last_err, "USB"),
                         (h.ble_failed, h.ble_last_err, "Bluetooth"),
                     ] {
                         if n > 0 && err != 0 {
@@ -1008,7 +1022,7 @@ fn half_rows(b: &Block, t: &Thresholds, out: &mut Vec<HealthRow>) {
                     words
                 }
                 None => plural(
-                    u32::from(b.hid_failed),
+                    counted,
                     "report refused by USB or Bluetooth",
                     "reports refused by USB or Bluetooth",
                 ),
@@ -1019,9 +1033,26 @@ fn half_rows(b: &Block, t: &Thresholds, out: &mut Vec<HealthRow>) {
                 "raw_hid",
                 item.clone(),
                 "hid_failed",
-                u32::from(b.hid_failed),
+                counted,
                 failed_words,
             );
+            if usb_not_ready > 0 {
+                let not_ready = format!(
+                    "{} while the PC wasn't ready ({}: a PC restart, sleep or replug)",
+                    plural(
+                        u32::from(usb_not_ready),
+                        "USB report not sent",
+                        "USB reports not sent"
+                    ),
+                    errno_words(USB_NOT_CONFIGURED)
+                );
+                let detail = if out.iter().any(|r| r.subsystem == "raw_hid") {
+                    not_ready
+                } else {
+                    format!("no problems since start; {not_ready}")
+                };
+                out.push(HealthRow::new("raw_hid", item.clone(), Level::Ok, detail));
+            }
             // Information, never a warning: Bluetooth reports with no PC listening there.
             if let Some(h) = b.hid_transport.filter(|h| h.ble_skipped > 0) {
                 let skipped = format!(

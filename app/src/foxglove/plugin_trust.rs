@@ -173,7 +173,12 @@ const GRANDFATHER: &str = "plugins.grandfather";
 
 /// The grandfathered plugins; the first time, the `installed` ones (id, version) are taken.
 pub fn grandfather(installed: &[(String, String)]) -> Grandfather {
-    let g: Grandfather = super::store::try_load(GRANDFATHER).unwrap_or_default();
+    let g: Grandfather = match super::store::load(GRANDFATHER) {
+        Ok(g) => g.unwrap_or_default(),
+        // Unreadable (#741): grandfather nothing rather than take every installed plugin as
+        // a list that was never saved.
+        Err(_) => return Grandfather::default(),
+    };
     if g.taken {
         return g;
     }
