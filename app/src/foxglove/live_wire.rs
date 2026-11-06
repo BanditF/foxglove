@@ -14,7 +14,8 @@
 //! ```text
 //! {"t":"hello","v":1,"topics":["keys","state"],"board":{"name":"Eyelash Corne","keys":[[x,y,w,h,r],...]},"state":{...},"quiet":null}
 //! {"t":"state","layer":{"index":3,"name":"NAV"},"art":"Fox run","battery":{"left":80,"right":61},"link":{"connected":true,"output":"ble","profile":1},
-//!  "lights":{"on":true,"color":"#ff6a00","brightness":60,"effect":"Solid","rainbow":false}}
+//!  "lights":{"on":true,"color":"#ff6a00","brightness":60,"effect":"Solid","rainbow":false},
+//!  "keyboard":{"name":"Eyelash Corne","source":"host_link","connected":true}}
 //! {"t":"art","art":{"name":"Fox run","nva":"TlZBMUSM..."}}   the piece's frames, once per change
 //! {"t":"panel","panel":{"w":64,"h":52,"bits":"AAAA..."}}     the left screen's PC panel, as shown
 //! {"t":"keys","e":[[17,1,0],[17,0,9]]}      index, 1 down / 0 up, ms since the batch's first
@@ -107,6 +108,18 @@ pub struct Lights {
     pub rainbow: bool,
 }
 
+/// The keyboard the feed is about (#801): the focused keyboard, or the one the feed is pinned
+/// to. Its name and where Foxglove found it; never a serial number or a device path.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Keyboard {
+    pub name: String,
+    /// `host_link` (a Foxglove keyboard: layers, keys, battery and lights follow), `via` or
+    /// `lamp_array` (its name and shape only).
+    pub source: String,
+    /// It is connected now; a keyboard that went this run stays named, `false`.
+    pub connected: bool,
+}
+
 /// The slow facts, sent whole whenever one changes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct State {
@@ -118,6 +131,9 @@ pub struct State {
     /// Left out until the keyboard reported its lights.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lights: Option<Lights>,
+    /// Which keyboard the rest is about (#801); left out before any keyboard was found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyboard: Option<Keyboard>,
 }
 
 /// The right screen's piece with its frames (`live_art`): sent when the piece changes and to a
@@ -417,6 +433,11 @@ mod tests {
                 effect: "Solid".into(),
                 rainbow: false,
             }),
+            keyboard: Some(Keyboard {
+                name: "Eyelash Corne".into(),
+                source: "host_link".into(),
+                connected: true,
+            }),
         }
     }
 
@@ -515,6 +536,9 @@ mod tests {
             "title",
             "body",
             "level",
+            // `state.keyboard` (#801): which keyboard, by name and source.
+            "keyboard",
+            "source",
         ];
         for m in every_message() {
             let json = m.json();
@@ -569,6 +593,10 @@ mod tests {
             serde_json::json!([0.0, 0.37, 1.0, 1.0, 0.0])
         );
         assert_eq!(hello["state"]["layer"]["name"], "NAV");
+        assert_eq!(
+            hello["state"]["keyboard"],
+            serde_json::json!({"name": "Eyelash Corne", "source": "host_link", "connected": true})
+        );
         assert_eq!(hello["quiet"], "away");
         assert_eq!(
             hello["state"]["lights"],

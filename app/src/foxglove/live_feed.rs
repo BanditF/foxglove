@@ -24,6 +24,12 @@
 //!   on. A wallpaper answers `notified`; without an answer in [`wire::ACK_LIMIT`] the hub shows
 //!   the Windows notification instead.
 //!
+//! - **Which keyboard (#801):** the focused keyboard, or the one the feed is pinned to (Settings →
+//!   Live wallpaper, `focus_pins`). `state.keyboard` names it. While it is the connected
+//!   host-link keyboard the feed carries its facts, keys and the overlay's geometry; for any other
+//!   keyboard only its name and shape (its `KeyLayout`), and no keys. A focus change (C1's
+//!   `focus.*` facts) sends the new board and state.
+//!
 //! Later topics (PC stats) are new `t` values in `live_wire`; the gates, the pairing and the hub
 //! stay as they are.
 
@@ -134,6 +140,8 @@ enum Msg {
     },
     /// A `keyboard.*` fact or the art changed.
     State,
+    /// The feed's keyboard may have changed (`focus.*`, #801).
+    Focus,
     /// Foxglove sent the left screen's panel a new frame, or handed it back (`screens`).
     Panel,
     /// The program in front changed.
@@ -193,6 +201,8 @@ struct Hub {
     panel_unsent: bool,
     pending: Vec<Pending>,
     last_note: u64,
+    /// The feed shows a keyboard other than the connected host-link one (#801): no keys.
+    foreign: bool,
 }
 
 impl Hub {
@@ -263,7 +273,9 @@ impl Hub {
     /// Whether key events are wanted at all: someone listens and nothing but full screen holds
     /// the feed (full screen is checked at a burst's start, so it needs the keys).
     fn wants_keys(&self) -> bool {
-        self.listeners().next().is_some() && matches!(self.quiet, None | Some(Why::Fullscreen))
+        !self.foreign
+            && self.listeners().next().is_some()
+            && matches!(self.quiet, None | Some(Why::Fullscreen))
     }
 
     fn hello(&self) -> Message {
@@ -406,7 +418,7 @@ impl Hub {
 
     /// A key event; true when it started a batch.
     fn key(&mut self, row: u16, col: u16, pressed: bool, now_ms: u64) -> bool {
-        if self.quiet.is_some() {
+        if self.quiet.is_some() || self.foreign {
             return false;
         }
         let positions = self.board.as_ref().map_or(&[][..], |(_, p)| p.as_slice());
@@ -596,6 +608,7 @@ fn listen(s: &LiveSettings) -> Result<(), String> {
     });
     let facts = super::devices::bus().facts();
     forward_facts(facts, "keyboard.*", &tx, || Msg::State);
+    forward_facts(facts, "focus.*", &tx, || Msg::Focus);
     forward_facts(facts, "app.foreground", &tx, || Msg::Foreground);
     let rx = Mutex::new(rx);
     // Key generations count across hub restarts, so a restarted hub never takes keys still
@@ -734,9 +747,11 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
 
     let epoch = Instant::now();
     let mut clients = Clients(Vec::new());
+    let fed = feed_keyboard();
     let mut hub = Hub {
         state: read_state(facts),
-        board: GEOMETRY.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        board: board_for(fed.as_ref()),
+        foreign: !super::focus_pins::host_link(fed.as_ref()),
         ..Hub::default()
     };
     let mut fullscreen = fullscreen_now();
@@ -819,8 +834,21 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
             }
             Some(Msg::Panel) => panel.changed(Instant::now()),
             Some(Msg::Board) => {
-                let board = GEOMETRY.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let board = board_for(feed_keyboard().as_ref());
                 dead = hub.set_board(board, &mut Streams(&mut clients));
+            }
+            Some(Msg::Focus) => {
+                let fed = feed_keyboard();
+                hub.foreign = !super::focus_pins::host_link(fed.as_ref());
+                if hub.foreign {
+                    // Keys of a burst already batched were the host link's: dropped.
+                    hub.batch = wire::Batch::default();
+                }
+                dead = hub.set_board(board_for(fed.as_ref()), &mut Streams(&mut clients));
+                dead.extend(hub.set_state(read_state(facts), &mut Streams(&mut clients)));
+                if let Some(piece) = art.read(&hub.state) {
+                    dead.extend(hub.set_art(piece, &mut Streams(&mut clients)));
+                }
             }
             Some(Msg::Foreground) => {
                 fullscreen = fullscreen_now();
@@ -1068,7 +1096,77 @@ fn forward_facts(facts: &Facts, pattern: &str, tx: &Sender<Msg>, msg: fn() -> Ms
     });
 }
 
+/// The keyboard the feed is about: its pin, else the focus (#801).
+fn feed_keyboard() -> Option<super::keyboard_focus::Keyboard> {
+    super::keyboard_focus::for_view(super::keyboard_focus::View::Feed)
+}
+
+/// The board for `fed`: the overlay's geometry while it is the host-link keyboard (its keys map
+/// onto it), else the keyboard's own layout, drawn only.
+fn board_for(fed: Option<&super::keyboard_focus::Keyboard>) -> Option<Geometry> {
+    match fed {
+        Some(k) if !super::focus_pins::host_link(Some(k)) => Some((
+            board_of(&k.name, &super::keyboard_focus::layout(k)),
+            Vec::new(),
+        )),
+        _ => GEOMETRY.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+    }
+}
+
+/// A keyboard's layout as the feed's board: its parts side by side, a key's width apart.
+fn board_of(name: &str, layout: &super::key_layout::KeyLayout) -> wire::Board {
+    let mut keys = Vec::new();
+    let mut x0 = 0.0;
+    for part in &layout.parts {
+        let mut right: f32 = 0.0;
+        for k in part {
+            let r = k.rect;
+            keys.push(wire::key_rect(
+                r.min.x + x0,
+                r.min.y,
+                r.width(),
+                r.height(),
+                k.r,
+            ));
+            right = right.max(k.bounds().max.x);
+        }
+        if !part.is_empty() {
+            x0 += right + 1.0;
+        }
+    }
+    wire::Board {
+        name: name.to_string(),
+        keys,
+    }
+}
+
+/// The state for the feed's keyboard `fed` from the host link's `host` state: all of it for the
+/// host-link keyboard, only its name and whether it's there for any other.
+fn state_for(host: wire::State, fed: Option<&super::keyboard_focus::Keyboard>) -> wire::State {
+    let keyboard = fed.map(|k| wire::Keyboard {
+        name: k.name.clone(),
+        source: k.source.as_str().into(),
+        connected: k.connected,
+    });
+    if super::focus_pins::host_link(fed) {
+        return wire::State { keyboard, ..host };
+    }
+    wire::State {
+        link: wire::Link {
+            connected: fed.is_some_and(|k| k.connected),
+            ..wire::Link::default()
+        },
+        keyboard,
+        ..wire::State::default()
+    }
+}
+
 fn read_state(facts: &Facts) -> wire::State {
+    state_for(read_host_state(facts), feed_keyboard().as_ref())
+}
+
+/// The host-link keyboard's facts (`keyboard.*`) and the right screen's art.
+fn read_host_state(facts: &Facts) -> wire::State {
     let int = |k: &str| match facts.get(k) {
         Some(Value::Int(n)) => u8::try_from(n).ok(),
         _ => None,
@@ -1099,6 +1197,7 @@ fn read_state(facts: &Facts) -> wire::State {
             },
         },
         lights: lights(facts),
+        keyboard: None,
     }
 }
 
@@ -1328,6 +1427,8 @@ pub fn group(ui: &mut egui::Ui) {
             ui.weak(
                 "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
             );
+            // #801: which keyboard the wallpaper shows, the focus or a pin.
+            super::focus_pins::feed_row(ui);
             let mut notify = s.notify;
             if notify_row(ui, &mut notify).changed() {
                 error = set_notify(notify).err();
@@ -1546,6 +1647,92 @@ mod tests {
         assert!(!hub.key(9, 9, true, 109), "off the board: dropped");
         assert!(hub.flush(&mut out).is_empty());
         assert_eq!(out.last(1), r#"{"t":"keys","e":[[2,1,0],[2,0,8]]}"#);
+    }
+
+    /// #801: the feed names its keyboard; for one that isn't the connected host-link keyboard
+    /// (a VIA keyboard in focus, or a pin to one) it sends no keys and none of the host link's
+    /// facts, only the name and its own shape.
+    #[test]
+    fn the_feed_names_its_keyboard_and_sends_another_keyboards_shape_only() {
+        use crate::foxglove::keyboard_focus::{Keyboard, Source};
+        let kb = |name: &str, source, connected| Keyboard {
+            key: name.into(),
+            name: name.into(),
+            source,
+            vid: 0x3434,
+            pid: 0x0250,
+            device: None,
+            connected,
+        };
+        let host = wire::State {
+            layer: Some(wire::Layer {
+                index: 3,
+                name: "NAV".into(),
+            }),
+            art: Some("Fox run".into()),
+            link: wire::Link {
+                connected: true,
+                ..wire::Link::default()
+            },
+            ..wire::State::default()
+        };
+        let host_kb = kb("Eyelash Corne", Source::HostLink, true);
+        let s = state_for(host.clone(), Some(&host_kb));
+        assert_eq!(s.layer, host.layer, "the host link's facts");
+        assert_eq!(
+            s.keyboard,
+            Some(wire::Keyboard {
+                name: "Eyelash Corne".into(),
+                source: "host_link".into(),
+                connected: true,
+            })
+        );
+        assert_eq!(
+            state_for(host.clone(), None),
+            host,
+            "no keyboard yet: as before"
+        );
+        let k5 = kb("K5 Pro", Source::Via, true);
+        let s = state_for(host.clone(), Some(&k5));
+        assert_eq!((s.layer, s.art), (None, None), "not the K5 Pro's");
+        assert!(s.link.connected);
+        assert_eq!(s.keyboard.unwrap().source, "via");
+        let gone = kb("Eyelash Corne", Source::HostLink, false);
+        let s = state_for(host, Some(&gone));
+        assert_eq!(s.layer, None, "a greyed keyboard has no facts");
+        assert!(!s.link.connected);
+
+        // Its shape: the parts side by side, a key apart.
+        let layout =
+            crate::foxglove::key_layout::of(Some(&crate::foxglove::fixtures::users_desk::board()));
+        let board = board_of("Eyelash Corne", &layout);
+        let n: usize = layout.parts.iter().map(Vec::len).sum();
+        assert_eq!(board.keys.len(), n);
+        let left_edge = |k: &wire::KeyRect| k[0];
+        let split = layout.parts[0].len();
+        assert!(
+            board.keys[split..]
+                .iter()
+                .map(left_edge)
+                .fold(f32::MAX, f32::min)
+                > board.keys[..split]
+                    .iter()
+                    .map(left_edge)
+                    .fold(f32::MIN, f32::max),
+            "the right half to the right of the left"
+        );
+
+        // No keys while the feed shows another keyboard.
+        let mut hub = Hub {
+            board: Some(corne()),
+            foreign: true,
+            ..Hub::default()
+        };
+        let mut out = Sent::default();
+        assert!(hub.join(1, &mut out));
+        assert!(!hub.wants_keys());
+        assert!(!hub.key(0, 2, true, 100));
+        assert!(hub.batch.is_empty());
     }
 
     #[test]

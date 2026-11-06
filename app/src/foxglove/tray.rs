@@ -194,8 +194,14 @@ impl Controls {
             self.paused_shown = paused;
         }
         self.connected = art_service::handle().is_some_and(|h| h.snapshot().connected);
-        let name = super::link::connected_name().unwrap_or_default();
-        self.status = status_line(self.connected, &name, paused);
+        // #801: the tooltip names the focused keyboard while it's connected.
+        let focus = super::keyboard_focus::current().filter(|k| k.connected);
+        let name = focus
+            .as_ref()
+            .map(|k| k.name.clone())
+            .or_else(super::link::connected_name)
+            .unwrap_or_default();
+        self.status = status_line(self.connected || focus.is_some(), &name, paused);
     }
 }
 

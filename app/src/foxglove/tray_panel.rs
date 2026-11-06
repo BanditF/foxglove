@@ -274,7 +274,12 @@ pub struct View {
     pub update: Option<String>,
     /// The other devices' batteries (#504): name, level, and whether it's low.
     pub devices: Vec<(String, String, bool)>,
+    /// The focused keyboard's name, in the title (#801); `None` before any keyboard was found.
+    pub keyboard: Option<String>,
 }
+
+/// The title's keyboard name at most this wide, so the pause button keeps its room.
+const NAME_ROOM: f32 = 150.0;
 
 /// What a click asks for.
 #[derive(Clone, Debug, PartialEq)]
@@ -400,6 +405,7 @@ fn view(ctx: &egui::Context) -> View {
         paused: super::pause::paused(),
         update: super::update::available_version().map(|v| format!("Update available: v{v}")),
         devices: devices(&super::peripherals::list()),
+        keyboard: super::keyboard_focus::current().map(|k| k.name),
     })
 }
 
@@ -648,6 +654,14 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     // #404: paused, the title dims and says so.
                     let title = if v.paused { p.muted } else { p.text_strong };
                     ui.label(RichText::new("FOXGLOVE").font(theme::hud(17.0)).color(title));
+                    // #801: the focused keyboard, the one the panel is about.
+                    if let Some(name) = &v.keyboard {
+                        ui.scope(|ui| {
+                            ui.set_max_width(NAME_ROOM);
+                            ui.add(egui::Label::new(RichText::new(name).size(14.0).color(if v.paused { p.muted } else { p.text })).truncate())
+                                .on_hover_text(format!("{name}. {}", super::focus_ui::TITLE_HOVER));
+                        });
+                    }
                     if v.paused {
                         ui.label(RichText::new(PAUSED_BADGE).font(theme::hud(13.0)).color(p.warn));
                     }
@@ -1222,6 +1236,7 @@ pub mod tests {
             paused: false,
             update: Some("Update available: v0.2.1".into()),
             devices: devices(&super::super::peripherals::tests::sample()),
+            keyboard: Some("Eyelash Corne".into()),
         }
     }
 }

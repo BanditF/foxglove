@@ -339,6 +339,10 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                         crate::foxglove::settings_ui::grid_heading(ui, text);
                     }
                 };
+                // #801: which keyboard it shows, the focus or a pin.
+                if !legacy() {
+                    crate::foxglove::focus_pins::overlay_row(ui);
+                }
                 grid_heading(ui, "When it shows");
                 for (label, value) in [("Display duration", 2000.0), ("Activation delay", 0.0)] {
                     ui.label(label);
@@ -3300,4 +3304,146 @@ fn live_wallpaper_notify_row_renders() {
             .count();
         assert!(n > 1000, "{name}: the theme's ground shows");
     }
+}
+
+/// #801: "Keyboard: Follow focus ▾" in the layer overlay's card and the Live wallpaper card, dark
+/// and light: both following the focus (the Corne), the overlay's list open, and the overlay
+/// pinned to the Corne while the focus is on the K5 Pro (the feed, following, says it gets the
+/// K5 Pro's name and shape only).
+#[test]
+fn focus_pins_render() {
+    use crate::foxglove::focus_pins::{feed_row, overlay_row, PinView, PREVIEW, PREVIEW_OPEN};
+    use crate::foxglove::keyboard_focus::View;
+    use crate::foxglove::live_feed::EXPLAINER;
+    use crate::foxglove::settings_ui::{grid_heading, section};
+    use crate::foxglove::theme::{Choice, DARK, LIGHT};
+    let keyboards = vec![
+        ("corne".to_string(), "Eyelash Corne".to_string(), true),
+        ("k5".to_string(), "K5 Pro".to_string(), true),
+    ];
+    let row = |pinned: Option<&str>, limited: bool| PinView {
+        pinned: pinned.map(String::from),
+        keyboards: keyboards.clone(),
+        limited,
+    };
+    let follow = (row(None, false), row(None, false));
+    let pinned = (row(Some("corne"), false), row(None, true));
+    let cards = |ui: &mut egui::Ui| {
+        ui.set_width(720.0);
+        section(ui, "Overlay Appearance", |ui| {
+            egui::Grid::new("appearance_grid")
+                .num_columns(2)
+                .striped(true)
+                .spacing([20.0, 10.0])
+                .show(ui, |ui| {
+                    overlay_row(ui);
+                    grid_heading(ui, "When it shows");
+                    ui.label("Display duration");
+                    ui.label("2000 ms");
+                    ui.end_row();
+                });
+        });
+        section(ui, "Live wallpaper", |ui| {
+            ui.checkbox(&mut true, "Live keyboard feed for wallpapers");
+            ui.weak(EXPLAINER);
+            ui.weak(
+                "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
+            );
+            feed_row(ui);
+            ui.weak("Listening on 127.0.0.1:8768: 1 wallpaper connected");
+        });
+    };
+    for (choice, theme, ground) in [
+        (Choice::Dark, "dark", DARK.ground),
+        (Choice::Light, "light", LIGHT.ground),
+    ] {
+        let shot = |pins: &(PinView, PinView), open: Option<View>| {
+            PREVIEW.with_borrow_mut(|p| *p = Some(pins.clone()));
+            PREVIEW_OPEN.set(open);
+            let ctx = preview_ctx();
+            crate::foxglove::theme::apply_choice(&ctx, choice);
+            let img = render(&ctx, egui::vec2(760.0, 520.0), ground, |ctx| {
+                egui::Area::new(egui::Id::new("focus-pins"))
+                    .fixed_pos(egui::pos2(20.0, 14.0))
+                    .show(ctx, cards);
+            });
+            PREVIEW.with_borrow_mut(|p| *p = None);
+            PREVIEW_OPEN.set(None);
+            img
+        };
+        let follows = shot(&follow, None);
+        let open = shot(&follow, Some(View::Overlay));
+        let pin = shot(&pinned, None);
+        assert_ne!(follows, open, "{theme}: the list");
+        assert_ne!(follows, pin, "{theme}: the pin and the feed's note");
+        keep(&format!("ui-801-pins-follow-{theme}.png"), &follows);
+        keep(&format!("ui-801-pins-list-open-{theme}.png"), &open);
+        keep(&format!("ui-801-pins-pinned-{theme}.png"), &pin);
+    }
+}
+
+/// #801: the tray panel's title names the focused keyboard (a long name is cut short, its
+/// whole name on hover), dark and light.
+#[test]
+fn tray_title_names_the_focus_renders() {
+    use crate::foxglove::theme::Choice;
+    for (choice, theme) in [(Choice::Dark, "dark"), (Choice::Light, "light")] {
+        let shot = |v: &crate::foxglove::tray_panel::View| {
+            let ctx = preview_ctx();
+            crate::foxglove::theme::apply_choice(&ctx, choice);
+            let size = egui::vec2(crate::foxglove::tray_panel::WIDTH + 40.0, 260.0);
+            render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+                egui::Area::new(egui::Id::new("tray-panel-preview"))
+                    .fixed_pos(egui::pos2(20.0, 20.0))
+                    .show(ctx, |ui| {
+                        crate::foxglove::tray_panel::panel(
+                            ui,
+                            v,
+                            &mut Default::default(),
+                            &mut Vec::new(),
+                        );
+                    });
+            })
+        };
+        let v = crate::foxglove::tray_panel::tests::sample();
+        let corne = shot(&v);
+        let long = shot(&crate::foxglove::tray_panel::View {
+            keyboard: Some("Keychron K5 Pro ANSI Knob (wired)".into()),
+            ..v.clone()
+        });
+        let none = shot(&crate::foxglove::tray_panel::View {
+            keyboard: None,
+            ..v
+        });
+        assert_ne!(corne, none, "{theme}: the name in the title");
+        assert_ne!(corne, long);
+        keep(&format!("ui-801-tray-title-{theme}.png"), &corne);
+        keep(&format!("ui-801-tray-title-long-{theme}.png"), &long);
+    }
+}
+
+/// #801: the Scenes room with two keyboards (the Corne and a K5 Pro beside it), the focused one
+/// ringed: the Corne, then the K5 Pro.
+#[test]
+fn scenes_room_two_keyboards_renders() {
+    use crate::foxglove::scene_room::{
+        focused_ids,
+        tests::{sample_room_two_keyboards, two_keyboards},
+    };
+    use crate::foxglove::shell::Page;
+    let room = sample_room_two_keyboards();
+    let [corne, k5] = two_keyboards().try_into().unwrap();
+    let on = |focused: Vec<String>| {
+        let mut s = Samples::full();
+        s.scenes.0.room = room.clone();
+        s.scenes.0.focused = focused;
+        shell_preview_with(Page::Scenes, &s, 1000.0)
+    };
+    let plain = on(Vec::new());
+    let on_corne = on(focused_ids(&room, Some(&corne)));
+    let on_k5 = on(focused_ids(&room, Some(&k5)));
+    assert_ne!(plain, on_corne, "the ring");
+    assert_ne!(on_corne, on_k5, "the ring moves with the focus");
+    keep("ui-801-scenes-room-corne.png", &on_corne);
+    keep("ui-801-scenes-room-k5.png", &on_k5);
 }

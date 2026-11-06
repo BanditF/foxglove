@@ -251,7 +251,9 @@ impl OverlayApp {
                             .striped(true)
                             .spacing([20.0, 10.0])
                             .show(ui, |ui| {
-                                // Foxglove (#534): when it shows, then how it looks.
+                                // Foxglove (#801): which keyboard, then when it shows, then how
+                                // it looks.
+                                crate::foxglove::focus_pins::overlay_row(ui);
                                 crate::foxglove::settings_ui::grid_heading(ui, "When it shows");
                                 ui.label("Display duration");
                                 let mut timeout_ui =

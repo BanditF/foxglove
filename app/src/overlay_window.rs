@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod connection_flow;
 mod foxglove_connect;
+mod foxglove_focus;
 mod foxglove_place;
 mod foxglove_settings;
 mod settings_sync;
@@ -31,6 +32,8 @@ pub struct OverlayApp {
     pub(crate) editor: crate::keymap_editor::EditorState,
     /// Foxglove: the last profile switch the overlay applied.
     profile_seen: u64,
+    /// Foxglove (#801): the keyboard the overlay's view named when last checked.
+    focus_seen: Option<String>,
 }
 
 impl OverlayApp {
@@ -86,6 +89,7 @@ impl OverlayApp {
             editor: crate::keymap_editor::EditorState::new(),
             serial_watch: foxglove_connect::SerialWatch::default(),
             profile_seen: 0,
+            focus_seen: None,
         }
     }
 
@@ -225,6 +229,7 @@ impl OverlayApp {
 
         self.poll_connect_result();
         self.auto_connect(); // Foxglove
+        self.follow_focus(); // Foxglove (#801)
         self.maintain_connection(ctx);
         self.apply_live_visual_settings();
         self.apply_live_layout_settings();

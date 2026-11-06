@@ -86,6 +86,9 @@ pub struct View {
     /// The running scene stepped aside for someone else's lights (#491): who, in words
     /// ("Windows Dynamic Lighting", "another app").
     pub yielded_to: Option<&'static str>,
+    /// The room ids of the focused keyboard's devices, ringed on the map (#801); empty with
+    /// one keyboard, where there is nothing to tell apart.
+    pub focused: Vec<String>,
 }
 
 /// How the status line reads.
@@ -207,6 +210,8 @@ struct State {
     clock: Clock,
     /// "Keep running on the keyboard", as stored.
     keep_on_keyboard: bool,
+    /// The focused keyboard's room ids (#801).
+    focused: Vec<String>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -276,6 +281,7 @@ fn show(ui: &mut egui::Ui) {
             == super::led_map::MapState::Shipped,
         lamp_note: lamp_note(st),
         yielded_to: super::lights_owner::yielded_to(),
+        focused: st.focused.clone(),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -352,6 +358,7 @@ fn refresh(slot: &mut Option<State>, frame: u64) -> &mut State {
         reload: false,
         clock: Clock::starting_now(),
         keep_on_keyboard: super::scene_run::keep().on_quit,
+        focused: Vec::new(),
     });
     if st.profile != profile || std::mem::take(&mut st.reload) {
         st.profile = profile;
@@ -372,6 +379,13 @@ fn rebuild_room(st: &mut State) {
     st.room_generation = super::scene_room::generation();
     st.room = super::scene_room::room();
     st.moved = !super::scene_room::layout().offsets.is_empty();
+    // #801: with more than one keyboard here, the focused one is ringed.
+    let keyboards = super::keyboard_focus::keyboards();
+    st.focused = if keyboards.iter().filter(|k| k.connected).count() > 1 {
+        super::scene_room::focused_ids(&st.room, super::keyboard_focus::current().as_ref())
+    } else {
+        Vec::new()
+    };
     st.keyboard_lit =
         super::devices::bus().facts().get("keyboard.connected") == Some(Value::Bool(true));
     // Never looks for a keyboard here (the UI thread): what the one found last said.
@@ -1106,6 +1120,15 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
             Stroke::new(1.0, line),
             egui::StrokeKind::Inside,
         );
+        if v.focused.contains(&d.id) {
+            // #801: the keyboard shown in Foxglove, ringed a little outside its outline.
+            painter.rect_stroke(
+                r.expand(FOCUS_RING_GAP),
+                4.0 + FOCUS_RING_GAP,
+                Stroke::new(2.0, p.accent),
+                egui::StrokeKind::Outside,
+            );
+        }
         let dim = |c: Color32| if lit { c } else { c.gamma_multiply(0.4) };
         if is_keyboard(&d.id) {
             // Without SET_FRAME the keyboard shows one colour for both halves (#485), so the
@@ -1153,10 +1176,21 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
             } else {
                 "shown only"
             };
-            response.on_hover_text_at_pointer(format!("{} · {lit} · drag to move", d.name));
+            let shown = if v.focused.contains(&d.id) {
+                FOCUS_RING_WORDS
+            } else {
+                ""
+            };
+            response.on_hover_text_at_pointer(format!("{}{shown} · {lit} · drag to move", d.name));
         }
     }
 }
+
+/// How far outside a focused keyboard's outline its ring sits (#801).
+const FOCUS_RING_GAP: f32 = 3.0;
+
+/// After a focused keyboard's name in the map's hover.
+pub const FOCUS_RING_WORDS: &str = " · shown in Foxglove";
 
 /// A soft round glow: `c` in the middle, fading to nothing at `radius`.
 fn glow(painter: &egui::Painter, centre: Pos2, radius: f32, c: Color32) {
@@ -1628,6 +1662,7 @@ pub(crate) mod tests {
             leds_shipped: false,
             lamp_note: None,
             yielded_to: None,
+            focused: Vec::new(),
         }
     }
 
@@ -1689,6 +1724,7 @@ pub(crate) mod tests {
             leds_shipped: false,
             lamp_note: None,
             yielded_to: None,
+            focused: Vec::new(),
         }
     }
 

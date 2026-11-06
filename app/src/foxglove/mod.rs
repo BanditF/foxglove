@@ -42,6 +42,8 @@ pub mod firmware_update;
 #[cfg(test)]
 pub(crate) mod fixtures;
 pub mod focus;
+// Foxglove (#801): the overlay and the wallpaper feed follow the focus, or a pin.
+pub mod focus_pins;
 pub mod focus_ui;
 pub mod foreground;
 pub mod gpu_reset;
