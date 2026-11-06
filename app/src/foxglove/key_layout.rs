@@ -10,7 +10,8 @@
 //!    opens the board ([`from_definition`], #797).
 //! 2. A definition the user loaded: a VIA JSON or a QMK keyboard.json / info.json, handed over
 //!    by `via_host` when it opens the board the definition is for ([`from_definition`], #797),
-//!    as a [`Supplied`] with [`LayoutSource::Definition`]. B3 #798 adds KLE.
+//!    as a [`Supplied`] with [`LayoutSource::Definition`]; or a VIA, QMK or KLE file loaded for
+//!    the focused keyboard with "Load a layout…", handed over by `layout_files` (#798).
 //! 3. The board profile's `[drawing]`.
 //! 4. Guessed: a plain grid of the keymap's key count (`Drawing::plain`).
 //!
@@ -33,7 +34,7 @@ use super::theme::Dot;
 pub enum LayoutSource {
     /// The keyboard said: ZMK Studio's physical layout, or a Vial board's own definition.
     Keyboard,
-    /// A definition the user loaded (B2 #797; B3 #798 adds KLE).
+    /// A definition the user loaded (B2 #797), or a layout file (B3 #798).
     Definition(DefinitionFormat),
     /// The board profile's `[drawing]`.
     Profile,
@@ -41,13 +42,14 @@ pub enum LayoutSource {
     Guessed(usize),
 }
 
-/// The file a loaded definition came from (B2 #797 builds `Via` and `QmkInfo`, B3 #798 `Kle`).
+/// The file a loaded definition came from (B2 #797 builds `Via` and `QmkInfo`, B3 #798 all
+/// three).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefinitionFormat {
     Via,
     /// A QMK keyboard.json / info.json: one of its `LAYOUT_*` layouts.
     QmkInfo,
-    #[allow(dead_code)]
+    /// A raw KLE (keyboard-layout-editor.com) layout.
     Kle,
 }
 

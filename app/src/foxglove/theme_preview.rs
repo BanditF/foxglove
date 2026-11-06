@@ -1077,6 +1077,78 @@ fn definition_layouts_render() {
     assert_ne!(shots[0], shots[2], "dark and light");
 }
 
+/// #798: "Load a layout…", dark and light: a keyboard whose shape is guessed, with the link
+/// after the muted note; the same keyboard drawn from a KLE file it loaded, with its chip and
+/// "Forget this layout"; and a bad file's one line under the guess.
+#[test]
+fn loaded_layouts_render() {
+    use crate::foxglove::key_layout::{of_keyboard, resolve, set_for_test};
+    use crate::foxglove::keyboard_page::{board, tests::sample_board, BoardView};
+    use crate::foxglove::layout_files;
+    use crate::foxglove::theme::{Choice, DARK, LIGHT};
+    const KB: (u16, u16) = (0xB398, 0x0036);
+    const KLE: &str = r#"[{"name": "Split 36"},
+        ["Q", "W", "E", "R", "T", {"x": 3}, "Y", "U", "I", "O", "P"],
+        ["A", "S", "D", "F", "G", {"x": 3}, "H", "J", "K", "L", ";"],
+        ["Z", "X", "C", "V", "B", {"x": 3}, "N", "M", ",", ".", "/"],
+        [{"x": 2.5, "y": 0.2}, "Esc", "Tab", {"x": 4}, "Ent", "Bsp"],
+        [{"r": 20, "rx": 4.6, "ry": 3.3}, "Spc"],
+        [{"r": -20, "rx": 7.4, "ry": 3.3, "x": -1}, "Sft"]]"#;
+    crate::foxglove::store::test_config_dir();
+    let dir = crate::foxglove::store::test_config_dir()
+        .parent()
+        .unwrap()
+        .join("layout-preview");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("split-36.json");
+    std::fs::write(&path, KLE).unwrap();
+    set_for_test(KB.0, KB.1, None);
+    let guessed = resolve(None, &[], 36);
+    layout_files::load(KB.0, KB.1, &path).unwrap();
+    let loaded = of_keyboard(KB.0, KB.1, None);
+    let view = |layout| BoardView {
+        layout,
+        split: false,
+        panel: None,
+        art: None,
+        screens: Vec::new(),
+        title: "Split 36".into(),
+        layout_for: Some(KB),
+        ..sample_board()
+    };
+    let mut shots = Vec::new();
+    for (choice, theme, ground) in [
+        (Choice::Dark, "dark", DARK.ground),
+        (Choice::Light, "light", LIGHT.ground),
+    ] {
+        let shot =
+            |name: &str, layout: &crate::foxglove::key_layout::KeyLayout, problem: Option<&str>| {
+                let ctx = preview_ctx();
+                crate::foxglove::theme::apply_choice(&ctx, choice);
+                if let Some(m) = problem {
+                    layout_files::show_problem(KB, m);
+                }
+                let v = view(layout.clone());
+                let img = render_ui(&ctx, egui::vec2(980.0, 340.0), ground, |ui| {
+                    board(ui, &v);
+                });
+                layout_files::show_problem((0, 0), "");
+                keep(&format!("ui-798-{name}-{theme}.png"), &img);
+                img
+            };
+        shots.push(shot("guessed", &guessed, None));
+        shots.push(shot("kle", &loaded, None));
+        shots.push(shot(
+            "bad-file",
+            &guessed,
+            Some("Couldn't load notes.json: it isn't a VIA definition, a QMK keyboard.json / info.json or a KLE layout."),
+        ));
+    }
+    assert_ne!(shots[0], shots[1], "the loaded layout is drawn");
+    assert_ne!(shots[0], shots[2], "the bad file's line shows");
+    assert_ne!(shots[0], shots[3], "dark and light");
+}
+
 /// #822: the board drawing's screens come from the board, dark and light: the Corne's two (as
 /// before), none on a one-piece K5 Pro drawn from its VIA definition, and a one-piece board's
 /// info and art screens where its profile puts them.

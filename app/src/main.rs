@@ -68,6 +68,7 @@ fn main() {
     foxglove::battery::start(); // Foxglove (#372, #373)
     foxglove::peripherals::start(); // Foxglove (#504): Bluetooth and controller batteries
     foxglove::live_feed::start(); // Foxglove (#499): the live wallpaper feed, when turned on
+    foxglove::layout_files::start(); // Foxglove (#798): layouts the user loaded, before keyboards connect
     foxglove::via_host::start();
     foxglove::pc_lights::start(); // Foxglove (#423): case and peripheral lights
     foxglove::scene_run::start_from_env(); // Foxglove (#485): the live check's demo scene

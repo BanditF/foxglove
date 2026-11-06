@@ -9,6 +9,9 @@
 //!   lighting)
 //! - [`qmk`]: a QMK keyboard.json / info.json as a definition (matrix and a `LAYOUT_*` layout),
 //!   for boards with no VIA definition
+//! - [`kle`]: a raw KLE (keyboard-layout-editor.com) layout
+//! - [`layout_file`]: a layout file the user loads for a keyboard's drawing (VIA, QMK or KLE),
+//!   bounded in size (#798)
 //! - [`device`]: the keyboard as a device-layer device (keymap read, lighting)
 //! - [`vial`]: a Vial board's own definition, read from the board (bounded) and decompressed
 //! - [`discovery`]: which Raw HID interfaces are VIA keyboards (with a definition, or any QMK
@@ -27,6 +30,8 @@ pub mod device;
 pub mod discovery;
 #[cfg(feature = "hid")]
 pub mod hid;
+pub mod kle;
+pub mod layout_file;
 pub mod location;
 pub mod protocol;
 pub mod qmk;

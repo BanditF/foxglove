@@ -64,7 +64,10 @@ pub fn load(path: &Path, text: &str) -> Result<Definition, String> {
             }
             for f in FILES {
                 let p = up.join(f);
-                if let Ok(t) = std::fs::read_to_string(&p) {
+                // Bounded like the file itself: a folder's info.json is a few KiB.
+                let fits = std::fs::metadata(&p)
+                    .is_ok_and(|m| m.len() <= crate::layout_file::MAX_BYTES as u64);
+                if let Some(t) = fits.then(|| std::fs::read_to_string(&p).ok()).flatten() {
                     parts.push(Part::parse(&t).map_err(|e| format!("{}: {e}", p.display()))?);
                     top = up.to_path_buf();
                 }

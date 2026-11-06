@@ -238,6 +238,7 @@ pub fn read_only_board(focus: &super::focus_ui::Focused, layout: KeyLayout) -> B
         right_label: String::new(),
         title: focus.name.clone(),
         read_only: focus.read_only.clone(),
+        layout_for: super::keyboard_focus::current().map(|k| (k.vid, k.pid)),
         ..Default::default()
     }
 }
@@ -586,6 +587,9 @@ pub struct BoardView {
     /// The screens drawn on the board, from its own screens and profile ([`board_screens`],
     /// #822); none for a board without screens.
     pub screens: Vec<BoardScreen>,
+    /// The keyboard (vid, pid) a loaded layout is for (#798): the focused one. `None` offers
+    /// no "Load a layout…".
+    pub layout_for: Option<(u16, u16)>,
 }
 
 /// A screen the board drawing shows (#822): what it is for, the part it sits on, where along
@@ -727,6 +731,7 @@ fn board_view(ctx: &egui::Context) -> BoardView {
         right_label,
         title: focus.map(|f| f.name).unwrap_or_default(),
         read_only: None,
+        layout_for: focused.as_ref().map(|k| (k.vid, k.pid)),
     }
 }
 
@@ -784,13 +789,13 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 super::key_layout::source_chip(ui, layout);
+                super::layout_files::forget_link(ui, layout, v.layout_for);
                 if let Some(why) = &v.read_only {
                     super::focus_ui::read_only_chip(ui, why);
                 }
             });
-            if let Some(note) = layout.source.note() {
-                ui.weak(note);
-            }
+            // A guessed shape's note, with "Load a layout…" (#798).
+            super::layout_files::note_row(ui, layout, v.layout_for);
             ui.add_space(6.0);
             let unit = KEY_UNIT;
             let half = layout.size * unit;
@@ -1401,6 +1406,7 @@ pub mod tests {
                 Some(&corne),
                 &corne.parts(),
             ),
+            layout_for: None,
         }
     }
 
