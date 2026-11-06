@@ -10,7 +10,10 @@
 //!    opens the board ([`from_definition`], #797).
 //! 2. A definition the user loaded: a VIA JSON or a QMK keyboard.json / info.json, handed over
 //!    by `via_host` when it opens the board the definition is for ([`from_definition`], #797),
-//!    as a [`Supplied`] with [`LayoutSource::Definition`]. B3 #798 adds KLE.
+//!    as a [`Supplied`] with [`LayoutSource::Definition`]; or a VIA, QMK or KLE file loaded for
+//!    the focused keyboard with "Load a layout…", handed over by `layout_files` (#798)
+//!    ([`from_file`]). A loaded file wins over a scanned definition for the same board until
+//!    the user forgets it.
 //! 3. The board profile's `[drawing]`.
 //! 4. Guessed: a plain grid of the keymap's key count (`Drawing::plain`).
 //!
@@ -33,7 +36,7 @@ use super::theme::Dot;
 pub enum LayoutSource {
     /// The keyboard said: ZMK Studio's physical layout, or a Vial board's own definition.
     Keyboard,
-    /// A definition the user loaded (B2 #797; B3 #798 adds KLE).
+    /// A definition the user loaded (B2 #797), or a layout file (B3 #798).
     Definition(DefinitionFormat),
     /// The board profile's `[drawing]`.
     Profile,
@@ -41,13 +44,14 @@ pub enum LayoutSource {
     Guessed(usize),
 }
 
-/// The file a loaded definition came from (B2 #797 builds `Via` and `QmkInfo`, B3 #798 `Kle`).
+/// The file a loaded definition came from (B2 #797 builds `Via` and `QmkInfo`, B3 #798 all
+/// three).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefinitionFormat {
     Via,
     /// A QMK keyboard.json / info.json: one of its `LAYOUT_*` layouts.
     QmkInfo,
-    #[allow(dead_code)]
+    /// A raw KLE (keyboard-layout-editor.com) layout.
     Kle,
 }
 
@@ -377,12 +381,18 @@ fn in_order_of(keys: &[LayoutKey], wanted: &[Rect]) -> Vec<LayoutKey> {
 struct Store {
     keyboard: Option<(u16, u16)>,
     supplied: Vec<((u16, u16), Supplied)>,
+    /// Layouts the user loaded from a file (#798), one per keyboard. Kept apart from what the
+    /// sources hand over, so a scan's VIA definition for the same board neither replaces nor
+    /// withdraws one, and one wins over it until the user forgets it: user intent beats
+    /// auto-detect.
+    files: Vec<((u16, u16), Supplied)>,
 }
 
 #[cfg(not(test))]
 static STORE: std::sync::Mutex<Store> = std::sync::Mutex::new(Store {
     keyboard: None,
     supplied: Vec::new(),
+    files: Vec::new(),
 });
 
 #[cfg(not(test))]
@@ -437,6 +447,52 @@ pub fn withdraw(vid: u16, pid: u16, source: LayoutSource) {
     }
 }
 
+/// A layout the user loaded from a file for keyboard (vid, pid) (#798, `layout_files`): it
+/// replaces the one loaded before and, on the definition step, wins over a definition a source
+/// handed over for the same board (a VIA scan's), until [`forget_file`].
+pub fn from_file(vid: u16, pid: u16, layout: Supplied) {
+    let changed = with_store(
+        |s| match s.files.iter().position(|(id, _)| *id == (vid, pid)) {
+            Some(i) if s.files[i].1 == layout => false,
+            Some(i) => {
+                s.files[i].1 = layout;
+                true
+            }
+            None => {
+                s.files.push(((vid, pid), layout));
+                true
+            }
+        },
+    );
+    if changed {
+        super::scene_run::devices_changed();
+    }
+}
+
+/// The user forgot keyboard (vid, pid)'s loaded layout: what its sources handed over (a VIA
+/// definition) draws it again, else the next step down.
+pub fn forget_file(vid: u16, pid: u16) {
+    let changed = with_store(|s| {
+        let before = s.files.len();
+        s.files.retain(|(id, _)| *id != (vid, pid));
+        s.files.len() != before
+    });
+    if changed {
+        super::scene_run::devices_changed();
+    }
+}
+
+/// Keyboard `id`'s layouts: its loaded file first, so it wins its step of the ladder (the
+/// ladder's sort keeps this order within a step), then what its sources handed over.
+fn supplied_for(s: &Store, id: (u16, u16)) -> Vec<Supplied> {
+    s.files
+        .iter()
+        .chain(&s.supplied)
+        .filter(|(k, _)| *k == id)
+        .map(|(_, l)| l.clone())
+        .collect()
+}
+
 fn hand_over(vid: u16, pid: u16, layout: Supplied, connected: bool) {
     let changed = with_store(|s| {
         if connected {
@@ -466,13 +522,7 @@ fn hand_over(vid: u16, pid: u16, layout: Supplied, connected: bool) {
 
 /// What the sources handed over for the keyboard connected now.
 fn supplied_now() -> Vec<Supplied> {
-    with_store(|s| {
-        s.supplied
-            .iter()
-            .filter(|(id, _)| Some(*id) == s.keyboard)
-            .map(|(_, l)| l.clone())
-            .collect()
-    })
+    with_store(|s| s.keyboard.map(|k| supplied_for(s, k)).unwrap_or_default())
 }
 
 /// The connected keyboard's layout, from the caches; asks the keyboard nothing.
@@ -500,15 +550,8 @@ pub fn of(board: Option<&Board>) -> KeyLayout {
 /// keymap key count is known, so another keyboard without either gets the default grid, never
 /// the host keyboard's count. Asks the keyboard nothing.
 pub fn of_keyboard(vid: u16, pid: u16, board: Option<&Board>) -> KeyLayout {
-    let (supplied, connected) = with_store(|s| {
-        let supplied: Vec<Supplied> = s
-            .supplied
-            .iter()
-            .filter(|(id, _)| *id == (vid, pid))
-            .map(|(_, l)| l.clone())
-            .collect();
-        (supplied, s.keyboard == Some((vid, pid)))
-    });
+    let (supplied, connected) =
+        with_store(|s| (supplied_for(s, (vid, pid)), s.keyboard == Some((vid, pid))));
     let keys = if connected {
         super::boards::keymap_key_count()
     } else {
@@ -574,6 +617,7 @@ pub fn set_for_test(vid: u16, pid: u16, layout: Option<Supplied>) {
     with_store(|s| {
         s.keyboard = Some((vid, pid));
         s.supplied.clear();
+        s.files.clear();
         if let Some(l) = layout {
             s.supplied.push(((vid, pid), l));
         }
