@@ -8,6 +8,7 @@ impl OverlayApp {
     /// keys can do, all of which hold without Foxglove running.
     pub(super) fn foxglove_keyboard_group(ui: &mut egui::Ui) {
         crate::foxglove::update::group(ui);
+        crate::foxglove::follow_typing::group(ui); // Foxglove (#802)
         crate::foxglove::live_feed::group(ui); // Foxglove (#499)
         crate::foxglove::health::group(ui); // Foxglove (#705)
         crate::foxglove::troubleshooting::group(ui); // Foxglove (#535)

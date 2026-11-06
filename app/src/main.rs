@@ -70,6 +70,7 @@ fn main() {
     foxglove::live_feed::start(); // Foxglove (#499): the live wallpaper feed, when turned on
     foxglove::layout_files::start(); // Foxglove (#798): layouts the user loaded, before keyboards connect
     foxglove::via_host::start();
+    foxglove::follow_typing::start(); // Foxglove (#802): only when "Follow the keyboard I type on" is on
     foxglove::pc_lights::start(); // Foxglove (#423): case and peripheral lights
     foxglove::scene_run::start_from_env(); // Foxglove (#485): the live check's demo scene
     foxglove::scene_triggers::start(); // Foxglove (#489): layer sweeps

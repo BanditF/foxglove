@@ -1,8 +1,9 @@
 //! The focused keyboard (#799, C1; docs/design/device-focus-layouts-thumbnails-lights-declutter.md
 //! section 1): one keyboard the whole app shows, picked from every keyboard the device layer
 //! knows. Not `focus.rs`, which is window focus (#618). The model only: the switcher and the pages
-//! are `focus_ui` (C2), the pins' cards `focus_pins` (C3), and "follow the keyboard I type on"
-//! is C4.
+//! are `focus_ui` (C2), the pins' cards `focus_pins` (C3). "Follow the keyboard I type on" (C4,
+//! #802) feeds [`typed`] from `follow_typing`'s Raw Input listener: only which keyboard typed,
+//! never a key.
 //!
 //! - **The keyboards:** the device layer reports what each source sees, on its own events: the
 //!   host-link keyboard on its link's State events (`devices::start`), VIA/Vial keyboards on each
@@ -18,6 +19,9 @@
 //!   connected one. Nothing else moves it.
 //! - **A new keyboard never steals the focus**, except when nothing was focused.
 //! - **A picked focus stays**, greyed when its keyboard goes, and a replug keeps it.
+//! - **Follow the keyboard I type on** (off by default): with it on, a few keys on another
+//!   keyboard move the focus there, at most once a second (`follow_typing::Follower`). A pick
+//!   holds until the user types on a keyboard other than the one they typed on when they picked.
 //! - **Pins:** the overlay and the wallpaper feed may each pin a keyboard (`[focus.pins]`); an
 //!   unpinned view follows the focus. Their cards and the views' following are `focus_pins` (C3).
 //! - **Events:** every change sets the `focus.*` facts on the app's bus ([`subscribe`]), which
@@ -28,11 +32,13 @@
 
 use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use foxglove_devices::facts::{Change, Value};
 use serde::{Deserialize, Serialize};
 
 use super::boards::Board;
+use super::follow_typing::Follower;
 use super::key_layout::KeyLayout;
 
 /// The store's section.
@@ -199,6 +205,8 @@ pub struct Model {
     remembered: Option<String>,
     pins: Pins,
     follow_typing: bool,
+    /// Which keyboard is being typed on, debounced (C4).
+    follower: Follower,
 }
 
 impl Model {
@@ -231,6 +239,43 @@ impl Model {
 
     pub fn follow_typing(&self) -> bool {
         self.follow_typing
+    }
+
+    /// Turns "Follow the keyboard I type on" on or off; off forgets who was typing.
+    pub fn set_follow_typing(&mut self, on: bool) {
+        self.follow_typing = on;
+        if !on {
+            self.follower = Follower::default();
+        }
+    }
+
+    /// The known keyboard a typing device with these ids is: the focus when it is one, else the
+    /// first connected one.
+    fn typing_keyboard(&self, vid: u16, pid: u16) -> Option<String> {
+        let is = |k: &&Keyboard| k.connected && (k.vid, k.pid) == (vid, pid);
+        self.focus()
+            .filter(is)
+            .or_else(|| self.keyboards.iter().find(is))
+            .map(|k| k.key.clone())
+    }
+
+    /// A keyboard with these ids typed at `at` (C4): only which device, never which key.
+    /// Whether the focus moved: only with "Follow the keyboard I type on" on, only to a known
+    /// keyboard, and only as the [`Follower`] allows (a few keys, at most once a second).
+    pub fn typed(&mut self, vid: u16, pid: u16, at: Instant) -> bool {
+        if !self.follow_typing {
+            return false;
+        }
+        let Some(key) = self.typing_keyboard(vid, pid) else {
+            return false;
+        };
+        if !self.follower.typed(&key, at) || self.focus.as_deref() == Some(key.as_str()) {
+            return false;
+        }
+        self.focus = Some(key);
+        // The user's own doing: the start rule no longer moves it.
+        self.picked = true;
+        true
     }
 
     /// The keyboard `view` shows: its pin when that keyboard is known this run (greyed when
@@ -571,6 +616,35 @@ pub fn pins() -> Pins {
 /// "Follow the keyboard I type on" (C4): off by default.
 pub fn follow_typing() -> bool {
     with(|m| m.follow_typing())
+}
+
+/// Turns "Follow the keyboard I type on" on or off, saved in `[focus] follow_typing`. The
+/// listener itself is `follow_typing::set`'s.
+pub fn set_follow_typing(on: bool) {
+    with(|m| m.set_follow_typing(on));
+    save(|s| s.follow_typing = on);
+}
+
+/// A keyboard with these ids typed at `at` (from `follow_typing`'s source): moves the focus as
+/// [`Model::typed`] says and announces it. Whether it moved. Never told which key.
+pub fn typed(vid: u16, pid: u16, at: Instant) -> bool {
+    let facts = with(|m| {
+        let before = m.focus().map(|k| k.name.clone());
+        if !m.typed(vid, pid, at) {
+            return None;
+        }
+        eprintln!(
+            "Foxglove: keyboard focus: {} \u{2192} {} (typed on)",
+            before.as_deref().unwrap_or("none"),
+            m.focus().map_or("none", |k| k.name.as_str())
+        );
+        Some(m.facts())
+    });
+    let moved = facts.is_some();
+    if let Some(facts) = facts {
+        publish(facts);
+    }
+    moved
 }
 
 /// The user picks `key`: it becomes the focus, is remembered in `[focus] keyboard`, and the

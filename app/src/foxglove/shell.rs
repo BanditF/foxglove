@@ -61,7 +61,7 @@ impl Page {
 
 /// Every settings section by title, and the page it lives on (#385). A new section goes in
 /// here too; the `every_section_has_a_page` test finds the ones that don't.
-pub const SECTIONS: [(&str, Page); 20] = [
+pub const SECTIONS: [(&str, Page); 21] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
     // The layer overlay's card (#534): KeyPeek's appearance grid, its layer colours, then the
@@ -81,6 +81,8 @@ pub const SECTIONS: [(&str, Page); 20] = [
     ("Profile", Page::Settings),
     ("Appearance", Page::Settings),
     ("Startup and updates", Page::Settings),
+    // "Follow the keyboard I type on" (#802).
+    ("Keyboard shown", Page::Settings),
     ("Live wallpaper", Page::Settings),
     // Copy diagnostics, the log folder and the connection details (#535).
     ("Troubleshooting", Page::Settings),
@@ -879,6 +881,7 @@ mod tests {
             ("Profile", Page::Settings),
             ("Appearance", Page::Settings),
             ("Startup and updates", Page::Settings),
+            ("Keyboard shown", Page::Settings),
         ] {
             assert_eq!(page_of(title), page, "{title}");
         }
