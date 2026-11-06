@@ -87,10 +87,15 @@ impl OverlayApp {
             AppConnectionState::Connected { keyboard } => {
                 // Foxglove (#404): no layer overlay while paused.
                 // Foxglove: an opacity slider being dragged previews it too.
-                self.is_any_window_open()
-                    || crate::foxglove::overlay_opacity::previewing()
-                    || (!crate::foxglove::pause::paused()
-                        && keyboard.overlay_is_visible(Instant::now()))
+                // Foxglove: "Show layer overlay" off hides it, previews included.
+                crate::foxglove::overlay_shown::visible(crate::foxglove::overlay_shown::Shows {
+                    on: crate::foxglove::overlay_shown::on(),
+                    editor: self.editor.target.is_some(),
+                    settings: self.ui.settings_visible,
+                    previewing: crate::foxglove::overlay_opacity::previewing(),
+                    paused: crate::foxglove::pause::paused(),
+                    layer: keyboard.overlay_is_visible(Instant::now()),
+                })
             }
         }
     }

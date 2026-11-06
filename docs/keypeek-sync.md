@@ -67,6 +67,10 @@ rows to the top of the appearance grid, under a "When it shows" heading
 (`settings_ui::grid_heading`), and calls `settings_ui::keymap_choice` before the sections. On a
 conflict there, keep upstream's rows and move the two again.
 
+The card's first row is Foxglove's **Show layer overlay** (`overlay_shown::row`, then
+`overlay_shown::mute_if_off`), and `overlay_visible` in `settings_sync.rs` goes through
+`overlay_shown::visible`. On a conflict there, keep upstream's logic and put the two calls back.
+
 ## Sending a change upstream
 
 ```bash

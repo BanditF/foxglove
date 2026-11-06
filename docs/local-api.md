@@ -55,6 +55,7 @@ same messages.
 | `lights.page` | call | `devices.read` (API 1.7) |
 | `scenes.page` | call | `devices.read` (API 1.10) |
 | `focus.get` / `focus.set` | call | `devices.read` / `focus.write` (API 1.12) |
+| `overlay.shown` / `overlay.set_shown` | call | `devices.read` / `app.windows` (API 1.13) |
 
 The params and results are in the schema. Notes:
 
@@ -125,6 +126,11 @@ The params and results are in the schema. Notes:
   result. Every change also sets the `focus.*` facts (`focus.keyboard`, `focus.name`,
   `focus.source`, `focus.connected`, `focus.keyboards`, `focus.connected_keyboards`,
   `focus.overlay`, `focus.feed`), so `facts.subscribe` with `focus.*` hears it.
+- **Show layer overlay (API 1.13):** `overlay.shown` answers `{on}`, the Keyboard page's
+  **Show layer overlay** checkbox; `overlay.set_shown {on}` sets it as the checkbox does (saved
+  in the store's `[overlay_shown]`, one `Foxglove: layer overlay on|off` line when it changed)
+  and answers the same. Off hides the overlay at once and keeps its other settings. The write
+  needs `app.windows`.
 - **What the Lights page shows (#674, API 1.7), for agents:** `lights.page {device}` reads the
   keyboard's lights (RGB_STATE) and answers with what the Lights page's Keyboard card shows, from
   the same view-model the page draws: the effect the keyboard reports (`effect`), the caption

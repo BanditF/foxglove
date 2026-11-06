@@ -251,6 +251,9 @@ impl OverlayApp {
                             .striped(true)
                             .spacing([20.0, 10.0])
                             .show(ui, |ui| {
+                                // Foxglove: on or off first; off mutes the rest, kept as set.
+                                crate::foxglove::overlay_shown::row(ui);
+                                crate::foxglove::overlay_shown::mute_if_off(ui);
                                 // Foxglove (#801): which keyboard, then when it shows, then how
                                 // it looks.
                                 crate::foxglove::focus_pins::overlay_row(ui);
@@ -420,6 +423,8 @@ impl OverlayApp {
                     });
 
                     titled_group(ui, "Theme", |ui| {
+                        // Foxglove: the layer colours are the overlay's too, muted while it's off.
+                        crate::foxglove::overlay_shown::mute_if_off(ui);
                         const LAYERS: usize = ThemeSettings::OTHER_LAYERS as usize;
                         const HALF: usize = LAYERS / 2;
 

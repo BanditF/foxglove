@@ -1,5 +1,5 @@
 {
-  "api": "1.12",
+  "api": "1.13",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -2082,6 +2082,61 @@
           "on_screen"
         ],
         "title": "OverlayWindow",
+        "type": "object"
+      }
+    },
+    "overlay.set_shown": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Turns \"Show layer overlay\" on or off (API 1.13), as the Keyboard page's checkbox does.",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "title": "SetOverlayShownParams",
+        "type": "object"
+      },
+      "permission": "app.windows",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "\"Show layer overlay\" (API 1.13): whether the layer overlay shows at all. Off hides it and\nkeeps its other settings. The Keyboard page's checkbox reads and writes the same setting.",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "title": "OverlayShown",
+        "type": "object"
+      }
+    },
+    "overlay.shown": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "\"Show layer overlay\" (API 1.13): whether the layer overlay shows at all. Off hides it and\nkeeps its other settings. The Keyboard page's checkbox reads and writes the same setting.",
+        "properties": {
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "title": "OverlayShown",
         "type": "object"
       }
     },
