@@ -2967,6 +2967,7 @@ fn lights_other_devices_1105_renders() {
         near_warn(&three) > near_warn(&one) + 20,
         "the conflict's amber dot"
     );
+}
 
 /// Settings > Live wallpaper with "Show notifications on the wallpaper when it's on screen" and
 /// its hover, in the dark and light themes.
