@@ -204,6 +204,7 @@ pub fn start() {
     register("keymap", super::keymap_health::rows_now); // #582, #583
     register("via_writes", super::via_host::health_rows); // #581
     register("knob", super::knob_health::rows_now); // #719
+    register("hold_lease", super::hold_lease::rows_now); // #847
     register("lights_owner", super::lights_owner::rows_now); // #491
     register("plugin_signing", super::plugin_trust::health_rows); // #381
     register("plugin_catalog_expiry", super::plugin_trust::expiry_rows); // #785

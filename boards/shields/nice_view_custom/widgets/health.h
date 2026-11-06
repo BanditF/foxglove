@@ -47,7 +47,7 @@ enum health_counter {
     HEALTH_SPLIT_DROPS,       // split links that went down
     HEALTH_KNOB_EVENTS,       // left: knob events sent to the PC (D7 94 01, #719)
     HEALTH_KNOB_KEYS,         // left: fallback keys the knob tapped (detents, presses)
-    HEALTH_KNOB_DROPS,        // left: holds the board dropped (USB disconnect, endpoint change)
+    HEALTH_KNOB_DROPS,        // left: holds the board dropped (USB disconnect, endpoint change, lapse)
     HEALTH_COUNTERS,
 };
 

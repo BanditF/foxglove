@@ -93,7 +93,7 @@ enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_
        SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
        SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F, SETTING_LAMP_PARTS = 0x10,
        SETTING_PC_STATE = 0x11, SETTING_PANEL_POLARITY = 0x12, SETTING_HEALTH = 0x13,
-       SETTING_KNOB = 0x14 };
+       SETTING_KNOB = 0x14, SETTING_HOLD_LEASE = 0x15 };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -327,7 +327,7 @@ static void hello_reply(void) {
  * word 2 is capability 32 + n (HOST_LINK_CAPS2_*). */
 
 static uint32_t caps_word2(void) {
-    uint32_t caps = 0;
+    uint32_t caps = HOST_LINK_CAPS2_HOLD_LEASE; // D7 15: held modes lapse with a lease (#847)
 #if IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
     caps |= HOST_LINK_CAPS2_ART_LOCAL; // D6 goes to the art store on this half (#834)
     caps |= HOST_LINK_CAPS2_ART_PACE;  // its art follows the target's pace; D6 0A (#842)
@@ -643,9 +643,26 @@ static void conn_state_event_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(conn_state_event_work, conn_state_event_cb);
 
+/*
+ * Host-held modes (#847): what the PC takes over from the board until it hands it back, the art
+ * keys (D7 0D) and the knob (D7 14, #719). Each mode is one row of held_modes[] below; the PC
+ * taking it calls held_changed(). Every row shares one set of ends:
+ *   - the link drops (a USB disconnect, an endpoint change): every mode at once, as before #847;
+ *   - D7 15 HOLD_LEASE: a PC that set a lease keeps its modes only while it is heard. Any host-link
+ *     report from it renews the lease; after a third of the lease without one the board asks
+ *     (D7 95 event 1), again at two thirds, and at the full lease it lets every mode go and says
+ *     so (D7 95 event 2), once more on the PC's next report if it didn't take a mode back since.
+ *     Without a lease (0, and a PC before #847 never sets one) only the link ends a hold.
+ * A new held mode (#855's master volume) adds its row and calls held_changed() when taken; the
+ * lease, its asks, the lapse and the link drops then apply to it, and its row's index is its
+ * bit in D7 95's mask.
+ */
+
 /* D7 0D ART_KEYS (#60): the app takes &art_next / &art_prev while subscribed */
 
 static atomic_t art_keys;
+
+static void held_changed(void);
 
 int host_link_art_key(int8_t dir) {
     if (!atomic_get(&art_keys)) {
@@ -654,6 +671,14 @@ int host_link_art_key(int8_t dir) {
     uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_ART_KEYS, 1, (uint8_t)dir};
     reply(r, sizeof(r));
     return 0;
+}
+
+static bool art_keys_held(void) { return atomic_get(&art_keys) != 0; }
+
+// The keys step the art on the board again until the PC subscribes anew; nothing to say.
+static void art_keys_drop(bool tell) {
+    ARG_UNUSED(tell);
+    atomic_set(&art_keys, 0);
 }
 
 /* D7 14 KNOB (#719, HELLO bit 31): the PC holds &knob / &knob_press (knob.c) */
@@ -693,8 +718,9 @@ static void knob_set(atomic_val_t state) {
     health_set(HEALTH_KNOB_STATE, (uint8_t)state);
 }
 
-// The PC may be gone (a USB disconnect, an endpoint change): the knob is its fallback keys again
-// until the PC holds it anew. `tell`: say so (D7 94 01 05), for a PC that is still there.
+// The PC may be gone (a USB disconnect, an endpoint change, a lapsed lease): the knob is its
+// fallback keys again until the PC holds it anew. `tell`: say so (D7 94 01 05), for a PC that is
+// still there.
 static void knob_drop(bool tell) {
     atomic_val_t was = atomic_set(&knob_state, 0);
     if (!(was & KNOB_HELD)) {
@@ -717,6 +743,7 @@ static void knob_command(const uint8_t *d, int len) {
             status = 5;
         } else {
             knob_set(hold ? (KNOB_HELD | (target == KNOB_APP ? KNOB_ON_APP : 0)) : 0);
+            held_changed();
         }
     }
     atomic_val_t state = atomic_get(&knob_state);
@@ -726,18 +753,173 @@ static void knob_command(const uint8_t *d, int len) {
     reply(r, sizeof(r));
 }
 
+/* The held modes' table and their lease (D7 15 HOLD_LEASE, word 2's bit 34, #847) */
+
+struct held_mode {
+    bool (*held)(void);
+    void (*drop)(bool tell); // tell: the PC may still be there (an endpoint change)
+};
+
+// Row i is bit i of D7 95's mask (HOST_LINK_HELD_*).
+static const struct held_mode held_modes[] = {
+    {art_keys_held, art_keys_drop},       // HOST_LINK_HELD_ART_KEYS
+    {host_link_knob_held, knob_drop},     // HOST_LINK_HELD_KNOB
+};
+BUILD_ASSERT(ARRAY_SIZE(held_modes) <= 8, "D7 95's mask is one byte");
+
+static uint8_t held_now(void) {
+    uint8_t mask = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(held_modes); i++) {
+        if (held_modes[i].held()) {
+            mask |= BIT(i);
+        }
+    }
+    return mask;
+}
+
+// Lets every mode go; the ones that were held.
+static uint8_t held_drop_all(bool tell) {
+    uint8_t was = held_now();
+    for (size_t i = 0; i < ARRAY_SIZE(held_modes); i++) {
+        held_modes[i].drop(tell);
+    }
+    return was;
+}
+
+enum { LEASE_REPLY = 0, LEASE_ASK = 1, LEASE_LAPSED = 2 };
+
+static struct k_spinlock lease_lock;
+static uint8_t lease_s;      // 0: no lease, only the link ends a hold
+static uint32_t lease_heard; // k_uptime_get_32() of the PC's last host-link report
+static uint32_t ask_stretch; // lease_heard when `asks` were counted
+static uint8_t asks;         // asks sent since the PC was last heard (0-2)
+static uint8_t lapsed;       // the modes the last lapse let go, until the PC hears of it
+static uint8_t lapses;       // since boot, saturating
+
+static void lease_cb(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(lease_work, lease_cb);
+
+static void lease_send(uint8_t kind, uint8_t status, uint8_t mask) {
+    k_spinlock_key_t key = k_spin_lock(&lease_lock);
+    uint32_t ms = (uint32_t)lease_s * 1000U, quiet = k_uptime_get_32() - lease_heard;
+    uint8_t left = (ms == 0 || held_now() == 0) ? 0
+                   : quiet >= ms                ? 0
+                                                : (uint8_t)DIV_ROUND_UP(ms - quiet, 1000U);
+    uint8_t r[8] = {HOST_LINK_SETTINGS, 0x80 | SETTING_HOLD_LEASE, kind, status, lease_s, left,
+                    mask, lapses};
+    k_spin_unlock(&lease_lock, key);
+    reply(r, sizeof(r));
+}
+
+// The lease's one-shot timer: runs only while a lease is set and a mode is held. Each run asks,
+// lets go, or moves on to the next boundary after the PC's last report (no repeats between).
+static void lease_cb(struct k_work *work) {
+    k_spinlock_key_t key = k_spin_lock(&lease_lock);
+    uint32_t ms = (uint32_t)lease_s * 1000U;
+    if (ms == 0 || held_now() == 0) {
+        k_spin_unlock(&lease_lock, key);
+        return;
+    }
+    if (lease_heard != ask_stretch) {
+        ask_stretch = lease_heard; // heard since: the asks start over
+        asks = 0;
+    }
+    uint32_t quiet = k_uptime_get_32() - lease_heard;
+    if (quiet >= ms) {
+        k_spin_unlock(&lease_lock, key);
+        uint8_t dropped = held_drop_all(false);
+        key = k_spin_lock(&lease_lock);
+        lapsed = dropped;
+        lapses = lapses < UINT8_MAX ? lapses + 1 : lapses;
+        k_spin_unlock(&lease_lock, key);
+        LOG_INF("host link: the PC's lease lapsed, held modes 0x%02x let go", dropped);
+        lease_send(LEASE_LAPSED, 0, dropped);
+        return;
+    }
+    bool ask = false;
+    uint32_t due = (asks + 1U) * ms / 3U; // a third, two thirds, then the lease's end
+    if (asks < 2 && quiet >= due) {
+        asks++;
+        ask = true;
+        due = (asks + 1U) * ms / 3U;
+    }
+    k_spin_unlock(&lease_lock, key);
+    if (ask) {
+        lease_send(LEASE_ASK, 0, held_now()); // the PC renews by answering (any report does)
+    }
+    k_work_reschedule(&lease_work, K_MSEC(due > quiet ? due - quiet : 0)); // late: at once
+}
+
+// A mode was taken or handed back, or the lease changed: (re)start the timer from now.
+static void held_changed(void) {
+    k_spinlock_key_t key = k_spin_lock(&lease_lock);
+    if (held_now() != 0) {
+        lapsed = 0; // the PC took a mode again: it knows
+    }
+    bool run = lease_s != 0 && held_now() != 0;
+    k_spin_unlock(&lease_lock, key);
+    if (run) {
+        k_work_reschedule(&lease_work, K_NO_WAIT);
+    } else {
+        k_work_cancel_delayable(&lease_work);
+    }
+}
+
+// Any host-link report from the PC: it is there. Cheap (no timer touched); the timer reads it.
+static void lease_heard_now(void) {
+    k_spinlock_key_t key = k_spin_lock(&lease_lock);
+    lease_heard = k_uptime_get_32();
+    k_spin_unlock(&lease_lock, key);
+}
+
+// After a report was handled: a PC that hasn't heard of a lapse yet hears of it now.
+static void lease_after_report(void) {
+    k_spinlock_key_t key = k_spin_lock(&lease_lock);
+    uint8_t mask = lapsed;
+    lapsed = 0;
+    k_spin_unlock(&lease_lock, key);
+    if (mask != 0) {
+        lease_send(LEASE_LAPSED, 0, mask);
+    }
+}
+
+static void hold_lease_command(const uint8_t *d, int len) {
+    uint8_t want = len >= 3 ? d[2] : HOST_LINK_HOLD_LEASE_READ;
+    uint8_t status = 0;
+    if (want != HOST_LINK_HOLD_LEASE_READ) {
+        if (want != 0 && (want < HOST_LINK_HOLD_LEASE_MIN_S || want > HOST_LINK_HOLD_LEASE_MAX_S)) {
+            status = 5;
+        } else {
+            k_spinlock_key_t key = k_spin_lock(&lease_lock);
+            lease_s = want;
+            lapsed = 0; // a PC setting its lease has heard (D7 95 shows what it still holds)
+            k_spin_unlock(&lease_lock, key);
+            held_changed();
+        }
+    }
+    lease_send(LEASE_REPLY, status, held_now());
+}
+
+// The link dropped: every mode goes, and the lease with it (the next PC sets its own).
+static void held_link_dropped(bool tell) {
+    held_drop_all(tell);
+    k_spinlock_key_t key = k_spin_lock(&lease_lock);
+    lease_s = 0;
+    lapsed = 0;
+    k_spin_unlock(&lease_lock, key);
+    k_work_cancel_delayable(&lease_work);
+}
+
 static int conn_state_listener(const zmk_event_t *eh) {
-    // The PC side may be gone: the keys step the art on the board again until it subscribes
-    // anew, and the knob is its fallback keys until it is held anew (#719).
+    // The PC side may be gone: every held mode goes back to the board (the art keys step the art
+    // there, the knob is its fallback keys) until the PC takes it anew (#719, #847).
 #if IS_ENABLED(CONFIG_ZMK_USB)
     if (!zmk_usb_is_hid_ready()) {
-        atomic_set(&art_keys, 0);
-        knob_drop(false); // no USB to say it on
+        held_link_dropped(false); // no USB to say it on
     }
 #endif
     if (as_zmk_endpoint_changed(eh) != NULL) {
-        atomic_set(&art_keys, 0);
-        knob_drop(true);
+        held_link_dropped(true);
     }
     if (atomic_get(&host_seen)) {
         k_work_reschedule(&conn_state_event_work, CONN_STATE_SETTLE);
@@ -1108,8 +1290,12 @@ static void settings_command(const uint8_t *d, int len) {
     case SETTING_KNOB:
         knob_command(d, len);
         break;
+    case SETTING_HOLD_LEASE:
+        hold_lease_command(d, len);
+        break;
     case SETTING_ART_KEYS: {
         atomic_set(&art_keys, len >= 3 && d[2] != 0);
+        held_changed();
         uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_ART_KEYS, 0, atomic_get(&art_keys)};
         reply(r, sizeof(r));
         break;
@@ -1230,6 +1416,7 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
 
     if (d[0] == HOST_LINK_PANEL || d[0] == HOST_LINK_ART || d[0] == HOST_LINK_SETTINGS) {
         atomic_set(&host_seen, 1);
+        lease_heard_now(); // the PC is there: its hold lease (#847) is renewed
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
         test_hooks_host_seen();
 #endif
@@ -1244,6 +1431,9 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
     case HOST_LINK_SETTINGS:
         settings_command(d, MIN(ev->length, REPORT_SIZE));
         break;
+    }
+    if (d[0] == HOST_LINK_PANEL || d[0] == HOST_LINK_ART || d[0] == HOST_LINK_SETTINGS) {
+        lease_after_report();
     }
     return ZMK_EV_EVENT_BUBBLE;
 }

@@ -103,7 +103,7 @@ the half has built in.
 | 97 | 1 | the last knob event sent to the PC (0 none, 1 turn, 2 click, 3 double click, 4 hold, 5 handed back) |
 | 98 | 2 | knob events sent to the PC (D7 94 01) |
 | 100 | 2 | fallback keys the knob tapped (a detent, a press, a double click's mute on master) |
-| 102 | 2 | holds the board dropped (a USB disconnect or an endpoint change) |
+| 102 | 2 | holds the board dropped (a USB disconnect, an endpoint change or a lapsed hold lease, #847) |
 | 104 | 2 | Raw HID reports the USB driver refused (version 3, the left; 0 with the module's `raw_hid/stats.h` before version 2) |
 | 106 | 2 | Raw HID Bluetooth notifications queued |
 | 108 | 2 | Raw HID Bluetooth notifies refused on a link where the PC listens |

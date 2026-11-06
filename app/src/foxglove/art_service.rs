@@ -270,6 +270,8 @@ enum Command {
     },
     /// Foxglove paused or resumed (#404): it holds the art keys only while it runs.
     ArtKeys,
+    /// The keyboard let the art keys go: Foxglove's hold lease lapsed (#847). Taken again.
+    ArtKeysLapsed,
     /// The "Animate on e-paper" switch changed (#839): tell a keyboard that paces its own art
     /// (HELLO v2 `ART_PACE`, #842).
     Animate(bool),
@@ -627,6 +629,14 @@ pub fn stop() {
             }
         };
         art_keys_health::note(|h| h.told(false, Some(why)));
+    }
+}
+
+/// The keyboard let the art keys go because Foxglove's hold lease lapsed (#847,
+/// `hold_lease.rs`): they are taken again (while Foxglove runs unpaused).
+pub fn holds_lapsed() {
+    if let Some(h) = SERVICE.get() {
+        let _ = h.commands.send(Command::ArtKeysLapsed);
     }
 }
 
@@ -1421,6 +1431,14 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 if let Some((id, _)) = current {
                     let want = !super::pause::paused();
                     art_keys_told = sync_art_keys(&links[id].0, has_art_keys, want, art_keys_told);
+                }
+                continue;
+            }
+            Command::ArtKeysLapsed => {
+                // The keyboard holds nothing now, whatever it was told: tell it again.
+                if let Some((id, _)) = current {
+                    let want = !super::pause::paused();
+                    art_keys_told = sync_art_keys(&links[id].0, has_art_keys, want, None);
                 }
                 continue;
             }

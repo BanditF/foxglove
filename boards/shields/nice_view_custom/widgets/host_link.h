@@ -82,7 +82,8 @@
  *      firmware on: 2 or more says D5 08 answers, so the PC asks it only then and firmware with
  *      version 1 is never asked (no timeout). The HELLO reply keeps its layout; only byte 2 changed (1 to 2).
  *      Bit n of word 2 is capability 32 + n (HOST_LINK_CAPS2_*): 32 ART_LOCAL (#834, below),
- *      33 ART_PACE (#842: the art plays at its target's pace, D6 0A ANIMATE below). A PC
+ *      33 ART_PACE (#842: the art plays at its target's pace, D6 0A ANIMATE below),
+ *      34 HOLD_LEASE (#847: D7 15 below). A PC
  *      that reads fewer words than n ignores the rest; words past n read as 0.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
  * With CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0, the WPM chart also comes back after that many
@@ -288,8 +289,8 @@
  *   0D ART_KEYS on u8                                      reply: D7 8D, 00, on
  *      The PC takes the &art_next / &art_prev keys (#60, HELLO bit 16): while on, each press
  *      sends D7 8D, 01, dir (i8: 1 next, -1 previous) and the PC steps its hotlist. Off, or after
- *      a USB disconnect or an endpoint change, the board steps the right's built-ins and saved
- *      slots itself. No keep-alive: subscribe again after HELLO.
+ *      a USB disconnect, an endpoint change or a lapsed hold lease (D7 15), the board steps the
+ *      right's built-ins and saved slots itself. Subscribe again after HELLO.
  *   0E BATTERY_DIM  op u8 (0 read, 1 write), then for a write struct battery_dim_config (5 B):
  *                   enabled (0/1), on power %, on battery %, low battery %, low below charge %
  *      reply: D7 8E, status (0 ok, 4 not built in, 5 bad values: levels 1-100, threshold 0-100),
@@ -423,8 +424,27 @@
  *      fallback keys, held or not, so Windows' own volume and popup work without the app; and a
  *      double click on master also taps the fallback key (the system mute) on the board. A burst
  *      of detents goes as one turn event. The hold drops (held 0, target master) on a USB
- *      disconnect or an endpoint change, as ART_KEYS does; an endpoint change sends kind 5. No
- *      keep-alive: hold again after HELLO, and set the target with each change.
+ *      disconnect, an endpoint change or a lapsed hold lease (D7 15), as ART_KEYS does; an
+ *      endpoint change sends kind 5 (a lapse says so in D7 95 instead). Hold again after HELLO,
+ *      and set the target with each change.
+ *   15 HOLD_LEASE  lease s u8 (0 none; 3-120 a lease; 0xff read)   (word 2's bit 34, #847)
+ *      reply and events: D7 95, kind (0 the reply, 1 ask: the lease ends soon, 2 lapsed), status
+ *             (0 ok, 5 bad: a lease out of range; nothing changes), lease s (the one set, 0 none),
+ *             seconds left (0 when no lease runs: none set, or nothing held), held (bit i the
+ *             mode in row i of host_link.c's held_modes[]: HOST_LINK_HELD_*; for kind 2 the modes
+ *             the lapse let go), lapses (since boot, saturating at 255)
+ *      The host-held modes (ART_KEYS, KNOB; #855's master volume next) end when the PC goes
+ *      silent. Without a lease they end only with the link (a USB disconnect, an endpoint
+ *      change), as before #847: a PC that never sends D7 15 (every app before #847) is never
+ *      timed out. With one, any host-link report (D5, D6, D7) renews it. While a mode is held and
+ *      the PC is quiet the board asks (kind 1) a third and two thirds of the lease after its last
+ *      report; the PC answers with D7 15 again (any report would do). At the full lease the board
+ *      lets every held mode go (the art keys step on the board, the knob is its keys again) and
+ *      sends kind 2 with the modes it let go; it sends kind 2 once more after the PC's next
+ *      report unless the PC took a mode again first, so a PC that slept through the lapse hears
+ *      of it. The PC takes them again as it would after HELLO. The lease stays set until D7 15
+ *      00 or the link drops (which clears it: each PC sets its own after HELLO). Nothing runs
+ *      while no mode is held or no lease is set; each ask or lapse is one report.
  *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
  *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
@@ -452,6 +472,16 @@
 // target's pace (art_pace.h: its v2 descriptor's refresh class and shortest frame interval) and
 // takes D6 0A ANIMATE, the PC's "animate on e-paper". With the local art store only.
 #define HOST_LINK_CAPS2_ART_PACE (1U << 1)
+// Capability 34 (#847): D7 15 HOLD_LEASE, the host-held modes lapse when a PC with a lease goes
+// silent.
+#define HOST_LINK_CAPS2_HOLD_LEASE (1U << 2)
+// D7 15's lease byte: read, and the lease's range in seconds (0 is none).
+#define HOST_LINK_HOLD_LEASE_READ 0xff
+#define HOST_LINK_HOLD_LEASE_MIN_S 3
+#define HOST_LINK_HOLD_LEASE_MAX_S 120
+// D7 95's held mask: bit i is row i of host_link.c's held_modes[].
+#define HOST_LINK_HELD_ART_KEYS (1U << 0)
+#define HOST_LINK_HELD_KNOB (1U << 1)
 // D6 0A ANIMATE's flags byte: bit 0 lets art animate on an e-paper art target.
 #define HOST_LINK_ART_ANIMATE_EPAPER (1U << 0)
 
