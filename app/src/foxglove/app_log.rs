@@ -10,6 +10,12 @@
 //!
 //! No timers: the reader wakes only when there is something to write.
 //!
+//! #857: the file is UTF-8 throughout, and says so: each new file starts with the UTF-8 byte
+//! order mark. Without it Windows' own readers (Windows PowerShell's `Get-Content`, older
+//! editors) took the file for the ANSI code page and showed "Knob · Master tab" as
+//! "Knob Â· Master tab". Lines read back (Copy diagnostics) skip the mark and decode lossily, so
+//! one bad byte never hides the lines after it.
+//!
 //! #741: at a sign-in start the file once couldn't be opened, and that run had no log at all.
 //! Now a failed first open is retried on a thread of its own (a bounded backoff, about 30 s),
 //! then `%LOCALAPPDATA%\Foxglove\logs` is tried; lines from meanwhile wait in memory and go into
@@ -17,7 +23,7 @@
 //! while logging is off.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -26,6 +32,8 @@ use super::health::{HealthRow, Level};
 
 /// One file rolls at this size; two files at most.
 pub const MAX_BYTES: u64 = 1_000_000;
+/// The UTF-8 byte order mark every new log file starts with (#857).
+pub const BOM: &[u8] = b"\xEF\xBB\xBF";
 const FILE: &str = "foxglove.log";
 const OLD: &str = "foxglove.1.log";
 
@@ -44,11 +52,12 @@ pub struct Log {
 impl Log {
     pub fn open(dir: &Path) -> std::io::Result<Log> {
         std::fs::create_dir_all(dir)?;
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(dir.join(FILE))?;
         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let size = if size == 0 { marked(&mut file) } else { size };
         Ok(Log {
             dir: dir.to_path_buf(),
             file: Some(file),
@@ -80,7 +89,15 @@ impl Log {
             .append(true)
             .open(self.dir.join(FILE))
             .ok();
-        self.size = 0;
+        self.size = self.file.as_mut().map_or(0, marked);
+    }
+}
+
+/// Starts an empty log file with the [`BOM`]; its size after.
+fn marked(file: &mut File) -> u64 {
+    match file.write_all(BOM) {
+        Ok(()) => BOM.len() as u64,
+        Err(_) => 0,
     }
 }
 
@@ -293,12 +310,25 @@ pub fn recent(n: usize) -> Vec<String> {
 fn recent_in(dir: &Path, n: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for name in [OLD, FILE] {
-        if let Ok(f) = File::open(dir.join(name)) {
-            lines.extend(std::io::BufReader::new(f).lines().map_while(Result::ok));
+        if let Ok(bytes) = std::fs::read(dir.join(name)) {
+            lines.extend(read_lines(&bytes));
         }
     }
     let skip = lines.len().saturating_sub(n);
     lines.split_off(skip)
+}
+
+/// A log file's lines: UTF-8 without its [`BOM`], a bad byte shown as U+FFFD (never the end).
+fn read_lines(bytes: &[u8]) -> Vec<String> {
+    let bytes = bytes.strip_prefix(BOM).unwrap_or(bytes);
+    let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    bytes
+        .split(|&b| b == b'\n')
+        .map(|l| String::from_utf8_lossy(l.strip_suffix(b"\r").unwrap_or(l)).into_owned())
+        .collect()
 }
 
 /// `2026-10-25 14:03:07Z` for a unix time (UTC; civil-from-days, Howard Hinnant's algorithm).
@@ -684,6 +714,62 @@ mod tests {
         assert!(size(FILE) > before);
         assert_eq!(recent_in(&d, 1), vec!["1970-01-01 00:00:00Z after"]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #857: non-ASCII text round-trips: the file is UTF-8 marked with its BOM (so Windows'
+    /// readers don't take it for ANSI and show "Knob Â· Master tab"), a rolled file starts
+    /// marked too, and lines read back exactly, without the mark.
+    #[test]
+    fn non_ascii_round_trips_in_utf8() {
+        let d = temp("utf8");
+        let mut log = Log::open(&d).unwrap();
+        let text = "Foxglove: knob popup shown: Knob · Master tab — Ünïcödé ✓ 日本 🦊";
+        log.write_line(0, text);
+        let bytes = std::fs::read(d.join(FILE)).unwrap();
+        assert!(bytes.starts_with(BOM), "the file says it is UTF-8");
+        let decoded = std::str::from_utf8(&bytes[BOM.len()..]).expect("valid UTF-8");
+        assert_eq!(decoded, format!("1970-01-01 00:00:00Z {text}\n"));
+        assert!(!decoded.contains("Â"), "no mojibake");
+        assert!(
+            decoded.as_bytes().windows(2).any(|w| w == [0xC2, 0xB7]),
+            "· as UTF-8 (C2 B7), written once"
+        );
+        assert_eq!(
+            recent_in(&d, 5),
+            vec![format!("1970-01-01 00:00:00Z {text}")]
+        );
+        // Reopened: one mark, at the start only.
+        drop(log);
+        let mut log = Log::open(&d).unwrap();
+        log.write_line(1, "Foxglove: again ·");
+        let bytes = std::fs::read(d.join(FILE)).unwrap();
+        assert_eq!(bytes.windows(3).filter(|w| *w == BOM).count(), 1);
+        // A rolled file starts marked too.
+        log.roll();
+        log.write_line(2, "Foxglove: after the roll ·");
+        let bytes = std::fs::read(d.join(FILE)).unwrap();
+        assert!(bytes.starts_with(BOM));
+        assert_eq!(
+            recent_in(&d, 3),
+            vec![
+                format!("1970-01-01 00:00:00Z {text}"),
+                "1970-01-01 00:00:01Z Foxglove: again ·".to_string(),
+                "1970-01-01 00:00:02Z Foxglove: after the roll ·".to_string(),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A log written before #857 (no mark), or with a bad byte, still reads: every line, the
+    /// bad byte as U+FFFD, not the end of the read.
+    #[test]
+    fn unmarked_and_damaged_logs_still_read() {
+        assert_eq!(
+            read_lines(b"a \xC2\xB7 b\r\nbad \xFF here\nlast\n"),
+            ["a · b", "bad \u{FFFD} here", "last"]
+        );
+        assert_eq!(read_lines(b"\xEF\xBB\xBFfirst\n"), ["first"]);
+        assert!(read_lines(b"").is_empty());
     }
 
     #[test]
