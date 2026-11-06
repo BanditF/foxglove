@@ -1100,6 +1100,96 @@ fn position_press_needs_capability_bits_and_releases_held_keys() {
     assert_eq!(fake.requests.borrow()[1], vec![0xd7, 0x05, 43, 0]);
 }
 
+/// #864: a failed step skips the case's other steps but not its cleanup steps, so the key
+/// releases still go out (the #851 repro left 0/46/43 held); the case keeps its failure.
+#[test]
+fn a_failed_step_still_sends_the_case_releases() {
+    let steps = "[{press_position={pos=43,state='down'}},{press_position={pos=44,state='down'}},\
+        {press_position={pos=0,state='down'}},{expect_layer={active_contains=[6],within_ms=1}},\
+        {press_position={pos=0,state='up'}},{press_position={pos=44,state='up'}},\
+        {press_position={pos=43,state='up'}},{expect_layer={top=0}}]";
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([43, 44, 0, 0, 44, 43].map(|p| position(0, p)));
+    let r = run_with(&fake, &case(steps), TEST_HOOKS);
+    assert_eq!(r.status, Status::Fail);
+    assert!(r.message.contains("timeout"), "{}", r.message);
+    let statuses: Vec<_> = r.steps.iter().map(|s| s.status).collect();
+    use Status::{Fail, Pass, Skipped};
+    assert_eq!(
+        statuses,
+        [Pass, Pass, Pass, Fail, Pass, Pass, Pass, Skipped],
+        "only the releases run after the failure"
+    );
+    assert!(
+        r.steps[4].actual.contains("cleanup"),
+        "{}",
+        r.steps[4].actual
+    );
+    let sent: Vec<_> = fake
+        .requests
+        .borrow()
+        .iter()
+        .map(|q| (q[2], q[3]))
+        .collect();
+    assert_eq!(
+        sent,
+        [(43, 1), (44, 1), (0, 1), (0, 0), (44, 0), (43, 0)],
+        "the releases, once each: nothing left for the case's end"
+    );
+
+    // A release the relay answers busy stays held; the case's end asks for it again.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([position(0, 46), position(2, 46), position(0, 46)]);
+    let steps = "[{press_position={pos=46,state='down'}},{expect_layer={top=1,within_ms=1}},\
+        {press_position={pos=46,state='up'}}]";
+    fake.replies.borrow_mut().push_front(hello(2, 4));
+    let r = run_with(&fake, &case(steps), TEST_HOOKS);
+    assert_eq!(r.status, Status::Fail);
+    assert_eq!(r.steps[2].status, Status::Fail);
+    assert!(
+        r.message.contains("cleanup after the failure"),
+        "{}",
+        r.message
+    );
+    let ups = fake
+        .requests
+        .borrow()
+        .iter()
+        .filter(|q| q[..2] == [0xd7, 0x05] && q[3] == 0)
+        .count();
+    assert_eq!(ups, 2, "the busy release is sent again at the end");
+
+    // A blocked case ran nothing, so it releases nothing.
+    let fake = Fake::default();
+    let r = run(&fake, &case("[{press_position={pos=0,state='up'}}]"));
+    assert_eq!(r.status, Status::Blocked);
+    assert!(fake.requests.borrow().is_empty());
+}
+
+/// #864: an art-key opt-in (D7 0D 01) left on by a failed step is ended at the case's end.
+#[test]
+fn a_failed_opt_in_is_ended_at_the_case_end() {
+    let fake = ArtKeysFake(Fake::default());
+    // The D7 0D 01 gets no answer: it may have reached the board all the same.
+    fake.0
+        .replies
+        .borrow_mut()
+        .extend([hello(2, 4), art(5, 0, 4), art(5, 0, 4)]);
+    let r = run_with(
+        &fake,
+        &case("[{art_key={pos=11,subscribed=true}}]"),
+        TEST_HOOKS,
+    );
+    assert_eq!(r.status, Status::Fail);
+    let requests = fake.0.requests.borrow();
+    assert_eq!(requests[requests.len() - 2], vec![0xd7, 0x0d, 1]);
+    assert_eq!(requests[requests.len() - 1], vec![0xd7, 0x0d, 0]);
+}
+
 #[test]
 fn position_refusal_and_tap() {
     let fake = Fake::default();

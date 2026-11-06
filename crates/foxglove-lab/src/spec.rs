@@ -493,6 +493,16 @@ impl Invoke {
     }
 }
 impl Step {
+    /// A step that undoes what earlier steps left on the keyboard: a key release
+    /// (`press_position` up) or `panel_release`. After a failed step these still run, as the
+    /// case's cleanup phase, so a case never leaves keys held (#864); other steps are skipped.
+    pub fn is_cleanup(&self) -> bool {
+        match self {
+            Self::PressPosition(p) => p.state == "up",
+            Self::PanelRelease(_) => true,
+            _ => false,
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         let wait = |ms| -> Result<()> {
             ensure!((1..=30000).contains(&ms), "within_ms must be 1..30000");
