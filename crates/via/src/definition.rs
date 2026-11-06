@@ -31,6 +31,9 @@ pub struct Definition {
     pub options: Vec<LayoutOption>,
     /// The QMK lighting controls the definition offers, best first.
     pub lighting: Vec<Channel>,
+    /// The QMK layout (`LAYOUT_*`) it was built from, when it came from a QMK keyboard.json /
+    /// info.json ([`crate::qmk`]) instead of a VIA definition.
+    pub qmk_layout: Option<String>,
     /// Every key, with the layout option choice it belongs to.
     keys: Vec<Placed>,
 }
@@ -62,9 +65,9 @@ impl LayoutOption {
 
 /// A key and the layout option choice (`group, choice`) it belongs to, if any.
 #[derive(Clone, Debug, PartialEq)]
-struct Placed {
-    key: Key,
-    option: Option<(u8, u8)>,
+pub(crate) struct Placed {
+    pub(crate) key: Key,
+    pub(crate) option: Option<(u8, u8)>,
 }
 
 #[derive(Deserialize)]
@@ -120,20 +123,30 @@ impl Definition {
         Definition::build(raw, name, (vid, pid))
     }
 
+    /// A definition file, VIA's or QMK's, told apart by what's in it (#74): a VIA definition
+    /// has `layouts.keymap` (KLE rows); a QMK keyboard.json / info.json has `usb`, a matrix or
+    /// `LAYOUT_*` layouts. A QMK file is completed from the info.json files of the folders above
+    /// it, as QMK's build does ([`crate::qmk::load`]).
+    pub fn load(path: &std::path::Path) -> Result<Definition, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        // Windows editors may save a byte order mark, which JSON doesn't allow.
+        let text = text.trim_start_matches('\u{feff}');
+        let value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        if value.pointer("/layouts/keymap").is_some() {
+            Definition::parse(text)
+        } else if crate::qmk::looks_like(&value) {
+            crate::qmk::load(path, text)
+        } else {
+            Err("neither a VIA definition nor a QMK keyboard.json / info.json".into())
+        }
+    }
+
     fn build(
         raw: Raw,
         name: String,
         (vendor_id, product_id): (u16, u16),
     ) -> Result<Definition, String> {
-        let mut keys = kle_keys(&raw.layouts.keymap)?;
-        for Placed { key: k, .. } in &keys {
-            if k.row >= raw.matrix.rows || k.col >= raw.matrix.cols {
-                return Err(format!(
-                    "key {},{} is outside the {}x{} matrix",
-                    k.row, k.col, raw.matrix.rows, raw.matrix.cols
-                ));
-            }
-        }
+        let keys = kle_keys(&raw.layouts.keymap)?;
         // VIA's built-in lighting menus (`qmk_backlight_rgblight` names two).
         let text: String = raw
             .menus
@@ -152,7 +165,36 @@ impl Definition {
         .map(|(_, c)| c)
         .collect();
         let options = options(&raw.layouts.labels, &keys);
-        // The default layout's top-left corner is the origin, as in VIA.
+        Definition::assemble(
+            name,
+            (vendor_id, product_id),
+            (raw.matrix.rows, raw.matrix.cols),
+            keys,
+            options,
+            lighting,
+            None,
+        )
+    }
+
+    /// The definition from its parts, VIA's or QMK's: every key inside the matrix, the default
+    /// layout's top-left corner as the origin (as in VIA).
+    pub(crate) fn assemble(
+        name: String,
+        (vendor_id, product_id): (u16, u16),
+        (rows, cols): (u16, u16),
+        mut keys: Vec<Placed>,
+        options: Vec<LayoutOption>,
+        lighting: Vec<Channel>,
+        qmk_layout: Option<String>,
+    ) -> Result<Definition, String> {
+        for Placed { key: k, .. } in &keys {
+            if k.row >= rows || k.col >= cols {
+                return Err(format!(
+                    "key {},{} is outside the {rows}x{cols} matrix",
+                    k.row, k.col
+                ));
+            }
+        }
         let (x0, y0) = keys
             .iter()
             .filter(|p| p.option.is_none_or(|(_, c)| c == 0))
@@ -169,10 +211,11 @@ impl Definition {
             name: name.clone(),
             vendor_id,
             product_id,
-            rows: raw.matrix.rows,
-            cols: raw.matrix.cols,
+            rows,
+            cols,
             layout: Layout { name, keys: vec![] },
             options,
+            qmk_layout,
             keys,
         };
         d.layout = d.layout_for(0);

@@ -516,6 +516,17 @@ changes them.
   VIA's list. Then press **Refresh**.
 - **No definition:** **Find any VIA or Vial keyboard** still finds it, with its lights but
   no keymap. Keychron's white (single-colour) boards have no lights over VIA.
+- **No VIA definition to be found:** the same button also takes the keyboard's QMK
+  `keyboard.json` or `info.json`. Foxglove draws the keys from its layout (the one for your
+  variant's folder, else the file's first) and reads the layers from the keyboard; the board
+  then says **Definition: from a loaded QMK layout**. QMK often keeps the ids and layouts in
+  the folder above, so download the keyboard's whole folder, keep it as it is, and add the
+  file in your variant's folder. For a Keychron K Pro board they're in Keychron's public QMK
+  fork, for example the K5 Pro ANSI white:
+  [keyboards/keychron/k5_pro/ansi/white](https://github.com/Keychron/qmk_firmware/tree/bluetooth_playground/keyboards/keychron/k5_pro/ansi/white)
+  (its layouts are in `k5_pro/info.json`). The same board folder's
+  [via_json](https://github.com/Keychron/qmk_firmware/tree/bluetooth_playground/keyboards/keychron/k5_pro/via_json)
+  folder has VIA definitions too.
 - **Let other apps use it** closes Foxglove's connection to it, so VIA or the maker's
   app can use it without two programs talking at once. **Resume** connects again.
 - **Active layer:** stock firmware doesn't report it, so it shows as unknown.

@@ -162,15 +162,13 @@ pub fn found() -> Vec<Found> {
     STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Loads the definitions; returns the ones that parse and the errors for the rest.
+/// Loads the definitions, VIA JSON or a QMK keyboard.json / info.json (told apart by their
+/// contents); returns the ones that parse and the errors for the rest.
 fn definitions(s: &ViaSettings) -> (Vec<Definition>, Vec<String>) {
     let mut ok = Vec::new();
     let mut errors = Vec::new();
     for path in &s.definitions {
-        match std::fs::read_to_string(path)
-            .map_err(|e| e.to_string())
-            .and_then(|t| Definition::parse(&t))
-        {
+        match Definition::load(path) {
             Ok(d) => ok.push(d),
             Err(e) => errors.push(format!("{}: {e}", path.display())),
         }
@@ -374,6 +372,7 @@ pub fn source_text(s: &Source) -> String {
             "the keyboard's own couldn't be read ({}), so no keymap",
             Unreadable::of(why).plain()
         ),
+        Source::QmkLayout { .. } => "from a loaded QMK layout".into(),
         s => source_detail(s),
     }
 }
@@ -382,6 +381,7 @@ pub fn source_text(s: &Source) -> String {
 pub fn source_detail(s: &Source) -> String {
     match s {
         Source::Loaded => "from a loaded file".into(),
+        Source::QmkLayout { layout } => format!("from a loaded QMK layout ({layout})"),
         Source::Vial { .. } => "read from the keyboard (Vial)".into(),
         Source::Missing { why: None } => "none, so no keymap: add its VIA definition".into(),
         Source::Missing { why: Some(why) } => {
@@ -411,7 +411,7 @@ pub fn board_rows(found: &[Found]) -> Vec<super::health::HealthRow> {
         .filter_map(|f| {
             let s = f.opened.as_ref().ok()?;
             let level = match &s.source {
-                Source::Loaded | Source::Vial { .. } => Level::Ok,
+                Source::Loaded | Source::QmkLayout { .. } | Source::Vial { .. } => Level::Ok,
                 Source::Missing { why: None } => Level::Warn,
                 Source::Missing { why: Some(_) } => Level::Fail,
             };
@@ -782,6 +782,56 @@ pub(crate) mod tests {
         assert!(board_rows(&[asked])[0]
             .line()
             .ends_with("; lighting: none answered"));
+    }
+
+    /// A QMK keyboard.json in the definitions list loads like a VIA file (#74) and the board
+    /// says where its layout came from: the settings line plainly, the health row with the
+    /// layout's name.
+    #[test]
+    fn a_qmk_keyboard_json_loads_and_says_so() {
+        let dir = std::env::temp_dir().join(format!("foxglove-via-qmk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keyboard.json");
+        std::fs::write(
+            &path,
+            r#"{"keyboard_name": "Fox 2", "usb": {"vid": "0xFEED", "pid": "0x0002"},
+                "matrix_size": {"rows": 1, "cols": 2},
+                "layouts": {"LAYOUT": {"layout": [
+                    {"matrix": [0, 0], "x": 0, "y": 0}, {"matrix": [0, 1], "x": 1, "y": 0}]}}}"#,
+        )
+        .unwrap();
+        let s = ViaSettings {
+            definitions: vec![path],
+            ..Default::default()
+        };
+        let (defs, errors) = definitions(&s);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(
+            (defs[0].name.as_str(), defs[0].qmk_layout.as_deref()),
+            ("Fox 2", Some("LAYOUT"))
+        );
+        let source = Source::QmkLayout {
+            layout: "LAYOUT".into(),
+        };
+        let found = Found {
+            name: "Fox 2".into(),
+            opened: Ok(Summary {
+                firmware: Some("VIA protocol 11".into()),
+                lighting: None,
+                lighting_asked: true,
+                source: source.clone(),
+                layers: Some(4),
+            }),
+            key: Some("via:fox2".into()),
+            paused: false,
+            maybe: None,
+        };
+        assert!(summary_line(found.opened.as_ref().unwrap())
+            .ends_with("· Definition: from a loaded QMK layout"));
+        let rows = board_rows(&[found]);
+        assert_eq!(rows[0].level, super::super::health::Level::Ok);
+        assert!(rows[0].line().contains("from a loaded QMK layout (LAYOUT)"));
     }
 
     /// The definition source is a health signal: a row per open board, none for a paused one.
