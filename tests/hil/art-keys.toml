@@ -11,7 +11,7 @@ steps = [{ expect_hello = { caps_set = [16] } }]
 
 [[cases]]
 name = "art-keys-board-steps"
-description = "No app opt-in: SYSTEM+P steps the right-screen art forward and SYSTEM+O back, on the board itself"
+description = "No app opt-in (D7 0D 00 first, in case a killed app left it on): SYSTEM+P steps the right-screen art forward and SYSTEM+O back, on the board itself"
 tags = ["art-keys"]
 requires = ["art_keys", "position_press"]
 steps = [
@@ -46,8 +46,26 @@ steps = [
 ]
 
 [[cases]]
+name = "art-keys-unplug-check"
+description = "The USB-unplug follow-up: run it alone (--only art-keys-unplug-check) after art-keys-opt-in-for-replug and an unplug of the left USB. As art-keys-board-steps, but without D7 0D 00 first, so it passes only if the unplug ended the opt-in"
+tags = ["art-keys", "manual-follow-up"]
+requires = ["art_keys", "position_press"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6], retrigger = 0 } },
+  { art_key = { pos = 11, keep_found_opt_in = true } },
+  { art_key = { pos = 10 } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
+
+[[cases]]
 name = "art-keys-opt-in-for-replug"
-description = "Opt in and leave it on, for the USB-unplug check: after the left's USB is unplugged and plugged back, art-keys-board-steps must pass again (the opt-in ended)"
+description = "Opt in and leave it on, for the USB-unplug check: after the left's USB is unplugged and plugged back, art-keys-unplug-check must pass (the opt-in ended)"
 tags = ["art-keys", "manual-follow-up"]
 requires = ["art_keys", "position_press"]
 steps = [

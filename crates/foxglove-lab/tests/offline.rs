@@ -977,6 +977,107 @@ fn position(status: u8, pos: u8) -> [u8; REPORT] {
     reply(&[0xd7, 0x85, status, pos])
 }
 
+/// A Fake that can deliver unsolicited art-key events, of which none arrive.
+struct ArtKeysFake(Fake);
+impl Transport for ArtKeysFake {
+    fn send(&self, r: &[u8]) -> Result<()> {
+        self.0.send(r)
+    }
+    fn request(&self, r: &[u8], p: u8, c: u8, t: Duration) -> Result<[u8; REPORT]> {
+        self.0.request(r, p, c, t)
+    }
+}
+impl Device for ArtKeysFake {
+    fn layer(&self, t: Duration) -> Result<Option<u32>> {
+        self.0.layer(t)
+    }
+    fn art_key_events(&self) -> Option<foxglove_lab::runner::Events> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Open, as a live link's would be.
+        std::mem::forget(tx);
+        Some(foxglove_lab::runner::Events::from_channel(rx))
+    }
+}
+
+#[test]
+fn board_steps_hand_the_art_keys_back_first() {
+    // An app the lab killed never sent its D7 0D 00 on quit; the presses would go to the host.
+    // The step without `subscribed` ends any opt-in before it reads the art or presses.
+    let fake = ArtKeysFake(Fake::default());
+    fake.0.replies.borrow_mut().extend([
+        hello(2, 4),
+        reply(&[0xd7, 0x8d, 0, 0]), // ART_KEYS off
+        art(5, 0, 4),
+        art(5, 0, 4),
+        hello(2, 4),
+        position(0, 11),
+        position(0, 11),
+        art(5, 1, 4),
+        art(5, 1, 4),
+    ]);
+    let result = run_with(&fake, &case("[{art_key={pos=11}}]"), TEST_HOOKS);
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert!(
+        result.steps[0].actual.contains("D7 0D 00 sent first"),
+        "{}",
+        result.steps[0].actual
+    );
+    let requests = fake.0.requests.borrow();
+    assert_eq!(requests[1], vec![0xd7, 0x0d, 0], "the clear goes first");
+    assert!(
+        !requests[2..].iter().any(|r| r[..2] == [0xd7, 0x0d]),
+        "no other ART_KEYS write: {requests:02x?}"
+    );
+
+    // The USB-unplug follow-up keeps what it finds, so a stuck opt-in fails it.
+    let fake = ArtKeysFake(Fake::default());
+    fake.0.replies.borrow_mut().extend([
+        hello(2, 4),
+        art(5, 0, 4),
+        art(5, 0, 4),
+        hello(2, 4),
+        position(0, 11),
+        position(0, 11),
+        art(5, 1, 4),
+        art(5, 1, 4),
+    ]);
+    let result = run_with(
+        &fake,
+        &case("[{art_key={pos=11,keep_found_opt_in=true}}]"),
+        TEST_HOOKS,
+    );
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert!(!fake
+        .0
+        .requests
+        .borrow()
+        .iter()
+        .any(|r| r[..2] == [0xd7, 0x0d]));
+
+    // The seed suite: board-steps clears, the unplug check doesn't, and only with subscribed off.
+    let suite = spec::load(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/hil/art-keys.toml"
+    )))
+    .unwrap();
+    let art_keys = |name: &str| -> Vec<spec::ArtKey> {
+        let c = suite.cases.iter().find(|c| c.name == name).unwrap();
+        c.steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::ArtKey(k) => Some(k.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(art_keys("art-keys-board-steps")
+        .iter()
+        .all(|k| !k.subscribed && !k.keep_found_opt_in));
+    assert!(art_keys("art-keys-unplug-check")[0].keep_found_opt_in);
+    let bad = case("[{art_key={pos=11,subscribed=true,keep_found_opt_in=true}}]");
+    assert!(bad.steps[0].validate().is_err());
+}
+
 #[test]
 fn position_press_needs_capability_bits_and_releases_held_keys() {
     let steps = "[{press_position={pos=43,state='down'}},{expect_layer={active_contains=[1]}}]";
