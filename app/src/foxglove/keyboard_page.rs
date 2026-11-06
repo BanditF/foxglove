@@ -578,15 +578,89 @@ pub struct BoardView {
     pub glow_rainbow: bool,
     pub left_label: String,
     pub right_label: String,
-    /// The info and art screens' shapes upright, from the keyboard's screens (#560); `None`
-    /// takes the firmware's.
-    pub panel_shape: Option<egui::Vec2>,
-    pub art_shape: Option<egui::Vec2>,
     /// The focused keyboard's name, over the drawing (#800); empty draws no title.
     pub title: String,
     /// A keyboard Foxglove can't change: the read-only chip's hover. Its drawing has no screens
     /// or underglow.
     pub read_only: Option<String>,
+    /// The screens drawn on the board, from its own screens and profile ([`board_screens`],
+    /// #822); none for a board without screens.
+    pub screens: Vec<BoardScreen>,
+}
+
+/// A screen the board drawing shows (#822): what it is for, the part it sits on, where along
+/// that part (0 its left edge, 1 its right; `None` over the inner columns) and its shape
+/// upright (#560).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoardScreen {
+    pub role: super::screen_roles::Role,
+    pub part: usize,
+    pub along: Option<f32>,
+    pub shape: egui::Vec2,
+}
+
+/// Where a one-piece board's profile puts a screen (its `half`): "left", "middle", "right".
+fn along(place: &str) -> Option<f32> {
+    match place {
+        "left" => Some(0.25),
+        "middle" | "center" | "centre" => Some(0.5),
+        "right" => Some(0.75),
+        _ => None,
+    }
+}
+
+/// The screens drawn for the host-link keyboard when nothing says (no profile, none
+/// described): the older firmware's, on its board's parts (#563); a part the drawing doesn't
+/// have draws none.
+fn old_firmware_screens() -> Vec<BoardScreen> {
+    let old = super::boards::old_firmware_board();
+    board_screens(
+        &super::screen_roles::old_firmware(),
+        old,
+        &super::parts::Parts::of(old),
+    )
+}
+
+/// The screens the board drawing shows (#822), from the board's screens (the firmware's, else
+/// its profile's: `screen_roles`) and where its profile puts each (`half`: the part on a split,
+/// the place along a one-piece board). The drawing shows the info and the art screen, the first
+/// of each, so a board with neither draws no screens.
+pub fn board_screens(
+    screens: &[super::screen_roles::Screen],
+    board: Option<&super::boards::Board>,
+    parts: &super::parts::Parts,
+) -> Vec<BoardScreen> {
+    use super::screen_roles::Role;
+    let split = parts.is_split();
+    [Role::Info, Role::Art]
+        .into_iter()
+        .filter_map(|role| {
+            let s = super::screen_roles::first(screens, role)?;
+            let place = board.and_then(|b| {
+                b.screens
+                    .iter()
+                    .find(|p| Role::of_kind(&p.kind) == Some(role))
+                    .map(|p| p.half.as_str())
+            });
+            let (w, h) = s.upright();
+            let shape = if w > 0 && h > 0 {
+                egui::vec2(f32::from(w), f32::from(h))
+            } else {
+                fallback_shape(role)
+            };
+            let default_part = usize::from(split && role == Role::Art);
+            Some(BoardScreen {
+                role,
+                part: if split {
+                    place.and_then(|p| parts.index(p)).unwrap_or(default_part)
+                } else {
+                    0
+                },
+                along: place.filter(|_| !split).and_then(along),
+                shape,
+            })
+        })
+        .collect()
 }
 
 /// The board drawing's state from the cached keyboard state; nothing here asks the keyboard. A
@@ -637,10 +711,12 @@ fn board_view(ctx: &egui::Context) -> BoardView {
         || second.clone(),
         |n| format!("{second} · {}", n.to_uppercase()),
     );
-    let screens = super::screen_roles::current();
+    let screens = match super::screen_roles::current() {
+        Some(s) => board_screens(&s, board.as_ref(), &parts),
+        None => old_firmware_screens(),
+    };
     BoardView {
-        panel_shape: shape_of(screens.as_deref(), super::screen_roles::Role::Info),
-        art_shape: shape_of(screens.as_deref(), super::screen_roles::Role::Art),
+        screens,
         layout,
         split: parts.is_split(),
         panel,
@@ -678,15 +754,6 @@ fn fallback_shape(role: super::screen_roles::Role) -> egui::Vec2 {
         })
 }
 
-/// A screen's shape upright, as the user sees it (#560).
-fn shape_of(
-    screens: Option<&[super::screen_roles::Screen]>,
-    role: super::screen_roles::Role,
-) -> Option<egui::Vec2> {
-    let s = super::screen_roles::first(screens?, role)?;
-    let (w, h) = s.upright();
-    (w > 0 && h > 0).then(|| egui::vec2(f32::from(w), f32::from(h)))
-}
 const SCREEN_HEIGHT: f32 = 72.0;
 
 thread_local! {
@@ -730,8 +797,17 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
             let between = 56.0;
             // A keyboard without Foxglove's firmware has no screens or underglow to show.
             let firmware = v.read_only.is_none();
+            let drawn = if v.split { 2 } else { 1 };
+            // Only screens on a part the drawing has; a board without screens draws its keys
+            // at the top (#822).
+            let shown: Vec<&BoardScreen> = v.screens.iter().filter(|s| s.part < drawn).collect();
+            let band = if shown.is_empty() {
+                0.0
+            } else {
+                SCREEN_HEIGHT + 12.0
+            };
             let height = if firmware {
-                SCREEN_HEIGHT + 12.0 + half.y + 14.0 + 8.0 + 10.0 + 12.0
+                band + half.y + 14.0 + 8.0 + 10.0 + 12.0
             } else {
                 half.y + 14.0 + 12.0
             };
@@ -744,6 +820,7 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
             } else {
                 vec![rect.center().x - half.x / 2.0]
             };
+            let mut screen_no = 0;
             for (i, x) in places.into_iter().enumerate() {
                 let right = i == 1;
                 let top = rect.top();
@@ -777,104 +854,53 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
                     }
                     continue;
                 }
-                // The screen sits over the inner columns, as on the Corne, shaped like what it shows.
-                let shape = if right {
-                    v.art_shape
-                        .unwrap_or_else(|| fallback_shape(super::screen_roles::Role::Art))
+                let mut here: Vec<&BoardScreen> =
+                    shown.iter().copied().filter(|s| s.part == i).collect();
+                here.sort_by(|a, b| a.along.unwrap_or(0.5).total_cmp(&b.along.unwrap_or(0.5)));
+                // Each shaped like what it shows (#560).
+                let sizes: Vec<egui::Vec2> = here
+                    .iter()
+                    .map(|s| {
+                        egui::vec2(
+                            (SCREEN_HEIGHT - 6.0) * s.shape.x / s.shape.y + 6.0,
+                            SCREEN_HEIGHT,
+                        )
+                    })
+                    .collect();
+                // One screen sits where the profile puts it, else over the inner columns, as on
+                // the Corne; more sit side by side over the part's middle.
+                let centres: Vec<f32> = if let [only] = here.as_slice() {
+                    let inner = if right { 0.25 } else { 0.75 };
+                    vec![x + half.x * only.along.unwrap_or(inner)]
                 } else {
-                    v.panel_shape
-                        .unwrap_or_else(|| fallback_shape(super::screen_roles::Role::Info))
+                    let gap = 12.0;
+                    let total = sizes.iter().fold(-gap, |t, s| t + s.x + gap);
+                    let mut at = x + half.x / 2.0 - total / 2.0;
+                    sizes
+                        .iter()
+                        .map(|s| {
+                            let c = at + s.x / 2.0;
+                            at += s.x + gap;
+                            c
+                        })
+                        .collect()
                 };
-                let screen = egui::vec2(
-                    (SCREEN_HEIGHT - 6.0) * shape.x / shape.y + 6.0,
-                    SCREEN_HEIGHT,
-                );
-                let screen_x = if right {
-                    x + half.x * 0.25
-                } else {
-                    x + half.x * 0.75
-                };
-                let screen_rect = egui::Rect::from_center_size(
-                    egui::pos2(screen_x, top + screen.y / 2.0),
-                    screen,
-                );
-                #[cfg(test)]
-                hits.screens.push(screen_rect);
-                let click = ui.interact(
-                    screen_rect,
-                    ui.id().with(("board-screen", i)),
-                    Sense::click(),
-                );
-                ui.painter().rect_filled(
-                    screen_rect,
-                    CornerRadius::same(4),
-                    Color32::from_rgb(0x05, 0x07, 0x06),
-                );
-                let inner = screen_rect.shrink(3.0);
-                if right {
-                    match &v.art {
-                        Some(stored) => {
-                            let key = std::sync::Arc::as_ptr(stored) as usize;
-                            let t = ART_TEXTURE.with_borrow_mut(|cache| match cache {
-                                Some((k, t)) if *k == key => t.clone(),
-                                _ => {
-                                    let image = super::art_ui::thumbnail(stored, false);
-                                    let t = ui.ctx().load_texture(
-                                        "board-art",
-                                        image,
-                                        egui::TextureOptions::NEAREST,
-                                    );
-                                    *cache = Some((key, t.clone()));
-                                    t
-                                }
-                            });
-                            paint_fitted(ui.painter(), &t, inner);
-                        }
-                        // Nothing known: a dark screen, not a made-up picture.
-                        None => {
-                            ui.painter().text(
-                                inner.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "ART",
-                                theme::mono(10.0),
-                                p.muted,
-                            );
-                        }
-                    }
-                } else {
-                    match &v.panel {
-                        Some(frame) => {
-                            let t = PANEL_TEXTURE.with_borrow_mut(|cache| {
-                                super::screens_ui::frame_texture(ui.ctx(), cache, frame).clone()
-                            });
-                            paint_fitted(ui.painter(), &t, inner);
-                        }
-                        None => {
-                            ui.painter().text(
-                                inner.center(),
-                                egui::Align2::CENTER_CENTER,
-                                "PANEL",
-                                theme::mono(11.0),
-                                p.accent,
-                            );
-                        }
+                for ((s, size), cx) in here.iter().zip(&sizes).zip(centres) {
+                    let screen_rect =
+                        egui::Rect::from_center_size(egui::pos2(cx, top + size.y / 2.0), *size);
+                    #[cfg(test)]
+                    hits.screens.push(screen_rect);
+                    let click = ui.interact(
+                        screen_rect,
+                        ui.id().with(("board-screen", screen_no)),
+                        Sense::click(),
+                    );
+                    screen_no += 1;
+                    if screen(ui, v, s.role, screen_rect, click) {
+                        go = Some(Page::Screens);
                     }
                 }
-                let ring = if click.hovered() || click.has_focus() {
-                    2.0
-                } else {
-                    1.0
-                };
-                ui.painter().rect_stroke(
-                    screen_rect,
-                    CornerRadius::same(4),
-                    Stroke::new(ring, p.accent),
-                    egui::StrokeKind::Inside,
-                );
-                if click.on_hover_text("Open Screens").clicked() {
-                    go = Some(Page::Screens);
-                }
-                let keys_top = screen_rect.bottom() + 12.0;
+                let keys_top = top + band;
                 for k in layout.part(i) {
                     let key = egui::Rect::from_min_size(
                         egui::pos2(x + k.rect.min.x * unit, keys_top + k.rect.min.y * unit),
@@ -960,6 +986,85 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
     }
     ui.add_space(6.0);
     go
+}
+
+/// Paints one of the board's screens into `screen_rect`: the panel's last frame or the art
+/// playing, else the role's placeholder; returns whether it was clicked.
+fn screen(
+    ui: &egui::Ui,
+    v: &BoardView,
+    role: super::screen_roles::Role,
+    screen_rect: egui::Rect,
+    click: egui::Response,
+) -> bool {
+    let p = theme::palette(ui);
+    ui.painter().rect_filled(
+        screen_rect,
+        CornerRadius::same(4),
+        Color32::from_rgb(0x05, 0x07, 0x06),
+    );
+    let inner = screen_rect.shrink(3.0);
+    if role == super::screen_roles::Role::Art {
+        match &v.art {
+            Some(stored) => {
+                let key = std::sync::Arc::as_ptr(stored) as usize;
+                let t = ART_TEXTURE.with_borrow_mut(|cache| match cache {
+                    Some((k, t)) if *k == key => t.clone(),
+                    _ => {
+                        let image = super::art_ui::thumbnail(stored, false);
+                        let t = ui.ctx().load_texture(
+                            "board-art",
+                            image,
+                            egui::TextureOptions::NEAREST,
+                        );
+                        *cache = Some((key, t.clone()));
+                        t
+                    }
+                });
+                paint_fitted(ui.painter(), &t, inner);
+            }
+            // Nothing known: a dark screen, not a made-up picture.
+            None => {
+                ui.painter().text(
+                    inner.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "ART",
+                    theme::mono(10.0),
+                    p.muted,
+                );
+            }
+        }
+    } else {
+        match &v.panel {
+            Some(frame) => {
+                let t = PANEL_TEXTURE.with_borrow_mut(|cache| {
+                    super::screens_ui::frame_texture(ui.ctx(), cache, frame).clone()
+                });
+                paint_fitted(ui.painter(), &t, inner);
+            }
+            None => {
+                ui.painter().text(
+                    inner.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "PANEL",
+                    theme::mono(11.0),
+                    p.accent,
+                );
+            }
+        }
+    }
+    let ring = if click.hovered() || click.has_focus() {
+        2.0
+    } else {
+        1.0
+    };
+    ui.painter().rect_stroke(
+        screen_rect,
+        CornerRadius::same(4),
+        Stroke::new(ring, p.accent),
+        egui::StrokeKind::Inside,
+    );
+    click.on_hover_text("Open Screens").clicked()
 }
 
 /// Paints a screen's texture into `rect`, as large as fits with its shape kept.
@@ -1090,12 +1195,12 @@ pub mod tests {
             ),
             split: false,
             left_label: "KEYBOARD · USB".into(),
-            // #560: its 128x32 info screen, drawn in its own shape.
-            panel_shape: shape_of(
-                Some(&crate::foxglove::screen_roles::of_board(
-                    &second_desk::board(),
-                )),
-                crate::foxglove::screen_roles::Role::Info,
+            // #560: its 128x32 info screen, drawn in its own shape; #822: with its art screen,
+            // where its profile puts them.
+            screens: board_screens(
+                &crate::foxglove::screen_roles::of_board(&second_desk::board()),
+                Some(&second_desk::board()),
+                &plank,
             ),
             ..Default::default()
         };
@@ -1103,12 +1208,125 @@ pub mod tests {
         board_frame(&ctx, &view, vec![]);
         let hits = LAST_HITS.take().unwrap();
         assert_eq!(hits.keys.len(), second_desk::LAMPS, "61 keys, drawn once");
-        assert_eq!(hits.screens.len(), 1);
+        assert_eq!(hits.screens.len(), 2, "its info and art screens");
         let screen = hits.screens[0];
         assert!(
             screen.width() > screen.height() * 3.0,
             "a 4:1 info screen, not the Corne's: {screen:?}"
         );
+    }
+
+    /// #822: the board's screens come from its own screens and profile. A one-piece VIA board
+    /// (no profile, nothing described) and a profile without screens draw none, with the keys
+    /// at the top; the Corne keeps its info screen on the left half and its art screen on the
+    /// right; a profile that puts both on one part gets them side by side.
+    #[test]
+    fn screen_placeholders_come_from_the_board() {
+        use crate::foxglove::parts::Parts;
+        use crate::foxglove::screen_roles::{of_board, Role};
+        use crate::foxglove::via_host::{layout_of, tests::k5_pro_opened};
+        let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+
+        let (via, layout) = k5_pro_opened(1);
+        let via =
+            crate::foxglove::key_layout::resolve(None, &[layout_of(&via, &layout).unwrap()], 0);
+        let one_piece = BoardView {
+            layout: via,
+            split: false,
+            screens: board_screens(&[], None, &Parts::of(None)),
+            left_label: "KEYBOARD".into(),
+            ..Default::default()
+        };
+        assert!(one_piece.screens.is_empty());
+        board_frame(&ctx, &one_piece, vec![]);
+        let hits = LAST_HITS.take().unwrap();
+        assert!(
+            hits.screens.is_empty(),
+            "no placeholder on a board without screens"
+        );
+        let top = |keys: &[egui::Rect]| keys.iter().map(|k| k.top()).fold(f32::MAX, f32::min);
+        let bare_top = top(&hits.keys);
+        // No empty band where a screen would be: with a screen the keys sit a band lower.
+        board_frame(
+            &ctx,
+            &BoardView {
+                screens: sample_board().screens,
+                ..one_piece.clone()
+            },
+            vec![],
+        );
+        let hits = LAST_HITS.take().unwrap();
+        assert_eq!(
+            hits.screens.len(),
+            1,
+            "a one-piece drawing has no right half"
+        );
+        assert!((top(&hits.keys) - bare_top - (SCREEN_HEIGHT + 12.0)).abs() < 0.01);
+        // Even with the Corne's sample screens around, a view built for it carries none.
+        let spread = BoardView {
+            split: false,
+            screens: Vec::new(),
+            ..sample_board()
+        };
+        board_frame(&ctx, &spread, vec![]);
+        assert!(LAST_HITS.take().unwrap().screens.is_empty());
+
+        // A profile without screens, or with only a screen its firmware draws itself.
+        let mut bare = crate::foxglove::fixtures::second_desk::board();
+        bare.screens.retain(|s| s.kind == "display");
+        assert!(board_screens(&of_board(&bare), Some(&bare), &bare.parts()).is_empty());
+        bare.screens.clear();
+        assert!(board_screens(&of_board(&bare), Some(&bare), &bare.parts()).is_empty());
+
+        // The Corne: the info screen over the left half's inner columns, the art screen upright
+        // over the right's, as before.
+        let corne = crate::foxglove::fixtures::users_desk::board();
+        let screens = board_screens(&of_board(&corne), Some(&corne), &corne.parts());
+        assert_eq!(
+            screens,
+            [
+                BoardScreen {
+                    role: Role::Info,
+                    part: 0,
+                    along: None,
+                    shape: egui::vec2(64.0, 52.0),
+                },
+                BoardScreen {
+                    role: Role::Art,
+                    part: 1,
+                    along: None,
+                    shape: egui::vec2(68.0, 140.0),
+                },
+            ]
+        );
+        board_frame(&ctx, &sample_board(), vec![]);
+        let hits = LAST_HITS.take().unwrap();
+        assert_eq!(hits.screens.len(), 2);
+        let (left, right) = (hits.screens[0], hits.screens[1]);
+        assert!(left.center().x < right.center().x);
+        assert!(left.width() > left.height() && right.width() < right.height());
+
+        // A split whose profile puts both screens on its left half: side by side there.
+        let mut both_left = corne.clone();
+        both_left.screens[1].half = "left".into();
+        let screens = board_screens(&of_board(&both_left), Some(&both_left), &both_left.parts());
+        assert!(screens.iter().all(|s| s.part == 0), "{screens:?}");
+        board_frame(
+            &ctx,
+            &BoardView {
+                screens,
+                ..sample_board()
+            },
+            vec![],
+        );
+        let hits = LAST_HITS.take().unwrap();
+        assert_eq!(hits.screens.len(), 2);
+        assert!(!hits.screens[0].intersects(hits.screens[1]));
+        let right_keys = hits.keys[21..]
+            .iter()
+            .map(|k| k.left())
+            .fold(f32::MAX, f32::min);
+        assert!(hits.screens.iter().all(|s| s.center().x < right_keys));
     }
 
     /// The sample the previews draw: both halves seen, the right one not answering yet.
@@ -1176,10 +1394,13 @@ pub mod tests {
             glow_rainbow: false,
             left_label: "LEFT · USB".into(),
             right_label: "RIGHT · HEARTH".into(),
-            panel_shape: None,
-            art_shape: None,
             title: String::new(),
             read_only: None,
+            screens: board_screens(
+                &crate::foxglove::screen_roles::of_board(&corne),
+                Some(&corne),
+                &corne.parts(),
+            ),
         }
     }
 
@@ -1202,6 +1423,8 @@ pub mod tests {
             board: BoardView {
                 left_label: "LEFT".into(),
                 right_label: "RIGHT".into(),
+                // What `board_view` draws with nothing connected.
+                screens: old_firmware_screens(),
                 ..Default::default()
             },
             ..Default::default()
