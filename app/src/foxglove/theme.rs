@@ -27,6 +27,8 @@ pub struct Palette {
     pub well: Color32,
     /// Card outlines and separators.
     pub line: Color32,
+    /// Read-only status chips (#793): between `surface` and `control`, with no outline.
+    pub chip_fill: Color32,
     /// Buttons and other controls.
     pub control: Color32,
     pub control_line: Color32,
@@ -71,6 +73,7 @@ pub fn dark(roles: &Roles) -> Palette {
         surface_raised: hex(0x1d2422),
         well: hex(0x0a0d0c),
         line: hex(0x2a3330),
+        chip_fill: hex(0x1c2321),
         control: hex(0x232b28),
         control_line: hex(0x34403b),
         text: hex(0xd9e0dc),
@@ -96,6 +99,7 @@ pub fn light(roles: &Roles) -> Palette {
         surface_raised: hex(0xe8ede9),
         well: hex(0xf8faf9),
         line: hex(0xcfd8d3),
+        chip_fill: hex(0xf0f3f1),
         control: hex(0xe8ede9),
         control_line: hex(0xb9c4be),
         text: hex(0x26302c),
@@ -122,6 +126,7 @@ impl Palette {
             ("surface_raised", self.surface_raised),
             ("well", self.well),
             ("line", self.line),
+            ("chip_fill", self.chip_fill),
             ("control", self.control),
             ("control_line", self.control_line),
             ("text", self.text),
@@ -389,6 +394,299 @@ pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
         .stroke(Stroke::new(1.0, p.accent))
 }
 
+// Disclosure widgets (#793; docs/design/device-focus-layouts-thumbnails-lights-declutter.md,
+// section 4): a state becomes a flat chip, an explanation becomes hover text, and amber stays
+// on screen as one short bar. Outlines are only for clickable things.
+
+/// The coloured state in a chip's leading dot: ok green, muted grey or warn amber.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dot {
+    Ok,
+    Muted,
+    Warn,
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+impl Dot {
+    fn color(self, p: &Palette) -> Color32 {
+        match self {
+            Dot::Ok => p.ok,
+            Dot::Muted => p.muted,
+            Dot::Warn => p.warn,
+        }
+    }
+}
+
+/// How loud an [`info_bar`] is (WinUI's `InfoBar` severities).
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warn,
+    Danger,
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+impl Level {
+    fn color(self, p: &Palette) -> Color32 {
+        match self {
+            Level::Info => p.muted,
+            Level::Warn => p.warn,
+            Level::Danger => p.danger,
+        }
+    }
+}
+
+/// The longest short line an [`info_bar`] takes (rule 5: 60 characters or less).
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub const BAR_MAX_CHARS: usize = 60;
+
+/// An info bar's fill: its level's colour mixed into `surface`, opaque.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn bar_fill(p: &Palette, level: Level) -> Color32 {
+    let amount = match (level, p.dark) {
+        (Level::Info, _) => 0.10,
+        (_, true) => 0.11,
+        (_, false) => 0.12,
+    };
+    let tint = level.color(p);
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * amount).round() as u8;
+    let s = p.surface;
+    Color32::from_rgb(
+        mix(s.r(), tint.r()),
+        mix(s.g(), tint.g()),
+        mix(s.b(), tint.b()),
+    )
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+const CHIP_PAD: egui::Vec2 = egui::vec2(8.0, 3.0);
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+const CHIP_RADIUS: u8 = 6;
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+const CHIP_DOT: f32 = 3.5;
+/// The room the dot takes before the text.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+const CHIP_DOT_ROOM: f32 = 12.0;
+
+/// Places a chip and paints its face: the muted fill, the leading dot and the text, cut to one
+/// row at the room left. Read-only chips stop here, so this function never outlines anything
+/// (the flat-chip rule; a source test checks it). Whether the row cut the text.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+fn chip_face(
+    ui: &mut egui::Ui,
+    text: &str,
+    dot: Option<Dot>,
+    sense: egui::Sense,
+) -> (egui::Rect, egui::Response, bool) {
+    let p = palette(ui);
+    let dot_room = if dot.is_some() { CHIP_DOT_ROOM } else { 0.0 };
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), body(12.5), p.text);
+    job.wrap = egui::text::TextWrapping {
+        max_width: (ui.available_width() - CHIP_PAD.x * 2.0 - dot_room).max(40.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
+    let elided = galley.elided;
+    let size = egui::vec2(dot_room + galley.size().x, galley.size().y) + CHIP_PAD * 2.0;
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(CHIP_RADIUS), p.chip_fill);
+        if let Some(dot) = dot {
+            let center = egui::pos2(rect.left() + CHIP_PAD.x + CHIP_DOT, rect.center().y);
+            painter.circle_filled(center, CHIP_DOT, dot.color(p));
+        }
+        painter.galley(
+            rect.min + CHIP_PAD + egui::vec2(dot_room, 0.0),
+            galley,
+            p.text,
+        );
+    }
+    (rect, response, elided)
+}
+
+/// A chip's hover: `hover`, with the whole text first when the row cut it.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+fn chip_hover(text: &str, hover: Option<&str>, elided: bool) -> Option<String> {
+    match (hover, elided) {
+        (Some(h), true) => Some(format!("{text}\n{h}")),
+        (Some(h), false) => Some(h.to_owned()),
+        (None, true) => Some(text.to_owned()),
+        (None, false) => None,
+    }
+}
+
+/// A read-only status chip (rule 2): 1 to 4 words of state on a muted fill with no outline,
+/// and a leading `dot` when the state has a colour. The text stays `text`, not coloured. The
+/// sentence that explains it is `hover`, word for word; a chip never gets an ⓘ.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn hint_chip(
+    ui: &mut egui::Ui,
+    text: &str,
+    hover: Option<&str>,
+    dot: Option<Dot>,
+) -> egui::Response {
+    let (_, response, elided) = chip_face(ui, text, dot, egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+    match chip_hover(text, hover, elided) {
+        Some(h) => response.on_hover_text(h),
+        None => response,
+    }
+}
+
+/// A chip that opens something when clicked (such as the status strip's focus switcher): the
+/// [`hint_chip`] face plus the outline every clickable thing has, the accent on hover and the
+/// focus ring on keyboard focus. Enter and Space click it, as they click a button.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn click_chip(
+    ui: &mut egui::Ui,
+    text: &str,
+    hover: Option<&str>,
+    dot: Option<Dot>,
+) -> egui::Response {
+    let (rect, response, elided) = chip_face(ui, text, dot, egui::Sense::click());
+    let line = if response.hovered() || response.has_focus() {
+        ui.style().interact(&response).bg_stroke
+    } else {
+        Stroke::new(1.0, palette(ui).control_line)
+    };
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(CHIP_RADIUS),
+        line,
+        egui::StrokeKind::Inside,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+    match chip_hover(text, hover, elided) {
+        Some(h) => response.on_hover_text(h),
+        None => response,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The previews show the ⓘ with this hover text as if Enter had been pressed on it.
+    pub static PREVIEW_PINNED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The ⓘ after a control or in an info bar (rule 3), a hint that there is more. Hovering it
+/// shows `hover`, exactly. It takes keyboard focus, and Enter or Space (or a click) shows the
+/// text until pressed again, Escape, or the focus moves on. Nothing ever highlights it on its
+/// own: no first-run glow, no "new" mark (decision 6).
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn info_dot(ui: &mut egui::Ui, hover: &str) -> egui::Response {
+    let p = palette(ui);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    let pinned_id = response.id.with("foxglove-info-pinned");
+    let mut pinned = ui.ctx().data(|d| d.get_temp::<bool>(pinned_id)) == Some(true);
+    if response.clicked() {
+        pinned = !pinned;
+    } else if !response.has_focus() && !response.hovered() {
+        pinned = false;
+    }
+    if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        pinned = false;
+    }
+    #[cfg(test)]
+    if PREVIEW_PINNED.with_borrow(|t| t.as_deref() == Some(hover)) {
+        pinned = true;
+        response.request_focus();
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(pinned_id, pinned));
+    if ui.is_rect_visible(rect) {
+        let lit = response.hovered() || response.has_focus() || pinned;
+        let color = if lit { p.accent } else { p.muted };
+        let painter = ui.painter();
+        let center = rect.center();
+        painter.circle_stroke(center, 6.0, Stroke::new(1.2, color));
+        painter.text(center, egui::Align2::CENTER_CENTER, "i", body(10.5), color);
+        if response.has_focus() {
+            // The focus ring every control has (#384).
+            painter.circle_stroke(center, 8.0, Stroke::new(2.0, p.accent));
+        }
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, hover));
+    if pinned {
+        response.show_tooltip_text(hover);
+        response
+    } else {
+        response.on_hover_text(hover)
+    }
+}
+
+/// A control and its ⓘ (rule 3): `hover` goes on the control too, so the ⓘ only says there is
+/// more. Call it in the control's row, right after adding the control; returns its response.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn with_info(ui: &mut egui::Ui, control: egui::Response, hover: &str) -> egui::Response {
+    let control = control.on_hover_text(hover);
+    info_dot(ui, hover);
+    control
+}
+
+/// What an [`info_bar`] did this frame.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub struct BarResponse {
+    /// The whole bar.
+    pub response: egui::Response,
+    /// Its action button, when it has one.
+    pub action: Option<egui::Response>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+impl BarResponse {
+    /// Whether the action button was clicked.
+    pub fn clicked(&self) -> bool {
+        self.action.as_ref().is_some_and(|a| a.clicked())
+    }
+}
+
+/// A one-line bar (WinUI's `InfoBar`, rule 5): the level's fill and no outline, a dot in the
+/// level's colour, the `short` line that names the problem (60 characters or less, hover =
+/// `full`), an ⓘ with the `full` sentence, and the `action` button. It is never collapsed: on a
+/// narrow card it wraps.
+#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #794 and #795.
+pub fn info_bar(
+    ui: &mut egui::Ui,
+    level: Level,
+    short: &str,
+    full: &str,
+    action: Option<&str>,
+) -> BarResponse {
+    debug_assert!(
+        short.chars().count() <= BAR_MAX_CHARS,
+        "an info bar's line is {BAR_MAX_CHARS} characters or less: {short:?}"
+    );
+    let p = palette(ui);
+    let mut button = None;
+    let inner = egui::Frame::new()
+        .fill(bar_fill(p, level))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 18.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(dot.center(), 4.0, level.color(p));
+                ui.add(egui::Label::new(RichText::new(short).color(p.text_strong)).wrap())
+                    .on_hover_text(full);
+                info_dot(ui, full);
+                if let Some(label) = action {
+                    button = Some(ui.button(label));
+                }
+            });
+        });
+    BarResponse {
+        response: inner.response,
+        action: button,
+    }
+}
+
 /// The window theme picker, saved in the store's `[ui]` section.
 pub fn picker(ui: &mut egui::Ui) {
     let current = match ui.ctx().options(|o| o.theme_preference) {
@@ -421,6 +719,382 @@ pub fn credits(ui: &mut egui::Ui) {
             .small()
             .weak(),
     );
+}
+
+/// Headless frames for the widget tests: no window, the app's fonts and theme.
+#[cfg(test)]
+pub mod headless {
+    use egui::epaint::Shape;
+    use egui::{Event, Key, Pos2, RawInput, Rect};
+
+    pub fn ctx(choice: super::Choice) -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        super::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
+        super::apply_choice(&ctx, choice);
+        ctx
+    }
+
+    /// A press of `key`, then its release.
+    pub fn tap(key: Key) -> Vec<Event> {
+        [true, false]
+            .map(|pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Default::default(),
+            })
+            .to_vec()
+    }
+
+    pub fn hover(pos: Pos2) -> Vec<Event> {
+        vec![Event::PointerMoved(pos)]
+    }
+
+    /// The pointer pressed and released at `pos`.
+    pub fn click(pos: Pos2) -> Vec<Event> {
+        let button = |pressed| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        vec![Event::PointerMoved(pos), button(true), button(false)]
+    }
+
+    /// One frame at second `time` with `events` (time moves on a second a frame, past the
+    /// tooltip delay); the frame's shapes, flattened.
+    pub fn frame(
+        ctx: &egui::Context,
+        time: f64,
+        events: Vec<Event>,
+        draw: impl FnMut(&mut egui::Ui),
+    ) -> Vec<Shape> {
+        let raw = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(480.0, 320.0))),
+            time: Some(time),
+            predicted_dt: 1.0,
+            focused: true,
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, draw);
+        out.textures_delta.clear();
+        let mut shapes = Vec::new();
+        fn flat(s: Shape, out: &mut Vec<Shape>) {
+            match s {
+                Shape::Vec(v) => v.into_iter().for_each(|s| flat(s, out)),
+                s => out.push(s),
+            }
+        }
+        for c in out.shapes {
+            flat(c.shape, &mut shapes);
+        }
+        shapes
+    }
+
+    /// Every line of text the frame painted, whole (a wrapped tooltip is one text).
+    pub fn texts(shapes: &[Shape]) -> Vec<String> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod widget_tests {
+    use super::headless::{self, click, frame, hover, tap, texts};
+    use super::*;
+    use egui::epaint::Shape;
+    use egui::Key;
+
+    const SOURCE: &str = include_str!("theme.rs");
+
+    /// The body of `fn name` in this file, up to its closing brace at the start of a line (with
+    /// either line ending: a Windows checkout has CRLF).
+    fn body(name: &str) -> &'static str {
+        let start = SOURCE
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("fn {name} in theme.rs"));
+        let rest = &SOURCE[start..];
+        let end = ["\n}\n", "\n}\r\n"]
+            .iter()
+            .filter_map(|e| rest.find(e))
+            .min()
+            .expect("the function ends");
+        &rest[..end]
+    }
+
+    /// The flat-chip rule (rule 2): nothing a read-only chip runs outlines it. An outline is
+    /// only for clickable things, so it lives in `click_chip` alone.
+    #[test]
+    fn read_only_chips_and_bars_have_no_stroke_in_their_source() {
+        for name in [
+            "hint_chip",
+            "chip_face",
+            "chip_hover",
+            "info_bar",
+            "bar_fill",
+        ] {
+            let code = body(name).to_lowercase();
+            assert!(!code.contains("stroke"), "{name} outlines something");
+        }
+        assert!(body("click_chip").contains("rect_stroke"));
+        // Amber is never collapsed (rule 5).
+        assert!(!body("info_bar").to_lowercase().contains("collaps"));
+    }
+
+    /// The rectangles painted with `fill`, and whether each has an outline.
+    fn outlined(shapes: &[Shape], fill: Color32) -> Vec<bool> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Rect(r) if r.fill == fill => {
+                    Some(r.stroke.width > 0.0 && r.stroke.color.a() > 0)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_status_chip_is_flat_and_a_clickable_chip_is_outlined() {
+        for choice in [Choice::Dark, Choice::Light] {
+            let ctx = headless::ctx(choice);
+            let p = if choice == Choice::Dark {
+                *DARK
+            } else {
+                *LIGHT
+            };
+            let draw = |ui: &mut egui::Ui| {
+                hint_chip(
+                    ui,
+                    "6 zones per half",
+                    Some("6 lighting zones per half"),
+                    None,
+                );
+                hint_chip(ui, "calibrated", None, Some(Dot::Ok));
+                hint_chip(ui, "in front only", None, Some(Dot::Muted));
+                hint_chip(ui, "off in Windows", None, Some(Dot::Warn));
+            };
+            let shapes = frame(&ctx, 0.0, vec![], draw);
+            assert_eq!(outlined(&shapes, p.chip_fill), vec![false; 4]);
+            // The dots, in their state's colours; the text stays `text`.
+            for c in [p.ok, p.muted, p.warn] {
+                assert!(
+                    shapes
+                        .iter()
+                        .any(|s| matches!(s, Shape::Circle(d) if d.fill == c)),
+                    "a {c:?} dot"
+                );
+            }
+            for s in &shapes {
+                if let Shape::Text(t) = s {
+                    assert_eq!(t.fallback_color, p.text);
+                }
+            }
+            let shapes = frame(&ctx, 1.0, vec![], |ui| {
+                click_chip(ui, "Corne", None, Some(Dot::Ok));
+            });
+            assert!(shapes.iter().any(|s| matches!(
+                s,
+                Shape::Rect(r) if r.fill == Color32::TRANSPARENT && r.stroke.width > 0.0
+            )));
+        }
+    }
+
+    #[test]
+    fn a_chip_cut_short_hovers_with_its_whole_text() {
+        assert_eq!(chip_hover("a", Some("why"), false).as_deref(), Some("why"));
+        assert_eq!(chip_hover("a", None, false), None);
+        assert_eq!(chip_hover("a b", None, true).as_deref(), Some("a b"));
+        assert_eq!(
+            chip_hover("a b", Some("why"), true).as_deref(),
+            Some("a b\nwhy")
+        );
+    }
+
+    const TIP: &str =
+        "The underglow takes the accent colour's hue. The brightness stays the board's.";
+
+    fn dot_row(ui: &mut egui::Ui) -> egui::Rect {
+        ui.horizontal(|ui| {
+            ui.label("Follow Windows accent");
+            info_dot(ui, TIP).rect
+        })
+        .inner
+    }
+
+    fn shown(shapes: &[Shape]) -> bool {
+        texts(shapes).iter().any(|t| t == TIP)
+    }
+
+    #[test]
+    fn the_info_hover_is_the_given_text() {
+        let ctx = headless::ctx(Choice::Dark);
+        let mut rect = egui::Rect::NOTHING;
+        let shapes = frame(&ctx, 0.0, vec![], |ui| rect = dot_row(ui));
+        assert!(!shown(&shapes), "no tooltip before a hover");
+        let mut last = Vec::new();
+        for t in 1..5 {
+            let events = if t == 1 { hover(rect.center()) } else { vec![] };
+            last = frame(&ctx, t as f64, events, |ui| {
+                dot_row(ui);
+            });
+        }
+        assert!(shown(&last), "hovering the ⓘ shows its text, exactly");
+    }
+
+    #[test]
+    fn the_info_dot_is_never_highlighted_on_its_own() {
+        // No first-run highlight (decision 6): frame after frame without input the ⓘ looks the
+        // same, in the muted colour, and nothing it runs remembers having been seen.
+        let ctx = headless::ctx(Choice::Dark);
+        let first = frame(&ctx, 0.0, vec![], |ui| {
+            dot_row(ui);
+        });
+        for t in 1..5 {
+            let again = frame(&ctx, t as f64, vec![], |ui| {
+                dot_row(ui);
+            });
+            assert_eq!(format!("{first:?}"), format!("{again:?}"));
+        }
+        assert!(first
+            .iter()
+            .any(|s| matches!(s, Shape::Circle(c) if c.stroke.color == DARK.muted)));
+        let code = body("info_dot");
+        for word in ["highlight", "store::", "seen", "first_run"] {
+            assert!(!code.contains(word), "info_dot uses {word}");
+        }
+    }
+
+    #[test]
+    fn keyboard_focus_reaches_the_info_dot_and_enter_or_space_shows_its_text() {
+        let ctx = headless::ctx(Choice::Light);
+        let draw = |ui: &mut egui::Ui| {
+            dot_row(ui);
+        };
+        frame(&ctx, 0.0, vec![], draw);
+        // Tab moves the focus onto the ⓘ (the only control); the text waits for a key.
+        let shapes = frame(&ctx, 1.0, tap(Key::Tab), draw);
+        assert!(!shown(&shapes));
+        let focused = shapes
+            .iter()
+            .any(|s| matches!(s, Shape::Circle(c) if c.stroke.width == 2.0));
+        assert!(focused, "the focus ring");
+        let mut t = 2.0;
+        let mut step = |events| {
+            // A new tooltip's first frame only measures it (egui), so look one frame later.
+            t += 1.0;
+            frame(&ctx, t, events, draw);
+            t += 1.0;
+            let first = shown(&frame(&ctx, t, vec![], draw));
+            // It stays, with no pointer near it, until the next key.
+            t += 1.0;
+            let then = shown(&frame(&ctx, t, vec![], draw));
+            assert_eq!(first, then);
+            first
+        };
+        assert!(step(tap(Key::Enter)), "Enter shows the text");
+        assert!(!step(tap(Key::Enter)), "and Enter hides it");
+        assert!(step(tap(Key::Space)), "Space shows it too");
+        assert!(!step(tap(Key::Escape)), "Escape hides it");
+    }
+
+    #[test]
+    fn a_click_on_the_info_dot_shows_its_text() {
+        let ctx = headless::ctx(Choice::Dark);
+        let mut rect = egui::Rect::NOTHING;
+        frame(&ctx, 0.0, vec![], |ui| rect = dot_row(ui));
+        let shapes = frame(&ctx, 1.0, click(rect.center()), |ui| {
+            dot_row(ui);
+        });
+        let next = frame(&ctx, 2.0, vec![], |ui| {
+            dot_row(ui);
+        });
+        // A click hides the hover tooltip (egui), so the text shows as pinned.
+        assert!(shown(&shapes) || shown(&next));
+    }
+
+    #[test]
+    fn an_info_bar_is_fill_only_and_shows_its_line_and_action() {
+        for choice in [Choice::Dark, Choice::Light] {
+            let ctx = headless::ctx(choice);
+            let p = if choice == Choice::Dark {
+                *DARK
+            } else {
+                *LIGHT
+            };
+            let full = "Windows Dynamic Lighting holds the keyboard's lights. Turn off Settings > Personalization > Dynamic Lighting to give them back.";
+            let mut clicked = false;
+            let draw = |ui: &mut egui::Ui| {
+                // A narrow card: the bar wraps, it never folds away.
+                ui.set_max_width(220.0);
+                let bar = info_bar(
+                    ui,
+                    Level::Warn,
+                    "Windows has the keyboard's lights",
+                    full,
+                    Some("Open Dynamic Lighting settings"),
+                );
+                assert!(bar.action.is_some());
+                assert!(bar.response.rect.width() > 0.0);
+                clicked |= bar.clicked();
+            };
+            let shapes = frame(&ctx, 0.0, vec![], draw);
+            assert_eq!(outlined(&shapes, bar_fill(&p, Level::Warn)), vec![false]);
+            let lines = texts(&shapes);
+            for want in [
+                "Windows has the keyboard's lights",
+                "Open Dynamic Lighting settings",
+            ] {
+                assert!(lines.iter().any(|t| t == want), "{want} on screen");
+            }
+            assert!(!clicked);
+            // The amber dot.
+            assert!(shapes
+                .iter()
+                .any(|s| matches!(s, Shape::Circle(c) if c.fill == p.warn)));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "60 characters or less")]
+    fn an_info_bar_line_is_short() {
+        let ctx = headless::ctx(Choice::Dark);
+        frame(&ctx, 0.0, vec![], |ui| {
+            info_bar(ui, Level::Warn, &"x".repeat(BAR_MAX_CHARS + 1), "", None);
+        });
+    }
+
+    #[test]
+    fn with_info_puts_the_text_on_the_control_too() {
+        let ctx = headless::ctx(Choice::Dark);
+        let mut rect = egui::Rect::NOTHING;
+        let draw = |ui: &mut egui::Ui, rect: &mut egui::Rect| {
+            ui.horizontal(|ui| {
+                let c = ui.checkbox(&mut true, "Follow Windows accent");
+                *rect = with_info(ui, c, TIP).rect;
+            });
+        };
+        frame(&ctx, 0.0, vec![], |ui| draw(ui, &mut rect));
+        let mut last = Vec::new();
+        let at = rect.center();
+        for t in 1..5 {
+            let events = if t == 1 { hover(at) } else { vec![] };
+            last = frame(&ctx, t as f64, events, |ui| draw(ui, &mut rect));
+        }
+        assert!(
+            shown(&last),
+            "hovering the control's label shows the ⓘ's text"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -495,7 +1169,17 @@ mod tests {
     #[test]
     fn text_reads_on_every_surface() {
         for p in &every_theme() {
-            for bg in [p.ground, p.surface, p.surface_raised, p.control] {
+            let bars = [Level::Info, Level::Warn, Level::Danger].map(|l| bar_fill(p, l));
+            for bg in [
+                p.ground,
+                p.surface,
+                p.surface_raised,
+                p.control,
+                p.chip_fill,
+            ]
+            .into_iter()
+            .chain(bars)
+            {
                 for (name, fg) in [("text", p.text), ("muted", p.muted)] {
                     let c = contrast(fg, bg);
                     assert!(c >= 4.5, "{name} on {bg:?} (dark {}): {c:.2}", p.dark);

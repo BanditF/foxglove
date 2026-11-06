@@ -2560,3 +2560,103 @@ fn via_settings_render() {
     };
     assert!(lit(&on) > lit(&off), "the boards add lines");
 }
+
+/// The disclosure widgets (#793), dark and light: flat status chips with and without a dot, the
+/// one clickable chip (outlined), the ⓘ after controls (one shown as Enter shows it), the info
+/// bars and the expanders, closed and open.
+#[test]
+fn disclosure_widgets_render() {
+    use crate::foxglove::settings_ui::{expander, expander_with, set_expander_open};
+    use crate::foxglove::theme::{self, Choice, Dot, Level, DARK, LIGHT};
+    const PINNED: &str =
+        "On: the right half's lights do what the left half's do. Saved on the keyboard.";
+    let sheet = |choice: Choice| {
+        let ctx = preview_ctx();
+        theme::apply_choice(&ctx, choice);
+        let p = if choice == Choice::Dark {
+            *DARK
+        } else {
+            *LIGHT
+        };
+        set_expander_open(&ctx, "preview-adjust", true);
+        theme::PREVIEW_PINNED.set(Some(PINNED.to_owned()));
+        let img = render_ui(&ctx, egui::vec2(640.0, 600.0), p.ground, move |ui| {
+            egui::Frame::new()
+                .fill(p.ground)
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    theme::card(ui)
+                        .inner_margin(egui::Margin::symmetric(18, 14))
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.label(theme::heading(ui, "Disclosure widgets"));
+                            ui.add_space(8.0);
+                            ui.label(theme::caps_label(ui, "Status chips · read-only, flat"));
+                            ui.horizontal_wrapped(|ui| {
+                                theme::hint_chip(ui, "6 zones per half", Some("6 lighting zones per half, by column"), None);
+                                theme::hint_chip(ui, "Lights now: Foxglove", None, Some(Dot::Ok));
+                                theme::hint_chip(ui, "in front only", None, Some(Dot::Muted));
+                                theme::hint_chip(ui, "off in Windows", None, Some(Dot::Warn));
+                            });
+                            ui.add_space(8.0);
+                            ui.label(theme::caps_label(ui, "Clickable chip · outlined"));
+                            ui.horizontal(|ui| {
+                                theme::click_chip(ui, "Corne · focus", Some("Pick the keyboard the pages show"), Some(Dot::Ok));
+                                ui.label(egui::RichText::new("beside a pill:").color(p.muted));
+                                theme::pill(ui, true, "Solid");
+                            });
+                            ui.add_space(10.0);
+                            ui.label(theme::caps_label(ui, "Info bars · fill only, never collapsed"));
+                            theme::info_bar(
+                                ui,
+                                Level::Warn,
+                                "Windows has the keyboard's lights · Aurora waits",
+                                "Windows Dynamic Lighting holds the keyboard's lights.",
+                                Some("Open Dynamic Lighting settings"),
+                            );
+                            ui.add_space(4.0);
+                            theme::info_bar(ui, Level::Danger, "The keyboard didn't answer", "No reply in 2 s.", Some("Retry"));
+                            ui.add_space(4.0);
+                            theme::info_bar(ui, Level::Info, "Needs an RGB key in the keymap", "The controls need an RGB key (&rgb_ug) somewhere in the keymap.", None);
+                            ui.add_space(10.0);
+                            ui.label(theme::caps_label(ui, "Expanders · closed by default"));
+                            expander_with(
+                                ui,
+                                "preview-more",
+                                "More sources",
+                                "OpenRGB: on",
+                                |ui| {
+                                    theme::hint_chip(ui, "OpenRGB not connected", None, Some(Dot::Warn));
+                                },
+                                |ui| ui.label("Use OpenRGB's devices"),
+                            );
+                            expander(ui, "preview-adjust", "Adjust levels…", "100% · 80% · 12%", |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("On battery");
+                                    ui.add(egui::Slider::new(&mut 80.0, 0.0..=100.0).suffix("%"));
+                                });
+                            });
+                            ui.add_space(10.0);
+                            ui.label(theme::caps_label(ui, "Info dot on controls"));
+                            ui.horizontal(|ui| {
+                                let c = ui.checkbox(&mut true, "Follow Windows accent");
+                                theme::with_info(ui, c, "Follow the Windows accent colour: the underglow takes the accent colour's hue.");
+                            });
+                            ui.horizontal(|ui| {
+                                let c = ui.checkbox(&mut true, "Right follows left");
+                                theme::with_info(ui, c, PINNED);
+                                ui.label(egui::RichText::new("← focused, Enter pressed").color(p.muted));
+                            });
+                            ui.add_space(70.0);
+                        });
+                });
+        });
+        theme::PREVIEW_PINNED.set(None);
+        img
+    };
+    let dark = sheet(Choice::Dark);
+    let light = sheet(Choice::Light);
+    keep("ui-793-widgets-dark.png", &dark);
+    keep("ui-793-widgets-light.png", &light);
+    assert_ne!(dark, light);
+}
