@@ -417,7 +417,7 @@ mod tests {
         let art = b.screens.iter_mut().find(|s| s.kind == "art").unwrap();
         art.refresh = Refresh::EpaperPartial;
         art.min_frame_ms = 2000;
-        let target = |art| ScreenDescriptor {
+        let target = |art: Option<ArtLimits>| ScreenDescriptor {
             count: 1,
             index: 0,
             id: 3,
@@ -431,7 +431,7 @@ mod tests {
             rotation: 0,
             format: 0,
             ops: ScreenDescriptor::OP_ART | ScreenDescriptor::OP_SLOTS,
-            stride: art.map_or(0, |a: ArtLimits| a.max_blob),
+            stride: art.map_or(0, |a| a.max_blob),
             rows_per_report: 0,
             readback_half: None,
             version: if art.is_some() { 2 } else { 1 },
