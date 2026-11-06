@@ -73,10 +73,17 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
     FOXGLOVE_FW_PATCH=${CMAKE_MATCH_3})
   zephyr_library_sources(
     ${FOXGLOVE_WIDGETS}/host_link.c
-    ${FOXGLOVE_WIDGETS}/screens_corne.c
     ${FOXGLOVE_WIDGETS}/half_marker.c
     hostlink_sim.c
   )
+  if(CONFIG_FOXGLOVE_SIM_ART_LOCAL)
+    # A single-screen board's local art target (#834): the real art_store.c and art_local.c behind
+    # host_link.c; its screens table, drawer and flash slots are faked in art_local_sim.c.
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_store.c ${FOXGLOVE_WIDGETS}/art_local.c
+                           art_local_sim.c)
+  else()
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/screens_corne.c)
+  endif()
   if(CONFIG_FOXGLOVE_SIM_PANEL_STREAM)
     zephyr_library_sources(panel_stream_sim.c)
   endif()

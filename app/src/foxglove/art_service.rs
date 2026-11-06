@@ -59,6 +59,10 @@ pub struct Snapshot {
     pub background: bool,
     /// Counts claims on `busy`, so a background job sees that a user's command took it over.
     pub claim: u64,
+    /// The art target is on the keyboard's host-link half and pushes go straight to its store
+    /// (HELLO v2 `ART_LOCAL`, #834; a single-screen board): no relay to wait for, and each reply
+    /// is final. Read on connect; false for a relaying keyboard (the Corne) and older firmware.
+    pub direct: bool,
     /// The art screen's limits from its firmware's v2 descriptor (#832), read when the snapshot
     /// is taken; `None` from older firmware (the art status and the defaults stand).
     pub target: Option<protocol::ArtLimits>,
@@ -970,6 +974,10 @@ fn restore(pinned: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
 }
 
 fn fresh_status(link: &Link, h: &Handle) -> Result<ArtStatus, String> {
+    if h.snapshot().direct {
+        // The store answers from its own state: one read is fresh (#834).
+        return art::status(link).map_err(|e| e.to_string());
+    }
     art::status(link).map_err(|e| e.to_string())?;
     std::thread::sleep(Duration::from_millis(300));
     if h.cancelled() {
@@ -1008,6 +1016,9 @@ fn with_relay(
     what: &str,
     f: impl Fn() -> Result<ArtStatus, String>,
 ) -> Result<ArtStatus, String> {
+    if h.snapshot().direct {
+        return f(); // the store is on the host-link half: no relay to come back (#834)
+    }
     if h.snapshot().status.is_some_and(|s| s.link == 2) {
         match f() {
             Err(e) if relay_down(&e) => {}
@@ -1691,6 +1702,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     triggers.disconnected();
                     h.update(|s| {
                         s.connected = false;
+                        s.direct = false;
                         s.status = None;
                         s.sent = None;
                         // Read again on the next connect; never taken for that keyboard's.
@@ -1709,7 +1721,17 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 current = Some((id, state.generation));
-                let caps = super::link::ask_hello(link).map_or(0, |hello| hello.capabilities);
+                let hello = super::link::ask_hello(link);
+                let caps = hello.map_or(0, |hello| hello.capabilities);
+                // The direct path only when the firmware says so (#834): D5 08's word 2, asked
+                // only of a keyboard with art push and HELLO v2.
+                let direct = hello.is_some_and(|hello| {
+                    caps & protocol::capabilities::ART_RELAY != 0
+                        && foxglove_link::hello_v2::capabilities::art_local(
+                            caps,
+                            foxglove_link::hello_v2::read(link.as_ref(), &hello).word2(),
+                        )
+                });
                 let wake_events = caps & protocol::capabilities::RGB_STATE_EVENT != 0;
                 // Taken on each connect: the keyboard drops them on a USB disconnect or an
                 // endpoint change, and keeps no keep-alive.
@@ -1719,6 +1741,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 h.update(|s| {
                     s.connected = true;
                     s.wake_events = wake_events;
+                    s.direct = direct;
                 });
                 connected_now = true;
                 // The playlist stages its next piece once the places are read (#522).

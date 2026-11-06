@@ -1,0 +1,85 @@
+artlocal: -- hello: the art bits, word 2's ART_LOCAL, the screens (art target on half 0, v2)
+artlocal: pc sends D5 01 01
+artlocal: HELLO art push 1, slots 1, store 1, status events 0
+artlocal: pc sends D5 08
+artlocal: CAPS words 1, word 2 0x00000001 (ART_LOCAL 1)
+artlocal: pc sends D5 06 00
+hostlink: rx D5 86 00 03 00 00 00 00 FF 90 00 A8 00 00 00 00 00 00 00 00 00 12 00 00 FF 01
+artlocal: pc sends D5 06 01
+hostlink: rx D5 86 00 03 01 01 01 00 00 90 00 38 00 00 00 70 00 00 00 11 00 12 00 01 FF 01
+artlocal: pc sends D5 06 02
+hostlink: rx D5 86 00 03 02 02 02 00 00 90 00 70 00 00 00 00 00 00 00 0C 00 00 80 00 FF 02 02
+artlocal: pc sends D5 06 03
+hostlink: rx D5 86 05 03 03
+artlocal: -- status: link 2 at once, no relay to wait for
+artlocal: pc sends D6 05
+artlocal: reply 85 idle error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: -- select built-in 1: done in the reply
+artlocal: pc sends D6 04 01
+art: play two, 1 frame(s), 0 fps
+artlocal: reply 84 done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 1 of 2, slots 2 used 0x00
+artlocal: -- push a 144x112 set: COMMIT's reply is final, the set plays
+artlocal: pc sends D6 01 14 00 C8 EF 8A 78
+artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set 1 of 2, slots 2 used 0x00
+artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
+artlocal: pc sends D6 03
+art: play pushed, 2 frame(s), 4 fps
+artlocal: reply 83 done error 0, 20/20, link 2; v10 store 2 received 20 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: -- push the Corne's 140x68: bad blob (error 7, store 4); the set on screen stays
+artlocal: pc sends D6 01 14 00 2C C6 54 7F
+artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
+artlocal: pc sends D6 03
+artlocal: reply 83 failed error 7, 0/20, link 2; v10 store 4 received 20 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: -- push with a wrong CRC: error 5, store 3
+artlocal: pc sends D6 01 14 00 C9 EF 8A 78
+artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
+artlocal: pc sends D6 03
+artlocal: reply 83 failed error 5, 0/20, link 2; v10 store 3 received 20 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: -- too big (65535 over 32768): error 2, store 5
+artlocal: pc sends D6 01 FF FF 00 00 00 00
+artlocal: reply 81 failed error 2, 0/65535, link 2; v10 store 5 received 0 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: -- data past the announced length: error 4
+artlocal: pc sends D6 01 04 00 00 00 00 00
+artlocal: reply 81 receiving error 0, 0/4, link 2; v10 store 1 received 0 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: pc sends D6 02 02 00 08 00 00 00 ...
+artlocal: reply 82 failed error 4, 0/4, link 2; v10 store 1 received 0 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: -- save the set on screen into slot 0: saving, then saved
+artlocal: pc sends D6 06 00 70 75 73 68 65 ...
+artlocal: reply 86 done error 0, 0/0, link 2; v10 store 6 received 0 of 32768, set -1 of 2, slots 2 used 0x00
+art: slot 0 written
+artlocal: pc sends D6 05
+artlocal: reply 85 done error 0, 0/0, link 2; v10 store 7 received 0 of 32768, set -1 of 2, slots 2 used 0x01
+artlocal: -- slot 0, then a slot the board doesn't have: D6 87 at once
+artlocal: pc sends D6 07 00
+hostlink: rx D6 87 00 00 01 01 00 00 00 14 00 70 75 73 68 65 64
+artlocal: pc sends D6 07 05
+hostlink: rx D6 87 04 05
+artlocal: -- play slot 0 (select set_count + 0)
+artlocal: pc sends D6 04 02
+art: play saved, 2 frame(s), 4 fps
+artlocal: reply 84 done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 2 of 2, slots 2 used 0x01
+artlocal: -- store a set into slot 1 without showing it: saving, then back to idle
+artlocal: pc sends D6 01 14 00 C8 EF 8A 78
+artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set 2 of 2, slots 2 used 0x01
+artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
+artlocal: pc sends D6 09 01 73 74 61 67 65 ...
+artlocal: reply 89 done error 0, 20/20, link 2; v10 store 6 received 20 of 32768, set 2 of 2, slots 2 used 0x01
+art: slot 1 written
+artlocal: pc sends D6 05
+artlocal: reply 85 done error 0, 20/20, link 2; v10 store 0 received 20 of 32768, set 2 of 2, slots 2 used 0x03
+artlocal: -- store into slot 0, on screen: refused (error 6)
+artlocal: pc sends D6 01 14 00 C8 EF 8A 78
+artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set 2 of 2, slots 2 used 0x03
+artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
+artlocal: pc sends D6 09 00 6E 6F 70 65 00 ...
+artlocal: reply 89 failed error 6, 0/20, link 2; v10 store 1 received 20 of 32768, set 2 of 2, slots 2 used 0x03
+artlocal: -- erase slot 0, on screen: back to a built-in, saving, then saved
+artlocal: pc sends D6 08 00
+art: play one, 1 frame(s), 0 fps
+artlocal: reply 88 done error 0, 0/0, link 2; v10 store 6 received 20 of 32768, set 0 of 2, slots 2 used 0x03
+art: slot 0 erased
+artlocal: pc sends D6 05
+artlocal: reply 85 done error 0, 0/0, link 2; v10 store 7 received 20 of 32768, set 0 of 2, slots 2 used 0x02
+artlocal: -- done

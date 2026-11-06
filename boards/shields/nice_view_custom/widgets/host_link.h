@@ -16,7 +16,9 @@
  *                                   (bytes 27-30; profile 0 dev, 1 GA),
  *                                   split links the #122 guard dropped since boot (byte 31;
  *                                   0 also when CONFIG_FOXGLOVE_SPLIT_GUARD is off)
- *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
+ *      Capabilities: bit 0 panel, 1 art push (D6; "art relay" before #834: the target is the
+ *                    SCREENS art target, relayed to the far half or, with word 2's bit 32, on this
+ *                    one), 2 settings/RGB, 3 unsolicited art STATUS,
  *                    4 settings CONN_STATE, 5 POSITION (only when test hooks are built),
  *                    6 screen snapshots (D7 06/07), 7 INVOKE refuses &bt/&out/&bootloader/
  *                    &sys_reset/&soft_off with status 6 (firmware without it may press them),
@@ -79,13 +81,23 @@
  *      effects, 30 art STORE, 31 KNOB). HELLO's version byte (reply byte 2) is 2 from this
  *      firmware on: 2 or more says D5 08 answers, so the PC asks it only then and firmware with
  *      version 1 is never asked (no timeout). The HELLO reply keeps its layout; only byte 2 changed (1 to 2).
- *      Bit n of word 2 is capability 32 + n; none is defined yet (HOST_LINK_CAPS2_*). A PC that
- *      reads fewer words than n ignores the rest; words past n read as 0.
+ *      Bit n of word 2 is capability 32 + n (HOST_LINK_CAPS2_*): 32 ART_LOCAL (#834, below). A PC
+ *      that reads fewer words than n ignores the rest; words past n read as 0.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
  * With CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0, the WPM chart also comes back after that many
  * seconds without a 0xD5 report.
  *
- * 0xD6 right-hand art (see art_relay.h for the blob), host -> keyboard:
+ * 0xD6 art pushes (see art_relay.h for the blob), host -> keyboard. The target is SCREENS' art
+ * target. On a split board (the Corne) it is on the far half: the left relays every op over the
+ * split link (art_relay_central.c), and the reply's "left" state runs PUSHING until the right has
+ * answered. With word 2's bit 32 ART_LOCAL (#834; a single-screen board, the target's half is the
+ * host link's) the ops go straight to the art store on this half (art_local.c, art_store.h): the
+ * same commands and replies, but link is always 2, every reply is final when it comes (DONE or
+ * FAILED, never PUSHING; SAVE/ERASE/STORE still show the store's SAVING until the flash write
+ * ends), D6 87 comes at once, no unsolicited D6 85 is sent, and error 6 means the store refused the
+ * op (busy saving, no such slot, nothing to save) where the relay's write would have failed. A PC
+ * without ART_LOCAL sees a relay that is always up. The set's NVA1 w and h must be the target's
+ * native size, else it ends in BAD_BLOB (right state 4, error 7).
  *   01 BEGIN   len u16, crc32 u32   start receiving an art blob on the left
  *   02 DATA    offset u16, n, n bytes (n <= 27)
  *   03 COMMIT                       check the CRC, then push the blob to the right half
@@ -420,8 +432,11 @@
 // HELLO's version byte. 2 (HELLO v2): D5 08 CAPS answers with the capability words past HELLO's.
 #define HOST_LINK_VERSION 2
 #define HOST_LINK_PANEL_CAPS 0x08
-// Capability words D5 88 carries (word 2 on). Word 2's bits: HOST_LINK_CAPS2_*, none yet.
+// Capability words D5 88 carries (word 2 on). Word 2's bits: HOST_LINK_CAPS2_*.
 #define HOST_LINK_CAPS_V2_WORDS 1
+// Capability 32 (#834): the art target is on this half and D6 goes straight to its art store
+// (art_local.c), no relay. The PC may skip waiting for a relay; its replies are final.
+#define HOST_LINK_CAPS2_ART_LOCAL (1U << 0)
 
 #define HOST_LINK_CAP_PANEL (1U << 0)
 #define HOST_LINK_CAP_ART_RELAY (1U << 1)

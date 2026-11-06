@@ -1,0 +1,9 @@
+# A local art target (module/art_local_sim.c, #834): HELLO's art bits and word 2's ART_LOCAL; the
+# art target on half 0 in SCREENS (v2: 32 KiB sets, 2 slots, fast); every D6 reply final (done or failed, link 2, never pushing);
+# a set of the target's size plays, the Corne's size is a bad blob and the screen keeps its set; CRC,
+# size and range errors; SAVE, SLOT (D6 87 at once), playing a slot, STORE without showing,
+# STORE onto the slot on screen refused, ERASE of the slot on screen back to a built-in.
+/^artlocal: /p
+/^art: /p
+/^hostlink: rx D5 86/p
+/^hostlink: rx D6 87/p

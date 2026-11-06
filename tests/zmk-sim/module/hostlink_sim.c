@@ -22,7 +22,8 @@
 ZMK_EVENT_IMPL(raw_hid_received_event);
 ZMK_EVENT_IMPL(raw_hid_sent_event);
 
-bool zmk_display_is_initialized(void) { return false; }
+// The local art case (#834) plays its sets on the display queue (the system queue here).
+bool zmk_display_is_initialized(void) { return IS_ENABLED(CONFIG_FOXGLOVE_SIM_ART_LOCAL); }
 struct k_work_q *zmk_display_work_q(void) { return &k_sys_work_q; }
 
 /* Replies: printed, and the last one kept for the driver */
@@ -133,8 +134,13 @@ void polarity_sim_driver(void);
 void health_sim_driver(void);
 void colour_swirl_sim_driver(void);
 void knob_sim_driver(void);
+void art_local_sim_driver(void);
 
 static void driver(void) {
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_ART_LOCAL)) {
+        art_local_sim_driver(); // the art-local case plays the app on a single-screen board
+        return;
+    }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_KNOB)) {
         knob_sim_driver(); // the knob case plays the app and the encoder
         return;

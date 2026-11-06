@@ -13,6 +13,9 @@ pub const SETTINGS: u8 = 0xD7;
 /// HELLO capabilities, independent of the protocol version and current split connection.
 pub mod capabilities {
     pub const PANEL: u32 = 1 << 0;
+    /// Art push (D6) to the SCREENS art target: relayed to the far half of a split board, or, with
+    /// HELLO v2's [`crate::hello_v2::capabilities::ART_LOCAL`], straight to the store on the
+    /// host-link half (#834). Named for the relay it was first.
     pub const ART_RELAY: u32 = 1 << 1;
     pub const SETTINGS_RGB: u32 = 1 << 2;
     pub const ART_STATUS_EVENT: u32 = 1 << 3;
@@ -2720,6 +2723,41 @@ mod slot_tests {
         );
         r[2] = 4;
         assert_eq!(SlotInfo::parse(&r), Err(4));
+    }
+
+    /// A local art store's replies (#834; tests/zmk-sim/art-local): the relay's layout, link 2
+    /// always, COMMIT's reply already done, and a set of the wrong size refused as a bad blob.
+    #[test]
+    fn local_store_replies_parse_as_the_relays() {
+        let mut r = [0u8; REPORT];
+        // COMMIT: done, 20/20, link 2; v10, playing, 20 of 32768, set -1 of 2, 2 slots.
+        r[..26].copy_from_slice(&[
+            0xD6, 0x83, 3, 0, 20, 0, 20, 0, 2, 10, 2, 20, 0, 0x00, 0x80, 0xFF, 2, 0, 0, 0, 0, 0, 0,
+            0, 2, 0,
+        ]);
+        let s = ArtStatus::parse(&r);
+        assert_eq!(
+            (s.state, s.error, s.link, s.pushed, s.length),
+            (left_state::DONE, 0, 2, 20, 20)
+        );
+        assert_eq!(
+            (s.right_state, s.right_capacity, s.right_set, s.flash_slots),
+            (right_state::PLAYING, 32768, -1, 2)
+        );
+        // The Corne's 140x68 on a 144x112 target: failed, right rejected it, a bad blob.
+        r[2..4].copy_from_slice(&[left_state::FAILED, relay_error::RIGHT]);
+        r[6] = 0;
+        r[10] = right_state::BAD_BLOB;
+        let s = ArtStatus::parse(&r);
+        assert_eq!(
+            (s.state, s.error, s.right_state, s.pushed),
+            (
+                left_state::FAILED,
+                relay_error::RIGHT,
+                right_state::BAD_BLOB,
+                0
+            )
+        );
     }
 
     #[test]
