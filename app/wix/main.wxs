@@ -82,7 +82,9 @@
     </Feature>
 
     <!-- Uninstall (not a major upgrade, where the new version keeps the value): remove the
-         app's Run value if it starts this exe. As the user, before the exe is removed. -->
+         app's Startup shortcut and old Run value, and the Start menu shortcut (#856: the app
+         also makes it when started outside the MSI), each only if it starts this exe. As the
+         user, before the exe is removed. -->
     <CustomAction Id="RemoveAutostart" FileKey="FoxgloveExe" ExeCommand="--uninstall-cleanup"
                   Execute="deferred" Impersonate="yes" Return="ignore" />
 <?ifdef SparseIdentity?>
