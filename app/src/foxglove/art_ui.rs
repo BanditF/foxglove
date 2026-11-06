@@ -388,6 +388,9 @@ fn act(art: &Art, acts: Vec<Act>) {
                 if let Err(e) = art_service::set_animate_epaper(on) {
                     eprintln!("Foxglove: {e}");
                 }
+                // A keyboard that paces its own art (#842) plays its built-in and kept pieces
+                // at the new choice too.
+                h.tell_animate(on);
                 // A piece sent from this PC goes again at the new pace; kept ones stay as kept.
                 let sent = art.s.status.map(|st| art_words::showing(&st)) == Some(Showing::Sent);
                 if let Some(file) = art.s.showing_file().filter(|_| sent) {
