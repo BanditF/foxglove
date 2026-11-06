@@ -27,6 +27,12 @@ updates run without elevation. Another Windows user installs their own copy. It 
 `app/resources/icon.ico`, which `app/build.rs` also embeds in the exe. No firmware or art is
 bundled.
 
+The app keeps that Start menu entry too (#856): at startup it makes `Foxglove.lnk` in the user's
+Start menu Programs folder when it's missing, or repairs it when the file it starts is gone, so
+a copy run outside the MSI can be found in Start as well. One starting another exe that exists
+is left alone; dev builds and test runs never write it. `--uninstall-cleanup` removes it when it
+starts this exe.
+
 **Start with Windows** belongs to the app alone. The switch is in **App -> Startup and
 updates -> Start with Windows** and is on by default.
 - It writes and removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Foxglove`, the

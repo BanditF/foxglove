@@ -416,6 +416,74 @@ fn the_log_line_says_what_and_why() {
     assert!(line(Startup::Off).starts_with("Foxglove: Start with Windows: off"));
 }
 
+/// #856: the Start menu shortcut is made when missing, repaired when its file is gone, left alone
+/// when it starts another exe that exists, never written by a dev build, and removed on uninstall
+/// only when it starts this exe.
+#[test]
+fn the_start_menu_shortcut_is_made_repaired_and_removed() {
+    let me = Path::new(ME_FILE);
+    let exists = |f: &Path| f == me || f == Path::new(OTHER_FILE);
+    let menu = FakeEntry::default();
+    let run = |dev| reconcile_start_menu(me, dev, &menu, &exists).unwrap();
+    assert_eq!(run(Some("a dev build")), StartMenu::Skipped("a dev build"));
+    assert_eq!(menu.target().unwrap(), None, "a dev build writes nothing");
+    assert_eq!(run(None), StartMenu::Written);
+    assert_eq!(menu.target().unwrap().as_deref(), Some(me));
+    assert_eq!(run(None), StartMenu::Unchanged);
+    assert_eq!(*menu.1.borrow(), 1, "one write");
+    // Removed by someone: made again at the next start.
+    menu.remove().unwrap();
+    assert_eq!(run(None), StartMenu::Written);
+    // A file that's gone: repaired.
+    menu.create(Path::new(GONE_FILE)).unwrap();
+    assert_eq!(run(None), StartMenu::Replaced(GONE_FILE.into()));
+    assert_eq!(menu.target().unwrap().as_deref(), Some(me));
+    // A second install that exists: left alone, and uninstall leaves it.
+    menu.create(Path::new(OTHER_FILE)).unwrap();
+    assert_eq!(run(None), StartMenu::KeptOther(OTHER_FILE.into()));
+    assert!(!cleanup_start_menu(me, &menu).unwrap());
+    assert_eq!(
+        menu.target().unwrap().as_deref(),
+        Some(Path::new(OTHER_FILE))
+    );
+    // This exe's: uninstall removes it.
+    menu.create(me).unwrap();
+    assert!(cleanup_start_menu(me, &menu).unwrap());
+    assert_eq!(menu.target().unwrap(), None);
+    let line = |r: StartMenu| describe_start_menu(&Ok(r), me);
+    assert!(line(StartMenu::Written).starts_with("Foxglove: Start menu: made"));
+    assert!(line(StartMenu::Skipped("a dev build")).contains("not written"));
+}
+
+/// #856: in a test build the Startup and Start menu folders resolve inside the store's test
+/// sandbox, so a test never sees the user's real Start menu; the real shortcut code round-trips
+/// there, and a shortcut write outside the sandbox panics.
+#[cfg(windows)]
+#[test]
+fn the_start_menu_resolves_inside_the_test_sandbox() {
+    use super::windows_places::{start_menu, start_menu_dir, startup_dir, Shortcut};
+    let sandbox = crate::foxglove::store::test_config_dir();
+    for dir in [start_menu_dir().unwrap(), startup_dir().unwrap()] {
+        assert!(dir.starts_with(sandbox), "{}", dir.display());
+    }
+    let menu = start_menu().unwrap();
+    let exe = std::env::current_exe().unwrap();
+    assert_eq!(
+        reconcile_start_menu(&exe, None, &menu, &|f| f.is_file()).unwrap(),
+        StartMenu::Written
+    );
+    assert!(start_menu_dir().unwrap().join(SHORTCUT).is_file());
+    assert!(same_path(&menu.target().unwrap().unwrap(), &exe));
+    assert!(cleanup_start_menu(&exe, &menu).unwrap());
+    assert!(!start_menu_dir().unwrap().join(SHORTCUT).exists());
+    let outside = Shortcut {
+        dir: std::env::temp_dir().join("foxglove-not-the-sandbox"),
+    };
+    let wrote = std::panic::catch_unwind(|| outside.create(&exe));
+    assert!(wrote.is_err(), "a write outside the sandbox panics");
+    assert!(!outside.dir.exists());
+}
+
 /// The real shortcut and registry code, on a temp folder and a test key
 /// (`HKCU\Software\FoxgloveTest\autostart-<pid>`): never the user's Startup folder, Run key or
 /// StartupApproved values.
@@ -425,7 +493,7 @@ fn the_windows_places_round_trip_on_a_test_root() {
     use super::windows_places::Owned;
     let pid = std::process::id();
     let base = format!(r"Software\FoxgloveTest\autostart-{pid}");
-    let dir = std::env::temp_dir().join(format!("foxglove-autostart-test-{pid}"));
+    let dir = crate::foxglove::store::test_config_dir().join(format!("autostart-test-{pid}"));
     let owned = Owned::at(dir.clone(), &base);
     assert!(
         owned.approved.key.starts_with(r"Software\FoxgloveTest\"),

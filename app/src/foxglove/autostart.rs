@@ -22,6 +22,14 @@
 //! - Dev builds (debug, or an exe in a cargo `target` dir or under `worktrees`) never write at
 //!   startup: those files get cleaned, and an entry naming a deleted lab build starts nothing.
 //! - Test isolation runs (`FOXGLOVE_CONFIG_DIR` set) never touch the user's entry or registry.
+//!
+//! The Start menu entry (#856): a per-user shortcut `Foxglove.lnk` in the user's Start menu
+//! Programs folder, so Foxglove can be found and started again by hand. The MSI installs the same
+//! file; a copy started outside the MSI (a portable folder) makes it at startup. Startup makes it
+//! when it's missing and repairs it when the file it starts no longer exists; one starting another
+//! exe that exists (a second install) is left alone. Dev builds and test runs never write it.
+//! Uninstall removes it only when it starts this exe. In test builds both folders resolve inside
+//! the store's test sandbox (`store::test_sandbox`), and a shortcut write outside it panics.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -309,6 +317,73 @@ pub fn apply(on: bool, exe: &Path, p: &Places) -> std::io::Result<()> {
     p.approved.set(on)
 }
 
+/// What startup did with the Start menu shortcut (#856).
+#[derive(Debug, PartialEq, Eq)]
+pub enum StartMenu {
+    /// It already starts this exe.
+    Unchanged,
+    /// There was none: it now starts this exe.
+    Written,
+    /// It started a file that no longer exists (shown); it now starts this exe.
+    Replaced(String),
+    /// It starts another exe that exists (shown): left alone.
+    KeptOther(String),
+    /// It is missing or stale, but this is a dev build (why).
+    Skipped(&'static str),
+}
+
+/// At startup: makes the Start menu shortcut when it is missing, repairs it when the file it
+/// starts is gone, and leaves one starting another existing exe alone. `dev` from [`dev_build`].
+pub fn reconcile_start_menu(
+    exe: &Path,
+    dev: Option<&'static str>,
+    entry: &dyn Entry,
+    exists: &dyn Fn(&Path) -> bool,
+) -> std::io::Result<StartMenu> {
+    let old = match entry.target()? {
+        Some(t) if same_path(&t, exe) => return Ok(StartMenu::Unchanged),
+        Some(t) if exists(&t) => return Ok(StartMenu::KeptOther(t.display().to_string())),
+        old => old,
+    };
+    if let Some(why) = dev {
+        return Ok(StartMenu::Skipped(why));
+    }
+    entry.create(exe)?;
+    Ok(match old {
+        Some(t) => StartMenu::Replaced(t.display().to_string()),
+        None => StartMenu::Written,
+    })
+}
+
+/// The one log line for what startup did with the Start menu shortcut.
+pub fn describe_start_menu(result: &std::io::Result<StartMenu>, exe: &Path) -> String {
+    let me = exe.display();
+    let what = match result {
+        Ok(StartMenu::Unchanged) => format!("the shortcut starts {me}; nothing to do"),
+        Ok(StartMenu::Written) => format!("made the shortcut; it starts {me}"),
+        Ok(StartMenu::Replaced(old)) => {
+            format!("the shortcut started {old}, which no longer exists; it now starts {me}")
+        }
+        Ok(StartMenu::KeptOther(other)) => {
+            format!("the shortcut starts {other}, which exists; left alone")
+        }
+        Ok(StartMenu::Skipped(why)) => {
+            format!("the shortcut is missing or stale, but this is {why}; not written")
+        }
+        Err(e) => format!("couldn't read or write the shortcut: {e}"),
+    };
+    format!("Foxglove: Start menu: {what}")
+}
+
+/// Uninstall: removes the Start menu shortcut when it starts this exe. True when it was removed.
+pub fn cleanup_start_menu(exe: &Path, entry: &dyn Entry) -> std::io::Result<bool> {
+    if entry.target()?.is_some_and(|t| same_path(&t, exe)) {
+        entry.remove()?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Uninstall: removes the shortcut and the old Run value where they start this exe. True when
 /// something was removed.
 pub fn cleanup(exe: &Path, p: &Places) -> std::io::Result<bool> {
@@ -423,6 +498,21 @@ mod windows_places {
         fn path(&self) -> PathBuf {
             self.dir.join(super::SHORTCUT)
         }
+
+        /// Test builds: panics on a shortcut write outside the store's test sandbox (#828's
+        /// guard, extended to the Startup and Start menu folders, #856). Nothing in the app.
+        #[inline]
+        fn assert_sandboxed(&self) {
+            if let Some(dir) = crate::foxglove::store::test_sandbox() {
+                assert!(
+                    self.dir.starts_with(dir),
+                    "a test wrote a shortcut in {}, outside the test settings folder {}; build \
+                     test paths under store::test_config_dir()",
+                    self.dir.display(),
+                    dir.display()
+                );
+            }
+        }
     }
 
     /// COM on this thread for one call: initialised here if it wasn't (the UI thread's is).
@@ -473,6 +563,7 @@ mod windows_places {
                 CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER,
             };
             use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+            self.assert_sandboxed();
             std::fs::create_dir_all(&self.dir)?;
             let lnk = self.path();
             with_com(|| {
@@ -492,6 +583,7 @@ mod windows_places {
         }
 
         fn remove(&self) -> std::io::Result<()> {
+            self.assert_sandboxed();
             match std::fs::remove_file(self.path()) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
                 _ => Ok(()),
@@ -499,18 +591,45 @@ mod windows_places {
         }
     }
 
-    /// The user's Startup folder (FOLDERID_Startup).
-    pub fn startup_dir() -> std::io::Result<PathBuf> {
+    /// A known folder's path; in test builds `sandboxed` inside the store's test sandbox, so a
+    /// test never resolves the user's real Startup or Start menu folder.
+    fn known_folder(id: &windows::core::GUID, sandboxed: &str) -> std::io::Result<PathBuf> {
         use windows::Win32::System::Com::CoTaskMemFree;
-        use windows::Win32::UI::Shell::{FOLDERID_Startup, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+        use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+        if let Some(dir) = crate::foxglove::store::test_sandbox() {
+            return Ok(dir.join(sandboxed));
+        }
         // SAFETY: the returned string is copied, then freed with CoTaskMemFree as documented.
         unsafe {
-            let p = SHGetKnownFolderPath(&FOLDERID_Startup, KF_FLAG_DEFAULT, None)
+            let p = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None)
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             let dir = PathBuf::from(p.to_string().unwrap_or_default());
             CoTaskMemFree(Some(p.0 as *const _));
             Ok(dir)
         }
+    }
+
+    /// The user's Startup folder (FOLDERID_Startup).
+    pub fn startup_dir() -> std::io::Result<PathBuf> {
+        known_folder(
+            &windows::Win32::UI::Shell::FOLDERID_Startup,
+            r"shell\Startup",
+        )
+    }
+
+    /// The user's Start menu Programs folder (FOLDERID_Programs), where the MSI puts its entry.
+    pub fn start_menu_dir() -> std::io::Result<PathBuf> {
+        known_folder(
+            &windows::Win32::UI::Shell::FOLDERID_Programs,
+            r"shell\Start Menu\Programs",
+        )
+    }
+
+    /// The user's Start menu shortcut.
+    pub fn start_menu() -> std::io::Result<Shortcut> {
+        Ok(Shortcut {
+            dir: start_menu_dir()?,
+        })
     }
 
     /// The real places, or a test root's: `root` names a folder for the shortcut and an `HKCU`
@@ -585,6 +704,12 @@ pub fn uninstall_entry() -> bool {
             eprintln!("Foxglove: uninstall: Start with Windows: {e}");
         }
     }
+    #[cfg(windows)]
+    if let (Ok(exe), Ok(menu)) = (std::env::current_exe(), windows_places::start_menu()) {
+        if let Err(e) = cleanup_start_menu(&exe, &menu) {
+            eprintln!("Foxglove: uninstall: Start menu: {e}");
+        }
+    }
     true
 }
 
@@ -643,9 +768,15 @@ pub fn start() {
         if isolated() {
             eprintln!(
                 "Foxglove: Start with Windows: a test run (FOXGLOVE_CONFIG_DIR set); the startup \
-                 entry is not touched"
+                 entry and the Start menu shortcut are not touched"
             );
             return;
+        }
+        // The Start menu entry (#856), whatever the switch says.
+        if let (Ok(exe), Ok(menu)) = (std::env::current_exe(), windows_places::start_menu()) {
+            let dev = dev_build(&exe, cfg!(debug_assertions));
+            let result = reconcile_start_menu(&exe, dev, &menu, &|p| p.is_file());
+            eprintln!("{}", describe_start_menu(&result, &exe));
         }
         let (Ok(exe), Ok(owned)) = (std::env::current_exe(), windows_places::Owned::user()) else {
             return;
