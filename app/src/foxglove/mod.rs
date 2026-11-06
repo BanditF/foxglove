@@ -45,6 +45,8 @@ pub mod focus;
 // Foxglove (#801): the overlay and the wallpaper feed follow the focus, or a pin.
 pub mod focus_pins;
 pub mod focus_ui;
+// Foxglove (#802): "Follow the keyboard I type on", Raw Input device handles only.
+pub mod follow_typing;
 pub mod foreground;
 pub mod gpu_reset;
 pub mod health;

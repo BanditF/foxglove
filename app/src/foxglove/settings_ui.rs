@@ -143,6 +143,7 @@ fn style(title: &str) -> Style {
         | "Profile"
         | "Appearance"
         | "Startup and updates"
+        | "Keyboard shown"
         | "Live wallpaper"
         | "Troubleshooting"
         | "Keyboard health"

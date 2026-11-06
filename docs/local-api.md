@@ -117,7 +117,9 @@ The params and results are in the schema. Notes:
   before any keyboard was found), each keyboard's `{key, name, source, connected, read_only,
   device}` (a gone one stays listed with `connected` false until the app restarts), the overlay's
   and the wallpaper feed's pinned keys (null follows the focus), and "follow the keyboard I type
-  on" (off by default). `focus.set {keyboard}` picks the focus, remembered in the settings;
+  on" (off by default; App › Keyboard shown, #802: with it on, a few keys on another known
+  keyboard move the focus there, at most once a second, and Foxglove reads only which keyboard
+  typed, never the key). `focus.set {keyboard}` picks the focus, remembered in the settings;
   `focus.set {keyboard, view}` with `view` `overlay` or `feed` pins that view instead (`keyboard`
   null: follow the focus again). An unknown key is error -32602. Both answer with `focus.get`'s
   result. Every change also sets the `focus.*` facts (`focus.keyboard`, `focus.name`,

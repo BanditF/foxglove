@@ -569,6 +569,7 @@ fn sections(ui: &mut egui::Ui) {
     keypeek_groups(ui);
     crate::foxglove::profiles_ui::picker(ui);
     crate::foxglove::update::group(ui);
+    crate::foxglove::follow_typing::group(ui);
     crate::foxglove::live_feed::group(ui);
     crate::foxglove::troubleshooting::group(ui);
     foxglove_groups(ui);
@@ -1475,6 +1476,34 @@ fn settings_page_renders() {
     );
     // The theme picker's selected pill sits in "Appearance".
     assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
+}
+
+/// "Follow the keyboard I type on" (#802) on the App page, off and on, dark and light, each with
+/// its ⓘ open.
+#[test]
+fn follow_typing_card_renders() {
+    use crate::foxglove::follow_typing::hover;
+    use crate::foxglove::keyboard_focus as kf;
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::{self, Choice};
+    crate::foxglove::store::test_config_dir();
+    kf::TEST_SECTION.set(Some("focus-follow-typing-preview"));
+    let mut shots = Vec::new();
+    for (choice, name) in [(Choice::Dark, "dark"), (Choice::Light, "light")] {
+        for on in [false, true] {
+            kf::set_follow_typing(on);
+            theme::PREVIEW_PINNED.set(Some(hover(on)));
+            let img = shell_preview_in(Page::Settings, &Samples::full(), 1000.0, choice);
+            theme::PREVIEW_PINNED.set(None);
+            let state = if on { "on" } else { "off" };
+            keep(&format!("ui-802-follow-typing-{state}-{name}.png"), &img);
+            shots.push(img);
+        }
+    }
+    kf::set_follow_typing(false);
+    kf::TEST_SECTION.set(None);
+    assert_ne!(shots[0], shots[1], "the switch shows its state");
+    assert_ne!(shots[0], shots[2], "dark and light");
 }
 
 /// The Settings window as a native window of its own shows it: the shell edge to edge in the
