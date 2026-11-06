@@ -40,7 +40,7 @@ def user_pc_lighting():
 
 def log_lines(cfg, piece):
     log = cfg / 'logs' / 'foxglove.log'
-    return [l for l in log.read_text(encoding='utf-8', errors='replace').splitlines() if piece in l] if log.exists() else []
+    return [l for l in log.read_text(encoding='utf-8-sig', errors='replace').splitlines() if piece in l] if log.exists() else []
 
 
 def audio(*a):

@@ -435,7 +435,8 @@ def gold(args, check):
 
 def read_lines(path):
     try:
-        return Path(path).read_text(encoding='utf-8', errors='replace').splitlines()
+        # utf-8-sig: foxglove.log starts with the UTF-8 BOM (#857).
+        return Path(path).read_text(encoding='utf-8-sig', errors='replace').splitlines()
     except OSError:
         return []
 

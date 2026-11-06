@@ -214,7 +214,7 @@ def main():
     check = Checks()
     if args.history:
         log = REAL_CONFIG.parent / 'logs' / 'foxglove.log'
-        lines = log.read_text(encoding='utf-8', errors='replace').splitlines() if log.exists() else []
+        lines = log.read_text(encoding='utf-8-sig', errors='replace').splitlines() if log.exists() else []
         pairs = history(lines)
         for away, back in pairs[-5:]:
             print(f'  real display edge: away {away}, back {back}', flush=True)

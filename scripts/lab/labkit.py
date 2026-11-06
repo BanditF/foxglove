@@ -243,7 +243,7 @@ def require_app_ok():
 def log_lines(cfg, piece):
     """The lines of the test app's foxglove.log (in its temp config) containing `piece`."""
     log = Path(cfg) / 'logs' / 'foxglove.log'
-    return [l for l in log.read_text(encoding='utf-8', errors='replace').splitlines() if piece in l] if log.exists() else []
+    return [l for l in log.read_text(encoding='utf-8-sig', errors='replace').splitlines() if piece in l] if log.exists() else []
 
 
 class Windows:

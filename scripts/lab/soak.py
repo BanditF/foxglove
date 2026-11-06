@@ -130,7 +130,7 @@ with App(args.app, cfg) as app:
 
         check('end: the app still runs', app.proc.poll() is None, f'exit {app.proc.poll()}')
         log = cfg / 'logs' / 'foxglove.log'
-        lines = log.read_text(encoding='utf-8', errors='replace').splitlines() if log.exists() else []
+        lines = log.read_text(encoding='utf-8-sig', errors='replace').splitlines() if log.exists() else []
         allowed = [re.compile(a) for a in args.allow]
         errors = [l for l in lines if ERROR.search(l) and not any(a.search(l) for a in allowed)]
         (out / 'error-lines.txt').write_text('\n'.join(errors), encoding='utf-8')
