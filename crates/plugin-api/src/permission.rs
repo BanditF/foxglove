@@ -30,6 +30,8 @@ pub enum Permission {
     HidRaw,
     /// Switch Foxglove's profile (API 1.1).
     ProfilesWrite,
+    /// Choose which keyboard Foxglove shows, and pin the overlay's or feed's (API 1.12, #799).
+    FocusWrite,
     /// Any network, unrestricted: the plugin runs outside the sandbox, so the user is warned.
     /// Prefer the scoped forms below.
     Net,
@@ -80,6 +82,7 @@ impl Permission {
             Permission::KeyEvents => "see every key you press".into(),
             Permission::HidRaw => "send raw messages to your keyboard".into(),
             Permission::ProfilesWrite => "switch your Foxglove profile".into(),
+            Permission::FocusWrite => "choose which keyboard Foxglove shows".into(),
             Permission::Net => "use any network, without the sandbox".into(),
             Permission::NetConnect { host, port } => match port {
                 Some(port) => format!("connect to {host} port {port}"),
@@ -189,6 +192,7 @@ impl TryFrom<String> for Permission {
                 "key.events" => Permission::KeyEvents,
                 "hid.raw" => Permission::HidRaw,
                 "profiles.write" => Permission::ProfilesWrite,
+                "focus.write" => Permission::FocusWrite,
                 "net" => Permission::Net,
                 "files" => Permission::Files,
                 "audio.inputs.read" => Permission::AudioInputsRead,
@@ -214,6 +218,7 @@ impl From<Permission> for String {
             Permission::KeyEvents => "key.events".into(),
             Permission::HidRaw => "hid.raw".into(),
             Permission::ProfilesWrite => "profiles.write".into(),
+            Permission::FocusWrite => "focus.write".into(),
             Permission::Net => "net".into(),
             Permission::NetConnect { host, port } => {
                 format!(

@@ -52,6 +52,8 @@ pub mod keyboard_actions;
 #[cfg(test)]
 mod keyboard_direction_vectors;
 pub mod keyboard_facts;
+// Foxglove (#799): the one focused keyboard the app shows.
+pub mod keyboard_focus;
 pub mod keyboard_page;
 pub mod keyboard_settings;
 #[cfg(test)]

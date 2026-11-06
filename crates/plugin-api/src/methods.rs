@@ -286,6 +286,58 @@ pub struct Profiles {
     pub active: Option<String>,
 }
 
+/// One keyboard the focus knows (API 1.12, #799): every keyboard Foxglove found this run, a gone
+/// one greyed (`connected` false) until the app restarts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FocusKeyboard {
+    /// Stable across replugs; what `focus.set` takes.
+    pub key: String,
+    pub name: String,
+    /// `host_link` (Foxglove's own link), `via` (read-only) or `lamp_array` (lights only).
+    pub source: String,
+    pub connected: bool,
+    /// Foxglove can't change its keymap or firmware.
+    pub read_only: bool,
+    /// Its id in `devices.list`, when the device layer has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+}
+
+/// The views that may pin their own keyboard (API 1.12): `null` follows the focus.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FocusPins {
+    pub overlay: Option<String>,
+    pub feed: Option<String>,
+}
+
+/// The keyboard Foxglove shows (API 1.12, #799): the focus's key (`null` before any keyboard was
+/// found), every keyboard it can be, the pins, and "follow the keyboard I type on".
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Focus {
+    pub keyboard: Option<String>,
+    pub keyboards: Vec<FocusKeyboard>,
+    pub pins: FocusPins,
+    pub follow_typing: bool,
+}
+
+/// A view that may pin a keyboard (API 1.12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusView {
+    Overlay,
+    Feed,
+}
+
+/// Picks the focused keyboard by its key (API 1.12). With `view`, pins that view to `keyboard`
+/// instead, or (`keyboard` null) lets it follow the focus again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SetFocusParams {
+    #[serde(default)]
+    pub keyboard: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<FocusView>,
+}
+
 /// Switches profile; `name` null = the base settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ActivateProfileParams {
@@ -810,6 +862,21 @@ pub const METHODS: &[Method] = &[
         permission: Some("profiles.write"),
         params: schema!(ActivateProfileParams),
         result: Some(schema!(Profiles)),
+    },
+    // The focused keyboard (#799, API 1.12).
+    Method {
+        name: "focus.get",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(Focus)),
+    },
+    Method {
+        name: "focus.set",
+        kind: Kind::Call,
+        permission: Some("focus.write"),
+        params: schema!(SetFocusParams),
+        result: Some(schema!(Focus)),
     },
     Method {
         name: "key.event",

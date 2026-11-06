@@ -284,24 +284,35 @@ pub fn start() {
                     }));
                 }
                 Msg::Connected => {
-                    let _ = device();
+                    // The focus learns of it on the same event (#799).
+                    let d = device();
+                    if let Some(d) = d {
+                        super::keyboard_focus::host_link(Some(d.as_ref()));
+                    }
                 }
-                Msg::Lost(link) => lost(&link),
+                Msg::Lost(link) => {
+                    if lost(&link) {
+                        super::keyboard_focus::host_link(None);
+                    }
+                }
             }
         }
     });
 }
 
 /// `link` dropped: if it's the device's, the device keeps no ids until its next connection is
-/// checked (#633). The learned cache stays for a connection on the same build.
-fn lost(link: &std::sync::Weak<foxglove_link::link::Link>) {
+/// checked (#633). The learned cache stays for a connection on the same build. Whether it was
+/// the device's.
+fn lost(link: &std::sync::Weak<foxglove_link::link::Link>) -> bool {
     let cached = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(d) = cached
         .as_ref()
         .filter(|d| std::ptr::eq(link.as_ptr(), Arc::as_ptr(d.link())))
     {
         forget_ids(d);
+        return true;
     }
+    false
 }
 
 /// `d` invokes nothing until it is checked again.

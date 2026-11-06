@@ -54,6 +54,7 @@ same messages.
 | `overlay.window` / `overlay.restore` | call | `devices.read` / `app.windows` (API 1.6) |
 | `lights.page` | call | `devices.read` (API 1.7) |
 | `scenes.page` | call | `devices.read` (API 1.10) |
+| `focus.get` / `focus.set` | call | `devices.read` / `focus.write` (API 1.12) |
 
 The params and results are in the schema. Notes:
 
@@ -109,6 +110,19 @@ The params and results are in the schema. Notes:
   `level` `ok`, `warn` or `fail` and the reason in plain words, the keyboard's first, then the
   rows Foxglove's own features add. It needs `devices.read`. `foxglove-lab health` uses it while
   the app holds the keyboard.
+- **The focused keyboard (#799, API 1.12):** Foxglove shows one keyboard at a time, the
+  focus, picked from every keyboard it found this run: the host-link keyboard (`host_link`),
+  VIA/Vial keyboards (`via`, read-only) and Dynamic Lighting keyboards (`lamp_array`, lights
+  only). `focus.get` answers `{keyboard, keyboards, pins, follow_typing}`: the focus's key (null
+  before any keyboard was found), each keyboard's `{key, name, source, connected, read_only,
+  device}` (a gone one stays listed with `connected` false until the app restarts), the overlay's
+  and the wallpaper feed's pinned keys (null follows the focus), and "follow the keyboard I type
+  on" (off by default). `focus.set {keyboard}` picks the focus, remembered in the settings;
+  `focus.set {keyboard, view}` with `view` `overlay` or `feed` pins that view instead (`keyboard`
+  null: follow the focus again). An unknown key is error -32602. Both answer with `focus.get`'s
+  result. Every change also sets the `focus.*` facts (`focus.keyboard`, `focus.name`,
+  `focus.source`, `focus.connected`, `focus.keyboards`, `focus.connected_keyboards`,
+  `focus.overlay`, `focus.feed`), so `facts.subscribe` with `focus.*` hears it.
 - **What the Lights page shows (#674, API 1.7), for agents:** `lights.page {device}` reads the
   keyboard's lights (RGB_STATE) and answers with what the Lights page's Keyboard card shows, from
   the same view-model the page draws: the effect the keyboard reports (`effect`), the caption

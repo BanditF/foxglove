@@ -295,6 +295,7 @@ pub fn rescan() {
             STATUS.lock().unwrap_or_else(|e| e.into_inner()).clear();
             drop(guard);
             hand_layouts(Vec::new());
+            super::keyboard_focus::report(super::keyboard_focus::Source::Via, Vec::new());
             return;
         }
         let (defs, errors) = definitions(&s);
@@ -336,6 +337,8 @@ pub fn rescan() {
             .collect();
         let (planned, learned) = plan(&present, &s);
         let mut layouts = Vec::new();
+        // The keyboards it opened, for the focus (#799): read-only, but they can be focused.
+        let mut seen = Vec::new();
         for (entry, p) in report.devices.iter().zip(planned) {
             let maybe = p.maybe.map(|k| (p.own, k));
             let key = p.key;
@@ -369,6 +372,15 @@ pub fn rescan() {
                     summary
                 })
                 .map_err(|e| super::devices::describe(&e));
+            if opened.is_ok() {
+                seen.push(super::keyboard_focus::Seen {
+                    key: key.clone(),
+                    name: entry.info.name.clone(),
+                    vid: entry.info.id.vid,
+                    pid: entry.info.id.pid,
+                    device: Some(entry.info.id.to_string()),
+                });
+            }
             if let Ok(Summary {
                 source: Source::Missing { why: Some(why) },
                 ..
@@ -400,6 +412,7 @@ pub fn rescan() {
         // which may look at the open boards.
         drop(guard);
         hand_layouts(layouts);
+        super::keyboard_focus::report(super::keyboard_focus::Source::Via, seen);
     });
 }
 

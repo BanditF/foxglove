@@ -495,6 +495,29 @@ pub fn of(board: Option<&Board>) -> KeyLayout {
     resolve(board, &supplied, super::boards::keymap_key_count())
 }
 
+/// Keyboard (vid, pid)'s layout, for any keyboard the focus knows (#799): what its sources handed
+/// over for it, else `board`'s profile, else a guess. Only the connected host-link keyboard's
+/// keymap key count is known, so another keyboard without either gets the default grid, never
+/// the host keyboard's count. Asks the keyboard nothing.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn of_keyboard(vid: u16, pid: u16, board: Option<&Board>) -> KeyLayout {
+    let (supplied, connected) = with_store(|s| {
+        let supplied: Vec<Supplied> = s
+            .supplied
+            .iter()
+            .filter(|(id, _)| *id == (vid, pid))
+            .map(|(_, l)| l.clone())
+            .collect();
+        (supplied, s.keyboard == Some((vid, pid)))
+    });
+    let keys = if connected {
+        super::boards::keymap_key_count()
+    } else {
+        0
+    };
+    resolve(board, &supplied, keys)
+}
+
 /// The source chip: A1's flat status chip (#793: no outline, a muted fill), its dot green for
 /// the keyboard or a definition, none for the profile, amber for a guess; its hover the layout's
 /// name and where it came from.
