@@ -734,9 +734,23 @@ struct ArtSettings {
 
 /// Whether the user lets art play on an e-paper art screen (#833, "may ghost"); off by default,
 /// when art there shows its first frame only. No effect on a fast screen. The store's
-/// `[art] animate_epaper`; its switch on the Screens page follows #831.
+/// `[art] animate_epaper`, set by the Screens page's "Animate on e-paper" switch.
 pub fn animate_epaper() -> bool {
     load_art_settings().animate_epaper
+}
+
+/// The Screens page's switch was clicked: `[art] animate_epaper` read, changed and saved with
+/// the section's other keys as they are. Off is the default and isn't written.
+pub fn set_animate_epaper(on: bool) -> Result<(), String> {
+    super::store::save("art", &with_animate_epaper(load_art_settings(), on))
+        .map_err(|e| format!("saving the e-paper switch: {e}"))
+}
+
+fn with_animate_epaper(settings: ArtSettings, on: bool) -> ArtSettings {
+    ArtSettings {
+        animate_epaper: on,
+        ..settings
+    }
 }
 
 /// A pinned built-in, followed by name to its index on this firmware (`None` when the
@@ -1336,7 +1350,13 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     super::keyboard_settings::lights_changed();
                 }
                 let woke = was == Some(false) && on;
-                if !(woke && h.snapshot().cycle.steps_on(art_cycle::Step::LightsWake)) {
+                // Lights wake doesn't apply on e-paper (#833): Rotation there steps by minutes.
+                if !(woke
+                    && h.snapshot().cycle.steps_on(art_cycle::Step::LightsWake)
+                    && !super::art_encode::Pace::current_with(|| false)
+                        .refresh
+                        .is_epaper())
+                {
                     continue;
                 }
                 Command::Next
@@ -2486,6 +2506,31 @@ mod tests {
         };
         let back: ArtSettings = toml::from_str(&toml::to_string(&on).unwrap()).unwrap();
         assert!(back.animate_epaper);
+    }
+
+    /// #833: the Screens page's switch changes only its own key; the pin stays, and switching
+    /// it off again leaves the section as it was before.
+    #[test]
+    fn the_epaper_switch_keeps_the_rest_of_art() {
+        let pinned = ArtSettings {
+            pinned: Some(Choice::BuiltIn(2)),
+            built_in: Some("Bandit_Gem".into()),
+            animate_epaper: false,
+        };
+        let on = with_animate_epaper(pinned.clone(), true);
+        assert_eq!(
+            (on.pinned.clone(), on.built_in.clone()),
+            (pinned.pinned.clone(), pinned.built_in.clone())
+        );
+        assert!(toml::to_string(&on)
+            .unwrap()
+            .contains("animate_epaper = true"));
+        let off = with_animate_epaper(on, false);
+        assert_eq!(off, pinned);
+        assert_eq!(
+            toml::to_string(&off).unwrap(),
+            toml::to_string(&pinned).unwrap()
+        );
     }
 
     #[test]

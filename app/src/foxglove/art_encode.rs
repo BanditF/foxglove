@@ -264,14 +264,17 @@ impl Pace {
     /// The connected keyboard's art screen's pace (the firmware's screens, else its profile's;
     /// with no art screen said, the older firmware's), with the user's e-paper choice.
     pub fn current() -> Pace {
+        Self::current_with(super::art_service::animate_epaper)
+    }
+
+    /// [`Pace::current`] with the user's e-paper choice from `animate`, asked only when the art
+    /// screen is e-paper (the Screens page keeps its own copy; the lights-wake check needs none).
+    pub fn current_with(animate: impl FnOnce() -> bool) -> Pace {
         #[cfg(test)]
         if let Some(screens) = TEST_SCREENS.with_borrow(|s| s.clone()) {
-            return Self::in_screens(Some(&screens), super::art_service::animate_epaper);
+            return Self::in_screens(Some(&screens), animate);
         }
-        Self::in_screens(
-            super::screen_roles::current().as_deref(),
-            super::art_service::animate_epaper,
-        )
+        Self::in_screens(super::screen_roles::current().as_deref(), animate)
     }
 
     /// The pace of the art screen in `screens` (else the older firmware's); the user's e-paper
