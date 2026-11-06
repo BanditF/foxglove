@@ -228,3 +228,31 @@ fn art_after_update_renders() {
     );
     keep("ux-art-built-10-after-update.png", &page((s, l), 1300.0));
 }
+
+/// #853: a kept place named after a second library copy of the same bytes (hearth-moongarden
+/// beside moon-garden) shows the piece's picture, not the ART placeholder.
+#[test]
+fn kept_place_under_a_merged_name_renders() {
+    let (mut s, mut l) = art_ui::tests::sample();
+    let garden = l
+        .entries
+        .iter()
+        .find(|e| e.path.ends_with("moon-garden.bin"))
+        .expect("moon-garden in the sample")
+        .clone();
+    l.entries.push(crate::foxglove::art_library::Entry {
+        path: "art/hearth-moongarden.bin".into(),
+        ..garden.clone()
+    });
+    s.slots[0] = foxglove_link::protocol::SlotInfo {
+        slot: 0,
+        used: true,
+        writes: 1,
+        len: garden.bytes as u16,
+        name: "hearth-moongarde".into(),
+    };
+    let art = art_ui::Art::new(s.clone(), l.clone());
+    let piece = art.kept[0].as_ref().and_then(|k| k.piece);
+    keep("ui-853-kept-merged-name.png", &page((s, l), 1300.0));
+    assert!(piece.is_some(), "the first kept place finds its piece");
+}

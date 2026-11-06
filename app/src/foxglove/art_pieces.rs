@@ -64,6 +64,10 @@ pub enum Origin {
 pub struct PcPiece {
     /// The file (or folder) name, as a kept place would be named after it.
     pub name: String,
+    /// Every name it goes by: [`PcPiece::name`] first, then those of the same bytes merged into
+    /// it (#853: a library copy under another name leads [`PcPiece::origins`], so Keep names
+    /// the place after that copy).
+    pub names: Vec<String>,
     /// Library first when it is there too.
     pub origins: Vec<Origin>,
     /// The first frame as stored (see `art_ui::thumbnail`).
@@ -85,6 +89,14 @@ impl PcPiece {
             Origin::Library(p) => Some(p),
             _ => None,
         })
+    }
+
+    /// Whether a kept place named `kept_name` (cut to the place's 16 bytes) holds this piece by
+    /// one of its names.
+    pub fn answers_to(&self, kept_name: &str) -> bool {
+        self.names
+            .iter()
+            .any(|n| foxglove_link::protocol::art_name_fit(n) == kept_name)
     }
 
     /// Where its polarity choice is kept (#666, `art_polarity`): its library file, else its
@@ -287,9 +299,13 @@ pub fn pc_pieces(found: Vec<Found>, is_wallpaper: &dyn Fn(&str) -> bool) -> Vec<
                     p.origins.push(f.origin);
                 }
                 p.plugin |= f.plugin;
+                if !p.names.contains(&f.name) {
+                    p.names.push(f.name);
+                }
             }
             None => out.push(PcPiece {
                 wallpaper: is_wallpaper(&format!("{}.bin", f.name)),
+                names: vec![f.name.clone()],
                 name: f.name,
                 origins: vec![f.origin],
                 image: f.image,
@@ -329,10 +345,9 @@ pub fn kept(s: &Snapshot, pcs: &[PcPiece]) -> Vec<Option<Kept>> {
     (0..places(s))
         .map(|n| {
             let info = s.slots.iter().find(|i| i.slot == n && i.used)?;
-            let piece = pcs.iter().position(|p| {
-                foxglove_link::protocol::art_name_fit(&p.name) == info.name
-                    && p.bytes == usize::from(info.len)
-            });
+            let piece = pcs
+                .iter()
+                .position(|p| p.answers_to(&info.name) && p.bytes == usize::from(info.len));
             Some(Kept {
                 slot: n,
                 name: info.name.clone(),
@@ -384,7 +399,8 @@ pub fn sending(s: &Snapshot, piece: &PcPiece) -> bool {
         Some(Retry::Keep { file, .. }) => file,
         _ => return false,
     };
-    piece.file() == Some(file) || super::art_service::file_name(file) == piece.name
+    let name = super::art_service::file_name(file);
+    piece.file() == Some(file) || piece.names.contains(&name)
 }
 
 /// A PC piece's one badge.
@@ -692,6 +708,61 @@ pub mod tests {
         assert!(!Filter::NotOnKeyboard.keeps(&pcs[1], Badge::OnKeyboard, ""));
         assert!(Filter::All.keeps(&pcs[1], Badge::OnKeyboard, "rad"));
         assert!(!Filter::All.keeps(&pcs[1], Badge::OnKeyboard, "orb"));
+    }
+
+    /// #853: the same bytes under two names are one piece, named after the first file while its
+    /// newest library copy leads (and Keep names the place after that copy). The kept place
+    /// finds the piece's picture by any of its names; a place no piece answers to stays unknown.
+    #[test]
+    fn a_kept_place_finds_its_piece_by_any_name() {
+        let pcs = pc_pieces(
+            vec![
+                found(lib("hearth-moongarden"), "hearth-moongarden", 7, 3281),
+                found(lib("moon-garden"), "moon-garden", 7, 3281),
+                found(Origin::Bundled(3), "moon-garden", 7, 3281),
+                found(lib("Radar"), "Radar", 1, 3000),
+            ],
+            &|_| false,
+        );
+        assert_eq!(pcs.len(), 2, "one piece for the same bytes");
+        let garden = &pcs[0];
+        assert_eq!(garden.name, "hearth-moongarden");
+        assert_eq!(garden.names, ["hearth-moongarden", "moon-garden"]);
+        assert_eq!(
+            garden.file(),
+            Some(&PathBuf::from("art/moon-garden.bin")),
+            "the newest library copy leads, so Keep names the place moon-garden"
+        );
+        let s = Snapshot {
+            status: Some(status(0b111)),
+            slots: vec![
+                slot(0, "hearth-moongarde", 3281),
+                slot(1, "moon-garden", 3281),
+                slot(2, "lost-piece", 3281),
+            ],
+            ..Default::default()
+        };
+        let k = kept(&s, &pcs);
+        let pieces: Vec<_> = k
+            .iter()
+            .take(3)
+            .map(|p| p.as_ref().unwrap().piece)
+            .collect();
+        assert_eq!(
+            pieces,
+            [Some(0), Some(0), None],
+            "the first place by its 16-byte cut name, the second by the merged name,              the third truly unknown"
+        );
+        assert_eq!(badge(&s, garden, &k, 0), Badge::OnKeyboard);
+        let s = Snapshot {
+            status: Some(ArtStatus {
+                // Kept place 1, the one named after the merged copy.
+                right_set: 18,
+                ..status(0b11)
+            }),
+            ..s
+        };
+        assert_eq!(showing_picture(&s, &pcs).map(|p| p.0), Some(7));
     }
 
     /// The meter and the free place come from the keyboard's report, never a guess.
