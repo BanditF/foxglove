@@ -116,9 +116,11 @@ static void toast_set(const struct art_toast *t) {
     k_spin_unlock(&toast_lock, key);
 }
 
-// One pixel in portrait coordinates, if it falls on this canvas.
+// One pixel of the toast in portrait coordinates, if it falls inside the panel area (the toast
+// never leaves it: the layer tab, mods and profiles above stay readable) and on this canvas.
 static void px(lv_obj_t *c, int oy, int x, int y, lv_color_t color) {
-    if (x >= 0 && x < SCREEN_W && y - oy >= 0 && y - oy < CANVAS_SIZE) {
+    if (x >= HOST_PANEL_X && x < HOST_PANEL_X + HOST_PANEL_W && y >= HOST_PANEL_Y &&
+        y < HOST_PANEL_Y + HOST_PANEL_H && y - oy >= 0 && y - oy < CANVAS_SIZE) {
         lv_canvas_set_px_color(c, x, y - oy, color);
     }
 }
@@ -128,7 +130,7 @@ static void px(lv_obj_t *c, int oy, int x, int y, lv_color_t color) {
 // draw_art_card), without the piece's name: the left doesn't hold the right's names.
 static void draw_art_toast(lv_obj_t *c, int oy, const struct art_toast *t) {
     lv_color_t fg = LVGL_FOREGROUND;
-    const int x0 = 2, y0 = 106, w = 64, h = 52;
+    const int x0 = HOST_PANEL_X, y0 = HOST_PANEL_Y, w = HOST_PANEL_W, h = HOST_PANEL_H;
     for (int i = 0; i < 4; i++) {
         int x = (i & 1) ? x0 + w - 1 : x0, y = (i & 2) ? y0 + h - 1 : y0;
         int dx = (i & 1) ? -1 : 1, dy = (i & 2) ? -1 : 1;

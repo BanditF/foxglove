@@ -35,6 +35,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "icons.h"
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
 #include "art_relay.h"
+#include "art_store.h"
 #endif
 
 static sys_slist_t widgets = SYS_SLIST_STATIC_INIT(&widgets);
@@ -425,7 +426,11 @@ static void art_init(lv_obj_t *parent) {
     art_img = lv_img_create(parent);
     lv_img_set_src(art_img, &art_dsc);
     lv_obj_align(art_img, LV_ALIGN_TOP_LEFT, 0, 0);
-    art_play(&custom_art_sets[art_builtin_index(CONFIG_NICE_VIEW_CUSTOM_ART_SET)]);
+    int boot = art_builtin_index(CONFIG_NICE_VIEW_CUSTOM_ART_SET);
+    art_play(&custom_art_sets[boot]);
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    art_store_booted(boot); // the status names the emblem on screen, not a pushed set (#868)
+#endif
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_CUSTOM_ANIMATE)
     widget_art_activity_init();

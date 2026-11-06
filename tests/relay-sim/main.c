@@ -1266,6 +1266,35 @@ static void art_step_cycles(bool lag) {
 }
 #endif
 
+#if __has_include("art_toast.h")
+// The first press after a boot (#868): the right starts on its built-in, and its status names it
+// (set 0), as art_store_booted makes it say; before, it said -1 (a pushed set), and the first
+// &art_next selected the emblem on screen again. Kept places 0 and 1 (list 0, 1, 2), Foxglove
+// quit, no SELECT from anyone: the first next press steps to set 1 (2/3). Then the right restarts
+// (an update that keeps the places) and the first previous press steps to the last set (3/3).
+static void art_step_boot(void) {
+    sim_right.flash[0].used = true;
+    sim_right.flash[1].used = true;
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    k_msleep(2000); // the left's first status read after the relay is found
+    char why[200];
+    check("boot-names-built-in", status().right.set == 0, "status set %d", status().right.set);
+    bool ok = board_step(1, 1, why, sizeof(why));
+    check("first-next-steps", ok && sim_left.toast_index == 1 && sim_left.toast_total == 3,
+          "%s", why);
+    sim_bt_right_update(false, 3000000);
+    k_msleep(3000);
+    wait_relay(40);
+    k_msleep(2000);
+    ok = board_step(-1, 2, why, sizeof(why));
+    check("first-prev-after-restart",
+          ok && sim_left.toast_index == 2 && sim_left.toast_total == 3 && sim_left.toast_dir == -1,
+          "%s", why);
+    debug_line("at the end");
+}
+#endif
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -1304,6 +1333,8 @@ static void lab_thread(void *arg) {
 #if __has_include("art_toast.h")
     } else if (!strcmp(scenario, "art-step-toast")) {
         art_step_toast();
+    } else if (!strcmp(scenario, "art-step-boot")) {
+        art_step_boot();
     } else if (!strcmp(scenario, "art-step-cycles")) {
         art_step_cycles(false);
     } else if (!strcmp(scenario, "art-step-cycles-lag")) {

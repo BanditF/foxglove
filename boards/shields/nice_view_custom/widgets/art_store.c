@@ -175,6 +175,15 @@ void art_store_commit(void) {
     }
 }
 
+void art_store_booted(int set) {
+    if (status.set == -1 && shown < 0 && flash_shown < 0 && set >= 0 &&
+        set < custom_art_set_count) {
+        select_set = (int8_t)set;
+        status.set = (int8_t)set;
+        health_set(HEALTH_ART_SET, (uint8_t)status.set);
+    }
+}
+
 int art_store_select(int8_t set) {
     if (status.state == ART_RIGHT_SAVING) {
         return ART_STORE_BUSY;
