@@ -44,7 +44,7 @@ config FOXGLOVE_ART_LOCAL
     help
       For a single-screen board: the PC's art pushes (D6) reach the art store (art_store.c) on the
       host-link half itself, with no relay (art_local.c; HELLO v2 capability 32). The board's port
-      supplies the drawer (peripheral_status.h's art_play, art_hold, art_redraw_all,
+      supplies the drawer (peripheral_status.h's art_play, art_repace, art_hold, art_redraw_all,
       art_builtin_index; custom_art_sets) and its SCREENS art target on half 0, and an
       art_partition for flash slots if it wants them. Off until a board has its port: Toucan2's
       target is decided on the board (#340).

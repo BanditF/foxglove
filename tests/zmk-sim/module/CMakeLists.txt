@@ -74,6 +74,7 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
   zephyr_library_sources(
     ${FOXGLOVE_WIDGETS}/host_link.c
     ${FOXGLOVE_WIDGETS}/half_marker.c
+    ${FOXGLOVE_WIDGETS}/art_pace.c
     hostlink_sim.c
   )
   if(CONFIG_FOXGLOVE_SIM_ART_LOCAL)

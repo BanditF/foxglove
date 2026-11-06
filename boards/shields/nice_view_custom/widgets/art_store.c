@@ -18,6 +18,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <zmk/display.h>
 
+#include "art_pace.h"
 #include "art_store.h"
 #include "art_slots.h"
 #include "custom_art.h"
@@ -260,6 +261,16 @@ int art_store_erase(uint8_t slot) {
         status.state = ART_RIGHT_SAVE_FAILED;
     }
     return 0;
+}
+
+static void repace_cb(struct k_work *work) { art_repace(); }
+static K_WORK_DEFINE(repace_work, repace_cb);
+
+void art_store_animate(bool on) {
+    // Only a change re-times the set: a repeat (each connect sends it) does nothing.
+    if (art_pace_set_animate(on) && zmk_display_is_initialized()) {
+        k_work_submit_to_queue(zmk_display_work_q(), &repace_work);
+    }
 }
 
 void art_store_status(struct art_relay_status *out) {

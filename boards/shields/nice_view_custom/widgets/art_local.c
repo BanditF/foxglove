@@ -145,6 +145,12 @@ int art_local_save(uint8_t slot, const uint8_t name[16]) {
 
 int art_local_erase(uint8_t slot) { return op(art_store_erase(slot)); }
 
+// A setting, not an op on a set: a receive in progress and the last op's state stay as they are.
+int art_local_animate(uint8_t flags) {
+    art_store_animate(flags & HOST_LINK_ART_ANIMATE_EPAPER);
+    return 0;
+}
+
 int art_local_slot(uint8_t slot) {
     struct art_relay_slot_info info;
     uint8_t r[4 + sizeof(info)] = {HOST_LINK_ART, 0x87, 4, slot}; // 4: no such slot here

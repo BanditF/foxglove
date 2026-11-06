@@ -28,6 +28,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "pc_state.h"
 
+#include "art_pace.h"
 #include "peripheral_status.h"
 #include "screen_snap.h"
 #include "custom_art.h"
@@ -107,7 +108,8 @@ ZMK_DISPLAY_WIDGET_LISTENER(widget_peripheral_status, struct peripheral_status_s
 ZMK_SUBSCRIPTION(widget_peripheral_status, zmk_split_peripheral_status_changed);
 
 // Art: one set chosen per power-on; animated sets step through their frames while the
-// keyboard is active (CONFIG_NICE_VIEW_CUSTOM_ANIMATE) and hold still while idle.
+// keyboard is active (CONFIG_NICE_VIEW_CUSTOM_ANIMATE) and hold still while idle. Their pace is
+// the art target's (art_pace.h, #842): the Corne's right is fast with no limit, 1000 / fps.
 static const struct custom_art_set *art_set;
 static lv_obj_t *art_img;
 static int art_frame;
@@ -276,6 +278,37 @@ void art_activity_remote(bool active) {
 
 void art_hold(void) { atomic_set(&art_held, 1); }
 
+// The set on screen at its pace (art_pace_frame_ms): a timer, or its first frame only.
+static void art_retime(void) {
+#if IS_ENABLED(CONFIG_NICE_VIEW_CUSTOM_ANIMATE)
+    if (art_timer != NULL) {
+        lv_timer_del(art_timer);
+        art_timer = NULL;
+    }
+    uint32_t ms = art_pace_frame_ms(art_set);
+    if (ms == 0) {
+        if (art_frame != 0) {
+            art_frame = 0;
+            if (art_img != NULL) {
+                art_show(0);
+            }
+        }
+        return;
+    }
+    art_timer = lv_timer_create(art_timer_cb, ms, NULL);
+    if (!art_active()) {
+        lv_timer_pause(art_timer);
+    }
+#endif
+}
+
+// The pace changed (art_store.h, #842): the same set, timed again. Display queue.
+void art_repace(void) {
+    if (art_set != NULL) {
+        art_retime();
+    }
+}
+
 void art_play(const struct custom_art_set *set) {
     art_set = set;
     art_frame = 0;
@@ -286,19 +319,7 @@ void art_play(const struct custom_art_set *set) {
     if (art_img != NULL) {
         art_show(0);
     }
-
-#if IS_ENABLED(CONFIG_NICE_VIEW_CUSTOM_ANIMATE)
-    if (art_timer != NULL) {
-        lv_timer_del(art_timer);
-        art_timer = NULL;
-    }
-    if (set->frame_count > 1 && set->fps > 0) {
-        art_timer = lv_timer_create(art_timer_cb, 1000 / set->fps, NULL);
-        if (!art_active()) {
-            lv_timer_pause(art_timer);
-        }
-    }
-#endif
+    art_retime();
 }
 
 /* Whole-screen redraw (#613). The nice!view runs off the nice!nano's switched VCC, the rail ZMK's

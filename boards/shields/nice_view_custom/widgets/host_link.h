@@ -81,7 +81,8 @@
  *      effects, 30 art STORE, 31 KNOB). HELLO's version byte (reply byte 2) is 2 from this
  *      firmware on: 2 or more says D5 08 answers, so the PC asks it only then and firmware with
  *      version 1 is never asked (no timeout). The HELLO reply keeps its layout; only byte 2 changed (1 to 2).
- *      Bit n of word 2 is capability 32 + n (HOST_LINK_CAPS2_*): 32 ART_LOCAL (#834, below). A PC
+ *      Bit n of word 2 is capability 32 + n (HOST_LINK_CAPS2_*): 32 ART_LOCAL (#834, below),
+ *      33 ART_PACE (#842: the art plays at its target's pace, D6 0A ANIMATE below). A PC
  *      that reads fewer words than n ignores the rest; words past n read as 0.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
  * With CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0, the WPM chart also comes back after that many
@@ -113,6 +114,16 @@
  *                                   STATUS shows SAVING, then the shown set's state again (or
  *                                   SAVE_FAILED). A right before it fails it with error 7
  *                                   (right rejected) before anything is sent.
+ *   0A ANIMATE flags u8             (#842, only with word 2's bit 33 ART_PACE) bit 0: art may
+ *                                   animate on an e-paper art target (the app's "animate on
+ *                                   e-paper"); other bits 0. Replies like STATUS and changes no
+ *                                   op's state. The firmware plays every set (built-in, kept in a
+ *                                   slot, pushed) at the target's pace (art_pace.h): its v2
+ *                                   descriptor's shortest frame interval holds the rate down, and
+ *                                   on e-paper only the first frame shows unless bit 0 is set.
+ *                                   RAM only, off at power-on: the PC sends it on each connect. A
+ *                                   change re-times the set on screen. Firmware without ART_PACE
+ *                                   (a relaying board, the Corne) doesn't answer it.
  *   SAVE and ERASE reply like SELECT; the write then runs on the right, and STATUS shows the
  *   right's state SAVING (6), then SAVED (7) or SAVE_FAILED (8). SELECT set_count + n plays
  *   flash slot n. The right status (version 3) ends with flash_slots u8, flash_used u8 (bits).
@@ -437,6 +448,12 @@
 // Capability 32 (#834): the art target is on this half and D6 goes straight to its art store
 // (art_local.c), no relay. The PC may skip waiting for a relay; its replies are final.
 #define HOST_LINK_CAPS2_ART_LOCAL (1U << 0)
+// Capability 33 (#842): the firmware plays its own art (built-in, kept, pushed) at the art
+// target's pace (art_pace.h: its v2 descriptor's refresh class and shortest frame interval) and
+// takes D6 0A ANIMATE, the PC's "animate on e-paper". With the local art store only.
+#define HOST_LINK_CAPS2_ART_PACE (1U << 1)
+// D6 0A ANIMATE's flags byte: bit 0 lets art animate on an e-paper art target.
+#define HOST_LINK_ART_ANIMATE_EPAPER (1U << 0)
 
 #define HOST_LINK_CAP_PANEL (1U << 0)
 #define HOST_LINK_CAP_ART_RELAY (1U << 1)

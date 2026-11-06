@@ -1,0 +1,55 @@
+artlocal: -- hello: word 2's ART_PACE; the art target's v2 descriptor: e-paper (1), 1 s (10)
+artlocal: pc sends D5 01 01
+artlocal: HELLO art push 1, slots 1, store 1, status events 0
+artlocal: pc sends D5 08
+artlocal: CAPS words 1, word 2 0x00000003 (ART_LOCAL 1, ART_PACE 1)
+artlocal: pc sends D5 06 02
+hostlink: rx D5 86 00 03 02 02 02 00 00 90 00 70 00 00 00 00 00 00 00 0C 00 00 80 00 FF 02 02 01 0A
+artlocal: -- built-in 1 (2 frames, 8 fps): e-paper without the PC's go, first frame only
+artlocal: pc sends D6 04 01
+art: play two, 2 frame(s), 8 fps, first frame only
+artlocal: reply 84 done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 1 of 2, slots 2 used 0x00
+artlocal: -- animate off (as each connect sends it): no change, nothing re-timed
+artlocal: pc sends D6 0A 00
+artlocal: reply 8A done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 1 of 2, slots 2 used 0x00
+artlocal: -- the PC lets art animate (D6 0A 01): re-timed, held to 1 s (8 fps would be 125 ms)
+artlocal: pc sends D6 0A 01
+art: repace two, every 1000 ms
+artlocal: reply 8A done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 1 of 2, slots 2 used 0x00
+artlocal: -- the same again: nothing re-timed
+artlocal: pc sends D6 0A 01
+artlocal: reply 8A done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 1 of 2, slots 2 used 0x00
+artlocal: -- built-in 0, a still set: stays still
+artlocal: pc sends D6 04 00
+art: play one, 1 frame(s), 0 fps, first frame only
+artlocal: reply 84 done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 0 of 2, slots 2 used 0x00
+artlocal: -- push a 4 fps set: held to 1 s
+artlocal: pc sends D6 01 14 00 C8 EF 8A 78
+artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set 0 of 2, slots 2 used 0x00
+artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
+artlocal: pc sends D6 03
+art: play pushed, 2 frame(s), 4 fps, every 1000 ms
+artlocal: reply 83 done error 0, 20/20, link 2; v10 store 2 received 20 of 32768, set -1 of 2, slots 2 used 0x00
+artlocal: -- keep it in slot 0 and play it from there: held to 1 s
+artlocal: pc sends D6 06 00 6B 65 70 74 00 ...
+artlocal: reply 86 done error 0, 0/0, link 2; v10 store 6 received 20 of 32768, set -1 of 2, slots 2 used 0x00
+art: slot 0 written
+artlocal: pc sends D6 05
+artlocal: reply 85 done error 0, 0/0, link 2; v10 store 7 received 20 of 32768, set -1 of 2, slots 2 used 0x01
+artlocal: pc sends D6 04 02
+art: play saved, 2 frame(s), 4 fps, every 1000 ms
+artlocal: reply 84 done error 0, 0/0, link 2; v10 store 0 received 20 of 32768, set 2 of 2, slots 2 used 0x01
+artlocal: -- animate off (D6 0A 00): the kept set shows its first frame only
+artlocal: pc sends D6 0A 00
+art: repace saved, first frame only
+artlocal: reply 8A done error 0, 0/0, link 2; v10 store 0 received 20 of 32768, set 2 of 2, slots 2 used 0x01
+artlocal: -- ANIMATE mid-push: the receive goes on; the set plays, still
+artlocal: pc sends D6 01 14 00 C8 EF 8A 78
+artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set 2 of 2, slots 2 used 0x01
+artlocal: pc sends D6 0A 00
+artlocal: reply 8A receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set 2 of 2, slots 2 used 0x01
+artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
+artlocal: pc sends D6 03
+art: play pushed, 2 frame(s), 4 fps, first frame only
+artlocal: reply 83 done error 0, 20/20, link 2; v10 store 2 received 20 of 32768, set -1 of 2, slots 2 used 0x01
+artlocal: -- done

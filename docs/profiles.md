@@ -200,3 +200,11 @@ screens (D5 06 SCREENS, `host_link.h`) wins over the profile for what it says:
 A board whose art target leaves all four v2 fields 0 sends version 1, and an app from before v2
 reads a v2 descriptor as a v1 one, so old firmware with a new app and new firmware with an old app
 both work as before. The Corne's art target is v2: 16384 bytes, 8 places, fast, no limit.
+
+The firmware paces its own art the same way (#842): built-in pieces, pieces kept on the keyboard
+and pushed ones play no faster than the art target's shortest frame interval, and on e-paper only
+their first frame shows unless the user lets art animate there. Firmware with HELLO v2's
+`ART_PACE` (capability 33; boards whose art store is on the host-link half) takes that choice as
+D6 0A ANIMATE, which the app sends on each connect; it isn't saved on the keyboard, so an e-paper
+screen without the app stays still. Firmware without `ART_PACE` (the Corne, which relays its art)
+isn't sent it; the Corne's art plays exactly as before.

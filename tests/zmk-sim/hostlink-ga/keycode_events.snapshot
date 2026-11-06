@@ -15,6 +15,22 @@ hostlink: tx D5 06 03
 hostlink: rx D5 86 00 04 03 03 02 01 02 44 00 8C 00 00 00 14 00 00 00 0C 00 00 40 00 FF 02 08
 hostlink: tx D5 06 04
 hostlink: rx D5 86 05 04 04
+hostlink: -- art pace: the Corne's right art target plays as before (#842)
+hostlink: art pace right: refresh 0, shortest frame 0 ms
+hostlink: art pace 1 fps: every 1000 ms
+hostlink: art pace 2 fps: every 500 ms
+hostlink: art pace 3 fps: every 333 ms
+hostlink: art pace 4 fps: every 250 ms
+hostlink: art pace 5 fps: every 200 ms
+hostlink: art pace 6 fps: every 166 ms
+hostlink: art pace 8 fps: every 125 ms
+hostlink: art pace 10 fps: every 100 ms
+hostlink: art pace 12 fps: every 83 ms
+hostlink: art pace 15 fps: every 66 ms
+hostlink: art pace 24 fps: every 41 ms
+hostlink: art pace 30 fps: every 33 ms
+hostlink: art pace 60 fps: every 16 ms
+hostlink: art pace as before (1000 / fps, animate off and on, stills still): yes
 hostlink: -- build info: left, right (no relay here), bad half
 hostlink: tx D7 09
 hostlink: rx D7 89 00 00 00 03 00 01 73 69 6D 74 65 73 74

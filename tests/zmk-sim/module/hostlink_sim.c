@@ -16,6 +16,8 @@
 #include <zmk/display.h>
 #include <zmk/event_manager.h>
 
+#include "art_pace.h"
+
 
 /* The Raw HID module's events, and what the board's other widgets would provide */
 
@@ -121,6 +123,32 @@ static uint32_t arm(void) {
     return sys_get_le32(&last[3]);
 }
 
+/* #842: the Corne's art target (screens_corne.c: the right's, fast, no frame limit) keeps its
+ * pace. Every rate plays at 1000 / fps, as the right's drawer did before the pace existed, with
+ * the PC's "animate on e-paper" off or on; a still set stays still. */
+static void corne_pace(void) {
+    static const int rates[] = {1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 24, 30, 60};
+    struct art_pace p = art_pace_for_half(1);
+    printk("hostlink: art pace right: refresh %u, shortest frame %u ms\n", p.refresh,
+           p.min_frame_ms);
+    bool same = true;
+    for (int a = 0; a <= 1; a++) {
+        art_pace_set_animate(a);
+        p = art_pace_for_half(1);
+        for (int i = 0; i < ARRAY_SIZE(rates); i++) {
+            uint32_t ms = art_pace_interval_ms(p, rates[i], 2);
+            if (a == 0) {
+                printk("hostlink: art pace %d fps: every %u ms\n", rates[i], ms);
+            }
+            same = same && ms == 1000U / rates[i];
+        }
+        same = same && art_pace_interval_ms(p, 4, 1) == 0 && art_pace_interval_ms(p, 0, 4) == 0;
+    }
+    art_pace_set_animate(false);
+    printk("hostlink: art pace as before (1000 / fps, animate off and on, stills still): %s\n",
+           same ? "yes" : "NO");
+}
+
 void panel_stream_driver(void);
 void art_keys_sim_driver(void);
 void frames_sim_driver(void);
@@ -205,6 +233,9 @@ static void driver(void) {
     for (uint8_t i = 0; i <= 4; i++) {
         SEND(0xD5, 0x06, i);
     }
+
+    note("art pace: the Corne's right art target plays as before (#842)");
+    corne_pace();
 
     note("build info: left, right (no relay here), bad half");
     SEND(0xD7, 0x09, 0x00);

@@ -22,13 +22,15 @@
 
 #include "posix_board_if.h"
 
+#include "art_pace.h"
 #include "art_slots.h"
 #include "art_store.h"
 #include "custom_art.h"
 #include "host_link.h"
 
 /* The board: one 144 x 168 display on half 0, the PC's panel in its bottom third, and the art
- * target above it, on the same half (the host link's): local. */
+ * target above it, on the same half (the host link's): local. The art-epaper case (#842) makes the
+ * art target e-paper with partial refresh and a shortest frame of 1 s (v2 descriptor). */
 
 BUILD_ASSERT(sizeof(struct screen_descriptor) == 24, "descriptor layout");
 
@@ -43,23 +45,51 @@ const struct screen_descriptor foxglove_screens[] = {
     // v2 (#832): the local store's largest blob and its slots, a fast screen with no frame limit.
     {.id = 2, .kind = SCREEN_ART, .half = 0, .parent = 0, .width = ART_STORE_W,
      .height = ART_STORE_H, .ops = SCREEN_OP_ART | SCREEN_OP_SLOTS, .stride = ART_STORE_MAX_SIZE,
-     .readback_half = SCREEN_UNSET, .art_slots = SIM_SLOTS, .art_refresh = SCREEN_REFRESH_FAST},
+     .readback_half = SCREEN_UNSET, .art_slots = SIM_SLOTS,
+#if IS_ENABLED(CONFIG_FOXGLOVE_SIM_ART_EPAPER)
+     // The art-epaper case (#842): e-paper with partial refresh, a frame a second at most.
+     .art_refresh = SCREEN_REFRESH_EPAPER_PARTIAL, .art_min_frame_100ms = 10
+#else
+     .art_refresh = SCREEN_REFRESH_FAST
+#endif
+    },
 };
 const uint8_t foxglove_screen_count = ARRAY_SIZE(foxglove_screens);
 
-/* The drawer: two built-in sets; it prints what it plays. */
+/* The drawer: two built-in sets, a still one and an animated one (2 frames, 8 fps). It prints
+ * what it plays and the pace it would play it at (art_pace.h, #842): a frame every n ms, or the
+ * first frame only. */
 
 static const uint8_t builtin_delta[] = {0x00};
 static const uint8_t *const builtin_deltas[] = {builtin_delta};
-static const uint8_t builtin_order[] = {0};
+static const uint8_t builtin_order[] = {0, 0};
 const struct custom_art_set custom_art_sets[] = {
     {.name = "one", .deltas = builtin_deltas, .order = builtin_order, .frame_count = 1},
-    {.name = "two", .deltas = builtin_deltas, .order = builtin_order, .frame_count = 1},
+    {.name = "two", .deltas = builtin_deltas, .order = builtin_order, .frame_count = 2, .fps = 8},
 };
 const int custom_art_set_count = ARRAY_SIZE(custom_art_sets);
 
+static const struct custom_art_set *on_screen;
+
+static void print_pace(const struct custom_art_set *set) {
+    uint32_t ms = art_pace_frame_ms(set);
+    if (ms == 0) {
+        printk("first frame only\n");
+    } else {
+        printk("every %u ms\n", ms);
+    }
+}
+
 void art_play(const struct custom_art_set *set) {
-    printk("art: play %s, %d frame(s), %d fps\n", set->name, set->frame_count, set->fps);
+    on_screen = set;
+    printk("art: play %s, %d frame(s), %d fps, ", set->name, set->frame_count, set->fps);
+    print_pace(set);
+}
+void art_repace(void) {
+    if (on_screen != NULL) {
+        printk("art: repace %s, ", on_screen->name);
+        print_pace(on_screen);
+    }
 }
 void art_hold(void) {}
 void art_redraw_all(void) {}
@@ -152,8 +182,9 @@ static int reply_listener(const zmk_event_t *eh) {
         printk("artlocal: HELLO art push %u, slots %u, store %u, status events %u\n",
                (caps >> 1) & 1, (caps >> 10) & 1, (caps >> 30) & 1, (caps >> 3) & 1);
     } else if (r[0] == HOST_LINK_PANEL && r[1] == 0x88) {
-        printk("artlocal: CAPS words %u, word 2 0x%08x (ART_LOCAL %u)\n", r[2],
-               sys_get_le32(&r[3]), sys_get_le32(&r[3]) & HOST_LINK_CAPS2_ART_LOCAL ? 1 : 0);
+        uint32_t w2 = sys_get_le32(&r[3]);
+        printk("artlocal: CAPS words %u, word 2 0x%08x (ART_LOCAL %u, ART_PACE %u)\n", r[2], w2,
+               w2 & HOST_LINK_CAPS2_ART_LOCAL ? 1 : 0, w2 & HOST_LINK_CAPS2_ART_PACE ? 1 : 0);
     } else if (r[0] == HOST_LINK_ART && r[1] != 0x87) {
         static const char *const left[] = {"idle", "receiving", "pushing", "done", "failed"};
         struct art_relay_status st;
@@ -228,7 +259,64 @@ static void store(uint8_t slot, const char *name) {
     pc(d, sizeof(d));
 }
 
+static void animate(uint8_t flags) {
+    uint8_t d[3] = {HOST_LINK_ART, 0x0A, flags};
+    pc(d, sizeof(d));
+}
+
+/* The art-epaper case (#842): an e-paper target, partial refresh, a frame a second at most. */
+static void epaper_driver(void) {
+    note("hello: word 2's ART_PACE; the art target's v2 descriptor: e-paper (1), 1 s (10)");
+    PC(0xD5, 0x01, 0x01);
+    PC(0xD5, 0x08);
+    PC(0xD5, 0x06, 0x02);
+
+    note("built-in 1 (2 frames, 8 fps): e-paper without the PC's go, first frame only");
+    PC(0xD6, 0x04, 0x01);
+    note("animate off (as each connect sends it): no change, nothing re-timed");
+    animate(0x00);
+
+    note("the PC lets art animate (D6 0A 01): re-timed, held to 1 s (8 fps would be 125 ms)");
+    animate(0x01);
+    note("the same again: nothing re-timed");
+    animate(0x01);
+    note("built-in 0, a still set: stays still");
+    PC(0xD6, 0x04, 0x00);
+
+    note("push a 4 fps set: held to 1 s");
+    send_set(144, 112, 0);
+    PC(0xD6, 0x03);
+    note("keep it in slot 0 and play it from there: held to 1 s");
+    {
+        uint8_t d[19] = {HOST_LINK_ART, 0x06, 0};
+        strncpy((char *)&d[3], "kept", 16);
+        pc(d, sizeof(d));
+    }
+    PC(0xD6, 0x05);
+    PC(0xD6, 0x04, 0x02);
+
+    note("animate off (D6 0A 00): the kept set shows its first frame only");
+    animate(0x00);
+
+    note("ANIMATE mid-push: the receive goes on; the set plays, still");
+    {
+        uint8_t b[32];
+        uint16_t n = blob(b, 144, 112);
+        begin(n, crc32_ieee(b, n));
+        animate(0x00);
+        data(0, b, n);
+        PC(0xD6, 0x03);
+    }
+
+    note("done");
+    posix_exit(0); // the end of the run: nothing may print after it
+}
+
 void art_local_sim_driver(void) {
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_ART_EPAPER)) {
+        epaper_driver();
+        return;
+    }
     note("hello: the art bits, word 2's ART_LOCAL, the screens (art target on half 0, v2)");
     PC(0xD5, 0x01, 0x01);
     PC(0xD5, 0x08);

@@ -84,7 +84,8 @@ enum {
     ART_SAVE,
     ART_SLOT,
     ART_ERASE,
-    ART_STORE, // 09 (#522)
+    ART_STORE,   // 09 (#522)
+    ART_ANIMATE, // 0A (#842): local art store only (HELLO v2 ART_PACE)
 };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
@@ -329,6 +330,7 @@ static uint32_t caps_word2(void) {
     uint32_t caps = 0;
 #if IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
     caps |= HOST_LINK_CAPS2_ART_LOCAL; // D6 goes to the art store on this half (#834)
+    caps |= HOST_LINK_CAPS2_ART_PACE;  // its art follows the target's pace; D6 0A (#842)
 #endif
     return caps;
 }
@@ -460,6 +462,12 @@ static void art_command(const uint8_t *d) {
     case ART_STORE:
         err = ART_OPS(store)(d[2], &d[3]);
         break;
+#if IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
+    case ART_ANIMATE:
+        // The relay has no op for it yet: a relaying board doesn't answer, as before (#842).
+        err = art_local_animate(d[2]);
+        break;
+#endif
     case ART_SLOT:
         if (ART_OPS(slot)(d[2]) == 0) {
             return; // D6 87 comes from the relay (or, local, has gone already)

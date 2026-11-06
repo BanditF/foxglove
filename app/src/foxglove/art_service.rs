@@ -738,7 +738,9 @@ struct ArtSettings {
 
 /// Whether the user lets art play on an e-paper art screen (#833, "may ghost"); off by default,
 /// when art there shows its first frame only. No effect on a fast screen. The store's
-/// `[art] animate_epaper`, set by the Screens page's "Animate on e-paper" switch.
+/// `[art] animate_epaper`, set by the Screens page's "Animate on e-paper" switch. Firmware that
+/// paces its own art (HELLO v2 `ART_PACE`, #842) is told on each connect and when the switch
+/// changes (D6 0A, `Handle::tell_animate`).
 pub fn animate_epaper() -> bool {
     load_art_settings().animate_epaper
 }
@@ -1723,15 +1725,21 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 current = Some((id, state.generation));
                 let hello = super::link::ask_hello(link);
                 let caps = hello.map_or(0, |hello| hello.capabilities);
-                // The direct path only when the firmware says so (#834): D5 08's word 2, asked
-                // only of a keyboard with art push and HELLO v2.
-                let direct = hello.is_some_and(|hello| {
-                    caps & protocol::capabilities::ART_RELAY != 0
-                        && foxglove_link::hello_v2::capabilities::art_local(
-                            caps,
-                            foxglove_link::hello_v2::read(link.as_ref(), &hello).word2(),
-                        )
-                });
+                // D5 08's word 2, asked only of a keyboard with art push and HELLO v2.
+                let word2 = hello
+                    .filter(|_| caps & protocol::capabilities::ART_RELAY != 0)
+                    .map_or(0, |hello| {
+                        foxglove_link::hello_v2::read(link.as_ref(), &hello).word2()
+                    });
+                // The direct path only when the firmware says so (#834).
+                let direct = foxglove_link::hello_v2::capabilities::art_local(caps, word2);
+                // Firmware that paces its own art (#842) gets the user's e-paper choice on each
+                // connect: it keeps it in RAM only, and starts with the first frame only.
+                if foxglove_link::hello_v2::capabilities::art_pace(caps, word2) {
+                    if let Err(e) = art::animate(link.as_ref(), animate_epaper()) {
+                        eprintln!("Foxglove: art: animate on e-paper: {e:#}");
+                    }
+                }
                 let wake_events = caps & protocol::capabilities::RGB_STATE_EVENT != 0;
                 // Taken on each connect: the keyboard drops them on a USB disconnect or an
                 // endpoint change, and keeps no keep-alive.

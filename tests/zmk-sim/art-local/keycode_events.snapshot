@@ -2,7 +2,7 @@ artlocal: -- hello: the art bits, word 2's ART_LOCAL, the screens (art target on
 artlocal: pc sends D5 01 01
 artlocal: HELLO art push 1, slots 1, store 1, status events 0
 artlocal: pc sends D5 08
-artlocal: CAPS words 1, word 2 0x00000001 (ART_LOCAL 1)
+artlocal: CAPS words 1, word 2 0x00000003 (ART_LOCAL 1, ART_PACE 1)
 artlocal: pc sends D5 06 00
 hostlink: rx D5 86 00 03 00 00 00 00 FF 90 00 A8 00 00 00 00 00 00 00 00 00 12 00 00 FF 01
 artlocal: pc sends D5 06 01
@@ -16,14 +16,14 @@ artlocal: pc sends D6 05
 artlocal: reply 85 idle error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set -1 of 2, slots 2 used 0x00
 artlocal: -- select built-in 1: done in the reply
 artlocal: pc sends D6 04 01
-art: play two, 1 frame(s), 0 fps
+art: play two, 2 frame(s), 8 fps, every 125 ms
 artlocal: reply 84 done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 1 of 2, slots 2 used 0x00
 artlocal: -- push a 144x112 set: COMMIT's reply is final, the set plays
 artlocal: pc sends D6 01 14 00 C8 EF 8A 78
 artlocal: reply 81 receiving error 0, 0/20, link 2; v10 store 1 received 0 of 32768, set 1 of 2, slots 2 used 0x00
 artlocal: pc sends D6 02 00 00 14 4E 56 41 ...
 artlocal: pc sends D6 03
-art: play pushed, 2 frame(s), 4 fps
+art: play pushed, 2 frame(s), 4 fps, every 250 ms
 artlocal: reply 83 done error 0, 20/20, link 2; v10 store 2 received 20 of 32768, set -1 of 2, slots 2 used 0x00
 artlocal: -- push the Corne's 140x68: bad blob (error 7, store 4); the set on screen stays
 artlocal: pc sends D6 01 14 00 2C C6 54 7F
@@ -58,7 +58,7 @@ artlocal: pc sends D6 07 05
 hostlink: rx D6 87 04 05
 artlocal: -- play slot 0 (select set_count + 0)
 artlocal: pc sends D6 04 02
-art: play saved, 2 frame(s), 4 fps
+art: play saved, 2 frame(s), 4 fps, every 250 ms
 artlocal: reply 84 done error 0, 0/0, link 2; v10 store 0 received 0 of 32768, set 2 of 2, slots 2 used 0x01
 artlocal: -- store a set into slot 1 without showing it: saving, then back to idle
 artlocal: pc sends D6 01 14 00 C8 EF 8A 78
@@ -77,7 +77,7 @@ artlocal: pc sends D6 09 00 6E 6F 70 65 00 ...
 artlocal: reply 89 failed error 6, 0/20, link 2; v10 store 1 received 20 of 32768, set 2 of 2, slots 2 used 0x03
 artlocal: -- erase slot 0, on screen: back to a built-in, saving, then saved
 artlocal: pc sends D6 08 00
-art: play one, 1 frame(s), 0 fps
+art: play one, 1 frame(s), 0 fps, first frame only
 artlocal: reply 88 done error 0, 0/0, link 2; v10 store 6 received 20 of 32768, set 0 of 2, slots 2 used 0x03
 art: slot 0 erased
 artlocal: pc sends D6 05
