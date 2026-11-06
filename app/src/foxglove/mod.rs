@@ -34,6 +34,7 @@ pub mod calibrate;
 pub mod calibrate_ui;
 pub mod catalog_refresh;
 pub mod connection;
+pub mod device_thumb;
 pub mod devices;
 pub mod diagnostics;
 pub mod effect_controls;
