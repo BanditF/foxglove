@@ -177,22 +177,58 @@ impl ArtTarget {
         })
     }
 
-    /// The connected keyboard's art screen, else the older firmware's (its board's profile,
-    /// #563), else [`ArtTarget::FIRMWARE`].
-    pub fn current() -> ArtTarget {
+    /// [`ArtTarget::of`], or why the screen can't take art (#340): a format other than 1 bit,
+    /// or a size an NVA1 header can't hold.
+    pub fn try_of(screen: &super::screen_roles::Screen) -> Result<ArtTarget, String> {
+        let the = super::parts::upper_first(&screen.the());
+        if screen.format != "1bit" {
+            return Err(format!(
+                "{the} takes {} pictures; art is 1-bit.",
+                screen.format
+            ));
+        }
+        ArtTarget::of(screen).ok_or_else(|| {
+            let (w, h) = screen.upright();
+            format!("{the} is {w}x{h}; art can be at most 255x255.")
+        })
+    }
+
+    /// The older firmware's art screen (its board's profile, #563), else
+    /// [`ArtTarget::FIRMWARE`].
+    pub fn old_firmware() -> ArtTarget {
         use super::screen_roles::{first, Role};
-        super::screen_roles::current()
-            .as_deref()
-            .and_then(|s| first(s, Role::Art))
+        first(&super::screen_roles::old_firmware(), Role::Art)
             .and_then(ArtTarget::of)
-            .or_else(|| {
-                first(&super::screen_roles::old_firmware(), Role::Art).and_then(ArtTarget::of)
-            })
             .unwrap_or(ArtTarget::FIRMWARE)
     }
 
+    /// The connected keyboard's art target (#340): its art screen (the firmware's description,
+    /// else its profile's); with no art screen said, the older firmware's. `Err` says why the
+    /// keyboard's art screen can't take art.
+    pub fn resolve() -> Result<ArtTarget, String> {
+        #[cfg(test)]
+        if let Some(screens) = TEST_SCREENS.with_borrow(|s| s.clone()) {
+            return Self::resolve_in(Some(&screens));
+        }
+        Self::resolve_in(super::screen_roles::current().as_deref())
+    }
+
+    fn resolve_in(screens: Option<&[super::screen_roles::Screen]>) -> Result<ArtTarget, String> {
+        use super::screen_roles::{first, Role};
+        match screens.and_then(|s| first(s, Role::Art)) {
+            Some(screen) => ArtTarget::try_of(screen),
+            None => Ok(ArtTarget::old_firmware()),
+        }
+    }
+
+    /// The connected keyboard's art screen, else the older firmware's (its board's profile,
+    /// #563), else [`ArtTarget::FIRMWARE`].
+    pub fn current() -> ArtTarget {
+        ArtTarget::resolve().unwrap_or_else(|_| ArtTarget::old_firmware())
+    }
+
     /// The art's size upright, as drawn.
-    fn upright(self) -> (u32, u32) {
+    pub fn upright(self) -> (u32, u32) {
         if self.rotation % 2 == 1 {
             (self.height, self.width)
         } else {
@@ -201,18 +237,118 @@ impl ArtTarget {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The previews' keyboard screens (#340), so a made-up board's art screen can be drawn
+    /// without touching the process-wide board.
+    pub static TEST_SCREENS: std::cell::RefCell<Option<Vec<super::screen_roles::Screen>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// A folder holds one set when it has a `meta.txt`.
 pub fn is_set(folder: &Path) -> bool {
     folder.join("meta.txt").is_file()
 }
 
+/// How a piece was made to fit the art screen (#340). The rule, the same for every board: art
+/// drawn at the screen's size goes as it is; bigger art is scaled down evenly until it fits;
+/// smaller art keeps its size. Either way it is centred and the rest is the background. Art is
+/// never stretched one way more than the other, and never scaled up (so the Corne's art, and
+/// what `scripts/flipper_art.py` writes, stay as they were).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fit {
+    /// Drawn at the screen's size.
+    AsMade,
+    /// From the set's `<w>x<h>` folder, drawn for this screen.
+    Variant,
+    /// Drawn smaller (upright `from`): centred at its size.
+    Centred { from: (u32, u32) },
+    /// Drawn bigger (upright `from`): scaled down to fit, centred.
+    ScaledDown { from: (u32, u32) },
+}
+
+/// The [`Fit`] rule as the Screens page's note says it on hover (#340).
+pub const FIT_RULE: &str = "Art drawn for another screen is fitted to this board's art screen: \
+     bigger art is scaled down evenly until it fits, smaller art keeps its size, and either way \
+     it is centred with the background round it. A set's own folder for this screen's size \
+     (<width>x<height>) is used instead when it has one.";
+
+impl Fit {
+    /// For a piece not made for `target`, the rule that fitted it, as the art tile's hover says.
+    pub fn note(self, target: ArtTarget) -> Option<String> {
+        let (uw, uh) = target.upright();
+        let (from, how) = match self {
+            Fit::AsMade | Fit::Variant => return None,
+            Fit::Centred { from } => (from, "centred at its size"),
+            Fit::ScaledDown { from } => (from, "scaled down evenly to fit, centred"),
+        };
+        Some(format!(
+            "Drawn at {}x{}, not for this board's {uw}x{uh} art screen: {how}, with the \
+             background round it. A {uw}x{uh} folder in the set is used instead when there is one.",
+            from.0, from.1
+        ))
+    }
+
+    /// How a source of upright `from` fits `target`.
+    fn of(from: (u32, u32), target: ArtTarget) -> Fit {
+        let (uw, uh) = target.upright();
+        if from == (uw, uh) {
+            Fit::AsMade
+        } else if from.0 > uw || from.1 > uh {
+            Fit::ScaledDown { from }
+        } else {
+            Fit::Centred { from }
+        }
+    }
+
+    /// The fit of a set from the fits of its frames: the first that isn't as made.
+    fn of_all(fits: impl IntoIterator<Item = Fit>) -> Fit {
+        let fits: Vec<Fit> = fits.into_iter().collect();
+        fits.iter()
+            .copied()
+            .find(|f| matches!(f, Fit::ScaledDown { .. }))
+            .or_else(|| fits.iter().copied().find(|f| *f != Fit::AsMade))
+            .unwrap_or(Fit::AsMade)
+    }
+}
+
+/// The folder of a set drawn for `target` (#340): `<set>/<w>x<h>`, upright as drawn (e.g.
+/// `Bandit_idle/144x112`), when it is a set.
+pub fn variant(folder: &Path, target: ArtTarget) -> Option<std::path::PathBuf> {
+    let (uw, uh) = target.upright();
+    let v = folder.join(format!("{uw}x{uh}"));
+    is_set(&v).then_some(v)
+}
+
 /// The folder's frames encoded as one pushable blob for `target`, its ink normalised to
-/// `polarity` (#666).
+/// `polarity` (#666). The app uses [`encode_set`]; the tests check the blob alone.
+#[cfg(test)]
 pub fn encode_folder(
     folder: &Path,
     target: ArtTarget,
     polarity: Polarity,
 ) -> Result<Vec<u8>, String> {
+    encode_set(folder, target, polarity).map(|(blob, _)| blob)
+}
+
+/// [`encode_folder`], plus how the set was fitted (#340): from its variant for `target` when it
+/// has one, else from its own frames by the [`Fit`] rule.
+pub fn encode_set(
+    folder: &Path,
+    target: ArtTarget,
+    polarity: Polarity,
+) -> Result<(Vec<u8>, Fit), String> {
+    match variant(folder, target) {
+        Some(v) => encode_frames(&v, target, polarity).map(|(blob, _)| (blob, Fit::Variant)),
+        None => encode_frames(folder, target, polarity),
+    }
+}
+
+fn encode_frames(
+    folder: &Path,
+    target: ArtTarget,
+    polarity: Polarity,
+) -> Result<(Vec<u8>, Fit), String> {
     let meta =
         std::fs::read_to_string(folder.join("meta.txt")).map_err(|e| format!("meta.txt: {e}"))?;
     let value = |key: &str| {
@@ -234,6 +370,7 @@ pub fn encode_folder(
         .unwrap_or(2);
     let mut cache: Vec<(usize, GrayImage)> = Vec::new();
     let mut sources = Vec::with_capacity(order.len());
+    let mut fits = Vec::new();
     for &i in &order {
         if let Some((_, f)) = cache.iter().find(|(n, _)| *n == i) {
             sources.push(f.clone());
@@ -243,6 +380,7 @@ pub fn encode_folder(
         let img = image::open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .to_luma8();
+        fits.push(Fit::of(img.dimensions(), target));
         let img = fitted(&img, target);
         cache.push((i, img.clone()));
         sources.push(img);
@@ -253,7 +391,83 @@ pub fn encode_folder(
         .iter()
         .map(|img| to_bytes(&placed(img, target, invert), target))
         .collect();
-    encode(&frames, fps, target)
+    Ok((encode(&frames, fps, target)?, Fit::of_all(fits)))
+}
+
+/// The start of the error when a piece can't go on the art screen (#340); the reason follows.
+pub const DOES_NOT_FIT: &str = "doesn't fit the art screen: ";
+
+/// A blob as it is shown and sent to the art screen `target` (#340, [`fit_blob`]). A blob that
+/// doesn't decode goes as it is, for the push to refuse as before; one that can't be made for
+/// the screen (or a screen that can't take art) is an error starting [`DOES_NOT_FIT`].
+pub fn for_screen(
+    blob: &[u8],
+    target: &Result<ArtTarget, String>,
+) -> Result<(Vec<u8>, Fit), String> {
+    if super::art_preview::decode(blob).is_err() {
+        return Ok((blob.to_vec(), Fit::AsMade));
+    }
+    let target = target.as_ref().map_err(|e| format!("{DOES_NOT_FIT}{e}"))?;
+    fit_blob(blob, *target).map_err(|e| format!("{DOES_NOT_FIT}{e}"))
+}
+
+/// How many quarter turns a blob stored at `width` x `height` was made with: the older
+/// firmware's art screen's when it is that size (the art made before #340), else none.
+fn blob_turns(width: u32, height: u32) -> u8 {
+    let old = ArtTarget::old_firmware();
+    if (old.width, old.height) == (width, height) {
+        old.rotation
+    } else {
+        0
+    }
+}
+
+/// An encoded blob (a library file, a bundled set) for `target` (#340): as it is when it was
+/// made at the target's stored size (so a blob for this screen is never touched), else its
+/// frames upright, fitted by the [`Fit`] rule and encoded again, with the same play order and
+/// rate. `Err` when it doesn't decode or can't be encoded for the screen.
+pub fn fit_blob(blob: &[u8], target: ArtTarget) -> Result<(Vec<u8>, Fit), String> {
+    let d = super::art_preview::decode(blob).map_err(str::to_owned)?;
+    let (w, h) = (d.width as u32, d.height as u32);
+    if (w, h) == (target.width, target.height) {
+        return Ok((blob.to_vec(), Fit::AsMade));
+    }
+    let turns = blob_turns(w, h);
+    let stored = super::live_art::Stored::from_blob(blob).map_err(str::to_owned)?;
+    // Upright, ink black on white (a source as drawn), so the fit treats it as any source.
+    let up = super::live_art::upright(&stored, turns)?;
+    let u = super::art_preview::decode(&up).map_err(str::to_owned)?;
+    let (uw, uh) = (u.width as u32, u.height as u32);
+    let stride = u.width.div_ceil(8);
+    let images: Vec<GrayImage> = u
+        .frames
+        .iter()
+        .map(|bits| {
+            GrayImage::from_fn(uw, uh, |x, y| {
+                let (x, y) = (x as usize, y as usize);
+                let set = bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0;
+                Luma([if set == u.ink { 0 } else { 255 }])
+            })
+        })
+        .collect();
+    let unique: Vec<Vec<u8>> = images
+        .iter()
+        .map(|img| to_bytes(&placed(&fitted(img, target), target, false), target))
+        .collect();
+    let frames: Vec<Vec<u8>> = stored
+        .order
+        .iter()
+        .map(|&i| {
+            unique
+                .get(usize::from(i))
+                .cloned()
+                .ok_or("a frame past the set")
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((
+        encode(&frames, stored.fps, target)?,
+        Fit::of((uw, uh), target),
+    ))
 }
 
 /// Upright art scaled down to fit the target (as flipper_art's `fitted`), before the padding.
@@ -698,6 +912,166 @@ mod target_tests {
             rotation: 0,
         };
         assert!(encode(&[vec![0; 40 * 80]], 1, huge).is_err());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// A made-up board's art screen (#340): `w` x `h` stored, `rotation` turns, `format`.
+    fn screen(w: u16, h: u16, rotation: u8, format: &str) -> Screen {
+        Screen {
+            id: 0,
+            role: Role::Art,
+            name: "Art screen".into(),
+            width: w,
+            height: h,
+            format: format.into(),
+            rotation,
+        }
+    }
+
+    use crate::foxglove::screen_roles::Screen;
+
+    /// Ink pixels in a blob's first frame, as shown.
+    fn ink(blob: &[u8]) -> usize {
+        let img = super::super::art_preview::first_frame(blob).unwrap();
+        img.pixels
+            .iter()
+            .filter(|p| **p == egui::Color32::WHITE)
+            .count()
+    }
+
+    /// #340: the Corne's art comes out byte for byte as before: every bundled blob and the
+    /// fixtures go to its art screen untouched, and a folder made at its size is as made.
+    #[test]
+    fn the_cornes_art_is_byte_identical() {
+        let corne = of_board(&users_desk::board());
+        let target = ArtTarget::resolve_in(Some(&corne));
+        assert_eq!(target, Ok(ArtTarget::FIRMWARE));
+        assert_eq!(ArtTarget::resolve_in(None), Ok(ArtTarget::FIRMWARE));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/art");
+        let fixtures = ["ink-fixture.bin", "dark-fixture.bin"]
+            .map(|f| std::fs::read(root.join(f)).unwrap())
+            .to_vec();
+        let bundled = super::super::art_pieces::BUNDLED
+            .iter()
+            .map(|(_, b, _)| b.to_vec());
+        for blob in fixtures.into_iter().chain(bundled) {
+            assert_eq!(
+                for_screen(&blob, &target).unwrap(),
+                (blob.clone(), Fit::AsMade)
+            );
+        }
+        let (blob, fit) = encode_set(
+            &root.join("ink-fixture"),
+            ArtTarget::FIRMWARE,
+            Polarity::Auto,
+        )
+        .unwrap();
+        assert_eq!(blob, std::fs::read(root.join("ink-fixture.bin")).unwrap());
+        assert_eq!(fit, Fit::AsMade);
+        assert_eq!(fit.note(ArtTarget::FIRMWARE), None);
+    }
+
+    /// #340: a screen that can't take art is refused with the reason, never cut or drawn wrong.
+    #[test]
+    fn a_screen_that_cant_take_art_says_why() {
+        let wide = ArtTarget::resolve_in(Some(&[screen(320, 80, 0, "1bit")])).unwrap_err();
+        assert!(
+            wide.contains("320x80") && wide.contains("255x255"),
+            "{wide}"
+        );
+        let colour = ArtTarget::resolve_in(Some(&[screen(80, 160, 0, "rgb565")])).unwrap_err();
+        assert!(
+            colour.contains("rgb565") && colour.contains("1-bit"),
+            "{colour}"
+        );
+        let fury = super::super::art_pieces::BUNDLED[0].1;
+        let refused = for_screen(fury, &Err(wide.clone())).unwrap_err();
+        assert_eq!(refused, format!("{DOES_NOT_FIT}{wide}"));
+        assert_eq!(
+            super::super::art_words::problem(&refused, None),
+            super::super::art_words::Problem::DoesNotFit
+        );
+        // A file that isn't art goes as it is, for the push to refuse as before.
+        assert_eq!(
+            for_screen(b"junk", &Err(wide)).unwrap(),
+            (b"junk".to_vec(), Fit::AsMade)
+        );
+    }
+
+    /// #340: a one-piece board's 144x112 upright art screen (a Toucan-like target): Corne-sized
+    /// art is too tall, so it is scaled down evenly to fit and centred, and says so.
+    #[test]
+    fn taller_art_is_scaled_down_on_a_wide_screen() {
+        let target = ArtTarget::try_of(&screen(144, 112, 0, "1bit")).unwrap();
+        let d = folder("toucan", 68, 140);
+        let (blob, fit) = encode_set(&d, target, Polarity::Auto).unwrap();
+        assert_eq!(&blob[..6], b"NVA1\x90\x70");
+        assert_eq!(fit, Fit::ScaledDown { from: (68, 140) });
+        let note = fit.note(target).unwrap();
+        assert!(
+            note.contains("68x140") && note.contains("144x112"),
+            "{note}"
+        );
+        // The bundled Corne art, fitted the same way: the screen's size, the same play order.
+        let fury = super::super::art_encode::normalise_blob(
+            super::super::art_pieces::BUNDLED[0].1,
+            Polarity::Auto,
+        );
+        let (fitted, fit) = fit_blob(&fury, target).unwrap();
+        assert_eq!(fit, Fit::ScaledDown { from: (68, 140) });
+        let d2 = super::super::art_preview::decode(&fitted).unwrap();
+        assert_eq!((d2.width, d2.height), (144, 112));
+        assert_eq!(fitted[10..12], fury[10..12], "as many frames played");
+        assert_eq!(fitted[6], fury[6], "at the same rate");
+        // Uniform: the picture is 112 tall and (68 * 112 / 140 =) 54 wide, centred, so the
+        // columns outside 45..99 are the background.
+        let img = super::super::art_preview::first_frame(&fitted).unwrap();
+        let lit_at = |x: usize| (0..112).any(|y| img.pixels[y * 144 + x] == egui::Color32::WHITE);
+        assert!((0..45).chain(99..144).all(|x| !lit_at(x)));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// #340: a taller e-paper-like 88x184 art screen: Corne art fits, so it keeps its size,
+    /// centred with the background round it; every ink pixel survives.
+    #[test]
+    fn smaller_art_is_centred_at_its_size() {
+        let target = ArtTarget::try_of(&screen(88, 184, 0, "1bit")).unwrap();
+        let fury = super::super::art_encode::normalise_blob(
+            super::super::art_pieces::BUNDLED[0].1,
+            Polarity::Auto,
+        );
+        let (fitted, fit) = fit_blob(&fury, target).unwrap();
+        assert_eq!(fit, Fit::Centred { from: (68, 140) });
+        assert_eq!(&fitted[..6], b"NVA1\x58\xb8");
+        assert_eq!(ink(&fitted), ink(&fury), "nothing scaled, nothing lost");
+        // A folder made at 68x140 does the same; the upright square sits 10 in and 22 down.
+        let d = folder("halcyon", 68, 140);
+        let (blob, fit) = encode_set(&d, target, Polarity::Auto).unwrap();
+        assert_eq!(fit, Fit::Centred { from: (68, 140) });
+        let img = super::super::art_preview::first_frame(&blob).unwrap();
+        assert_eq!(img.pixels[(22 + 10) * 88 + 10 + 5], egui::Color32::WHITE);
+        assert_eq!(img.pixels[(22 + 9) * 88 + 10 + 5], egui::Color32::BLACK);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// #340: a set with a folder drawn for the board's screen (`<w>x<h>`, upright) uses it.
+    #[test]
+    fn a_sets_variant_for_the_screen_wins() {
+        let target = ArtTarget::try_of(&screen(144, 112, 0, "1bit")).unwrap();
+        let d = folder("variant", 68, 140);
+        let v = d.join("144x112");
+        std::fs::create_dir_all(&v).unwrap();
+        std::fs::write(v.join("meta.txt"), "Frame rate: 4\nFrames order: 0\n").unwrap();
+        GrayImage::from_pixel(144, 112, Luma([0]))
+            .save(v.join("frame_0.png"))
+            .unwrap();
+        assert_eq!(variant(&d, target), Some(v));
+        let (blob, fit) = encode_set(&d, target, Polarity::AsIs).unwrap();
+        assert_eq!(fit, Fit::Variant);
+        assert_eq!(fit.note(target), None, "made for it");
+        assert_eq!(ink(&blob), 144 * 112, "the variant's all-ink frame");
+        // The Corne has no 68x140 folder in it: its own frames, as made.
+        assert_eq!(variant(&d, ArtTarget::FIRMWARE), None);
         let _ = std::fs::remove_dir_all(d);
     }
 }

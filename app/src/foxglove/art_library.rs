@@ -11,6 +11,8 @@ pub struct Entry {
     /// in two places once (#59).
     pub bytes: usize,
     pub hash: u64,
+    /// How it was made for the art screen (#340): a blob made for another screen is fitted.
+    pub fit: super::art_encode::Fit,
 }
 
 /// A hash of an art blob's bytes; equal blobs are the same art.
@@ -26,6 +28,8 @@ pub struct Source {
     pub folder: PathBuf,
     pub blob: Result<Arc<Vec<u8>>, String>,
     pub preview: Option<Arc<egui::ColorImage>>,
+    /// How the set was fitted to the art screen (#340), when it encoded.
+    pub fit: Option<super::art_encode::Fit>,
 }
 
 #[derive(Clone, Default)]
@@ -36,9 +40,10 @@ pub struct Library {
 }
 static LIBRARY: OnceLock<Arc<Mutex<Library>>> = OnceLock::new();
 static LOADING: AtomicBool = AtomicBool::new(false);
-/// The art screen the source sets were last made for (#560): when the keyboard's turns out
+/// The art screen the source sets were last made for (#560, #340): when the keyboard's turns out
 /// different (it connected after the first scan), they are made again.
-static MADE_FOR: Mutex<Option<super::art_encode::ArtTarget>> = Mutex::new(None);
+type Target = Result<super::art_encode::ArtTarget, String>;
+static MADE_FOR: Mutex<Option<Target>> = Mutex::new(None);
 pub static PICK_FILE: AtomicBool = AtomicBool::new(false);
 
 /// A `.bin` the right screen can play. `<name>.left.bin` is a wallpaper's left-screen companion
@@ -63,8 +68,8 @@ pub fn snapshot() -> Library {
         scan(state.clone());
         state
     });
-    let made_for = *MADE_FOR.lock().unwrap_or_else(|e| e.into_inner());
-    if made_for.is_some_and(|t| t != super::art_encode::ArtTarget::current()) {
+    let made_for = MADE_FOR.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if made_for.is_some_and(|t| t != super::art_encode::ArtTarget::resolve()) {
         scan(state.clone());
     }
     state.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -79,8 +84,8 @@ fn scan(state: Arc<Mutex<Library>>) {
     if LOADING.swap(true, Ordering::Relaxed) {
         return;
     }
-    let target = super::art_encode::ArtTarget::current();
-    *MADE_FOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(target);
+    let target = super::art_encode::ArtTarget::resolve();
+    *MADE_FOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(target.clone());
     if std::thread::Builder::new()
         .name("foxglove-art-library".into())
         .spawn(move || {
@@ -94,14 +99,22 @@ fn scan(state: Arc<Mutex<Library>>) {
                         continue;
                     }
                     use std::io::Read;
-                    // As shown and sent: normalised to the piece's polarity (#666).
-                    let read = std::fs::File::open(&path).and_then(|f| {
-                        let mut bytes = Vec::new();
-                        f.take(65536).read_to_end(&mut bytes)?;
-                        Ok(super::art_polarity::blob(&path, &bytes))
-                    });
-                    let (bytes, hash) = read.as_ref().map_or((0, 0), |b| (b.len(), blob_hash(b)));
-                    let preview = read.map_err(|e| e.to_string()).and_then(|b| {
+                    // As shown and sent: normalised to the piece's polarity (#666), made for
+                    // the art screen (#340).
+                    let read = std::fs::File::open(&path)
+                        .and_then(|f| {
+                            let mut bytes = Vec::new();
+                            f.take(65536).read_to_end(&mut bytes)?;
+                            Ok(super::art_polarity::blob(&path, &bytes))
+                        })
+                        .map_err(|e| e.to_string())
+                        .and_then(|b| super::art_encode::for_screen(&b, &target));
+                    let (bytes, hash, fit) = read
+                        .as_ref()
+                        .map_or((0, 0, super::art_encode::Fit::AsMade), |(b, fit)| {
+                            (b.len(), blob_hash(b), *fit)
+                        });
+                    let preview = read.and_then(|(b, _)| {
                         super::art_preview::first_frame(&b)
                             .map(Arc::new)
                             .map_err(str::to_owned)
@@ -111,6 +124,7 @@ fn scan(state: Arc<Mutex<Library>>) {
                         preview,
                         bytes,
                         hash,
+                        fit,
                     });
                 }
                 library.entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -119,16 +133,21 @@ fn scan(state: Arc<Mutex<Library>>) {
                 for source in super::art_sources::load().sources {
                     for folder in super::art_sources::sets_in(&source) {
                         let polarity = super::art_polarity::of(&folder); // #666
-                        let blob = super::art_encode::encode_folder(&folder, target, polarity);
-                        let preview = blob
+                        let made = target
+                            .as_ref()
+                            .map_err(|e| format!("{}{e}", super::art_encode::DOES_NOT_FIT))
+                            .and_then(|t| super::art_encode::encode_set(&folder, *t, polarity));
+                        let preview = made
                             .as_ref()
                             .ok()
-                            .and_then(|b| super::art_preview::first_frame(b).ok())
+                            .and_then(|(b, _)| super::art_preview::first_frame(b).ok())
                             .map(Arc::new);
+                        let fit = made.as_ref().ok().map(|(_, fit)| *fit);
                         library.sources.push(Source {
                             folder,
-                            blob: blob.map(Arc::new),
+                            blob: made.map(|(b, _)| Arc::new(b)),
                             preview,
+                            fit,
                         });
                     }
                 }

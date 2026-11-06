@@ -150,11 +150,17 @@ pub struct Art {
     pub pcs: Vec<PcPiece>,
     pub kept: Vec<Option<Kept>>,
     pub unreadable: Vec<String>,
+    /// Pieces that can't go on the art screen, with the reason (#340).
+    pub refused: Vec<(String, String)>,
 }
 
 impl Art {
     pub fn new(s: Snapshot, library: art_library::Library) -> Art {
-        let (found, unreadable) = art_pieces::found(&library);
+        let art_pieces::Scanned {
+            found,
+            unreadable,
+            refused,
+        } = art_pieces::found(&library);
         let looks = art_pieces::wallpaper_files();
         let is_wallpaper = |file: &str| looks.contains(&file.to_lowercase());
         let pcs = art_pieces::pc_pieces(found, &is_wallpaper);
@@ -165,6 +171,7 @@ impl Art {
             pcs,
             kept,
             unreadable,
+            refused,
         }
     }
 
@@ -1390,6 +1397,15 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
     if let Some(m) = &state.message {
         ui.colored_label(p.warn, m);
     }
+    // #340: when no piece was made for this board, one note says so for all of them; a card
+    // says "fitted" only when the board has pieces of both kinds.
+    let fitted = Fitted::of(&art.pcs);
+    if fitted == Fitted::All {
+        ui.horizontal(|ui| {
+            let note = ui.weak(FITTED_NOTE);
+            theme::with_info(ui, note, super::art_encode::FIT_RULE);
+        });
+    }
     ui.add_space(6.0);
     let shown: Vec<(usize, Badge)> = art
         .pcs
@@ -1412,7 +1428,15 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
             for (i, badge) in row {
                 let piece = &art.pcs[*i];
                 let on = art_pieces::on_screen(s, piece, &art.kept, *i);
-                pc_tile(ui, piece, *i, *badge, on, can_send, has_places, acts);
+                let tile = Tile {
+                    badge: *badge,
+                    on,
+                    can_send,
+                    has_places,
+                    capacity: art_pieces::capacity(s),
+                    fitted_chip: fitted == Fitted::Some,
+                };
+                pc_tile(ui, piece, *i, tile, acts);
             }
         });
         ui.add_space(gap / 2.0);
@@ -1423,6 +1447,20 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
             art.unreadable.len()
         ))
         .on_hover_text(art.unreadable.join(", "));
+    }
+    if !art.refused.is_empty() {
+        // #340: what can't be made for this board's art screen, and why.
+        ui.weak(refused_line(
+            art.refused.len(),
+            &super::screen_roles::the(super::screen_roles::Role::Art),
+        ))
+        .on_hover_text(
+            art.refused
+                .iter()
+                .map(|(name, why)| format!("{name}: {why}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
     }
     if art.library.error.is_some() {
         ui.colored_label(p.warn, "Couldn't read the art folder on this PC.");
@@ -1453,18 +1491,76 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
 /// A PC card's outer width: its content, margins and line.
 const PC_TILE: f32 = 136.0;
 
-/// A PC piece's card: the picture, its name, its one badge, and Keep on keyboard.
-#[allow(clippy::too_many_arguments)]
-fn pc_tile(
-    ui: &mut egui::Ui,
-    piece: &PcPiece,
-    index: usize,
+/// A PC card's state: its badge, whether it shows now, what the keyboard allows, and the most
+/// a piece can be (the keyboard's art buffer).
+#[derive(Clone, Copy)]
+struct Tile {
     badge: Badge,
     on: bool,
     can_send: bool,
     has_places: bool,
-    acts: &mut Vec<Act>,
-) {
+    capacity: usize,
+    /// Show the "fitted" chip on a fitted piece (only when native and fitted pieces mix).
+    fitted_chip: bool,
+}
+
+/// The note above the PC cards when none was made for this board (#340).
+pub const FITTED_NOTE: &str = "Art isn't made for this board: it's fitted, never stretched";
+
+/// How many of the PC pieces were fitted to this board's art screen (#340).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fitted {
+    None,
+    /// Some, beside pieces made for it: each fitted card gets a chip.
+    Some,
+    /// Every one: one note for all.
+    All,
+}
+
+impl Fitted {
+    pub fn of(pcs: &[PcPiece]) -> Fitted {
+        let n = pcs.iter().filter(|p| p.fitted.is_some()).count();
+        match n {
+            0 => Fitted::None,
+            n if n == pcs.len() => Fitted::All,
+            _ => Fitted::Some,
+        }
+    }
+}
+
+/// "1 piece can't go on the art screen." / "3 pieces can't go on the art screen."
+pub fn refused_line(n: usize, the_screen: &str) -> String {
+    let pieces = if n == 1 { "piece" } else { "pieces" };
+    format!("{n} {pieces} can't go on {the_screen}.")
+}
+
+/// A thumbnail's size on a PC card: the picture's own shape, at most 70 points tall and as
+/// wide as the card allows (#340). The Corne's halved 34x70 thumbnail stays 34x70.
+fn tile_picture_size(size: [usize; 2]) -> egui::Vec2 {
+    let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+    let scale = f32::min(70.0 / h, (PC_TILE - 26.0) / w);
+    egui::vec2(w * scale, h * scale)
+}
+
+/// A size in KiB as the art words say it: "16 KiB", "12.5 KiB".
+pub fn kib(bytes: usize) -> String {
+    if bytes.is_multiple_of(1024) {
+        format!("{} KiB", bytes / 1024)
+    } else {
+        format!("{:.1} KiB", bytes as f32 / 1024.0)
+    }
+}
+
+/// A PC piece's card: the picture, its name, its one badge, and Keep on keyboard.
+fn pc_tile(ui: &mut egui::Ui, piece: &PcPiece, index: usize, tile: Tile, acts: &mut Vec<Act>) {
+    let Tile {
+        badge,
+        on,
+        can_send,
+        has_places,
+        capacity,
+        fitted_chip,
+    } = tile;
     let p = theme::palette(ui);
     let line = if on { p.accent } else { p.line };
     let r = egui::Frame::new()
@@ -1476,8 +1572,12 @@ fn pc_tile(
             ui.set_width(PC_TILE - 18.0);
             ui.vertical_centered(|ui| {
                 let t = texture(ui.ctx(), piece.key, true, &piece.image);
-                ui.add(egui::Image::new((t.id(), egui::vec2(34.0, 70.0))));
+                ui.add(egui::Image::new((t.id(), tile_picture_size(t.size()))));
                 ui.label(RichText::new(&piece.name).color(p.text_strong));
+                if let Some(rule) = piece.fitted.as_deref().filter(|_| fitted_chip) {
+                    // #340: drawn for another screen, fitted by the one rule.
+                    theme::hint_chip(ui, "fitted", Some(rule), None);
+                }
                 badge_ui(ui, badge);
                 match badge {
                     Badge::Sending(n) => {
@@ -1488,7 +1588,19 @@ fn pc_tile(
                         );
                     }
                     Badge::TooBig => {
-                        ui.label(RichText::new("over 16 KiB").small().color(p.danger));
+                        let over = piece.bytes.saturating_sub(capacity);
+                        ui.label(
+                            RichText::new(format!("over {}", kib(capacity)))
+                                .small()
+                                .color(p.danger),
+                        )
+                        .on_hover_text(format!(
+                            "{} is {}: {} over the {} the keyboard takes.",
+                            piece.name,
+                            kib(piece.bytes),
+                            kib(over),
+                            kib(capacity)
+                        ));
                     }
                     Badge::ThisPc
                         if has_places
@@ -1660,6 +1772,44 @@ pub mod tests {
         );
     }
 
+    /// #340: a card's picture keeps its shape; the Corne's halved art stays 34x70, a wide
+    /// screen's fits the card's width, and sizes read in KiB.
+    #[test]
+    fn tile_pictures_keep_their_shape() {
+        assert_eq!(super::tile_picture_size([34, 70]), egui::vec2(34.0, 70.0));
+        let wide = super::tile_picture_size([160, 56]);
+        assert!((wide.x - (PC_TILE - 26.0)).abs() < 0.01 && wide.y < 70.0);
+        assert!((wide.x / wide.y - 160.0 / 56.0).abs() < 0.01);
+        assert_eq!(super::kib(16384), "16 KiB");
+        assert_eq!(super::kib(12800), "12.5 KiB");
+    }
+
+    /// #340: one note when every piece is fitted, a chip per card only when they mix; the
+    /// refused line counts in words.
+    #[test]
+    fn fitted_pieces_are_noted_once_or_chipped() {
+        use super::{refused_line, Fitted};
+        let (_, lib) = sample();
+        let mut pcs = Art::new(Snapshot::default(), lib).pcs;
+        assert_eq!(Fitted::of(&pcs), Fitted::None);
+        for p in &mut pcs {
+            p.fitted = Some("rule".into());
+        }
+        assert_eq!(Fitted::of(&pcs), Fitted::All);
+        pcs[0].fitted = None;
+        assert_eq!(Fitted::of(&pcs), Fitted::Some);
+        assert_eq!(Fitted::of(&[]), Fitted::None);
+        assert_eq!(
+            refused_line(1, "the art screen"),
+            "1 piece can't go on the art screen."
+        );
+        assert_eq!(
+            refused_line(3, "the art screen"),
+            "3 pieces can't go on the art screen."
+        );
+        assert!(super::FITTED_NOTE.chars().count() <= 60);
+    }
+
     fn bundled(name: &str) -> Vec<u8> {
         std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1689,6 +1839,7 @@ pub mod tests {
                         .map_err(str::to_owned),
                     bytes: bytes.len(),
                     hash: art_library::blob_hash(&bytes),
+                    fit: super::super::art_encode::Fit::AsMade,
                 }
             })
             .collect();

@@ -56,10 +56,11 @@ impl Stored {
 }
 
 /// How many quarter turns clockwise art stored at `width` x `height` was turned for its screen:
-/// the connected keyboard's art screen when the size is its, else the firmware's, else none.
+/// the connected keyboard's art screen when the size is its, else the older firmware's (its
+/// board's profile), else none.
 pub fn turns_for(width: usize, height: usize) -> u8 {
     let is = |t: ArtTarget| t.width as usize == width && t.height as usize == height;
-    [ArtTarget::current(), ArtTarget::FIRMWARE]
+    [ArtTarget::current(), ArtTarget::old_firmware()]
         .into_iter()
         .find(|&t| is(t))
         .map_or(0, |t| t.rotation % 4)
