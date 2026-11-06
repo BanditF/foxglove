@@ -225,11 +225,8 @@ pub struct Thumb {
 }
 
 impl Thumb {
-    /// A keyboard: its own layout, from `key_layout::current()` or `key_layout::of(board)`.
-    ///
-    /// TODO(#800, C2): the focus switcher and its menu rows draw each keyboard with this, at
-    /// [`SMALL`] through [`row_thumb`]; D2 (#804) left the switcher to C2, still in flight.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A keyboard: its own layout, from `key_layout::current()`, `key_layout::of(board)` or
+    /// `keyboard_focus::layout` (the focus switcher's rows, #819).
     pub fn keyboard(layout: KeyLayout, tint: Tint) -> Thumb {
         Thumb {
             keys: Some(layout),

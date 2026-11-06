@@ -678,6 +678,7 @@ fn sample_strip() -> crate::foxglove::shell::StripState {
         unplug_warning: None,
         host_link: Some("USB"),
         parts: crate::foxglove::fixtures::users_desk::board().parts(),
+        switcher: Default::default(),
     }
 }
 
@@ -791,6 +792,7 @@ fn long_samples() -> Samples {
         unplug_warning: Some("Unplugging now leaves the keyboard unable to type".into()),
         host_link: Some("USB"),
         parts: crate::foxglove::fixtures::users_desk::board().parts(),
+        switcher: Default::default(),
     };
     for h in &mut s.keyboard.halves {
         h.text = format!(
@@ -905,6 +907,79 @@ fn keyboard_page_renders() {
     }
     // The right half's "no reply yet" is amber on the page as well as in the strip.
     assert!(count(&with, DARK.warn) > count(&without, DARK.warn));
+}
+
+/// #800: the keyboard switcher at the head of the status strip, and the pages following the
+/// focus, dark and light: one keyboard (a flat chip, no caret), two keyboards (the clickable chip),
+/// the list open, the Corne focused (the cards named for it) and the K5 Pro focused (its own
+/// layout, muted cards with read-only chips).
+#[test]
+fn focus_switcher_renders() {
+    use crate::foxglove::focus_ui::{tests as ft, Focused, Switcher, PREVIEW_OPEN};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::Choice;
+    let corne = Focused {
+        name: "Eyelash Corne".into(),
+        read_only: None,
+    };
+    let two = ft::sample(ft::SAMPLE_CORNE);
+    let one = Switcher {
+        rows: vec![two.rows[0].clone()],
+    };
+    let on_corne = |switcher: Switcher| {
+        let mut s = Samples::full();
+        s.strip.switcher = switcher;
+        s.keyboard.focus = Some(corne.clone());
+        s.keyboard.board.title = corne.name.clone();
+        s.lights.focus = Some(corne.clone());
+        s
+    };
+    let k5_switcher = ft::sample(ft::SAMPLE_K5);
+    let k5 = Focused {
+        name: "K5 Pro".into(),
+        read_only: k5_switcher.focused().and_then(|r| r.read_only.clone()),
+    };
+    // No VIA definition is drawn yet (B2): the K5 Pro's layout is B1's guess.
+    let layout = crate::foxglove::key_layout::resolve(None, &[], 0);
+    let on_k5 = {
+        let mut s = Samples::full();
+        s.strip.switcher = k5_switcher.clone();
+        let board = crate::foxglove::keyboard_page::read_only_board(&k5, layout.clone());
+        let link = k5_switcher.focused().unwrap().detail.clone();
+        s.keyboard = crate::foxglove::keyboard_page::View {
+            devices: s.keyboard.devices.clone(),
+            device_notice: true,
+            ..crate::foxglove::keyboard_page::read_only(k5.clone(), board, link)
+        };
+        s.lights = crate::foxglove::lights_page::read_only_view(
+            k5.clone(),
+            crate::foxglove::light_zones::line(None, &layout),
+        );
+        s
+    };
+    for (choice, theme) in [(Choice::Dark, "dark"), (Choice::Light, "light")] {
+        let strip_one = shell_preview_in(Page::Keyboard, &on_corne(one.clone()), 420.0, choice);
+        let strip_two = shell_preview_in(Page::Keyboard, &on_corne(two.clone()), 420.0, choice);
+        PREVIEW_OPEN.set(true);
+        let open = shell_preview_in(Page::Keyboard, &on_corne(two.clone()), 420.0, choice);
+        PREVIEW_OPEN.set(false);
+        let corne_lights = shell_preview_in(Page::Lights, &on_corne(two.clone()), 760.0, choice);
+        let k5_keyboard = shell_preview_in(Page::Keyboard, &on_k5, 900.0, choice);
+        let k5_lights = shell_preview_in(Page::Lights, &on_k5, 760.0, choice);
+        PREVIEW_OPEN.set(true);
+        let k5_open = shell_preview_in(Page::Keyboard, &on_k5, 420.0, choice);
+        PREVIEW_OPEN.set(false);
+        assert_ne!(strip_one, strip_two, "{theme}: the caret and the outline");
+        assert_ne!(strip_two, open, "{theme}: the list");
+        assert_ne!(strip_two, k5_open, "{theme}: the K5 Pro in focus");
+        keep(&format!("ui-800-strip-one-{theme}.png"), &strip_one);
+        keep(&format!("ui-800-strip-two-{theme}.png"), &strip_two);
+        keep(&format!("ui-800-list-open-{theme}.png"), &open);
+        keep(&format!("ui-800-list-open-k5-{theme}.png"), &k5_open);
+        keep(&format!("ui-800-lights-corne-{theme}.png"), &corne_lights);
+        keep(&format!("ui-800-keyboard-k5-{theme}.png"), &k5_keyboard);
+        keep(&format!("ui-800-lights-k5-{theme}.png"), &k5_lights);
+    }
 }
 
 /// #796: the Keyboard page drawing from each layout source, each with its chip (the Corne from

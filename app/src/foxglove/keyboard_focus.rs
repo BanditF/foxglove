@@ -37,6 +37,22 @@ use super::key_layout::KeyLayout;
 /// The store's section.
 pub const SECTION: &str = "focus";
 
+#[cfg(test)]
+thread_local! {
+    /// Tests share one settings folder: one that picks through [`set`] keeps its `[focus]` in
+    /// a section of its own, so it can't become another test's remembered keyboard.
+    pub static TEST_SECTION: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// The store section the focus is kept in: [`SECTION`] (a test's own one in tests).
+fn section() -> &'static str {
+    #[cfg(test)]
+    if let Some(s) = TEST_SECTION.get() {
+        return s;
+    }
+    SECTION
+}
+
 /// Where a keyboard was found, which says what Foxglove can do with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Source {
@@ -60,7 +76,6 @@ impl Source {
 
     /// Why a keyboard found this way has fewer controls, for C2's muted reason chip; `None`
     /// for the host link, which has them all.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn limit(self) -> Option<&'static str> {
         match self {
             Source::HostLink => None,
@@ -430,7 +445,7 @@ fn with<R>(f: impl FnOnce(&mut Model) -> R) -> R {
 /// The saved `[focus]`, or the defaults when there is none or the store can't be read now
 /// (nothing is saved until the user picks).
 fn loaded() -> Model {
-    Model::new(&super::store::try_load::<Saved>(SECTION).unwrap_or_default())
+    Model::new(&super::store::try_load::<Saved>(section()).unwrap_or_default())
 }
 
 /// Each keyboard's board profile, looked up once when it is first reported (on the reporting
@@ -577,15 +592,13 @@ pub fn pin(view: View, key: Option<&str>) -> Result<(), String> {
 
 /// Read-modify-write of `[focus]`, so a pick and a pin can't undo each other.
 fn save(change: impl FnOnce(&mut Saved)) {
-    if let Err(e) = super::store::update(SECTION, change) {
+    if let Err(e) = super::store::update(section(), change) {
         eprintln!("Foxglove: can't save the keyboard focus: {e}");
     }
 }
 
 /// `keyboard`'s keys, from B1's ladder (`key_layout`): what its sources handed over for it, else
 /// its board profile (looked up when it was first reported), else a guess. Asks it nothing.
-// C2-C4 read it (#800, #801, #802); C1 builds the model only.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn layout(keyboard: &Keyboard) -> KeyLayout {
     let board = BOARDS
         .lock()
