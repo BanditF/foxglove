@@ -267,6 +267,12 @@ pub enum Fit {
     ScaledDown { from: (u32, u32) },
 }
 
+/// The [`Fit`] rule as the Screens page's note says it on hover (#340).
+pub const FIT_RULE: &str = "Art drawn for another screen is fitted to this board's art screen: \
+     bigger art is scaled down evenly until it fits, smaller art keeps its size, and either way \
+     it is centred with the background round it. A set's own folder for this screen's size \
+     (<width>x<height>) is used instead when it has one.";
+
 impl Fit {
     /// For a piece not made for `target`, the rule that fitted it, as the art tile's hover says.
     pub fn note(self, target: ArtTarget) -> Option<String> {

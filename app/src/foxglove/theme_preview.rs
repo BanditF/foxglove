@@ -1334,8 +1334,14 @@ fn screens_art_for_another_board_renders() {
         fit: None,
     });
     let other = shell_preview_with(Page::Screens, &samples, 1500.0);
+    // A board with art of both kinds: one piece made for it, so the fitted ones get a chip.
+    let (_, lib) = samples.art.as_mut().expect("art sample");
+    lib.entries[0].fit = crate::foxglove::art_encode::Fit::AsMade;
+    let mixed = shell_preview_with(Page::Screens, &samples, 1500.0);
     TEST_SCREENS.set(None);
     keep("ui-340-screens-other-board.png", &other);
+    keep("ui-340-screens-mixed.png", &mixed);
+    assert_ne!(other, mixed);
     assert_ne!(corne, other);
     let lit = Color32::from_rgb(0xe8, 0xea, 0xe9);
     let count = |img: &image::RgbaImage, c: Color32| {

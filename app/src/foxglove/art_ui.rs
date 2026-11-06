@@ -1397,6 +1397,15 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
     if let Some(m) = &state.message {
         ui.colored_label(p.warn, m);
     }
+    // #340: when no piece was made for this board, one note says so for all of them; a card
+    // says "fitted" only when the board has pieces of both kinds.
+    let fitted = Fitted::of(&art.pcs);
+    if fitted == Fitted::All {
+        ui.horizontal(|ui| {
+            let note = ui.weak(FITTED_NOTE);
+            theme::with_info(ui, note, super::art_encode::FIT_RULE);
+        });
+    }
     ui.add_space(6.0);
     let shown: Vec<(usize, Badge)> = art
         .pcs
@@ -1425,6 +1434,7 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
                     can_send,
                     has_places,
                     capacity: art_pieces::capacity(s),
+                    fitted_chip: fitted == Fitted::Some,
                 };
                 pc_tile(ui, piece, *i, tile, acts);
             }
@@ -1440,10 +1450,9 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
     }
     if !art.refused.is_empty() {
         // #340: what can't be made for this board's art screen, and why.
-        ui.weak(format!(
-            "{} piece(s) can't go on {}.",
+        ui.weak(refused_line(
             art.refused.len(),
-            super::screen_roles::the(super::screen_roles::Role::Art)
+            &super::screen_roles::the(super::screen_roles::Role::Art),
         ))
         .on_hover_text(
             art.refused
@@ -1491,6 +1500,38 @@ struct Tile {
     can_send: bool,
     has_places: bool,
     capacity: usize,
+    /// Show the "fitted" chip on a fitted piece (only when native and fitted pieces mix).
+    fitted_chip: bool,
+}
+
+/// The note above the PC cards when none was made for this board (#340).
+pub const FITTED_NOTE: &str = "Art isn't made for this board: it's fitted, never stretched";
+
+/// How many of the PC pieces were fitted to this board's art screen (#340).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fitted {
+    None,
+    /// Some, beside pieces made for it: each fitted card gets a chip.
+    Some,
+    /// Every one: one note for all.
+    All,
+}
+
+impl Fitted {
+    pub fn of(pcs: &[PcPiece]) -> Fitted {
+        let n = pcs.iter().filter(|p| p.fitted.is_some()).count();
+        match n {
+            0 => Fitted::None,
+            n if n == pcs.len() => Fitted::All,
+            _ => Fitted::Some,
+        }
+    }
+}
+
+/// "1 piece can't go on the art screen." / "3 pieces can't go on the art screen."
+pub fn refused_line(n: usize, the_screen: &str) -> String {
+    let pieces = if n == 1 { "piece" } else { "pieces" };
+    format!("{n} {pieces} can't go on {the_screen}.")
 }
 
 /// A thumbnail's size on a PC card: the picture's own shape, at most 70 points tall and as
@@ -1518,6 +1559,7 @@ fn pc_tile(ui: &mut egui::Ui, piece: &PcPiece, index: usize, tile: Tile, acts: &
         can_send,
         has_places,
         capacity,
+        fitted_chip,
     } = tile;
     let p = theme::palette(ui);
     let line = if on { p.accent } else { p.line };
@@ -1532,14 +1574,9 @@ fn pc_tile(ui: &mut egui::Ui, piece: &PcPiece, index: usize, tile: Tile, acts: &
                 let t = texture(ui.ctx(), piece.key, true, &piece.image);
                 ui.add(egui::Image::new((t.id(), tile_picture_size(t.size()))));
                 ui.label(RichText::new(&piece.name).color(p.text_strong));
-                if let Some(rule) = &piece.fitted {
+                if let Some(rule) = piece.fitted.as_deref().filter(|_| fitted_chip) {
                     // #340: drawn for another screen, fitted by the one rule.
-                    ui.label(
-                        RichText::new("Not made for this board")
-                            .small()
-                            .color(p.muted),
-                    )
-                    .on_hover_text(rule);
+                    theme::hint_chip(ui, "fitted", Some(rule), None);
                 }
                 badge_ui(ui, badge);
                 match badge {
@@ -1745,6 +1782,32 @@ pub mod tests {
         assert!((wide.x / wide.y - 160.0 / 56.0).abs() < 0.01);
         assert_eq!(super::kib(16384), "16 KiB");
         assert_eq!(super::kib(12800), "12.5 KiB");
+    }
+
+    /// #340: one note when every piece is fitted, a chip per card only when they mix; the
+    /// refused line counts in words.
+    #[test]
+    fn fitted_pieces_are_noted_once_or_chipped() {
+        use super::{refused_line, Fitted};
+        let (_, lib) = sample();
+        let mut pcs = Art::new(Snapshot::default(), lib).pcs;
+        assert_eq!(Fitted::of(&pcs), Fitted::None);
+        for p in &mut pcs {
+            p.fitted = Some("rule".into());
+        }
+        assert_eq!(Fitted::of(&pcs), Fitted::All);
+        pcs[0].fitted = None;
+        assert_eq!(Fitted::of(&pcs), Fitted::Some);
+        assert_eq!(Fitted::of(&[]), Fitted::None);
+        assert_eq!(
+            refused_line(1, "the art screen"),
+            "1 piece can't go on the art screen."
+        );
+        assert_eq!(
+            refused_line(3, "the art screen"),
+            "3 pieces can't go on the art screen."
+        );
+        assert!(super::FITTED_NOTE.chars().count() <= 60);
     }
 
     fn bundled(name: &str) -> Vec<u8> {
