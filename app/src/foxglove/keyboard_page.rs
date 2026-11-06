@@ -652,9 +652,7 @@ pub fn board_screens(
             Some(BoardScreen {
                 role,
                 part: if split {
-                    place
-                        .and_then(|p| parts.index(p))
-                        .unwrap_or(default_part)
+                    place.and_then(|p| parts.index(p)).unwrap_or(default_part)
                 } else {
                     0
                 },
@@ -1230,7 +1228,8 @@ pub mod tests {
         let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
 
         let (via, layout) = k5_pro_opened(1);
-        let via = crate::foxglove::key_layout::resolve(None, &[layout_of(&via, &layout).unwrap()], 0);
+        let via =
+            crate::foxglove::key_layout::resolve(None, &[layout_of(&via, &layout).unwrap()], 0);
         let one_piece = BoardView {
             layout: via,
             split: false,
@@ -1241,7 +1240,10 @@ pub mod tests {
         assert!(one_piece.screens.is_empty());
         board_frame(&ctx, &one_piece, vec![]);
         let hits = LAST_HITS.take().unwrap();
-        assert!(hits.screens.is_empty(), "no placeholder on a board without screens");
+        assert!(
+            hits.screens.is_empty(),
+            "no placeholder on a board without screens"
+        );
         let top = |keys: &[egui::Rect]| keys.iter().map(|k| k.top()).fold(f32::MAX, f32::min);
         let bare_top = top(&hits.keys);
         // No empty band where a screen would be: with a screen the keys sit a band lower.
@@ -1254,7 +1256,11 @@ pub mod tests {
             vec![],
         );
         let hits = LAST_HITS.take().unwrap();
-        assert_eq!(hits.screens.len(), 1, "a one-piece drawing has no right half");
+        assert_eq!(
+            hits.screens.len(),
+            1,
+            "a one-piece drawing has no right half"
+        );
         assert!((top(&hits.keys) - bare_top - (SCREEN_HEIGHT + 12.0)).abs() < 0.01);
         // Even with the Corne's sample screens around, a view built for it carries none.
         let spread = BoardView {
@@ -1305,11 +1311,21 @@ pub mod tests {
         both_left.screens[1].half = "left".into();
         let screens = board_screens(&of_board(&both_left), Some(&both_left), &both_left.parts());
         assert!(screens.iter().all(|s| s.part == 0), "{screens:?}");
-        board_frame(&ctx, &BoardView { screens, ..sample_board() }, vec![]);
+        board_frame(
+            &ctx,
+            &BoardView {
+                screens,
+                ..sample_board()
+            },
+            vec![],
+        );
         let hits = LAST_HITS.take().unwrap();
         assert_eq!(hits.screens.len(), 2);
         assert!(!hits.screens[0].intersects(hits.screens[1]));
-        let right_keys = hits.keys[21..].iter().map(|k| k.left()).fold(f32::MAX, f32::min);
+        let right_keys = hits.keys[21..]
+            .iter()
+            .map(|k| k.left())
+            .fold(f32::MAX, f32::min);
         assert!(hits.screens.iter().all(|s| s.center().x < right_keys));
     }
 
