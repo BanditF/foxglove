@@ -710,6 +710,19 @@ impl Devices for AppDevices {
                 }
                 overlay_window(super::overlay_restore::window_state())
             }
+            // "Show layer overlay" (API 1.13): the Keyboard page's checkbox, the same setting.
+            "overlay.shown" => Ok(json!(methods::OverlayShown {
+                on: super::overlay_shown::on()
+            })),
+            "overlay.set_shown" => {
+                let p: methods::SetOverlayShownParams = params(_params)?;
+                let on = super::overlay_shown::set(p.on).map_err(|e| Error {
+                    code: code::BACKEND,
+                    message: e.to_string(),
+                    data: None,
+                })?;
+                Ok(json!(methods::OverlayShown { on }))
+            }
             "focus.get" => Ok(json!(focus_now())),
             "focus.set" => {
                 let p: methods::SetFocusParams = params(_params)?;
@@ -1560,6 +1573,9 @@ mod parity_tests {
         assert_eq!(need("overlay.window"), Some("devices.read"));
         assert_eq!(need("tray.set_panel"), Some("app.windows"));
         assert_eq!(need("overlay.restore"), Some("app.windows"));
+        // API 1.13: "Show layer overlay" reads like the window, and writes need `app.windows`.
+        assert_eq!(need("overlay.shown"), Some("devices.read"));
+        assert_eq!(need("overlay.set_shown"), Some("app.windows"));
         assert_eq!(need("art.select"), Some("art.write"));
         assert!(!Permission::AppWindows.sensitive());
         // API 1.7 (#674): what the Lights page shows is a read.
@@ -1693,6 +1709,33 @@ mod tests {
                 .unwrap_err();
             assert_eq!(e.code, code::INVALID_PARAMS, "{params}");
         }
+    }
+
+    /// `overlay.set_shown` writes the setting the Keyboard page's checkbox reads, and
+    /// `overlay.shown` reads what the checkbox wrote: one setting (API 1.13).
+    #[test]
+    fn overlay_shown_is_the_checkbox_setting() {
+        use super::super::overlay_shown;
+        crate::foxglove::store::test_config_dir();
+        overlay_shown::TEST_SECTION.set(Some("overlay_shown_test_api"));
+        let shown = |v: Value| {
+            serde_json::from_value::<methods::OverlayShown>(v)
+                .unwrap()
+                .on
+        };
+        let off = AppDevices
+            .call_from(0, "overlay.set_shown", json!({"on": false}))
+            .unwrap();
+        assert!(!shown(off));
+        assert!(!overlay_shown::on(), "the checkbox sees the API's change");
+        overlay_shown::set(true).unwrap();
+        let now = AppDevices.call_from(0, "overlay.shown", json!({})).unwrap();
+        assert!(shown(now), "the API sees the checkbox's change");
+        let e = AppDevices
+            .call_from(0, "overlay.set_shown", json!({}))
+            .unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS);
+        overlay_shown::TEST_SECTION.set(None);
     }
 
     /// A keyboard's lights in memory: every write it took, in order.

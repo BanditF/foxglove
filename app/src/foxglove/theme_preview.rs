@@ -340,8 +340,10 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                         crate::foxglove::settings_ui::grid_heading(ui, text);
                     }
                 };
-                // #801: which keyboard it shows, the focus or a pin.
+                // On or off, then #801: which keyboard it shows, the focus or a pin.
                 if !legacy() {
+                    crate::foxglove::overlay_shown::row(ui);
+                    crate::foxglove::overlay_shown::mute_if_off(ui);
                     crate::foxglove::focus_pins::overlay_row(ui);
                 }
                 grid_heading(ui, "When it shows");
@@ -402,6 +404,9 @@ fn keypeek_groups(ui: &mut egui::Ui) {
             });
     });
     section(ui, "Theme", |ui| {
+        if !legacy() {
+            crate::foxglove::overlay_shown::mute_if_off(ui);
+        }
         // The window theme is in "Appearance" since #390.
         let mut white = Color32::WHITE;
         ui.horizontal(|ui| {
@@ -884,6 +889,47 @@ fn layer_overlay_card_renders() {
     keep("ui-ia-keyboard-full.png", &keyboard);
     keep("ui-ia-app.png", &app);
     assert_ne!(keyboard, app);
+}
+
+/// "Show layer overlay" on and off, dark and light: the Layer overlay card alone (its
+/// appearance grid and layer colours, the keymap source hidden). Off mutes the rest of the card.
+#[test]
+fn layer_overlay_on_off_renders() {
+    use crate::foxglove::theme::{Choice, DARK, LIGHT};
+    let mut seen = Vec::new();
+    for (choice, name, ground) in [
+        (Choice::Dark, "dark", DARK.ground),
+        (Choice::Light, "light", LIGHT.ground),
+    ] {
+        for on in [true, false] {
+            crate::foxglove::overlay_shown::PREVIEW.set(Some(on));
+            // One keyboard, connected, one layout: the card ends with its layer colours.
+            crate::foxglove::settings_ui::keymap_choice(1, true, 1);
+            let ctx = preview_ctx();
+            crate::foxglove::theme::apply_choice(&ctx, choice);
+            let img = render(&ctx, egui::vec2(720.0, 720.0), ground, |ctx| {
+                egui::Area::new(egui::Id::new("overlay-card"))
+                    .fixed_pos(egui::pos2(16.0, 10.0))
+                    .show(ctx, |ui| {
+                        ui.set_width(688.0);
+                        keypeek_groups(ui);
+                    });
+            });
+            crate::foxglove::settings_ui::keymap_choice(0, false, 0);
+            keep(
+                &format!(
+                    "overlay-toggle-{}-{name}.png",
+                    if on { "on" } else { "off" }
+                ),
+                &img,
+            );
+            seen.push(img);
+        }
+    }
+    crate::foxglove::overlay_shown::PREVIEW.set(None);
+    // Off looks different from on, in each theme.
+    assert_ne!(seen[0], seen[1]);
+    assert_ne!(seen[2], seen[3]);
 }
 
 /// The Keyboard page (#386) with a keyboard and without one.

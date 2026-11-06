@@ -499,6 +499,19 @@ pub struct OverlayWindow {
     pub on_screen: bool,
 }
 
+/// "Show layer overlay" (API 1.13): whether the layer overlay shows at all. Off hides it and
+/// keeps its other settings. The Keyboard page's checkbox reads and writes the same setting.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OverlayShown {
+    pub on: bool,
+}
+
+/// Turns "Show layer overlay" on or off (API 1.13), as the Keyboard page's checkbox does.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SetOverlayShownParams {
+    pub on: bool,
+}
+
 /// A split keyboard's "right half's lights follow the left", saved on the keyboard (#617, API 1.5):
 /// the answer to `lighting.sync` and `lighting.set_sync`, read back from the keyboard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1018,6 +1031,21 @@ pub const METHODS: &[Method] = &[
         permission: Some("app.windows"),
         params: schema!(Empty),
         result: Some(schema!(OverlayWindow)),
+    },
+    // "Show layer overlay", the Keyboard page's checkbox (API 1.13).
+    Method {
+        name: "overlay.shown",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(OverlayShown)),
+    },
+    Method {
+        name: "overlay.set_shown",
+        kind: Kind::Call,
+        permission: Some("app.windows"),
+        params: schema!(SetOverlayShownParams),
+        result: Some(schema!(OverlayShown)),
     },
     // Hold and give back the lights (#236).
     Method {

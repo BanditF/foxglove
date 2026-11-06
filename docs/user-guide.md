@@ -161,7 +161,9 @@ The sidebar has six pages, top to bottom:
     report a battery aren't listed, and the keyboard has its own lines. The tray panel shows the
     same list under **Batteries** when one reports.
   - **Layer overlay:** everything about the picture of the keymap that pops up on screen when
-    you change layer, in one card: **When it shows** (how long it stays, the delay before it
+    you change layer, in one card. **Show layer overlay** at the top turns it on or off (on by
+    default); off hides it at once and keeps the rest of the card's settings, shown greyed until
+    you turn it back on. Then **When it shows** (how long it stays, the delay before it
     appears), **Appearance** (display, alignment, size, opacity, labels), **Layer colours** (the
     text colour, and per layer its colour and whether it shows), and **Keymap source**, the
     keyboard the overlay reads (**Device**, **Layout**, **Connect**). Keymap source shows only

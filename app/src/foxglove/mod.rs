@@ -98,6 +98,7 @@ pub mod overlay_opacity;
 pub mod overlay_place;
 pub mod overlay_profile;
 pub mod overlay_restore;
+pub mod overlay_shown;
 mod palette_file;
 mod panel_polarity_ui;
 pub mod parts;
