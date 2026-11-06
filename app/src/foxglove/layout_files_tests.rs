@@ -168,6 +168,81 @@ fn forgetting_goes_back_to_the_guess_and_out_of_the_store() {
     assert!(!loaded(0xB304, 0x0001));
 }
 
+/// The scan's VIA definition for the same board, as `via_host` hands it over on each scan.
+fn scanned_k5() -> Supplied {
+    let (summary, layout) = crate::foxglove::via_host::tests::k5_pro_opened(0);
+    crate::foxglove::via_host::layout_of(&summary, &layout).unwrap()
+}
+
+/// User intent beats auto-detect: a loaded file survives a rescan that hands a VIA definition
+/// for the same vid:pid, and wins over it.
+#[test]
+fn a_loaded_file_survives_a_rescan_that_hands_a_via_definition() {
+    isolated();
+    let kb = (0xB308, 0x0001);
+    set_for_test(0xB308, 0x0999, None);
+    // The scan first, then the file, then rescans (each hands its definition over again).
+    crate::foxglove::key_layout::from_definition(kb.0, kb.1, scanned_k5());
+    load(kb.0, kb.1, &file("rescan.json", KLE)).unwrap();
+    for _ in 0..2 {
+        crate::foxglove::key_layout::from_definition(kb.0, kb.1, scanned_k5());
+        assert_eq!(
+            source(kb.0, kb.1),
+            LayoutSource::Definition(DefinitionFormat::Kle)
+        );
+    }
+    // A scan that no longer finds the board withdraws its definition, never the file.
+    crate::foxglove::key_layout::withdraw(
+        kb.0,
+        kb.1,
+        LayoutSource::Definition(DefinitionFormat::Via),
+    );
+    assert_eq!(
+        source(kb.0, kb.1),
+        LayoutSource::Definition(DefinitionFormat::Kle)
+    );
+    // Loaded before the scan, at start: the scan's hand-over still doesn't replace it.
+    let kb2 = (0xB308, 0x0002);
+    load(kb2.0, kb2.1, &file("first.json", KLE)).unwrap();
+    crate::foxglove::key_layout::from_definition(kb2.0, kb2.1, scanned_k5());
+    assert_eq!(
+        source(kb2.0, kb2.1),
+        LayoutSource::Definition(DefinitionFormat::Kle)
+    );
+    // And the page offers "Forget this layout" on it.
+    let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+    LAST_FORGET.set(None);
+    frame(&ctx, &of_keyboard(kb2.0, kb2.1, None), Some(kb2), vec![]);
+    assert!(LAST_FORGET.get().is_some());
+}
+
+/// After "Forget this layout" the scan's VIA definition draws the board again, with no rescan.
+#[test]
+fn after_forget_the_via_definition_draws_again() {
+    isolated();
+    let kb = (0xB309, 0x0001);
+    set_for_test(0xB309, 0x0999, None);
+    crate::foxglove::key_layout::from_definition(kb.0, kb.1, scanned_k5());
+    load(kb.0, kb.1, &file("forget-via.json", KLE)).unwrap();
+    assert_eq!(
+        source(kb.0, kb.1),
+        LayoutSource::Definition(DefinitionFormat::Kle)
+    );
+    forget(kb.0, kb.1).unwrap();
+    let back = of_keyboard(kb.0, kb.1, None);
+    assert_eq!(back.source, LayoutSource::Definition(DefinitionFormat::Via));
+    assert_eq!(
+        back.parts.iter().map(Vec::len).sum::<usize>(),
+        scanned_k5().layouts[0].1.len(),
+        "the K5 Pro's own keys"
+    );
+    // No forget link on the scan's own definition.
+    let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+    LAST_FORGET.set(None);
+    frame(&ctx, &back, Some(kb), vec![]);
+    assert!(LAST_FORGET.get().is_none());
+}
+
 /// The store is read-modify-write: a load keeps the section's other keyboards and the store's
 /// other sections.
 #[test]

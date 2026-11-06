@@ -7,9 +7,11 @@
 //! - The layout's keys (not the file's path) are kept in the store's own `[layout_files]`
 //!   section, by the keyboard's `vvvv:pppp`, with read-modify-write, so the file may move or go
 //!   and the layout survives updates.
-//! - It goes to `key_layout` as the ladder's "definition" step ([`key_layout::from_definition`]),
-//!   now and at every start, so it wins over a profile or a guess from the next frame and on
-//!   every later connect, without a restart. Forgetting it withdraws it the same way.
+//! - It goes to `key_layout` on the ladder's "definition" step ([`key_layout::from_file`]), now
+//!   and at every start, so it wins over a profile or a guess from the next frame and on every
+//!   later connect, without a restart. It also wins over a VIA definition a scan hands over for
+//!   the same board (user intent beats auto-detect) until it is forgotten; then the scan's
+//!   definition draws the board again.
 //! - Only drawn: nothing is sent to the keyboard.
 //!
 //! The file picker is a trait ([`Picker`]) so tests hand in a fake one: no dialog opens in them.
@@ -180,7 +182,7 @@ fn hand_over_all(saved: &Saved) {
         };
         let format = definition_format(&entry.format);
         with_loaded(|l| l.insert(kb.clone(), format.unwrap_or(DefinitionFormat::Via)));
-        key_layout::from_definition(vid, pid, layout);
+        key_layout::from_file(vid, pid, layout);
     }
 }
 
@@ -208,7 +210,7 @@ pub fn load(vid: u16, pid: u16, path: &Path) -> Result<(), String> {
     })
     .map_err(|e| format!("Couldn't save the layout: {e}."))?;
     with_loaded(|l| l.insert(id(vid, pid), format));
-    key_layout::from_definition(vid, pid, supplied);
+    key_layout::from_file(vid, pid, supplied);
     eprintln!(
         "Foxglove: keyboard {}: layout loaded from {file}",
         id(vid, pid)
@@ -216,16 +218,15 @@ pub fn load(vid: u16, pid: u16, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Forgets keyboard (vid, pid)'s loaded layout: out of `[layout_files]` and withdrawn, so the
-/// next source down draws it again.
+/// Forgets keyboard (vid, pid)'s loaded layout: out of `[layout_files]` and withdrawn, so a
+/// scanned VIA definition, else the next source down, draws it again.
 pub fn forget(vid: u16, pid: u16) -> Result<(), String> {
     super::store::update::<Saved>(SECTION, |s| {
         s.keyboards.remove(&id(vid, pid));
     })
     .map_err(|e| format!("Couldn't forget the layout: {e}."))?;
-    if let Some(format) = with_loaded(|l| l.remove(&id(vid, pid))) {
-        key_layout::withdraw(vid, pid, LayoutSource::Definition(format));
-    }
+    with_loaded(|l| l.remove(&id(vid, pid)));
+    key_layout::forget_file(vid, pid);
     Ok(())
 }
 
