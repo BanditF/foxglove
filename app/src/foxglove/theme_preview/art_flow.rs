@@ -256,3 +256,80 @@ fn kept_place_under_a_merged_name_renders() {
     keep("ui-853-kept-merged-name.png", &page((s, l), 1300.0));
     assert!(piece.is_some(), "the first kept place finds its piece");
 }
+
+/// The KEPT list's follow-ups to #853: a kept place with no file on this PC keeps its ART
+/// placeholder and says why on hover; Keep refuses a piece already kept; and two places holding
+/// the same piece offer the copy's place back, with a confirm.
+#[test]
+fn kept_missing_and_duplicates_render() {
+    let tile_at = |slot: u8| {
+        art_ui::KEPT_TILES
+            .with_borrow(|t| t.iter().find(|(n, _)| *n == slot).map(|(_, r)| *r))
+            .expect("the kept tile was drawn")
+    };
+    // Around a kept tile, with room for its tooltip, in pixels.
+    let around = |img: &image::RgbaImage, r: egui::Rect| {
+        let x = (240.0 * PPP) as u32;
+        let y = ((r.min.y - 120.0).max(0.0) * PPP) as u32;
+        let w = (820.0 * PPP) as u32;
+        let h = (360.0 * PPP) as u32;
+        image::imageops::crop_imm(img, x, y, w.min(img.width() - x), h.min(img.height() - y))
+            .to_image()
+    };
+
+    // bandit-radar (place 3) has no file on this PC: hovered.
+    let sample = art_ui::tests::sample;
+    page(sample(), 1900.0);
+    let radar = tile_at(2);
+    POINTER.set(Some(radar.center()));
+    let hovered = page(sample(), 1900.0);
+    POINTER.set(None);
+    keep("kept-dup-1-missing-hover.png", &around(&hovered, radar));
+    keep("kept-dup-1-missing-hover-page.png", &hovered);
+
+    // moon-garden sent from this PC while a place keeps it: Keep is refused.
+    let (mut s, l) = sample();
+    s.sent = Some(("art/moon-garden.bin".into(), 0));
+    s.pinned = Some(crate::foxglove::art_service::Choice::File(
+        "art/moon-garden.bin".into(),
+    ));
+    let refused = page((s, l), 1900.0);
+    let top = image::imageops::crop_imm(&refused, 0, 0, refused.width(), (620.0 * PPP) as u32);
+    keep("kept-dup-2-already-kept.png", &top.to_image());
+
+    // hearth-moongarde (place 1) and moon-garden (place 4): the same bytes in two places.
+    let dup = || {
+        let (mut s, mut l) = sample();
+        let garden = l
+            .entries
+            .iter()
+            .find(|e| e.path.ends_with("moon-garden.bin"))
+            .expect("moon-garden in the sample")
+            .clone();
+        l.entries.push(crate::foxglove::art_library::Entry {
+            path: "art/hearth-moongarden.bin".into(),
+            ..garden.clone()
+        });
+        s.slots[0] = foxglove_link::protocol::SlotInfo {
+            slot: 0,
+            used: true,
+            writes: 1,
+            len: garden.bytes as u16,
+            name: "hearth-moongarde".into(),
+        };
+        (s, l)
+    };
+    let (s, l) = dup();
+    let art = art_ui::Art::new(s.clone(), l.clone());
+    let dups = crate::foxglove::art_pieces::duplicates(&art.s, &art.kept);
+    assert_eq!(dups.len(), 1, "{dups:?}");
+    assert_eq!((dups[0].slot, dups[0].of_slot), (3, 0));
+    let offer = page((s, l), 1900.0);
+    let garden = tile_at(3);
+    keep("kept-dup-3-free-offer.png", &around(&offer, garden));
+    keep("kept-dup-3-free-offer-page.png", &offer);
+    art_ui::preview_free(Some(3));
+    let confirm = page(dup(), 1900.0);
+    art_ui::preview_free(None);
+    keep("kept-dup-4-free-confirm.png", &confirm);
+}
