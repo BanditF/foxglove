@@ -99,7 +99,7 @@ the half has built in.
 | 93 | 1 | the left: the polarity the right acknowledged on this link (0xff none) |
 | 94 | 1 | this half's LEDs (its chain) |
 | 95 | 1 | the left: the LEDs it frames for the right (`LAMP_PARTS_RIGHT`); compare with the right's byte 94 |
-| 96 | 1 | the knob (the left, #719; `knob.h`): bit 0 the keymap has `&knob`, 1 `&knob_press`, 2 the PC holds it (D7 14), 3 its target is an app (0: master) |
+| 96 | 1 | the knob (the left, #719; `knob.h`): bit 0 the keymap has `&knob`, 1 `&knob_press`, 2 the PC holds it (D7 14), 3 its target is an app (0: master), 4 the PC holds master volume (D7 16, #855: master's turns go to the PC) |
 | 97 | 1 | the last knob event sent to the PC (0 none, 1 turn, 2 click, 3 double click, 4 hold, 5 handed back) |
 | 98 | 2 | knob events sent to the PC (D7 94 01) |
 | 100 | 2 | fallback keys the knob tapped (a detent, a press, a double click's mute on master) |

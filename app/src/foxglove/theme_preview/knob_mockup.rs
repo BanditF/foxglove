@@ -624,6 +624,7 @@ fn knob_a_real_renders() {
             Card::Master {
                 level: Some(64),
                 note: "back to master",
+                muted: false,
             },
         ),
         (
@@ -631,6 +632,7 @@ fn knob_a_real_renders() {
             Card::Master {
                 level: Some(64),
                 note: "held: master",
+                muted: false,
             },
         ),
         (
@@ -697,6 +699,32 @@ fn knob_names_854_renders() {
     cards_sheet(
         "knob-854-names.png",
         "Knob (#854): friendly names, only apps that played",
+        &cards,
+    );
+}
+
+/// #855: master's cards while Foxglove holds master volume: a turn (the level, no note) and a
+/// double click (muted, as an app's card says it). Windows shows no flyout under them.
+#[test]
+fn knob_master_855_renders() {
+    use crate::foxglove::knob_popup::Card;
+    let master = |level: u8, muted: bool| Card::Master {
+        level: Some(level),
+        note: "",
+        muted,
+    };
+    let cards: Vec<(&str, Card)> = vec![
+        (
+            "Turn on master: Foxglove's card, no Windows flyout",
+            master(66, false),
+        ),
+        ("Double click on master: muted", master(66, true)),
+        ("Turn to 0", master(0, false)),
+        ("Turn to 100", master(100, false)),
+    ];
+    cards_sheet(
+        "knob-855-master.png",
+        "Knob (#855): master volume on Foxglove's card",
         &cards,
     );
 }

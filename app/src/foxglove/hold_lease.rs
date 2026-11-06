@@ -1,5 +1,5 @@
 //! The lease on what Foxglove holds on the keyboard (#847): the art keys (`art_service.rs`, D7 0D)
-//! and the knob (`knob.rs`, D7 14), and #855's master volume next.
+//! the knob (`knob.rs`, D7 14) and master volume (`knob.rs`, D7 16, #855).
 //!
 //! Foxglove hands them back on a clean quit, but a crash or a kill never did, and the keyboard
 //! kept sending its art keys to a PC that wasn't listening. Firmware with HELLO v2's
@@ -145,10 +145,13 @@ fn held_words(held: u8) -> String {
     if held & wire::HELD_KNOB != 0 {
         parts.push("knob");
     }
-    if parts.is_empty() {
-        "nothing held".to_string()
-    } else {
-        parts.join(" and ")
+    if held & wire::HELD_KNOB_VOLUME != 0 {
+        parts.push("master volume");
+    }
+    match parts.split_last() {
+        None => "nothing held".to_string(),
+        Some((last, [])) => last.to_string(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -403,6 +406,12 @@ mod tests {
         .unwrap();
         assert_eq!(decide(Trigger::Report(lapsed)), Action::Retake);
         assert_eq!(held_words(lapsed.held), "art keys and knob");
+        // #855: master volume lapses with them (tests/zmk-sim/hold-lease's mask 04).
+        assert_eq!(held_words(wire::HELD_KNOB_VOLUME), "master volume");
+        assert_eq!(held_words(7), "art keys, knob and master volume");
+        assert_eq!(held_words(0), "nothing held");
+        let volume = wire::parse(&[0xD7, 0x95, 2, 0, 0x1E, 0, 4, 2]).unwrap();
+        assert_eq!(decide(Trigger::Report(volume)), Action::Retake);
     }
 
     /// The keyboard's side, as widgets/host_link.c runs it: any report from the PC renews; while

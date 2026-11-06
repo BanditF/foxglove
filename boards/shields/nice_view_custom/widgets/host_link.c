@@ -93,7 +93,7 @@ enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_
        SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
        SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F, SETTING_LAMP_PARTS = 0x10,
        SETTING_PC_STATE = 0x11, SETTING_PANEL_POLARITY = 0x12, SETTING_HEALTH = 0x13,
-       SETTING_KNOB = 0x14, SETTING_HOLD_LEASE = 0x15 };
+       SETTING_KNOB = 0x14, SETTING_HOLD_LEASE = 0x15, SETTING_KNOB_VOLUME = 0x16 };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -328,6 +328,9 @@ static void hello_reply(void) {
 
 static uint32_t caps_word2(void) {
     uint32_t caps = HOST_LINK_CAPS2_HOLD_LEASE; // D7 15: held modes lapse with a lease (#847)
+    if (KNOB_PARTS & KNOB_HAS_TURN) {
+        caps |= HOST_LINK_CAPS2_KNOB_VOLUME; // D7 16: the PC may take master volume (#855)
+    }
 #if IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
     caps |= HOST_LINK_CAPS2_ART_LOCAL; // D6 goes to the art store on this half (#834)
     caps |= HOST_LINK_CAPS2_ART_PACE;  // its art follows the target's pace; D6 0A (#842)
@@ -645,17 +648,16 @@ static K_WORK_DELAYABLE_DEFINE(conn_state_event_work, conn_state_event_cb);
 
 /*
  * Host-held modes (#847): what the PC takes over from the board until it hands it back, the art
- * keys (D7 0D) and the knob (D7 14, #719). Each mode is one row of held_modes[] below; the PC
- * taking it calls held_changed(). Every row shares one set of ends:
+ * keys (D7 0D), the knob (D7 14, #719) and master volume (D7 16, #855). Each mode is one row of
+ * held_modes[] below; the PC taking it calls held_changed(). Every row shares one set of ends:
  *   - the link drops (a USB disconnect, an endpoint change): every mode at once, as before #847;
  *   - D7 15 HOLD_LEASE: a PC that set a lease keeps its modes only while it is heard. Any host-link
  *     report from it renews the lease; after a third of the lease without one the board asks
  *     (D7 95 event 1), again at two thirds, and at the full lease it lets every mode go and says
  *     so (D7 95 event 2), once more on the PC's next report if it didn't take a mode back since.
  *     Without a lease (0, and a PC before #847 never sets one) only the link ends a hold.
- * A new held mode (#855's master volume) adds its row and calls held_changed() when taken; the
- * lease, its asks, the lapse and the link drops then apply to it, and its row's index is its
- * bit in D7 95's mask.
+ * A new held mode adds its row and calls held_changed() when taken; the lease, its asks, the
+ * lapse and the link drops then apply to it, and its row's index is its bit in D7 95's mask.
  */
 
 /* D7 0D ART_KEYS (#60): the app takes &art_next / &art_prev while subscribed */
@@ -683,9 +685,11 @@ static void art_keys_drop(bool tell) {
 
 /* D7 14 KNOB (#719, HELLO bit 31): the PC holds &knob / &knob_press (knob.c) */
 
-// The state, one value so a target is never seen without its hold: bit 0 held, bit 1 an app.
+// The state, one value so a target is never seen without its hold: bit 0 held, bit 1 an app,
+// bit 2 master volume held (D7 16, #855; its own held mode, apart from the knob's hold).
 #define KNOB_HELD BIT(0)
 #define KNOB_ON_APP BIT(1)
+#define KNOB_VOLUME BIT(2)
 static atomic_t knob_state;
 static atomic_t knob_seq;
 
@@ -694,6 +698,8 @@ bool host_link_knob_held(void) { return (atomic_get(&knob_state) & KNOB_HELD) !=
 enum knob_target host_link_knob_target(void) {
     return (atomic_get(&knob_state) & KNOB_ON_APP) ? KNOB_APP : KNOB_MASTER;
 }
+
+bool host_link_knob_volume(void) { return (atomic_get(&knob_state) & KNOB_VOLUME) != 0; }
 
 static void knob_send(enum knob_event kind, int8_t steps, atomic_val_t state) {
     uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | SETTING_KNOB, 1, kind, (uint8_t)steps,
@@ -706,27 +712,36 @@ static void knob_send(enum knob_event kind, int8_t steps, atomic_val_t state) {
 
 int host_link_knob_event(enum knob_event kind, int8_t steps) {
     atomic_val_t state = atomic_get(&knob_state);
-    if (!(state & KNOB_HELD)) {
+    // A turn goes on an app (held) or on master while master volume is held; the rest when held.
+    bool sent = kind == KNOB_TURN ? (state & (KNOB_ON_APP | KNOB_VOLUME)) != 0
+                                  : (state & KNOB_HELD) != 0;
+    if (!sent) {
         return -ENOTCONN;
     }
     knob_send(kind, steps, state);
     return 0;
 }
 
-static void knob_set(atomic_val_t state) {
-    atomic_set(&knob_state, state);
-    health_set(HEALTH_KNOB_STATE, (uint8_t)state);
+// Clears `clear` and sets `set` in one step (the knob's hold and master volume share the value);
+// the value before.
+static atomic_val_t knob_update(atomic_val_t clear, atomic_val_t set) {
+    atomic_val_t was, now;
+    do {
+        was = atomic_get(&knob_state);
+        now = (was & ~clear) | set;
+    } while (!atomic_cas(&knob_state, was, now));
+    health_set(HEALTH_KNOB_STATE, (uint8_t)now);
+    return was;
 }
 
 // The PC may be gone (a USB disconnect, an endpoint change, a lapsed lease): the knob is its
 // fallback keys again until the PC holds it anew. `tell`: say so (D7 94 01 05), for a PC that is
 // still there.
 static void knob_drop(bool tell) {
-    atomic_val_t was = atomic_set(&knob_state, 0);
+    atomic_val_t was = knob_update(KNOB_HELD | KNOB_ON_APP, 0);
     if (!(was & KNOB_HELD)) {
         return;
     }
-    health_set(HEALTH_KNOB_STATE, 0);
     health_inc(HEALTH_KNOB_DROPS);
     if (tell) {
         knob_send(KNOB_HANDED_BACK, 0, was);
@@ -742,7 +757,8 @@ static void knob_command(const uint8_t *d, int len) {
         if (hold > 1 || target > KNOB_APP) {
             status = 5;
         } else {
-            knob_set(hold ? (KNOB_HELD | (target == KNOB_APP ? KNOB_ON_APP : 0)) : 0);
+            knob_update(KNOB_HELD | KNOB_ON_APP,
+                        hold ? (KNOB_HELD | (target == KNOB_APP ? KNOB_ON_APP : 0)) : 0);
             held_changed();
         }
     }
@@ -751,6 +767,40 @@ static void knob_command(const uint8_t *d, int len) {
                     (state & KNOB_HELD) ? 1 : 0, (state & KNOB_ON_APP) ? KNOB_APP : KNOB_MASTER,
                     KNOB_PARTS};
     reply(r, sizeof(r));
+}
+
+/* D7 16 KNOB_VOLUME (#855, word 2's bit 35): the PC holds master volume, the turns on master */
+
+enum { KNOB_VOLUME_REPLY = 0, KNOB_VOLUME_DROPPED = 1 };
+
+static void knob_volume_send(uint8_t kind, uint8_t status) {
+    uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_KNOB_VOLUME, kind, status,
+                    host_link_knob_volume() ? 1 : 0};
+    reply(r, sizeof(r));
+}
+
+// The PC may be gone: master's turns are the fallback keys again (Windows' own volume and its
+// popup) until the PC holds it anew. `tell`: say so (D7 96 01), for a PC that is still there.
+static void knob_volume_drop(bool tell) {
+    atomic_val_t was = knob_update(KNOB_VOLUME, 0);
+    if ((was & KNOB_VOLUME) && tell) {
+        knob_volume_send(KNOB_VOLUME_DROPPED, 0);
+    }
+}
+
+static void knob_volume_command(const uint8_t *d, int len) {
+    uint8_t status = 0;
+    if (!(KNOB_PARTS & KNOB_HAS_TURN)) {
+        status = 4; // no &knob in this keymap (or CONFIG_FOXGLOVE_KNOB off)
+    } else if (len >= 3 && d[2] != 0xff) {
+        if (d[2] > 1) {
+            status = 5;
+        } else {
+            knob_update(KNOB_VOLUME, d[2] ? KNOB_VOLUME : 0);
+            held_changed();
+        }
+    }
+    knob_volume_send(KNOB_VOLUME_REPLY, status);
 }
 
 /* The held modes' table and their lease (D7 15 HOLD_LEASE, word 2's bit 34, #847) */
@@ -762,8 +812,9 @@ struct held_mode {
 
 // Row i is bit i of D7 95's mask (HOST_LINK_HELD_*).
 static const struct held_mode held_modes[] = {
-    {art_keys_held, art_keys_drop},       // HOST_LINK_HELD_ART_KEYS
-    {host_link_knob_held, knob_drop},     // HOST_LINK_HELD_KNOB
+    {art_keys_held, art_keys_drop},            // HOST_LINK_HELD_ART_KEYS
+    {host_link_knob_held, knob_drop},          // HOST_LINK_HELD_KNOB
+    {host_link_knob_volume, knob_volume_drop}, // HOST_LINK_HELD_KNOB_VOLUME (#855)
 };
 BUILD_ASSERT(ARRAY_SIZE(held_modes) <= 8, "D7 95's mask is one byte");
 
@@ -1292,6 +1343,9 @@ static void settings_command(const uint8_t *d, int len) {
         break;
     case SETTING_HOLD_LEASE:
         hold_lease_command(d, len);
+        break;
+    case SETTING_KNOB_VOLUME:
+        knob_volume_command(d, len);
         break;
     case SETTING_ART_KEYS: {
         atomic_set(&art_keys, len >= 3 && d[2] != 0);

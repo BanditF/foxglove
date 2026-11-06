@@ -6,9 +6,12 @@
 //!   window that never activates, which covers the chosen display's work area. The card is a
 //!   non-interactable egui area, so it takes no focus and no clicks; egui's points carry the
 //!   display's DPI.
-//! - On master Foxglove draws no second popup: Windows' own flyout shows (the knob sends the
-//!   volume keys), and while Foxglove holds the knob a small "Knob · Master" tab sits on top of
-//!   it, on the display Windows shows its flyout on (the main one).
+//! - On master, while Foxglove holds master volume (#855, firmware with D7 16), the turns and a
+//!   double click come to Foxglove: it sets master's level and mute and shows this card for
+//!   master (Windows shows no flyout: no volume keys went). On firmware without it Foxglove
+//!   draws no second popup: Windows' own flyout shows (the knob sends the volume keys), and while
+//!   Foxglove holds the knob a small "Knob · Master" tab sits on top of it, on the display
+//!   Windows shows its flyout on (the main one).
 //! - Timing, as the storyboard has it: a click 2 s; a turn keeps the card up until 1.5 s after
 //!   the last detent; master (past the last app, or a hold) 2 s; mute 2 s; "<app> stopped ·
 //!   knob: master" 3 s; the tab 2 s after master's level last changed.
@@ -31,10 +34,12 @@ pub enum Card {
         level: Option<u8>,
         muted: bool,
     },
-    /// Back to master (past the last app, or a hold): Windows' level, and why.
+    /// Master: back to it (past the last app, or a hold), with why; or a turn or a double click
+    /// on it while Foxglove holds master volume (#855; no note). Windows' level, and its mute.
     Master {
         level: Option<u8>,
         note: &'static str,
+        muted: bool,
     },
     /// The target's sound ended; the knob is on master again.
     Stopped { name: String },
@@ -63,6 +68,12 @@ impl Card {
                 }
                 s
             }
+            Card::Master { muted: true, .. } => "Master volume muted".into(),
+            Card::Master {
+                note: "",
+                level: Some(l),
+                ..
+            } => format!("Master volume {l} %"),
             Card::Master { note, .. } => format!("Master volume ({note})"),
             Card::Stopped { name } => format!("{name} stopped · knob: master"),
             Card::MasterTab => "Knob · Master tab".into(),
@@ -234,13 +245,22 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
             *level,
             *muted,
         ),
-        Card::Master { level, note } => (
+        Card::Master { level, note, muted } => (
             icon::SPEAKER_HIGH.to_string(),
             GREY,
-            "Master volume".to_string(),
-            note.to_string(),
+            // Muted as an app's card says it (#855).
+            if *muted {
+                format!("Master volume {}", icon::SPEAKER_SLASH)
+            } else {
+                "Master volume".to_string()
+            },
+            if *muted {
+                "muted".to_string()
+            } else {
+                note.to_string()
+            },
             *level,
-            false,
+            *muted,
         ),
         Card::Stopped { name } => (
             icon::SPEAKER_X.to_string(),
@@ -400,10 +420,23 @@ mod tests {
         assert_eq!(
             Card::Master {
                 level: Some(64),
-                note: "held: master"
+                note: "held: master",
+                muted: false
             }
             .words(),
             "Master volume (held: master)"
         );
+        let turned = Card::Master {
+            level: Some(66),
+            note: "",
+            muted: false,
+        };
+        assert_eq!(turned.words(), "Master volume 66 %");
+        let muted = Card::Master {
+            level: Some(66),
+            note: "",
+            muted: true,
+        };
+        assert_eq!(muted.words(), "Master volume muted");
     }
 }

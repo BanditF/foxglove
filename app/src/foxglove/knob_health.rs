@@ -1,5 +1,6 @@
 //! Health of the knob (#719), as plain data for the shared "Keyboard health" view (#705):
-//! whether Foxglove holds the knob, what it points at now, and how the last level change went.
+//! whether Foxglove holds the knob (and master volume, #855), what it points at now, and how the
+//! last level change went.
 //! The knob service (`knob.rs`) notes each event as it happens; [`rows`] only reads. No polling.
 //! Registered with `health::register` as "knob"; the keyboard's own side is its self-report's
 //! knob row (block version 2).
@@ -29,6 +30,11 @@ pub struct KnobHealth {
     pub supported: Option<bool>,
     /// Foxglove holds the knob (D7 14 01) and the keyboard hasn't dropped it.
     pub held: bool,
+    /// The keyboard's firmware lets Foxglove hold master volume (word 2's bit 35, #855); `None`
+    /// with no keyboard (or one without the knob).
+    pub master_volume_supported: Option<bool>,
+    /// Foxglove holds master volume (D7 16 01): master's turns show its card, not Windows'.
+    pub master_volume: bool,
     /// The app the knob points at; `None`: master (Windows' own volume keys).
     pub target: Option<String>,
     pub last_level: Option<LastLevel>,
@@ -45,6 +51,8 @@ pub struct KnobHealth {
 static HEALTH: Mutex<KnobHealth> = Mutex::new(KnobHealth {
     supported: None,
     held: false,
+    master_volume_supported: None,
+    master_volume: false,
     target: None,
     last_level: None,
     events: 0,
@@ -82,7 +90,20 @@ pub fn rows(h: &KnobHealth) -> Vec<HealthRow> {
             "this keyboard's firmware has no knob (HELLO bit 31): the knob is the volume keys"
                 .into(),
         ),
-        (Some(true), true) => row("Held", Level::Ok, "yes: Foxglove holds the knob".into()),
+        (Some(true), true) => row(
+            "Held",
+            Level::Ok,
+            match (h.master_volume_supported, h.master_volume) {
+                (_, true) => "yes: Foxglove holds the knob and master volume (its own card on \
+                              master, no Windows flyout)"
+                    .into(),
+                (Some(false), false) => "yes: Foxglove holds the knob; master stays the volume \
+                                         keys (this firmware has no master volume hold, word \
+                                         2's bit 35)"
+                    .into(),
+                _ => "yes: Foxglove holds the knob".into(),
+            },
+        ),
         (Some(true), false) => row(
             "Held",
             Level::Ok,
@@ -90,6 +111,7 @@ pub fn rows(h: &KnobHealth) -> Vec<HealthRow> {
         ),
     };
     let mut target_words = match &h.target {
+        None if h.master_volume => "master volume (set by Foxglove, its own card)".to_string(),
         None => "master volume (Windows' own volume keys)".to_string(),
         Some(app) => format!("{app} (its own volume)"),
     };
@@ -181,6 +203,7 @@ mod tests {
             last_back: Some("Discord's sound ended".into()),
             popups: 3,
             last_popup: Some("Discord stopped · knob: master".into()),
+            ..KnobHealth::default()
         };
         assert_eq!(
             levels(&h),
@@ -201,6 +224,40 @@ mod tests {
             r[2].detail,
             "couldn't set Discord's level: the app's sound ended"
         );
+    }
+
+    #[test]
+    fn master_volume_held_or_not_reads_as_such() {
+        // #855: Foxglove holds master volume; then firmware without it.
+        let mut h = KnobHealth {
+            supported: Some(true),
+            held: true,
+            master_volume_supported: Some(true),
+            master_volume: true,
+            last_level: Some(LastLevel::Set {
+                app: "master volume".into(),
+                percent: 66,
+            }),
+            ..KnobHealth::default()
+        };
+        let r = rows(&h);
+        assert_eq!(
+            r[0].detail,
+            "yes: Foxglove holds the knob and master volume (its own card on master, no Windows \
+             flyout)"
+        );
+        assert_eq!(r[1].detail, "master volume (set by Foxglove, its own card)");
+        assert_eq!(r[2].detail, "master volume set to 66 %");
+        h.master_volume_supported = Some(false);
+        h.master_volume = false;
+        let r = rows(&h);
+        assert_eq!(
+            r[0].detail,
+            "yes: Foxglove holds the knob; master stays the volume keys (this firmware has no \
+             master volume hold, word 2's bit 35)"
+        );
+        assert_eq!(r[1].detail, "master volume (Windows' own volume keys)");
+        assert!(r.iter().all(|r| r.level == Level::Ok));
     }
 
     #[test]

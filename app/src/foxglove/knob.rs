@@ -8,11 +8,18 @@
 //! - **click:** the next app with an active audio session that has played sound during this run
 //!   (#854: a background helper holding a silent stream isn't offered), in the order first heard;
 //!   past the last one, back to master;
-//! - **turn** (only while an app is the target; on master the keyboard sends the volume keys):
-//!   that app's level, 2 % a detent, through Windows' own session volume (ISimpleAudioVolume,
-//!   the Volume Mixer's);
-//! - **double click:** mutes or unmutes the app (on master the keyboard taps the system mute);
+//! - **turn:** the target's level, 2 % a detent: an app's through Windows' own session volume
+//!   (ISimpleAudioVolume, the Volume Mixer's); master's through the default output device's
+//!   IAudioEndpointVolume, unmuting it as Windows' volume keys do (#855);
+//! - **double click:** mutes or unmutes the target;
 //! - **hold** (half a second): back to master.
+//!
+//! Master volume (#855): firmware with HELLO v2's `KNOB_VOLUME` (word 2's bit 35, D7 16) lets
+//! Foxglove hold master volume too, a held mode of its own: then master's turns and double click
+//! come here, Foxglove sets the level and mute and shows its own card (`knob_popup.rs`), and
+//! Windows shows no volume flyout (no volume key went). Without it (older firmware, Foxglove
+//! paused or quit, or killed and its hold lease lapsed, #847) master is the keyboard's volume
+//! keys and mute, and Windows' own flyout, as before.
 //!
 //! Nothing is kept: the target lives as long as its session. When the session expires or
 //! disconnects the knob goes back to master and the keyboard is told. No hooks, no system
@@ -29,6 +36,7 @@
 use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+use foxglove_link::hello_v2::capabilities as caps2;
 use foxglove_link::link::{Event, EventSubscription, Link};
 use foxglove_link::protocol::knob::{self as wire, EventKind, Target as WireTarget};
 use foxglove_link::protocol::{self, capabilities};
@@ -70,6 +78,9 @@ pub struct Cycle {
     pub popup: Option<(Card, Duration)>,
     /// The sessions heard during this run: the only ones a click offers (#854).
     pub heard: Heard,
+    /// The keyboard sends master's turns and double click here (Foxglove holds master volume,
+    /// D7 16, #855); `false`: on master it sends the volume keys and mute itself.
+    pub volume: bool,
 }
 
 /// How often the knob reads the peaks while an app is its target.
@@ -158,6 +169,7 @@ impl Cycle {
                     } else {
                         "no app playing sound"
                     },
+                    muted: false,
                 },
                 knob_popup::MASTER,
             ),
@@ -184,10 +196,50 @@ impl Cycle {
         ));
     }
 
-    /// Detents (+ clockwise) while an app is the target: its level, 2 % each.
+    /// Master's card after a turn or a mute (#855): its level and mute now.
+    fn master_card(&mut self, sessions: &dyn Sessions, time: Duration) {
+        let now = sessions.master().ok();
+        self.popup = Some((
+            Card::Master {
+                level: now.map(|m| m.0),
+                note: "",
+                muted: now.is_some_and(|m| m.1),
+            },
+            time,
+        ));
+    }
+
+    /// Detents (+ clockwise) on master while Foxglove holds master volume (#855): its level, 2 %
+    /// each, unmuted as Windows' volume keys do.
+    fn master_turn(&mut self, sessions: &dyn Sessions, steps: i8) {
+        let last = match sessions.step_master(i32::from(steps)) {
+            Ok(percent) => LastLevel::Set {
+                app: MASTER.into(),
+                percent,
+            },
+            Err(why) => {
+                eprintln!("Foxglove: knob: master's level: {why}");
+                LastLevel::Failed {
+                    app: MASTER.into(),
+                    why,
+                }
+            }
+        };
+        let ok = matches!(last, LastLevel::Set { .. });
+        self.last_level = Some(last);
+        if ok {
+            self.master_card(sessions, knob_popup::TURN);
+        }
+    }
+
+    /// Detents (+ clockwise): the target's level, 2 % each.
     pub fn turn(&mut self, sessions: &dyn Sessions, steps: i8) {
         let Some(app) = &self.target else {
-            return; // master: the keyboard sends the volume keys itself
+            if self.volume {
+                self.master_turn(sessions, steps);
+            }
+            // Else master is the keyboard's volume keys: a turn here came by mistake.
+            return;
         };
         let last = match sessions.step(&app.id, i32::from(steps)) {
             Ok(percent) => LastLevel::Set {
@@ -209,9 +261,27 @@ impl Cycle {
         }
     }
 
-    /// A double click: mutes or unmutes the app. On master the keyboard tapped the system mute.
+    /// A double click: mutes or unmutes the target. On master without master volume the
+    /// keyboard tapped the system mute itself.
     pub fn double(&mut self, sessions: &dyn Sessions) {
         let Some(app) = &self.target else {
+            if self.volume {
+                let last = match sessions.toggle_master_mute() {
+                    Ok(muted) => LastLevel::Muted {
+                        app: MASTER.into(),
+                        muted,
+                    },
+                    Err(why) => LastLevel::Failed {
+                        app: MASTER.into(),
+                        why,
+                    },
+                };
+                let ok = matches!(last, LastLevel::Muted { .. });
+                self.last_level = Some(last);
+                if ok {
+                    self.master_card(sessions, knob_popup::MUTE);
+                }
+            }
             return;
         };
         let last = match sessions.toggle_mute(&app.id) {
@@ -237,6 +307,7 @@ impl Cycle {
             Card::Master {
                 level: sessions.master().ok().map(|m| m.0),
                 note: "held: master",
+                muted: false,
             },
             knob_popup::MASTER,
         ));
@@ -288,9 +359,11 @@ impl Cycle {
     }
 
     /// Master's level or mute changed while the knob is held on master: Windows shows its own
-    /// flyout, and Foxglove only the tab on top of it.
+    /// flyout, and Foxglove only the tab on top of it. Not while Foxglove holds master volume
+    /// (#855): its own steps show its own card (and aren't reported here), and the tab would
+    /// replace that card.
     pub fn master_changed(&mut self, held: bool) {
-        if held && self.target.is_none() {
+        if held && self.target.is_none() && !self.volume {
             self.popup = Some((Card::MasterTab, knob_popup::TAB));
         }
     }
@@ -318,12 +391,24 @@ impl Cycle {
     }
 }
 
+/// The name master's level goes by in the health view.
+const MASTER: &str = "master volume";
+
 /// Whether the keyboard on `link` has the knob (HELLO bit 31).
 fn has_knob(link: &Link) -> bool {
     link.state()
         .connected
         .and_then(|c| c.hello)
         .is_some_and(|h| h.capabilities & capabilities::KNOB != 0)
+}
+
+/// Whether the keyboard on `link` lets Foxglove hold master volume (#855): HELLO v2's word 2,
+/// bit 35 (`KNOB_VOLUME`). Firmware before it is never sent D7 16.
+fn has_master_volume(link: &Link) -> bool {
+    let Some(hello) = link.state().connected.and_then(|c| c.hello) else {
+        return false;
+    };
+    foxglove_link::hello_v2::read(link, &hello).word2() & caps2::KNOB_VOLUME != 0
 }
 
 /// The report that puts `cycle`'s target on the keyboard, or hands the knob back.
@@ -349,9 +434,18 @@ enum Work {
 static WORK: Mutex<Option<mpsc::Sender<Work>>> = Mutex::new(None);
 /// The link Foxglove holds the knob on, for [`stop`] to hand it back.
 static HELD: Mutex<Option<Weak<Link>>> = Mutex::new(None);
+/// The link Foxglove holds master volume on (#855), for [`stop`] to hand it back.
+static VOLUME_HELD: Mutex<Option<Weak<Link>>> = Mutex::new(None);
 
 fn held_link(link: Option<Weak<Link>>) -> Option<Weak<Link>> {
     std::mem::replace(&mut *HELD.lock().unwrap_or_else(|e| e.into_inner()), link)
+}
+
+fn volume_link(link: Option<Weak<Link>>) -> Option<Weak<Link>> {
+    std::mem::replace(
+        &mut *VOLUME_HELD.lock().unwrap_or_else(|e| e.into_inner()),
+        link,
+    )
 }
 
 /// Foxglove paused or resumed (#404): the knob goes back to the volume keys while paused.
@@ -372,8 +466,21 @@ pub fn holds_lapsed(link: Weak<Link>) {
 /// How long [`stop`] waits for the keyboard to take the knob back.
 const RELEASE_REPLY: Duration = Duration::from_millis(300);
 
-/// Foxglove quits: the knob is the volume keys again once the keyboard answers.
+/// Foxglove quits: the knob is the volume keys again once the keyboard answers (master volume
+/// first: Windows' own flyout again).
 pub fn stop() {
+    if let Some(link) = volume_link(None).and_then(|l| l.upgrade()) {
+        let r = link.request(
+            &wire::volume_hold(false),
+            protocol::SETTINGS,
+            protocol::settings::KNOB_VOLUME,
+            RELEASE_REPLY,
+        );
+        if let Err(e) = r {
+            eprintln!("Foxglove: knob: master volume not handed back to the keyboard: {e}");
+        }
+        knob_health::note(|h| h.master_volume = false);
+    }
     if let Some(link) = held_link(None).and_then(|l| l.upgrade()) {
         let r = link.request(
             &wire::release(),
@@ -400,6 +507,29 @@ fn tell(link: &Weak<Link>, held: bool, target: WireTarget) {
         }
         Err(e) => eprintln!("Foxglove: knob: can't tell the keyboard: {e}"),
     }
+}
+
+/// Tells the keyboard on `link` whether Foxglove holds master volume (#855); notes it in
+/// `cycle` (only once the keyboard was told: until then it sends the keys).
+fn tell_volume(link: &Weak<Link>, held: bool, cycle: &mut Cycle) {
+    let Some(keyboard) = link.upgrade() else {
+        return;
+    };
+    match keyboard.send(&wire::volume_hold(held)) {
+        Ok(()) => {
+            volume_link(held.then(|| link.clone()));
+            cycle.volume = held;
+            knob_health::note(|h| h.master_volume = held);
+        }
+        Err(e) => eprintln!("Foxglove: knob: can't tell the keyboard about master volume: {e}"),
+    }
+}
+
+/// The keyboard dropped master volume, or the link went: master is its keys again.
+fn volume_gone(cycle: &mut Cycle) {
+    volume_link(None);
+    cycle.volume = false;
+    knob_health::note(|h| h.master_volume = false);
 }
 
 /// Starts the knob for every shared keyboard link. `FOXGLOVE_DISABLE=knob` leaves it out (the
@@ -440,6 +570,8 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
     // The link the knob is held on now, and the last event's sequence number.
     let mut current: Option<Weak<Link>> = None;
     let mut last_seq: Option<u8> = None;
+    // The keyboard on `current` lets Foxglove hold master volume (#855).
+    let mut volume_ok = false;
     // While an app is the target: when to stop reading the peaks (#854).
     let mut listen_until: Option<Instant> = None;
     loop {
@@ -489,7 +621,10 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                     let tx = tx.clone();
                     let weak = weak.clone();
                     move |_, report| {
-                        if wire::event(report).is_some() {
+                        // Knob events, and master volume dropped by the board (#855).
+                        if wire::event(report).is_some()
+                            || wire::volume(report).is_some_and(|v| v.dropped)
+                        {
                             let _ = tx.send(Work::Report(weak.clone(), *report));
                         }
                     }
@@ -501,17 +636,26 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                     continue;
                 };
                 let has = has_knob(&link);
+                let volume = has && has_master_volume(&link);
                 drop(link);
-                knob_health::note(|h| h.supported = Some(has));
+                knob_health::note(|h| {
+                    h.supported = Some(has);
+                    h.master_volume_supported = has.then_some(volume);
+                });
                 if !has {
                     continue;
                 }
-                // A new connection: the keyboard starts unheld, on master.
+                // A new connection: the keyboard starts unheld, on master, with its keys.
                 cycle.dropped();
+                volume_gone(&mut cycle);
+                volume_ok = volume;
                 last_seq = None;
                 current = Some(weak.clone());
                 if !super::pause::paused() {
                     tell(&weak, true, cycle.wire());
+                    if volume_ok {
+                        tell_volume(&weak, true, &mut cycle);
+                    }
                 }
             }
             Work::Disconnected(weak) => {
@@ -519,15 +663,23 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                     current = None;
                     held_link(None);
                     cycle.dropped();
+                    volume_gone(&mut cycle);
+                    volume_ok = false;
                     knob_health::note(|h| {
                         h.held = false;
                         h.supported = None;
+                        h.master_volume_supported = None;
                     });
                 }
             }
             Work::Report(weak, r) => {
                 if !current.as_ref().is_some_and(|c| Weak::ptr_eq(c, &weak)) {
                     continue; // another keyboard's, or one Foxglove doesn't hold
+                }
+                if wire::volume(&r).is_some_and(|v| v.dropped) {
+                    // An endpoint change: master is the keys again until the next connect.
+                    volume_gone(&mut cycle);
+                    continue;
                 }
                 let Some(ev) = wire::event(&r) else {
                     continue;
@@ -566,18 +718,27 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                     continue;
                 };
                 cycle.dropped();
-                tell(link, !super::pause::paused(), cycle.wire());
+                let link = link.clone();
+                tell(&link, !super::pause::paused(), cycle.wire());
+                if volume_ok {
+                    tell_volume(&link, !super::pause::paused(), &mut cycle);
+                }
             }
             Work::Lapsed(weak) => {
                 if !current.as_ref().is_some_and(|c| Weak::ptr_eq(c, &weak)) {
                     continue; // another keyboard's, or one Foxglove doesn't hold
                 }
-                // The keyboard is on master and unheld now: the same as a fresh connect.
+                // The keyboard is on master and unheld now, master volume its keys again: the same
+                // as a fresh connect.
                 cycle.dropped();
+                volume_gone(&mut cycle);
                 held_link(None);
                 knob_health::note(|h| h.held = false);
                 if !super::pause::paused() {
                     tell(&weak, true, cycle.wire());
+                    if volume_ok {
+                        tell_volume(&weak, true, &mut cycle);
+                    }
                 }
             }
         }
@@ -625,6 +786,9 @@ mod tests {
         steps: Mutex<Vec<(String, i32)>>,
         silent: Mutex<Vec<String>>,
         peak_reads: Mutex<u32>,
+        /// The fake IAudioEndpointVolume (#855): master's level % and mute once Foxglove set
+        /// them (`None`: 64 %, unmuted). Tests never touch the system's volume.
+        master: Mutex<Option<(i32, bool)>>,
     }
 
     impl FakeSessions {
@@ -728,7 +892,24 @@ mod tests {
         }
 
         fn master(&self) -> Result<(u8, bool), String> {
-            Ok((64, false))
+            let (level, muted) = self.master.lock().unwrap().unwrap_or((64, false));
+            Ok((level as u8, muted))
+        }
+
+        fn step_master(&self, steps: i32) -> Result<u8, String> {
+            let mut m = self.master.lock().unwrap();
+            let (level, _) = m.unwrap_or((64, false));
+            let new = foxglove_panel::sessions::step_level(level as f32 / 100.0, steps);
+            let percent = (new * 100.0).round() as i32;
+            *m = Some((percent, false)); // a step unmutes, as Windows' volume keys do
+            Ok(percent as u8)
+        }
+
+        fn toggle_master_mute(&self) -> Result<bool, String> {
+            let mut m = self.master.lock().unwrap();
+            let (level, muted) = m.unwrap_or((64, false));
+            *m = Some((level, !muted));
+            Ok(!muted)
         }
     }
 
@@ -790,7 +971,8 @@ mod tests {
             Some((
                 Card::Master {
                     level: Some(64),
-                    note: "back to master"
+                    note: "back to master",
+                    muted: false
                 },
                 knob_popup::MASTER
             ))
@@ -804,7 +986,8 @@ mod tests {
             Some((
                 Card::Master {
                     level: Some(64),
-                    note: "held: master"
+                    note: "held: master",
+                    muted: false
                 },
                 knob_popup::MASTER
             ))
@@ -1072,5 +1255,86 @@ mod tests {
         assert_eq!(report(true, WireTarget::App), [0xD7, 0x14, 1, 1]);
         assert_eq!(report(true, WireTarget::Master), [0xD7, 0x14, 1, 0]);
         assert_eq!(report(false, WireTarget::Master), [0xD7, 0x14, 0, 0]);
+        // #855: master volume, as tests/zmk-sim/knob sends it.
+        assert_eq!(wire::volume_hold(true), [0xD7, 0x16, 1]);
+        assert_eq!(wire::volume_hold(false), [0xD7, 0x16, 0]);
+    }
+
+    fn master_now(s: &FakeSessions) -> (u8, bool) {
+        s.master().unwrap()
+    }
+
+    #[test]
+    fn with_master_volume_held_master_turns_show_foxgloves_card() {
+        // #855: the keyboard sends master's turns here; Foxglove sets the level (the fake
+        // IAudioEndpointVolume) and shows the same card as an app's, not Windows' flyout.
+        let s = FakeSessions::with(&[("a", "Spotify", 40)]);
+        let mut c = Cycle {
+            volume: true,
+            ..Cycle::default()
+        };
+        assert_eq!(c.event(&s, EventKind::Turn(3)), Tell::Nothing);
+        assert_eq!(master_now(&s), (70, false));
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::Master {
+                    level: Some(70),
+                    note: "",
+                    muted: false
+                },
+                knob_popup::TURN
+            ))
+        );
+        assert_eq!(
+            c.last_level,
+            Some(LastLevel::Set {
+                app: "master volume".into(),
+                percent: 70
+            })
+        );
+        assert!(s.steps.lock().unwrap().is_empty(), "no app was touched");
+        // A double click mutes master here (the keyboard tapped no mute key).
+        c.event(&s, EventKind::Double);
+        assert_eq!(master_now(&s), (70, true));
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::Master {
+                    level: Some(70),
+                    note: "",
+                    muted: true
+                },
+                knob_popup::MUTE
+            ))
+        );
+        // A turn unmutes, as Windows' volume keys do; the edges hold.
+        c.event(&s, EventKind::Turn(-1));
+        assert_eq!(master_now(&s), (68, false));
+        c.event(&s, EventKind::Turn(127));
+        assert_eq!(master_now(&s), (100, false));
+        // Master's change events (from elsewhere) show no tab over Foxglove's card.
+        popup(&mut c);
+        c.master_changed(true);
+        assert_eq!(popup(&mut c), None);
+        // On an app the turns are the app's, master untouched.
+        c.event(&s, EventKind::Click);
+        c.event(&s, EventKind::Turn(1));
+        assert_eq!(s.level("a"), 42);
+        assert_eq!(master_now(&s), (100, false));
+    }
+
+    #[test]
+    fn without_master_volume_master_is_the_keyboards_keys() {
+        // Firmware before #855 (or Foxglove paused): the keyboard sends the volume keys and
+        // mute itself, Windows shows its flyout and Foxglove only the tab.
+        let s = FakeSessions::with(&[("a", "Spotify", 40)]);
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Turn(3));
+        c.event(&s, EventKind::Double);
+        assert_eq!(master_now(&s), (64, false), "master is untouched");
+        assert_eq!(popup(&mut c), None);
+        c.master_changed(true);
+        assert_eq!(popup(&mut c), Some((Card::MasterTab, knob_popup::TAB)));
     }
 }

@@ -521,6 +521,27 @@ fn a_version_2_block_carries_the_knob() {
 }
 
 #[test]
+fn the_knob_row_says_when_master_volume_is_foxgloves() {
+    // #855: bit 4 of byte 96, the PC holds master volume (D7 16).
+    let k = Knob {
+        flags: knob_flags::TURN | knob_flags::PRESS | knob_flags::HELD | knob_flags::VOLUME,
+        last: 1,
+        events: 3,
+        keys: 0,
+        drops: 0,
+    };
+    assert_eq!(
+        knob_words(&k),
+        "held by Foxglove, on master (master volume Foxglove's); 3 events, 0 keys, 0 holds dropped"
+    );
+    let plain = Knob {
+        flags: k.flags & !knob_flags::VOLUME,
+        ..k
+    };
+    assert!(knob_words(&plain).starts_with("held by Foxglove, on master;"));
+}
+
+#[test]
 fn an_older_block_has_no_knob_and_a_shorter_right_reads() {
     // A version 1 block (96 bytes) parses as before, with no knob row; and a version 2 left's
     // D7 93 for an older right says 104 bytes while the block says 96 (docs/health.md).

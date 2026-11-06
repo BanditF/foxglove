@@ -216,6 +216,8 @@ pub mod knob_flags {
     pub const PRESS: u8 = 1 << 1;
     pub const HELD: u8 = 1 << 2;
     pub const ON_APP: u8 = 1 << 3;
+    /// The PC holds master volume (D7 16, #855): master's turns go to it.
+    pub const VOLUME: u8 = 1 << 4;
 }
 
 /// One half's self-report block (docs/health.md, versions 1 to 3).
@@ -1142,6 +1144,8 @@ pub fn knob_words(k: &Knob) -> String {
         "not held: the volume keys and mute"
     } else if k.flags & knob_flags::ON_APP != 0 {
         "held by Foxglove, on an app"
+    } else if k.flags & knob_flags::VOLUME != 0 {
+        "held by Foxglove, on master (master volume Foxglove's)"
     } else {
         "held by Foxglove, on master"
     };

@@ -1,5 +1,7 @@
 knob: pc sends D5 01 01
 knob: HELLO caps bit 31 KNOB 1
+knob: pc sends D5 08
+hostlink: rx D5 88 01 0C
 knob: -- not held: the turns and the click are the keys
 knob: turn 1
 kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
@@ -41,9 +43,43 @@ knob: double click
 hostlink: rx D7 94 01 03 00 01 06
 knob: hold 700 ms
 hostlink: rx D7 94 01 04 00 01 07
-knob: -- the endpoint changes: the board drops the hold and says so; the keys again
+knob: -- master volume (#855): held on master, the turns are events and a double taps no key
+knob: pc sends D7 16 FF
+hostlink: rx D7 96
+knob: pc sends D7 14 01 00
+hostlink: rx D7 94 00 00 01 00 03
+knob: pc sends D7 16 01
+hostlink: rx D7 96 00 00 01
+knob: turn 2
+hostlink: rx D7 94 01 01 02 00 08
+knob: click
+hostlink: rx D7 94 01 02 00 00 09
+knob: double click
+hostlink: rx D7 94 01 03 00 00 0A
+knob: -- the knob handed back, master volume still held: turns to the PC, the click is mute
+knob: pc sends D7 14 00
+hostlink: rx D7 94 00 00 00 00 03
+knob: turn -1
+hostlink: rx D7 94 01 01 FF 00 0B
+knob: click
+kp_pressed: usage_page 0x0C keycode 0xE2 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE2 implicit_mods 0x00 explicit_mods 0x00
+knob: -- master volume handed back: master's turns are the volume keys again; bad is 5
+knob: pc sends D7 14 01 00
+hostlink: rx D7 94 00 00 01 00 03
+knob: pc sends D7 16 00
+hostlink: rx D7 96
+knob: turn 1
+kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+knob: pc sends D7 16 02
+hostlink: rx D7 96 00 05
+knob: pc sends D7 16 01
+hostlink: rx D7 96 00 00 01
+knob: -- the endpoint changes: the board drops both holds and says so; the keys again
 knob: the endpoint changes
-hostlink: rx D7 94 01 05 00 01 08
+hostlink: rx D7 94 01 05 00 00 0C
+hostlink: rx D7 96 01
 knob: turn 1
 kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
 kp_released: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00

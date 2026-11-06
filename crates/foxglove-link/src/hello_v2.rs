@@ -9,7 +9,7 @@
 //! | D5 81 HELLO reply | 2 | version: **2** from HELLO v2 firmware on (1 before); the rest as before |
 //! | D5 08 CAPS (PC) | 0-1 | `D5 08`, nothing else |
 //! | D5 88 CAPS reply | 2 | n: the words that follow (1 today, at most [`MAX_WORDS`]) |
-//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`, 34 `HOLD_LEASE`) |
+//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`, 34 `HOLD_LEASE`, 35 `KNOB_VOLUME`) |
 //! | | 7-30 | words 3-8, when n says so |
 //!
 //! Both ways stay compatible:
@@ -70,6 +70,13 @@ pub mod capabilities {
     /// holds (art keys, knob) lapse when a PC that set a lease goes silent; the keyboard asks for
     /// the renewal. Every board with it has it, whatever its keymap.
     pub const HOLD_LEASE: u32 = 1 << 2;
+
+    /// Capability 35 (#855): D7 16 KNOB_VOLUME ([`crate::protocol::knob::volume_hold`]). The PC
+    /// may take master volume: the knob's turns on master come to it as events, and a double
+    /// click on master taps no mute key, so the PC sets master's level and mute and shows its own
+    /// card instead of Windows' popup. Only with a `&knob` in the keymap; firmware without it
+    /// sends the volume keys on master, as before.
+    pub const KNOB_VOLUME: u32 = 1 << 3;
 }
 
 /// The PC's request: D5 08.
@@ -433,6 +440,29 @@ mod tests {
         let old = Hello::parse(&hello_reply(1));
         assert_eq!(
             read(&Board::new(vec![]), &old).word2() & capabilities::HOLD_LEASE,
+            0
+        );
+    }
+
+    /// KNOB_VOLUME (#855): capability 35. The knob sim case's D5 88 (01 0C: HOLD_LEASE and
+    /// KNOB_VOLUME) says it; the hostlink case's (01 04, no knob) and an old HELLO don't.
+    #[test]
+    fn knob_volume_is_capability_35() {
+        assert_eq!(
+            capabilities::KNOB_VOLUME,
+            8,
+            "capability 35 is word 2's bit 3"
+        );
+        let h = Hello::parse(&hello_reply(2));
+        let board = Board::new(vec![Ok(caps_reply(&[0xD5, 0x88, 1, 0x0C]))]);
+        let w2 = read(&board, &h).word2();
+        assert_ne!(w2 & capabilities::KNOB_VOLUME, 0);
+        assert_ne!(w2 & capabilities::HOLD_LEASE, 0);
+        let board = Board::new(vec![Ok(caps_reply(&[0xD5, 0x88, 1, 4]))]);
+        assert_eq!(read(&board, &h).word2() & capabilities::KNOB_VOLUME, 0);
+        let old = Hello::parse(&hello_reply(1));
+        assert_eq!(
+            read(&Board::new(vec![]), &old).word2() & capabilities::KNOB_VOLUME,
             0
         );
     }

@@ -56,7 +56,7 @@ enum health_value {
     HEALTH_ART_LAST_ERROR, // left: enum art_relay_error of the last failed job; right: its state
     HEALTH_ART_SET,        // the art set shown (int8; 0x80 unknown)
     HEALTH_LAST_EFFECT,    // the PC effect kind running (0 none)
-    HEALTH_KNOB_STATE,     // left: the knob's hold (host_link.c: bit 0 held, bit 1 an app)
+    HEALTH_KNOB_STATE,     // left: the knob's hold (host_link.c: bit 0 held, 1 an app, 2 volume)
     HEALTH_KNOB_LAST,      // left: the last knob event's kind (knob.h; 0 none)
     HEALTH_VALUES,
 };
@@ -84,6 +84,7 @@ enum health_state { HEALTH_PENDING, HEALTH_PASS, HEALTH_FAIL, HEALTH_NA };
 #define HEALTH_KNOB_PRESS BIT(1)
 #define HEALTH_KNOB_HELD BIT(2)
 #define HEALTH_KNOB_ON_APP BIT(3)
+#define HEALTH_KNOB_VOLUME BIT(4) // the PC holds master volume (D7 16, #855)
 
 // Block flags (byte 3): what this half has built in.
 #define HEALTH_F_RELAY_CENTRAL BIT(0)

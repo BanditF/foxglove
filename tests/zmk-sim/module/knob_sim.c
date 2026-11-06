@@ -1,6 +1,7 @@
 /*
  * Simulator case for the knob (tests/zmk-sim/knob, #719): the real knob.c (&knob, &knob_press)
- * and host_link.c (D7 14 KNOB / D7 94), with the production keymap's base-layer bindings. This
+ * and host_link.c (D7 14 KNOB / D7 94, D7 16 KNOB_VOLUME / D7 96 for #855's master volume), with
+ * the production keymap's base-layer bindings. This
  * plays the PC and the encoder: the turns go through the behaviour's own sensor API (the
  * simulator has no encoder), the click through ZMK's keymap at position 34. Printed: the PC's
  * requests here, the keyboard's reports by hostlink_sim.c, the keys by ZMK's HID listener.
@@ -123,6 +124,7 @@ static void hold(void) {
 void knob_sim_driver(void) {
     k_msleep(500);
     PC(0xD5, 0x01, 0x01);
+    PC(0xD5, 0x08); // word 2: HOLD_LEASE (bit 2) and KNOB_VOLUME (bit 3, #855)
 
     note("not held: the turns and the click are the keys");
     turn(1);
@@ -145,7 +147,27 @@ void knob_sim_driver(void) {
     double_click();
     hold();
 
-    note("the endpoint changes: the board drops the hold and says so; the keys again");
+    note("master volume (#855): held on master, the turns are events and a double taps no key");
+    PC(0xD7, 0x16, 0xFF);
+    PC(0xD7, 0x14, 0x01, 0x00);
+    PC(0xD7, 0x16, 0x01);
+    turn(2);
+    click();
+    double_click();
+
+    note("the knob handed back, master volume still held: turns to the PC, the click is mute");
+    PC(0xD7, 0x14, 0x00);
+    turn(-1);
+    click();
+
+    note("master volume handed back: master's turns are the volume keys again; bad is 5");
+    PC(0xD7, 0x14, 0x01, 0x00);
+    PC(0xD7, 0x16, 0x00);
+    turn(1);
+    PC(0xD7, 0x16, 0x02);
+    PC(0xD7, 0x16, 0x01);
+
+    note("the endpoint changes: the board drops both holds and says so; the keys again");
     printk("knob: the endpoint changes\n");
     raise_zmk_endpoint_changed((struct zmk_endpoint_changed){0});
     k_msleep(200);
