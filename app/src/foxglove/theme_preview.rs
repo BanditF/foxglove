@@ -940,6 +940,49 @@ fn key_layout_renders() {
     keep("ui-796-zones-keyboard.png", &zoned);
 }
 
+/// #797: keyboards drawn from their definitions, dark and light: a K5 Pro from its VIA
+/// definition with a layout option on (Split Backspace), and the same board from a loaded QMK
+/// layout, each with its chip.
+#[test]
+fn definition_layouts_render() {
+    use crate::foxglove::key_layout::resolve;
+    use crate::foxglove::keyboard_page::{board, tests::sample_board, BoardView};
+    use crate::foxglove::theme::{Choice, DARK, LIGHT};
+    use crate::foxglove::via_host::{layout_of, tests::k5_pro_opened};
+    let (via, layout) = k5_pro_opened(1);
+    let via = resolve(None, &[layout_of(&via, &layout).unwrap()], 0);
+    let (mut qmk, layout) = k5_pro_opened(0);
+    qmk.source = foxglove_via::Source::QmkLayout {
+        layout: "LAYOUT_108_ansi".into(),
+    };
+    qmk.layout_options.clear();
+    let qmk = resolve(None, &[layout_of(&qmk, &layout).unwrap()], 0);
+    let mut shots = Vec::new();
+    for (choice, theme, ground) in [
+        (Choice::Dark, "dark", DARK.ground),
+        (Choice::Light, "light", LIGHT.ground),
+    ] {
+        for (name, l) in [("via", &via), ("qmk", &qmk)] {
+            let ctx = preview_ctx();
+            crate::foxglove::theme::apply_choice(&ctx, choice);
+            let v = BoardView {
+                layout: l.clone(),
+                split: false,
+                panel: None,
+                art: None,
+                ..sample_board()
+            };
+            let img = render_ui(&ctx, egui::vec2(980.0, 360.0), ground, |ui| {
+                board(ui, &v);
+            });
+            keep(&format!("ui-797-{name}-{theme}.png"), &img);
+            shots.push(img);
+        }
+    }
+    assert_ne!(shots[0], shots[1], "the chips differ");
+    assert_ne!(shots[0], shots[2], "dark and light");
+}
+
 /// The left panel as the preview shows it: a keyboard that answered HELLO, a frame of the
 /// panel drawn from a pattern, and a game in front.
 pub(crate) fn sample_screens() -> crate::foxglove::screens::Snapshot {

@@ -6,9 +6,11 @@
 //! **The source, best first** ([`LayoutSource`]):
 //! 1. The keyboard says: ZMK Studio's physical layouts, read with the keymap on connect (or from
 //!    the keymap copy `keymap_cache` keeps) and handed over by `protocols::zmk`
-//!    ([`from_keyboard`]). Later Vial's own definition.
-//! 2. A definition the user loaded (VIA JSON, QMK `info.json`, KLE): B2 #797 and B3 #798 hand
-//!    one over as a [`Supplied`] with [`LayoutSource::Definition`].
+//!    ([`from_keyboard`]), or a Vial board's own definition, handed over by `via_host` when it
+//!    opens the board ([`from_definition`], #797).
+//! 2. A definition the user loaded: a VIA JSON or a QMK keyboard.json / info.json, handed over
+//!    by `via_host` when it opens the board the definition is for ([`from_definition`], #797),
+//!    as a [`Supplied`] with [`LayoutSource::Definition`]. B3 #798 adds KLE.
 //! 3. The board profile's `[drawing]`.
 //! 4. Guessed: a plain grid of the keymap's key count (`Drawing::plain`).
 //!
@@ -29,10 +31,9 @@ use super::theme::Dot;
 /// Where a keyboard's layout came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutSource {
-    /// The keyboard said: ZMK Studio's physical layout (later Vial's own definition).
+    /// The keyboard said: ZMK Studio's physical layout, or a Vial board's own definition.
     Keyboard,
-    /// A definition the user loaded (B2 #797, B3 #798 hand these over).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A definition the user loaded (B2 #797; B3 #798 adds KLE).
     Definition(DefinitionFormat),
     /// The board profile's `[drawing]`.
     Profile,
@@ -40,12 +41,13 @@ pub enum LayoutSource {
     Guessed(usize),
 }
 
-/// The file a loaded definition came from (B2 #797 builds `Via`, B3 #798 the others).
+/// The file a loaded definition came from (B2 #797 builds `Via` and `QmkInfo`, B3 #798 `Kle`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum DefinitionFormat {
     Via,
+    /// A QMK keyboard.json / info.json: one of its `LAYOUT_*` layouts.
     QmkInfo,
+    #[allow(dead_code)]
     Kle,
 }
 
@@ -57,9 +59,7 @@ impl LayoutSource {
             LayoutSource::Definition(DefinitionFormat::Via) => {
                 "Layout from its VIA definition".into()
             }
-            LayoutSource::Definition(DefinitionFormat::QmkInfo) => {
-                "Layout from its QMK info.json".into()
-            }
+            LayoutSource::Definition(DefinitionFormat::QmkInfo) => "Layout from a QMK layout".into(),
             LayoutSource::Definition(DefinitionFormat::Kle) => "Layout from its KLE file".into(),
             LayoutSource::Profile => "Layout from Foxglove's board profile".into(),
             LayoutSource::Guessed(n) => format!("Shape guessed from {n} keys"),
@@ -408,8 +408,38 @@ pub fn connected(vid: u16, pid: u16) {
 /// A source read keyboard (vid, pid)'s layout: it replaces what that source said before, and the
 /// Scenes room is built again on it. Called where the keymap is read, never on a timer.
 pub fn from_keyboard(vid: u16, pid: u16, layout: Supplied) {
+    hand_over(vid, pid, layout, true);
+}
+
+/// A VIA or Vial board's layout, from its definition (#797): handed over by `via_host` when it
+/// opens the board, so when its definition loads or changes and when it reads the board's
+/// layout options (a rescan), never on a timer. Unlike [`from_keyboard`] the host-link keyboard
+/// stays the connected one: a VIA board is another keyboard beside it, which the focus (#799)
+/// draws with `of_keyboard`.
+pub fn from_definition(vid: u16, pid: u16, layout: Supplied) {
+    hand_over(vid, pid, layout, false);
+}
+
+/// Keyboard (vid, pid)'s layout from `source`'s step of the ladder is gone (its definition was
+/// removed, or the board was closed): the next source down draws it.
+pub fn withdraw(vid: u16, pid: u16, source: LayoutSource) {
+    let rank = source.rank();
     let changed = with_store(|s| {
-        s.keyboard = Some((vid, pid));
+        let before = s.supplied.len();
+        s.supplied
+            .retain(|(id, l)| !(*id == (vid, pid) && l.source.rank() == rank));
+        s.supplied.len() != before
+    });
+    if changed {
+        super::scene_run::devices_changed();
+    }
+}
+
+fn hand_over(vid: u16, pid: u16, layout: Supplied, connected: bool) {
+    let changed = with_store(|s| {
+        if connected {
+            s.keyboard = Some((vid, pid));
+        }
         let rank = layout.source.rank();
         let old = s
             .supplied
@@ -479,9 +509,17 @@ pub fn source_chip(ui: &mut egui::Ui, layout: &KeyLayout) -> egui::Response {
 pub fn hover(layout: &KeyLayout) -> String {
     let mut s = match layout.source {
         LayoutSource::Keyboard => {
-            "Drawn from the physical layout the keyboard reports (ZMK Studio)".to_string()
+            "Drawn from the physical layout the keyboard reports (ZMK Studio, or Vial's own definition)".to_string()
         }
-        LayoutSource::Definition(_) => "Drawn from the definition you loaded".to_string(),
+        LayoutSource::Definition(DefinitionFormat::Via) => {
+            "Drawn from the VIA definition you loaded".to_string()
+        }
+        LayoutSource::Definition(DefinitionFormat::QmkInfo) => {
+            "Drawn from the QMK keyboard.json / info.json you loaded".to_string()
+        }
+        LayoutSource::Definition(DefinitionFormat::Kle) => {
+            "Drawn from the KLE file you loaded".to_string()
+        }
         LayoutSource::Profile => {
             "Drawn from Foxglove's board profile for this keyboard".to_string()
         }

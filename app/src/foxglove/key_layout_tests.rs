@@ -279,3 +279,38 @@ fn the_source_chip_is_the_flat_hint_chip() {
     assert!(drawn.is_some_and(|r| r.width() > 0.0));
     assert!(hover(&layout).contains("\u{201c}Eyelash 42\u{201d} (1 of 2)"));
 }
+
+/// What the sources handed over for keyboard (vid, pid), for other modules' tests.
+pub(crate) fn handed_for(vid: u16, pid: u16) -> Vec<Supplied> {
+    with_store(|s| {
+        s.supplied
+            .iter()
+            .filter(|(id, _)| *id == (vid, pid))
+            .map(|(_, l)| l.clone())
+            .collect()
+    })
+}
+
+/// The keyboard connected now, for other modules' tests.
+pub(crate) fn connected_now() -> Option<(u16, u16)> {
+    with_store(|s| s.keyboard)
+}
+
+/// #797: a definition's layout is kept for its own keyboard and leaves the connected one alone
+/// (a VIA board is another keyboard beside the host-link one); withdrawn, it's gone, and only
+/// its own step is withdrawn.
+#[test]
+fn a_definition_is_kept_beside_the_connected_keyboard_and_can_be_withdrawn() {
+    set_for_test(0x1d50, 0x615e, Some(crate::protocols::zmk::studio_layouts(&corne_studio())));
+    let mut via = crate::protocols::zmk::studio_layouts(&corne_studio());
+    via.source = LayoutSource::Definition(DefinitionFormat::Via);
+    from_definition(0x3434, 0x0250, via.clone());
+    assert_eq!(connected_now(), Some((0x1d50, 0x615e)));
+    assert_eq!(handed_for(0x3434, 0x0250), vec![via.clone()]);
+    assert_eq!(supplied_now().len(), 1, "the connected keyboard's own only");
+    withdraw(0x3434, 0x0250, LayoutSource::Keyboard);
+    assert_eq!(handed_for(0x3434, 0x0250), vec![via], "another step stays");
+    withdraw(0x3434, 0x0250, LayoutSource::Definition(DefinitionFormat::QmkInfo));
+    assert!(handed_for(0x3434, 0x0250).is_empty());
+    assert_eq!(handed_for(0x1d50, 0x615e).len(), 1);
+}

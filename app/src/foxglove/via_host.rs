@@ -107,6 +107,69 @@ pub fn save(s: &ViaSettings) -> Result<(), String> {
 
 static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
 static STATUS: Mutex<Vec<Found>> = Mutex::new(Vec::new());
+/// The boards whose layouts the last scan handed to `key_layout`, and from which step, so the
+/// next scan can withdraw the ones that are gone.
+static HANDED: Mutex<Vec<((u16, u16), super::key_layout::LayoutSource)>> = Mutex::new(Vec::new());
+
+/// An open board's layout as `key_layout` takes it (#797): from its definition, laid out for the
+/// layout options the board reported when it was opened. A loaded VIA definition is the
+/// ladder's "definition" step, a loaded QMK layout too; a Vial board's own definition is the
+/// keyboard's. None without a definition. Pure: it reads only what the open already read.
+pub fn layout_of(
+    summary: &Summary,
+    layout: &foxglove_devices::Layout,
+) -> Option<super::key_layout::Supplied> {
+    use super::key_layout::{DefinitionFormat, LayoutKey, LayoutSource, Supplied};
+    let (source, name) = match &summary.source {
+        Source::Loaded => (
+            LayoutSource::Definition(DefinitionFormat::Via),
+            layout.name.clone(),
+        ),
+        Source::QmkLayout { layout } => (
+            LayoutSource::Definition(DefinitionFormat::QmkInfo),
+            layout.clone(),
+        ),
+        Source::Vial { .. } => (LayoutSource::Keyboard, layout.name.clone()),
+        Source::Missing { .. } => return None,
+    };
+    if layout.keys.is_empty() {
+        return None;
+    }
+    let name = if summary.layout_options.is_empty() {
+        name
+    } else {
+        format!("{name} \u{b7} {}", summary.layout_options.join(", "))
+    };
+    let keys = layout
+        .keys
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            let rect = egui::Rect::from_min_size(egui::pos2(k.x, k.y), egui::vec2(k.w, k.h));
+            LayoutKey::new(rect, k.r, i)
+        })
+        .collect();
+    Some(Supplied {
+        source,
+        layouts: vec![(name, keys)],
+        active: 0,
+    })
+}
+
+/// Hands the open boards' layouts (`handed`) to `key_layout` and withdraws the ones the last
+/// scan handed over that are gone. Called once per scan, the only time a board's definition
+/// and layout options are read; never on a timer.
+fn hand_layouts(handed: Vec<((u16, u16), super::key_layout::Supplied)>) {
+    let mut last = HANDED.lock().unwrap_or_else(|e| e.into_inner());
+    let now: Vec<_> = handed.iter().map(|(id, l)| (*id, l.source)).collect();
+    for (id, source) in last.iter().filter(|old| !now.contains(old)) {
+        super::key_layout::withdraw(id.0, id.1, *source);
+    }
+    for ((vid, pid), layout) in handed {
+        super::key_layout::from_definition(vid, pid, layout);
+    }
+    *last = now;
+}
 
 /// A keyboard found on the last scan, for the settings.
 #[derive(Clone, Debug)]
@@ -230,6 +293,8 @@ pub fn rescan() {
         *guard = None; // closes what was open
         if !s.enabled {
             STATUS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            drop(guard);
+            hand_layouts(Vec::new());
             return;
         }
         let (defs, errors) = definitions(&s);
@@ -270,6 +335,7 @@ pub fn rescan() {
             })
             .collect();
         let (planned, learned) = plan(&present, &s);
+        let mut layouts = Vec::new();
         for (entry, p) in report.devices.iter().zip(planned) {
             let maybe = p.maybe.map(|k| (p.own, k));
             let key = p.key;
@@ -287,13 +353,20 @@ pub fn rescan() {
             let opened = registry
                 .open(&entry.info.id)
                 .map(|d| {
-                    summaries.get(&entry.info.id).unwrap_or_else(|| Summary {
+                    let summary = summaries.get(&entry.info.id).unwrap_or_else(|| Summary {
                         firmware: d.info().firmware.clone(),
                         lighting: None,
                         lighting_asked: true,
                         source: Source::Missing { why: None },
                         layers: None,
-                    })
+                        layout_options: Vec::new(),
+                    });
+                    // The layout the open already worked out; nothing more is asked.
+                    let layout = d.keymap().and_then(|k| k.layout().ok());
+                    if let Some(l) = layout.and_then(|l| layout_of(&summary, &l)) {
+                        layouts.push(((entry.info.id.vid, entry.info.id.pid), l));
+                    }
+                    summary
                 })
                 .map_err(|e| super::devices::describe(&e));
             if let Ok(Summary {
@@ -323,6 +396,10 @@ pub fn rescan() {
         }
         *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = found;
         *guard = Some(registry);
+        // Handed over after the registry is released: a new layout rebuilds the Scenes room,
+        // which may look at the open boards.
+        drop(guard);
+        hand_layouts(layouts);
     });
 }
 
@@ -679,6 +756,7 @@ pub(crate) mod tests {
                 lighting_asked: true,
                 source,
                 layers,
+                layout_options: vec![],
             }),
             key: Some(format!("via:{name}")),
             paused: false,
@@ -764,6 +842,7 @@ pub(crate) mod tests {
                 lighting_asked,
                 source: Source::Loaded,
                 layers: Some(4),
+                layout_options: vec![],
             }),
             key: Some("via:k5".into()),
             paused: false,
@@ -822,6 +901,7 @@ pub(crate) mod tests {
                 lighting_asked: true,
                 source: source.clone(),
                 layers: Some(4),
+                layout_options: vec![],
             }),
             key: Some("via:fox2".into()),
             paused: false,
@@ -937,5 +1017,232 @@ pub(crate) mod tests {
         let old: ViaSettings =
             toml::from_str("enabled = true\npaused = [\"3434:0250\"]\n").unwrap();
         assert!(old.known.is_empty() && old.aliases.is_empty());
+    }
+
+    /// A Keychron K5 Pro shaped VIA definition (#797): full size, 108 keys (the 104 of ANSI and
+    /// four more over the number pad), drawn the way VIA definitions draw them, with one layout
+    /// option as #770's fixtures have them: "Split Backspace", whose second choice (two 1u keys)
+    /// sits right of the board.
+    pub(crate) fn k5_pro_definition() -> String {
+        use serde_json::{json, Value};
+        let mut col = 0u16;
+        let mut row = 0u16;
+        let mut rows: Vec<Value> = Vec::new();
+        // Each row: (gap before, width, height, option) per key; gaps and sizes in key units.
+        let k = |gap: f64, w: f64| (gap, w, 1.0, "");
+        let mut push = |keys: Vec<(f64, f64, f64, &str)>, y: f64, row: &mut u16, col: &mut u16| {
+            let mut items = Vec::new();
+            for (i, (gap, w, h, option)) in keys.into_iter().enumerate() {
+                let mut o = serde_json::Map::new();
+                if i == 0 && y != 0.0 {
+                    o.insert("y".into(), json!(y));
+                }
+                if gap != 0.0 {
+                    o.insert("x".into(), json!(gap));
+                }
+                if w != 1.0 {
+                    o.insert("w".into(), json!(w));
+                }
+                if h != 1.0 {
+                    o.insert("h".into(), json!(h));
+                }
+                if !o.is_empty() {
+                    items.push(Value::Object(o));
+                }
+                let label = if option.is_empty() {
+                    format!("{row},{col}")
+                } else {
+                    format!("{row},{col}\n\n\n{option}")
+                };
+                items.push(json!(label));
+                *col += 1;
+            }
+            rows.push(Value::Array(items));
+            *row += 1;
+            *col = 0;
+        };
+        let ones = |n: usize, first_gap: f64| {
+            (0..n)
+                .map(|i| k(if i == 0 { first_gap } else { 0.0 }, 1.0))
+                .collect::<Vec<_>>()
+        };
+        // Esc, F1-F12 in threes of four, the three over the arrows, four over the number pad.
+        let mut r0 = vec![k(0.0, 1.0)];
+        r0.extend(ones(4, 1.0));
+        r0.extend(ones(4, 0.5));
+        r0.extend(ones(4, 0.5));
+        r0.extend(ones(3, 0.25));
+        r0.extend(ones(4, 0.25));
+        // ` 1-0 - = and Backspace (2u, or two 1u keys right of the board), Ins Home PgUp, the pad.
+        let mut r1 = ones(13, 0.0);
+        r1.push((0.0, 2.0, 1.0, "0,0"));
+        r1.extend(ones(3, 0.25));
+        r1.extend(ones(4, 0.25));
+        r1.push((0.25, 1.0, 1.0, "0,1"));
+        r1.push((0.0, 1.0, 1.0, "0,1"));
+        let mut r2 = vec![k(0.0, 1.5)];
+        r2.extend(ones(12, 0.0));
+        r2.push(k(0.0, 1.5));
+        r2.extend(ones(3, 0.25));
+        r2.extend(ones(3, 0.25));
+        r2.push((0.0, 1.0, 2.0, ""));
+        let mut r3 = vec![k(0.0, 1.75)];
+        r3.extend(ones(11, 0.0));
+        r3.push(k(0.0, 2.25));
+        r3.extend(ones(3, 3.5));
+        let mut r4 = vec![k(0.0, 2.25)];
+        r4.extend(ones(10, 0.0));
+        r4.push(k(0.0, 2.75));
+        r4.push(k(1.25, 1.0));
+        r4.extend(ones(3, 1.25));
+        r4.push((0.0, 1.0, 2.0, ""));
+        let mut r5: Vec<_> = (0..3).map(|_| k(0.0, 1.25)).collect();
+        r5.push(k(0.0, 6.25));
+        r5.extend((0..4).map(|_| k(0.0, 1.25)));
+        r5.extend(ones(3, 0.25));
+        r5.push(k(0.25, 2.0));
+        r5.push(k(0.0, 1.0));
+        push(r0, 0.0, &mut row, &mut col);
+        push(r1, 0.25, &mut row, &mut col);
+        push(r2, 0.0, &mut row, &mut col);
+        push(r3, 0.0, &mut row, &mut col);
+        push(r4, 0.0, &mut row, &mut col);
+        push(r5, 0.0, &mut row, &mut col);
+        json!({
+            "name": "Keychron K5 Pro",
+            "vendorId": "0x3434",
+            "productId": "0x0250",
+            "matrix": {"rows": 6, "cols": 23},
+            "menus": ["qmk_rgb_matrix"],
+            "layouts": {"labels": ["Split Backspace"], "keymap": rows}
+        })
+        .to_string()
+    }
+
+    /// What an open of the K5 Pro reports for a layout options value (as `ViaDevice::open`
+    /// works it out): its summary and its layout.
+    pub(crate) fn k5_pro_opened(value: u32) -> (Summary, foxglove_devices::Layout) {
+        let d = Definition::parse(&k5_pro_definition()).unwrap();
+        let summary = Summary {
+            firmware: Some("VIA protocol 12".into()),
+            lighting: Some(Channel::RgbMatrix),
+            lighting_asked: true,
+            source: Source::Loaded,
+            layers: Some(4),
+            layout_options: d.chosen_names(value),
+        };
+        (summary, d.layout_for(value))
+    }
+
+    fn count(l: &crate::foxglove::key_layout::KeyLayout) -> usize {
+        l.parts.iter().map(Vec::len).sum()
+    }
+
+    /// #797: a K5 Pro definition draws its full-size layout, with the chip "Layout from its VIA
+    /// definition", and follows its layout options value.
+    #[test]
+    fn a_k5_pro_definition_draws_its_full_size_layout_and_follows_its_layout_options() {
+        use crate::foxglove::key_layout::{resolve, LayoutSource};
+        let (summary, layout) = k5_pro_opened(0);
+        let supplied = layout_of(&summary, &layout).unwrap();
+        let drawn = resolve(None, &[supplied], 0);
+        assert_eq!(count(&drawn), 108, "the whole board, not a guess");
+        assert_eq!(drawn.source.chip(), "Layout from its VIA definition");
+        assert!(matches!(drawn.source, LayoutSource::Definition(_)));
+        assert_eq!(drawn.source.dot(), Some(crate::foxglove::theme::Dot::Ok));
+        assert!(drawn.size.x > 22.0 && drawn.size.x < 23.0, "{:?}", drawn.size);
+        assert!((drawn.size.y - 6.25).abs() < 0.01, "{:?}", drawn.size);
+        assert_eq!(drawn.name.as_deref(), Some("Keychron K5 Pro"));
+        // Split Backspace on: two 1u keys where the 2u one was.
+        let (summary, layout) = k5_pro_opened(1);
+        let split = resolve(None, &[layout_of(&summary, &layout).unwrap()], 0);
+        assert_eq!(count(&split), 109);
+        assert_eq!(split.source.chip(), "Layout from its VIA definition");
+        assert_eq!(
+            split.name.as_deref(),
+            Some("Keychron K5 Pro \u{b7} Split Backspace")
+        );
+        let hover = crate::foxglove::key_layout::hover(&split);
+        assert!(hover.starts_with("Drawn from the VIA definition you loaded"), "{hover}");
+        let backspace = |l: &crate::foxglove::key_layout::KeyLayout| {
+            let mut row: Vec<(f32, f32)> = l.parts[0]
+                .iter()
+                .filter(|k| (k.rect.min.y - 1.25).abs() < 0.01 && k.rect.min.x > 12.5 && k.rect.min.x < 15.0)
+                .map(|k| (k.rect.min.x, k.rect.width()))
+                .collect();
+            row.sort_by(|a, b| a.0.total_cmp(&b.0));
+            row
+        };
+        assert_eq!(backspace(&drawn), [(13.0, 2.0)]);
+        assert_eq!(backspace(&split), [(13.0, 1.0), (14.0, 1.0)]);
+        // The ladder: the definition beats the guess, and the keyboard beats it.
+        assert_eq!(drawn.size, split.size, "the split keys sit in the 2u key's place");
+    }
+
+    /// A loaded QMK keyboard.json says "from a QMK layout", named by its `LAYOUT_*`; a Vial
+    /// board's own definition is the keyboard's; a board with no definition hands nothing over.
+    #[test]
+    fn qmk_layouts_and_vial_definitions_have_their_own_chips() {
+        use crate::foxglove::key_layout::resolve;
+        let (mut summary, layout) = k5_pro_opened(0);
+        summary.source = Source::QmkLayout {
+            layout: "LAYOUT_108_ansi".into(),
+        };
+        summary.layout_options.clear();
+        let qmk = resolve(None, &[layout_of(&summary, &layout).unwrap()], 0);
+        assert_eq!(qmk.source.chip(), "Layout from a QMK layout");
+        assert_eq!(qmk.name.as_deref(), Some("LAYOUT_108_ansi"));
+        assert_eq!(count(&qmk), 108);
+        summary.source = Source::Vial { protocol: 6 };
+        let vial = resolve(None, &[layout_of(&summary, &layout).unwrap()], 0);
+        assert_eq!(vial.source.chip(), "Layout from the keyboard");
+        summary.source = Source::Missing { why: None };
+        assert_eq!(layout_of(&summary, &layout), None);
+    }
+
+    /// A scan hands the open boards' layouts over and withdraws the ones gone (a definition
+    /// removed, a board paused or closed); the host-link keyboard stays the connected one.
+    #[test]
+    fn a_scan_hands_layouts_over_and_withdraws_the_gone_ones() {
+        use crate::foxglove::key_layout;
+        key_layout::set_for_test(0x1d50, 0x615e, None);
+        let (summary, layout) = k5_pro_opened(0);
+        let k5 = layout_of(&summary, &layout).unwrap();
+        hand_layouts(vec![((0x3434, 0x0250), k5.clone())]);
+        let focused = key_layout::tests::handed_for(0x3434, 0x0250);
+        assert_eq!(focused, vec![k5]);
+        assert_eq!(key_layout::tests::connected_now(), Some((0x1d50, 0x615e)));
+        hand_layouts(Vec::new());
+        assert!(key_layout::tests::handed_for(0x3434, 0x0250).is_empty());
+    }
+
+    /// #797, nothing is written: the layout comes from what the read-only open already read.
+    /// The code that hands it over reaches no VIA write path, and the scan opens boards without
+    /// asking for writes.
+    #[test]
+    fn handing_layouts_over_reaches_no_via_write_path() {
+        let src = include_str!("via_host.rs");
+        let body = |from: &str, to: &str| {
+            let start = src.find(from).unwrap();
+            let end = src[start..].find(to).unwrap() + start;
+            &src[start..end]
+        };
+        let handing = body("pub fn layout_of(", "/// Loads the definitions");
+        let scan = body("pub fn rescan()", "/// Runs `f` on an open VIA keyboard");
+        for code in [handing, scan] {
+            for write in [
+                "set_binding",
+                "set_effect",
+                "set_color",
+                "set_value",
+                "allow_writes",
+                "with_writes",
+                ".send(",
+                "lighting()",
+            ] {
+                assert!(!code.contains(write), "{write} reached");
+            }
+        }
+        assert!(scan.contains("ViaBackend::new(defs)"));
     }
 }

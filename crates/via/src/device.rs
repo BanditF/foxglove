@@ -53,6 +53,9 @@ pub struct Summary {
     pub source: Source,
     /// Layers, when it has a keymap.
     pub layers: Option<u8>,
+    /// The layout options the keyboard has chosen, in words ([`Definition::chosen_names`]):
+    /// what its drawn layout follows. Empty without a definition or options.
+    pub layout_options: Vec<String>,
 }
 
 pub struct ViaDevice<T: Transport> {
@@ -136,6 +139,9 @@ impl<T: Transport> ViaDevice<T> {
             lighting_asked: self.probe.scheme.is_some(),
             source: self.source.clone(),
             layers: self.def.is_some().then_some(self.probe.layers),
+            layout_options: self.def.as_ref().map_or_else(Vec::new, |d| {
+                d.chosen_names(self.probe.layout_options.unwrap_or(0))
+            }),
         }
     }
 
@@ -469,6 +475,7 @@ mod tests {
                 lighting_asked: true,
                 source: Source::Missing { why: None },
                 layers: None,
+                layout_options: vec![],
             }
         );
         foxglove_devices::contract::check_device(&dev).unwrap();
@@ -491,6 +498,7 @@ mod tests {
             assert_eq!(dev.probe.layout_options, answer);
             let layout = Keymap::layout(&dev).unwrap();
             assert_eq!(layout, def.layout_for(value));
+            assert_eq!(dev.summary().layout_options, def.chosen_names(value));
             let mut at: Vec<_> = layout.keys.iter().map(|k| (k.row, k.col)).collect();
             at.sort();
             at.dedup();

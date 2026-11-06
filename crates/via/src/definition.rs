@@ -245,6 +245,20 @@ impl Definition {
         out
     }
 
+    /// The chosen layout options in words, for a layout options value: a toggle that is on by
+    /// its name ("Split Backspace"), a group with choices as "name: choice" ("Enter: 2u"). Off
+    /// toggles are left out.
+    pub fn chosen_names(&self, value: u32) -> Vec<String> {
+        self.options
+            .iter()
+            .zip(self.choices(value))
+            .filter_map(|(o, c)| match o.choices.get(usize::from(c)) {
+                Some(choice) => Some(format!("{}: {choice}", o.name)),
+                None => (c != 0).then(|| o.name.clone()),
+            })
+            .collect()
+    }
+
     /// The layout for a layout options value: the keys outside any option and, of each option,
     /// the chosen choice's keys, moved so its top-left key is where choice 0's is.
     pub fn layout_for(&self, value: u32) -> Layout {
@@ -583,6 +597,18 @@ mod tests {
         );
         assert_eq!(d.choices(0b1101), [1, 2, 1]);
         assert_eq!(d.options[0].name, "Option 0");
+    }
+
+    /// #797: the chosen options in words, for the drawing's hover: toggles on by name, a group
+    /// with choices as "name: choice".
+    #[test]
+    fn chosen_options_in_words() {
+        let d = Definition::parse(OPTIONS).unwrap();
+        assert_eq!(d.chosen_names(0), ["Enter: 1u"]);
+        assert_eq!(
+            d.chosen_names(0b1101),
+            ["Split Backspace", "Enter: 2u", "Split Space"]
+        );
     }
 
     #[test]
