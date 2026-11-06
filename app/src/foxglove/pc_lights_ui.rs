@@ -139,76 +139,170 @@ pub fn show(ui: &mut egui::Ui) {
     let mut guard = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let (draft, wizard) = guard.get_or_insert_with(Default::default);
     for intent in draw(ui, &view, draft, wizard) {
-        match intent {
-            Intent::Apply { key, colors } => {
-                draft.colors.remove(&key);
-                pc_lights::send(Msg::Set { key, colors });
-            }
-            Intent::Off(key) => {
-                draft.colors.remove(&key);
-                pc_lights::send(Msg::Off(key));
-            }
-            Intent::Identify(key) => pc_lights::send(Msg::Identify(key)),
-            Intent::Match(key, on) => {
-                // What the keyboard last reported, should the worker have none yet.
-                if let (true, Some(k)) = (on, keyboard_shows()) {
-                    // The accent the keyboard is sent may not be what it shows (#616): say
-                    // which one the case follows.
-                    if let Some(accent) = super::accent::followed() {
-                        eprintln!(
-                            "Foxglove: Match keyboard on for {key}: following the keyboard's \
+        act(ui.ctx(), intent, &view.pc.devices, draft);
+    }
+}
+
+/// The worker request a row's Apply, Off or Identify is: the keyboard card sends the same for a
+/// focused LampArray keyboard's key (#825). `None` for the rest.
+pub fn row_msg(intent: &Intent) -> Option<Msg> {
+    match intent {
+        Intent::Apply { key, colors } => Some(Msg::Set {
+            key: key.clone(),
+            colors: colors.clone(),
+        }),
+        Intent::Off(key) => Some(Msg::Off(key.clone())),
+        Intent::Identify(key) => Some(Msg::Identify(key.clone())),
+        _ => None,
+    }
+}
+
+/// What a click asks of the worker (or the window), with `devices` the rows it may name and
+/// `draft` the colours being picked: Other devices' rows, and the keyboard card for a focused
+/// LampArray keyboard (#825). Queues requests only; no device is asked here.
+pub fn act(ctx: &egui::Context, intent: Intent, devices: &[Row], draft: &mut Draft) {
+    if let Some(msg) = row_msg(&intent) {
+        if let Intent::Apply { key, .. } | Intent::Off(key) = &intent {
+            draft.colors.remove(key);
+        }
+        pc_lights::send(msg);
+        return;
+    }
+    match intent {
+        Intent::Apply { .. } | Intent::Off(_) | Intent::Identify(_) => {}
+        Intent::Match(key, on) => {
+            // What the keyboard last reported, should the worker have none yet.
+            if let (true, Some(k)) = (on, keyboard_shows()) {
+                // The accent the keyboard is sent may not be what it shows (#616): say
+                // which one the case follows.
+                if let Some(accent) = super::accent::followed() {
+                    eprintln!(
+                        "Foxglove: Match keyboard on for {key}: following the keyboard's \
                              report (effect {}, hue {}, sat {}, brightness {}), not the accent \
                              {} it is sent",
-                            k.effect,
-                            k.hue,
-                            k.sat,
-                            k.brightness,
-                            pc_lights::hex(accent)
-                        );
-                    }
-                    pc_lights::send(Msg::Keyboard(k));
+                        k.effect,
+                        k.hue,
+                        k.sat,
+                        k.brightness,
+                        pc_lights::hex(accent)
+                    );
                 }
-                pc_lights::send(Msg::Match(key, on));
+                pc_lights::send(Msg::Keyboard(k));
             }
-            Intent::TestZone {
-                vid,
-                pid,
-                path,
-                protocol,
-                zone,
-            } => pc_lights::send(Msg::TestZone {
-                vid,
-                pid,
-                path,
-                protocol,
-                zone,
-            }),
-            Intent::Save(device) => pc_lights::send(Msg::SaveLocal(device)),
-            Intent::Remove(vid, pid) => pc_lights::send(Msg::RemoveLocal(vid, pid)),
-            Intent::Copy(text) => ui.ctx().copy_text(text),
-            Intent::Calibrate(key) => {
-                if let Some(row) = view.pc.devices.iter().find(|r| r.key == key) {
-                    super::calibrate_ui::open(super::calibrate_ui::lights_target(row));
-                }
-            }
-            Intent::CalibrateColor(key, zone, color) => {
-                if let Some(row) = view.pc.devices.iter().find(|r| r.key == key) {
-                    let target = super::calibrate_ui::lights_target(row);
-                    super::calibrate_ui::open_at(target, zone, Some(color));
-                }
-            }
-            Intent::OpenRgb(settings) => {
-                draft.openrgb = None;
-                pc_lights::send(Msg::OpenRgbSettings(settings));
-            }
-            Intent::OpenRgbConnect => pc_lights::send(Msg::OpenRgbConnect),
-            Intent::OpenDynamicLighting => {
-                super::notifications_ui::open_settings_page(super::lights_owner::DL_SETTINGS)
-            }
-            // The switcher's own pick: C1 saves and announces it, and the pages follow.
-            Intent::Show(key) => super::focus_ui::pick(ui.ctx(), &key),
+            pc_lights::send(Msg::Match(key, on));
         }
+        Intent::TestZone {
+            vid,
+            pid,
+            path,
+            protocol,
+            zone,
+        } => pc_lights::send(Msg::TestZone {
+            vid,
+            pid,
+            path,
+            protocol,
+            zone,
+        }),
+        Intent::Save(device) => pc_lights::send(Msg::SaveLocal(device)),
+        Intent::Remove(vid, pid) => pc_lights::send(Msg::RemoveLocal(vid, pid)),
+        Intent::Copy(text) => ctx.copy_text(text),
+        Intent::Calibrate(key) => {
+            if let Some(row) = devices.iter().find(|r| r.key == key) {
+                super::calibrate_ui::open(super::calibrate_ui::lights_target(row));
+            }
+        }
+        Intent::CalibrateColor(key, zone, color) => {
+            if let Some(row) = devices.iter().find(|r| r.key == key) {
+                let target = super::calibrate_ui::lights_target(row);
+                super::calibrate_ui::open_at(target, zone, Some(color));
+            }
+        }
+        Intent::OpenRgb(settings) => {
+            draft.openrgb = None;
+            pc_lights::send(Msg::OpenRgbSettings(settings));
+        }
+        Intent::OpenRgbConnect => pc_lights::send(Msg::OpenRgbConnect),
+        Intent::OpenDynamicLighting => {
+            super::notifications_ui::open_settings_page(super::lights_owner::DL_SETTINGS)
+        }
+        // The switcher's own pick: C1 saves and announces it, and the pages follow.
+        Intent::Show(key) => super::focus_ui::pick(ctx, &key),
     }
+}
+
+/// Off's hover, on a row and on the keyboard card (#825).
+pub const OFF_TIP: &str = "Turn every zone dark";
+
+/// Identify's hover, on a row and on the keyboard card (#825).
+pub const IDENTIFY_TIP: &str = "Blink this device for a moment, then put its colours back";
+
+#[cfg(test)]
+thread_local! {
+    /// Where the keyboard card's lights buttons landed this frame, by label, for the click
+    /// tests (#825).
+    pub static LAST_CARD_BUTTONS: std::cell::RefCell<Vec<(&'static str, egui::Rect)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A button of the keyboard card's lights, noted for the click tests.
+fn card_button(
+    ui: &mut egui::Ui,
+    label: &'static str,
+    enabled: bool,
+    button: egui::Button,
+) -> egui::Response {
+    let r = ui.add_enabled(enabled, button);
+    #[cfg(test)]
+    LAST_CARD_BUTTONS.with_borrow_mut(|b| b.push((label, r.rect)));
+    #[cfg(not(test))]
+    let _ = label;
+    r
+}
+
+/// The keyboard card's lights for a focused keyboard Foxglove drives through Windows Dynamic
+/// Lighting (#825): its row's own controls, so the clicks are the row's requests for its key
+/// ([`row_msg`]): the colour for all lamps (a picker per lamp for 2 to 12), Apply colours, Off,
+/// Identify and Calibrate…. Muted, never blank, while Foxglove doesn't drive it (Windows lists
+/// it but Foxglove hasn't opened it): the header's Windows chip says why.
+pub fn card_lights(
+    ui: &mut egui::Ui,
+    row: &Row,
+    busy: bool,
+    draft: &mut Draft,
+    out: &mut Vec<Intent>,
+) {
+    let driven = driven(row);
+    ui.add_enabled_ui(driven && !busy, |ui| {
+        let colours = row.caps.takes_color() && zones(ui, row, draft, true, out);
+        let changes = draft.changes(row);
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if colours {
+                let apply = theme::primary_button(ui, "Apply colours");
+                if card_button(ui, "Apply colours", !changes.is_empty(), apply).clicked() {
+                    out.push(Intent::Apply {
+                        key: row.key.clone(),
+                        colors: changes.clone(),
+                    });
+                }
+            }
+            if row.caps.switchable() {
+                let off =
+                    card_button(ui, "Off", true, egui::Button::new("Off")).on_hover_text(OFF_TIP);
+                if off.clicked() {
+                    out.push(Intent::Off(row.key.clone()));
+                }
+                let identify = card_button(ui, "Identify", true, egui::Button::new("Identify"))
+                    .on_hover_text(IDENTIFY_TIP);
+                if identify.clicked() {
+                    out.push(Intent::Identify(row.key.clone()));
+                }
+            }
+            if colours && calibrate_button(ui).clicked() {
+                out.push(Intent::Calibrate(row.key.clone()));
+            }
+        });
+    });
 }
 
 /// What "Match keyboard" starts from: the keyboard's lights as it last reported them
@@ -299,8 +393,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
             ui.add_space(4.0);
             let status = placed(&s.results, &Place::Row(row.key.clone()));
             let lamps = super::scene_room::vid_pid(&row.key).and_then(|k| v.lamps.get(&k));
-            let focus = v.keyboards.row_focus(row);
-            device(ui, row, status, lamps, focus, s.busy, draft, &mut out);
+            let show = v.keyboards.show_on(row);
+            device(ui, row, status, lamps, show, s.busy, draft, &mut out);
         }
         ui.add_space(4.0);
         ui.separator();
@@ -800,15 +894,14 @@ pub fn row_note(row: &Row) -> String {
 /// for it, it gives way (the battery list's size, then none: [`thumb::row_size`]) from what the
 /// row's other contents needed last pass.
 ///
-/// A keyboard that isn't the focus (`focus`, #820) has "Show in Foxglove" at the row's end; the
-/// focused LampArray-only keyboard, still listed for its colours, a muted "shown in Foxglove" chip.
+/// A keyboard that isn't the focus (`show`, #820) has "Show in Foxglove" at the row's end.
 #[allow(clippy::too_many_arguments)]
 fn device(
     ui: &mut egui::Ui,
     row: &Row,
     status: Option<&Status>,
     lamps: Option<&pc_lights::LampLayout>,
-    focus: others::RowFocus<'_>,
+    show: Option<&super::keyboard_focus::Keyboard>,
     busy: bool,
     draft: &mut Draft,
     out: &mut Vec<Intent>,
@@ -876,9 +969,6 @@ fn device(
             if let Some(chip) = lamp {
                 theme::hint_chip(ui, chip.text, Some(chip.hover), Some(chip.dot));
             }
-            if focus == others::RowFocus::Shown {
-                others::shown_chip(ui);
-            }
             // What the last click on this device did: on its row, open or closed.
             if let Some(st) = status.filter(|st| st.tone == Tone::Done) {
                 done_chip(ui, st, Some(&row.name));
@@ -887,7 +977,7 @@ fn device(
                 .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Room for the buttons' outline at the row's clipped edge.
                     ui.add_space(2.0);
-                    if let others::RowFocus::Show(k) = focus {
+                    if let Some(k) = show {
                         // At the end, where a keyboard's own row has it.
                         if others::link(ui, k) {
                             asked.push(Intent::Show(k.key.clone()));
@@ -899,9 +989,7 @@ fn device(
                     if identify {
                         let identify = ui
                             .add_enabled(!busy, egui::Button::new("Identify"))
-                            .on_hover_text(
-                                "Blink this device for a moment, then put its colours back",
-                            );
+                            .on_hover_text(IDENTIFY_TIP);
                         if identify.clicked() {
                             asked.push(Intent::Identify(row.key.clone()));
                         }
@@ -934,7 +1022,7 @@ fn device(
                 Control::LampArray => row.lamp_access.is_some() && row.caps.takes_color(),
                 Control::NotYet => false,
             };
-            let colours = colours && zones(ui, row, draft, &mut asked);
+            let colours = colours && zones(ui, row, draft, false, &mut asked);
             actions(ui, row, busy, driven, colours, draft, &mut asked);
             asked
         },
@@ -1016,7 +1104,15 @@ pub fn effect_of(control: Control) -> Option<&'static super::effect_controls::Ef
 
 /// The zone pickers and the swatch row; false when the device's effect takes no colour (then
 /// nothing is drawn).
-fn zones(ui: &mut egui::Ui, row: &Row, draft: &mut Draft, out: &mut Vec<Intent>) -> bool {
+/// The colour group's caps label sits beside the swatches on a row, above them on the keyboard
+/// card (rule 4, as its COLOUR).
+fn zones(
+    ui: &mut egui::Ui,
+    row: &Row,
+    draft: &mut Draft,
+    above: bool,
+    out: &mut Vec<Intent>,
+) -> bool {
     // Only the controls its effect uses (#670); every one Foxglove drives takes a colour.
     if !effect_of(row.control).is_some_and(|e| e.uses_colour()) {
         return false;
@@ -1057,17 +1153,20 @@ fn zones(ui: &mut egui::Ui, row: &Row, draft: &mut Draft, out: &mut Vec<Intent>)
         });
     }
     ui.add_space(4.0);
+    let caps = match (row.caps.per_zone(), row.control) {
+        (false, _) => "Colour",
+        (true, Control::LampArray) => "All lamps",
+        (true, Control::OpenRgb) => "All LEDs",
+        (true, _) => "All zones",
+    };
+    if above {
+        ui.label(theme::caps_label(ui, caps));
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        ui.label(theme::caps_label(
-            ui,
-            match (row.caps.per_zone(), row.control) {
-                (false, _) => "Colour",
-                (true, Control::LampArray) => "All lamps",
-                (true, Control::OpenRgb) => "All LEDs",
-                (true, _) => "All zones",
-            },
-        ));
+        if !above {
+            ui.label(theme::caps_label(ui, caps));
+        }
         for (name, rgb) in super::lights_page::SWATCHES {
             let all = picks.iter().all(|c| *c == Some(rgb));
             if swatch(ui, super::calibrate::screen_color(&row.key, None, rgb), all)
@@ -1113,11 +1212,7 @@ fn actions(
                         .clicked();
                 }
                 if switch {
-                    if ui
-                        .button("Off")
-                        .on_hover_text("Turn every zone dark")
-                        .clicked()
-                    {
+                    if ui.button("Off").on_hover_text(OFF_TIP).clicked() {
                         out.push(Intent::Off(row.key.clone()));
                     }
                     if row.caps.takes_color() && calibrate_button(ui).clicked() {

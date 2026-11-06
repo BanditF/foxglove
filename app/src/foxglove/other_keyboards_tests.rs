@@ -89,21 +89,25 @@ fn keyboards_that_are_not_the_focus_get_the_action() {
     assert!(sample().keyboards.own_rows(&sample().pc.devices).is_empty());
 }
 
-/// #820 AC: a focused LampArray-only keyboard isn't listed twice, and its colours stay
-/// reachable (the keyboard card mutes them): its lights row stays, once, with a flat muted
-/// "shown in Foxglove" chip in place of the link. The Corne and the K5 Pro get rows of their
-/// own with the link.
+/// #820 AC, changed by #825: a focused LampArray-only keyboard isn't listed under Other devices
+/// at all while in focus (the keyboard card drives its lights now). The Corne and the K5 Pro
+/// get rows of their own with the link.
 #[test]
-fn a_focused_lamp_array_keyboard_keeps_its_lights_row_with_a_chip() {
+fn a_focused_lamp_array_keyboard_is_not_listed() {
     let v = desk(LAMP);
     let lamp_row = v.pc.devices.last().unwrap();
-    assert!(v.keyboards.listed(lamp_row) && v.keyboards.shown_here(lamp_row));
+    assert!(!v.keyboards.listed(lamp_row));
     assert_eq!(v.keyboards.show_on(lamp_row), None);
-    assert_eq!(v.keyboards.row_focus(lamp_row), RowFocus::Shown);
     assert_eq!(keys(v.keyboards.own_rows(&v.pc.devices)), [CORNE, K5]);
     let text = shown(&v);
-    assert_eq!(text.matches("Lamp keyboard").count(), 1, "{text}");
-    assert_eq!(text.matches(SHOWN).count(), 1, "{text}");
+    assert!(
+        !text.contains("Lamp keyboard"),
+        "not listed in focus: {text}"
+    );
+    assert!(
+        !text.contains("shown in Foxglove"),
+        "the stopgap chip went: {text}"
+    );
     for want in ["Eyelash Corne", "ZMK · USB · Foxglove firmware", "K5 Pro"] {
         assert!(text.contains(want), "{want}: {text}");
     }
@@ -112,14 +116,10 @@ fn a_focused_lamp_array_keyboard_keeps_its_lights_row_with_a_chip() {
         2,
         "the Corne's and the K5 Pro's links, none on the focus: {text}"
     );
-    // The chip says where another keyboard is picked.
-    let open = crate::foxglove::pc_lights_ui::tests::reachable(&v);
-    assert!(
-        open.contains(focus_ui::TITLE_HOVER),
-        "the chip's hover: {open}"
-    );
-    // Not focused: the link, no chip.
-    assert!(!shown(&desk(CORNE)).contains(SHOWN));
+    // Not focused: listed again, with the link.
+    let corne = desk(CORNE);
+    assert!(corne.keyboards.listed(corne.pc.devices.last().unwrap()));
+    assert!(shown(&corne).contains("Lamp keyboard"));
     // The other devices stay.
     for want in ["HP OMEN 45L case lights", "G502 Proteus Spectrum"] {
         assert!(text.contains(want), "{want}: {text}");
@@ -147,9 +147,8 @@ fn a_keyboards_own_lights_row_is_that_keyboard() {
     assert_eq!(text.matches(focus_ui::SHOW).count(), 2, "{text}");
     v.keyboards.focus = Some(K5.into());
     let text = shown(&v);
-    // A focused VIA keyboard's lights row stays out (only a LampArray-only one stays, #820).
+    // A focused keyboard's lights row stays out: the keyboard card has them (#825).
     assert!(!text.contains("Keychron K5 Pro lights"), "{text}");
-    assert!(!text.contains(SHOWN), "{text}");
     assert!(text.contains("Eyelash Corne"), "{text}");
     // Gone: neither a row of its own nor the link on its lights' row.
     let mut gone = desk(CORNE);

@@ -15,6 +15,14 @@
 //! ([`through_windows`], `pc_lights::Msg::KeyboardLamp`). Only on the owner's word. Breathe,
 //! Spectrum and Swirl run there as a scene look on the scene engine (#768, `scene_card`,
 //! [`card_pick`]); a running scene comes first.
+//!
+//! A focused LampArray keyboard (one Windows Dynamic Lighting reaches, #825) gets the card too:
+//! its lights through its Other devices row's own requests ([`Lamp`], `pc_lights_ui::act`:
+//! the Lights worker's Set, Off and Identify with Windows' lamp access), the row's Windows chips
+//! in the header, and its colours in the zone drawing. The rest stays muted with a reason chip.
+//! A VIA keyboard's own LampArray isn't driven here: the Lights worker leaves a keyboard with a
+//! Raw HID interface to its own link (#754, so it has no row), and VIA stays read-only (#581).
+//! Should Windows ever list one as a device of its own, it is that row and the card drives it.
 
 use std::sync::Mutex;
 
@@ -23,6 +31,7 @@ use foxglove_link::protocol::{RgbHalf, RgbState};
 
 use super::effect_controls::Showing;
 use super::keyboard_settings::{self as ks, RgbSync};
+use super::pc_lights::Tone;
 use super::settings_ui::card;
 use super::theme;
 
@@ -93,12 +102,34 @@ pub struct View {
     /// The focused keyboard (#800): the card's title, and for one Foxglove can't change, muted
     /// controls with a read-only chip. `None` titles the card "Keyboard".
     pub focus: Option<super::focus_ui::Focused>,
+    /// The focused keyboard's lights through Windows Dynamic Lighting (#825), for a keyboard
+    /// that isn't the host link's: the card drives them as its Other devices row did.
+    pub lamp: Option<Lamp>,
 }
+
+/// A focused keyboard's lights as the Lights worker has them (#825): its device row, whose own
+/// requests the card sends (`pc_lights_ui::row_msg`), and its keys for the drawing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lamp {
+    pub row: super::pc_lights::Row,
+    /// A write is in flight: the controls wait, as on the row.
+    pub busy: bool,
+    /// The last result for its key (`Place::Row`), shown on the card.
+    pub status: Option<super::pc_lights::Status>,
+    /// Its own keys (`keyboard_focus::layout`), for the drawing.
+    pub layout: super::key_layout::KeyLayout,
+    /// Foxglove runs with package identity (`scene_lamps::identity`): what the Windows chip
+    /// says, as on the row.
+    pub identity: bool,
+}
+
+/// The chip of a keyboard whose lights the card drives through Windows but nothing else (#825).
+pub const LIGHTS_ONLY: &str = super::keyboard_focus::LIGHTS_ONLY_CHIP;
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
 /// keyboard reports it back (ZMK saves it late). Untouched, the colour and brightness show what
 /// the keyboard reports (#624: the page said 42 % while the keyboard reported 9 %).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Draft {
     /// Hue 0-359, saturation and brightness 0-100.
     pub color: Option<(u16, u8, u8)>,
@@ -107,6 +138,8 @@ pub struct Draft {
     pub speed: Option<u8>,
     /// The custom colour's hue and saturation sliders are open.
     pub custom_open: bool,
+    /// A focused LampArray keyboard's picks until Apply (#825), as its row held them.
+    pub lamp: super::pc_lights_ui::Draft,
 }
 
 impl Draft {
@@ -124,7 +157,7 @@ impl Draft {
 }
 
 /// What a click or slider asks for.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
     Lights(bool),
     Effect(u8),
@@ -146,6 +179,8 @@ pub enum Intent {
     ForgetCheck,
     /// Open the colour calibrator on the keyboard.
     Calibrate,
+    /// A focused LampArray keyboard's lights (#825): its row's own request.
+    Lamp(super::pc_lights_ui::Intent),
 }
 
 static DRAFT: Mutex<Draft> = Mutex::new(Draft {
@@ -153,6 +188,11 @@ static DRAFT: Mutex<Draft> = Mutex::new(Draft {
     edited: false,
     speed: None,
     custom_open: false,
+    lamp: super::pc_lights_ui::Draft {
+        colors: std::collections::BTreeMap::new(),
+        removing: None,
+        openrgb: None,
+    },
 });
 
 #[cfg(test)]
@@ -183,9 +223,30 @@ pub fn show(ui: &mut egui::Ui) {
     }
     let view = live_view(ks::rgb_state(&ctx));
     if view.read_only().is_some() {
-        // A keyboard Foxglove can't change (#800): nothing to draft, nothing its controls send.
-        draw(ui, &view, &mut Draft::default());
+        // A keyboard Foxglove can't change (#800): nothing of the host link's to draft or send.
+        // Its lights through Windows (#825) keep their picks, and go as its row's requests.
+        let mut guard = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut draft = Draft {
+            lamp: std::mem::take(&mut guard.lamp),
+            ..Draft::default()
+        };
+        let intents = draw(ui, &view, &mut draft);
+        if let Some(lamp) = &view.lamp {
+            for intent in intents {
+                if let Intent::Lamp(i) = intent {
+                    super::pc_lights_ui::act(
+                        &ctx,
+                        i,
+                        std::slice::from_ref(&lamp.row),
+                        &mut draft.lamp,
+                    );
+                }
+            }
+        }
+        guard.lamp = draft.lamp;
+        drop(guard);
         super::pc_lights_ui::show(ui);
+        super::calibrate_ui::dialog(&ctx);
         return;
     }
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
@@ -281,6 +342,8 @@ pub fn show(ui: &mut egui::Ui) {
                     super::calibrate_ui::open(t);
                 }
             }
+            // Only a LampArray keyboard's card asks this (#825).
+            Intent::Lamp(_) => {}
         }
     }
     drop(draft);
@@ -420,10 +483,29 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
             ui.add_space(6.0);
         }
         // What the last pick drawn through Windows did (#749 b), on this card, not Other
-        // devices'.
-        super::pc_lights_ui::keyboard_status(ui);
-        let zones_open = header(ui, v, owner.as_ref().filter(|l| !l.warn), &mut out);
-        if let (true, Some(line)) = (zones_open, &v.zones) {
+        // devices'; for a LampArray keyboard (#825), what its last click did.
+        match &v.lamp {
+            None => super::pc_lights_ui::keyboard_status(ui),
+            Some(lamp) => {
+                let bar = lamp
+                    .status
+                    .as_ref()
+                    .filter(|st| st.shown() && st.tone != Tone::Done);
+                if let Some(st) = bar {
+                    super::pc_lights_ui::status_bar(ui, st, Some(&lamp.row.name));
+                    ui.add_space(6.0);
+                }
+            }
+        }
+        let zones_open = match &v.lamp {
+            Some(lamp) => lamp_header(ui, v, lamp, &mut out),
+            None => header(ui, v, owner.as_ref().filter(|l| !l.warn), &mut out),
+        };
+        if let (true, Some(lamp)) = (zones_open, &v.lamp) {
+            ui.add_space(4.0);
+            let tint = super::device_thumb::Tint::of_row(&lamp.row);
+            super::zones_ui::lamp_keyboard(ui, &lamp.layout, &tint, &lamp.row.caps);
+        } else if let (true, Some(line)) = (zones_open, &v.zones) {
             ui.add_space(4.0);
             match super::zones_ui::keyboard(ui, line, v.leds.0) {
                 Some(super::zones_ui::Ask::Check) => out.push(Intent::FindLeds),
@@ -451,7 +533,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
                             // The gap is between the columns, not between a column's items.
                             ui.spacing_mut().item_spacing = spacing;
                             if controls {
-                                underglow(ui, v, draft, &mut out);
+                                colour_side(ui, v, draft, &mut out);
                             } else {
                                 keyboard_side(ui, v, &mut out);
                             }
@@ -460,7 +542,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
                 }
             });
         } else {
-            underglow(ui, v, draft, &mut out);
+            colour_side(ui, v, draft, &mut out);
             ui.add_space(8.0);
             keyboard_side(ui, v, &mut out);
         }
@@ -496,7 +578,105 @@ pub fn read_only_view(focus: super::focus_ui::Focused, zones: super::light_zones
         saved: None,
         zones: Some(zones),
         focus: Some(focus),
+        lamp: None,
     }
+}
+
+/// The card for a focused keyboard whose lights Foxglove drives through Windows (#825): the
+/// read-only card with `lamp`'s lights in place of the underglow, and the lights-only chip's
+/// hover in `focus`.
+pub fn lamp_view(focus: super::focus_ui::Focused, lamp: Lamp) -> View {
+    let zones = super::light_zones::line(lamp.row.caps.zones.as_ref(), &lamp.layout);
+    View {
+        lamp: Some(lamp),
+        ..read_only_view(focus, zones)
+    }
+}
+
+/// The lights-only chip's hover (#825): what the card does for a keyboard over `source`, and
+/// what it can't.
+pub fn lights_only_hover(source: super::keyboard_focus::Source) -> Option<String> {
+    use super::keyboard_focus::Source;
+    match source {
+        Source::HostLink => None,
+        Source::Via => Some(
+            "Read-only over VIA: Foxglove sets this keyboard's lights through Windows Dynamic \
+             Lighting, but doesn't change its keymap or firmware."
+                .into(),
+        ),
+        Source::LampArray => super::focus_ui::read_only_hover(source),
+    }
+}
+
+/// The left column: the underglow's controls, or a LampArray keyboard's lights (#825) under the
+/// effects its class has (`effect_controls::LAMP_ARRAY`).
+fn colour_side(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
+    let Some(lamp) = &v.lamp else {
+        underglow(ui, v, draft, out);
+        return;
+    };
+    let row = &lamp.row;
+    // EFFECT over the pills (rule 4), as the underglow's: one class, one effect today.
+    if let Some(shown) = super::pc_lights_ui::effect_of(row.control) {
+        ui.label(theme::caps_label(ui, "Effect"));
+        ui.add_enabled_ui(super::pc_lights_ui::driven(row), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for e in super::effect_controls::effects(shown.class) {
+                    theme::pill(ui, e.id == shown.id, e.name);
+                }
+            });
+        });
+        ui.add_space(2.0);
+    }
+    let mut asked = Vec::new();
+    super::pc_lights_ui::card_lights(ui, row, lamp.busy, &mut draft.lamp, &mut asked);
+    out.extend(asked.into_iter().map(Intent::Lamp));
+}
+
+/// A LampArray keyboard's header row (#825): the lights-only chip, what Windows allows (the
+/// row's chips and hovers, "Open Dynamic Lighting settings" while another app comes first), its
+/// lamps with **Show zones**, "calibrated", and its last click's confirmation. Whether the
+/// drawing is open.
+fn lamp_header(ui: &mut egui::Ui, v: &View, lamp: &Lamp, out: &mut Vec<Intent>) -> bool {
+    use super::pc_lights_ui as pcu;
+    let row = &lamp.row;
+    let mut open = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if let Some(why) = v.read_only() {
+            theme::hint_chip(ui, LIGHTS_ONLY, Some(why), Some(theme::Dot::Muted));
+        }
+        let windows = pcu::lamp_chip(row, lamp.identity);
+        if let Some(chip) = windows {
+            theme::hint_chip(ui, chip.text, Some(chip.hover), Some(chip.dot));
+        }
+        if let Some(chip) = pcu::light_chip(row) {
+            let hover = match row.caps.summary(false) {
+                Some(summary) => format!("{summary}\n{}", super::light_zones::TIP),
+                None => super::light_zones::TIP.to_string(),
+            };
+            theme::hint_chip(ui, &chip, Some(&hover), None);
+            if pcu::offers_zones(row) {
+                open = super::zones_ui::toggle(ui, ZONES_KEY, row.caps.kind(false));
+            }
+        }
+        if row.calibrated {
+            theme::hint_chip(ui, "calibrated", None, Some(theme::Dot::Ok));
+        }
+        if let Some(st) = lamp
+            .status
+            .as_ref()
+            .filter(|st| st.shown() && st.tone == Tone::Done)
+        {
+            pcu::done_chip(ui, st, Some(&row.name));
+        }
+        if windows.is_some_and(|c| c.settings)
+            && ui.button(super::lights_owner::DL_BUTTON).clicked()
+        {
+            out.push(Intent::Lamp(pcu::Intent::OpenDynamicLighting));
+        }
+    });
+    open
 }
 
 /// The colour line of a keyboard whose colour isn't read.
@@ -745,6 +925,23 @@ pub fn live_view(state: Option<RgbState>) -> View {
     if let (Some(k), Some(f)) = (&focused, &focus) {
         if f.read_only.is_some() {
             let layout = super::keyboard_focus::layout(k);
+            // Its lights through Windows (#825): its Other devices row, from the worker's cache.
+            let row = super::pc_lights::find_row(|r| super::other_keyboards::is_row_of(k, r));
+            if let Some((row, busy)) = row {
+                let place = super::pc_lights::Place::Row(row.key.clone());
+                let focus = super::focus_ui::Focused {
+                    read_only: lights_only_hover(k.source),
+                    ..f.clone()
+                };
+                let lamp = Lamp {
+                    status: super::pc_lights::result(&place),
+                    row,
+                    busy,
+                    layout,
+                    identity: super::scene_lamps::identity(),
+                };
+                return lamp_view(focus, lamp);
+            }
             return read_only_view(f.clone(), super::light_zones::line(None, &layout));
         }
     }
@@ -765,6 +962,7 @@ pub fn live_view(state: Option<RgbState>) -> View {
         saved: super::devices::keyboard_id().and_then(|id| super::lighting_leases::saved(&id)),
         zones: super::light_zones::current(),
         focus,
+        lamp: None,
     }
 }
 
@@ -1077,6 +1275,10 @@ pub fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool) -> egui::Respon
 }
 
 #[cfg(test)]
+#[path = "lamp_card_tests.rs"]
+mod lamp_tests;
+
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
@@ -1353,6 +1555,7 @@ pub mod tests {
             saved: None,
             zones: Some(zone_line_of(&crate::foxglove::fixtures::users_desk::board())),
             focus: None,
+            lamp: None,
         }
     }
 
@@ -1533,6 +1736,7 @@ pub mod tests {
             saved: None,
             zones: None,
             focus: None,
+            lamp: None,
         }
     }
 

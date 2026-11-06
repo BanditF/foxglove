@@ -205,6 +205,62 @@ pub fn keyboard(ui: &mut egui::Ui, line: &Line, check: bool) -> Option<Ask> {
     footer(ui, z, line.dead.as_deref(), line.kind, false, Some(check))
 }
 
+/// The lamp drawing's hover: why each key's colour is a guess (#825).
+pub const LAMPS_SPREAD: &str = "Its keys in the colours Foxglove last set. Windows doesn't say                                 which key each lamp lights, so the lamps' colours go over the                                 keys in order.";
+
+/// A keyboard Foxglove lights through Windows Dynamic Lighting (#825): its own keys (`layout`)
+/// in the colours it was last set (`tint`, spread over the keys as its thumbnail spreads them;
+/// dark when off, outlines when unknown), then where its lamps come from. Drawn from data
+/// alone: no keyboard is named in code.
+pub fn lamp_keyboard(
+    ui: &mut egui::Ui,
+    layout: &super::key_layout::KeyLayout,
+    tint: &super::device_thumb::Tint,
+    caps: &LightCaps,
+) {
+    let p = theme::palette(ui);
+    let halves = layout
+        .parts
+        .iter()
+        .filter(|k| !k.is_empty())
+        .count()
+        .clamp(1, 2) as u8;
+    let size = Vec2::new(ui.available_width().min(720.0), HEIGHT);
+    let (rect, r) = ui.allocate_exact_size(size, Sense::hover());
+    r.on_hover_text(LAMPS_SPREAD);
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 6.0, p.well);
+    let g = Geometry::new(layout, halves, rect.shrink(12.0));
+    let n: usize = (0..usize::from(halves))
+        .map(|a| g.keys(layout, a).len())
+        .sum();
+    let mut i = 0;
+    for a in 0..usize::from(halves) {
+        for k in g.keys(layout, a) {
+            let shape = match tint.colour(i, n) {
+                Some(c) if c != Color32::BLACK => {
+                    g.key_shape(a, k, c.gamma_multiply(0.7), Stroke::new(1.0, c))
+                }
+                Some(_) => g.key_shape(a, k, Color32::BLACK, Stroke::new(1.0, p.line)),
+                None => g.key_shape(a, k, Color32::TRANSPARENT, Stroke::new(1.0, p.line)),
+            };
+            painter.add(shape);
+            i += 1;
+        }
+    }
+    if let Some(z) = caps.zones.as_ref() {
+        ui.add_space(4.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(words::source_line(z, false))
+                    .color(p.muted)
+                    .size(12.5),
+            )
+            .wrap(),
+        );
+    }
+}
+
 /// The board, top-down: each zone's keys tinted, a numbered dot on its top key (none on a
 /// per-key board), keys that light nothing in outline, and the parts named on a split.
 fn board(ui: &mut egui::Ui, line: &Line, z: &Zones, per_key: bool) {

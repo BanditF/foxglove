@@ -16,6 +16,7 @@ mod device_rows;
 mod device_thumbs;
 mod keymap_session;
 mod knob_mockup;
+mod lamp_keyboard;
 mod layout;
 mod overlay;
 

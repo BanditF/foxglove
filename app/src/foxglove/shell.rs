@@ -705,9 +705,14 @@ fn status_strip(ui: &mut egui::Ui, s: &StripState) {
             if let Some(key) = super::focus_ui::switcher(ui, &s.switcher) {
                 super::focus_ui::pick(ui.ctx(), &key);
             }
-            let read_only = s.switcher.focused().and_then(|r| r.read_only.clone());
+            let focused = s.switcher.focused();
+            let read_only = focused.and_then(|r| r.read_only.clone());
             if let Some(why) = &read_only {
-                super::focus_ui::read_only_chip_in(ui, theme::ChipStyle::STRIP, why);
+                // Its own words (`Source::chip`, #825): "lights only" as on the Lights card.
+                let chip = focused
+                    .and_then(|r| r.chip)
+                    .unwrap_or(super::focus_ui::READ_ONLY);
+                super::focus_ui::limit_chip_in(ui, theme::ChipStyle::STRIP, chip, why);
             }
             for c in chips(s) {
                 // The host link's chips describe its keyboard, not a read-only one in focus;
@@ -1111,6 +1116,59 @@ mod tests {
         assert_eq!(left_link(Some(false), Some("BLE")), "on Bluetooth");
         assert_eq!(left_link(Some(false), None), "on Bluetooth");
         assert_eq!(left_link(None, Some("BLE")), "connected");
+    }
+
+    /// #825: the strip's reason chip uses the focused keyboard's own words (`Source::chip`), as
+    /// the switcher's list and the Lights card do: "lights only" for a LampArray keyboard,
+    /// "read-only" over VIA, with C2's hover.
+    #[test]
+    fn the_strips_reason_chip_says_what_the_keyboard_allows() {
+        use crate::foxglove::focus_ui::{read_only_hover, Switcher, READ_ONLY};
+        use crate::foxglove::keyboard_focus::{Keyboard, Source, LIGHTS_ONLY_CHIP};
+        let keyboard = |key: &str, source| Keyboard {
+            key: key.into(),
+            name: key.into(),
+            source,
+            vid: 0x2f1e,
+            pid: 0x0c01,
+            device: None,
+            connected: true,
+        };
+        let all = [
+            keyboard("lamp", Source::LampArray),
+            keyboard("via", Source::Via),
+        ];
+        let strip_text = |focus: &str| {
+            let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+            ctx.memory_mut(|m| m.set_everything_is_visible(true));
+            let strip = StripState {
+                switcher: Switcher::new(&all, Some(focus), None),
+                ..Default::default()
+            };
+            let mut text = String::new();
+            for _ in 0..3 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| status_strip(ui, &strip));
+                out.textures_delta.clear();
+                text.clear();
+                for c in &out.shapes {
+                    crate::foxglove::zones_ui::tests::collect(&c.shape, &mut text);
+                }
+            }
+            text
+        };
+        let lamp = strip_text("lamp");
+        assert!(lamp.lines().any(|l| l == LIGHTS_ONLY_CHIP), "{lamp}");
+        assert!(!lamp.lines().any(|l| l == READ_ONLY), "{lamp}");
+        let why = read_only_hover(Source::LampArray).unwrap();
+        assert!(lamp.contains(&why), "the same hover: {lamp}");
+        assert_eq!(
+            crate::foxglove::lights_page::lights_only_hover(Source::LampArray),
+            Some(why),
+            "the card's hover"
+        );
+        let via = strip_text("via");
+        assert!(via.lines().any(|l| l == READ_ONLY), "{via}");
+        assert!(!via.lines().any(|l| l == LIGHTS_ONLY_CHIP), "{via}");
     }
 
     /// #800: the switcher's chips (flat with one keyboard, clickable with more) and the strip's
