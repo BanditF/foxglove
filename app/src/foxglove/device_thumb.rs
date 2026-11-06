@@ -15,9 +15,12 @@
 //!
 //! [`Thumb::marks`] is a pure function of the data, the box and the palette (the tests read it);
 //! [`paint`] hands its marks to an egui painter. Nothing here asks a device anything.
-
-// D2 (#804) places the thumbnails; until then only the tests and previews draw them.
-#![cfg_attr(not(test), allow(dead_code))]
+//!
+//! **Animation** (#804): a thumbnail draws the colours its row holds now, so a running effect
+//! moves it on the frames the effect already asks for (the scene's frames reach the Lights
+//! worker, whose snapshot repaints the page). Nothing here asks for a frame. Off screen it
+//! isn't painted, and while the window isn't in front it keeps the colours it last drew
+//! ([`held`]).
 
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use foxglove_devices::pc_lighting::{Control, DeviceKind, Shape as CatalogShape, ZoneRole};
@@ -54,6 +57,8 @@ pub enum Shape {
 }
 
 impl Shape {
+    /// Every shape (the tests and the preview sheets).
+    #[cfg(test)]
     pub const ALL: [Shape; 10] = [
         Shape::Keyboard,
         Shape::Split,
@@ -221,6 +226,10 @@ pub struct Thumb {
 
 impl Thumb {
     /// A keyboard: its own layout, from `key_layout::current()` or `key_layout::of(board)`.
+    ///
+    /// TODO(#800, C2): the focus switcher and its menu rows draw each keyboard with this, at
+    /// [`SMALL`] through [`row_thumb`]; D2 (#804) left the switcher to C2, still in flight.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn keyboard(layout: KeyLayout, tint: Tint) -> Thumb {
         Thumb {
             keys: Some(layout),
@@ -871,7 +880,8 @@ pub enum Mark {
 }
 
 impl Mark {
-    /// Its colour as drawn: the fill, else the outline's.
+    /// Its colour as drawn: the fill, else the outline's (the tests read it).
+    #[cfg(test)]
     pub fn colour(&self) -> Color32 {
         match self {
             Mark::Poly { fill, stroke, .. }
@@ -955,6 +965,87 @@ pub fn show(ui: &mut egui::Ui, size: Vec2, thumb: &Thumb) -> egui::Response {
         paint(ui.painter(), rect, thumb, super::theme::palette(ui));
     }
     response.on_hover_text(thumb.shape().label())
+}
+
+/// The space after a row's thumbnail, before the name.
+pub const GAP: f32 = 4.0;
+
+/// A row thumbnail's size in a row `room` wide whose other contents need `rest` (unknown on
+/// its first pass): [`ROW`], else [`SMALL`] when only that fits, else none (the window at its
+/// narrowest keeps the name and the buttons).
+pub fn row_size(room: f32, rest: Option<f32>) -> Option<Vec2> {
+    let Some(rest) = rest else {
+        return Some(ROW);
+    };
+    [ROW, SMALL].into_iter().find(|s| rest + s.x + GAP <= room)
+}
+
+/// A thumbnail's hover when a click on it runs Identify (design section 3).
+pub const IDENTIFY: &str = "Identify: blink this device for a moment";
+
+/// The widget id of the thumbnail for the device `key` (the tests click it).
+pub fn id(key: &str) -> egui::Id {
+    egui::Id::new(("device-thumb", key))
+}
+
+/// A device row's thumbnail of `size`, `key`'s: with `identify`, a click on it is Identify
+/// ([`IDENTIFY`] on hover); else the shape's name on hover. Its tint is [`held`] while the
+/// window isn't in front.
+pub fn row_thumb(
+    ui: &mut egui::Ui,
+    size: Vec2,
+    key: &str,
+    thumb: Thumb,
+    identify: bool,
+) -> egui::Response {
+    let sense = if identify {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let label = thumb.shape().label();
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let response = ui.interact(rect, id(key), sense);
+    if ui.is_rect_visible(rect) {
+        let front = ui.ctx().input(|i| i.focused);
+        let tint = held(ui.ctx(), id(key), front, thumb.tint.clone());
+        let thumb = Thumb { tint, ..thumb };
+        paint(ui.painter(), rect, &thumb, super::theme::palette(ui));
+        if identify && (response.hovered() || response.has_focus()) {
+            let p = super::theme::palette(ui);
+            ui.painter().rect_stroke(
+                rect,
+                4.0,
+                Stroke::new(1.0, p.accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+    if identify {
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(IDENTIFY)
+    } else {
+        response.on_hover_text(label)
+    }
+}
+
+/// The tint to draw: `now` while the window is in front (`front`), and kept as the one last
+/// drawn for `id`; behind, that kept one, so an effect doesn't move a window nobody looks at.
+pub fn held(ctx: &egui::Context, id: egui::Id, front: bool, now: Option<Tint>) -> Option<Tint> {
+    let id = id.with("held-tint");
+    let last = ctx.data(|d| d.get_temp::<Option<Tint>>(id));
+    let shown = pick(front, last, now);
+    ctx.data_mut(|d| d.insert_temp(id, shown.clone()));
+    shown
+}
+
+/// [`held`]'s rule: in front, now; behind, the last drawn (now when none was).
+fn pick(front: bool, last: Option<Option<Tint>>, now: Option<Tint>) -> Option<Tint> {
+    match last {
+        Some(last) if !front => last,
+        _ => now,
+    }
 }
 
 #[cfg(test)]

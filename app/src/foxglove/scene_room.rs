@@ -210,7 +210,7 @@ fn found_leds(
 }
 
 /// The `vvvv:pppp` a lighting device's key starts with.
-fn vid_pid(key: &str) -> Option<(u16, u16)> {
+pub(super) fn vid_pid(key: &str) -> Option<(u16, u16)> {
     let mut parts = key.split(':');
     let vid = u16::from_str_radix(parts.next()?, 16).ok()?;
     let pid = u16::from_str_radix(parts.next()?, 16).ok()?;

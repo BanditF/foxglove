@@ -427,3 +427,50 @@ pub(crate) fn sample(shape: Shape) -> Thumb {
         Shape::Unknown => Thumb::default(),
     }
 }
+
+/// #804: a rainbow moves only while the window is in front: behind, the thumbnail keeps the
+/// colours it last drew, and it takes the new ones once the window is in front again. Nothing
+/// here asks for a frame (no timer): the effect's own frames repaint the page.
+#[test]
+fn a_thumbnail_holds_its_colours_behind_the_window() {
+    let ctx = egui::Context::default();
+    let id = egui::Id::new("t");
+    let red = Some(Tint::Lit(vec![egui::Color32::RED]));
+    let blue = Some(Tint::Lit(vec![egui::Color32::BLUE]));
+    assert_eq!(held(&ctx, id, true, red.clone()), red);
+    assert_eq!(held(&ctx, id, false, blue.clone()), red, "behind: held");
+    assert_eq!(held(&ctx, id, false, blue.clone()), red);
+    assert_eq!(held(&ctx, id, true, blue.clone()), blue, "in front: moves");
+    // Never drawn before: what it is now, in front or not.
+    assert_eq!(pick(false, None, blue.clone()), blue);
+    // Drawing one asks for no frame a still thumbnail doesn't.
+    let delay = |clickable: bool| {
+        let fresh = egui::Context::default();
+        let mut delay = None;
+        for _ in 0..4 {
+            let mut o = fresh.run_ui(egui::RawInput::default(), |ui| {
+                let thumb = Thumb::bluetooth(BtCategory::Mouse);
+                if clickable {
+                    row_thumb(ui, ROW, "k", thumb, true);
+                } else {
+                    show(ui, ROW, &thumb);
+                }
+            });
+            o.textures_delta.clear();
+            delay = Some(o.viewport_output[&egui::ViewportId::ROOT].repaint_delay);
+        }
+        delay
+    };
+    assert_eq!(delay(true), delay(false));
+}
+
+/// #804: a row thumbnail gives way on a narrow row: the row's size, then the battery list's,
+/// then none; the full size on its first pass, before the row was measured.
+#[test]
+fn a_row_thumbnail_gives_way_on_a_narrow_row() {
+    assert_eq!(row_size(400.0, None), Some(ROW));
+    assert_eq!(row_size(400.0, Some(300.0)), Some(ROW));
+    assert_eq!(row_size(400.0, Some(400.0 - ROW.x - GAP)), Some(ROW));
+    assert_eq!(row_size(400.0, Some(400.0 - ROW.x)), Some(SMALL));
+    assert_eq!(row_size(400.0, Some(400.0 - SMALL.x)), None);
+}

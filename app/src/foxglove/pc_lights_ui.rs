@@ -38,6 +38,8 @@ use super::theme;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct View {
     pub pc: Snapshot,
+    /// Each LampArray's kind and lamp positions by VID/PID, for the thumbnails (#804).
+    pub lamps: BTreeMap<(u16, u16), pc_lights::LampLayout>,
 }
 
 /// What a click asks for.
@@ -125,6 +127,7 @@ pub fn show(ui: &mut egui::Ui) {
     pc_lights::page_shown(ui.ctx());
     let view = View {
         pc: pc_lights::snapshot(),
+        lamps: pc_lights::lamp_layouts(),
     };
     let mut guard = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let (draft, wizard) = guard.get_or_insert_with(Default::default);
@@ -275,7 +278,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
         for row in &s.devices {
             ui.add_space(4.0);
             let status = placed(&s.results, &Place::Row(row.key.clone()));
-            device(ui, row, status, s.busy, draft, &mut out);
+            let lamps = super::scene_room::vid_pid(&row.key).and_then(|k| v.lamps.get(&k));
+            device(ui, row, status, lamps, s.busy, draft, &mut out);
         }
         ui.add_space(4.0);
         ui.separator();
@@ -770,24 +774,54 @@ pub fn row_note(row: &Row) -> String {
 /// Identify and the ⋯ menu; open, the light line, the zone pickers and swatches, Match
 /// keyboard, Calibrate…, Off and Apply.
 ///
-/// The row leaves the room before the name for the device's thumbnail (D2, #804).
+/// The device's thumbnail (#804) leads the row, tinted with its colours now; a click on it is
+/// Identify where the row has Identify, the same request as the button. On a row too narrow
+/// for it, it gives way (the battery list's size, then none: [`thumb::row_size`]) from what the
+/// row's other contents needed last pass.
 fn device(
     ui: &mut egui::Ui,
     row: &Row,
     status: Option<&Status>,
+    lamps: Option<&pc_lights::LampLayout>,
     busy: bool,
     draft: &mut Draft,
     out: &mut Vec<Intent>,
 ) {
+    use super::device_thumb::{self as thumb, Thumb};
     let p = theme::palette(ui);
     let driven = driven(row);
+    let identify = driven && row.caps.switchable();
     let identity = super::scene_lamps::identity();
     let note = row_note(row);
     let mut asked = Vec::new();
     let mut removing = None;
-    let ex = super::settings_ui::expander_with(
+    let mut thumb_clicked = false;
+    // What the row's contents other than the thumbnail needed last pass, and this pass's room.
+    let need_id = thumb::id(&row.key).with("rest");
+    let rest = ui.ctx().data(|d| d.get_temp::<f32>(need_id));
+    let room = std::cell::Cell::new(0.0_f32);
+    let used = std::cell::Cell::new(0.0_f32);
+    let edge = std::cell::Cell::new(0.0_f32);
+    let ex = super::settings_ui::expander_lead(
         ui,
         &row_key(&row.key),
+        thumb::ROW.y + 4.0,
+        |ui| {
+            room.set(ui.available_width());
+            edge.set(ui.max_rect().right());
+            if let Some(size) = thumb::row_size(room.get(), rest) {
+                let r = thumb::row_thumb(
+                    ui,
+                    size,
+                    &row.key,
+                    Thumb::of_row(row, lamps),
+                    identify && !busy,
+                );
+                thumb_clicked = r.clicked();
+                ui.add_space(thumb::GAP);
+                used.set(size.x + thumb::GAP + ui.spacing().item_spacing.x);
+            }
+        },
         &row.name,
         "",
         |ui| {
@@ -820,26 +854,42 @@ fn device(
             if let Some(st) = status.filter(|st| st.tone == Tone::Done) {
                 done_chip(ui, st, Some(&row.name));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Room for the buttons' outline at the row's clipped edge.
-                ui.add_space(2.0);
-                if let Some(entry) = &row.entry {
-                    more(ui, row, entry, &mut removing, &mut asked);
-                }
-                if driven && row.caps.switchable() {
-                    let identify = ui
-                        .add_enabled(!busy, egui::Button::new("Identify"))
-                        .on_hover_text("Blink this device for a moment, then put its colours back");
-                    if identify.clicked() {
-                        asked.push(Intent::Identify(row.key.clone()));
+            let left = ui
+                .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Room for the buttons' outline at the row's clipped edge.
+                    ui.add_space(2.0);
+                    if let Some(entry) = &row.entry {
+                        more(ui, row, entry, &mut removing, &mut asked);
                     }
+                    if identify {
+                        let identify = ui
+                            .add_enabled(!busy, egui::Button::new("Identify"))
+                            .on_hover_text(
+                                "Blink this device for a moment, then put its colours back",
+                            );
+                        if identify.clicked() {
+                            asked.push(Intent::Identify(row.key.clone()));
+                        }
+                    }
+                    if lamp.is_some_and(|c| c.settings)
+                        && ui.button(super::lights_owner::DL_BUTTON).clicked()
+                    {
+                        asked.push(Intent::OpenDynamicLighting);
+                    }
+                    ui.available_width()
+                })
+                .inner;
+            // Room to spare (or, past the row's edge, how far over it went).
+            // (egui widens the row's own rect with what overflows it: measure from its edge.)
+            let over = ui.min_rect().right() - edge.get();
+            let slack = if over > 0.5 { -over } else { left.max(0.0) };
+            let need = room.get() - used.get() - slack;
+            if rest.is_none_or(|r| (r - need).abs() > 0.5) {
+                ui.ctx().data_mut(|d| d.insert_temp(need_id, need));
+                if thumb::row_size(room.get(), rest) != thumb::row_size(room.get(), Some(need)) {
+                    ui.ctx().request_discard("a device thumbnail's size");
                 }
-                if lamp.is_some_and(|c| c.settings)
-                    && ui.button(super::lights_owner::DL_BUTTON).clicked()
-                {
-                    asked.push(Intent::OpenDynamicLighting);
-                }
-            });
+            }
         },
         |ui| {
             let mut asked = Vec::new();
@@ -854,6 +904,9 @@ fn device(
             asked
         },
     );
+    if thumb_clicked {
+        out.push(Intent::Identify(row.key.clone()));
+    }
     out.extend(asked);
     out.extend(ex.body.into_iter().flatten());
     // A note or a problem stays under the row, closed or open (amber is never collapsed).
@@ -1277,7 +1330,8 @@ pub mod tests {
                         size: None,
                         zone_positions: vec![],
                         zone_roles: vec![],
-                        kind: Default::default(),
+                        // As the catalog has it (#804: its thumbnail is a cooler's ring).
+                        kind: pc_lighting::DeviceKind::Cooler,
                         shape: None,
                         lamp_access: None,
                         calibration_hint: None,
@@ -1345,6 +1399,8 @@ pub mod tests {
                     r"C:\Users\you\AppData\Roaming\Foxglove\lighting-catalog.local.toml".into(),
                 ),
             },
+            // The mouse's two lamps where Windows places them (#804's thumbnail).
+            lamps: crate::foxglove::fixtures::users_desk::lamps(),
         }
     }
 
@@ -1355,6 +1411,7 @@ pub mod tests {
                 devices: vec![case([None; 5], true)],
                 ..Default::default()
             },
+            lamps: Default::default(),
         }
     }
 
@@ -1381,6 +1438,7 @@ pub mod tests {
                 devices: vec![desk::case_row(), bar],
                 ..Default::default()
             },
+            lamps: desk::lamps(),
         }
     }
 
@@ -1807,6 +1865,71 @@ pub mod tests {
         assert_eq!(control_text(Control::LampArray), "Windows lighting");
         assert_eq!(control_text(Control::NotYet), "Not controllable yet");
         assert_eq!(control_text(Control::OpenRgb), "Through OpenRGB");
+    }
+
+    /// What a click on a device's thumbnail asks for (#804): two frames, the press and the
+    /// release, over the thumbnail where the first frame put it.
+    fn click_thumb(v: &View, key: &str, busy: bool) -> Vec<Intent> {
+        use crate::foxglove::device_thumb;
+        let mut v = v.clone();
+        v.pc.busy = busy;
+        let ctx = test_ctx();
+        let mut draft = Draft::default();
+        let mut wizard = Wizard::default();
+        let mut frame = |events: Vec<egui::Event>| {
+            let mut asked = Vec::new();
+            let raw = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                asked = draw(ui, &v, &mut draft, &mut wizard);
+            });
+            out.textures_delta.clear();
+            asked
+        };
+        frame(vec![]);
+        let at = ctx
+            .read_response(device_thumb::id(key))
+            .expect("the row has a thumbnail")
+            .rect
+            .center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut asked = frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        asked.extend(frame(vec![button(false)]));
+        asked
+    }
+
+    /// #804: a driven device's thumbnail is Identify, the same request as its button; one
+    /// Foxglove can't drive (the cooler) has a thumbnail that does nothing, and none is
+    /// clickable while the worker is busy (as the button isn't).
+    #[test]
+    fn a_click_on_the_thumbnail_identifies_the_device() {
+        let v = sample();
+        let case = v.pc.devices[0].key.clone();
+        let cooler = v.pc.devices[1].key.clone();
+        let mouse = v.pc.devices[2].key.clone();
+        assert_eq!(
+            click_thumb(&v, &case, false),
+            vec![Intent::Identify(case.clone())]
+        );
+        assert_eq!(
+            click_thumb(&v, &mouse, false),
+            vec![Intent::Identify(mouse)]
+        );
+        assert_eq!(click_thumb(&v, &cooler, false), vec![]);
+        assert_eq!(click_thumb(&v, &case, true), vec![]);
+        // The hover says so; the cooler's names its shape.
+        let text = reachable(&v);
+        assert!(
+            text.contains(crate::foxglove::device_thumb::IDENTIFY),
+            "{text}"
+        );
     }
 
     /// A headless context with the app's fonts and theme.

@@ -377,12 +377,18 @@ fn devices(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             } else {
                 Tone::Plain
             };
-            row(
-                ui,
-                &d.name,
-                RichText::new(super::peripherals::level_text(d)).color(tone_color(ui, tone)),
-            )
-            .on_hover_text(d.kind.label());
+            // #804: its thumbnail, the shape from its Bluetooth category, lights unknown.
+            ui.horizontal(|ui| {
+                use super::device_thumb::{self as thumb, BtCategory, Thumb};
+                let category = d.category.unwrap_or(BtCategory::Other);
+                thumb::show(ui, thumb::SMALL, &Thumb::bluetooth(category));
+                row(
+                    ui,
+                    &d.name,
+                    RichText::new(super::peripherals::level_text(d)).color(tone_color(ui, tone)),
+                )
+                .on_hover_text(d.kind.label());
+            });
         }
         ui.add_space(4.0);
         let mut on = v.device_notice;
