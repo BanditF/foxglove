@@ -23,6 +23,7 @@
 //! {"t":"quiet","why":"away"}                nothing more until "live": paused, away, fullscreen
 //! {"t":"live"}
 //! {"t":"notify","id":7,"title":"Right half battery low","body":"14% left.","level":"info"}
+//! {"t":"refused","why":"token"}            the token was wrong; a close 4001 follows at once
 //! ```
 //!
 //! Wallpaper → Foxglove: `{"t":"hi","wallpaper":"bandit-live-board","caps":["notify"]}`,
@@ -54,6 +55,12 @@ pub const MAX_CLIENTS: usize = 4;
 pub const CAP_NOTIFY: &str = "notify";
 /// How long a wallpaper has to say it drew a notification before Windows shows it instead.
 pub const ACK_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// The close code after `refused`: an application code (4000-4999), so a browser's `onclose`
+/// sees it, where a refused upgrade only shows as 1006.
+pub const CLOSE_REFUSED: u16 = 4001;
+/// Refused connections are summed in the log at most this often, and the health warning about
+/// them goes once none came for this long.
+pub const REFUSAL_QUIET: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// One key on the board: top-left corner, size and rotation (degrees, clockwise about the key's
 /// centre), in key units, as the layer overlay draws it.
@@ -199,6 +206,14 @@ pub enum Level {
     Warn,
 }
 
+/// Why a connection was refused, as the client is told: only that its token was wrong (or
+/// missing), nothing about the right one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Refused {
+    Token,
+}
+
 /// One key event: index, 1 down / 0 up, ms since the batch's first event.
 pub type KeyEvent = (u16, u8, u16);
 
@@ -237,6 +252,11 @@ pub enum Message {
         title: String,
         body: String,
         level: Level,
+    },
+    /// The one message a client with a wrong or missing token gets, before a close
+    /// [`CLOSE_REFUSED`].
+    Refused {
+        why: Refused,
     },
 }
 
@@ -358,15 +378,102 @@ pub fn quiet(paused: bool, away: bool, fullscreen: bool) -> Option<Why> {
 /// `file:///`, and Chromium sends `Origin: null` for them; #320) or a program that sends no
 /// Origin, and in every case only with this install's token, as `?token=` or as a second
 /// sub-protocol. Any web page has a real origin and is refused before the token is looked at.
-pub fn admit(origin: Option<&str>, token_given: Option<&str>, token: &str) -> Result<(), String> {
+pub fn admit(origin: Option<&str>, token_given: Option<&str>, token: &str) -> Result<(), Denied> {
     match origin {
         None | Some("null") | Some("file://") => {}
-        Some(o) => return Err(format!("origin {o} isn't a local wallpaper")),
+        Some(o) => return Err(Denied::Origin(o.to_string())),
     }
     if token.is_empty() || !token_given.is_some_and(|g| same(g.as_bytes(), token.as_bytes())) {
-        return Err("wrong or missing token".into());
+        return Err(Denied::Token);
     }
     Ok(())
+}
+
+/// Why [`admit`] said no.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Denied {
+    /// A web page: refused with a plain HTTP 403, before the token is looked at.
+    Origin(String),
+    /// A local wallpaper or program with a wrong or missing token: told `refused`.
+    Token,
+}
+
+impl std::fmt::Display for Denied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Denied::Origin(o) => write!(f, "origin {o} isn't a local wallpaper"),
+            Denied::Token => f.write_str("wrong or missing token"),
+        }
+    }
+}
+
+/// Token refusals (a wallpaper still holding an old token retries every few seconds): what the
+/// log says and whether the health view warns. No clock of its own: the log's summary goes out
+/// with the next refusal once [`REFUSAL_QUIET`] passed since the last line, and the warning is
+/// worked out when it is read.
+#[derive(Debug, Default)]
+pub struct Refusals {
+    /// Refusals since the last log line.
+    unlogged: u64,
+    /// The last log line about them.
+    last_line: Option<std::time::Instant>,
+    /// The last refusal, until a wallpaper paired.
+    last: Option<std::time::Instant>,
+}
+
+impl Refusals {
+    pub const fn new() -> Self {
+        Refusals {
+            unlogged: 0,
+            last_line: None,
+            last: None,
+        }
+    }
+
+    /// A token refusal at `now`: the log lines to write (without the `Foxglove: ` prefix). The
+    /// first of a run in full, then at most one summary per [`REFUSAL_QUIET`]. A run ends with a
+    /// pairing or [`REFUSAL_QUIET`] without refusals; the next refusal starts a new one, after a
+    /// summary of the old run's unlogged ones.
+    pub fn refused(&mut self, now: std::time::Instant) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.warns(now) {
+            if self.unlogged > 0 {
+                lines.push(self.summary());
+            }
+            self.last_line = Some(now);
+            self.last = Some(now);
+            lines.push(format!("live feed refused a connection: {}", Denied::Token));
+            return lines;
+        }
+        self.last = Some(now);
+        self.unlogged += 1;
+        if self
+            .last_line
+            .is_none_or(|t| now.saturating_duration_since(t) >= REFUSAL_QUIET)
+        {
+            lines.push(self.summary());
+            self.last_line = Some(now);
+        }
+        lines
+    }
+
+    fn summary(&mut self) -> String {
+        let n = std::mem::take(&mut self.unlogged);
+        let s = if n == 1 { "" } else { "s" };
+        format!("live feed refused {n} connection{s}: wrong token")
+    }
+
+    /// A wallpaper paired: the warning goes; a refusal after this starts a new run.
+    pub fn paired(&mut self) {
+        self.last = None;
+    }
+
+    /// A wallpaper keeps presenting a wrong token: a refusal came less than [`REFUSAL_QUIET`]
+    /// before `now`, and no pairing since.
+    pub fn warns(&self, now: std::time::Instant) -> bool {
+        self.last
+            .is_some_and(|t| now.saturating_duration_since(t) < REFUSAL_QUIET)
+    }
 }
 
 /// The token from the path's query (`/live?token=…`) or the offered sub-protocols
@@ -478,6 +585,9 @@ mod tests {
                 body: "14% left. Charge it soon.".into(),
                 level: Level::Warn,
             },
+            Message::Refused {
+                why: Refused::Token,
+            },
         ]
     }
 
@@ -576,6 +686,7 @@ mod tests {
             m[8].json(),
             r#"{"t":"notify","id":7,"title":"Right half battery low","body":"14% left. Charge it soon.","level":"warn"}"#
         );
+        assert_eq!(m[9].json(), r#"{"t":"refused","why":"token"}"#);
         assert_eq!(
             Message::Art { art: None }.json(),
             r#"{"t":"art","art":null}"#
@@ -714,7 +825,12 @@ mod tests {
             admit(Some("null"), Some("wrong"), t).is_err(),
             "a wrong token"
         );
-        assert!(admit(Some("null"), None, t).is_err(), "no token");
+        assert_eq!(admit(Some("null"), None, t), Err(Denied::Token), "no token");
+        assert_eq!(
+            admit(Some("https://example.com"), Some("wrong"), t),
+            Err(Denied::Origin("https://example.com".into())),
+            "a web page is refused by its origin, never told about the token"
+        );
         assert!(
             admit(Some("https://example.com"), Some(t), t).is_err(),
             "a web page, even with the token"
@@ -726,6 +842,54 @@ mod tests {
             Some("abc")
         );
         assert_eq!(token_from("/live", Some("foxglove-live.v1")), None);
+    }
+
+    /// A wallpaper with an old token retries every few seconds: the log says the first in full,
+    /// then sums them at most once per REFUSAL_QUIET, timed by the next refusal; the warning lasts
+    /// while they come and goes with a pairing or REFUSAL_QUIET of quiet.
+    #[test]
+    fn token_refusals_are_summed_and_warn_while_they_come() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut r = Refusals::new();
+        assert!(!r.warns(t0));
+        assert_eq!(
+            r.refused(t0),
+            ["live feed refused a connection: wrong or missing token"]
+        );
+        assert!(r.warns(t0));
+        // Every 8 s for just under 10 min: nothing more in the log.
+        let mut s = 8;
+        while s < 600 {
+            assert!(r.refused(at(s)).is_empty(), "at {s} s");
+            s += 8;
+        }
+        assert!(r.warns(at(599)));
+        // The next one, 10 min after the full line: one summary of all since.
+        assert_eq!(
+            r.refused(at(600)),
+            ["live feed refused 75 connections: wrong token"]
+        );
+        assert!(r.refused(at(608)).is_empty());
+        // A pairing clears the warning; the next refusal starts a new run, after a summary of
+        // the old run's unlogged one.
+        r.paired();
+        assert!(!r.warns(at(609)));
+        assert_eq!(
+            r.refused(at(700)),
+            [
+                "live feed refused 1 connection: wrong token",
+                "live feed refused a connection: wrong or missing token"
+            ]
+        );
+        // Ten minutes of quiet ends the warning, without a timer.
+        assert!(r.warns(at(1299)));
+        assert!(!r.warns(at(1300)));
+        assert_eq!(
+            r.refused(at(2000)),
+            ["live feed refused a connection: wrong or missing token"]
+        );
     }
 
     #[test]

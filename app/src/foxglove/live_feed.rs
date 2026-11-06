@@ -4,7 +4,9 @@
 //!
 //! - **Opt-in:** off by default. While it's off nothing listens and nothing subscribes to keys.
 //! - **Who:** a `file://` wallpaper (Origin `null`; #320) or a local program, and only with this
-//!   install's token. Web pages are refused by their origin.
+//!   install's token. Web pages are refused by their origin. A local client with a wrong token
+//!   is told `refused` and closed with 4001; the log says the first in full and then sums them at
+//!   most every 10 min, and the health view warns while they keep coming (`wire::Refusals`).
 //! - **When nothing is sent:** Foxglove paused, the session locked or the display off, a
 //!   full-screen program in front, or the wallpaper itself paused. The wallpaper is told once
 //!   (`quiet`), then hears nothing until `live`.
@@ -451,6 +453,30 @@ static GEOMETRY: Mutex<Option<Geometry>> = Mutex::new(None);
 /// What the settings show: listening, connected, or why it can't.
 static STATUS: Mutex<String> = Mutex::new(String::new());
 static CONNECTED: AtomicUsize = AtomicUsize::new(0);
+/// Token refusals: the log's summaries and the health warning (`wire::Refusals`).
+static REFUSALS: Mutex<wire::Refusals> = Mutex::new(wire::Refusals::new());
+
+/// The health view's rows (registered with `health::register` as "live_feed"): a warning while
+/// a wallpaper keeps presenting an old pairing token; nothing otherwise.
+pub fn health_rows() -> Vec<super::health::HealthRow> {
+    let warns = REFUSALS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .warns(Instant::now());
+    refusal_rows(warns)
+}
+
+fn refusal_rows(warns: bool) -> Vec<super::health::HealthRow> {
+    if !warns {
+        return Vec::new();
+    }
+    vec![super::health::HealthRow::new(
+        "live_feed",
+        "Live wallpaper pairing",
+        super::health::Level::Warn,
+        "a wallpaper is using an old pairing token",
+    )]
+}
 
 fn send(msg: Msg) {
     if let Some(r) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
@@ -662,10 +688,24 @@ fn accept_loop(listener: &TcpListener, stop: &AtomicBool, tx: &Sender<Msg>, toke
 fn serve(mut stream: TcpStream, id: u64, tx: &Sender<Msg>, token: &str, pending: &AtomicUsize) {
     let admitted = handshake(&mut stream, token);
     pending.fetch_sub(1, Ordering::SeqCst);
-    if let Err(e) = admitted {
-        eprintln!("Foxglove: live feed refused a connection: {e}");
-        let _ = stream.shutdown(Shutdown::Both);
-        return;
+    match admitted {
+        Ok(()) => REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).paired(),
+        Err(NotAdmitted::Token) => {
+            let lines = REFUSALS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .refused(Instant::now());
+            for line in lines {
+                eprintln!("Foxglove: {line}");
+            }
+            let _ = stream.shutdown(Shutdown::Both);
+            return;
+        }
+        Err(NotAdmitted::Other(e)) => {
+            eprintln!("Foxglove: live feed refused a connection: {e}");
+            let _ = stream.shutdown(Shutdown::Both);
+            return;
+        }
     }
     let Ok(writer) = stream.try_clone() else {
         return;
@@ -712,27 +752,75 @@ impl std::io::Read for Deadline<'_> {
     }
 }
 
-fn handshake(stream: &mut TcpStream, token: &str) -> Result<(), String> {
+/// Why a connection didn't get the feed.
+enum NotAdmitted {
+    /// A wrong or missing token: the client was told `refused` (the log sums these).
+    Token,
+    /// Anything else (a web origin, a wrong path, a broken upgrade), logged as it is.
+    Other(String),
+}
+
+fn handshake(stream: &mut TcpStream, token: &str) -> Result<(), NotAdmitted> {
+    let other = |e: std::io::Error| NotAdmitted::Other(e.to_string());
     let h = ws::read_handshake(&mut Deadline(stream, Instant::now() + HANDSHAKE_LIMIT))
-        .map_err(|e| e.to_string())?;
+        .map_err(other)?;
     if !(h.path == "/live" || h.path.starts_with("/live?")) {
         let _ = ws::reject(stream, 404, "Not Found");
         // Without the query: it may hold a token.
-        return Err(format!(
+        return Err(NotAdmitted::Other(format!(
             "no such path {}",
             h.path.split('?').next().unwrap_or("")
-        ));
+        )));
     }
     let offered = h.header("sec-websocket-protocol");
-    if let Err(e) = wire::admit(h.origin(), wire::token_from(&h.path, offered), token) {
-        let _ = ws::reject(stream, 403, "Forbidden");
-        return Err(e);
-    }
     let protocol = offered
         .is_some_and(|p| p.split(',').any(|p| p.trim() == wire::PROTOCOL))
         .then_some(wire::PROTOCOL);
-    ws::accept(stream, &h, protocol).map_err(|e| e.to_string())?;
-    stream.set_read_timeout(None).map_err(|e| e.to_string())
+    match wire::admit(h.origin(), wire::token_from(&h.path, offered), token) {
+        Ok(()) => {}
+        // A web page gets a plain 403 and no WebSocket at all.
+        Err(e @ wire::Denied::Origin(_)) => {
+            let _ = ws::reject(stream, 403, "Forbidden");
+            return Err(NotAdmitted::Other(e.to_string()));
+        }
+        // A local client with a wrong token: a browser can't see a refused upgrade's status
+        // (only close 1006), so the upgrade completes and it is told `refused` and closed with
+        // CLOSE_REFUSED. That is all it learns.
+        Err(wire::Denied::Token) => {
+            refuse(stream, &h, protocol);
+            return Err(NotAdmitted::Token);
+        }
+    }
+    ws::accept(stream, &h, protocol).map_err(other)?;
+    stream.set_read_timeout(None).map_err(other)
+}
+
+/// Tells a client with a wrong token so, then closes: `{"t":"refused","why":"token"}` and a
+/// close [`wire::CLOSE_REFUSED`]. Waits at most [`WRITE_LIMIT`] for the client's close.
+fn refuse(stream: &mut TcpStream, h: &ws::Handshake, protocol: Option<&str>) {
+    let _ = stream.set_write_timeout(Some(WRITE_LIMIT));
+    if ws::accept(stream, h, protocol).is_err() {
+        return;
+    }
+    let refused = Message::Refused {
+        why: wire::Refused::Token,
+    };
+    let _ = ws::write_text(stream, &refused.json());
+    let _ = ws::write_frame(
+        stream,
+        ws::CLOSE,
+        &close_payload(wire::CLOSE_REFUSED, "token"),
+    );
+    if stream.set_read_timeout(Some(WRITE_LIMIT)).is_ok() {
+        let _ = ws::Reader::default().read(stream);
+    }
+}
+
+/// A close frame's body: the code, then the reason.
+fn close_payload(code: u16, reason: &str) -> Vec<u8> {
+    let mut p = code.to_be_bytes().to_vec();
+    p.extend_from_slice(reason.as_bytes());
+    p
 }
 
 /// The hub: owns the wallpapers' streams, the state and the gates.
@@ -1455,6 +1543,89 @@ pub fn group(ui: &mut egui::Ui) {
 mod tests {
     use super::*;
 
+    /// One upgrade request through `handshake` on a loopback socket: what came back, and what
+    /// the feed made of it.
+    fn try_handshake(origin: &str, path: &str, token: &str) -> (Vec<u8>, Result<(), String>) {
+        use std::io::Read;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let request = format!(
+            "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: foxglove-live.v1\r\nOrigin: {origin}\r\n\r\n"
+        );
+        let client = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(addr).unwrap();
+            c.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            c.write_all(request.as_bytes()).unwrap();
+            let mut got = Vec::new();
+            let _ = c.read_to_end(&mut got);
+            got
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        let r = handshake(&mut stream, token).map_err(|e| match e {
+            NotAdmitted::Token => "token".to_string(),
+            NotAdmitted::Other(e) => e,
+        });
+        let _ = stream.shutdown(Shutdown::Both);
+        drop(stream);
+        (client.join().unwrap(), r)
+    }
+
+    /// A wallpaper with an old token: the upgrade completes so a browser can see why, it hears
+    /// `refused` and a close 4001, and nothing else (no hello, nothing about the token).
+    #[test]
+    fn a_wrong_token_is_told_refused_and_closed_4001() {
+        let token = "s3cretS3cretS3cretS3cret";
+        let (got, r) = try_handshake("null", "/live?token=old", token);
+        assert_eq!(r, Err("token".into()));
+        let text = String::from_utf8_lossy(&got);
+        let (head, frames) = got.split_at(text.find("\r\n\r\n").unwrap() + 4);
+        let head = String::from_utf8_lossy(head);
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        assert!(head.contains("Sec-WebSocket-Protocol: foxglove-live.v1"));
+        let body = br#"{"t":"refused","why":"token"}"#;
+        let mut want = vec![0x81, body.len() as u8];
+        want.extend_from_slice(body);
+        want.extend_from_slice(&[0x88, 7, 0x0f, 0xa1]);
+        want.extend_from_slice(b"token");
+        assert_eq!(
+            frames,
+            want.as_slice(),
+            "refused, then close 4001, and no more"
+        );
+        assert!(!text.contains(token));
+        assert_eq!(wire::CLOSE_REFUSED, 4001);
+
+        // No token at all: the same.
+        let (got, r) = try_handshake("null", "/live", token);
+        assert_eq!(r, Err("token".into()));
+        assert!(String::from_utf8_lossy(&got).contains(r#"{"t":"refused","why":"token"}"#));
+    }
+
+    /// A web page is refused by its origin with a plain 403: no WebSocket, no `refused`.
+    #[test]
+    fn a_web_page_gets_a_plain_403() {
+        let token = "s3cretS3cretS3cretS3cret";
+        let (got, r) = try_handshake("https://example.com", "/live?token=old", token);
+        assert!(r.unwrap_err().contains("isn't a local wallpaper"));
+        let text = String::from_utf8_lossy(&got);
+        assert!(text.starts_with("HTTP/1.1 403"), "{text}");
+        assert!(!text.contains("refused"));
+        // The right token: admitted.
+        let (got, r) = try_handshake("null", &format!("/live?token={token}"), token);
+        assert_eq!(r, Ok(()));
+        assert!(String::from_utf8_lossy(&got).starts_with("HTTP/1.1 101"));
+    }
+
+    /// The health row: a warning only while a wallpaper keeps presenting an old token.
+    #[test]
+    fn the_health_row_names_an_old_pairing_token() {
+        assert!(refusal_rows(false).is_empty());
+        let rows = refusal_rows(true);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].level, super::super::health::Level::Warn);
+        assert_eq!(rows[0].detail, "a wallpaper is using an old pairing token");
+    }
+
     /// #587: a hub that panics drops its tap, which moves the shared generation on, so the old
     /// forwarder ends and the restarted hub's first tap can't match its queued keys.
     #[test]
@@ -2115,7 +2286,8 @@ mod tests {
             held.push(c);
             String::from_utf8_lossy(&head).to_string()
         };
-        assert!(ask("/live?token=wrong", Some("null"), None).contains("403"));
+        // A wrong token completes the upgrade so a browser can be told why (`refused`, 4001).
+        assert!(ask("/live?token=wrong", Some("null"), None).contains("101"));
         assert!(ask(
             &format!("/live?token={token}"),
             Some("https://example.com"),
@@ -2205,7 +2377,19 @@ mod tests {
             ..LiveSettings::default()
         })
         .unwrap();
-        assert!(StandIn::connect(port, "wrong").is_none(), "a wrong token");
+        let mut wrong = StandIn::connect(port, "wrong").expect("upgraded, to be told why");
+        assert_eq!(
+            wrong.next(Duration::from_secs(5)).as_deref(),
+            Some(r#"{"t":"refused","why":"token"}"#),
+            "a wrong token"
+        );
+        // Then the close (4001, "token"), and no hello.
+        let close = wrong.next(Duration::from_secs(5)).unwrap();
+        assert!(
+            close.ends_with("token") && !close.contains("hello"),
+            "{close}"
+        );
+        drop(wrong);
         let mut w = StandIn::connect(port, &token).expect("the paired wallpaper");
         let hello = w.next(Duration::from_secs(5)).unwrap();
         assert!(hello.starts_with(r#"{"t":"hello","v":1"#), "{hello}");
@@ -2349,7 +2533,13 @@ mod tests {
             })
             .expect("the port is free again");
         }
-        assert!(StandIn::connect(port, &token).is_none(), "the old token");
+        let mut old = StandIn::connect(port, &token).unwrap();
+        assert_eq!(
+            old.next(Duration::from_secs(5)).as_deref(),
+            Some(r#"{"t":"refused","why":"token"}"#),
+            "the old token"
+        );
+        drop(old);
         assert!(StandIn::connect(port, &fresh).is_some(), "the new token");
 
         stop();
