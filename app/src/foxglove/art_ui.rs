@@ -1411,7 +1411,10 @@ fn free_dialog(
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.add(theme::primary_button(ui, "Free the place")).clicked() {
+                if ui
+                    .add(theme::primary_button(ui, "Free the place"))
+                    .clicked()
+                {
                     acts.push(Act::Remove(slot));
                     state.free = None;
                 }
@@ -2206,7 +2209,10 @@ pub mod tests {
             });
         }
         let t = headless::texts(&shapes);
-        assert!(t.iter().any(|t| t == "Already kept as hearth-moongarde"), "{t:?}");
+        assert!(
+            t.iter().any(|t| t == "Already kept as hearth-moongarde"),
+            "{t:?}"
+        );
         assert!(!t.iter().any(|t| t == "Keep on keyboard"), "{t:?}");
     }
 
@@ -2260,13 +2266,19 @@ pub mod tests {
         assert!(acts.is_empty());
         assert!(t.iter().any(|t| t == "Free moon-garden's place?"), "{t:?}");
         assert!(
-            t.iter().any(|t| t
-                == "It's the same piece as hearth-moongarde, which stays kept, so nothing is lost."),
+            t.iter().any(|t| {
+                t
+                == "It's the same piece as hearth-moongarde, which stays kept, so nothing is lost."
+            }),
             "{t:?}"
         );
         let button = at.get().expect("Free the place was drawn");
         let (_, acts) = run(4.0, headless::click(button), &mut state);
-        assert_eq!(acts, [Act::Remove(3)], "the existing erase, for place 4 only");
+        assert_eq!(
+            acts,
+            [Act::Remove(3)],
+            "the existing erase, for place 4 only"
+        );
         assert_eq!(state.free, None);
         // A non-duplicate place never gets the confirm.
         let mut other = UiState {

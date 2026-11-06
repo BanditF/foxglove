@@ -399,7 +399,8 @@ fn in_use(s: &Snapshot, slot: u8) -> bool {
             .layers
             .iter()
             .any(|l| l.art == super::art_cycle::Item::Slot(slot))
-        || s.status.is_some_and(|st| showing(&st) == Showing::Kept(slot))
+        || s.status
+            .is_some_and(|st| showing(&st) == Showing::Kept(slot))
 }
 
 /// The user's kept places that hold a piece another of them already holds. Of each set the one
@@ -418,10 +419,7 @@ pub fn duplicates(s: &Snapshot, kept: &[Option<Kept>]) -> Vec<Duplicate> {
         }
         seen.push(k.piece);
         let same: Vec<&&Kept> = mine.iter().filter(|o| o.piece == k.piece).collect();
-        let stays = same
-            .iter()
-            .find(|o| in_use(s, o.slot))
-            .unwrap_or(&same[0]);
+        let stays = same.iter().find(|o| in_use(s, o.slot)).unwrap_or(&same[0]);
         out.extend(
             same.iter()
                 .filter(|o| o.slot != stays.slot)
