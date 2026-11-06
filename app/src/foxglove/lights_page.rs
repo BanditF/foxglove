@@ -124,7 +124,7 @@ pub struct Lamp {
 }
 
 /// The chip of a keyboard whose lights the card drives through Windows but nothing else (#825).
-pub const LIGHTS_ONLY: &str = "lights only";
+pub const LIGHTS_ONLY: &str = super::keyboard_focus::LIGHTS_ONLY_CHIP;
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
 /// keyboard reports it back (ZMK saves it late). Untouched, the colour and brightness show what

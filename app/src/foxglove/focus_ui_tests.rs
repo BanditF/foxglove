@@ -91,6 +91,30 @@ fn rows_say_protocol_link_and_what_foxglove_can_do() {
     );
 }
 
+/// #825: one helper names each source's reason chip, so the strip, the switcher's list and the
+/// Lights card can't drift apart: "read-only" over VIA, "lights only" for a LampArray keyboard.
+#[test]
+fn each_source_has_one_reason_chip() {
+    assert_eq!(Source::HostLink.chip(), None);
+    assert_eq!(Source::Via.chip(), Some(READ_ONLY));
+    assert_eq!(Source::LampArray.chip(), Some(kf::LIGHTS_ONLY_CHIP));
+    assert_eq!(
+        crate::foxglove::lights_page::LIGHTS_ONLY,
+        kf::LIGHTS_ONLY_CHIP
+    );
+    for source in [Source::Via, Source::LampArray] {
+        let k = keyboard("k", "K", source, true);
+        let s = Switcher::new(std::slice::from_ref(&k), Some("k"), None);
+        let row = s.focused().unwrap();
+        assert_eq!(row.chip, source.chip());
+        assert!(
+            row.detail.ends_with(source.chip().unwrap()),
+            "{}",
+            row.detail
+        );
+    }
+}
+
 /// VIA and LampArray-only keyboards carry the read-only chip's reason; the host link has none.
 #[test]
 fn read_only_keyboards_say_why() {

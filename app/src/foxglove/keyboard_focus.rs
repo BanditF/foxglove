@@ -84,7 +84,24 @@ impl Source {
             Source::LampArray => Some("lights only, through Windows Dynamic Lighting"),
         }
     }
+
+    /// Its muted reason chip, the same words in the status strip, the switcher's list and the
+    /// Lights card (#825): "read-only" over VIA, "lights only" for a LampArray keyboard; `None`
+    /// for the host link. The chip's hover is `focus_ui::read_only_hover`.
+    pub fn chip(self) -> Option<&'static str> {
+        match self {
+            Source::HostLink => None,
+            Source::Via => Some(READ_ONLY_CHIP),
+            Source::LampArray => Some(LIGHTS_ONLY_CHIP),
+        }
+    }
 }
+
+/// [`Source::chip`] for a keyboard Foxglove reads but doesn't change (VIA).
+pub const READ_ONLY_CHIP: &str = "read-only";
+
+/// [`Source::chip`] for a keyboard whose lights alone Foxglove sets (Windows Dynamic Lighting).
+pub const LIGHTS_ONLY_CHIP: &str = "lights only";
 
 /// One keyboard as a source sees it now.
 #[derive(Clone, Debug, PartialEq, Eq)]

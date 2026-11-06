@@ -17,8 +17,8 @@ use super::key_layout::KeyLayout;
 use super::keyboard_focus::{self as kf, Keyboard, Source};
 use super::theme;
 
-/// The read-only chip's words.
-pub const READ_ONLY: &str = "read-only";
+/// The read-only chip's words (`Source::chip` of a VIA keyboard).
+pub const READ_ONLY: &str = kf::READ_ONLY_CHIP;
 
 /// The list's title.
 pub const LIST_TITLE: &str = "Keyboard shown in Foxglove";
@@ -102,13 +102,24 @@ pub fn read_only_chip(ui: &mut egui::Ui, hover: &str) -> egui::Response {
     read_only_chip_in(ui, theme::ChipStyle::CARD, hover)
 }
 
+/// A keyboard's reason chip in `style` (the status strip's, #825): `chip` its words
+/// (`Source::chip`: "read-only", "lights only"), `hover` why; flat, a grey dot.
+pub fn limit_chip_in(
+    ui: &mut egui::Ui,
+    style: theme::ChipStyle,
+    chip: &str,
+    hover: &str,
+) -> egui::Response {
+    theme::hint_chip_in(ui, style, chip, Some(hover), Some(theme::Dot::Muted))
+}
+
 /// [`read_only_chip`] in `style`: [`theme::ChipStyle::STRIP`] on the status strip.
 pub fn read_only_chip_in(
     ui: &mut egui::Ui,
     style: theme::ChipStyle,
     hover: &str,
 ) -> egui::Response {
-    theme::hint_chip_in(ui, style, READ_ONLY, Some(hover), Some(theme::Dot::Muted))
+    limit_chip_in(ui, style, READ_ONLY, hover)
 }
 
 /// One row of the list.
@@ -123,6 +134,8 @@ pub struct Row {
     pub focused: bool,
     /// The read-only chip's hover, for a keyboard Foxglove can't change.
     pub read_only: Option<String>,
+    /// That chip's words (`Source::chip`): "read-only", "lights only".
+    pub chip: Option<&'static str>,
     /// Its keys for the thumbnail (#819); `None` looks them up when the list opens
     /// (`keyboard_focus::layout`), so a closed switcher resolves no layout.
     pub layout: Option<KeyLayout>,
@@ -150,6 +163,7 @@ impl Switcher {
                     connected: k.connected,
                     focused: focus == Some(k.key.as_str()),
                     read_only: read_only_hover(k.source),
+                    chip: k.source.chip(),
                     layout: None,
                     tint: None,
                 })
@@ -210,8 +224,7 @@ pub fn detail(k: &Keyboard, host_link: Option<&str>) -> String {
     } else {
         match k.source {
             Source::HostLink => "Foxglove firmware",
-            Source::Via => "read-only",
-            Source::LampArray => "lights only",
+            Source::Via | Source::LampArray => k.source.chip().unwrap_or_default(),
         }
     };
     [Some(protocol), link, Some(can)]
