@@ -287,7 +287,9 @@ mod tests {
         // The once-per-kind-per-day rule doesn't look at the text.
         let mut sent = Sent::default();
         assert_eq!(
-            due(None, std::slice::from_ref(&own), &mut sent, "2026-11-06").0.len(),
+            due(None, std::slice::from_ref(&own), &mut sent, "2026-11-06")
+                .0
+                .len(),
             1
         );
         assert!(due(None, &[own], &mut sent, "2026-11-06").0.is_empty());
