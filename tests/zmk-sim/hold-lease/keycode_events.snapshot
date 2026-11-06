@@ -100,8 +100,8 @@ hostlink: rx D7 96 00 00 01
 lease: turn 1
 hostlink: rx D7 94 01 01 01 00 04
 lease: pc quiet 35 s
-hostlink: rx D7 95 01 00 1E 14 04
-hostlink: rx D7 95 01 00 1E 0A 04
+hostlink: rx D7 95 01 00 1E 14 04 01
+hostlink: rx D7 95 01 00 1E 0A 04 01
 hostlink: rx D7 95 02 00 1E 00 04 02
 lease: turn 1
 kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
