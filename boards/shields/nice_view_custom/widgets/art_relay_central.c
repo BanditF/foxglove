@@ -33,6 +33,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "art_relay.h"
 #include "art_relay_doorbell.h"
+#include "art_toast.h"
 #include "pc_state.h"
 #include "panel_polarity.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
@@ -1302,7 +1303,15 @@ void art_relay_step(int dir) {
             at = i;
         }
     }
-    art_relay_select(ids[((at + dir) % total + total) % total]);
+    int next = ((at + dir) % total + total) % total;
+    if (art_relay_select(ids[next]) == 0) {
+        // The toast (#852) counts this same list: its place and length, whatever the list holds.
+        struct art_toast t = {.index = (uint8_t)next,
+                              .total = (uint8_t)total,
+                              .dir = dir > 0 ? 1 : -1,
+                              .kept = ids[next] >= right.set_count};
+        art_toast_show(&t);
+    }
 }
 
 void art_relay_discovery(int8_t *result, uint8_t *tries) {

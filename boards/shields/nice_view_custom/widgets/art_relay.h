@@ -240,7 +240,8 @@ int art_relay_commit(void);
 int art_relay_select(int8_t set);
 // &art_next / &art_prev without the app (#60): select the next (dir 1) or previous (-1) of what
 // the right holds, its built-in sets and then its saved slots, wrapping round. Does nothing
-// without a relay link or before the first status read.
+// without a relay link or before the first status read. A step that goes out shows the left's
+// toast (art_toast.h, #852) with its place in this same list.
 void art_relay_step(int dir);
 // How finding the right half's relay service went; negative = a bt_gatt_discover error.
 enum art_relay_discovery {

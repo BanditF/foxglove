@@ -100,6 +100,9 @@ store keeps `position` across restarts, as now.
 - **Feedback:** when a key steps the hotlist, the left panel shows a one-second toast (`ART 3/7`
   and the set's label in the 3x5 font) over the clock area. That's a panel override with a 1 s
   TTL, not a timer. Layer and preset changes need no toast; the art itself is the feedback.
+  Without the app holding the keys (quit, paused), the firmware draws its own toast on each
+  on-board step (#852, `art_toast.h`): `ART`, the place in the keyboard's step list (built-ins,
+  then kept slots), the triangle, and BUILT-IN or KEPT, for 1.2 s.
 - **No extra transition frames:** the firmware swaps sets on the next frame. A glitch-wipe
   transition would need firmware work and RAM. Not now.
 - **Art that pairs well with triggers:**

@@ -92,6 +92,18 @@ bool screen_snap_remote_valid(void) {
            sys_get_le32(snap_wire + 2);
 }
 
+/* status.c's toast for an on-board art step (#852); widgets before it never call it. */
+#if __has_include("art_toast.h")
+#include "art_toast.h"
+void art_toast_show(const struct art_toast *t) {
+    sim_left.toasts++;
+    sim_left.toast_index = t->index;
+    sim_left.toast_total = t->total;
+    sim_left.toast_dir = t->dir;
+    sim_left.toast_kept = t->kept;
+}
+#endif
+
 /* Test hooks (dev builds); the relay's press and boot jobs answer here. */
 void test_hooks_relay_done(uint8_t status) { (void)status; }
 void test_hooks_boot_relay_done(uint8_t status) { (void)status; }
