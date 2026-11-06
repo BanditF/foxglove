@@ -1289,29 +1289,9 @@ fn screens_page_renders() {
     );
 }
 
-/// The Screens page on a made-up board with an 88x184 upright art screen (#340): the bundled
-/// Corne art fitted to it (centred, marked "Not made for this board"), and a piece that can't
-/// go on it listed with the reason. Beside it, the Corne's page as it was.
-#[test]
-fn screens_art_for_another_board_renders() {
-    use crate::foxglove::art_encode::{for_screen, ArtTarget, DOES_NOT_FIT, TEST_SCREENS};
-    use crate::foxglove::screen_roles::{Role, Screen};
-    use crate::foxglove::shell::Page;
-    let corne = shell_preview_with(Page::Screens, &Samples::full(), 1500.0);
-    keep("ui-340-screens-corne.png", &corne);
-    TEST_SCREENS.set(Some(vec![Screen {
-        id: 0,
-        role: Role::Art,
-        name: "Art screen".into(),
-        width: 88,
-        height: 184,
-        format: "1bit".into(),
-        rotation: 0,
-        refresh: Default::default(),
-        min_frame_ms: 0,
-        max_blob: None,
-        slots: None,
-    }]));
+/// The full samples with the bundled Corne art fitted to the art screen in `TEST_SCREENS`.
+fn fitted_samples() -> Samples {
+    use crate::foxglove::art_encode::{for_screen, ArtTarget};
     let target = ArtTarget::resolve();
     let mut samples = Samples::full();
     let (_, lib) = samples.art.as_mut().expect("art sample");
@@ -1330,6 +1310,72 @@ fn screens_art_for_another_board_renders() {
         e.hash = crate::foxglove::art_library::blob_hash(&bytes);
         e.fit = fit;
     }
+    samples
+}
+
+/// #833: the Screens page on a made-up board with an e-paper art screen (88x184, 1 s a frame),
+/// "Animate on e-paper" off and on, and Rotation without Lights wake; beside it the Corne's
+/// page, which a stored "on" leaves pixel for pixel as it was. Dark and light.
+#[test]
+fn screens_epaper_switch_renders() {
+    use crate::foxglove::art_encode::TEST_SCREENS;
+    use crate::foxglove::art_ui::{tests::epaper_screens, PREVIEW_ANIMATE_EPAPER};
+    use crate::foxglove::fixtures::users_desk;
+    use crate::foxglove::screen_roles::of_board;
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::Choice;
+    let height = 900.0;
+    for (choice, theme) in [(Choice::Dark, "dark"), (Choice::Light, "light")] {
+        let corne = shell_preview_in(Page::Screens, &Samples::full(), height, choice);
+        TEST_SCREENS.set(Some(of_board(&users_desk::board())));
+        PREVIEW_ANIMATE_EPAPER.set(Some(true));
+        let corne_on = shell_preview_in(Page::Screens, &Samples::full(), height, choice);
+        keep(&format!("ui-833-corne-{theme}.png"), &corne_on);
+        assert!(corne == corne_on, "the Corne's page is unchanged ({theme})");
+        TEST_SCREENS.set(Some(epaper_screens()));
+        let samples = fitted_samples();
+        let mut shots = Vec::new();
+        for (on, name) in [(false, "off"), (true, "on")] {
+            PREVIEW_ANIMATE_EPAPER.set(Some(on));
+            let img = shell_preview_in(Page::Screens, &samples, height, choice);
+            keep(&format!("ui-833-epaper-{name}-{theme}.png"), &img);
+            shots.push(img);
+        }
+        TEST_SCREENS.set(None);
+        PREVIEW_ANIMATE_EPAPER.set(None);
+        assert!(shots[0] != shots[1], "the switch shows its state ({theme})");
+        assert!(
+            shots[0] != corne,
+            "e-paper's page differs from the Corne's ({theme})"
+        );
+    }
+}
+
+/// The Screens page on a made-up board with an 88x184 upright art screen (#340): the bundled
+/// Corne art fitted to it (centred, marked "Not made for this board"), and a piece that can't
+/// go on it listed with the reason. Beside it, the Corne's page as it was.
+#[test]
+fn screens_art_for_another_board_renders() {
+    use crate::foxglove::art_encode::{DOES_NOT_FIT, TEST_SCREENS};
+    use crate::foxglove::screen_roles::{Role, Screen};
+    use crate::foxglove::shell::Page;
+    let corne = shell_preview_with(Page::Screens, &Samples::full(), 1500.0);
+    keep("ui-340-screens-corne.png", &corne);
+    TEST_SCREENS.set(Some(vec![Screen {
+        id: 0,
+        role: Role::Art,
+        name: "Art screen".into(),
+        width: 88,
+        height: 184,
+        format: "1bit".into(),
+        rotation: 0,
+        refresh: Default::default(),
+        min_frame_ms: 0,
+        max_blob: None,
+        slots: None,
+    }]));
+    let mut samples = fitted_samples();
+    let (_, lib) = samples.art.as_mut().expect("art sample");
     lib.sources.push(crate::foxglove::art_library::Source {
         folder: "art-src/Bandit_wide".into(),
         blob: Err(format!(

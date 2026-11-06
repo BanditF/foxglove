@@ -122,6 +122,8 @@ enum Act {
     Dismiss,
     /// Which way round a piece's ink is (#666), by its file or folder.
     Polarity(PathBuf, super::art_encode::Polarity),
+    /// The "Animate on e-paper" switch (#833), clicked.
+    AnimateEpaper(bool),
 }
 
 #[cfg(test)]
@@ -129,6 +131,79 @@ thread_local! {
     /// The previews' art state and library, so they never ask a real keyboard.
     pub static PREVIEW: std::cell::RefCell<Option<(Snapshot, art_library::Library)>> =
         const { std::cell::RefCell::new(None) };
+    /// The previews' e-paper switch, so they never read or write the shared test store.
+    pub static PREVIEW_ANIMATE_EPAPER: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The art screen's pace as the page shows it (#833): its refresh class and frame limit, and
+/// the user's e-paper switch, which is read only for an e-paper screen (never for the Corne's).
+fn page_pace(ctx: &egui::Context) -> super::art_encode::Pace {
+    super::art_encode::Pace::current_with(|| animate_epaper_here(ctx))
+}
+
+/// The e-paper switch as last read or clicked here: read from the store again each time the
+/// page comes back on screen (a frame without it in between), not every frame.
+fn animate_epaper_here(ctx: &egui::Context) -> bool {
+    #[cfg(test)]
+    if let Some(on) = PREVIEW_ANIMATE_EPAPER.get() {
+        return on;
+    }
+    let id = egui::Id::new("foxglove-animate-epaper");
+    let frame = ctx.cumulative_frame_nr();
+    let kept = ctx
+        .data(|d| d.get_temp::<(u64, bool)>(id))
+        .filter(|(n, _)| frame.saturating_sub(*n) <= 1);
+    let on = kept.map_or_else(art_service::animate_epaper, |(_, on)| on);
+    ctx.data_mut(|d| d.insert_temp(id, (frame, on)));
+    on
+}
+
+/// The switch's label.
+pub const EPAPER_SWITCH: &str = "Animate on e-paper";
+/// The chip beside it, and the chip's hover.
+pub const MAY_GHOST: &str = "may ghost";
+pub const GHOST_TIP: &str =
+    "E-paper can keep a faint trace of the frame before (ghosting) until the screen's next full refresh.";
+
+/// The switch's hover (and its ⓘ): what it does, at this screen's rate. It doesn't repeat the
+/// switch's label, which sits right beside it.
+pub fn epaper_tip(pace: super::art_encode::Pace) -> String {
+    let rate = match pace.fps(u8::MAX) {
+        _ if pace.min_frame_ms == 0 => "at the piece's own rate".to_string(),
+        1 => "at most 1 frame a second on this screen".to_string(),
+        n => format!("at most {n} frames a second on this screen"),
+    };
+    format!(
+        "Plays each piece's frames, {rate}. Off: only its first frame shows. Pieces kept on \
+         the keyboard change when they're kept again."
+    )
+}
+
+/// "Animate on e-paper" with its ⓘ and "may ghost" beside it (#833), only when the art screen
+/// is e-paper: a fast screen (the Corne's) never shows it.
+fn epaper_switch(ui: &mut egui::Ui, pace: super::art_encode::Pace, acts: &mut Vec<Act>) {
+    if !pace.refresh.is_epaper() {
+        return;
+    }
+    let mut on = pace.animate_epaper;
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let c = ui.checkbox(&mut on, EPAPER_SWITCH);
+        if theme::with_info(ui, c, &epaper_tip(pace)).changed() {
+            let id = egui::Id::new("foxglove-animate-epaper");
+            let frame = ui.ctx().cumulative_frame_nr();
+            ui.ctx().data_mut(|d| d.insert_temp(id, (frame, on)));
+            acts.push(Act::AnimateEpaper(on));
+        }
+        let dot = if on {
+            theme::Dot::Warn
+        } else {
+            theme::Dot::Muted
+        };
+        theme::hint_chip(ui, MAY_GHOST, Some(GHOST_TIP), Some(dot));
+    });
 }
 
 /// Opens (or closes) the full-keyboard choice for the previews.
@@ -308,6 +383,16 @@ fn act(art: &Art, acts: Vec<Act>) {
             Act::Dismiss => h.dismiss_notice(),
             Act::Polarity(p, polarity) => {
                 super::art_polarity::set(&p, polarity);
+            }
+            Act::AnimateEpaper(on) => {
+                if let Err(e) = art_service::set_animate_epaper(on) {
+                    eprintln!("Foxglove: {e}");
+                }
+                // A piece sent from this PC goes again at the new pace; kept ones stay as kept.
+                let sent = art.s.status.map(|st| art_words::showing(&st)) == Some(Showing::Sent);
+                if let Some(file) = art.s.showing_file().filter(|_| sent) {
+                    h.push(file.clone());
+                }
             }
         }
     }
@@ -711,18 +796,21 @@ fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
             });
         });
     });
+    // Under the picture, across the column, so "may ghost" stays beside the switch.
+    epaper_switch(ui, page_pace(ui.ctx()), acts);
     strip(ui, s, acts);
 }
 
 /// Which Rotation pills are lit, from its settings: Off, Every n min, Lights wake, Match the
-/// wallpaper.
-pub fn rotation_pills(c: &Cycle) -> [bool; 4] {
-    let moves =
-        c.steps_on(Step::Minutes) || c.steps_on(Step::LightsWake) || c.follow == Follow::Wallpaper;
+/// wallpaper. On e-paper (#833) lights wake doesn't apply: it isn't offered, and a saved one
+/// doesn't count as moving.
+pub fn rotation_pills(c: &Cycle, epaper: bool) -> [bool; 4] {
+    let wake = c.steps_on(Step::LightsWake) && !epaper;
+    let moves = c.steps_on(Step::Minutes) || wake || c.follow == Follow::Wallpaper;
     [
         !moves,
         c.steps_on(Step::Minutes),
-        c.steps_on(Step::LightsWake),
+        wake,
         c.follow == Follow::Wallpaper,
     ]
 }
@@ -753,7 +841,11 @@ fn draw_rotation(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
     ));
     let mut cycle = s.cycle.clone();
     let mut changed = false;
-    let lit = rotation_pills(&cycle);
+    // On e-paper Rotation steps by minutes; lights wake isn't offered (#833).
+    let epaper = super::art_encode::Pace::current_with(|| false)
+        .refresh
+        .is_epaper();
+    let lit = rotation_pills(&cycle, epaper);
     ui.horizontal_wrapped(|ui| {
         // A pill that doesn't fit moves to the next row rather than wrapping its words.
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -768,14 +860,16 @@ fn draw_rotation(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
             cycle.set_step(Step::Minutes, !lit[1]);
             changed = true;
         }
-        let wake = ui.add_enabled(s.wake_events, theme::pill_button(ui, lit[2], "Lights wake"));
-        if wake
-            .on_hover_text("Steps when the keyboard's lights come back on.")
-            .on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.")
-            .clicked()
-        {
-            cycle.set_step(Step::LightsWake, !lit[2]);
-            changed = true;
+        if !epaper {
+            let wake = ui.add_enabled(s.wake_events, theme::pill_button(ui, lit[2], "Lights wake"));
+            if wake
+                .on_hover_text("Steps when the keyboard's lights come back on.")
+                .on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.")
+                .clicked()
+            {
+                cycle.set_step(Step::LightsWake, !lit[2]);
+                changed = true;
+            }
         }
         let engine = super::wallpaper_engine::presence();
         let hover = if engine.installed() {
@@ -1744,10 +1838,110 @@ pub mod tests {
     #[test]
     fn rotation_pills_follow_its_settings() {
         let mut c = Cycle::default();
-        assert_eq!(rotation_pills(&c), [true, false, false, false]);
+        assert_eq!(rotation_pills(&c, false), [true, false, false, false]);
         c.set_step(Step::Minutes, true);
         c.follow = Follow::Wallpaper;
-        assert_eq!(rotation_pills(&c), [false, true, false, true]);
+        assert_eq!(rotation_pills(&c, false), [false, true, false, true]);
+        // #833: on e-paper a saved lights wake isn't offered and doesn't move the art.
+        let mut wake = Cycle::default();
+        wake.set_step(Step::LightsWake, true);
+        assert_eq!(rotation_pills(&wake, false), [false, false, true, false]);
+        assert_eq!(rotation_pills(&wake, true), [true, false, false, false]);
+        wake.set_step(Step::Minutes, true);
+        assert_eq!(rotation_pills(&wake, true), [false, true, false, false]);
+    }
+
+    /// A made-up board's e-paper art screen (#833): 88x184, partial refresh, 1 s a frame.
+    pub fn epaper_screens() -> Vec<crate::foxglove::screen_roles::Screen> {
+        use crate::foxglove::screen_roles::{Role, Screen};
+        vec![Screen {
+            id: 0,
+            role: Role::Art,
+            name: "Art screen".into(),
+            width: 88,
+            height: 184,
+            format: "1bit".into(),
+            rotation: 0,
+            refresh: crate::foxglove::boards::Refresh::EpaperPartial,
+            min_frame_ms: 1000,
+            max_blob: None,
+            slots: None,
+        }]
+    }
+
+    /// Every text Showing now's art and Rotation columns paint (hover text not included), on
+    /// the art screens `screens`, with the e-paper switch `animate`.
+    fn now_texts(
+        screens: Vec<crate::foxglove::screen_roles::Screen>,
+        animate: bool,
+    ) -> Vec<String> {
+        use crate::foxglove::art_encode::TEST_SCREENS;
+        use crate::foxglove::theme::headless;
+        TEST_SCREENS.set(Some(screens));
+        PREVIEW_ANIMATE_EPAPER.set(Some(animate));
+        let (s, lib) = sample();
+        let art = Art::new(s, lib);
+        let ctx = headless::ctx(crate::foxglove::theme::Choice::Dark);
+        ctx.memory_mut(|m| m.set_everything_is_visible(true));
+        let mut shapes = Vec::new();
+        for t in 0..2 {
+            shapes = headless::frame(&ctx, f64::from(t), vec![], |ui| {
+                let mut acts = Vec::new();
+                draw_now_right(ui, &art, &mut acts);
+                draw_rotation(ui, &art, &mut acts);
+                assert!(acts.is_empty(), "drawing alone asks for nothing");
+            });
+        }
+        TEST_SCREENS.set(None);
+        PREVIEW_ANIMATE_EPAPER.set(None);
+        headless::texts(&shapes)
+    }
+
+    /// #833: an e-paper art screen gets "Animate on e-paper" with "may ghost" beside it, and
+    /// Rotation offers Every n min but not Lights wake.
+    #[test]
+    fn epaper_gets_the_switch_and_no_lights_wake() {
+        for animate in [false, true] {
+            let t = now_texts(epaper_screens(), animate);
+            assert!(t.iter().any(|t| t == EPAPER_SWITCH), "{t:?}");
+            assert!(t.iter().any(|t| t == MAY_GHOST), "{t:?}");
+            assert!(t.iter().any(|t| t.starts_with("Every ")), "{t:?}");
+            assert!(!t.iter().any(|t| t == "Lights wake"), "{t:?}");
+        }
+        let pace = crate::foxglove::art_encode::Pace::of(&epaper_screens()[0], false);
+        assert_eq!(
+            epaper_tip(pace),
+            "Plays each piece's frames, at most 1 frame a second on this screen. Off: only its \
+             first frame shows. Pieces kept on the keyboard change when they're kept again."
+        );
+        assert!(GHOST_TIP.contains("ghosting"));
+    }
+
+    /// #833: the Corne's screen is fast: no e-paper switch (its setting isn't even read, so a
+    /// stored "on" changes nothing), and Rotation as before, Lights wake included.
+    #[test]
+    fn the_cornes_screens_page_is_unchanged() {
+        use crate::foxglove::art_encode::Pace;
+        use crate::foxglove::fixtures::users_desk;
+        use crate::foxglove::screen_roles::{of_board, old_firmware};
+        let corne = of_board(&users_desk::board());
+        for screens in [corne.clone(), old_firmware()] {
+            let off = now_texts(screens.clone(), false);
+            assert_eq!(
+                off,
+                now_texts(screens.clone(), true),
+                "the switch's value doesn't matter"
+            );
+            assert!(
+                !off.iter().any(|t| t == EPAPER_SWITCH || t == MAY_GHOST),
+                "{off:?}"
+            );
+            assert!(off.iter().any(|t| t == "Lights wake"), "{off:?}");
+        }
+        crate::foxglove::art_encode::TEST_SCREENS.set(Some(corne));
+        let pace = Pace::current_with(|| panic!("the Corne's page reads the e-paper switch"));
+        crate::foxglove::art_encode::TEST_SCREENS.set(None);
+        assert!(!pace.refresh.is_epaper());
     }
 
     /// The pictures' textures live in the context they were made in, keyed by content: a new

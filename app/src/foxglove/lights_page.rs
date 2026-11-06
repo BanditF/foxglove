@@ -813,6 +813,20 @@ pub const WALLPAPER_TIP: &str =
                                  its picture; a grey picture gives the Windows accent colour. A \
                                  running scene keeps the lights until it ends.";
 
+/// The accent and wallpaper switches' labels on the card (K18, K19).
+pub const ACCENT_SHORT: &str = "Follow Windows accent";
+pub const WALLPAPER_SHORT: &str = "Follow the wallpaper";
+
+/// [`ACCENT_SHORT`]'s hover and ⓘ: its whole name, then what it does (K18).
+pub fn accent_hover() -> String {
+    format!("Follow the Windows accent colour: {ACCENT_TIP}")
+}
+
+/// [`WALLPAPER_SHORT`]'s hover and ⓘ: its whole name, then what it does (K19).
+pub fn wallpaper_hover() -> String {
+    format!("Lights follow the wallpaper: {WALLPAPER_TIP}")
+}
+
 /// Where the colour comes from besides a pick: the Windows accent and the wallpaper, each a
 /// short checkbox and an ⓘ whose text starts with the switch's whole name (K18, K19).
 fn sources(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
@@ -823,9 +837,8 @@ fn sources(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
             let mut accent = v.accent;
             let changed = ui
                 .horizontal(|ui| {
-                    let c = ui.checkbox(&mut accent, "Follow Windows accent");
-                    let tip = format!("Follow the Windows accent colour: {ACCENT_TIP}");
-                    theme::with_info(ui, c, &tip).changed()
+                    let c = ui.checkbox(&mut accent, ACCENT_SHORT);
+                    theme::with_info(ui, c, &accent_hover()).changed()
                 })
                 .inner;
             if changed {
@@ -835,9 +848,8 @@ fn sources(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         let mut wallpaper = v.wallpaper;
         let changed = ui
             .horizontal(|ui| {
-                let c = ui.checkbox(&mut wallpaper, "Follow the wallpaper");
-                let tip = format!("Lights follow the wallpaper: {WALLPAPER_TIP}");
-                theme::with_info(ui, c, &tip).changed()
+                let c = ui.checkbox(&mut wallpaper, WALLPAPER_SHORT);
+                theme::with_info(ui, c, &wallpaper_hover()).changed()
             })
             .inner;
         if changed {
@@ -1175,6 +1187,11 @@ fn follow_tip(parts: &super::parts::Parts) -> String {
     )
 }
 
+/// [`follow_short`]'s hover and ⓘ: its whole name, then what it does (K24).
+pub fn follow_hover(parts: &super::parts::Parts) -> String {
+    format!("{}. {}", follow_label(parts), follow_tip(parts))
+}
+
 /// "Right follows left" and its ⓘ, saved on the keyboard; greyed with a short chip while its
 /// state isn't known, the whole line on hover (#794 K24, K25).
 fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mut Vec<Intent>) {
@@ -1190,8 +1207,7 @@ fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mu
             RgbSync::Known { on } => {
                 let mut follow = on;
                 let c = ui.checkbox(&mut follow, &short);
-                let tip = format!("{label}. {}", follow_tip(parts));
-                if theme::with_info(ui, c, &tip).changed() {
+                if theme::with_info(ui, c, &follow_hover(parts)).changed() {
                     out.push(Intent::Follow(follow));
                 }
             }
