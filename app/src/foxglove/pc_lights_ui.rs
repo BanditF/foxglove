@@ -299,8 +299,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
             ui.add_space(4.0);
             let status = placed(&s.results, &Place::Row(row.key.clone()));
             let lamps = super::scene_room::vid_pid(&row.key).and_then(|k| v.lamps.get(&k));
-            let show = v.keyboards.show_on(row);
-            device(ui, row, status, lamps, show, s.busy, draft, &mut out);
+            let focus = v.keyboards.row_focus(row);
+            device(ui, row, status, lamps, focus, s.busy, draft, &mut out);
         }
         ui.add_space(4.0);
         ui.separator();
@@ -800,14 +800,15 @@ pub fn row_note(row: &Row) -> String {
 /// for it, it gives way (the battery list's size, then none: [`thumb::row_size`]) from what the
 /// row's other contents needed last pass.
 ///
-/// A keyboard that isn't the focus (`show`, #820) has "Show in Foxglove" at the row's end.
+/// A keyboard that isn't the focus (`focus`, #820) has "Show in Foxglove" at the row's end; the
+/// focused LampArray-only keyboard, still listed for its colours, a muted "shown in Foxglove" chip.
 #[allow(clippy::too_many_arguments)]
 fn device(
     ui: &mut egui::Ui,
     row: &Row,
     status: Option<&Status>,
     lamps: Option<&pc_lights::LampLayout>,
-    show: Option<&super::keyboard_focus::Keyboard>,
+    focus: others::RowFocus<'_>,
     busy: bool,
     draft: &mut Draft,
     out: &mut Vec<Intent>,
@@ -875,6 +876,9 @@ fn device(
             if let Some(chip) = lamp {
                 theme::hint_chip(ui, chip.text, Some(chip.hover), Some(chip.dot));
             }
+            if focus == others::RowFocus::Shown {
+                others::shown_chip(ui);
+            }
             // What the last click on this device did: on its row, open or closed.
             if let Some(st) = status.filter(|st| st.tone == Tone::Done) {
                 done_chip(ui, st, Some(&row.name));
@@ -883,7 +887,7 @@ fn device(
                 .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Room for the buttons' outline at the row's clipped edge.
                     ui.add_space(2.0);
-                    if let Some(k) = show {
+                    if let others::RowFocus::Show(k) = focus {
                         // At the end, where a keyboard's own row has it.
                         if others::link(ui, k) {
                             asked.push(Intent::Show(k.key.clone()));

@@ -25,7 +25,8 @@ fn device_rows_render() {
 /// K5 Pro isn't there and the lamp keyboard is a plain lights row. After, with the Corne
 /// focused (`ui-820-after-*`): the K5 Pro on a row of its own and the lamp keyboard's row, each
 /// with "Show in Foxglove". With the lamp keyboard focused (`ui-820-after-lamp-focused-*`): its
-/// row goes (the keyboard card has it), and the Corne and the K5 Pro carry the link.
+/// lights row stays for its colours, with a muted "shown in Foxglove" chip instead of the link,
+/// and the Corne and the K5 Pro carry the link.
 #[test]
 fn show_in_foxglove_renders() {
     use crate::foxglove::keyboard_focus::{Keyboard, Source};

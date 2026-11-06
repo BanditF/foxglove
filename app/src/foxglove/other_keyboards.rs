@@ -67,15 +67,33 @@ impl Keyboards {
     }
 
     /// Whether the card lists `row`: not when it is the focused keyboard, which has the page's
-    /// keyboard card.
+    /// keyboard card, except a focused LampArray-only keyboard ([`Self::shown_here`]).
     pub fn listed(&self, row: &Row) -> bool {
-        !self.of_row(row).is_some_and(|k| self.focused(k))
+        !self.of_row(row).is_some_and(|k| self.focused(k)) || self.shown_here(row)
+    }
+
+    /// Whether `row` is the focused LampArray-only keyboard's lights row. It stays listed, with
+    /// the "shown in Foxglove" chip in place of the link, so its colours can still be set: the
+    /// keyboard card mutes them for a keyboard Foxglove can't change. A stopgap until that card
+    /// drives a LampArray keyboard's lights.
+    pub fn shown_here(&self, row: &Row) -> bool {
+        self.of_row(row)
+            .is_some_and(|k| self.focused(k) && k.source == kf::Source::LampArray)
     }
 
     /// The keyboard whose "Show in Foxglove" link `row` carries: a connected one that isn't
     /// the focus.
     pub fn show_on(&self, row: &Row) -> Option<&Keyboard> {
         self.of_row(row).filter(|k| k.connected && !self.focused(k))
+    }
+
+    /// What a listed device row says about the focus.
+    pub fn row_focus(&self, row: &Row) -> RowFocus<'_> {
+        if self.shown_here(row) {
+            RowFocus::Shown
+        } else {
+            self.show_on(row).map_or(RowFocus::None, RowFocus::Show)
+        }
     }
 
     /// The keyboards listed on rows of their own: connected, not the focus, and not already a
@@ -96,6 +114,17 @@ impl Keyboards {
     pub fn detail(&self, k: &Keyboard) -> String {
         focus_ui::detail(k, self.host_link.as_deref())
     }
+}
+
+/// What a device row says about the focus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RowFocus<'a> {
+    /// Nothing: not a keyboard, or one that went.
+    None,
+    /// A keyboard that isn't the focus: "Show in Foxglove".
+    Show(&'a Keyboard),
+    /// The focused LampArray-only keyboard: the "shown in Foxglove" chip.
+    Shown,
 }
 
 /// A Lights key's VID and PID: `vvvv:pppp`, maybe followed by a serial.
@@ -121,6 +150,20 @@ pub fn link(ui: &mut egui::Ui, k: &Keyboard) -> bool {
     #[cfg(test)]
     LAST_LINKS.with_borrow_mut(|l| l.push((k.key.clone(), r.rect)));
     r.clicked()
+}
+
+/// The focused LampArray-only keyboard's chip on its lights row.
+pub const SHOWN: &str = "shown in Foxglove";
+
+/// That chip: flat and muted, no link (it is the focus already); its hover says where another
+/// keyboard is picked.
+pub fn shown_chip(ui: &mut egui::Ui) -> egui::Response {
+    theme::hint_chip(
+        ui,
+        SHOWN,
+        Some(focus_ui::TITLE_HOVER),
+        Some(theme::Dot::Muted),
+    )
 }
 
 /// The space before a row's thumbnail: where a device row has its chevron, so the thumbnails
