@@ -672,10 +672,28 @@ pub fn info_dot(ui: &mut egui::Ui, hover: &str) -> egui::Response {
 
 /// A control and its ⓘ (rule 3): `hover` goes on the control too, so the ⓘ only says there is
 /// more. Call it in the control's row, right after adding the control; returns its response.
+/// `hover` is shown as given: it says what the control does and doesn't start with the
+/// control's own label, which is right beside it ([`repeats_label`]). A shortened label's whole
+/// name may lead it (K18), since that name is said nowhere else.
 pub fn with_info(ui: &mut egui::Ui, control: egui::Response, hover: &str) -> egui::Response {
     let control = control.on_hover_text(hover);
     info_dot(ui, hover);
     control
+}
+
+/// Whether `hover` opens with `label` (case and trailing punctuation aside): a tooltip that
+/// only repeats what its control already says. The tests hold every ⓘ to it.
+#[cfg(test)]
+pub fn repeats_label(label: &str, hover: &str) -> bool {
+    let words = |s: &str| {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .filter(|w| !w.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let (label, hover) = (words(label), words(hover));
+    !label.is_empty() && hover.starts_with(&label)
 }
 
 /// What an [`info_bar`] did this frame.
@@ -1144,6 +1162,79 @@ mod widget_tests {
             shown(&last),
             "hovering the control's label shows the ⓘ's text"
         );
+    }
+
+    /// #839: no ⓘ's tooltip starts by repeating its control's label ("Animate on e-paper:
+    /// plays…" read the label twice). Every `with_info` in the app, with the text it is given.
+    #[test]
+    fn no_tooltip_starts_with_its_controls_label() {
+        use crate::foxglove::{art_encode, art_ui, battery_dim_ui, lights_page, pc_lights_ui};
+        assert!(repeats_label(
+            "Animate on e-paper",
+            "Animate on e-paper: plays…"
+        ));
+        assert!(repeats_label("Match keyboard", "match keyboard. Shows…"));
+        assert!(!repeats_label(
+            "Follow Windows accent",
+            "Follow the Windows accent colour: …"
+        ));
+        let parts = crate::foxglove::parts::Parts::of(None);
+        let epaper = art_ui::tests::epaper_screens();
+        let pairs = [
+            (
+                art_ui::EPAPER_SWITCH.to_string(),
+                art_ui::epaper_tip(art_encode::Pace::of(&epaper[0], false)),
+            ),
+            (
+                art_ui::FITTED_NOTE.to_string(),
+                art_encode::FIT_RULE.to_string(),
+            ),
+            (
+                battery_dim_ui::SHORT.to_string(),
+                battery_dim_ui::hover(true),
+            ),
+            (
+                battery_dim_ui::SHORT.to_string(),
+                battery_dim_ui::hover(false),
+            ),
+            (
+                lights_page::ACCENT_SHORT.to_string(),
+                lights_page::accent_hover(),
+            ),
+            (
+                lights_page::WALLPAPER_SHORT.to_string(),
+                lights_page::wallpaper_hover(),
+            ),
+            (
+                lights_page::follow_short(&parts),
+                lights_page::follow_hover(&parts),
+            ),
+            (
+                pc_lights_ui::MATCH_SHORT.to_string(),
+                pc_lights_ui::MATCH_TIP.to_string(),
+            ),
+            (
+                pc_lights_ui::OPENRGB_SHORT.to_string(),
+                pc_lights_ui::OPENRGB_TIP.to_string(),
+            ),
+        ];
+        for (label, hover) in pairs {
+            assert!(
+                !repeats_label(&label, &hover),
+                "{label:?} repeats in {hover:?}"
+            );
+        }
+        // Every call site is listed above: a new `with_info` needs its pair here too.
+        let calls: usize = [
+            include_str!("art_ui.rs"),
+            include_str!("battery_dim_ui.rs"),
+            include_str!("lights_page.rs"),
+            include_str!("pc_lights_ui.rs"),
+        ]
+        .iter()
+        .map(|s| s.matches("theme::with_info(").count())
+        .sum();
+        assert_eq!(calls, 8, "with_info calls outside this test's list");
     }
 }
 

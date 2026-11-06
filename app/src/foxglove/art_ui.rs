@@ -166,7 +166,8 @@ pub const MAY_GHOST: &str = "may ghost";
 pub const GHOST_TIP: &str =
     "E-paper can keep a faint trace of the frame before (ghosting) until the screen's next full refresh.";
 
-/// The switch's hover (and its ⓘ): what it does, at this screen's rate.
+/// The switch's hover (and its ⓘ): what it does, at this screen's rate. It doesn't repeat the
+/// switch's label, which sits right beside it.
 pub fn epaper_tip(pace: super::art_encode::Pace) -> String {
     let rate = match pace.fps(u8::MAX) {
         _ if pace.min_frame_ms == 0 => "at the piece's own rate".to_string(),
@@ -174,8 +175,8 @@ pub fn epaper_tip(pace: super::art_encode::Pace) -> String {
         n => format!("at most {n} frames a second on this screen"),
     };
     format!(
-        "{EPAPER_SWITCH}: plays each piece's frames, {rate}. Off: only its first frame shows. \
-         Pieces kept on the keyboard change when they're kept again."
+        "Plays each piece's frames, {rate}. Off: only its first frame shows. Pieces kept on \
+         the keyboard change when they're kept again."
     )
 }
 
@@ -1910,9 +1911,8 @@ pub mod tests {
         let pace = crate::foxglove::art_encode::Pace::of(&epaper_screens()[0], false);
         assert_eq!(
             epaper_tip(pace),
-            "Animate on e-paper: plays each piece's frames, at most 1 frame a second on this \
-             screen. Off: only its first frame shows. Pieces kept on the keyboard change when \
-             they're kept again."
+            "Plays each piece's frames, at most 1 frame a second on this screen. Off: only its \
+             first frame shows. Pieces kept on the keyboard change when they're kept again."
         );
         assert!(GHOST_TIP.contains("ghosting"));
     }

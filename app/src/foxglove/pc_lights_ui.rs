@@ -327,8 +327,13 @@ pub fn control_text(c: Control) -> &'static str {
 pub const ABOUT: &str =
     "Case lights, screens and other lighting devices on this PC, and what each can do.";
 
+/// The labels of the switches whose ⓘ follows them.
+pub const MATCH_SHORT: &str = "Match keyboard";
+pub const OPENRGB_SHORT: &str = "Use OpenRGB's devices";
+
 /// "Match keyboard" hover (#616), on the checkbox and its ⓘ.
-const MATCH_TIP: &str = "Show the colour the keyboard's lights show, as the keyboard reports it. \
+pub const MATCH_TIP: &str =
+    "Show the colour the keyboard's lights show, as the keyboard reports it. \
                          While the keyboard plays a rainbow (Spectrum, Swirl) there's no colour to \
                          copy: this device keeps its colours and the line below says so. It \
                          doesn't go dark when the keyboard dims. Picking a colour here stops it.";
@@ -601,9 +606,7 @@ fn openrgb_row(
         .horizontal(|ui| {
             let c = ui.checkbox(
                 &mut on,
-                RichText::new("Use OpenRGB's devices")
-                    .color(p.text_strong)
-                    .strong(),
+                RichText::new(OPENRGB_SHORT).color(p.text_strong).strong(),
             );
             theme::with_info(ui, c, &tip).changed()
         })
@@ -1226,7 +1229,7 @@ fn actions(
                 return;
             }
             ui.add_enabled_ui(!busy, |ui| {
-                let c = ui.checkbox(&mut matching, "Match keyboard");
+                let c = ui.checkbox(&mut matching, MATCH_SHORT);
                 toggled = theme::with_info(ui, c, MATCH_TIP).changed();
             });
         },
