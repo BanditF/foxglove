@@ -197,7 +197,9 @@ pub fn ids(path: &str) -> Option<(u16, u16)> {
     let up = path.to_ascii_uppercase();
     let hex = |tag: &str| -> Option<u16> {
         let rest = &up[up.find(tag)? + tag.len()..];
-        let digits = rest.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(rest.len());
+        let digits = rest
+            .find(|c: char| !c.is_ascii_hexdigit())
+            .unwrap_or(rest.len());
         let run = &rest[..digits];
         // `VID_` is followed by its four digits; `VID&` by the issuer's, then the four.
         let four = if tag.ends_with('_') {

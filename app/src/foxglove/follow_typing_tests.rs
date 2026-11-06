@@ -9,7 +9,8 @@ use crate::foxglove::keyboard_focus::{self as kf, Model, Saved, Seen};
 
 const CORNE: &str = "zmk-1d50:615e-p31";
 const K5: &str = "via-k5";
-const CORNE_PATH: &str = r"\\?\HID#VID_1D50&PID_615E&MI_00#7&2a1b3c4d&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+const CORNE_PATH: &str =
+    r"\\?\HID#VID_1D50&PID_615E&MI_00#7&2a1b3c4d&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
 const K5_PATH: &str = r"\\?\HID#{00001812-0000-1000-8000-00805f9b34fb}_Dev_VID&023434_PID&0250_REV&0001_c8a1b2c3d4e5#9&1c2d3e4f&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
 
 fn seen(key: &str, name: &str, vid: u16, pid: u16) -> Seen {
@@ -175,11 +176,16 @@ fn device_paths_give_their_ids() {
     assert_eq!(ids(CORNE_PATH), Some(CORNE_IDS));
     assert_eq!(ids(K5_PATH), Some(K5_IDS), "Bluetooth LE");
     assert_eq!(
-        ids(r"\\?\HID#{00001124-0000-1000-8000-00805f9b34fb}_VID&0002046d_PID&b342&Col01#8&1&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}"),
+        ids(
+            r"\\?\HID#{00001124-0000-1000-8000-00805f9b34fb}_VID&0002046d_PID&b342&Col01#8&1&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}"
+        ),
         Some((0x046d, 0xb342)),
         "Bluetooth"
     );
-    assert_eq!(ids(r"\\?\Root#RDP_KBD#0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}"), None);
+    assert_eq!(
+        ids(r"\\?\Root#RDP_KBD#0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}"),
+        None
+    );
     assert_eq!(ids(""), None);
 }
 
