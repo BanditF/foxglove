@@ -554,6 +554,10 @@ fn process_alive(_pid: u32) -> bool {
 
 /// `%LOCALAPPDATA%\Foxglove\flash-history.log` (or `FOXGLOVE_FLASH_HISTORY`), as the script writes it.
 fn history_path() -> Option<PathBuf> {
+    // A test build stays in its own folder, never %LOCALAPPDATA%\Foxglove.
+    if let Some(dir) = super::store::test_sandbox() {
+        return Some(dir.join("flash-history.log"));
+    }
     if let Some(p) = std::env::var_os("FOXGLOVE_FLASH_HISTORY") {
         return Some(PathBuf::from(p));
     }
@@ -1077,6 +1081,17 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    /// A test build's flash history is in the test folder, never %LOCALAPPDATA%\Foxglove.
+    #[test]
+    fn flash_history_stays_in_the_test_folder() {
+        let p = history_path().unwrap();
+        assert!(
+            p.starts_with(crate::foxglove::store::test_sandbox().unwrap()),
+            "{}",
+            p.display()
+        );
+    }
 
     /// #814: an update that ran says so once, done or failed, through `notice::show`.
     #[test]

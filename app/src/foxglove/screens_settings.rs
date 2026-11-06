@@ -132,13 +132,23 @@ impl ScreensSettings {
 }
 
 /// `%APPDATA%\hostpanel\config.toml`.
+/// None in a test build, which never reads outside its own folder.
 fn hostpanel_config_path() -> Option<PathBuf> {
+    if super::store::test_sandbox().is_some() {
+        return None;
+    }
     directories::BaseDirs::new().map(|d| d.config_dir().join("hostpanel").join("config.toml"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A test build never reads (or migrates from) the real hostpanel config.
+    #[test]
+    fn no_hostpanel_config_in_a_test_build() {
+        assert_eq!(hostpanel_config_path(), None);
+    }
 
     #[test]
     fn imports_hostpanel_config() {

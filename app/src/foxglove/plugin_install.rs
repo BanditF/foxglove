@@ -371,7 +371,11 @@ pub fn autoinstall() {
     else {
         return;
     };
-    let config_dir = std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from);
+    // A test build always uses its own folder (store::test_sandbox).
+    let config_dir = match super::store::test_sandbox() {
+        Some(dir) => Some(dir.to_path_buf()),
+        None => std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from),
+    };
     let real =
         directories::ProjectDirs::from("", "", "Foxglove").map(|d| d.config_dir().to_path_buf());
     let result = autoinstall_allowed(

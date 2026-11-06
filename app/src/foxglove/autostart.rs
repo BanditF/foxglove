@@ -567,7 +567,7 @@ mod windows_places {
 /// A test isolation run: the user's entry is never touched.
 #[cfg(windows)]
 fn isolated() -> bool {
-    std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some()
+    super::store::test_sandbox().is_some() || std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some()
 }
 
 /// `foxglove.exe --uninstall-cleanup`, run by the MSI's uninstall as the user: removes this
