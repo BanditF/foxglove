@@ -46,6 +46,7 @@ offer the sub-protocols `foxglove-live.v1, <token>`.
 |---|---|---|
 | `hello` | → wallpaper | `v`, `topics`, `board` (`name`, `keys`: `[x, y, w, h, r]` in key units, rotation about the key's centre), `state`, `quiet` |
 | `state` | → wallpaper | `layer` (`index`, `name`), `art`, `battery` (`left`, `right`), `link` (`connected`, `output`, `profile`), `lights` (below) |
+| `art` | → wallpaper | `art`: `name` (as `state.art`), `nva` (the piece's frames, below, or `null`); or `art: null` |
 | `keys` | → wallpaper | `e`: `[index, 1 down / 0 up, ms since the batch's first]` |
 | `board` | → wallpaper | the geometry changed |
 | `quiet` | → wallpaper | `why`: `paused`, `away` or `fullscreen`; nothing follows until `live` |
@@ -60,6 +61,26 @@ usable accent), `brightness` (0-100), `effect` (its name, such as `Solid` or `Br
 what the keyboard shows). A wallpaper can take `color` as its accent while `on` and not
 `rainbow`, so the wallpaper matches the keyboard. It comes from the `keyboard.lighting.*`
 facts (docs/local-api.md) and changes only when the keyboard reports a change.
+
+`art` (code: `live_art.rs`) carries the right screen's piece, so a wallpaper can draw the literal art:
+- **Format:** `nva` is an NVA1 blob in base64, re-encoded **upright** (as the art is drawn, 68x140 on
+  the Corne), with a set bit for ink whatever the source's polarity. The header is `NVA1`, width,
+  height, frames a second, flags (1 = ink bits), unique frame count (u16 LE), play-order length (u16
+  LE), the play order, then a u16 LE offset per unique frame. Each unique frame is an XOR delta on
+  the one before (the first on blank), packed as byte RLE: a control byte `op << 6 | (n - 1)`, where
+  op 0 is `n` literal bytes, op 1 is `n` zero bytes, op 2 is `n` 0xff bytes and op 3 is the next
+  byte `n` times. Rows are MSB first, `ceil(width / 8)` bytes a row. The play order runs on a loop
+  at the given rate, as the keyboard plays it.
+- **When:** after the `hello` (on joining, and on coming back from a pause), and whenever the
+  piece changes. Never per frame, and not with each `state`. A change while the feed is quiet
+  goes out after `live`.
+- **Size:** at most 32 KiB of blob (twice the right half's 16 KiB art slot), so at most about
+  43 KiB of text. A piece past that goes with `nva: null`. The art library's Bandit_radar (12 frames) is 2.9 KiB.
+- **What has frames:** a library file the right half plays, a built-in (from the firmware's own
+  `custom_art.c`, when its manifest matches the keyboard), and a kept place when the library has
+  a file of the same name and size. Otherwise `nva` is `null`, and the wallpaper draws a stand-in.
+- **The left screen:** it shows the firmware's own status panel, not art, so the feed doesn't
+  describe it.
 
 A client ignores any `t` it doesn't know, and any field it doesn't know. The reserved topics `stats` (PC stats) and `notes`
 (notifications) come later without a new version.

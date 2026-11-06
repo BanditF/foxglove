@@ -142,6 +142,10 @@ struct Hub {
     board: Option<Geometry>,
     quiet: Option<Why>,
     batch: wire::Batch,
+    /// The right screen's piece with its frames (`live_art`), sent once per change.
+    art: Option<wire::Art>,
+    /// The piece changed while the feed was quiet: it goes out when the feed is live again.
+    art_unsent: bool,
 }
 
 impl Hub {
@@ -165,6 +169,20 @@ impl Hub {
         }
     }
 
+    /// The hello, then the piece's frames when there are any.
+    fn greet(&self, id: u64, out: &mut impl Out) -> bool {
+        out.send(id, &self.hello().json())
+            && self.art.as_ref().is_none_or(|_| {
+                out.send(
+                    id,
+                    &Message::Art {
+                        art: self.art.clone(),
+                    }
+                    .json(),
+                )
+            })
+    }
+
     fn broadcast(&self, out: &mut impl Out, m: &Message) -> Vec<u64> {
         let text = m.json();
         self.listeners()
@@ -177,7 +195,7 @@ impl Hub {
             return false;
         }
         self.clients.push((id, false));
-        out.send(id, &self.hello().json())
+        self.greet(id, out)
     }
 
     fn leave(&mut self, id: u64) {
@@ -190,7 +208,7 @@ impl Hub {
             return true;
         };
         let was = std::mem::replace(&mut c.1, paused);
-        was == paused || paused || out.send(id, &self.hello().json())
+        was == paused || paused || self.greet(id, out)
     }
 
     /// The gates now; the wallpapers hear only a change.
@@ -205,6 +223,10 @@ impl Hub {
             None => {
                 let mut dead = self.broadcast(out, &Message::Live);
                 dead.extend(self.broadcast(out, &Message::State(self.state.clone())));
+                if std::mem::take(&mut self.art_unsent) {
+                    let art = self.art.clone();
+                    dead.extend(self.broadcast(out, &Message::Art { art }));
+                }
                 dead
             }
         }
@@ -219,6 +241,20 @@ impl Hub {
             return Vec::new();
         }
         self.broadcast(out, &Message::State(self.state.clone()))
+    }
+
+    /// The piece on the right screen changed (its frames, or that there's none now).
+    fn set_art(&mut self, art: Option<wire::Art>, out: &mut impl Out) -> Vec<u64> {
+        if art == self.art {
+            return Vec::new();
+        }
+        self.art = art;
+        if self.quiet.is_some() {
+            self.art_unsent = true;
+            return Vec::new();
+        }
+        let art = self.art.clone();
+        self.broadcast(out, &Message::Art { art })
     }
 
     fn set_board(&mut self, board: Option<Geometry>, out: &mut impl Out) -> Vec<u64> {
@@ -502,6 +538,8 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
     };
     let mut fullscreen = fullscreen_now();
     hub.quiet = wire::quiet(super::pause::paused(), super::away::away(), fullscreen);
+    let mut art = ArtWatch::default();
+    hub.art = art.read(&hub.state).unwrap_or_default();
     let mut batch_started: Option<Instant> = None;
     let mut last_key: Option<Instant> = None;
     let mut keys = KeyTap::new(key_generation.clone());
@@ -547,6 +585,9 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
             }
             Some(Msg::State) => {
                 dead = hub.set_state(read_state(facts), &mut Streams(&mut clients));
+                if let Some(piece) = art.read(&hub.state) {
+                    dead.extend(hub.set_art(piece, &mut Streams(&mut clients)));
+                }
             }
             Some(Msg::Board) => {
                 let board = GEOMETRY.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -702,6 +743,35 @@ impl KeyTap {
                 }
             }
         });
+    }
+}
+
+/// Where the right screen's piece comes from, so its frames are read only when it changes (a
+/// battery or layer change re-reads the state, not the art file).
+#[derive(Default)]
+struct ArtWatch {
+    source: Option<super::live_art::Source>,
+}
+
+impl ArtWatch {
+    /// The piece's `art` body when what plays changed since the last call, else `None`.
+    fn read(&mut self, state: &wire::State) -> Option<Option<wire::Art>> {
+        let source =
+            super::art_service::handle().and_then(|h| super::live_art::source(&h.snapshot()));
+        self.changed(source, state)
+    }
+
+    fn changed(
+        &mut self,
+        source: Option<super::live_art::Source>,
+        state: &wire::State,
+    ) -> Option<Option<wire::Art>> {
+        if source == self.source {
+            return None;
+        }
+        self.source.clone_from(&source);
+        let name = state.art.clone().unwrap_or_default();
+        Some(source.map(|s| super::live_art::art(&s, name)))
     }
 }
 
@@ -1054,6 +1124,77 @@ mod tests {
         let n = out.count(1);
         assert!(hub.set_state(state, &mut out).is_empty());
         assert_eq!(out.count(1), n, "the same state isn't sent again");
+    }
+
+    /// The right screen's frames go out once per change, to a joining or returning wallpaper,
+    /// and after a quiet spell only when the piece changed during it.
+    #[test]
+    fn art_frames_go_out_once_per_change() {
+        let piece = |n: &str| wire::Art {
+            name: n.into(),
+            nva: Some("TlZBMQ==".into()),
+        };
+        let mut hub = Hub::default();
+        let mut out = Sent::default();
+        hub.join(1, &mut out);
+        assert_eq!(out.count(1), 1, "no art yet: the hello only");
+        hub.set_art(Some(piece("Fox run")), &mut out);
+        assert!(out
+            .last(1)
+            .starts_with(r#"{"t":"art","art":{"name":"Fox run""#));
+        let n = out.count(1);
+        assert!(hub.set_art(Some(piece("Fox run")), &mut out).is_empty());
+        hub.set_state(
+            wire::State {
+                battery: wire::Battery {
+                    left: Some(50),
+                    right: None,
+                },
+                ..wire::State::default()
+            },
+            &mut out,
+        );
+        assert_eq!(
+            out.count(1),
+            n + 1,
+            "a state change doesn't resend the frames"
+        );
+        hub.join(2, &mut out);
+        assert_eq!(out.count(2), 2, "a new wallpaper: hello, then the frames");
+        assert!(out.last(2).contains("Fox run"));
+        hub.paused(2, true, &mut out);
+        hub.paused(2, false, &mut out);
+        assert_eq!(out.count(2), 4, "back from a pause: both again");
+        // Quiet: held, and sent on live only because it changed.
+        hub.gates(Some(Why::Away), &mut out);
+        hub.set_art(Some(piece("Radar")), &mut out);
+        let quiet = out.count(1);
+        hub.gates(None, &mut out);
+        assert_eq!(out.count(1), quiet + 3, "live, state, art");
+        assert!(out.last(1).contains("Radar"));
+        hub.gates(Some(Why::Away), &mut out);
+        let quiet = out.count(1);
+        hub.gates(None, &mut out);
+        assert_eq!(out.count(1), quiet + 2, "unchanged: live and state only");
+        hub.set_art(None, &mut out);
+        assert_eq!(out.last(1), r#"{"t":"art","art":null}"#);
+    }
+
+    /// The art file is read only when the source changes, not on every state change.
+    #[test]
+    fn art_is_read_only_when_the_piece_changes() {
+        use super::super::live_art::Source;
+        let mut w = ArtWatch::default();
+        let state = wire::State {
+            art: Some("Bandit emblem".into()),
+            ..wire::State::default()
+        };
+        assert_eq!(w.changed(None, &state), None, "nothing, still nothing");
+        let first = w.changed(Some(Source::BuiltIn(0, 1)), &state);
+        let art = first.expect("changed").expect("a piece");
+        assert_eq!(art.name, "Bandit emblem");
+        assert_eq!(w.changed(Some(Source::BuiltIn(0, 1)), &state), None);
+        assert_eq!(w.changed(None, &state), Some(None), "the keyboard went");
     }
 
     /// #40: the keyboard's lights reach the wallpaper once the keyboard reported them.

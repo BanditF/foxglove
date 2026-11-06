@@ -1062,7 +1062,7 @@ fn choose(link: &impl Transport, h: &Handle, choice: &Choice) -> Result<ArtStatu
 
 /// A blob file as it is sent: its bytes normalised to the piece's polarity (#666; Auto unless
 /// the art picker or a plugin chose otherwise), so the panel polarity alone decides its look.
-fn pushed_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
+pub(crate) fn pushed_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
     let mut blob = Vec::new();
     std::fs::File::open(path)
         .and_then(|f| f.take(65536).read_to_end(&mut blob))

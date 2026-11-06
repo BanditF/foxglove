@@ -73,6 +73,7 @@ pub mod lighting_leases;
 pub mod lights_owner;
 pub mod lights_page;
 pub mod link;
+pub mod live_art;
 pub mod live_feed;
 pub mod live_wire;
 pub mod mic_broker;

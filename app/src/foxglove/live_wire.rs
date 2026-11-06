@@ -15,6 +15,7 @@
 //! {"t":"hello","v":1,"topics":["keys","state"],"board":{"name":"Eyelash Corne","keys":[[x,y,w,h,r],...]},"state":{...},"quiet":null}
 //! {"t":"state","layer":{"index":3,"name":"NAV"},"art":"Fox run","battery":{"left":80,"right":61},"link":{"connected":true,"output":"ble","profile":1},
 //!  "lights":{"on":true,"color":"#ff6a00","brightness":60,"effect":"Solid","rainbow":false}}
+//! {"t":"art","art":{"name":"Fox run","nva":"TlZBMUSM..."}}   the piece's frames, once per change
 //! {"t":"keys","e":[[17,1,0],[17,0,9]]}      index, 1 down / 0 up, ms since the batch's first
 //! {"t":"board","board":{...}}               the geometry changed (another keyboard, layout)
 //! {"t":"quiet","why":"away"}                nothing more until "live": paused, away, fullscreen
@@ -30,7 +31,7 @@ pub const VERSION: u8 = 1;
 /// The WebSocket sub-protocol a wallpaper offers (with its token as a second one).
 pub const PROTOCOL: &str = "foxglove-live.v1";
 /// The topics this build sends; reserved for later: `stats`, `notes`.
-pub const TOPICS: &[&str] = &["keys", "state"];
+pub const TOPICS: &[&str] = &["keys", "state", "art"];
 /// Key events in one frame at most (a burst beyond it waits for the next frame).
 pub const MAX_BATCH: usize = 64;
 /// How long a batch collects after its first key: at most 60 frames a second.
@@ -100,6 +101,17 @@ pub struct State {
     pub lights: Option<Lights>,
 }
 
+/// The right screen's piece with its frames (`live_art`): sent when the piece changes and to a
+/// wallpaper as it joins, never per frame.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Art {
+    /// The piece, by the same name as `state.art`.
+    pub name: String,
+    /// Its animation as an upright NVA1 blob in base64 (docs/live-feed.md), at most
+    /// `live_art::MAX_BLOB` bytes before base64; `None` when Foxglove doesn't have its frames.
+    pub nva: Option<String>,
+}
+
 /// Why the feed is quiet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -128,6 +140,10 @@ pub enum Message {
     State(State),
     Keys {
         e: Vec<KeyEvent>,
+    },
+    /// `art: null`: nothing on the right screen Foxglove can name (no keyboard).
+    Art {
+        art: Option<Art>,
     },
     Board {
         board: Option<Board>,
@@ -337,6 +353,12 @@ mod tests {
                 e: vec![(17, 1, 0), (17, 0, 9)],
             },
             Message::Board { board: Some(board) },
+            Message::Art {
+                art: Some(Art {
+                    name: "Fox run".into(),
+                    nva: Some("TlZBMUSMBAEBAAEAAA==".into()),
+                }),
+            },
             Message::Quiet {
                 why: Why::Fullscreen,
             },
@@ -388,6 +410,7 @@ mod tests {
             "rainbow",
             "e",
             "why",
+            "nva",
         ];
         for m in every_message() {
             let json = m.json();
@@ -415,8 +438,16 @@ mod tests {
     fn the_messages_read_as_documented() {
         let m = every_message();
         assert_eq!(m[2].json(), r#"{"t":"keys","e":[[17,1,0],[17,0,9]]}"#);
-        assert_eq!(m[4].json(), r#"{"t":"quiet","why":"fullscreen"}"#);
-        assert_eq!(m[5].json(), r#"{"t":"live"}"#);
+        assert_eq!(
+            m[4].json(),
+            r#"{"t":"art","art":{"name":"Fox run","nva":"TlZBMUSMBAEBAAEAAA=="}}"#
+        );
+        assert_eq!(m[5].json(), r#"{"t":"quiet","why":"fullscreen"}"#);
+        assert_eq!(m[6].json(), r#"{"t":"live"}"#);
+        assert_eq!(
+            Message::Art { art: None }.json(),
+            r#"{"t":"art","art":null}"#
+        );
         let hello: Value = serde_json::from_str(&m[0].json()).unwrap();
         assert_eq!(hello["t"], "hello");
         assert_eq!(hello["v"], 1);
