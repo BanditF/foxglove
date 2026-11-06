@@ -107,12 +107,16 @@ static RUNNING: Mutex<Option<Stop>> = Mutex::new(None);
 /// Repaints the settings window when the focus follows the typing.
 static WAKE: OnceLock<crate::ui_wake::UiWake> = OnceLock::new();
 
-/// The app's source: Raw Input. Tests get one that registers nothing.
+/// The app's source: Raw Input.
+#[cfg(all(windows, not(test)))]
 fn default_source() -> Box<dyn Source> {
-    #[cfg(all(windows, not(test)))]
-    return Box::new(raw::RawInput);
-    #[cfg(any(not(windows), test))]
-    return Box::new(Nothing);
+    Box::new(raw::RawInput)
+}
+
+/// Tests (and other systems) get one that registers nothing.
+#[cfg(any(not(windows), test))]
+fn default_source() -> Box<dyn Source> {
+    Box::new(Nothing)
 }
 
 /// A source that never types: tests and non-Windows builds.
