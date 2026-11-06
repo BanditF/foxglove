@@ -297,6 +297,9 @@ pub struct Runner<'a, D: Device> {
     pub app: Option<&'a dyn crate::app_api::AppArt>,
     /// The PC state before this case's first `pc_away` (pc_hold.rs); put back in cleanup.
     pc_saved: Option<crate::pc_hold::Saved<'a, D>>,
+    /// An art_key step asked for the art-key opt-in (D7 0D 01) and hasn't ended it yet (not
+    /// `keep_opt_in`); cleanup sends D7 0D 00 (#864).
+    art_keys_on: bool,
 }
 impl<'a, D: Device> Runner<'a, D> {
     pub fn new(
@@ -328,6 +331,7 @@ impl<'a, D: Device> Runner<'a, D> {
             injections: None,
             app: None,
             pc_saved: None,
+            art_keys_on: false,
         }
     }
     fn check(&self) -> Result<()> {
@@ -531,6 +535,8 @@ impl<'a, D: Device> Runner<'a, D> {
             .art_key_events()
             .ok_or_else(|| anyhow::anyhow!("this device can't deliver unsolicited reports"))?;
         if k.subscribed {
+            // Set first: a D7 0D 01 that wasn't answered may still have turned it on.
+            self.art_keys_on = !k.keep_opt_in;
             subscribe(self, true)?;
         }
         let tap = crate::spec::Position {
@@ -588,6 +594,7 @@ impl<'a, D: Device> Runner<'a, D> {
         })();
         if k.subscribed && !k.keep_opt_in {
             subscribe(self, false)?;
+            self.art_keys_on = false;
         }
         outcome
     }
@@ -822,8 +829,12 @@ impl<'a, D: Device> Runner<'a, D> {
                 s
             }
             "up" => {
-                self.held_positions.retain(|&q| q != p.pos);
-                send(0)?
+                let s = send(0)?;
+                // Still held until the up is answered ok: cleanup sends it again (#864).
+                if s == 0 {
+                    self.held_positions.retain(|&q| q != p.pos);
+                }
+                s
             }
             _ => {
                 let s = send(1)?;
@@ -934,7 +945,9 @@ impl<'a, D: Device> Runner<'a, D> {
         self.pc_saved = Some(saved);
         Ok(line)
     }
-    fn cleanup(&mut self) {
+    /// The case's end, after any failure too. Returns what it couldn't undo, for the report.
+    fn cleanup(&mut self) -> Vec<String> {
+        let mut left = Vec::new();
         if let Some(mut saved) = self.pc_saved.take() {
             saved.restore();
         }
@@ -949,16 +962,68 @@ impl<'a, D: Device> Runner<'a, D> {
         let held = std::mem::take(&mut self.held_positions);
         let _injecting = (!held.is_empty()).then(|| self.injecting(|| format!("release {held:?}")));
         for pos in held.into_iter().rev() {
-            // Best effort; the firmware also releases owned downs after 10 s.
-            let _ = self.device.request(
-                &[protocol::SETTINGS, POSITION, pos, 0],
+            // A right-half up goes over the relay, which can answer busy (2) or relay timeout
+            // (3) right after a failed step: asked again, at most 3 times (#864). No answer at
+            // all isn't (the link is gone). The firmware also releases owned downs after 10 s.
+            let mut answer = String::new();
+            for attempt in 0..3 {
+                if attempt > 0 {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                match self.device.request(
+                    &[protocol::SETTINGS, POSITION, pos, 0],
+                    protocol::SETTINGS,
+                    POSITION,
+                    Duration::from_secs(4),
+                ) {
+                    Ok(r) if r[2] == 0 => {
+                        answer.clear();
+                        break;
+                    }
+                    Ok(r) => {
+                        answer = format!("status {}", r[2]);
+                        if ![2, 3].contains(&r[2]) {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        answer = format!("{e:#}");
+                        break;
+                    }
+                }
+            }
+            if !answer.is_empty() {
+                left.push(format!("release of position {pos} failed: {answer}"));
+            }
+        }
+        if std::mem::take(&mut self.art_keys_on) {
+            let off = self.device.request(
+                &protocol::art_keys(false),
                 protocol::SETTINGS,
-                POSITION,
-                Duration::from_secs(4),
+                protocol::settings::ART_KEYS,
+                Duration::from_secs(1),
             );
+            if let Err(e) = off {
+                left.push(format!(
+                    "ending the art-key opt-in (D7 0D 00) failed: {e:#}"
+                ));
+            }
         }
         if let Some(end) = self.held_until.take() {
             std::thread::sleep(end.saturating_duration_since(Instant::now()));
+        }
+        left
+    }
+    /// A cleanup step (Step::is_cleanup). In the cleanup phase after a failure it runs even
+    /// when the run was cancelled: a Ctrl-C mustn't leave keys held.
+    fn cleanup_step(&mut self, step: &Step) -> Result<String> {
+        match step {
+            Step::PressPosition(p) => self.press(p),
+            Step::PanelRelease(_) => {
+                panel::release(self.device)?;
+                Ok("PANEL RELEASE sent".into())
+            }
+            _ => bail!("not a cleanup step"),
         }
     }
     fn execute(&mut self, step: &Step) -> Result<String> {
@@ -1313,10 +1378,7 @@ impl<'a, D: Device> Runner<'a, D> {
             }
             Step::PanelFlood(f) => self.panel_flood(f),
             Step::ArtKey(k) => self.art_key(k),
-            Step::PanelRelease(_) => {
-                panel::release(self.device)?;
-                Ok("PANEL RELEASE sent".into())
-            }
+            Step::PanelRelease(_) => self.cleanup_step(step),
             Step::IdleCpu(i) => {
                 ensure!((1..=600).contains(&i.seconds), "seconds must be 1..=600");
                 ensure!(i.settle_s <= 600, "settle_s must be 0..=600");
@@ -1662,9 +1724,20 @@ impl<'a, D: Device> Runner<'a, D> {
             result.message = blocked.join("; ");
         }
         let mut stop = result.status != Status::Pass;
+        // A step ran: after a failure the cleanup steps still run (#864), unless nothing did.
+        let mut ran = false;
         for s in &c.steps {
             let start = Instant::now();
-            let (status, actual) = if stop {
+            let (status, actual) = if stop && ran && s.is_cleanup() {
+                match self.cleanup_step(s) {
+                    Ok(actual) => (Status::Pass, format!("cleanup after the failure: {actual}")),
+                    Err(e) => {
+                        let e = format!("cleanup after the failure: {e:#}");
+                        result.message = format!("{}; {e}", result.message);
+                        (Status::Fail, e)
+                    }
+                }
+            } else if stop {
                 (
                     if result.status == Status::Blocked {
                         Status::Blocked
@@ -1674,6 +1747,7 @@ impl<'a, D: Device> Runner<'a, D> {
                     result.message.clone(),
                 )
             } else {
+                ran = true;
                 match self.execute(s) {
                     Ok(actual) => {
                         if matches!(s, Step::Prompt(_))
@@ -1707,9 +1781,18 @@ impl<'a, D: Device> Runner<'a, D> {
                 attachments: std::mem::take(&mut self.attachments),
             });
         }
-        self.cleanup();
+        let left = self.cleanup();
         if result.status == Status::Pass && result.manual {
             result.message = "manual, confirmed by user".into();
+        }
+        if !left.is_empty() {
+            let left = format!("cleanup: {}", left.join("; "));
+            eprintln!("{}: {left}", c.name);
+            result.message = if result.message.is_empty() {
+                left
+            } else {
+                format!("{}; {left}", result.message)
+            };
         }
         result.elapsed_ms = started.elapsed().as_millis();
         result
