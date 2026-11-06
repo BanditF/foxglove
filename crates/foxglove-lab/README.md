@@ -45,6 +45,11 @@ app, back to master and released, a bad request refused, and the knob's health r
 v2). Turns and clicks need a person: one `HUMAN` line, never faked. Exit 0 pass, 1 fail, 2 blocked
 (no HELLO bit 31, no keyboard, the app running). Cases: docs/test-lab/knob-cases.md.
 
+"Follow the keyboard I type on" (#802) has no command: two physical keyboards (Corne and K5
+Pro) and a person typing on each, read back through `focus.get`, the `focus.*` facts and the
+log. Queued for the next batch; the typing rows go to the needs-human queue. Cases:
+docs/test-lab/follow-typing-cases.md.
+
 `rates [--seconds N] [--writes N] [--only keyboard,case,lamps] [--out FILE] [--json]` (#486)
 measures what each light can take, for scenes: a bounded burst (default 400 writes or 10 s per
 light, never over 120 s; five failures in a row end it), one write in flight, to the keyboard's

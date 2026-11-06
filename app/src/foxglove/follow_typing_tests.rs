@@ -315,3 +315,162 @@ fn it_waits_on_events_only() {
         assert!(!src.contains(banned), "follow_typing.rs uses {banned}");
     }
 }
+
+#[test]
+fn the_hover_starts_with_what_it_does() {
+    for on in [false, true] {
+        let h = hover(on);
+        assert!(h.starts_with("Shows the keyboard you last typed on"), "{h}");
+        assert!(!h.contains(LABEL), "the label isn't repeated: {h}");
+    }
+    assert!(hover(false).ends_with(OFF));
+    assert!(!hover(true).contains(OFF));
+}
+
+/// winit's registrations as winit 0.30 makes them: the mouse and the keyboard, on its
+/// event-target window, with plug events.
+fn winits(target: isize) -> Vec<Registration> {
+    vec![
+        Registration {
+            page: DESKTOP,
+            usage: 0x02,
+            flags: DEV_NOTIFY,
+            target,
+        },
+        Registration {
+            page: DESKTOP,
+            usage: KEYBOARD,
+            flags: DEV_NOTIFY,
+            target,
+        },
+    ]
+}
+
+/// Only the keyboard's usage moves to the listener, and it goes back to winit's exactly when the
+/// setting goes off; with no registration before (or its window gone) the keyboard's is removed.
+#[test]
+fn only_the_keyboard_is_registered_and_it_is_handed_back() {
+    let ours = ours(0x1234);
+    assert_eq!((ours.page, ours.usage), (DESKTOP, KEYBOARD));
+    assert_eq!(ours.flags, INPUT_SINK | DEV_NOTIFY);
+    let before = keyboard_of(&winits(0x99));
+    assert_eq!(
+        before,
+        Some(winits(0x99)[1]),
+        "the keyboard's, not the mouse's"
+    );
+    assert_eq!(
+        on_stop(before, |w| w == 0x99),
+        winits(0x99)[1],
+        "winit's back"
+    );
+    let removed = Registration {
+        page: DESKTOP,
+        usage: KEYBOARD,
+        flags: REMOVE,
+        target: 0,
+    };
+    assert_eq!(on_stop(before, |_| false), removed, "its window went");
+    assert_eq!(on_stop(None, |_| true), removed, "nothing was registered");
+    assert_eq!(keyboard_of(&winits(0x99)[..1]), None);
+    // The raw module registers only these two, so the mouse's (winit's) is never touched.
+    let src = source();
+    assert_eq!(src.matches("register(super::ours(").count(), 1);
+    assert_eq!(src.matches("register(super::on_stop(").count(), 2);
+    assert_eq!(
+        src.matches("register(").count() - src.matches("fn register(").count(),
+        3,
+        "no other registration"
+    );
+    assert_eq!(
+        src.matches("RegisterRawInputDevices(").count(),
+        1,
+        "one call site"
+    );
+}
+
+/// Typing and IME in Foxglove's own windows don't come from raw keyboard input: winit 0.30 makes
+/// `WindowEvent::KeyboardInput` and `Ime` from window messages (key, character, IME), and raw
+/// keyboard input only into `DeviceEvent::Key`, which nothing in the app reads. A winit bump
+/// re-checks.
+#[test]
+fn the_app_never_reads_winits_raw_keyboard() {
+    let lock = include_str!("../../Cargo.lock");
+    let winit = lock
+        .split("[[package]]")
+        .find(|p| p.contains("name = \"winit\""))
+        .expect("winit in app/Cargo.lock");
+    assert!(
+        winit.contains("version = \"0.30."),
+        "winit changed: check its raw keyboard use before bumping (#802): {winit}"
+    );
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![src];
+    let mut found = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !name.ends_with(".rs") || name.starts_with("follow_typing") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for banned in [
+                "winit::event::DeviceEvent",
+                "RawKeyEvent",
+                "fn device_event",
+                "listen_device_events",
+                "DeviceEvents::",
+            ] {
+                if text.contains(banned) {
+                    found.push(format!("{} uses {banned}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:?}");
+}
+
+/// With the setting on, a text field still takes typed text, keys and an IME's commit: egui
+/// gets them as window events, which the listener never touches.
+#[test]
+fn text_and_ime_still_reach_egui_while_it_is_on() {
+    let mut m = two_keyboards(true);
+    type_on(&mut m, K5_IDS, FOLLOW_AFTER, Instant::now(), KEY);
+    assert_eq!(focus(&m), K5, "on and following");
+    let ctx = egui::Context::default();
+    let mut text = String::new();
+    let id = egui::Id::new("follow-typing-text");
+    let frame = |events: Vec<egui::Event>, text: &mut String| {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let r = ui.add(egui::TextEdit::singleline(text).id(id));
+            r.request_focus();
+        });
+        out.textures_delta.clear();
+    };
+    frame(Vec::new(), &mut text);
+    frame(vec![egui::Event::Text("hé".into())], &mut text);
+    frame(
+        vec![egui::Event::Key {
+            key: egui::Key::Backspace,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        &mut text,
+    );
+    frame(
+        vec![egui::Event::Ime(egui::ImeEvent::Commit("日本".into()))],
+        &mut text,
+    );
+    assert_eq!(text, "h日本");
+}

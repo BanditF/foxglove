@@ -17,6 +17,17 @@
 //!   typing on the keyboard they were typing on; typing on another one moves it again.
 //! - **Injectable source** ([`Source`]): tests feed synthetic device events and never register
 //!   Raw Input; the app's source is [`raw::RawInput`].
+//! - **The keyboard only, and handed back** ([`ours`], [`on_stop`]): Raw Input keeps one
+//!   registration per usage per process, so only usage page 1 / usage 6 (keyboard) moves to this
+//!   listener; winit's mouse registration is never touched. Before registering, the listener
+//!   reads the process's registrations (`GetRegisteredRawInputDevices`) and keeps the keyboard's
+//!   one (winit's event-target window, `RIDEV_DEVNOTIFY`). When the setting goes off it registers
+//!   exactly that again, or removes the keyboard's if there was none or its window is gone.
+//! - **The app's typing doesn't use raw keyboard input:** winit 0.30 makes egui's key and text
+//!   events (`WindowEvent::KeyboardInput`, `Ime`) from each window's own key, character and IME
+//!   messages, and raw keyboard input only into `DeviceEvent::Key`, which neither egui-winit nor the
+//!   app reads. So typing and IME in Foxglove's windows work the same while this runs, and while
+//!   winit's registration is away. Tests hold the app to that and pin winit to 0.30.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -35,18 +46,68 @@ pub const MIN_SWITCH: Duration = Duration::from_secs(1);
 pub const TITLE: &str = "Keyboard shown";
 /// The switch.
 pub const LABEL: &str = "Follow the keyboard I type on";
-/// What the switch does: its hover and ⓘ, after [`LABEL`].
+/// What the switch does: its hover and ⓘ.
 pub const TIP: &str = "Shows the keyboard you last typed on. A few keys on another keyboard move \
                        it there. Foxglove reads only which keyboard typed, never what you type.";
 /// The switch off, in its hover.
 pub const OFF: &str = "Off: your pick stays until you change it.";
 
-/// The switch's hover: the whole label, what it does, and what off means while it is off.
+/// The switch's hover: what it does, and what off means while it is off.
 pub fn hover(on: bool) -> String {
     if on {
-        format!("{LABEL}: {TIP}")
+        TIP.to_string()
     } else {
-        format!("{LABEL}: {TIP}\n{OFF}")
+        format!("{TIP}\n{OFF}")
+    }
+}
+
+/// HID usage page 1 (generic desktop) and its usage 6 (keyboard): the only usage registered.
+pub const DESKTOP: u16 = 0x01;
+pub const KEYBOARD: u16 = 0x06;
+/// `RIDEV_REMOVE`, `RIDEV_INPUTSINK`, `RIDEV_DEVNOTIFY`.
+pub const REMOVE: u32 = 0x0001;
+pub const INPUT_SINK: u32 = 0x0100;
+pub const DEV_NOTIFY: u32 = 0x2000;
+
+/// One Raw Input registration (`RAWINPUTDEVICE`), as plain data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Registration {
+    pub page: u16,
+    pub usage: u16,
+    pub flags: u32,
+    /// The target window (`0`: none).
+    pub target: isize,
+}
+
+/// The listener's own registration: keyboards only, in the background, with plug events.
+pub fn ours(target: isize) -> Registration {
+    Registration {
+        page: DESKTOP,
+        usage: KEYBOARD,
+        flags: INPUT_SINK | DEV_NOTIFY,
+        target,
+    }
+}
+
+/// The keyboard's registration among the process's (winit's, before the listener's).
+pub fn keyboard_of(registered: &[Registration]) -> Option<Registration> {
+    registered
+        .iter()
+        .copied()
+        .find(|r| (r.page, r.usage) == (DESKTOP, KEYBOARD))
+}
+
+/// What the listener registers when it stops: the keyboard registration it found, when its
+/// window is still there (`alive`), else the keyboard's removed. Never another usage.
+pub fn on_stop(before: Option<Registration>, alive: impl Fn(isize) -> bool) -> Registration {
+    match before {
+        Some(r) if r.flags & REMOVE == 0 && r.target != 0 && alive(r.target) => r,
+        _ => Registration {
+            page: DESKTOP,
+            usage: KEYBOARD,
+            flags: REMOVE,
+            target: 0,
+        },
     }
 }
 
@@ -245,21 +306,58 @@ mod raw {
     use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::Input::{
-        GetRawInputData, GetRawInputDeviceInfoW, RegisterRawInputDevices, HRAWINPUT,
-        RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_DEVNOTIFY, RIDEV_INPUTSINK, RIDEV_REMOVE,
+        GetRawInputData, GetRawInputDeviceInfoW, GetRegisteredRawInputDevices,
+        RegisterRawInputDevices, HRAWINPUT, RAWINPUTDEVICE, RAWINPUTDEVICE_FLAGS, RAWINPUTHEADER,
         RIDI_DEVICENAME, RID_HEADER,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IsWindow,
         PostThreadMessageW, RegisterClassW, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE,
         WM_INPUT, WM_INPUT_DEVICE_CHANGE, WM_QUIT, WNDCLASSW,
     };
 
-    use super::{Sink, Source, Stop};
+    use super::{Registration, Sink, Source, Stop};
 
-    /// HID usage page 1 (generic desktop), usage 6 (keyboard).
-    const DESKTOP: u16 = 0x01;
-    const KEYBOARD: u16 = 0x06;
+    fn to_device(r: Registration) -> RAWINPUTDEVICE {
+        RAWINPUTDEVICE {
+            usUsagePage: r.page,
+            usUsage: r.usage,
+            dwFlags: RAWINPUTDEVICE_FLAGS(r.flags),
+            hwndTarget: HWND(r.target as _),
+        }
+    }
+
+    fn register(r: Registration) -> windows::core::Result<()> {
+        // SAFETY: one plain RAWINPUTDEVICE of its own size.
+        unsafe { RegisterRawInputDevices(&[to_device(r)], size_of::<RAWINPUTDEVICE>() as u32) }
+    }
+
+    /// The process's Raw Input registrations now (winit's, before the listener's).
+    fn registered() -> Vec<Registration> {
+        let size = size_of::<RAWINPUTDEVICE>() as u32;
+        let mut count = 0u32;
+        // SAFETY: with no buffer, Windows writes how many there are.
+        unsafe { GetRegisteredRawInputDevices(None, &mut count, size) };
+        if count == 0 {
+            return Vec::new();
+        }
+        let mut list = vec![RAWINPUTDEVICE::default(); count as usize];
+        // SAFETY: `list` holds `count` entries.
+        let got =
+            unsafe { GetRegisteredRawInputDevices(Some(list.as_mut_ptr()), &mut count, size) };
+        if got == u32::MAX {
+            return Vec::new();
+        }
+        list.truncate(got as usize);
+        list.iter()
+            .map(|d| Registration {
+                page: d.usUsagePage,
+                usage: d.usUsage,
+                flags: d.dwFlags.0,
+                target: d.hwndTarget.0 as isize,
+            })
+            .collect()
+    }
 
     thread_local! {
         /// The listener thread's sink and each device handle's path (`None`: no path).
@@ -274,6 +372,8 @@ mod raw {
             let (ready, started) = mpsc::channel();
             let thread = super::super::services::spawn_named("follow-typing", move || {
                 SINK.set(Some(sink));
+                // The keyboard's registration before ours (winit's), handed back on stop.
+                let before = super::keyboard_of(&registered());
                 // SAFETY: the window and its registration live on this thread, in its loop.
                 let result = unsafe { listen() };
                 match result {
@@ -281,7 +381,7 @@ mod raw {
                         // SAFETY: plain thread id.
                         let _ = ready.send(Ok(unsafe { GetCurrentThreadId() }));
                         // SAFETY: this thread's own message loop and window.
-                        unsafe { run(hwnd) };
+                        unsafe { run(hwnd, before) };
                     }
                     Err(e) => {
                         let _ = ready.send(Err(e));
@@ -305,8 +405,8 @@ mod raw {
 
     /// The message-only window, registered for every keyboard's Raw Input in the background.
     ///
-    /// The process has one Raw Input registration per device class: this one takes the
-    /// keyboard's from winit's, whose raw keyboard `DeviceEvent`s the app never reads.
+    /// The process has one Raw Input registration per usage: this takes the keyboard's (1/6) from
+    /// winit's, whose raw keyboard `DeviceEvent`s nothing reads; the mouse's stays winit's.
     unsafe fn listen() -> Result<HWND, String> {
         let class: Vec<u16> = "FoxgloveFollowTyping\0".encode_utf16().collect();
         let wc = WNDCLASSW {
@@ -333,34 +433,27 @@ mod raw {
             )
         }
         .map_err(|e| format!("no window: {e}"))?;
-        let device = RAWINPUTDEVICE {
-            usUsagePage: DESKTOP,
-            usUsage: KEYBOARD,
-            dwFlags: RIDEV_INPUTSINK | RIDEV_DEVNOTIFY,
-            hwndTarget: hwnd,
-        };
-        if let Err(e) =
-            unsafe { RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32) }
-        {
+        if let Err(e) = register(super::ours(hwnd.0 as isize)) {
             let _ = unsafe { DestroyWindow(hwnd) };
             return Err(format!("no Raw Input: {e}"));
         }
         Ok(hwnd)
     }
 
-    /// The loop until WM_QUIT, then the registration and the window go.
-    unsafe fn run(hwnd: HWND) {
+    /// The loop until WM_QUIT; then the keyboard's registration goes back to what it was
+    /// (`before`, winit's) or is removed, and the window goes.
+    unsafe fn run(hwnd: HWND, before: Option<Registration>) {
         let mut msg = MSG::default();
         while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
             let _ = unsafe { DispatchMessageW(&msg) };
         }
-        let device = RAWINPUTDEVICE {
-            usUsagePage: DESKTOP,
-            usUsage: KEYBOARD,
-            dwFlags: RIDEV_REMOVE,
-            hwndTarget: HWND::default(),
-        };
-        let _ = unsafe { RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32) };
+        // SAFETY: IsWindow only asks whether the handle is a window.
+        let alive = |target: isize| unsafe { IsWindow(Some(HWND(target as _))) }.as_bool();
+        if let Err(e) = register(super::on_stop(before, alive)) {
+            // Typing in the app doesn't need it (see the module docs): removed instead.
+            eprintln!("Foxglove: can't follow the keyboard you type on: handing back: {e}");
+            let _ = register(super::on_stop(None, |_| false));
+        }
         let _ = unsafe { DestroyWindow(hwnd) };
         SINK.set(None);
     }
