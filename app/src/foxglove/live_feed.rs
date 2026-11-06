@@ -19,8 +19,13 @@
 //!   timer. The token never goes on a command line. Any wallpaper or program may be a client
 //!   (docs/live-feed.md).
 //!
-//! Later topics (PC stats, notifications) are new `t` values in `live_wire`; the gates, the
-//! pairing and the hub stay as they are.
+//! - **Notifications:** Foxglove's own notifications (`notice`) go to the wallpapers that said
+//!   `caps: ["notify"]`, while the feed isn't quiet and "Show notifications on the wallpaper" is
+//!   on. A wallpaper answers `notified`; without an answer in [`wire::ACK_LIMIT`] the hub shows
+//!   the Windows notification instead.
+//!
+//! Later topics (PC stats) are new `t` values in `live_wire`; the gates, the pairing and the hub
+//! stay as they are.
 
 use std::io::Write;
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -35,6 +40,7 @@ use foxglove_plugin::ws;
 use serde::{Deserialize, Serialize};
 
 use super::live_wire::{self as wire, Message, Why};
+use super::notice::Note;
 
 pub const DEFAULT_PORT: u16 = 8768;
 const SECTION: &str = "live_wallpaper";
@@ -57,6 +63,8 @@ pub struct LiveSettings {
     pub port: u16,
     /// The pairing token the wallpaper presents; made on first use.
     pub token: String,
+    /// Foxglove's notifications go to a wallpaper that can show them, else to Windows.
+    pub notify: bool,
 }
 
 impl Default for LiveSettings {
@@ -65,6 +73,7 @@ impl Default for LiveSettings {
             enabled: false,
             port: DEFAULT_PORT,
             token: String::new(),
+            notify: true,
         }
     }
 }
@@ -95,6 +104,12 @@ enum Msg {
     Join(u64, TcpStream),
     Leave(u64),
     Paused(u64, bool),
+    /// A wallpaper's `hi`: whether it takes notifications.
+    Caps(u64, bool),
+    /// A wallpaper drew notification `id`.
+    Notified(u64),
+    /// A notification to route (`notice::show`).
+    Notify(Note),
     Key {
         row: u16,
         col: u16,
@@ -135,11 +150,20 @@ impl Out for Streams<'_> {
     }
 }
 
+/// A notification sent to the wallpapers, waiting for one to say it drew it.
+struct Pending {
+    id: u64,
+    note: Note,
+    due: Instant,
+}
+
 /// The hub's decisions, apart from its sockets and threads.
 #[derive(Default)]
 struct Hub {
     /// Connected wallpapers and whether each is paused.
     clients: Vec<(u64, bool)>,
+    /// The wallpapers whose `hi` declared [`wire::CAP_NOTIFY`].
+    notifiers: Vec<u64>,
     state: wire::State,
     board: Option<Geometry>,
     quiet: Option<Why>,
@@ -151,11 +175,73 @@ struct Hub {
     /// The left screen's PC panel as last sent to the keyboard.
     panel: Option<wire::Panel>,
     panel_unsent: bool,
+    pending: Vec<Pending>,
+    last_note: u64,
 }
 
 impl Hub {
     fn listeners(&self) -> impl Iterator<Item = u64> + '_ {
         self.clients.iter().filter(|(_, p)| !p).map(|(id, _)| *id)
+    }
+
+    /// A wallpaper's `hi`: it takes notifications or not.
+    fn caps(&mut self, id: u64, notify: bool) {
+        self.notifiers.retain(|&c| c != id);
+        if notify && self.clients.iter().any(|(c, _)| *c == id) {
+            self.notifiers.push(id);
+        }
+    }
+
+    /// Routes a notification: to every unpaused wallpaper that takes them, while the feed isn't
+    /// quiet, to be acknowledged within [`wire::ACK_LIMIT`]. The note comes back when it has to
+    /// be a Windows notification now; the ids are wallpapers whose write failed.
+    fn notify(&mut self, note: Note, now: Instant, out: &mut impl Out) -> (Option<Note>, Vec<u64>) {
+        let to: Vec<u64> = self
+            .listeners()
+            .filter(|id| self.notifiers.contains(id))
+            .collect();
+        if self.quiet.is_some() || to.is_empty() {
+            return (Some(note), Vec::new());
+        }
+        self.last_note += 1;
+        let id = self.last_note;
+        let text = Message::Notify {
+            id,
+            title: note.title.clone(),
+            body: note.body.clone(),
+            level: note.level,
+        }
+        .json();
+        let sent_to = to.len();
+        let dead: Vec<u64> = to.into_iter().filter(|&c| !out.send(c, &text)).collect();
+        if dead.len() == sent_to {
+            return (Some(note), dead);
+        }
+        self.pending.push(Pending {
+            id,
+            note,
+            due: now + wire::ACK_LIMIT,
+        });
+        (None, dead)
+    }
+
+    /// A wallpaper drew notification `id`: no Windows notification for it.
+    fn notified(&mut self, id: u64) {
+        self.pending.retain(|p| p.id != id);
+    }
+
+    /// The notifications nobody acknowledged in time, taken out to show as Windows ones.
+    fn expired(&mut self, now: Instant) -> Vec<Note> {
+        let (late, waiting): (Vec<Pending>, Vec<Pending>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|p| p.due <= now);
+        self.pending = waiting;
+        late.into_iter().map(|p| p.note).collect()
+    }
+
+    /// When the next unacknowledged notification falls back.
+    fn next_due(&self) -> Option<Instant> {
+        self.pending.iter().map(|p| p.due).min()
     }
 
     /// Whether key events are wanted at all: someone listens and nothing but full screen holds
@@ -214,6 +300,7 @@ impl Hub {
 
     fn leave(&mut self, id: u64) {
         self.clients.retain(|(c, _)| *c != id);
+        self.notifiers.retain(|&c| c != id);
     }
 
     /// A wallpaper paused or played again; coming back it gets everything afresh.
@@ -381,6 +468,27 @@ pub fn art_changed() {
     send(Msg::State);
 }
 
+/// Routes one of Foxglove's notifications (`notice::show`) to the wallpapers. The note comes
+/// back when it can't go that way: the setting is off or the feed isn't running. Whether a
+/// wallpaper can show it now is the hub's to decide; it falls back to Windows itself.
+pub fn notify(note: Note) -> Result<(), Note> {
+    notify_with(&settings(), note)
+}
+
+fn notify_with(s: &LiveSettings, note: Note) -> Result<(), Note> {
+    if !s.notify {
+        return Err(note);
+    }
+    let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(r) = running.as_ref() else {
+        return Err(note);
+    };
+    r.tx.send(Msg::Notify(note)).map_err(|e| match e.0 {
+        Msg::Notify(n) => n,
+        _ => unreachable!("sent a Notify"),
+    })
+}
+
 /// Foxglove paused or resumed (`pause`).
 pub fn pause_changed() {
     send(Msg::Gates);
@@ -518,9 +626,18 @@ fn serve(mut stream: TcpStream, id: u64, tx: &Sender<Msg>, token: &str, pending:
     loop {
         match reader.read(&mut stream) {
             Ok(ws::Message::Text(t)) => {
-                if let Some(wire::FromWallpaper::Paused { paused }) = wire::parse(&t) {
-                    let _ = tx.send(Msg::Paused(id, paused));
-                }
+                let _ = match wire::parse(&t) {
+                    Some(wire::FromWallpaper::Paused { paused }) => {
+                        tx.send(Msg::Paused(id, paused))
+                    }
+                    Some(wire::FromWallpaper::Hi { caps, .. }) => {
+                        tx.send(Msg::Caps(id, wire::FromWallpaper::wants_notify(&caps)))
+                    }
+                    Some(wire::FromWallpaper::Notified { id: note }) => {
+                        tx.send(Msg::Notified(note))
+                    }
+                    None => Ok(()),
+                };
             }
             Ok(ws::Message::Close(_)) | Err(_) => break,
             Ok(_) => {}
@@ -593,10 +710,19 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
     let mut last_key: Option<Instant> = None;
     let mut keys = KeyTap::new(key_generation.clone());
     loop {
-        let batch_due = batch_started.map(|t| t + Duration::from_millis(wire::BATCH_MS));
-        let msg = match [batch_due, panel.due].into_iter().flatten().min() {
-            Some(due) => {
-                let left = due.saturating_duration_since(Instant::now());
+        // Wakes for the batch's frame, the panel's pace or the next notification's fallback, else
+        // only on a message.
+        let wake = [
+            batch_started.map(|t| t + Duration::from_millis(wire::BATCH_MS)),
+            panel.due,
+            hub.next_due(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        let msg = match wake {
+            Some(at) => {
+                let left = at.saturating_duration_since(Instant::now());
                 match rx.recv_timeout(left) {
                     Ok(m) => Some(m),
                     Err(RecvTimeoutError::Timeout) => None,
@@ -631,6 +757,19 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
                 }
                 if !hub.paused(id, p, &mut Streams(&mut clients)) {
                     dead.push(id);
+                }
+            }
+            Some(Msg::Caps(id, notify)) => hub.caps(id, notify),
+            Some(Msg::Notified(note)) => hub.notified(note),
+            Some(Msg::Notify(note)) => {
+                // Full screen is looked at now: a game may have come up since the last check.
+                fullscreen = fullscreen_now();
+                dead = hub.gates(gates(fullscreen), &mut Streams(&mut clients));
+                let (fallback, failed) =
+                    hub.notify(note, Instant::now(), &mut Streams(&mut clients));
+                dead.extend(failed);
+                if let Some(n) = fallback {
+                    super::notice::toast(&n);
                 }
             }
             Some(Msg::State) => {
@@ -673,6 +812,9 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
                 KEYS_QUEUED.fetch_sub(1, Ordering::SeqCst);
             }
         }
+        for n in hub.expired(Instant::now()) {
+            super::notice::toast(&n);
+        }
         if panel.take(Instant::now()) {
             let latest = PANEL.lock().unwrap_or_else(|e| e.into_inner()).clone();
             dead.extend(hub.set_panel(latest, &mut Streams(&mut clients)));
@@ -696,11 +838,19 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
             super::tray_panel::wake();
         }
     }
-    // Stopped: the wallpapers are let go, those still queued to join too.
+    // Stopped: the wallpapers are let go, those still queued to join too, and notifications
+    // nobody acknowledged yet show as Windows ones.
     keys.want(false, tx);
+    for p in std::mem::take(&mut hub.pending) {
+        super::notice::toast(&p.note);
+    }
     while let Ok(m) = rx.try_recv() {
-        if let Msg::Join(_, stream) = m {
-            let _ = stream.shutdown(Shutdown::Both);
+        match m {
+            Msg::Join(_, stream) => {
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            Msg::Notify(n) => super::notice::toast(&n),
+            _ => {}
         }
     }
     for mut c in clients.0.drain(..) {
@@ -1012,6 +1162,22 @@ fn new_token() -> Result<(), String> {
 /// What the settings card says the feed sends.
 pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the art screen's art, battery, connection and the keyboard's light colour. It gets which key position was pressed and when, never the letter or keycode, and only with the pairing token. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
 
+/// The notification switch's label and hover.
+pub const NOTIFY_LABEL: &str = "Show notifications on the wallpaper when it's on screen";
+pub const NOTIFY_HOVER: &str = "Foxglove's own notifications, such as a low battery, show on a paired wallpaper that can draw them. When none is on screen, or it doesn't answer within 2 seconds, or a full-screen game, a locked PC or a pause holds the feed, they show as Windows notifications instead.";
+
+/// "Show notifications on the wallpaper" changed.
+fn set_notify(on: bool) -> Result<(), String> {
+    let mut s = settings();
+    s.notify = on;
+    save(&s)
+}
+
+/// The notification switch, apart so the review render draws the same row.
+pub fn notify_row(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    ui.checkbox(on, NOTIFY_LABEL).on_hover_text(NOTIFY_HOVER)
+}
+
 /// The settings card.
 pub fn group(ui: &mut egui::Ui) {
     super::settings_ui::section(ui, "Live wallpaper", |ui| {
@@ -1049,6 +1215,10 @@ pub fn group(ui: &mut egui::Ui) {
             ui.weak(
                 "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
             );
+            let mut notify = s.notify;
+            if notify_row(ui, &mut notify).changed() {
+                error = set_notify(notify).err();
+            }
             let status = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
             let n = CONNECTED.load(Ordering::Relaxed);
             let line = match n {
@@ -1365,6 +1535,123 @@ mod tests {
         assert_eq!(lights(&facts), None, "gone with the keyboard");
     }
 
+    fn note(title: &str) -> Note {
+        Note {
+            title: title.into(),
+            body: "14% left. Charge it soon.".into(),
+            level: wire::Level::Info,
+        }
+    }
+
+    /// A hub with wallpaper 1 that declared `notify` and wallpaper 2 that didn't.
+    fn notify_hub(out: &mut Sent) -> Hub {
+        let mut hub = Hub::default();
+        hub.join(1, out);
+        hub.join(2, out);
+        hub.caps(1, true);
+        hub.caps(2, false);
+        hub
+    }
+
+    /// The route to the wallpaper: only the one that declared the cap gets it, and its ack
+    /// means no Windows notification.
+    #[test]
+    fn a_notification_goes_to_the_capable_wallpaper_and_its_ack_holds_the_toast() {
+        let mut out = Sent::default();
+        let mut hub = notify_hub(&mut out);
+        let now = Instant::now();
+        let (fallback, dead) = hub.notify(note("Right half battery low"), now, &mut out);
+        assert_eq!(fallback, None, "on the wallpaper, not Windows");
+        assert!(dead.is_empty());
+        assert_eq!(
+            out.last(1),
+            r#"{"t":"notify","id":1,"title":"Right half battery low","body":"14% left. Charge it soon.","level":"info"}"#
+        );
+        assert_eq!(out.count(2), 1, "only the hello: no cap, no text");
+        assert_eq!(hub.next_due(), Some(now + wire::ACK_LIMIT));
+        hub.notified(1);
+        assert_eq!(hub.next_due(), None);
+        assert!(
+            hub.expired(now + wire::ACK_LIMIT * 2).is_empty(),
+            "no toast"
+        );
+    }
+
+    #[test]
+    fn no_ack_in_time_gives_the_toast() {
+        let mut out = Sent::default();
+        let mut hub = notify_hub(&mut out);
+        let now = Instant::now();
+        assert_eq!(hub.notify(note("a"), now, &mut out).0, None);
+        assert!(
+            hub.expired(now + wire::ACK_LIMIT / 2).is_empty(),
+            "still waiting"
+        );
+        hub.notified(99);
+        assert_eq!(hub.expired(now + wire::ACK_LIMIT), vec![note("a")]);
+        assert!(hub.expired(now + wire::ACK_LIMIT * 3).is_empty(), "once");
+    }
+
+    #[test]
+    fn without_a_capable_wallpaper_it_is_a_toast() {
+        let now = Instant::now();
+        // Nobody connected.
+        let mut out = Sent::default();
+        assert_eq!(
+            Hub::default().notify(note("a"), now, &mut out).0,
+            Some(note("a"))
+        );
+        // Connected without the cap, or the capable one paused or gone.
+        let mut hub = notify_hub(&mut out);
+        hub.paused(1, true, &mut out);
+        assert_eq!(hub.notify(note("b"), now, &mut out).0, Some(note("b")));
+        hub.paused(1, false, &mut out);
+        hub.leave(1);
+        assert_eq!(hub.notify(note("c"), now, &mut out).0, Some(note("c")));
+        // A cap from a client that never joined counts for nothing.
+        hub.caps(7, true);
+        assert_eq!(hub.notify(note("d"), now, &mut out).0, Some(note("d")));
+        // The capable one's write fails: a toast at once, and it's dropped.
+        let mut hub = notify_hub(&mut out);
+        out.dead.push(1);
+        let (fallback, dead) = hub.notify(note("e"), now, &mut out);
+        assert_eq!((fallback, dead), (Some(note("e")), vec![1]));
+        assert_eq!(hub.next_due(), None);
+    }
+
+    #[test]
+    fn a_quiet_feed_gives_the_toast() {
+        for why in [Why::Paused, Why::Away, Why::Fullscreen] {
+            let mut out = Sent::default();
+            let mut hub = notify_hub(&mut out);
+            hub.gates(Some(why), &mut out);
+            let told = out.count(1);
+            assert_eq!(
+                hub.notify(note("a"), Instant::now(), &mut out).0,
+                Some(note("a")),
+                "{why:?}"
+            );
+            assert_eq!(out.count(1), told, "{why:?}: nothing sent");
+        }
+    }
+
+    /// The setting off: [`notify`] hands the note back, and `notice::show` gives it to the
+    /// toast (the end-to-end test sees the fake sink get the fallbacks).
+    #[test]
+    fn the_setting_off_gives_the_toast() {
+        crate::foxglove::store::test_config_dir();
+        assert!(LiveSettings::default().notify, "on by default");
+        let parsed: LiveSettings = toml::from_str("enabled = true").unwrap();
+        assert!(parsed.notify, "a store from before keeps it on");
+        let off = LiveSettings {
+            notify: false,
+            ..LiveSettings::default()
+        };
+        assert_eq!(notify_with(&off, note("off")), Err(note("off")));
+        assert!(NOTIFY_HOVER.contains("Windows notifications instead"));
+        assert!(!NOTIFY_LABEL.contains("Bandit"), "any capable wallpaper");
+    }
+
     #[test]
     fn at_most_four_wallpapers() {
         let mut hub = Hub::default();
@@ -1496,6 +1783,7 @@ mod tests {
             enabled: true,
             port,
             token: token.clone(),
+            ..LiveSettings::default()
         })
         .unwrap();
         assert!(StandIn::connect(port, "wrong").is_none(), "a wrong token");
@@ -1530,6 +1818,58 @@ mod tests {
         }
         let keys = keys.expect("a keys frame");
         assert!(keys.starts_with(r#"{"t":"keys","e":[[2,1,"#), "{keys}");
+
+        // The stand-in declares `notify`: Foxglove's notification goes to it. Its ack holds the
+        // toast; a second it ignores falls back to the (fake) toast sink.
+        crate::foxglove::notice::test_toasts::ROUTE.set(true);
+        w.say(r#"{"t":"hi","wallpaper":"stand-in","caps":["notify"]}"#);
+        let mut sent = None;
+        let mut tries = 0;
+        for _ in 0..50 {
+            tries += 1;
+            crate::foxglove::notice::show(
+                crate::foxglove::notice::Kind::Battery,
+                "LiveE2E acked",
+                "drawn",
+                wire::Level::Warn,
+            );
+            while let Some(m) = w.next(Duration::from_millis(100)) {
+                if m.starts_with(r#"{"t":"notify""#) {
+                    sent = Some(m);
+                    break;
+                }
+            }
+            if sent.is_some() {
+                break;
+            }
+        }
+        let sent = sent.expect("a notify frame");
+        assert!(sent.contains(r#""title":"LiveE2E acked","body":"drawn","level":"warn""#));
+        let v: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        w.say(&format!(r#"{{"t":"notified","id":{}}}"#, v["id"]));
+        crate::foxglove::notice::show(
+            crate::foxglove::notice::Kind::Battery,
+            "LiveE2E ignored",
+            "not drawn",
+            wire::Level::Info,
+        );
+        let deadline = Instant::now() + wire::ACK_LIMIT + Duration::from_secs(3);
+        while crate::foxglove::notice::test_toasts::titled("LiveE2E ignored").is_empty()
+            && Instant::now() < deadline
+        {
+            let _ = w.next(Duration::from_millis(100));
+        }
+        assert_eq!(
+            crate::foxglove::notice::test_toasts::titled("LiveE2E ignored").len(),
+            1,
+            "no ack: the toast"
+        );
+        // Those sent before the hi arrived (no cap yet) were toasts; the acked one isn't, though
+        // its limit has passed.
+        assert_eq!(
+            crate::foxglove::notice::test_toasts::titled("LiveE2E acked").len(),
+            tries - 1
+        );
 
         // A full-screen game comes to the front: quiet, then nothing.
         FAKE_FULLSCREEN.store(true, Ordering::SeqCst);
@@ -1586,6 +1926,7 @@ mod tests {
                 enabled: true,
                 port,
                 token: fresh.clone(),
+                ..LiveSettings::default()
             })
             .expect("the port is free again");
         }

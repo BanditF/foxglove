@@ -227,9 +227,13 @@ fn save_with(change: impl FnOnce(&mut BatterySettings)) -> std::io::Result<()> {
     super::store::save("battery", &s)
 }
 
-/// Shows a battery notification (the halves' and the other devices').
-pub fn show_notice(title: &str, text: &str) {
-    imp::show(title, text);
+/// A heads-up's level: `warn` at the last threshold (it switches off soon), else `info`.
+pub fn level_for(threshold: u8) -> super::live_wire::Level {
+    if threshold <= THRESHOLDS[THRESHOLDS.len() - 1] {
+        super::live_wire::Level::Warn
+    } else {
+        super::live_wire::Level::Info
+    }
 }
 
 /// A frame for the tray and the pages, after a battery list changed.
@@ -308,83 +312,17 @@ pub fn start() {
                 if let Some(threshold) = alerts.level(part, *percent) {
                     if notices_on() {
                         let (title, text) = notice(part, threshold, *percent);
-                        imp::show(&title, &text);
+                        super::notice::show(
+                            super::notice::Kind::Battery,
+                            &title,
+                            &text,
+                            level_for(threshold),
+                        );
                     }
                 }
             }
         }
     });
-}
-
-/// The XML-escaped text for a toast.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-fn toast_xml(title: &str, text: &str) -> String {
-    format!(
-        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
-        escape(title),
-        escape(text)
-    )
-}
-
-#[cfg(windows)]
-mod imp {
-    use windows::core::HSTRING;
-    use windows::Data::Xml::Dom::XmlDocument;
-    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
-
-    /// The app id the toasts carry; registered under HKCU so an unpackaged app may show them.
-    const APP_ID: &str = "BanditF.Foxglove";
-
-    /// `HKCU\Software\Classes\AppUserModelId\BanditF.Foxglove`: the name and icon Windows shows.
-    fn register() -> std::io::Result<()> {
-        let (key, _) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-            .create_subkey(format!(r"Software\Classes\AppUserModelId\{APP_ID}"))?;
-        key.set_value("DisplayName", &"Foxglove")?;
-        if let Some(dir) =
-            super::super::store::path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        {
-            let icon = dir.join("notification-icon.png");
-            if !icon.exists() {
-                std::fs::create_dir_all(&dir)?;
-                std::fs::write(&icon, include_bytes!("../../resources/icon.png"))?;
-            }
-            key.set_value("IconUri", &icon.to_string_lossy().to_string())?;
-        }
-        Ok(())
-    }
-
-    pub fn show(title: &str, text: &str) {
-        if let Err(e) = register() {
-            eprintln!("Foxglove: can't register for notifications: {e}");
-        }
-        let shown = (|| -> windows::core::Result<()> {
-            let xml = XmlDocument::new()?;
-            xml.LoadXml(&HSTRING::from(super::toast_xml(title, text)))?;
-            let toast = ToastNotification::CreateToastNotification(&xml)?;
-            ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?
-                .Show(&toast)
-        })();
-        match shown {
-            Ok(()) => eprintln!("Foxglove: battery notice: {title}"),
-            Err(e) => eprintln!("Foxglove: can't show the battery notice: {e}"),
-        }
-    }
-}
-
-#[cfg(not(windows))]
-mod imp {
-    pub fn show(title: &str, _text: &str) {
-        eprintln!("Foxglove: battery notice: {title}");
-    }
 }
 
 #[cfg(test)]
@@ -526,12 +464,6 @@ mod tests {
         // Each battery change wakes the tray; the other keyboard facts don't.
         let woken = changes.try_iter().filter(|c| is_level(&c.key)).count();
         assert_eq!(woken, 5, "3 readings and 2 cleared halves");
-    }
-
-    #[test]
-    fn toast_text_is_escaped() {
-        let xml = toast_xml("A & B", "<5%>");
-        assert!(xml.contains("<text>A &amp; B</text><text>&lt;5%&gt;</text>"));
     }
 
     #[test]

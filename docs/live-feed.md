@@ -52,8 +52,10 @@ offer the sub-protocols `foxglove-live.v1, <token>`.
 | `board` | → wallpaper | the geometry changed |
 | `quiet` | → wallpaper | `why`: `paused`, `away` or `fullscreen`; nothing follows until `live` |
 | `live` | → wallpaper | sending again (a `state` follows) |
-| `hi` | → Foxglove | `wallpaper`: its name |
+| `notify` | → wallpaper | `id`, `title`, `body`, `level` (`info` or `warn`): one of Foxglove's notifications; only to a client whose `hi` had `caps: ["notify"]` |
+| `hi` | → Foxglove | `wallpaper`: its name; `caps`: what it can do beyond the feed (`notify`) |
 | `paused` | → Foxglove | `paused`: Wallpaper Engine paused the wallpaper (`setPaused`) |
+| `notified` | → Foxglove | `id`: it drew that notification |
 
 `lights` (#40) is the keyboard's lights as it reports them, left out until it has: `on`,
 `color` (`#rrggbb`: the chosen colour at full brightness, so a dim keyboard still gives a
@@ -96,8 +98,26 @@ of each window), and at most 1024 bytes of bits. It shows what the keyboard show
 notification Foxglove puts on the left screen is in it too; like everything else here it reaches
 only a wallpaper with the pairing token.
 
-A client ignores any `t` it doesn't know, and any field it doesn't know. The reserved topics `stats` (PC stats) and `notes`
-(notifications) come later without a new version.
+A client ignores any `t` it doesn't know, and any field it doesn't know. The reserved topic `stats` (PC stats) comes later
+without a new version.
+
+## Notifications
+
+Foxglove's own notifications (a low battery on a half or on another device, a firmware update done or failed, a new health warning or failure; `app/src/foxglove/notice.rs`)
+go to the wallpaper first when Settings → Live wallpaper → "Show notifications on the wallpaper
+when it's on screen" is on (the default) and at least one connected, unpaused client said
+`caps: ["notify"]` in its `hi`. Any wallpaper or program may declare it.
+
+- The client draws `{"t":"notify","id":7,"title":"…","body":"…","level":"info"}` and answers
+  `{"t":"notified","id":7}` once it's on screen. It may queue several and show them one by one,
+  but it acknowledges each when drawn, not when it was queued.
+- **No silent loss:** without a `notified` within 2 seconds Foxglove shows the Windows
+  notification instead. While the feed is quiet (Foxglove paused, the PC locked or the display
+  off, a full-screen program), or with no capable client, the setting off or the feed off, the
+  Windows notification shows at once. Windows' own focus or game mode may then hold it back,
+  as for any app.
+- The left screen's notifications (other apps' Windows notifications on the nice!view) are
+  apart and unchanged.
 
 ## Privacy and gates
 
@@ -106,6 +126,9 @@ A client ignores any `t` it doesn't know, and any field it doesn't know. The res
   character (`live_wire`'s privacy test).
 - **What an index can still reveal:** someone who knows the keymap can tell keys apart from
   their positions, and the setting's text says so.
+- **Notification text** goes only to a token-paired client that declared `caps: ["notify"]`;
+  the others never see it. Its keys are in `live_wire`'s privacy allowlist (`id`, `title`,
+  `body`, `level`).
 - **When nothing is sent:**
   - Foxglove is paused;
   - the session is locked or the display is off;

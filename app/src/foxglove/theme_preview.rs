@@ -2968,3 +2968,50 @@ fn lights_other_devices_1105_renders() {
         "the conflict's amber dot"
     );
 }
+
+/// Settings > Live wallpaper with "Show notifications on the wallpaper when it's on screen" and
+/// its hover, in the dark and light themes.
+#[test]
+fn live_wallpaper_notify_row_renders() {
+    use crate::foxglove::live_feed::{notify_row, EXPLAINER, NOTIFY_HOVER};
+    use crate::foxglove::theme::{Choice, DARK, LIGHT};
+    for (choice, name, ground) in [
+        (Choice::Dark, "dark", DARK.ground),
+        (Choice::Light, "light", LIGHT.ground),
+    ] {
+        let ctx = preview_ctx();
+        crate::foxglove::theme::apply_choice(&ctx, choice);
+        let img = render(&ctx, egui::vec2(760.0, 420.0), ground, |ctx| {
+            egui::Area::new(egui::Id::new("notify-settings"))
+                .fixed_pos(egui::pos2(20.0, 14.0))
+                .show(ctx, |ui| {
+                ui.set_width(720.0);
+                crate::foxglove::settings_ui::section(ui, "Live wallpaper", |ui| {
+                    ui.checkbox(&mut true, "Live keyboard feed for wallpapers");
+                    ui.weak(EXPLAINER);
+                    ui.weak(
+                        "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
+                    );
+                    let row = notify_row(ui, &mut true);
+                    ui.weak("Listening on 127.0.0.1:8768: 1 wallpaper connected");
+                    // The hover, drawn where egui puts it.
+                    egui::Area::new(egui::Id::new("notify-hover"))
+                        .fixed_pos(row.rect.left_bottom() + egui::vec2(24.0, 30.0))
+                        .order(egui::Order::Tooltip)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.set_max_width(420.0);
+                                ui.label(NOTIFY_HOVER);
+                            });
+                        });
+                });
+            });
+        });
+        keep(&format!("ui-notify-route-settings-{name}.png"), &img);
+        let n = img
+            .pixels()
+            .filter(|p| p.0[..3] == [ground.r(), ground.g(), ground.b()])
+            .count();
+        assert!(n > 1000, "{name}: the theme's ground shows");
+    }
+}

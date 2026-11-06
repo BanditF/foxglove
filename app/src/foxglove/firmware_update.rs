@@ -377,31 +377,88 @@ fn start_update() {
             save_known(&known);
             result
         })();
-        with(|s| {
+        let note = with(|s| {
             if let View::Running(list) = &s.view {
                 steps.clone_from(list);
             }
-            s.view = match result {
-                Ok(()) => {
-                    steps.push(if plan.parts.is_split() {
-                        format!(
-                            "{} are up to date.",
-                            super::parts::upper_first(plan.parts.all())
-                        )
-                    } else {
-                        "The keyboard is up to date.".into()
-                    });
-                    View::Done(steps)
-                }
-                Err(f) => View::Failed {
-                    steps,
-                    message: f.message,
-                    recovery: f.recovery,
-                },
-            };
+            let (view, note) = finished(std::mem::take(&mut steps), result, &plan.parts);
+            s.view = view;
+            note
         });
+        // Outside the card's lock: a Windows notification can take a moment.
+        note.show();
         super::keyboard_settings::read_firmware_again();
     });
+}
+
+/// The notification for an update's outcome (#814): one per update, done or failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutcomeNote {
+    pub title: String,
+    pub body: String,
+    pub failed: bool,
+}
+
+impl OutcomeNote {
+    pub fn show(&self) {
+        let level = if self.failed {
+            super::live_wire::Level::Warn
+        } else {
+            super::live_wire::Level::Info
+        };
+        super::notice::show(
+            super::notice::Kind::Firmware,
+            &self.title,
+            &self.body,
+            level,
+        );
+    }
+}
+
+/// The card's view after an update ran, and its one notification.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn finished(
+    mut steps: Vec<String>,
+    result: Result<(), foxglove_flash::Failure>,
+    parts: &foxglove_flash::Parts,
+) -> (View, OutcomeNote) {
+    match result {
+        Ok(()) => {
+            let line = if parts.is_split() {
+                format!("{} are up to date.", super::parts::upper_first(parts.all()))
+            } else {
+                "The keyboard is up to date.".into()
+            };
+            steps.push(line.clone());
+            let note = OutcomeNote {
+                title: "Firmware updated".into(),
+                body: line,
+                failed: false,
+            };
+            (View::Done(steps), note)
+        }
+        Err(f) => {
+            let note = OutcomeNote {
+                title: "Firmware update failed".into(),
+                body: {
+                    let m = f.message.trim_end();
+                    let stop = if m.ends_with(['.', '!', '?']) {
+                        ""
+                    } else {
+                        "."
+                    };
+                    format!("{m}{stop} Open Foxglove for what to do next.")
+                },
+                failed: true,
+            };
+            let view = View::Failed {
+                steps,
+                message: f.message,
+                recovery: f.recovery,
+            };
+            (view, note)
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1020,6 +1077,53 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    /// #814: an update that ran says so once, done or failed, through `notice::show`.
+    #[test]
+    fn done_and_failed_each_notify_once() {
+        use crate::foxglove::notice::test_toasts;
+        test_toasts::take_mine();
+        let (view, note) = finished(
+            vec!["Left half: written".into()],
+            Ok(()),
+            &foxglove_flash::Parts::split(),
+        );
+        assert!(
+            matches!(view, View::Done(ref s) if s.last().unwrap() == "Both halves are up to date."),
+            "{view:?}"
+        );
+        note.show();
+        let shown = test_toasts::take_mine();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].title, "Firmware updated");
+        assert_eq!(shown[0].body, "Both halves are up to date.");
+        assert_eq!(shown[0].level, crate::foxglove::live_wire::Level::Info);
+
+        let one = foxglove_flash::Parts::new(vec!["Keyboard".into()]);
+        assert_eq!(
+            finished(vec![], Ok(()), &one).1.body,
+            "The keyboard is up to date."
+        );
+
+        let failure = foxglove_flash::Failure {
+            half: foxglove_flash::Half::Right,
+            message: "The right half didn't come back".into(),
+            recovery: "Double-tap its reset button.".into(),
+        };
+        let (view, note) = finished(vec![], Err(failure), &foxglove_flash::Parts::split());
+        assert!(
+            matches!(view, View::Failed { ref recovery, .. } if recovery == "Double-tap its reset button.")
+        );
+        note.show();
+        let shown = test_toasts::take_mine();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].title, "Firmware update failed");
+        assert_eq!(
+            shown[0].body,
+            "The right half didn't come back. Open Foxglove for what to do next."
+        );
+        assert_eq!(shown[0].level, crate::foxglove::live_wire::Level::Warn);
+    }
 
     fn temp(name: &str) -> PathBuf {
         let d =

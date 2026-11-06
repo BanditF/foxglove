@@ -297,7 +297,7 @@ pub enum Msg {
 /// What the worker publishes after each change.
 pub trait Output {
     fn shown(&mut self, list: &[(String, Peripheral)], has_controllers: bool);
-    fn notice(&mut self, title: &str, text: &str);
+    fn notice(&mut self, title: &str, text: &str, level: super::live_wire::Level);
     /// The containers to leave out (the keyboard), asked again when a device with a battery
     /// arrives.
     fn hidden(&mut self) -> Vec<String>;
@@ -353,7 +353,7 @@ pub fn run(
         for (group, p) in &shown {
             if let Some(t) = alerts.level(&format!("device:{group}"), p.percent) {
                 let (title, text) = notice(&p.name, t, p.percent);
-                out.notice(&title, &text);
+                out.notice(&title, &text, super::battery::level_for(t));
             }
         }
         out.shown(&shown, list.has_controllers());
@@ -458,9 +458,9 @@ impl Output for AppOutput {
         super::battery::wake();
     }
 
-    fn notice(&mut self, title: &str, text: &str) {
+    fn notice(&mut self, title: &str, text: &str, level: super::live_wire::Level) {
         if super::battery::device_notices_on() {
-            super::battery::show_notice(title, text);
+            super::notice::show(super::notice::Kind::Battery, title, text, level);
         }
     }
 
@@ -780,7 +780,7 @@ pub mod tests {
                     .collect(),
             );
         }
-        fn notice(&mut self, title: &str, _: &str) {
+        fn notice(&mut self, title: &str, _: &str, _: crate::foxglove::live_wire::Level) {
             self.notices.push(title.into());
         }
         fn hidden(&mut self) -> Vec<String> {
