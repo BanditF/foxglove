@@ -3078,6 +3078,11 @@ fn via_settings_render() {
     assert!(lit(&on) > lit(&off), "the boards add lines");
 }
 
+/// The ⓘ text the disclosure preview pins open ("Right follows left"); the tooltip test
+/// lists it.
+pub(super) const PINNED: &str =
+    "On: the right half's lights do what the left half's do. Saved on the keyboard.";
+
 /// The disclosure widgets (#793), dark and light: flat status chips with and without a dot, the
 /// one clickable chip (outlined), the ⓘ after controls (one shown as Enter shows it), the info
 /// bars and the expanders, closed and open.
@@ -3085,8 +3090,6 @@ fn via_settings_render() {
 fn disclosure_widgets_render() {
     use crate::foxglove::settings_ui::{expander, expander_with, set_expander_open};
     use crate::foxglove::theme::{self, Choice, Dot, Level, DARK, LIGHT};
-    const PINNED: &str =
-        "On: the right half's lights do what the left half's do. Saved on the keyboard.";
     let sheet = |choice: Choice| {
         let ctx = preview_ctx();
         theme::apply_choice(&ctx, choice);

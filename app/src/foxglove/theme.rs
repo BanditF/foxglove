@@ -1165,12 +1165,17 @@ mod widget_tests {
     }
 
     /// #839: no ⓘ's tooltip starts by repeating its control's label ("Animate on e-paper:
-    /// plays…" read the label twice). Every `with_info` in the app, with the text it is given.
+    /// plays…" read the label twice). Every `with_info` call in app/src, found by walking the
+    /// source at test time, must be listed here with its label and the text it is given.
+    ///
+    /// The four approved declutter exceptions (#794 K18, K19, K24, K26) show a short label on
+    /// the card and lead the tooltip with the switch's whole name, which is said nowhere else.
+    /// They are listed with the short label, which the tooltip doesn't repeat.
     #[test]
     fn no_tooltip_starts_with_its_controls_label() {
         use crate::foxglove::{
             art_encode, art_ui, battery_dim_ui, follow_typing, lights_page, overlay_shown,
-            pc_lights_ui,
+            pc_lights_ui, theme_preview,
         };
         assert!(repeats_label(
             "Animate on e-paper",
@@ -1183,72 +1188,350 @@ mod widget_tests {
         ));
         let parts = crate::foxglove::parts::Parts::of(None);
         let epaper = art_ui::tests::epaper_screens();
-        let pairs = [
+        let pair = |label: &str, hover: String| (label.to_string(), hover);
+        const PREVIEW_ACCENT: &str =
+            "Follow the Windows accent colour: the underglow takes the accent colour's hue.";
+        // (file under app/src, the call's hover argument as written without whitespace, its
+        // declutter exception, the (label, hover) pairs it can show).
+        type Listed = (
+            &'static str,
+            String,
+            Option<&'static str>,
+            Vec<(String, String)>,
+        );
+        let listed: Vec<Listed> = vec![
             (
-                art_ui::EPAPER_SWITCH.to_string(),
-                art_ui::epaper_tip(art_encode::Pace::of(&epaper[0], false)),
+                "foxglove/art_ui.rs",
+                "&epaper_tip(pace)".into(),
+                None,
+                vec![pair(
+                    art_ui::EPAPER_SWITCH,
+                    art_ui::epaper_tip(art_encode::Pace::of(&epaper[0], false)),
+                )],
             ),
             (
-                art_ui::FITTED_NOTE.to_string(),
-                art_encode::FIT_RULE.to_string(),
+                "foxglove/art_ui.rs",
+                "super::art_encode::FIT_RULE".into(),
+                None,
+                vec![pair(art_ui::FITTED_NOTE, art_encode::FIT_RULE.into())],
             ),
             (
-                battery_dim_ui::SHORT.to_string(),
-                battery_dim_ui::hover(true),
+                "foxglove/battery_dim_ui.rs",
+                "&hover(config.enabled)".into(),
+                Some("K26"),
+                vec![
+                    pair(battery_dim_ui::SHORT, battery_dim_ui::hover(true)),
+                    pair(battery_dim_ui::SHORT, battery_dim_ui::hover(false)),
+                ],
             ),
             (
-                battery_dim_ui::SHORT.to_string(),
-                battery_dim_ui::hover(false),
+                "foxglove/follow_typing.rs",
+                "&hover(was)".into(),
+                None,
+                vec![
+                    pair(follow_typing::LABEL, follow_typing::hover(true)),
+                    pair(follow_typing::LABEL, follow_typing::hover(false)),
+                ],
             ),
             (
-                lights_page::ACCENT_SHORT.to_string(),
-                lights_page::accent_hover(),
+                "foxglove/lights_page.rs",
+                "&accent_hover()".into(),
+                Some("K18"),
+                vec![pair(lights_page::ACCENT_SHORT, lights_page::accent_hover())],
             ),
             (
-                lights_page::WALLPAPER_SHORT.to_string(),
-                lights_page::wallpaper_hover(),
+                "foxglove/lights_page.rs",
+                "&wallpaper_hover()".into(),
+                Some("K19"),
+                vec![pair(
+                    lights_page::WALLPAPER_SHORT,
+                    lights_page::wallpaper_hover(),
+                )],
             ),
             (
-                lights_page::follow_short(&parts),
-                lights_page::follow_hover(&parts),
+                "foxglove/lights_page.rs",
+                "&follow_hover(parts)".into(),
+                Some("K24"),
+                vec![(
+                    lights_page::follow_short(&parts),
+                    lights_page::follow_hover(&parts),
+                )],
             ),
             (
-                pc_lights_ui::MATCH_SHORT.to_string(),
-                pc_lights_ui::MATCH_TIP.to_string(),
+                "foxglove/overlay_shown.rs",
+                "TIP".into(),
+                None,
+                vec![pair(overlay_shown::LABEL, overlay_shown::TIP.into())],
             ),
             (
-                pc_lights_ui::OPENRGB_SHORT.to_string(),
-                pc_lights_ui::OPENRGB_TIP.to_string(),
+                "foxglove/pc_lights_ui.rs",
+                "&tip".into(),
+                None,
+                vec![pair(
+                    pc_lights_ui::OPENRGB_SHORT,
+                    pc_lights_ui::OPENRGB_TIP.into(),
+                )],
             ),
-            (follow_typing::LABEL.to_string(), follow_typing::hover(true)),
             (
-                follow_typing::LABEL.to_string(),
-                follow_typing::hover(false),
+                "foxglove/pc_lights_ui.rs",
+                "MATCH_TIP".into(),
+                None,
+                vec![pair(
+                    pc_lights_ui::MATCH_SHORT,
+                    pc_lights_ui::MATCH_TIP.into(),
+                )],
+            ),
+            // The tests' own calls: this module and the disclosure preview sheet.
+            (
+                "foxglove/theme.rs",
+                "TIP".into(),
+                None,
+                vec![pair("Follow Windows accent", TIP.into())],
             ),
             (
-                overlay_shown::LABEL.to_string(),
-                overlay_shown::TIP.to_string(),
+                "foxglove/theme_preview.rs",
+                format!("{PREVIEW_ACCENT:?}"),
+                None,
+                vec![pair("Follow Windows accent", PREVIEW_ACCENT.into())],
+            ),
+            (
+                "foxglove/theme_preview.rs",
+                "PINNED".into(),
+                None,
+                vec![pair("Right follows left", theme_preview::PINNED.into())],
             ),
         ];
-        for (label, hover) in pairs {
-            assert!(
-                !repeats_label(&label, &hover),
-                "{label:?} repeats in {hover:?}"
-            );
+        for (_, _, _, pairs) in &listed {
+            for (label, hover) in pairs {
+                assert!(
+                    !repeats_label(label, hover),
+                    "{label:?} repeats in {hover:?}"
+                );
+            }
         }
-        // Every call site is listed above: a new `with_info` needs its pair here too.
-        let calls: usize = [
-            include_str!("art_ui.rs"),
-            include_str!("battery_dim_ui.rs"),
-            include_str!("follow_typing.rs"),
-            include_str!("lights_page.rs"),
-            include_str!("overlay_shown.rs"),
-            include_str!("pc_lights_ui.rs"),
-        ]
-        .iter()
-        .map(|s| s.matches("theme::with_info(").count())
-        .sum();
-        assert_eq!(calls, 10, "with_info calls outside this test's list");
+        let mut exceptions: Vec<&str> = listed.iter().filter_map(|l| l.2).collect();
+        exceptions.sort();
+        assert_eq!(
+            exceptions,
+            ["K18", "K19", "K24", "K26"],
+            "only the four approved declutter exceptions"
+        );
+
+        // Every call site in the source is listed: a new `with_info` needs its pair here too.
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let sites = with_info_sites(&src);
+        let unlisted: Vec<String> = sites
+            .iter()
+            .filter(|(file, _, arg)| !listed.iter().any(|l| l.0 == file && &l.1 == arg))
+            .map(|(file, line, arg)| format!("app/src/{file}:{line} (hover {arg})"))
+            .collect();
+        assert!(
+            unlisted.is_empty(),
+            "with_info calls missing from this test's list: {unlisted:#?}"
+        );
+        let stale: Vec<String> = listed
+            .iter()
+            .filter(|l| !sites.iter().any(|(f, _, a)| f == l.0 && a == &l.1))
+            .map(|l| format!("app/src/{} (hover {})", l.0, l.1))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "listed calls not in the source: {stale:#?}"
+        );
+    }
+
+    /// Every call of `with_info` in the `.rs` files under `dir`: (path from `dir` with `/`, line,
+    /// its last argument without whitespace). Comments and string literals are skipped, and so
+    /// is the function's own definition.
+    fn with_info_sites(dir: &std::path::Path) -> Vec<(String, usize, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read a source dir") {
+                let path = entry.expect("a dir entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(dir, &mut files);
+        files.sort();
+        let mut sites = Vec::new();
+        for path in files {
+            let text = std::fs::read_to_string(&path).expect("read a source file");
+            let name = path
+                .strip_prefix(dir)
+                .expect("under the source dir")
+                .to_string_lossy()
+                .replace('\\', "/");
+            for (line, arg) in calls_in(&text) {
+                sites.push((name.clone(), line, arg));
+            }
+        }
+        sites
+    }
+
+    /// The `with_info(…)` calls in `text`: (line, last argument without whitespace).
+    fn calls_in(text: &str) -> Vec<(usize, String)> {
+        let c: Vec<char> = text.chars().collect();
+        let ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+        let name: Vec<char> = "with_info".chars().collect();
+        let mut out = Vec::new();
+        let (mut i, mut line) = (0, 1);
+        while i < c.len() {
+            if let Some(end) = skip_literal(&c, i) {
+                line += c[i..end].iter().filter(|&&ch| ch == '\n').count();
+                i = end;
+                continue;
+            }
+            let starts = c[i..].starts_with(&name)
+                && (i == 0 || !ident(c[i - 1]))
+                && c.get(i + name.len()) == Some(&'(');
+            if !starts {
+                if c[i] == '\n' {
+                    line += 1;
+                }
+                i += 1;
+                continue;
+            }
+            let before: String = c[i.saturating_sub(8)..i].iter().collect();
+            let definition = before.trim_end().ends_with("fn");
+            // The arguments, up to the matching parenthesis.
+            let open = i + name.len();
+            let (mut depth, mut j) = (0usize, open);
+            let mut args = Vec::new();
+            while j < c.len() {
+                if let Some(end) = skip_literal(&c, j) {
+                    args.extend_from_slice(&c[j..end]);
+                    j = end;
+                    continue;
+                }
+                match c[j] {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    break;
+                }
+                if j > open {
+                    args.push(c[j]);
+                }
+                j += 1;
+            }
+            if !definition {
+                out.push((line, last_arg(&args)));
+            }
+            i += name.len();
+        }
+        out
+    }
+
+    /// Where the comment, string or char literal starting at `i` ends, if one starts there.
+    fn skip_literal(c: &[char], i: usize) -> Option<usize> {
+        let at = |k: usize| c.get(k).copied();
+        let after_ident = i > 0 && (c[i - 1].is_alphanumeric() || c[i - 1] == '_');
+        match (c[i], at(i + 1)) {
+            ('/', Some('/')) => Some((i..c.len()).find(|&k| c[k] == '\n').unwrap_or(c.len())),
+            ('/', Some('*')) => {
+                let mut k = i + 2;
+                while k + 1 < c.len() && !(c[k] == '*' && c[k + 1] == '/') {
+                    k += 1;
+                }
+                Some((k + 2).min(c.len()))
+            }
+            ('r', Some('"' | '#')) if !after_ident => {
+                let hashes = c[i + 1..].iter().take_while(|&&ch| ch == '#').count();
+                if at(i + 1 + hashes) != Some('"') {
+                    return None;
+                }
+                let close: Vec<char> = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
+                let from = i + 2 + hashes;
+                Some(
+                    (from..c.len())
+                        .find(|&k| c[k..].starts_with(&close))
+                        .map_or(c.len(), |k| k + close.len()),
+                )
+            }
+            ('"', _) => {
+                let mut k = i + 1;
+                while k < c.len() && c[k] != '"' {
+                    k += if c[k] == '\\' { 2 } else { 1 };
+                }
+                Some((k + 1).min(c.len()))
+            }
+            // A char literal ('x', '\n'), not a lifetime ('a).
+            ('\'', Some('\\')) => (i + 3..c.len()).find(|&k| c[k] == '\'').map(|k| k + 1),
+            ('\'', Some(_)) if at(i + 2) == Some('\'') => Some(i + 3),
+            _ => None,
+        }
+    }
+
+    /// The last top-level argument in `args`, whitespace removed outside string literals. A
+    /// trailing comma (rustfmt's, on a call split over lines) ends no argument.
+    fn last_arg(args: &[char]) -> String {
+        let (mut depth, mut i) = (0i32, 0);
+        let mut commas = Vec::new();
+        while i < args.len() {
+            if let Some(end) = skip_literal(args, i) {
+                i = end;
+                continue;
+            }
+            match args[i] {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => commas.push(i),
+                _ => {}
+            }
+            i += 1;
+        }
+        let mut end = args.len();
+        while let Some(&k) = commas.last() {
+            if args[k + 1..end].iter().all(|ch| ch.is_whitespace()) {
+                end = k;
+                commas.pop();
+            } else {
+                break;
+            }
+        }
+        let start = commas.last().map_or(0, |&k| k + 1);
+        let arg = &args[start..end];
+        let mut out = String::new();
+        let mut k = 0;
+        while k < arg.len() {
+            if let Some(e) = skip_literal(arg, k) {
+                out.extend(&arg[k..e]);
+                k = e;
+            } else {
+                if !arg[k].is_whitespace() {
+                    out.push(arg[k]);
+                }
+                k += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_call_scan_skips_comments_strings_and_the_definition() {
+        let text = "// with_info(ui, c, A)\n\
+                    let s = \"with_info(x)\";\n\
+                    pub fn with_info(ui: &mut Ui, control: Response, hover: &str) {}\n\
+                    let _ = theme::with_info(ui, c, &hover(on));\n\
+                    super::theme::with_info(\n    ui,\n    c,\n    &f(a, b),\n);\n\
+                    with_info(ui, c, \"a, b\");\n\
+                    foo_with_info(ui, c, X);\n";
+        assert_eq!(
+            calls_in(text),
+            vec![
+                (4, "&hover(on)".to_string()),
+                (5, "&f(a,b)".to_string()),
+                (10, "\"a, b\"".to_string()),
+            ]
+        );
     }
 }
 
