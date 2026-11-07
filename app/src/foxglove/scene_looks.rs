@@ -181,37 +181,39 @@ impl Background {
 pub type Stops = (&'static str, Vec<[u8; 3]>);
 
 /// The palettes, by name. Bandit's stops are the bundled palette file's
-/// (`resources/palettes/bandit.json`, docs/palette.md).
-pub static PALETTES: LazyLock<[Stops; 5]> = LazyLock::new(|| {
-    [
-        (
-            "Bandit",
-            palette_file::bandit().stops.iter().map(|c| c.0).collect(),
-        ),
-        (
-            "Forest",
-            vec![[0x5f, 0xc4, 0x8e], [0x1c, 0x4a, 0x33], [0xf0, 0xd2, 0x3c]],
-        ),
-        (
-            "Steel",
-            vec![[0x7f, 0xb0, 0xe0], [0x14, 0x22, 0x3c], [0xe6, 0xe6, 0xe6]],
-        ),
-        (
-            "Ember",
-            vec![[0xff, 0x5f, 0x3c], [0xf0, 0xd2, 0x3c], [0x5a, 0x10, 0x08]],
-        ),
-        (
-            "Spectrum",
-            vec![
-                [255, 40, 40],
-                [255, 220, 40],
-                [40, 220, 80],
-                [40, 200, 255],
-                [80, 60, 255],
-                [230, 40, 220],
-            ],
-        ),
-    ]
+/// (`resources/palettes/bandit.json`, docs/palette.md), then the bundled harmony palettes'
+/// (`bandit-*.json`, #871), then Foxglove's other built-in ones.
+pub static PALETTES: LazyLock<Vec<Stops>> = LazyLock::new(|| {
+    let files = palette_file::bundled()
+        .iter()
+        .map(|p| (p.name.as_str(), p.stops.iter().map(|c| c.0).collect()));
+    files
+        .chain([
+            (
+                "Forest",
+                vec![[0x5f, 0xc4, 0x8e], [0x1c, 0x4a, 0x33], [0xf0, 0xd2, 0x3c]],
+            ),
+            (
+                "Steel",
+                vec![[0x7f, 0xb0, 0xe0], [0x14, 0x22, 0x3c], [0xe6, 0xe6, 0xe6]],
+            ),
+            (
+                "Ember",
+                vec![[0xff, 0x5f, 0x3c], [0xf0, 0xd2, 0x3c], [0x5a, 0x10, 0x08]],
+            ),
+            (
+                "Spectrum",
+                vec![
+                    [255, 40, 40],
+                    [255, 220, 40],
+                    [40, 220, 80],
+                    [40, 200, 255],
+                    [80, 60, 255],
+                    [230, 40, 220],
+                ],
+            ),
+        ])
+        .collect()
 });
 
 /// The palette that follows the wallpaper on screen (#40): its manifest's palette, else its
