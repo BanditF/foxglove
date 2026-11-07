@@ -1,0 +1,22 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Foxglove",
+  "harmony": "triadic",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "accent2": "#b9a1d9",
+    "accent2_light": "#6d45a1",
+    "accent3": "#6bb38a",
+    "accent3_light": "#206f42",
+    "base": "#0a0814",
+    "ink": "#e8dcc4",
+    "paper": "#e9e6e3",
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#0a0814",
+    "wall_ground": "#0a090b"
+  },
+  "stops": ["#f08a3c", "#0a0814", "#b9a1d9"]
+}

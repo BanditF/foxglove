@@ -1,0 +1,22 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Ember",
+  "harmony": "analogous",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "accent2": "#edb545",
+    "accent2_light": "#8a570a",
+    "accent3": "#ea6753",
+    "accent3_light": "#af301d",
+    "base": "#0d0807",
+    "ink": "#ecdcc0",
+    "paper": "#ece5d9",
+    "paper_ink": "#1c1a18",
+    "app_ground": "#0d0807",
+    "wall_ground": "#0a0909"
+  },
+  "stops": ["#ff5f3c", "#f08a3c", "#edb545", "#0d0807"]
+}

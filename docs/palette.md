@@ -50,6 +50,11 @@ them and drifted.
 | `roles.paper_ink` | no | Ink on `paper`. Falls back to Bandit's. |
 | `roles.app_ground` | no | The night ground Foxglove draws on: the scenes' **Night** background. Bandit's file keeps it equal to `base`. |
 | `roles.wall_ground` | no | The night ground the wallpapers draw on (`bg` in bandit-wallpapers' `bandit.js`). |
+| `roles.accent2` | no | A second accent, for dark grounds (see [Harmony palettes](#harmony-palettes)). Without it a consumer uses `accent` alone, which is Bandit's look. |
+| `roles.accent2_light` | no | `accent2` for text on light grounds. Derived: `accent2` clamped to 4.5:1 on `paper`. |
+| `roles.accent3` | no | A third accent, used even more sparingly. Only read when `accent2` is set. |
+| `roles.accent3_light` | no | `accent3` for text on light grounds. Derived: `accent3` clamped to 4.5:1 on `paper`. |
+| `harmony` | no | A label for people: `complementary`, `split-complementary`, `triadic` or `analogous`. No reader acts on it. |
 
 ### The two night grounds
 
@@ -104,3 +109,82 @@ theme (`theme.rs`) and the scenes (`scene_looks.rs`) read it when the app starts
 tests check that its contrast rules hold for the file, and for either Bandit orange with the
 hand-picked `highlight` and `accent_light` taken out. Keep `name` as `Bandit`: saved looks and
 manifests name the palette.
+
+## Harmony palettes
+
+Bandit's single orange stays the default and isn't changed. The harmony palettes add to the
+library: each one keeps the fox and Bandit orange `#f08a3c` (HSL hue 26°) as the anchor. Then it
+adds one or two colours from the colour wheel as accents. They are new files next to
+`bandit.json`. No reader loads them yet: the app's reader skips `accent2` / `accent3` today
+(they are additive v1 roles), and listing the files in the app is #871.
+
+| File | Name | Harmony | Second accent (`accent2`) | Third accent (`accent3`) | Night (`base`) |
+|---|---|---|---|---|---|
+| `bandit-steel.json` | Bandit Steel | complementary | steel blue `#6ca5d0` (206°) | — | `#050a13` |
+| `bandit-dusk.json` | Bandit Dusk | split-complementary | sea glass `#62bcb6` (176°) | periwinkle `#999ee6` (236°) | `#07081a` |
+| `bandit-foxglove.json` | Bandit Foxglove | triadic, toned down | foxglove violet `#b9a1d9` (266°) | leaf jade `#6bb38a` (146°) | `#0a0814` |
+| `bandit-ember.json` | Bandit Ember | analogous | gold `#edb545` (40°) | ember red `#ea6753` (8°) | `#0d0807` |
+
+All four keep Bandit's `accent`, `highlight` and `accent_light` exactly
+(`scripts/test_palette_contrast.py` checks this). Their grounds lean a little toward the palette's
+colour, and `app_ground` equals `base` as in Bandit's file. The cool accents are pale and only
+moderately saturated (HSL saturation 32–60 %) on purpose: next to a saturated orange they read as
+cool light, not as a second brand colour.
+
+### Usage rule (every harmony palette)
+
+- **The fox is never recoloured.** It keeps its orange, cream and ink in every palette.
+- **Orange keeps the most accent area.** `accent2` covers at most **15 %** of a surface's area,
+  and `accent3` at most **3 %**. Orange always covers at least as much as `accent2`. (Raised
+  from 10 % at the taste check, 11/07.)
+- **Where `accent2` goes:** the second ring and the compass nodes of a HUD, one secondary
+  value (for example the signal state), peak caps on audio bars, progress fills, the status dot,
+  a scanline tint and an ambient glow behind the motif. The tint and the glow stay at 7 %
+  opacity or less.
+- **Where `accent3` goes:** one marker per surface (the HUD's triangle), or the homing keys.
+- **Not for:** headers, the title, the tagline, the clock, warnings. Those keep orange and ink.
+- **Lights:** orange on the alpha keys, `accent2` on the thumb keys (6 of 42), `accent3` on the
+  homing keys F and J (2 of 42). Effects are slow and smooth: a two-tone breathe (orange and
+  `accent2` in opposite phase, 8 s loop, never below 35 %) or a slow gradient sweep through the
+  stops for Ember. Effects only may pass the area budget while they run (Ember's sweep); a still
+  surface never does. No flashes and no strobing; nothing changes faster than once per 2 s.
+- **Light grounds** use the `_light` roles for text. Bandit's hand-picked `accent_light` is
+  4.98:1 on the app's white cards but 4.0:1 on `paper`: on `paper` use it for graphics and
+  large text only. That's unchanged from Bandit.
+
+### Contrast
+
+`python scripts/palette_contrast.py` (add `--markdown` for full tables) checks every bundled
+palette. Text roles need 4.5:1 on each dark ground (`base`, `app_ground`, `wall_ground`) or on
+`paper`; graphics need 3:1. `app_surface` is the light theme's white card (`theme.rs`), not a
+role. The lowest ratio per role:
+
+| Role | Needs | Steel | Dusk | Foxglove | Ember |
+|---|---|---|---|---|---|
+| `ink` (dark grounds) | 4.5 | 14.60 | 14.61 | 14.62 | 14.74 |
+| `accent` (dark grounds) | 4.5 | 7.94 | 7.94 | 7.95 | 7.96 |
+| `highlight` (dark grounds) | 4.5 | 11.04 | 11.05 | 11.06 | 11.08 |
+| `accent2` (dark grounds) | 4.5 | 7.49 | 8.87 | 8.66 | 10.70 |
+| `accent3` (dark grounds) | 4.5 | — | 7.92 | 7.98 | 6.22 |
+| `paper_ink` on `paper` | 4.5 | 13.86 | 13.78 | 13.84 | 13.86 |
+| `accent2_light` on `paper` | 4.5 | 5.05 `#1c649c` | 4.88 `#0b6e68` | 5.60 `#6d45a1` | 4.87 `#8a570a` |
+| `accent3_light` on `paper` | 4.5 | — | 6.66 `#3941ac` | 4.95 `#206f42` | 5.14 `#af301d` |
+| `accent_light` on the app's cards | 4.5 | 4.98 | 4.98 | 4.98 | 4.98 |
+| `accent_light` on `paper` (graphics) | 3 | 4.01 | 3.99 | 4.01 | 3.98 |
+| `deep` (derived) on `paper` | 3 | 3.02 | 3.00 | 3.02 | 3.01 |
+
+The script runs in `scripts/check.ps1` through its unit test, so a palette that breaks a
+promise fails the gate.
+
+### Research
+
+- **Reuse:** the `foxglove-palette` v1 format and its derivations (`readable`, `deep`,
+  `accent_light`). The new roles reuse the `accent` / `accent_light` pattern. The contrast
+  script ports `palette_file::readable` as it is.
+- **Emulate:** Material 3's secondary and tertiary colour roles (a second and a third accent
+  with their own on-light shades, sized by usage, not by count). The 60-30-10 rule of interior
+  and UI colour (ground, ink, accent), with the second accent taking part of the 10. Adobe
+  Color's harmony rules (complementary, split-complementary, triadic, analogous) for picking the
+  hues. Radix Colors' habit of publishing contrast with every step.
+- **Design our own:** only the usage budget per surface (15 % / 3 %, the fox never recoloured)
+  and the light mapping (thumbs, homing keys).
