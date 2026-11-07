@@ -88,7 +88,7 @@ hostlink: rx D7 85 05 01
 hostlink: -- 3-byte report
 hostlink: tx D7 05 01
 hostlink: rx D7 85 05 01
-hostlink: -- position: W (pos 2) held, released by the firmware after 10 s
+hostlink: -- position: W (pos 2) held while the PC talks, released 10 s after it goes quiet
 hostlink: tx D7 05 02 01
 kp_pressed: usage_page 0x07 keycode 0x1A implicit_mods 0x00 explicit_mods 0x00
 hostlink: rx D7 85 00 02
@@ -102,9 +102,10 @@ hostlink: tx D7 04
 hostlink: rx D7 84
 hostlink: tx D7 04
 hostlink: rx D7 84
-kp_released: usage_page 0x07 keycode 0x1A implicit_mods 0x00 explicit_mods 0x00
 hostlink: tx D7 04
 hostlink: rx D7 84
+hostlink: -- position: W still held after 10.8 s of host traffic
+kp_released: usage_page 0x07 keycode 0x1A implicit_mods 0x00 explicit_mods 0x00
 hostlink: -- position: W released
 hostlink: -- bootloader: trigger without arm, wrong nonce, used nonce, expired nonce
 hostlink: tx D7 08 01 01 nonce
