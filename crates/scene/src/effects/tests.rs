@@ -387,3 +387,71 @@ fn tones_breathe_in_opposite_phase_or_crossfade() {
         .unwrap();
     assert_eq!(one.colour, BLUE);
 }
+
+/// #871 bold tier: Tide rolls the second colour in from the outer edges, swaps a light only at
+/// the bottom of its dip (never below the floor, never a jump at full), and holds the toned
+/// lights.
+#[test]
+fn tide_rolls_in_from_the_edges_and_swaps_only_at_a_dip() {
+    let colours = vec![RED, BLUE, PINE];
+    let fx = Effect::Tide {
+        colours: colours.clone(),
+        tones: [(tone_key("strip", "2"), 2u8)].into_iter().collect(),
+        period_ms: 12_000,
+        centre_x: 500.0,
+        inner_mm: 0.0,
+        outer_mm: 500.0,
+        floor: 0.4,
+        dip_ms: 2_000,
+    };
+    let b = room().bounds;
+    let edge = Point::new(0.0, 250.0);
+    let middle = Point::new(480.0, 250.0);
+    let at = |p: Point, ms: i64| fx.colour(p, SceneTime(ms), &b);
+    // The start: everything the first colour; the inner keys at full, the edge already
+    // easing into its dip (the wave reaches it 1.2 s in).
+    assert_eq!(at(middle, 0), RED);
+    let e = at(edge, 0);
+    assert!(e.0[2] == 0 && e.0[0] < 255, "{e:?}");
+    // Half way the wave covers the edge, which is full again.
+    assert_eq!(at(edge, 6_000), BLUE);
+    // Over the loop: the edge turns blue before the middle, and never below the floor.
+    let blue = |c: Rgb| c.0[2] > c.0[0];
+    let first = |p: Point| (0..12_000).step_by(50).find(|&ms| blue(at(p, ms)));
+    assert!(first(edge).unwrap() < first(middle).unwrap());
+    let mut last = at(edge, 0);
+    for ms in (50..12_000).step_by(50) {
+        let c = at(edge, ms);
+        let lin = c.linear();
+        assert!(
+            lin.iter().cloned().fold(0.0, f32::max) >= 0.399,
+            "{ms}: {c:?}"
+        );
+        if blue(c) != blue(last) {
+            // A swap happens only near the dip's bottom.
+            let peak = |c: Rgb| c.linear().iter().cloned().fold(0.0, f32::max);
+            assert!(peak(c) < 0.5 && peak(last) < 0.5, "{ms}: {last:?} -> {c:?}");
+        }
+        last = c;
+    }
+    // A toned light holds its colour; rendered by id.
+    let f = fx.render(&room(), SceneTime(3_000));
+    let held = f
+        .lights
+        .iter()
+        .find(|l| l.device == "strip" && l.light == "2")
+        .unwrap();
+    assert_eq!(held.colour, PINE);
+    // Still: the first colour.
+    let still = Effect::Tide {
+        colours,
+        tones: BTreeMap::new(),
+        period_ms: 0,
+        centre_x: 500.0,
+        inner_mm: 0.0,
+        outer_mm: 500.0,
+        floor: 0.4,
+        dip_ms: 2_000,
+    };
+    assert_eq!(still.colour(edge, SceneTime(5_000), &b), RED);
+}

@@ -27,6 +27,7 @@ use foxglove_scene::{
 
 use super::boards::Board;
 use super::key_layout::KeyLayout;
+use super::palette_file::Tier;
 use super::pc_lights::{LampLayout, Row};
 
 /// The store section with the user's drags and the case's side.
@@ -215,18 +216,28 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
 /// profile's `accent2_keys` / `accent3_keys` and its LED map. Only LEDs off the first accent
 /// are in it; a board without a usable map, or whose LEDs each light keys of mixed roles (the
 /// Eyelash Corne's columns), gives an empty map.
-pub fn keyboard_tones() -> BTreeMap<String, u8> {
-    tones(super::boards::current().as_ref())
+pub fn keyboard_tones(tier: Tier) -> BTreeMap<String, u8> {
+    tones(super::boards::current().as_ref(), tier)
 }
 
-/// [`keyboard_tones`] for `board`.
-pub fn tones(board: Option<&Board>) -> BTreeMap<String, u8> {
+/// [`keyboard_tones`] for `board`. A bold-tier palette takes the profile's `bold_accent*_keys`
+/// where it has them.
+pub fn tones(board: Option<&Board>, tier: Tier) -> BTreeMap<String, u8> {
     let mut out = BTreeMap::new();
     let Some(b) = board else { return out };
     let Some(l) = b.lighting.as_ref() else {
         return out;
     };
-    if !l.led_map_usable() || (l.accent2_keys.is_empty() && l.accent3_keys.is_empty()) {
+    let pick = |bold: &[u8], plain: &'_ [u8]| -> Vec<u8> {
+        if tier == Tier::Bold && !bold.is_empty() {
+            bold.to_vec()
+        } else {
+            plain.to_vec()
+        }
+    };
+    let accent2 = pick(&l.bold_accent2_keys, &l.accent2_keys);
+    let accent3 = pick(&l.bold_accent3_keys, &l.accent3_keys);
+    if !l.led_map_usable() || (accent2.is_empty() && accent3.is_empty()) {
         return out;
     }
     let Some(parts) = l.lamp_parts(b.halves) else {
@@ -242,7 +253,7 @@ pub fn tones(board: Option<&Board>) -> BTreeMap<String, u8> {
             continue;
         };
         for (i, lamp) in lamps.iter().enumerate() {
-            let tone = lamp_tone(&lamp.0, &l.accent2_keys, &l.accent3_keys);
+            let tone = lamp_tone(&lamp.0, &accent2, &accent3);
             if tone != 0 {
                 out.insert(foxglove_scene::tone_key(id, &i.to_string()), tone);
             }
@@ -952,10 +963,22 @@ pub(crate) mod tests {
     #[test]
     fn harmony_tones_follow_the_profile_and_need_per_key_leds() {
         let corne = users_desk::board();
-        assert!(tones(Some(&corne)).is_empty(), "column pixels stay orange");
+        assert!(
+            tones(Some(&corne), Tier::Harmony).is_empty(),
+            "column pixels stay orange"
+        );
+        // The bold tier: the outer column has its own pixel (5), so it shows on the Corne.
+        let bold = tones(Some(&corne), Tier::Bold);
+        assert_eq!(
+            bold.into_iter().collect::<Vec<_>>(),
+            [
+                (foxglove_scene::tone_key("keyboard:left", "5"), 1),
+                (foxglove_scene::tone_key("keyboard:right", "5"), 1)
+            ]
+        );
         let mut board = corne.clone();
         board.lighting.as_mut().unwrap().led_keys = super::super::boards::Lamp::chain(&PER_KEY);
-        let t = tones(Some(&board));
+        let t = tones(Some(&board), Tier::Harmony);
         // PER_KEY: LEDs 0, 7 and 8 sit under the thumbs (20, 19, 18), LED 5 under F (13).
         for half in ["keyboard:left", "keyboard:right"] {
             for led in ["0", "7", "8"] {
@@ -984,8 +1007,8 @@ pub(crate) mod tests {
         assert!(t.keys().all(|k| ids.contains(k)));
         // A provisional map, or a profile without accent keys: nothing.
         board.lighting.as_mut().unwrap().led_map = "provisional".into();
-        assert!(tones(Some(&board)).is_empty());
-        assert!(tones(None).is_empty());
+        assert!(tones(Some(&board), Tier::Bold).is_empty());
+        assert!(tones(None, Tier::Harmony).is_empty());
         assert_eq!(lamp_tone(&[15, 16, 17, 20], &[18, 19, 20], &[13]), 0);
         assert_eq!(lamp_tone(&[19, 20], &[18, 19, 20], &[13]), 1);
         assert_eq!(lamp_tone(&[], &[18], &[13]), 0);

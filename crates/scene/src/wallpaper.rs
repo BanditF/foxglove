@@ -97,6 +97,9 @@ fn shape(effect: &Effect) -> (&'static str, u32, f32, f32, Rgb, Rgb) {
         // the second one.
         Effect::Tones {
             colours, period_ms, ..
+        }
+        | Effect::Tide {
+            colours, period_ms, ..
         } => (
             "breathe",
             *period_ms,

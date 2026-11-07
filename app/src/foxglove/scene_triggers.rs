@@ -189,7 +189,7 @@ pub fn effect_colour(e: &Effect) -> Rgb {
         Effect::Scanline { colour, .. } | Effect::Ripple { colour, .. } => *colour,
         Effect::Breathe { to, .. } => *to,
         // The second accent: ripples over the tones are accent ripples.
-        Effect::Tones { colours, .. } => colours
+        Effect::Tones { colours, .. } | Effect::Tide { colours, .. } => colours
             .get(1)
             .or(colours.first())
             .copied()

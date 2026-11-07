@@ -150,6 +150,13 @@ pub struct Lighting {
     /// The keys in the third accent (the homing keys), the same way.
     #[serde(default)]
     pub accent3_keys: Vec<u8>,
+    /// A bold-tier palette's second-accent keys (docs/palette.md, "Bold tier": the thumbs and
+    /// the outer, modifier column); empty takes `accent2_keys`.
+    #[serde(default)]
+    pub bold_accent2_keys: Vec<u8>,
+    /// A bold-tier palette's third-accent keys; empty takes `accent3_keys`.
+    #[serde(default)]
+    pub bold_accent3_keys: Vec<u8>,
     /// Where "Find my LEDs" saw each LED (the user's override, the store's `[led_map]`): one
     /// entry per lamp in SET_FRAME order, a point on its half's drawing in key units, `None`
     /// for one the user couldn't see. Wins over `led_keys` when set.

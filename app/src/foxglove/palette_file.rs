@@ -189,7 +189,6 @@ pub struct PaletteFile {
     pub roles: Roles,
     pub stops: Vec<Rgb>,
     /// Which area budget its accents follow (docs/palette.md, "Bold tier").
-    #[allow(dead_code)] // the lights' key map reads it (#871 P2)
     pub tier: Tier,
 }
 

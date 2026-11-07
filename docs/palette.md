@@ -284,3 +284,25 @@ over the plain and the washed grounds:
   flashes, a slow luminance change only.
 - **Design our own:** the bold budget (35 % / 5 % of the marks, 12 % / 8 % wash, grounds at most
   14 % lightness), the modifier-column light mapping and the Tide effect.
+## Palette lights in the app (#871)
+
+How the app puts a palette on the keyboard. The key map is data in each board profile
+(docs/profiles.md), never the Corne's in code.
+
+- **The key map:** `[lighting] accent2_keys` and `accent3_keys` name the keys, as indices into
+  the drawing's keys like `led_keys`. A split's other half mirrors them. The bold tier takes
+  `bold_accent2_keys` / `bold_accent3_keys` where a profile has them. An LED takes an accent only
+  when most of the keys it lights have it (`scene_room::lamp_tone`).
+- **The Eyelash Corne:** each pixel lights a column's three alphas and its thumb together, so the
+  harmony mapping (thumbs, F, J) leaves every LED orange. Bold's outer column has its own pixel,
+  so it shows in `accent2`.
+- **Two-tone** (scene effect `Tones`, 8 s, never below 35 %): on a board whose LEDs carry the map,
+  tone 0 and tone 1 breathe in opposite phase and `accent3` holds. Where no LED is off `accent`,
+  the whole board crossfades `accent` and `accent2`. That is the firmware's own breathe
+  (SET_EFFECT kind 4), so nothing streams.
+- **Tide** (scene effect `Tide`, 12 s, dip to 40 %, 2 s each way): frames from the PC. The
+  firmware has no per-key wave.
+- **Slow sweep:** the scenes' Sweep through the palette's stops at speed 1 (12 s a turn), left
+  to right across the split. It is a firmware effect (1-4 stops).
+- **Ripples on key press** (Scenes' trigger) take the palette's `accent2` when the look runs a
+  harmony palette.
