@@ -4,6 +4,8 @@ modules/
 # tools/ (west's and others); only the dev-tooling example is tracked.
 **/tools/*
 !/tools/local.example.toml
+# The Bandit art generators (#885) are versioned.
+!/tools/art-src/
 .west/
 __pycache__/
 
