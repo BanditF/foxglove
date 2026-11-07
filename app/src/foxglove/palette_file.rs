@@ -29,13 +29,20 @@ pub const STOPS: std::ops::RangeInclusive<usize> = 2..=8;
 /// The bundled Bandit palette, as shipped.
 pub const BANDIT_JSON: &str = include_str!("../../resources/palettes/bandit.json");
 
-/// The bundled harmony palettes (docs/palette.md), in the order the pages offer them after
-/// Bandit.
-pub const HARMONY_JSON: [&str; 4] = [
+/// The bundled harmony and bold palettes (docs/palette.md), in the order the pages offer them
+/// after Bandit: each harmony palette with its Bold variant beside it, then the bold-only ones.
+pub const HARMONY_JSON: [&str; 11] = [
     include_str!("../../resources/palettes/bandit-steel.json"),
+    include_str!("../../resources/palettes/bandit-steel-bold.json"),
     include_str!("../../resources/palettes/bandit-dusk.json"),
+    include_str!("../../resources/palettes/bandit-dusk-bold.json"),
     include_str!("../../resources/palettes/bandit-foxglove.json"),
+    include_str!("../../resources/palettes/bandit-foxglove-bold.json"),
     include_str!("../../resources/palettes/bandit-ember.json"),
+    include_str!("../../resources/palettes/bandit-ember-bold.json"),
+    include_str!("../../resources/palettes/bandit-tide.json"),
+    include_str!("../../resources/palettes/bandit-nightshade.json"),
+    include_str!("../../resources/palettes/bandit-frost.json"),
 ];
 
 /// Every role, resolved: what the file gives, the rest derived.
@@ -515,11 +522,24 @@ mod tests {
             [
                 "Bandit",
                 "Bandit Steel",
+                "Bandit Steel Bold",
                 "Bandit Dusk",
+                "Bandit Dusk Bold",
                 "Bandit Foxglove",
-                "Bandit Ember"
+                "Bandit Foxglove Bold",
+                "Bandit Ember",
+                "Bandit Ember Bold",
+                "Bandit Tide",
+                "Bandit Nightshade",
+                "Bandit Frost"
             ]
         );
+        // The tier: the files that say bold, and harmony for the rest.
+        for p in all {
+            let bold = p.name.ends_with(" Bold")
+                || ["Bandit Tide", "Bandit Nightshade", "Bandit Frost"].contains(&p.name.as_str());
+            assert_eq!(p.tier == Tier::Bold, bold, "{}", p.name);
+        }
         let b = bandit().roles;
         for p in &all[1..] {
             let r = p.roles;

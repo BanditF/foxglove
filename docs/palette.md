@@ -199,7 +199,7 @@ promise fails the gate.
 Taste batch 2: the user liked the harmony palettes and asked for a round where the other colours
 lead more. The bold tier adds to the library and changes nothing above: the harmony palettes and
 `bandit.json` keep their rules. A bold palette says `"tier": "bold"`; a file without `tier` is
-`harmony`. Today's reader skips the field (and `accent2` / `accent3`) like any unknown key.
+`harmony`. The app reads it (`palette_file::Tier`, #871): an unknown tier reads as `harmony`, and a reader from before #871 skips the field like any unknown key. The Scenes page lists each Bold variant beside its harmony palette, then Tide, Nightshade and Frost.
 
 Every bold palette still keeps Bandit's `accent`, `highlight` and `accent_light` exactly, and
 the fox is never recoloured. Orange stays the anchor by **role**, not by area: it is the fox,
