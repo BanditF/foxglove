@@ -96,7 +96,12 @@ pub fn missing_assets(dir: &std::path::Path) -> Vec<&'static str> {
     ASSETS
         .iter()
         .copied()
-        .filter(|a| !dir.join(a).is_file())
+        // The manifest's Windows separators, as path parts so the check works on any OS.
+        .filter(|a| {
+            !a.split('\\')
+                .fold(dir.to_path_buf(), |p, part| p.join(part))
+                .is_file()
+        })
         .collect()
 }
 
