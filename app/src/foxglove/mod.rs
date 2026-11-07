@@ -84,6 +84,7 @@ pub mod light_zones;
 pub mod lighting_leases;
 pub mod lights_owner;
 pub mod lights_page;
+pub mod lights_palette;
 pub mod link;
 pub mod live_art;
 pub mod live_feed;

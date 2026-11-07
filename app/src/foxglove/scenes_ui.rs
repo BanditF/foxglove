@@ -529,6 +529,33 @@ fn restyle_on_wallpapers(running: &str, chosen_is_wallpaper_look: bool) -> bool 
     running == CUSTOM_SCENE && chosen_is_wallpaper_look
 }
 
+/// A look started from elsewhere (the Lights page's palette effects, #871): it becomes the
+/// chosen look, as the page's own pick would, and starts; a running scene takes it instead.
+pub fn start_look(look: Look) {
+    let mut chosen = looks::load_chosen();
+    chosen.look = look.clamped();
+    looks::save_chosen(&chosen);
+    super::scene_triggers::set_flags(&chosen);
+    if let Some(st) = STATE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        st.reload = true;
+    }
+    BY_PROFILE.store(false, Ordering::Relaxed);
+    let saved = looks::load_saved().presets;
+    let room = super::scene_room::room();
+    let name = scene_name(&chosen.look, &saved);
+    if super::scene_run::running().is_some() {
+        super::scene_run::set_effect(&name, chosen.look.effect(&room));
+    } else if !super::scene_run::start(&name, chosen.look.effect(&room), None) {
+        eprintln!("Foxglove: a scene still ends; the palette effect waits for it");
+    }
+}
+
+/// Stops the scene from elsewhere (the Lights page's palette effects, #871), as Stop does.
+pub fn stop_look() {
+    BY_PROFILE.store(false, Ordering::Relaxed);
+    stop_scene();
+}
+
 /// A profile's "Start with this profile" starts its scene.
 fn start_by_profile(chosen: &Chosen) {
     let saved = looks::load_saved().presets;

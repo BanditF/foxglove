@@ -105,6 +105,45 @@ pub struct View {
     /// The focused keyboard's lights through Windows Dynamic Lighting (#825), for a keyboard
     /// that isn't the host link's: the card drives them as its Other devices row did.
     pub lamp: Option<Lamp>,
+    /// The palette picker (#871): the chosen palette and its effect that runs now.
+    pub palette: PaletteView,
+}
+
+/// The palette picker's state (#871, `lights_palette`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaletteView {
+    /// The chosen bundled palette's name; Bandit by default.
+    pub chosen: String,
+    /// Its effect running as the scene now, if one is.
+    pub running: Option<super::scene_looks::Kind>,
+}
+
+impl Default for PaletteView {
+    fn default() -> Self {
+        PaletteView {
+            chosen: super::palette_file::bandit().name.clone(),
+            running: None,
+        }
+    }
+}
+
+impl PaletteView {
+    /// The picker as it is now: the saved choice, and the running scene when it is one of its
+    /// effects.
+    pub fn now() -> PaletteView {
+        let p = super::lights_palette::chosen();
+        let runs = super::scene_run::running().is_some();
+        let running = runs
+            .then(|| {
+                let look = super::scene_looks::load_chosen().look;
+                super::lights_palette::running(p, true, &look)
+            })
+            .flatten();
+        PaletteView {
+            chosen: p.name.clone(),
+            running,
+        }
+    }
 }
 
 /// A focused keyboard's lights as the Lights worker has them (#825): its device row, whose own
@@ -181,6 +220,12 @@ pub enum Intent {
     Calibrate,
     /// A focused LampArray keyboard's lights (#825): its row's own request.
     Lamp(super::pc_lights_ui::Intent),
+    /// The palette picker (#871): choose a bundled palette.
+    Palette(String),
+    /// Run one of the chosen palette's effects as the scene.
+    PaletteEffect(super::scene_looks::Kind),
+    /// Stop the palette effect that runs.
+    PaletteStop,
 }
 
 static DRAFT: Mutex<Draft> = Mutex::new(Draft {
@@ -262,7 +307,12 @@ pub fn show(ui: &mut egui::Ui) {
     for intent in intents {
         if !matches!(
             intent,
-            Intent::Refresh | Intent::AskFollow | Intent::ForgetCheck
+            Intent::Refresh
+                | Intent::AskFollow
+                | Intent::ForgetCheck
+                | Intent::Palette(_)
+                | Intent::PaletteEffect(_)
+                | Intent::PaletteStop
         ) {
             // The user acted on the lights: while Windows holds them, a running scene tries
             // the keyboard once (#749).
@@ -314,6 +364,19 @@ pub fn show(ui: &mut egui::Ui) {
             Intent::Wallpaper(on) => {
                 super::accent::set_wallpaper(on);
                 ks::refresh_rgb_state();
+            }
+            Intent::Palette(name) => {
+                super::lights_palette::set(&name);
+                ctx.request_repaint();
+            }
+            Intent::PaletteEffect(kind) => {
+                let p = super::lights_palette::chosen();
+                super::scenes_ui::start_look(super::lights_palette::look(p, kind));
+                ctx.request_repaint();
+            }
+            Intent::PaletteStop => {
+                super::scenes_ui::stop_look();
+                ctx.request_repaint();
             }
             Intent::Follow(on) => ks::ask_rgb_sync(Some(on), ctx.clone()),
             Intent::AskFollow => ks::ask_rgb_sync(None, ctx.clone()),
@@ -579,6 +642,7 @@ pub fn read_only_view(focus: super::focus_ui::Focused, zones: super::light_zones
         zones: Some(zones),
         focus: Some(focus),
         lamp: None,
+        palette: PaletteView::default(),
     }
 }
 
@@ -975,6 +1039,69 @@ pub fn live_view(state: Option<RgbState>) -> View {
         zones: super::light_zones::current(),
         focus,
         lamp: None,
+        palette: PaletteView::now(),
+    }
+}
+
+/// The palette picker (#871): a pill per bundled palette with its colours as dots, then the
+/// chosen palette's slow effects, which run as a scene. Bandit, the default, offers none.
+fn palette_combo(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    use super::lights_palette as lp;
+    let p = lp::of(&v.palette.chosen);
+    ui.label(theme::caps_label(ui, "Palette"));
+    egui::ComboBox::from_id_salt("lights-palette")
+        .selected_text(lp::short(p))
+        .show_ui(ui, |ui| {
+            for q in super::palette_file::bundled() {
+                let selected = q.name == p.name;
+                let row = ui
+                    .horizontal(|ui| {
+                        let r = ui.selectable_label(selected, lp::short(q));
+                        palette_dots(ui, &lp::dots(q));
+                        r
+                    })
+                    .inner;
+                if row.on_hover_text(&q.name).clicked() && !selected {
+                    out.push(Intent::Palette(q.name.clone()));
+                }
+            }
+        })
+        .response
+        .on_hover_text(PALETTE_HINT);
+    palette_dots(ui, &lp::dots(p));
+}
+
+/// The chosen palette's effects as pills after the keyboard's own (#871): selected while it
+/// runs as the scene, and a click on a running one stops it. None for Bandit.
+fn palette_effects(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    use super::lights_palette as lp;
+    let p = lp::of(&v.palette.chosen);
+    for kind in lp::effects(p) {
+        let on = v.palette.running == Some(kind);
+        let hint = format!("{}: {}", p.name, lp::effect_hint(kind));
+        let pill = theme::pill(ui, on, lp::effect_label(kind)).on_hover_text(hint);
+        if pill.clicked() {
+            out.push(if on {
+                Intent::PaletteStop
+            } else {
+                Intent::PaletteEffect(kind)
+            });
+        }
+    }
+}
+
+/// The palette picker's hover.
+pub const PALETTE_HINT: &str = "The colours the keyboard's palette effects use. Bandit is     Foxglove's own orange; the others add one or two accents. Picking one changes nothing until     you start one of its effects or pick one of its swatches.";
+
+/// A palette's colours as small dots beside its pill, as the keyboard's screen side shows them.
+fn palette_dots(ui: &mut egui::Ui, colours: &[[u8; 3]]) {
+    const STEP: f32 = 9.0;
+    let size = egui::vec2(colours.len() as f32 * STEP, 14.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    for (i, c) in colours.iter().enumerate() {
+        let shown = super::calibrate::keyboard_screen(Color32::from_rgb(c[0], c[1], c[2]));
+        let at = egui::pos2(rect.left() + STEP / 2.0 + i as f32 * STEP, rect.center().y);
+        ui.painter().circle_filled(at, 3.5, shown);
     }
 }
 
@@ -989,6 +1116,9 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             if theme::pill(ui, on == Some(true), "On").clicked() {
                 out.push(Intent::Lights(true));
             }
+            // The palette picker (#871) on the same line, so the card keeps its height.
+            ui.add_space(14.0);
+            palette_combo(ui, v, out);
         });
         // What the keyboard shows decides the controls and the preview, never the saved
         // look (#670); the saved one is only named when they differ. One model for the page
@@ -1009,6 +1139,8 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     out.push(Intent::Effect(i));
                 }
             }
+            // The chosen palette's own effects, which run as a scene (#871).
+            palette_effects(ui, v, out);
             // The look Foxglove saved, when the keyboard shows another (K12).
             if let Some(saved) = &m.saved {
                 theme::hint_chip(ui, &format!("Saved: {saved}"), m.note.as_deref(), None);
@@ -1028,17 +1160,19 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         };
         let custom_open = &mut draft.custom_open;
         if m.swatches {
+            // The chosen palette's accents join Bandit's swatches (#871).
+            let swatches = super::lights_palette::swatches(super::lights_palette::of(&v.palette.chosen));
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                for (name, rgb) in SWATCHES {
+                for (name, rgb) in swatches.iter().cloned() {
                     let selected = is_swatch((*hue, *sat), rgb);
                     let shown = super::calibrate::keyboard_screen(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-                    if swatch(ui, shown, selected).on_hover_text(name).clicked() {
+                    if swatch(ui, shown, selected).on_hover_text(&name).clicked() {
                         (*hue, *sat) = swatch_hue_sat(rgb);
                     }
                 }
                 // Any other colour: hue and saturation sliders behind a pill.
-                let custom = !SWATCHES.iter().any(|(_, rgb)| is_swatch((*hue, *sat), *rgb));
+                let custom = !swatches.iter().any(|(_, rgb)| is_swatch((*hue, *sat), *rgb));
                 if theme::pill(ui, custom || *custom_open, "Custom").clicked() {
                     *custom_open = !*custom_open;
                 }
@@ -1572,6 +1706,7 @@ pub mod tests {
             zones: Some(zone_line_of(&crate::foxglove::fixtures::users_desk::board())),
             focus: None,
             lamp: None,
+            palette: PaletteView::default(),
         }
     }
 
@@ -1753,6 +1888,7 @@ pub mod tests {
             zones: None,
             focus: None,
             lamp: None,
+            palette: PaletteView::default(),
         }
     }
 
