@@ -228,6 +228,45 @@ static BY_PROFILE: AtomicBool = AtomicBool::new(false);
 static READY: AtomicBool = AtomicBool::new(false);
 /// A profile switch came while a stop was ending a scene: decide again after it.
 static RECHECK: AtomicBool = AtomicBool::new(false);
+/// The chosen look is due to start without a profile's "Start with this profile": it ran when
+/// Foxglove last closed (`[scene_resume]`), or a palette effect was clicked while a scene was
+/// still ending. Cleared once it starts or on an explicit Stop.
+static RESUME: AtomicBool = AtomicBool::new(false);
+
+/// The store section that remembers whether a scene ran (not profiled: it describes the machine).
+pub const RESUME_SECTION: &str = "scene_resume";
+
+/// `[scene_resume]`: a look was started by hand (Start, a Lights-page palette effect) and not
+/// stopped, so the next launch starts it again. `None` is a store from before this was kept.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Resume {
+    pub running: Option<bool>,
+}
+
+fn save_resume(running: bool) {
+    let r = Resume {
+        running: Some(running),
+    };
+    if super::store::try_load::<Resume>(RESUME_SECTION) == Some(r) {
+        return;
+    }
+    if let Err(e) = super::store::save(RESUME_SECTION, &r) {
+        eprintln!("Foxglove: can't save [{RESUME_SECTION}]: {e}");
+    }
+}
+
+/// Whether the launch starts the chosen look by itself (not by a profile's box): the saved
+/// flag says so; a store from before the flag (`None`) resumes a look that was saved, since
+/// choosing one used to start it and nothing remembered a Stop.
+pub fn resume_at_launch(saved: Option<bool>, look_saved: bool) -> bool {
+    saved.unwrap_or(look_saved)
+}
+
+/// The store has a chosen look (`[scenes] look`, the active profile's or the base's).
+fn look_saved() -> bool {
+    super::store::try_load::<toml::Table>(looks::SECTION).is_some_and(|t| t.contains_key("look"))
+}
 
 #[cfg(test)]
 thread_local! {
@@ -471,6 +510,9 @@ pub fn profile_changed() {
             );
             show_art(&chosen);
         }
+        super::scene_triggers::ProfileAction::Nothing if RESUME.load(Ordering::Relaxed) => {
+            start_by_hand(&chosen);
+        }
         super::scene_triggers::ProfileAction::Nothing => {}
     }
 }
@@ -543,17 +585,53 @@ pub fn start_look(look: Look) {
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
     let name = scene_name(&chosen.look, &saved);
-    if super::scene_run::running().is_some() {
+    if super::scene_run::running().is_some() && !STOPPING.load(Ordering::Relaxed) {
         super::scene_run::set_effect(&name, chosen.look.effect(&room));
-    } else if !super::scene_run::start(&name, chosen.look.effect(&room), None) {
-        eprintln!("Foxglove: a scene still ends; the palette effect waits for it");
+        save_resume(true);
+    } else {
+        start_by_hand(&chosen);
     }
 }
 
 /// Stops the scene from elsewhere (the Lights page's palette effects, #871), as Stop does.
 pub fn stop_look() {
+    stop_by_hand();
+}
+
+/// The user's Stop (the page's button, the Lights page's): the next launch starts nothing, and
+/// a start waiting for a stop to end is dropped.
+fn stop_by_hand() {
     BY_PROFILE.store(false, Ordering::Relaxed);
+    RESUME.store(false, Ordering::Relaxed);
+    save_resume(false);
     stop_scene();
+}
+
+/// Starts the chosen look as the user's own scene (not a profile's): Start, a palette effect, or
+/// the look that ran when Foxglove closed. A scene still ending makes it wait: the stop thread
+/// decides again ([`after_start`]).
+fn start_by_hand(chosen: &Chosen) {
+    let saved = looks::load_saved().presets;
+    let room = super::scene_room::room();
+    let name = scene_name(&chosen.look, &saved);
+    let started = super::scene_run::start(&name, chosen.look.effect(&room), None);
+    after_start(started);
+    if started {
+        BY_PROFILE.store(false, Ordering::Relaxed);
+        save_resume(true);
+        show_art(chosen);
+    } else {
+        eprintln!("Foxglove: a scene still ends; {name} starts after it");
+    }
+}
+
+/// After a hand start: one that ran clears the pending start; one refused while a scene ends
+/// keeps it pending and asks the stop thread to decide again (as `start_by_profile` does).
+fn after_start(started: bool) {
+    RESUME.store(!started, Ordering::Relaxed);
+    if !started {
+        RECHECK.store(true, Ordering::Relaxed);
+    }
 }
 
 /// A profile's "Start with this profile" starts its scene.
@@ -563,6 +641,7 @@ fn start_by_profile(chosen: &Chosen) {
     let name = scene_name(&chosen.look, &saved);
     if super::scene_run::start(&name, chosen.look.effect(&room), None) {
         BY_PROFILE.store(true, Ordering::Relaxed);
+        RESUME.store(false, Ordering::Relaxed);
         show_art(chosen);
     } else {
         // A scene is still ending: start once it has (the stop thread decides again).
@@ -571,8 +650,15 @@ fn start_by_profile(chosen: &Chosen) {
 }
 
 /// Foxglove started its services: the trigger boxes take effect, and the active profile's
-/// scene starts when it has "Start with this profile" on.
+/// scene starts when it has "Start with this profile" on, or when a look the user started was
+/// still running when Foxglove closed (`[scene_resume]`).
 pub fn startup() {
+    let saved = super::store::try_load::<Resume>(RESUME_SECTION).unwrap_or_default();
+    let resume = resume_at_launch(saved.running, look_saved());
+    if resume {
+        eprintln!("Foxglove: the last look ran when Foxglove closed; starting it again");
+    }
+    RESUME.store(resume, Ordering::Relaxed);
     READY.store(true, Ordering::Relaxed);
     // The same decision as a switch (it reads the active profile as it is now), unless the
     // demo scene already runs.
@@ -625,12 +711,7 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
         Intent::Start => {
             BY_PROFILE.store(false, Ordering::Relaxed);
             looks::save_chosen(&st.chosen);
-            let name = scene_name(&st.chosen.look, &st.saved.presets);
-            if super::scene_run::start(&name, st.chosen.look.effect(&st.room), None) {
-                show_art(&st.chosen);
-            } else {
-                eprintln!("Foxglove: a scene still runs; Start waits for it to end");
-            }
+            start_by_hand(&st.chosen);
         }
         Intent::WithArt(on) => {
             st.chosen.with_art = on;
@@ -638,8 +719,7 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             show_art(&st.chosen);
         }
         Intent::Stop => {
-            BY_PROFILE.store(false, Ordering::Relaxed);
-            stop_scene();
+            stop_by_hand();
             ctx.request_repaint();
         }
         Intent::Trigger(which, on) => {
@@ -2107,5 +2187,55 @@ pub(crate) mod tests {
             ..sample_none()
         };
         assert!(click(&scan, looks::WALLPAPER).is_empty());
+    }
+
+    /// A look the user started comes back after a restart; one they stopped doesn't; a store
+    /// from before the flag resumes a saved look (choosing one used to start it).
+    #[test]
+    fn the_launch_resumes_a_look_that_ran() {
+        assert!(resume_at_launch(Some(true), false));
+        assert!(resume_at_launch(Some(true), true));
+        assert!(!resume_at_launch(Some(false), true));
+        assert!(!resume_at_launch(Some(false), false));
+        assert!(resume_at_launch(None, true));
+        assert!(!resume_at_launch(None, false));
+    }
+
+    /// `[scene_resume]` round-trips through the (sandboxed) store; Start writes true, Stop false.
+    #[test]
+    fn the_resume_flag_is_kept_in_the_store() {
+        crate::foxglove::store::test_config_dir();
+        assert!(!crate::foxglove::store::PROFILED.contains(&RESUME_SECTION));
+        save_resume(true);
+        let r: Resume = crate::foxglove::store::try_load(RESUME_SECTION).unwrap();
+        assert_eq!(r.running, Some(true));
+        save_resume(false);
+        let r: Resume = crate::foxglove::store::try_load(RESUME_SECTION).unwrap();
+        assert_eq!(r.running, Some(false));
+        // An old store has no key: `None`, so the look decides.
+        let old: Resume = toml::from_str("").unwrap();
+        assert_eq!(old.running, None);
+    }
+
+    /// A palette effect clicked while a scene still ends (start refused) waits: the stop thread
+    /// decides again and the look is still due; a start that ran clears it.
+    #[test]
+    fn a_start_refused_during_a_stop_waits_for_it() {
+        RECHECK.store(false, Ordering::Relaxed);
+        after_start(false);
+        assert!(RESUME.load(Ordering::Relaxed));
+        assert!(RECHECK.load(Ordering::Relaxed));
+        assert!(crate::foxglove::scene_triggers::restart_after_stop(
+            RECHECK.swap(false, Ordering::Relaxed),
+            true
+        ));
+        // After the stop: no profile box, but the pending look starts.
+        assert_eq!(
+            crate::foxglove::scene_triggers::on_profile(false, false, false),
+            crate::foxglove::scene_triggers::ProfileAction::Nothing
+        );
+        after_start(true);
+        assert!(!RESUME.load(Ordering::Relaxed));
+        assert!(!RECHECK.load(Ordering::Relaxed));
     }
 }

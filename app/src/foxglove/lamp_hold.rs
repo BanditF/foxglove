@@ -21,8 +21,12 @@
 //!   Foxglove holds is Foxglove, not "Windows holds the lights".
 //!
 //! The holds follow events only: a keyboard connect (the devices bus) and the Lights worker's
-//! scan of Dynamic Lighting devices ([`devices_changed`]) reopen them; `AvailabilityChanged`
-//! updates who has each one. Quit lets them go ([`stop`]), as does the process ending: Windows
+//! scan of Dynamic Lighting devices ([`devices_changed`]) reopen them; a watch on the LampArrays
+//! Windows lists ([`Watched`]) opens one that appears later (the Bluetooth one usually comes after
+//! USB) and lets go of one that goes; a connect of the same keyboard opens a transport Windows
+//! lists but Foxglove doesn't hold; `AvailabilityChanged` updates who has each one. Every open
+//! logs what it held and missed per transport, and the health view warns about a listed one not
+//! held (`lamp_health::unheld_rows`). Quit lets them go ([`stop`]), as does the process ending: Windows
 //! then hands each device to the next controller. **Pause lets them go** too, as scenes do: the
 //! user reads pause as hands off, so Windows' order decides meanwhile; resuming holds them again
 //! ([`pause_changed`]). Away and lock keep them (nothing is written, and letting go would hand
@@ -68,10 +72,44 @@ pub fn holds(owner: Owner) -> bool {
     now().ours(owner)
 }
 
-/// Opens the LampArrays of one keyboard (Windows', or a fake in tests), each with whether it's
-/// on Bluetooth.
+/// One LampArray Foxglove holds.
+pub struct HeldArray {
+    /// Windows' device id.
+    pub id: String,
+    /// Over Bluetooth LE, not USB.
+    pub ble: bool,
+    pub device: Box<dyn LampDevice>,
+}
+
+/// What one open found.
+#[derive(Default)]
+pub struct Opened {
+    /// The keyboard's LampArrays (its VID/PID).
+    pub held: Vec<HeldArray>,
+    /// The LampArrays Windows lists, any device's.
+    pub listed: usize,
+    /// Those skipped because they report another vendor and product.
+    pub skipped: usize,
+}
+
+/// Opens the LampArrays of one keyboard (Windows', or a fake in tests).
 pub trait HoldOpener: Send {
-    fn open(&mut self, vid: u16, pid: u16, changed: Changed) -> Vec<(bool, Box<dyn LampDevice>)>;
+    fn open(&mut self, vid: u16, pid: u16, changed: Changed) -> Opened;
+}
+
+/// Which transports Windows lists a LampArray of this keyboard on (the Lights worker's scan):
+/// `(usb, ble)`.
+pub type Listed = Box<dyn Fn(u16, u16) -> (bool, bool) + Send>;
+
+/// The LampArray watch's events (`scene_lamps::watch_lamp_arrays`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Watched {
+    /// The arrays already there are listed.
+    Enumerated,
+    /// One appeared (its device id).
+    Added(String),
+    /// One went.
+    Removed(String),
 }
 
 enum Job {
@@ -81,6 +119,10 @@ enum Job {
     Devices,
     /// Windows changed who may drive one of them.
     Changed,
+    /// Windows lists a new LampArray (or finished listing them): open any not held.
+    Listed,
+    /// Windows no longer lists this LampArray: let it go.
+    Gone(String),
     /// Foxglove paused (let every hold go) or resumed (hold them again).
     Paused(bool),
     Stop,
@@ -90,7 +132,9 @@ enum Job {
 struct Core {
     opener: Box<dyn HoldOpener>,
     keyboard: Option<(u16, u16)>,
-    held: Vec<(bool, Box<dyn LampDevice>)>,
+    held: Vec<HeldArray>,
+    /// The transports Windows lists the keyboard's LampArrays on.
+    listed: Listed,
     tx: mpsc::Sender<Job>,
     holds: Holds,
     /// Foxglove is paused: nothing is held, and nothing is opened until it resumes.
@@ -103,16 +147,29 @@ impl Core {
     /// Handles a batch; false once stopped.
     fn handle(&mut self, jobs: Vec<Job>) -> bool {
         let mut reopen = false;
+        // Open what isn't held, keeping what is.
+        let mut fill = false;
         for job in jobs {
             match job {
                 Job::Keyboard(k) => {
                     if k != self.keyboard {
                         self.keyboard = k;
                         reopen = true;
+                    } else {
+                        // The same keyboard again: a transport Windows lists may have come
+                        // since the first open.
+                        let (usb, ble) = self.missing();
+                        fill |= usb || ble;
                     }
                 }
                 Job::Devices => reopen = true,
                 Job::Changed => {}
+                Job::Listed => fill = true,
+                Job::Gone(id) => {
+                    let before = self.held.len();
+                    self.held.retain(|h| h.id != id);
+                    fill |= self.held.len() != before;
+                }
                 Job::Paused(p) => {
                     if p != self.paused {
                         self.paused = p;
@@ -129,16 +186,58 @@ impl Core {
         if reopen {
             // Let go first: one unplugged and back is a new device to Windows.
             self.held.clear();
-            if let Some((vid, pid)) = self.keyboard.filter(|_| !self.paused) {
-                let tx = self.tx.clone();
-                let changed: Changed = Arc::new(move || {
-                    let _ = tx.send(Job::Changed);
-                });
-                self.held = self.opener.open(vid, pid, changed);
-            }
+        }
+        if reopen || fill {
+            self.open(if reopen {
+                "a reopen"
+            } else {
+                "a LampArray change"
+            });
         }
         self.publish();
         true
+    }
+
+    /// Opens the keyboard's LampArrays, adding those not held yet (the held ones stay as they
+    /// are), and logs what each transport got.
+    fn open(&mut self, why: &str) {
+        let Some((vid, pid)) = self.keyboard.filter(|_| !self.paused) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let changed: Changed = Arc::new(move || {
+            let _ = tx.send(Job::Changed);
+        });
+        let opened = self.opener.open(vid, pid, changed);
+        for a in opened.held {
+            // A second handle on one held is dropped (closed) here.
+            if !self.held.iter().any(|h| h.id == a.id) {
+                self.held.push(a);
+            }
+        }
+        let (usb, ble) = (self.listed)(vid, pid);
+        eprintln!(
+            "Foxglove: keyboard LampArrays after {why}: USB {}, BLE {} ({} LampArrays listed, {}              skipped by VID/PID)",
+            claim_words(self.has(false), usb),
+            claim_words(self.has(true), ble),
+            opened.listed,
+            opened.skipped
+        );
+    }
+
+    /// Holds one of this transport's arrays.
+    fn has(&self, ble: bool) -> bool {
+        self.held.iter().any(|h| h.ble == ble)
+    }
+
+    /// Per transport `(usb, ble)`: Windows lists the keyboard's LampArray there, and none is
+    /// held. Nothing is missing while paused or without a keyboard.
+    fn missing(&self) -> (bool, bool) {
+        let Some((vid, pid)) = self.keyboard.filter(|_| !self.paused) else {
+            return (false, false);
+        };
+        let (usb, ble) = (self.listed)(vid, pid);
+        (usb && !self.has(false), ble && !self.has(true))
     }
 
     fn publish(&mut self) {
@@ -146,8 +245,8 @@ impl Core {
             let mine: Vec<bool> = self
                 .held
                 .iter()
-                .filter(|(b, _)| *b == ble)
-                .map(|(_, d)| d.available())
+                .filter(|h| h.ble == ble)
+                .map(|h| h.device.available())
                 .collect();
             (!mine.is_empty()).then(|| mine.iter().any(|a| *a))
         };
@@ -168,6 +267,42 @@ impl Core {
     }
 }
 
+/// One transport in the open's log line: held, missed (Windows lists it, nothing held), or not
+/// listed.
+fn claim_words(held: bool, listed: bool) -> &'static str {
+    match (held, listed) {
+        (true, _) => "held",
+        (false, true) => "MISSED (listed by Windows, not held)",
+        (false, false) => "not listed",
+    }
+}
+
+/// The transports Windows lists the keyboard `vid`:`pid`'s LampArrays on, from `arrays` (the
+/// Lights worker's scan): `(usb, ble)`.
+pub fn listed_in(
+    arrays: &[foxglove_devices::pc_lighting::KeyboardLampArray],
+    vid: u16,
+    pid: u16,
+) -> (bool, bool) {
+    let of = |ble: bool| {
+        arrays
+            .iter()
+            .any(|a| (a.vid, a.pid) == (vid, pid) && a.bluetooth == ble)
+    };
+    (of(false), of(true))
+}
+
+/// [`listed_in`] for the host-link keyboard now (`None` without one): what the health rows
+/// compare the holds with.
+pub fn listed_now() -> Option<(bool, bool)> {
+    let (vid, pid) = keyboard()?;
+    Some(listed_in(
+        &super::pc_lights::snapshot().keyboard_lamp_arrays,
+        vid,
+        pid,
+    ))
+}
+
 fn words(h: Option<bool>) -> &'static str {
     match h {
         None => "not held",
@@ -186,12 +321,13 @@ fn send(job: Job) {
 }
 
 /// The holder thread with `opener`, its queue kept for [`send`].
-fn spawn(opener: Box<dyn HoldOpener>, notify: Arc<dyn Fn() + Send + Sync>) {
+fn spawn(opener: Box<dyn HoldOpener>, listed: Listed, notify: Arc<dyn Fn() + Send + Sync>) {
     let (tx, rx) = mpsc::channel();
     let mut core = Core {
         opener,
         keyboard: None,
         held: Vec::new(),
+        listed,
         tx: tx.clone(),
         holds: Holds::default(),
         paused: super::pause::paused(),
@@ -226,6 +362,9 @@ pub fn start() {
     }
     spawn(
         Box::new(super::scene_lamps::WindowsHolds),
+        Box::new(|vid, pid| {
+            listed_in(&super::pc_lights::snapshot().keyboard_lamp_arrays, vid, pid)
+        }),
         Arc::new(|| {
             // Windows may have taken or given back the keyboard: a held scene tries its host
             // link once, and the pages repaint with the owner line.
@@ -233,6 +372,7 @@ pub fn start() {
             super::lights_owner::repaint();
         }),
     );
+    watch();
     let events = super::devices::bus().subscribe(false);
     super::services::spawn_named("lamp-hold-events", move || {
         send(Job::Keyboard(keyboard()));
@@ -242,6 +382,24 @@ pub fn start() {
             }
         }
     });
+}
+
+/// The watch on the LampArrays Windows lists, kept for the app's life (the process's end stops
+/// it; after Quit the holder's queue is gone, so later events go nowhere).
+fn watch() {
+    #[cfg(target_os = "windows")]
+    match super::scene_lamps::watch_lamp_arrays(|w| send(job_for(w))) {
+        Ok(w) => std::mem::forget(w),
+        Err(e) => eprintln!("Foxglove: can't watch the Dynamic Lighting devices: {e}"),
+    }
+}
+
+/// The holder's job for a watch event.
+fn job_for(w: Watched) -> Job {
+    match w {
+        Watched::Enumerated | Watched::Added(_) => Job::Listed,
+        Watched::Removed(id) => Job::Gone(id),
+    }
 }
 
 /// The Lights worker scanned the Dynamic Lighting devices: the holds are opened afresh.
@@ -316,30 +474,41 @@ mod tests {
         }
     }
 
-    /// The keyboard 1d50:615e over USB and BLE at once.
+    /// The keyboard 1d50:615e over USB and BLE at once (BLE only while `ble_listed`, as when
+    /// Windows publishes the Bluetooth LampArray after the first open).
     struct FakeOpener {
         usb: Arc<Fake>,
         ble: Arc<Fake>,
         opened: Arc<AtomicU32>,
         changed: Arc<Mutex<Option<Changed>>>,
+        ble_listed: Arc<AtomicBool>,
     }
 
     impl HoldOpener for FakeOpener {
-        fn open(
-            &mut self,
-            vid: u16,
-            pid: u16,
-            changed: Changed,
-        ) -> Vec<(bool, Box<dyn LampDevice>)> {
+        fn open(&mut self, vid: u16, pid: u16, changed: Changed) -> Opened {
             if (vid, pid) != (0x1d50, 0x615e) {
-                return Vec::new();
+                return Opened::default();
             }
             self.opened.fetch_add(1, Ordering::SeqCst);
             *self.changed.lock().unwrap() = Some(changed);
-            vec![
-                (false, Box::new(FakeDevice(self.usb.clone()))),
-                (true, Box::new(FakeDevice(self.ble.clone()))),
-            ]
+            let mut held = vec![HeldArray {
+                id: "usb".into(),
+                ble: false,
+                device: Box::new(FakeDevice(self.usb.clone())),
+            }];
+            if self.ble_listed.load(Ordering::SeqCst) {
+                held.push(HeldArray {
+                    id: "ble".into(),
+                    ble: true,
+                    device: Box::new(FakeDevice(self.ble.clone())),
+                });
+            }
+            let listed = held.len();
+            Opened {
+                held,
+                listed,
+                skipped: 0,
+            }
         }
     }
 
@@ -351,6 +520,8 @@ mod tests {
         opened: Arc<AtomicU32>,
         changed: Arc<Mutex<Option<Changed>>>,
         told: Arc<AtomicU32>,
+        /// Windows lists the Bluetooth LampArray (the opener finds it, the scan names it).
+        ble_listed: Arc<AtomicBool>,
     }
 
     fn rig() -> Rig {
@@ -358,17 +529,24 @@ mod tests {
         let opened = Arc::new(AtomicU32::new(0));
         let changed = Arc::new(Mutex::new(None));
         let told = Arc::new(AtomicU32::new(0));
+        let ble_listed = Arc::new(AtomicBool::new(true));
         let (tx, rx) = mpsc::channel();
         let t = told.clone();
+        let l = ble_listed.clone();
         let core = Core {
             opener: Box::new(FakeOpener {
                 usb: usb.clone(),
                 ble: ble.clone(),
                 opened: opened.clone(),
                 changed: changed.clone(),
+                ble_listed: ble_listed.clone(),
             }),
             keyboard: None,
             held: Vec::new(),
+            listed: Box::new(move |vid, pid| {
+                let ours = (vid, pid) == CORNE;
+                (ours, ours && l.load(Ordering::SeqCst))
+            }),
             tx,
             holds: Holds::default(),
             paused: false,
@@ -384,6 +562,7 @@ mod tests {
             opened,
             changed,
             told,
+            ble_listed,
         }
     }
 
@@ -508,6 +687,84 @@ mod tests {
             r.usb.writes.load(Ordering::SeqCst) + r.ble.writes.load(Ordering::SeqCst),
             0
         );
+    }
+
+    /// The diagnosis' case (11/07): the first open finds only USB (Windows publishes the
+    /// Bluetooth LampArray later); the watch's arrival opens BLE and keeps the USB hold as it is.
+    #[test]
+    fn a_lamp_array_that_appears_later_is_held_too() {
+        let mut r = rig();
+        r.usb.available.store(true, Ordering::SeqCst);
+        r.ble.available.store(true, Ordering::SeqCst);
+        r.ble_listed.store(false, Ordering::SeqCst);
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        assert_eq!(r.core.holds.ble, None);
+        r.ble_listed.store(true, Ordering::SeqCst);
+        r.core.handle(vec![job_for(Watched::Added("ble".into()))]);
+        assert_eq!(r.core.holds.ble, Some(true));
+        assert_eq!(r.core.holds.usb, Some(true));
+        assert_eq!(
+            r.usb.dropped.load(Ordering::SeqCst),
+            1,
+            "only the second USB handle closed: the first stays held"
+        );
+        assert_eq!(r.core.held.len(), 2);
+        // It goes: let go of it alone, then hold it again when it comes back.
+        r.ble_listed.store(false, Ordering::SeqCst);
+        r.core.handle(vec![job_for(Watched::Removed("ble".into()))]);
+        assert_eq!(r.core.holds.ble, None);
+        assert_eq!(r.core.holds.usb, Some(true));
+        assert_eq!(r.ble.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            r.usb.writes.load(Ordering::SeqCst) + r.ble.writes.load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    /// A connect of the same keyboard reopens only when Windows lists a transport not held.
+    #[test]
+    fn the_same_keyboard_again_opens_a_listed_transport_not_held() {
+        let mut r = rig();
+        r.ble_listed.store(false, Ordering::SeqCst);
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 1);
+        // Nothing new listed: no open.
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 1);
+        assert_eq!(r.core.missing(), (false, false));
+        // The scan now lists BLE: the same keyboard's event opens it.
+        r.ble_listed.store(true, Ordering::SeqCst);
+        assert_eq!(r.core.missing(), (false, true));
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 2);
+        assert!(r.core.holds.ble.is_some());
+        assert_eq!(r.core.missing(), (false, false));
+        // Paused: nothing is missing, nothing opens.
+        r.core.handle(vec![Job::Paused(true)]);
+        assert_eq!(r.core.missing(), (false, false));
+    }
+
+    #[test]
+    fn the_log_words_say_held_missed_or_not_listed() {
+        assert_eq!(claim_words(true, true), "held");
+        assert!(claim_words(false, true).starts_with("MISSED"));
+        assert_eq!(claim_words(false, false), "not listed");
+        let arr = |key: &str, ble| foxglove_devices::pc_lighting::KeyboardLampArray {
+            key: key.into(),
+            name: "Corne".into(),
+            vid: 0x1d50,
+            pid: 0x615e,
+            bluetooth: ble,
+        };
+        assert_eq!(
+            listed_in(&[arr("1d50:615e", false)], 0x1d50, 0x615e),
+            (true, false)
+        );
+        assert_eq!(
+            listed_in(&[arr("a", false), arr("b", true)], 0x1d50, 0x615e),
+            (true, true)
+        );
+        assert_eq!(listed_in(&[arr("b", true)], 0xfeed, 1), (false, false));
     }
 
     #[test]
