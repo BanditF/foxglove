@@ -23,8 +23,10 @@
 //! The holds follow events only: a keyboard connect (the devices bus) and the Lights worker's
 //! scan of Dynamic Lighting devices ([`devices_changed`]) reopen them; `AvailabilityChanged`
 //! updates who has each one. Quit lets them go ([`stop`]), as does the process ending: Windows
-//! then hands each device to the next controller. Pause and away keep them (nothing is
-//! written, and letting go would hand the keyboard to Windows' controller).
+//! then hands each device to the next controller. **Pause lets them go** too, as scenes do: the
+//! user reads pause as hands off, so Windows' order decides meanwhile; resuming holds them again
+//! ([`pause_changed`]). Away and lock keep them (nothing is written, and letting go would hand
+//! the keyboard to Windows' controller).
 //! Without identity none of this runs: an unpackaged Foxglove only drives LampArrays from the
 //! front.
 
@@ -79,6 +81,8 @@ enum Job {
     Devices,
     /// Windows changed who may drive one of them.
     Changed,
+    /// Foxglove paused (let every hold go) or resumed (hold them again).
+    Paused(bool),
     Stop,
 }
 
@@ -89,6 +93,8 @@ struct Core {
     held: Vec<(bool, Box<dyn LampDevice>)>,
     tx: mpsc::Sender<Job>,
     holds: Holds,
+    /// Foxglove is paused: nothing is held, and nothing is opened until it resumes.
+    paused: bool,
     /// Told when what Foxglove holds changes (a held keyboard retries its host link once).
     notify: Arc<dyn Fn() + Send + Sync>,
 }
@@ -107,6 +113,12 @@ impl Core {
                 }
                 Job::Devices => reopen = true,
                 Job::Changed => {}
+                Job::Paused(p) => {
+                    if p != self.paused {
+                        self.paused = p;
+                        reopen = true;
+                    }
+                }
                 Job::Stop => {
                     self.held.clear();
                     self.publish();
@@ -117,7 +129,7 @@ impl Core {
         if reopen {
             // Let go first: one unplugged and back is a new device to Windows.
             self.held.clear();
-            if let Some((vid, pid)) = self.keyboard {
+            if let Some((vid, pid)) = self.keyboard.filter(|_| !self.paused) {
                 let tx = self.tx.clone();
                 let changed: Changed = Arc::new(move || {
                     let _ = tx.send(Job::Changed);
@@ -182,6 +194,7 @@ fn spawn(opener: Box<dyn HoldOpener>, notify: Arc<dyn Fn() + Send + Sync>) {
         held: Vec::new(),
         tx: tx.clone(),
         holds: Holds::default(),
+        paused: super::pause::paused(),
         notify,
     };
     *TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
@@ -234,6 +247,12 @@ pub fn start() {
 /// The Lights worker scanned the Dynamic Lighting devices: the holds are opened afresh.
 pub fn devices_changed() {
     send(Job::Devices);
+}
+
+/// Foxglove paused or resumed (`pause::set`): paused lets every hold go, resumed holds them
+/// again.
+pub fn pause_changed(paused: bool) {
+    send(Job::Paused(paused));
 }
 
 /// Quit: lets every held LampArray go (Windows hands each to the next controller).
@@ -352,6 +371,7 @@ mod tests {
             held: Vec::new(),
             tx,
             holds: Holds::default(),
+            paused: false,
             notify: Arc::new(move || {
                 t.fetch_add(1, Ordering::SeqCst);
             }),
@@ -451,6 +471,43 @@ mod tests {
         assert_eq!(r.usb.dropped.load(Ordering::SeqCst), 3);
         assert_eq!(r.ble.dropped.load(Ordering::SeqCst), 3);
         assert_eq!(r.core.holds, Holds::default());
+    }
+
+    /// The Hub's pick (11/07): pause is hands off, so the holds go as a scene's do, and come back
+    /// on resume; while paused a reconnect or device change opens nothing.
+    #[test]
+    fn pause_lets_the_holds_go_and_resume_takes_them_again() {
+        let mut r = rig();
+        r.usb.available.store(true, Ordering::SeqCst);
+        r.ble.available.store(true, Ordering::SeqCst);
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        let told = r.told.load(Ordering::SeqCst);
+        r.core.handle(vec![Job::Paused(true)]);
+        assert_eq!(r.core.holds, Holds::default(), "paused: nothing held");
+        assert_eq!(r.usb.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(r.ble.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            r.told.load(Ordering::SeqCst),
+            told + 1,
+            "the owner line hears"
+        );
+        r.core.handle(vec![
+            Job::Devices,
+            Job::Keyboard(Some(CORNE)),
+            Job::Paused(true),
+        ]);
+        assert_eq!(
+            r.opened.load(Ordering::SeqCst),
+            1,
+            "nothing opened while paused"
+        );
+        r.core.handle(vec![Job::Paused(false)]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 2);
+        assert!(r.core.holds.ours(Owner::LampArrayUsb) && r.core.holds.ours(Owner::LampArrayBle));
+        assert_eq!(
+            r.usb.writes.load(Ordering::SeqCst) + r.ble.writes.load(Ordering::SeqCst),
+            0
+        );
     }
 
     #[test]

@@ -52,11 +52,76 @@ pub fn rows_now() -> Vec<HealthRow> {
         .iter()
         .flat_map(rows)
         .collect();
-    out.extend(keyboard_rows(
-        &super::pc_lights::snapshot().keyboard_lamp_arrays,
-        super::scene_lamps::identity(),
+    let keyboards = super::pc_lights::snapshot().keyboard_lamp_arrays;
+    let identity = super::scene_lamps::identity();
+    out.extend(keyboard_rows(&keyboards, identity));
+    out.extend(identity_row(
+        super::identity::ENABLED,
+        identity,
+        super::identity::package_here(),
     ));
+    if identity && !keyboards.is_empty() {
+        out.extend(hold_rows(super::lamp_hold::now()));
+    }
     out
+}
+
+/// The package identity row (#179): OK with identity; WARN when this copy should have it and
+/// doesn't (the package is next to the exe, so it was installed or registered for this
+/// folder), naming the likely cause; none for an ordinary build without the package.
+pub fn identity_row(enabled: bool, has: bool, package_here: bool) -> Option<HealthRow> {
+    let row =
+        |level, detail: &str| HealthRow::new(SUBSYSTEM, "Dynamic Lighting identity", level, detail);
+    match (has, enabled, package_here) {
+        (true, _, _) => Some(row(
+            Level::Ok,
+            "Foxglove runs with package identity: Windows lists it under Settings > \
+             Personalization > Dynamic Lighting > Background light control",
+        )),
+        (false, true, true) => Some(row(
+            Level::Warn,
+            "This copy is built for package identity and its package is next to it, but it runs \
+             without: not registered for this folder yet, or its certificate isn't trusted \
+             (scripts\\dev-identity.ps1 plan). Dynamic Lighting devices follow Foxglove only \
+             while its window is in front",
+        )),
+        (false, false, true) => Some(row(
+            Level::Warn,
+            "The identity package is next to this exe, but this build has no identity manifest: \
+             rebuild with FOXGLOVE_SPARSE_IDENTITY=1 (and FOXGLOVE_IDENTITY_PUBLISHER for a dev \
+             certificate), or Windows' background light control skips Foxglove",
+        )),
+        (false, _, false) => None,
+    }
+}
+
+/// With identity, Foxglove's hold on the keyboard's own LampArrays, per transport (#179): WARN
+/// when Windows gives one to another controller (Foxglove ranks below it for that device).
+pub fn hold_rows(holds: super::lamp_hold::Holds) -> Vec<HealthRow> {
+    [("USB", holds.usb), ("Bluetooth", holds.ble)]
+        .into_iter()
+        .filter_map(|(via, held)| {
+            let item = format!("Keyboard LampArray over {via}");
+            Some(match held? {
+                true => HealthRow::new(
+                    SUBSYSTEM,
+                    item,
+                    Level::Ok,
+                    "Foxglove holds it as the background light controller",
+                ),
+                false => HealthRow::new(
+                    SUBSYSTEM,
+                    item,
+                    Level::Warn,
+                    format!(
+                        "Another controller has it: in Settings > Personalization > Dynamic \
+                         Lighting, drag Foxglove to the top of Background light control, and \
+                         check the keyboard's {via} device page. Foxglove never changes that setting"
+                    ),
+                ),
+            })
+        })
+        .collect()
 }
 
 /// One row per keyboard that is also a LampArray (#754): Windows lists it under Dynamic
@@ -295,5 +360,55 @@ mod tests {
         assert_eq!(l.len(), 3);
         assert_eq!(l[0].1, Level::Warn);
         assert_eq!(l[1].1, Level::Warn);
+    }
+
+    /// #179: the identity row says OK with identity, warns when this copy should have it (the
+    /// package is next to it) and names why, and stays away from ordinary builds.
+    #[test]
+    fn the_identity_row_catches_a_lost_identity() {
+        let ok = identity_row(true, true, true).unwrap();
+        assert_eq!(ok.level, Level::Ok);
+        assert!(ok.detail.contains("Background light control"));
+        let missing = identity_row(true, false, true).unwrap();
+        assert_eq!(missing.level, Level::Warn);
+        assert!(
+            missing.detail.contains("not registered"),
+            "{}",
+            missing.detail
+        );
+        let rebuilt = identity_row(false, false, true).unwrap();
+        assert_eq!(rebuilt.level, Level::Warn);
+        assert!(
+            rebuilt.detail.contains("FOXGLOVE_SPARSE_IDENTITY=1"),
+            "{}",
+            rebuilt.detail
+        );
+        assert_eq!(identity_row(false, false, false), None, "an ordinary build");
+        assert_eq!(
+            identity_row(true, false, false),
+            None,
+            "a lab or worktree copy"
+        );
+    }
+
+    #[test]
+    fn the_hold_rows_warn_per_transport_another_controller_has() {
+        use crate::foxglove::lamp_hold::Holds;
+        let r = hold_rows(Holds {
+            usb: Some(true),
+            ble: Some(false),
+        });
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].level, Level::Ok);
+        assert_eq!(r[1].level, Level::Warn);
+        assert!(
+            r[1].detail.contains("Bluetooth device page"),
+            "{}",
+            r[1].detail
+        );
+        assert!(
+            hold_rows(Holds::default()).is_empty(),
+            "nothing held: no rows"
+        );
     }
 }
