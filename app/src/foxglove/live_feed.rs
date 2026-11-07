@@ -892,7 +892,11 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
                     stream,
                     paused: false,
                 });
-                if !hub.join(id, &mut Streams(&mut clients)) {
+                if hub.join(id, &mut Streams(&mut clients)) {
+                    // A wallpaper connects when it has just loaded, from its saved properties:
+                    // wallpaper sync sends them again (the theme too).
+                    super::wallpaper_sync::reconnected();
+                } else {
                     dead.push(id);
                 }
             }
