@@ -67,6 +67,8 @@ pub struct Roles {
     pub accent3_light: Option<Rgb>,
 }
 
+// The lights' palette effects use these (#871 P2, the next PR); until then only the tests do.
+#[allow(dead_code)]
 impl Roles {
     /// The second accent, else `accent`: the degrade-to-accent rule (docs/palette.md).
     pub fn second(&self) -> Rgb {
@@ -253,6 +255,7 @@ pub fn bundled() -> &'static [PaletteFile] {
 }
 
 /// A bundled palette by its name.
+#[allow(dead_code)] // the lights' palette effects (#871 P2)
 pub fn by_name(name: &str) -> Option<&'static PaletteFile> {
     bundled().iter().find(|p| p.name == name)
 }
