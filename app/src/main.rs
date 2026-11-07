@@ -40,6 +40,8 @@ fn main() {
     if !foxglove::single_instance::claim() {
         return;
     }
+    // Foxglove: settings and log redirected into another app's package (started from it)?
+    foxglove::store_split::start();
     foxglove::update::start();
     os_layout::init();
     foxglove::gpu_reset::start(); // Foxglove (#346): a fresh copy after a GPU reset
