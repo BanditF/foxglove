@@ -84,10 +84,14 @@ config FOXGLOVE_SIM_KNOB
     bool "Simulator: knob case (knob.c and host_link.c, module/knob_sim.c plays the PC and the encoder)"
     depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS && !FOXGLOVE_SIM_RGB_STATE && !FOXGLOVE_SIM_PC_STATE && !FOXGLOVE_SIM_POLARITY && !FOXGLOVE_SIM_HEALTH
 
+config FOXGLOVE_SIM_HOLD_LEASE
+    bool "Simulator: hold-lease case (#847: art_keys.c, knob.c and host_link.c, module/hold_lease_sim.c plays the PC, the art key and the encoder)"
+    depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS && !FOXGLOVE_SIM_RGB_STATE && !FOXGLOVE_SIM_PC_STATE && !FOXGLOVE_SIM_POLARITY && !FOXGLOVE_SIM_HEALTH && !FOXGLOVE_SIM_KNOB && !FOXGLOVE_SIM_ART_KEYS
+
 # The shield's symbol (Kconfig.defconfig), for every source that asks.
 config FOXGLOVE_KNOB
     bool
-    default y if FOXGLOVE_SIM_KNOB
+    default y if FOXGLOVE_SIM_KNOB || FOXGLOVE_SIM_HOLD_LEASE
 
 # The shield's symbol (Kconfig.defconfig), for every source that asks.
 config FOXGLOVE_HEALTH

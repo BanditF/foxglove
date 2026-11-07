@@ -17,7 +17,8 @@
 //! Nothing is kept: the target lives as long as its session. When the session expires or
 //! disconnects the knob goes back to master and the keyboard is told. No hooks, no system
 //! volume keys intercepted. Polling: none. Start events: a link's connect, a knob event from the
-//! keyboard, a session change from Windows, pause/resume, quit. Each sends at most one report;
+//! keyboard, a session change from Windows, pause/resume, a lapsed hold lease (#847,
+//! `hold_lease.rs`), quit. Each sends at most one report;
 //! the thread sleeps on its channel between them.
 //!
 //! Which sessions have played (#854): Windows has no event for sound, so the knob reads the
@@ -341,6 +342,8 @@ enum Work {
     Report(Weak<Link>, foxglove_link::link::Report),
     Sessions(Change),
     Pause,
+    /// The keyboard let the knob go: Foxglove's hold lease lapsed (#847).
+    Lapsed(Weak<Link>),
 }
 
 static WORK: Mutex<Option<mpsc::Sender<Work>>> = Mutex::new(None);
@@ -355,6 +358,14 @@ fn held_link(link: Option<Weak<Link>>) -> Option<Weak<Link>> {
 pub fn pause_changed() {
     if let Some(tx) = WORK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         let _ = tx.send(Work::Pause);
+    }
+}
+
+/// The keyboard on `link` let the knob go because Foxglove's hold lease lapsed (#847,
+/// `hold_lease.rs`): master, and held again (while Foxglove runs unpaused).
+pub fn holds_lapsed(link: Weak<Link>) {
+    if let Some(tx) = WORK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(Work::Lapsed(link));
     }
 }
 
@@ -556,6 +567,18 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                 };
                 cycle.dropped();
                 tell(link, !super::pause::paused(), cycle.wire());
+            }
+            Work::Lapsed(weak) => {
+                if !current.as_ref().is_some_and(|c| Weak::ptr_eq(c, &weak)) {
+                    continue; // another keyboard's, or one Foxglove doesn't hold
+                }
+                // The keyboard is on master and unheld now: the same as a fresh connect.
+                cycle.dropped();
+                held_link(None);
+                knob_health::note(|h| h.held = false);
+                if !super::pause::paused() {
+                    tell(&weak, true, cycle.wire());
+                }
             }
         }
         cycle.note_health();

@@ -1,0 +1,101 @@
+lease: -- hello: word 2 has HOLD_LEASE
+lease: pc sends D5 01 01
+lease: pc sends D5 08
+lease: CAPS word 2 HOLD_LEASE 1
+lease: -- an app before #847: no lease, the holds stay through a minute of silence
+lease: pc sends D7 0D 01
+hostlink: rx D7 8D 00 01
+lease: pc sends D7 14 01 01
+hostlink: rx D7 94 00 00 01 01 03
+lease: pc quiet 60 s
+lease: art key
+hostlink: rx D7 8D 01 01
+lease: turn 1
+hostlink: rx D7 94 01 01 01 01
+lease: -- a lease of 30 s; a lease out of range answers 5 and changes nothing; a read
+lease: pc sends D7 15 1E
+hostlink: rx D7 95 00 00 1E 1E 03
+lease: pc sends D7 15 02
+hostlink: rx D7 95 00 05 1E 1E 03
+lease: pc sends D7 15 79
+hostlink: rx D7 95 00 05 1E 1E 03
+lease: pc sends D7 15 FF
+hostlink: rx D7 95 00 00 1E 1E 03
+lease: -- a live app answers each ask (a third of the lease after its last report): held
+lease: pc quiet 10 s
+hostlink: rx D7 95 01 00 1E 14 03
+lease: pc sends D7 15 1E
+hostlink: rx D7 95 00 00 1E 1E 03
+lease: pc quiet 10 s
+hostlink: rx D7 95 01 00 1E 14 03
+lease: pc sends D7 15 1E
+hostlink: rx D7 95 00 00 1E 1E 03
+lease: pc quiet 10 s
+hostlink: rx D7 95 01 00 1E 14 03
+lease: pc sends D7 15 1E
+hostlink: rx D7 95 00 00 1E 1E 03
+lease: art key
+hostlink: rx D7 8D 01 01
+lease: turn 1
+hostlink: rx D7 94 01 01 01 01 01
+lease: -- existing traffic renews: a report every 8 s, no ask
+lease: pc quiet 8 s
+lease: pc sends D5 01 01
+lease: pc quiet 8 s
+lease: pc sends D5 01 01
+lease: pc quiet 8 s
+lease: pc sends D5 01 01
+lease: pc quiet 8 s
+lease: pc sends D5 01 01
+lease: pc quiet 8 s
+lease: pc sends D5 01 01
+lease: art key
+hostlink: rx D7 8D 01 01
+lease: turn 1
+hostlink: rx D7 94 01 01 01 01 02
+lease: -- the app is killed: asks at 10 and 20 s, every hold let go at 30 s
+lease: pc quiet 35 s
+hostlink: rx D7 95 01 00 1E 14 03
+hostlink: rx D7 95 01 00 1E 0A 03
+hostlink: rx D7 95 02 00 1E 00 03 01
+lease: art key
+lease: board steps 1
+lease: turn 1
+kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+lease: -- the PC's next report hears of the lapse; it takes the holds back
+lease: pc sends D5 01 01
+hostlink: rx D7 95 02 00 1E 00 03 01
+lease: pc sends D7 0D 01
+hostlink: rx D7 8D 00 01
+lease: pc sends D7 14 01 01
+hostlink: rx D7 94 00 00 01 01 03
+lease: art key
+hostlink: rx D7 8D 01 01
+lease: turn 1
+hostlink: rx D7 94 01 01 01 01 03
+lease: -- nothing held: nothing asked, nothing lapses
+lease: pc sends D7 0D 00
+hostlink: rx D7 8D
+lease: pc sends D7 14 00
+hostlink: rx D7 94 00 00 00 00 03
+lease: pc quiet 40 s
+lease: pc sends D7 15 FF
+hostlink: rx D7 95 00 00 1E 00 00 01
+lease: -- the lease off (D7 15 00): a hold stays through silence
+lease: pc sends D7 15 00
+hostlink: rx D7 95 00 00 00 00 00 01
+lease: pc sends D7 0D 01
+hostlink: rx D7 8D 00 01
+lease: pc quiet 40 s
+lease: art key
+hostlink: rx D7 8D 01 01
+lease: -- the link drops (an endpoint change): the holds and the lease go
+lease: pc sends D7 15 1E
+hostlink: rx D7 95 00 00 1E 1E 01 01
+lease: the endpoint changes
+lease: pc sends D7 15 FF
+hostlink: rx D7 95 00 00 00 00 00 01
+lease: art key
+lease: board steps 1
+lease: -- done

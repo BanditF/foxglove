@@ -9,7 +9,7 @@
 //! | D5 81 HELLO reply | 2 | version: **2** from HELLO v2 firmware on (1 before); the rest as before |
 //! | D5 08 CAPS (PC) | 0-1 | `D5 08`, nothing else |
 //! | D5 88 CAPS reply | 2 | n: the words that follow (1 today, at most [`MAX_WORDS`]) |
-//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`) |
+//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`, 34 `HOLD_LEASE`) |
 //! | | 7-30 | words 3-8, when n says so |
 //!
 //! Both ways stay compatible:
@@ -65,6 +65,11 @@ pub mod capabilities {
     pub fn art_pace(word1: u32, word2: u32) -> bool {
         word1 & crate::protocol::capabilities::ART_RELAY != 0 && word2 & ART_PACE != 0
     }
+
+    /// Capability 34 (#847): D7 15 HOLD_LEASE ([`crate::protocol::hold_lease`]). The modes the PC
+    /// holds (art keys, knob) lapse when a PC that set a lease goes silent; the keyboard asks for
+    /// the renewal. Every board with it has it, whatever its keymap.
+    pub const HOLD_LEASE: u32 = 1 << 2;
 }
 
 /// The PC's request: D5 08.
@@ -409,6 +414,27 @@ mod tests {
             c::ART_RELAY,
             capabilities::ART_LOCAL
         ));
+    }
+
+    /// HOLD_LEASE (#847): capability 34, on every board. The Corne's D5 88 in the hostlink sim
+    /// case (01 04) and the art-local cases' (word 2 = 7) both say it.
+    #[test]
+    fn hold_lease_is_capability_34() {
+        assert_eq!(
+            capabilities::HOLD_LEASE,
+            4,
+            "capability 34 is word 2's bit 2"
+        );
+        let h = Hello::parse(&hello_reply(2));
+        let board = Board::new(vec![Ok(caps_reply(&[0xD5, 0x88, 1, 4]))]);
+        assert_ne!(read(&board, &h).word2() & capabilities::HOLD_LEASE, 0);
+        let board = Board::new(vec![Ok(caps_reply(&[0xD5, 0x88, 1, 7]))]);
+        assert_ne!(read(&board, &h).word2() & capabilities::HOLD_LEASE, 0);
+        let old = Hello::parse(&hello_reply(1));
+        assert_eq!(
+            read(&Board::new(vec![]), &old).word2() & capabilities::HOLD_LEASE,
+            0
+        );
     }
 
     /// Word 1 by name: every bit, a few, none, and no HELLO.

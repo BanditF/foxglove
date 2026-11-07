@@ -1,0 +1,9 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    // No key presses: module/hold_lease_sim.c plays the PC, the art key and the encoder and ends
+    // the run when it is done ("lease: -- done"), so a driver that stops early fails on the
+    // snapshot.
+    /delete-property/ exit-after;
+    events = <ZMK_MOCK_RELEASE(4,0,10)>;
+};

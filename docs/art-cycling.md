@@ -154,8 +154,10 @@ store keeps `position` across restarts, as now.
   on each D7 8D 01 (even over layer or preset art, as Next › does) and shows the card on the
   left screen (`render::draw_art_card`, `screens::show_art_card`, 1.2 s, ended by the panel
   loop's own deadline; a plugin's frame stays on top). Pause hands the keys back (D7 0D 00), and
-  Quit does too before it exits (one request, 300 ms at most). A crash leaves them with the PC
-  until the next USB disconnect or endpoint change, when the board takes them back itself.
+  Quit does too before it exits (one request, 300 ms at most). A crash or a kill: on firmware
+  with the hold lease (#847, HELLO v2 word 2's bit 34; `hold_lease.rs`) the board takes them back
+  itself 30 s after Foxglove goes quiet; on older firmware they stay with the PC until the next
+  USB disconnect or endpoint change.
 - **Health** (`art_keys_health.rs`, for the shared Keyboard health view, #705): subsystem
   `screens.art_keys`, three rows: **Held** (Foxglove holds the keys, the keyboard steps its own
   art, or the firmware has none: Warn), **Presses** (pressed and stepped; Warn with the last

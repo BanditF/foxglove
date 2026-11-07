@@ -2,7 +2,7 @@ artlocal: -- hello: the art bits, word 2's ART_LOCAL, the screens (art target on
 artlocal: pc sends D5 01 01
 artlocal: HELLO art push 1, slots 1, store 1, status events 0
 artlocal: pc sends D5 08
-artlocal: CAPS words 1, word 2 0x00000003 (ART_LOCAL 1, ART_PACE 1)
+artlocal: CAPS words 1, word 2 0x00000007 (ART_LOCAL 1, ART_PACE 1)
 artlocal: pc sends D5 06 00
 hostlink: rx D5 86 00 03 00 00 00 00 FF 90 00 A8 00 00 00 00 00 00 00 00 00 12 00 00 FF 01
 artlocal: pc sends D5 06 01

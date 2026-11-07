@@ -189,6 +189,13 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
     zephyr_library_compile_definitions(FOXGLOVE_HAS_HOST_LINK)
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/knob.c knob_sim.c)
   endif()
+  if(CONFIG_FOXGLOVE_SIM_HOLD_LEASE)
+    # The held modes' lease (#847): the real &art_next and &knob behaviours, asking the real
+    # host_link.c; the board-side art step prints instead.
+    zephyr_library_compile_definitions(FOXGLOVE_HAS_HOST_LINK)
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_keys.c ${FOXGLOVE_WIDGETS}/knob.c
+                           hold_lease_sim.c)
+  endif()
   if(CONFIG_FOXGLOVE_TEST_HOOKS)
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/test_hooks.c)
   endif()

@@ -2,7 +2,7 @@ artlocal: -- hello: word 2's ART_PACE; the art target's v2 descriptor: e-paper (
 artlocal: pc sends D5 01 01
 artlocal: HELLO art push 1, slots 1, store 1, status events 0
 artlocal: pc sends D5 08
-artlocal: CAPS words 1, word 2 0x00000003 (ART_LOCAL 1, ART_PACE 1)
+artlocal: CAPS words 1, word 2 0x00000007 (ART_LOCAL 1, ART_PACE 1)
 artlocal: pc sends D5 06 02
 hostlink: rx D5 86 00 03 02 02 02 00 00 90 00 70 00 00 00 00 00 00 00 0C 00 00 80 00 FF 02 02 01 0A
 artlocal: -- built-in 1 (2 frames, 8 fps): e-paper without the PC's go, first frame only

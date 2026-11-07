@@ -163,10 +163,15 @@ void health_sim_driver(void);
 void colour_swirl_sim_driver(void);
 void knob_sim_driver(void);
 void art_local_sim_driver(void);
+void hold_lease_sim_driver(void);
 
 static void driver(void) {
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_ART_LOCAL)) {
         art_local_sim_driver(); // the art-local case plays the app on a single-screen board
+        return;
+    }
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_HOLD_LEASE)) {
+        hold_lease_sim_driver(); // the hold-lease case plays the app, the art key and the knob
         return;
     }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_KNOB)) {
@@ -224,7 +229,8 @@ static void driver(void) {
     note("hello: version, caps, panel timeout, build");
     SEND(0xD5, 0x01, 0x01);
 
-    // HELLO v2: version byte 2 above says D5 08 answers; one word (word 2), no bits defined yet.
+    // HELLO v2: version byte 2 above says D5 08 answers; one word (word 2): bit 34 HOLD_LEASE
+    // (#847) on every board, the art bits only on a single-screen one.
     note("hello v2: the capability words past HELLO's (D5 08)");
     SEND(0xD5, 0x08);
 

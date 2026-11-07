@@ -265,6 +265,8 @@ pub mod settings {
     pub const HEALTH: u8 = 0x13;
     /// The PC holds the knob (#719): see [`super::knob`].
     pub const KNOB: u8 = 0x14;
+    /// The host-held modes' lease (#847): see [`super::hold_lease`].
+    pub const HOLD_LEASE: u8 = 0x15;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -1048,8 +1050,8 @@ impl PcState {
 
 /// ART_KEYS (D7 0D, HELLO bit 16): `on` hands the `&art_next` / `&art_prev` presses to the PC as
 /// [`art_key_event`]s instead of the board stepping its own art. The board drops the
-/// subscription on a USB disconnect or an endpoint change; there is no keep-alive, so the PC
-/// subscribes again after each HELLO. The reply is D7 8D, 00, on.
+/// subscription on a USB disconnect, an endpoint change or a lapsed [`hold_lease`] (#847), so the
+/// PC subscribes again after each HELLO. The reply is D7 8D, 00, on.
 pub fn art_keys(on: bool) -> Vec<u8> {
     vec![SETTINGS, settings::ART_KEYS, u8::from(on)]
 }
@@ -1073,13 +1075,149 @@ pub fn is_pc_state_event(r: &[u8]) -> bool {
     is_reply(r, SETTINGS, settings::PC_STATE) && r.get(3).is_some_and(|&e| e != 0)
 }
 
+/// The host-held modes' lease (#847, D7 15 HOLD_LEASE, HELLO v2 word 2's
+/// [`crate::hello_v2::capabilities::HOLD_LEASE`]; firmware widgets/host_link.h). The modes the PC
+/// takes from the board, the art keys ([`art_keys`]) and the knob ([`knob`]), end when the PC goes
+/// silent. Without a lease (every app before #847) only the link ends them (a USB disconnect, an
+/// endpoint change). With one, any host-link report renews it; while a mode is held and the PC is
+/// quiet the keyboard asks ([`Kind::Ask`]) a third and two thirds of the lease after the PC's last
+/// report, and the PC answers with [`set`] again. At the full lease the keyboard lets every mode
+/// go and says so ([`Kind::Lapsed`], again after the PC's next report unless it took a mode back
+/// first); the PC takes them again. A link drop clears the lease: set it after each HELLO.
+///
+/// [`Kind::Ask`]: hold_lease::Kind::Ask
+/// [`Kind::Lapsed`]: hold_lease::Kind::Lapsed
+/// [`set`]: hold_lease::set
+pub mod hold_lease {
+    use super::{is_reply, settings, SETTINGS};
+
+    /// The shortest and longest lease the keyboard takes, in seconds (0 is none).
+    pub const MIN_S: u8 = 3;
+    pub const MAX_S: u8 = 120;
+    /// The read request's lease byte.
+    pub const READ: u8 = 0xff;
+
+    /// D7 95's held bits: the modes the PC holds (or, in [`Kind::Lapsed`], the ones let go).
+    pub const HELD_ART_KEYS: u8 = 1 << 0;
+    pub const HELD_KNOB: u8 = 1 << 1;
+
+    /// Sets the lease, `lease_s` seconds (0: none, holds end only with the link): D7 15 lease.
+    /// Sent again, it renews.
+    pub fn set(lease_s: u8) -> Vec<u8> {
+        vec![SETTINGS, settings::HOLD_LEASE, lease_s]
+    }
+
+    /// Reads the lease: D7 15 FF.
+    pub fn read() -> Vec<u8> {
+        vec![SETTINGS, settings::HOLD_LEASE, READ]
+    }
+
+    /// What a D7 95 is.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Kind {
+        /// The reply to a request.
+        Reply,
+        /// The lease ends soon: answer with [`set`] to renew it.
+        Ask,
+        /// The lease lapsed: the keyboard let the modes in `held` go; take them again.
+        Lapsed,
+    }
+
+    /// D7 95: kind, status, lease s, seconds left, held, lapses.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Report {
+        pub kind: Kind,
+        /// 0 ok, 5 bad (a lease out of range; nothing changed).
+        pub status: u8,
+        /// The lease set, 0 none.
+        pub lease_s: u8,
+        /// Seconds left before it lapses; 0 when none runs (none set, or nothing held).
+        pub left_s: u8,
+        /// [`HELD_ART_KEYS`], [`HELD_KNOB`]: held now, or let go by a lapse.
+        pub held: u8,
+        /// Lapses since the keyboard's boot (saturating at 255).
+        pub lapses: u8,
+    }
+
+    /// A D7 95; `None` for anything else, or a kind this app doesn't know.
+    pub fn parse(r: &[u8]) -> Option<Report> {
+        if !is_reply(r, SETTINGS, settings::HOLD_LEASE) || r.len() < 8 {
+            return None;
+        }
+        let kind = match r[2] {
+            0 => Kind::Reply,
+            1 => Kind::Ask,
+            2 => Kind::Lapsed,
+            _ => return None,
+        };
+        Some(Report {
+            kind,
+            status: r[3],
+            lease_s: r[4],
+            left_s: r[5],
+            held: r[6],
+            lapses: r[7],
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn report(bytes: &[u8]) -> [u8; crate::protocol::REPORT] {
+            let mut r = [0u8; crate::protocol::REPORT];
+            r[..bytes.len()].copy_from_slice(bytes);
+            r
+        }
+
+        #[test]
+        fn requests_are_the_firmwares() {
+            assert_eq!(set(30), [0xD7, 0x15, 30]);
+            assert_eq!(set(0), [0xD7, 0x15, 0]);
+            assert_eq!(read(), [0xD7, 0x15, 0xff]);
+        }
+
+        // The bytes tests/zmk-sim/hold-lease pins.
+        #[test]
+        fn reports_parse_as_the_simulator_prints_them() {
+            assert_eq!(
+                parse(&report(&[0xD7, 0x95, 0, 0, 0x1E, 0x1E, 3])),
+                Some(Report {
+                    kind: Kind::Reply,
+                    status: 0,
+                    lease_s: 30,
+                    left_s: 30,
+                    held: HELD_ART_KEYS | HELD_KNOB,
+                    lapses: 0,
+                })
+            );
+            let ask = parse(&report(&[0xD7, 0x95, 1, 0, 0x1E, 0x14, 3])).unwrap();
+            assert_eq!((ask.kind, ask.left_s), (Kind::Ask, 20));
+            let lapsed = parse(&report(&[0xD7, 0x95, 2, 0, 0x1E, 0, 3, 1])).unwrap();
+            assert_eq!(
+                (lapsed.kind, lapsed.held, lapsed.lapses),
+                (Kind::Lapsed, 3, 1)
+            );
+            let bad = parse(&report(&[0xD7, 0x95, 0, 5, 0x1E, 0x1E, 3])).unwrap();
+            assert_eq!(bad.status, 5);
+            assert_eq!(parse(&report(&[0xD7, 0x95, 9])), None, "an unknown kind");
+            assert_eq!(
+                parse(&report(&[0xD7, 0x94, 0, 0, 1, 1, 3])),
+                None,
+                "the knob's"
+            );
+            assert_eq!(parse(&[0xD7, 0x95, 1]), None, "cut short");
+        }
+    }
+}
+
 /// The knob (#719, D7 14 KNOB, HELLO bit 31; firmware widgets/knob.h, host_link.h): the keymap's
 /// `&knob` (an encoder's turns) and `&knob_press` (its click), which the PC may hold. Unheld they
 /// are their fallback keys (the volume keys and mute). Held, the click, a double click and a hold
 /// come as [`knob::Event`]s, and so do the turns while the target is an app; on master the turns
 /// stay the keys, and a double click also taps mute on the board. The board drops the hold on a
-/// USB disconnect or an endpoint change ([`knob::EventKind::HandedBack`] for the latter); there
-/// is no keep-alive, so the PC holds again after each HELLO.
+/// USB disconnect, an endpoint change ([`knob::EventKind::HandedBack`] for that one) or a lapsed
+/// [`hold_lease`] (#847), so the PC holds again after each HELLO.
 pub mod knob {
     use super::{is_reply, settings, SETTINGS};
 

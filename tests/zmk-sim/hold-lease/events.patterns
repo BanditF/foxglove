@@ -1,0 +1,10 @@
+# The lease (module/hold_lease_sim.c): word 2's bit 34; an app before #847 (no lease) keeps its
+# holds through silence; a 30 s lease, bad leases answer 5; a live app answers the asks and keeps
+# both holds, other traffic renews without asks; a killed app gets two asks and both holds lapse
+# at 30 s (the art key steps on the board, the knob is the volume key); the next report hears of
+# it and the holds come back; nothing held asks nothing; D7 15 00 and a link drop end the lease.
+/^lease: /p
+/^hostlink: rx D7 95/p
+/^hostlink: rx D7 8D/p
+/^hostlink: rx D7 94/p
+s/.*hid_listener_keycode/kp/p

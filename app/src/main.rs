@@ -62,6 +62,7 @@ fn main() {
     foxglove::reassert::start(); // Foxglove (#618): re-apply device state after events that lose it
     foxglove::pc_state::start(); // Foxglove (#609, #604): the PC awake or away, for the keyboard's idle
     foxglove::knob::start(); // Foxglove (#719): the knob on master or an app's volume
+    foxglove::hold_lease::start(); // Foxglove (#847): the keyboard lets the held modes go when it's gone
     foxglove::devices::start(); // Foxglove: find the host-link keyboard whenever a link connects
     foxglove::keyboard_facts::start();
     foxglove::focus_pins::start(); // Foxglove (#801): views follow the focused keyboard
