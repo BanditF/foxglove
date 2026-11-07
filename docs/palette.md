@@ -80,6 +80,7 @@ against the ground. The Rust reader (`palette_file::readable`) and the wallpaper
 |---|---|
 | App theme (`theme.rs`) | dark: `accent`, `highlight` (hover); light: `accent_light`. The other theme tokens (grounds, text, status colours) stay the theme's own. |
 | Scenes (`scene_looks.rs`) | `stops` is the **Bandit** palette, `base` the **Night** background, `accent` the demo scanline's colour. |
+| Scenes' palettes | Each bundled palette's `stops`, Bandit's first (#871). |
 | Lights | `accent`. Only its hue and saturation reach a device; per-device correction stays in the drivers' calibration, not in the palette. |
 | Art previews | None: `art_preview.rs` keeps white on black on purpose, because the previews mimic the keyboard's 1-bit nice!view screen (#610). The palette doesn't tint them. |
 | Wallpapers (`shared/bandit.js`) | `orange` ← `accent`, `orangeLight` ← `highlight`, `orangeDark` ← `deep`, `cream` ← `ink`, `bg` ← `base`, `paper`, `paperInk` ← `paper_ink`; the `schemecolor` default ← `accent`. |
@@ -116,8 +117,11 @@ manifests name the palette.
 Bandit's single orange stays the default and isn't changed. The harmony palettes add to the
 library: each one keeps the fox and Bandit orange `#f08a3c` (HSL hue 26°) as the anchor. Then it
 adds one or two colours from the colour wheel as accents. They are new files next to
-`bandit.json`. No reader loads them yet: the app's reader skips `accent2` / `accent3` today
-(they are additive v1 roles), and listing the files in the app is #871.
+`bandit.json`. The app bundles them (`palette_file::bundled`, #871): the Scenes page lists them
+after **Bandit**, and the reader takes `accent2` / `accent3` and their `_light` shades as
+optional roles (`Roles::second` and `Roles::third` fall back to `accent`, like
+`var(--accent2, var(--accent))`). A reader from before #871 still reads the files: it skips the
+roles it doesn't know.
 
 | File | Name | Harmony | Second accent (`accent2`) | Third accent (`accent3`) | Night (`base`) |
 |---|---|---|---|---|---|
