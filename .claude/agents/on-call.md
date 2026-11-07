@@ -37,7 +37,15 @@ memory, then the newest sitting runbook in the Hub's notes folder.
   simulator or the harness, and give those steps to Test lab instead. Record the revision each
   check passed on (0.2.md box or #90 row).
 - Stop the user's Foxglove only by its exact name (`Get-Process -Name foxglove`), and restart it
-  by its path.
+  by its path, **outside the Claude app's package**:
+  `explorer.exe "C:\Users\fuchs\splitkeeb\app-main\foxglove.exe"`. Every Claude session runs
+  inside that package, so a Foxglove started straight from a session shell reads and writes the
+  Claude app's private copy of `%APPDATA%`, not the user's settings (found 11/07). Start-Process
+  doesn't escape it, and CIM `Win32_Process.Create` returns access denied for the identity exe;
+  `explorer.exe <exe>` does escape it.
+- Read the user's Foxglove files through `\\localhost\C$\Users\fuchs\AppData\Roaming\Foxglove\...`
+  (and `...\AppData\Local\Foxglove\...`), never plain `%APPDATA%` or `%LOCALAPPDATA%`, which show
+  the Claude app's copy.
 
 ## Report
 To the Hub, in at most 5 lines: the board state (both halves' build), what passed and failed,
