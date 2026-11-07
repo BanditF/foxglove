@@ -94,9 +94,31 @@ pub fn after_register(registered: bool, relaunched: bool) -> Next {
 }
 
 /// Whether this start may register at all: a build with the identity manifest, no identity
-/// yet, not elevated (registration is per user), and not a sandboxed run.
-pub fn may_register(enabled: bool, has_identity: bool, elevated: bool, sandboxed: bool) -> bool {
-    enabled && !has_identity && !elevated && !sandboxed
+/// yet (or an older package than the one shipped, [`needs_update`]), not elevated
+/// (registration is per user), and not a sandboxed run.
+pub fn may_register(enabled: bool, current: bool, elevated: bool, sandboxed: bool) -> bool {
+    enabled && !current && !elevated && !sandboxed
+}
+
+/// Whether the registered package (`registered`, its four-part version) is older than the one
+/// this build ships ([`VERSION`]): an MSI upgrade with a changed package registers it again, in
+/// place, so the identity and the user's Settings order stay.
+pub fn needs_update(registered: [u16; 4], shipped: &str) -> bool {
+    let mut parts = shipped.split('.').map(|p| p.parse::<u16>().unwrap_or(0));
+    let shipped: [u16; 4] = std::array::from_fn(|_| parts.next().unwrap_or(0));
+    registered < shipped
+}
+
+/// This process has identity from the package this build ships (not an older one).
+#[cfg(windows)]
+fn identity_is_current() -> bool {
+    let Ok(package) = windows::ApplicationModel::Package::Current() else {
+        return false;
+    };
+    match package.Id().and_then(|id| id.Version()) {
+        Ok(v) => !needs_update([v.Major, v.Minor, v.Build, v.Revision], VERSION),
+        Err(_) => true,
+    }
 }
 
 /// The logos missing from `dir` (the install folder): Settings shows a blank icon without them.
@@ -121,7 +143,7 @@ pub fn start() {
         super::services::spawn_named("identity", || {
             let sandboxed = std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some()
                 || super::store::test_sandbox().is_some();
-            if !may_register(ENABLED, has_identity(), elevated(), sandboxed) {
+            if !may_register(ENABLED, identity_is_current(), elevated(), sandboxed) {
                 return;
             }
             let registered = match register() {
@@ -352,6 +374,17 @@ mod tests {
         );
         assert_eq!(after_register(false, false), Next::Nothing);
         assert_eq!(after_register(false, true), Next::Nothing);
+    }
+
+    /// #179: an MSI upgrade that ships a newer package registers it again; the same or an
+    /// older one (a downgrade the MSI refuses anyway) doesn't.
+    #[test]
+    fn a_newer_package_is_registered_over_an_older_one() {
+        assert!(needs_update([1, 0, 0, 0], "1.0.1.0"));
+        assert!(!needs_update([1, 0, 1, 0], "1.0.1.0"));
+        assert!(!needs_update([1, 0, 2, 0], "1.0.1.0"));
+        assert!(needs_update([1, 0, 1, 0], "1.1.0.0"));
+        assert!(!needs_update([1, 0, 1, 0], VERSION), "this build's own");
     }
 
     #[test]
