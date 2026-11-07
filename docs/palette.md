@@ -134,8 +134,9 @@ cool light, not as a second brand colour.
 ### Usage rule (every harmony palette)
 
 - **The fox is never recoloured.** It keeps its orange, cream and ink in every palette.
-- **Orange keeps the most accent area.** `accent2` covers at most **10 %** of a surface's area,
-  and `accent3` at most **3 %**. Orange always covers at least as much as `accent2`.
+- **Orange keeps the most accent area.** `accent2` covers at most **15 %** of a surface's area,
+  and `accent3` at most **3 %**. Orange always covers at least as much as `accent2`. (Raised
+  from 10 % at the taste check, 11/07.)
 - **Where `accent2` goes:** the second ring and the compass nodes of a HUD, one secondary
   value (for example the signal state), peak caps on audio bars, progress fills, the status dot,
   a scanline tint and an ambient glow behind the motif. The tint and the glow stay at 7 %
@@ -145,7 +146,8 @@ cool light, not as a second brand colour.
 - **Lights:** orange on the alpha keys, `accent2` on the thumb keys (6 of 42), `accent3` on the
   homing keys F and J (2 of 42). Effects are slow and smooth: a two-tone breathe (orange and
   `accent2` in opposite phase, 8 s loop, never below 35 %) or a slow gradient sweep through the
-  stops for Ember. No flashes and no strobing; nothing changes faster than once per 2 s.
+  stops for Ember. Effects only may pass the area budget while they run (Ember's sweep); a still
+  surface never does. No flashes and no strobing; nothing changes faster than once per 2 s.
 - **Light grounds** use the `_light` roles for text. Bandit's hand-picked `accent_light` is
   4.98:1 on the app's white cards but 4.0:1 on `paper`: on `paper` use it for graphics and
   large text only. That's unchanged from Bandit.
@@ -184,5 +186,5 @@ promise fails the gate.
   and UI colour (ground, ink, accent), with the second accent taking part of the 10. Adobe
   Color's harmony rules (complementary, split-complementary, triadic, analogous) for picking the
   hues. Radix Colors' habit of publishing contrast with every step.
-- **Design our own:** only the usage budget per surface (10 % / 3 %, the fox never recoloured)
+- **Design our own:** only the usage budget per surface (15 % / 3 %, the fox never recoloured)
   and the light mapping (thumbs, homing keys).
