@@ -85,11 +85,17 @@ fn main() {
     if let Some((path, _)) = &local {
         println!("cargo:rerun-if-changed={}", path.display());
     }
+    // local.toml only steers release builds: a test or dev build on this PC would otherwise get
+    // the identity cfg too and render the identity UI, so the gate's app tests would depend on
+    // this machine (#892's gate). The environment still applies to every profile.
+    let profile = std::env::var("PROFILE").unwrap_or_default();
     let identity = identity_build::resolve(
         |v| std::env::var(v).ok(),
-        local.as_ref().map(|(_, text)| text.as_str()),
+        local
+            .as_ref()
+            .filter(|_| profile == "release")
+            .map(|(_, text)| text.as_str()),
     );
-    let profile = std::env::var("PROFILE").unwrap_or_default();
     if let Some(warning) = identity_build::release_warning(&identity, &profile) {
         println!("cargo:warning={warning}");
     }
