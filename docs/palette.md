@@ -302,7 +302,8 @@ How the app puts a palette on the keyboard. The key map is data in each board pr
   (SET_EFFECT kind 4), so nothing streams.
 - **Tide** (scene effect `Tide`, 12 s, dip to 40 %, 2 s each way): frames from the PC. The
   firmware has no per-key wave.
-- **Slow sweep:** the scenes' Sweep through the palette's stops at speed 1 (12 s a turn), left
+- **Slow sweep:** the scenes' Sweep through the palette's stops at speed 1 (12 s a turn; a bold
+  palette at speed 2, 9 s), left
   to right across the split. It is a firmware effect (1-4 stops).
 - **Ripples on key press** (Scenes' trigger) take the palette's `accent2` when the look runs a
   harmony palette.

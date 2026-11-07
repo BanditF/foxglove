@@ -348,6 +348,27 @@ pub fn tone_colours(palette_name: &str) -> Vec<Rgb> {
     stops.into_iter().take(2).collect()
 }
 
+/// The slow sweep's speed for a palette (docs/palette.md): a harmony palette's at speed 1
+/// (12 s a turn), a bold one's at speed 2 (9 s).
+pub fn slow_sweep_speed(palette_name: &str) -> u8 {
+    match palette_file::by_name(palette_name).map(|p| p.tier) {
+        Some(palette_file::Tier::Bold) => 2,
+        _ => 1,
+    }
+}
+
+/// A palette's slow sweep: its stops left to right across the split, at
+/// [`slow_sweep_speed`].
+pub fn slow_sweep(palette_name: &str) -> Look {
+    Look {
+        kind: Kind::Sweep,
+        palette: palette_name.into(),
+        speed: slow_sweep_speed(palette_name),
+        direction: Direction::Right,
+        ..Look::default()
+    }
+}
+
 /// The colour of a key-press ripple over a look (#489): a harmony palette's second accent for
 /// the looks that take a palette (accent ripples, #871); `None` keeps the effect's own colour.
 pub fn ripple_colour(look: &Look) -> Option<Rgb> {
@@ -579,16 +600,8 @@ pub fn effect_presets() -> Vec<Preset> {
                 ..Look::default()
             },
         ),
-        preset(
-            "Ember sweep",
-            Look {
-                kind: Kind::Sweep,
-                palette: "Bandit Ember".into(),
-                speed: 1,
-                direction: Direction::Right,
-                ..Look::default()
-            },
-        ),
+        preset("Ember sweep", slow_sweep("Bandit Ember")),
+        preset("Ember Bold sweep", slow_sweep("Bandit Ember Bold")),
         preset(
             "Ripple from the keys",
             Look {
@@ -1180,6 +1193,13 @@ mod tests {
             dusk.accent2
         );
         assert_eq!(ripple_colour(&look(Kind::Sweep, "Bandit")), None);
+        // The slow sweep: 12 s a turn for a harmony palette, 9 s for a bold one.
+        assert_eq!(super::period_ms(slow_sweep("Bandit Ember").speed), 12_000);
+        assert_eq!(
+            super::period_ms(slow_sweep("Bandit Ember Bold").speed),
+            9_000
+        );
+        assert_eq!(slow_sweep("Bandit Dusk Bold").direction, Direction::Right);
         assert_eq!(
             ripple_colour(&Look::default()),
             None,
