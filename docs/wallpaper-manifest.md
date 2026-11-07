@@ -84,7 +84,7 @@ the `FOXGLOVE_WALLPAPER_OVERRIDE` test hook is it also matched by id (the file's
 | `gamemode` | `foxglove_game` | `true` while a layer named GAME… is active |
 | `clock` | `foxglove_scene` | The running scene's clock and geometry for that monitor (`foxglove_scene::wallpaper`), `""` with no scene |
 | `foxglove_live` | `foxglove_live` | The live feed's port while it listens, `0` when it doesn't (docs/live-feed.md) |
-| `theme` | `foxglove_theme` | Windows' app mode, `"light"` or `"dark"` (`AppsUseLightTheme`, the source Foxglove's own System theme uses), `""` when Windows doesn't say. Sent at start and on each change, so every wallpaper set to follow Windows shows the same mode on every monitor. |
+| `theme` | `foxglove_theme` | Windows' app mode, `"light"` or `"dark"` (`AppsUseLightTheme`, the source Foxglove's own System theme uses), `""` when Windows doesn't say. Sent at start, on each change and whenever the wallpaper reloads (its folder installed again or updated, or it connects to the live feed), so every wallpaper set to follow Windows shows the same mode on every monitor. |
 
 Declare each one you list as a user property in `project.json` too: Wallpaper Engine passes
 them to `wallpaperPropertyListener.applyUserProperties`. Foxglove pushes once per change, never
