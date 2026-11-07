@@ -13,7 +13,8 @@
 //! folder, a build without the `<msix>` element) can't loop. The uninstaller runs
 //! `foxglove.exe --unregister-identity` as the user.
 //!
-//! All of it is off unless the exe was built with `FOXGLOVE_SPARSE_IDENTITY=1`, which also
+//! All of it is off unless the exe was built with `FOXGLOVE_SPARSE_IDENTITY=1` (or on a PC whose
+//! `tools/local.toml` says `[identity] sparse = true`; see `identity_build.rs`), which also
 //! embeds the `<msix>` manifest; without a Windows-trusted signature whose subject matches
 //! [`PUBLISHER`], registration fails and Foxglove carries on without identity. A run with
 //! `FOXGLOVE_CONFIG_DIR` (tests, the Test lab) never registers.
@@ -22,6 +23,11 @@
 //! contents (0x80073CF9). Any change to `AppxManifest.xml` or the logos bumps [`VERSION`] (and
 //! the manifest's `Version`; a test checks they agree).
 #![cfg_attr(not(windows), allow(dead_code))]
+
+// build.rs's precedence (environment, tools/local.toml, off), tested with the app.
+#[cfg(test)]
+#[path = "identity_build.rs"]
+mod identity_build;
 
 /// Must match `AppxManifest.xml` and `msix.xml`.
 pub const NAME: &str = "BanditF.Foxglove";

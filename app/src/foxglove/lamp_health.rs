@@ -89,7 +89,7 @@ pub fn identity_row(enabled: bool, has: bool, package_here: bool) -> Option<Heal
             Level::Warn,
             "The identity package is next to this exe, but this build has no identity manifest: \
              rebuild with FOXGLOVE_SPARSE_IDENTITY=1 (and FOXGLOVE_IDENTITY_PUBLISHER for a dev \
-             certificate), or Windows' background light control skips Foxglove",
+             certificate) or [identity] sparse = true in tools\\local.toml, or Windows' background light control skips Foxglove",
         )),
         (false, _, false) => None,
     }

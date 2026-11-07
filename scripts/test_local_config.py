@@ -34,6 +34,23 @@ class LocalConfigTest(unittest.TestCase):
             self.assertEqual(c['keyboard']['left_serial'], 'BBBB')
             self.assertEqual(c['worktrees']['root'], 'E:/wt')
 
+    def test_identity_is_off_unless_turned_on(self):
+        self.assertEqual(lc.load(env={}, files=[])['identity'],
+                         {'sparse': False, 'publisher': ''})
+        with tempfile.TemporaryDirectory() as d:
+            on = Path(d) / 'local.toml'
+            on.write_text('[identity]\nsparse = true\npublisher = "CN=Foxglove Dev, O=BanditF"\n',
+                          encoding='utf-8')
+            c = lc.load(env={}, files=[on])['identity']
+            self.assertEqual(c, {'sparse': True, 'publisher': 'CN=Foxglove Dev, O=BanditF'})
+            c = lc.load(env={'FOXGLOVE_SPARSE_IDENTITY': '0'}, files=[on])['identity']
+            self.assertFalse(c['sparse'], 'an explicit 0 opts out')
+            c = lc.load(env={'FOXGLOVE_SPARSE_IDENTITY': '1',
+                             'FOXGLOVE_IDENTITY_PUBLISHER': 'CN=X'}, files=[])['identity']
+            self.assertEqual(c, {'sparse': True, 'publisher': 'CN=X'})
+            c = lc.load(env={'FOXGLOVE_SPARSE_IDENTITY': ''}, files=[on])['identity']
+            self.assertTrue(c['sparse'], 'an empty variable counts as unset')
+
     def test_bad_serials_are_refused(self):
         for env in ({'FOXGLOVE_LEFT_SERIAL': 'x|.*'},
                     {'FOXGLOVE_LEFT_SERIAL': '35B4541F78DE9CF8'}):
