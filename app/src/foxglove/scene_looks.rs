@@ -46,16 +46,22 @@ pub enum Kind {
     Gradient,
     /// A drifting noise field (the crate's `Noise`).
     Drift,
+    /// The palette's two accents breathing in turn (the crate's `Tones`, #871).
+    TwoTone,
+    /// A slow wave of the palette's second accent (the crate's `Tide`, the bold tier, #871).
+    Tide,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 8] = [
         Kind::Scanline,
         Kind::Sweep,
         Kind::Ripple,
         Kind::Breathe,
         Kind::Gradient,
         Kind::Drift,
+        Kind::TwoTone,
+        Kind::Tide,
     ];
 
     pub fn label(self) -> &'static str {
@@ -66,6 +72,8 @@ impl Kind {
             Kind::Breathe => "Breathe",
             Kind::Gradient => "Gradient",
             Kind::Drift => "Drift",
+            Kind::TwoTone => "Two-tone",
+            Kind::Tide => "Tide",
         }
     }
 
@@ -78,6 +86,13 @@ impl Kind {
             Kind::Breathe => "Every light fades in and out together",
             Kind::Gradient => "A still palette across the room",
             Kind::Drift => "Soft patches of a palette drift through the room",
+            Kind::Tide => {
+                "A slow wave of the palette's second accent rolls in from the outer keys and                  back, 12 s a loop; each key changes colour only at a soft dip"
+            }
+            Kind::TwoTone => {
+                "The palette's two accents breathe in turn, once every 8 s: the thumbs against \
+                 the letters on a per-key board, the whole board elsewhere"
+            }
         }
     }
 
@@ -87,7 +102,8 @@ impl Kind {
     }
 
     pub fn uses_speed(self) -> bool {
-        self != Kind::Gradient
+        // Two-tone keeps the palette rule's 8 s loop (docs/palette.md).
+        !matches!(self, Kind::Gradient | Kind::TwoTone | Kind::Tide)
     }
 
     pub fn uses_direction(self) -> bool {
@@ -312,6 +328,56 @@ pub fn palette(name: &str) -> Vec<Rgb> {
     PALETTES[0].1.iter().map(|c| Rgb(*c)).collect()
 }
 
+/// Two-tone's loop (docs/palette.md: slow, 8 s) and the least its tones fall to (35 %).
+pub const TWO_TONE_MS: u32 = 8_000;
+pub const TWO_TONE_FLOOR: f32 = 0.35;
+/// Tide's loop, the dip a key swaps colour at, and how long from full to the swap
+/// (docs/palette.md, "Bold tier": 12 s, 40 %, at least 2 s).
+pub const TIDE_MS: u32 = 12_000;
+pub const TIDE_FLOOR: f32 = 0.4;
+pub const TIDE_DIP_MS: u32 = 2_000;
+
+/// The colours a Two-tone look breathes: a harmony palette's accent, second and third accents;
+/// any other palette's first two stops.
+pub fn tone_colours(palette_name: &str) -> Vec<Rgb> {
+    if let Some(p) = palette_file::by_name(palette_name).filter(|p| p.roles.is_harmony()) {
+        let r = p.roles;
+        return vec![r.accent, r.second(), r.third()];
+    }
+    let stops = palette(palette_name);
+    stops.into_iter().take(2).collect()
+}
+
+/// The slow sweep's speed for a palette (docs/palette.md): a harmony palette's at speed 1
+/// (12 s a turn), a bold one's at speed 2 (9 s).
+pub fn slow_sweep_speed(palette_name: &str) -> u8 {
+    match palette_file::by_name(palette_name).map(|p| p.tier) {
+        Some(palette_file::Tier::Bold) => 2,
+        _ => 1,
+    }
+}
+
+/// A palette's slow sweep: its stops left to right across the split, at
+/// [`slow_sweep_speed`].
+pub fn slow_sweep(palette_name: &str) -> Look {
+    Look {
+        kind: Kind::Sweep,
+        palette: palette_name.into(),
+        speed: slow_sweep_speed(palette_name),
+        direction: Direction::Right,
+        ..Look::default()
+    }
+}
+
+/// The colour of a key-press ripple over a look (#489): a harmony palette's second accent for
+/// the looks that take a palette (accent ripples, #871); `None` keeps the effect's own colour.
+pub fn ripple_colour(look: &Look) -> Option<Rgb> {
+    if look.kind.uses_colour() {
+        return None;
+    }
+    palette_file::by_name(&look.palette)?.roles.accent2
+}
+
 /// Speed 1 (slowest) to 10: one cycle's length, in milliseconds. Speed 5 is the demo's 4 s.
 const PERIODS: [u32; 10] = [
     12_000, 9_000, 7_000, 5_500, 4_000, 3_000, 2_200, 1_600, 1_200, 1_000,
@@ -428,8 +494,62 @@ impl Look {
                 period_ms: period_ms.saturating_mul(4),
                 seed: 7,
             },
+            Kind::TwoTone => Effect::Tones {
+                colours: tone_colours(&l.palette),
+                tones: tones_for(room, &l.palette),
+                period_ms: TWO_TONE_MS,
+                floor: TWO_TONE_FLOOR,
+            },
+            Kind::Tide => {
+                let (centre_x, inner_mm, outer_mm) = tide_span(room);
+                Effect::Tide {
+                    colours: tone_colours(&l.palette),
+                    tones: tones_for(room, &l.palette),
+                    period_ms: TIDE_MS,
+                    centre_x,
+                    inner_mm,
+                    outer_mm,
+                    floor: TIDE_FLOOR,
+                    dip_ms: TIDE_DIP_MS,
+                }
+            }
         }
     }
+}
+
+/// Tide's wave across the keyboard: its middle, and how far the inner and outer keys sit from
+/// it (a split's halves roll in from their outer edges to the gap; a one-piece board from both
+/// ends to its middle). The room's bounds without a keyboard.
+fn tide_span(room: &RoomMap) -> (f32, f32, f32) {
+    let rect = |k: DeviceKind| room.devices.iter().find(|d| d.kind == k).map(|d| d.rect);
+    if let (Some(l), Some(r)) = (
+        rect(DeviceKind::KeyboardLeft),
+        rect(DeviceKind::KeyboardRight),
+    ) {
+        let (l, r) = if l.x <= r.x { (l, r) } else { (r, l) };
+        let left = l.x;
+        let right = r.x + r.w;
+        let centre = (left + right) / 2.0;
+        let inner = ((r.x - (l.x + l.w)) / 2.0).max(0.0);
+        return (centre, inner, (right - left) / 2.0);
+    }
+    let b = rect(DeviceKind::Keyboard).unwrap_or(room.bounds);
+    (b.x + b.w / 2.0, 0.0, b.w / 2.0)
+}
+
+/// The keyboard's tones (`scene_room::keyboard_tones`, in the palette's tier) for the LEDs
+/// `room` has.
+fn tones_for(room: &RoomMap, palette: &str) -> std::collections::BTreeMap<String, u8> {
+    let tier = palette_file::by_name(palette).map_or(palette_file::Tier::Harmony, |p| p.tier);
+    let mut tones = super::scene_room::keyboard_tones(tier);
+    tones.retain(|k, _| {
+        room.devices.iter().any(|d| {
+            d.lights
+                .iter()
+                .any(|l| foxglove_scene::tone_key(&d.id, &l.id) == *k)
+        })
+    });
+    tones
 }
 
 /// A named look.
@@ -463,6 +583,25 @@ pub fn effect_presets() -> Vec<Preset> {
     };
     vec![
         preset("Bandit scanline", Look::default()),
+        // The harmony palettes' slow looks (#871, docs/palette.md "Lights").
+        preset(
+            "Dusk two-tone",
+            Look {
+                kind: Kind::TwoTone,
+                palette: "Bandit Dusk".into(),
+                ..Look::default()
+            },
+        ),
+        preset(
+            "Dusk Bold tide",
+            Look {
+                kind: Kind::Tide,
+                palette: "Bandit Dusk Bold".into(),
+                ..Look::default()
+            },
+        ),
+        preset("Ember sweep", slow_sweep("Bandit Ember")),
+        preset("Ember Bold sweep", slow_sweep("Bandit Ember Bold")),
         preset(
             "Ripple from the keys",
             Look {
@@ -984,7 +1123,7 @@ mod tests {
     }
 
     #[test]
-    fn every_effect_has_a_look_and_presets_cover_all_six() {
+    fn every_effect_has_a_look_and_presets_cover_them_all() {
         let room = RoomMap::default();
         let kinds: Vec<Kind> = effect_presets().iter().map(|p| p.look.kind).collect();
         for k in Kind::ALL {
@@ -996,6 +1135,8 @@ mod tests {
             let name = format!("{:?}", look.effect(&room));
             let want = match k {
                 Kind::Drift => "Noise".to_string(),
+                Kind::TwoTone => "Tones".to_string(),
+                Kind::Tide => "Tide".to_string(),
                 k => format!("{k:?}"),
             };
             assert!(name.starts_with(&want), "{k:?}: {name}");
@@ -1004,6 +1145,66 @@ mod tests {
         let mut unique = names.clone();
         unique.dedup();
         assert_eq!(names, unique);
+    }
+
+    /// #871: the palette looks take the harmony palette's accents, keep their fixed slow
+    /// loops whatever the speed, and ripples over a palette look are its second accent.
+    #[test]
+    fn palette_looks_use_the_accents_and_stay_slow() {
+        let room = RoomMap::default();
+        let dusk = palette_file::by_name("Bandit Dusk").unwrap().roles;
+        let look = |kind: Kind, palette: &str| Look {
+            kind,
+            palette: palette.into(),
+            speed: 10,
+            ..Look::default()
+        };
+        let Effect::Tones {
+            colours,
+            period_ms,
+            floor,
+            ..
+        } = look(Kind::TwoTone, "Bandit Dusk").effect(&room)
+        else {
+            panic!("two-tone is tones")
+        };
+        assert_eq!(colours, vec![dusk.accent, dusk.second(), dusk.third()]);
+        assert_eq!((period_ms, floor), (TWO_TONE_MS, TWO_TONE_FLOOR));
+        // A palette without a second accent: its first two stops.
+        let Effect::Tones { colours, .. } = look(Kind::TwoTone, "Bandit").effect(&room) else {
+            panic!()
+        };
+        assert_eq!(colours, palette("Bandit")[..2].to_vec());
+        let Effect::Tide {
+            period_ms,
+            floor,
+            dip_ms,
+            ..
+        } = look(Kind::Tide, "Bandit Dusk").effect(&room)
+        else {
+            panic!("tide")
+        };
+        assert_eq!((period_ms, floor, dip_ms), (12_000, 0.4, 2_000));
+        assert!(!Kind::TwoTone.uses_speed() && !Kind::Tide.uses_speed());
+        // Nothing faster than once per 2 s (docs/palette.md).
+        const { assert!(TWO_TONE_MS / 2 >= 2_000 && TIDE_DIP_MS >= 2_000) };
+        assert_eq!(
+            ripple_colour(&look(Kind::Sweep, "Bandit Dusk")),
+            dusk.accent2
+        );
+        assert_eq!(ripple_colour(&look(Kind::Sweep, "Bandit")), None);
+        // The slow sweep: 12 s a turn for a harmony palette, 9 s for a bold one.
+        assert_eq!(super::period_ms(slow_sweep("Bandit Ember").speed), 12_000);
+        assert_eq!(
+            super::period_ms(slow_sweep("Bandit Ember Bold").speed),
+            9_000
+        );
+        assert_eq!(slow_sweep("Bandit Dusk Bold").direction, Direction::Right);
+        assert_eq!(
+            ripple_colour(&Look::default()),
+            None,
+            "a colour look keeps its colour"
+        );
     }
 
     #[test]

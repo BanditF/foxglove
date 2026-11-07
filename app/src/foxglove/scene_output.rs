@@ -401,7 +401,26 @@ pub fn keyboard_effect(
             0.0,
             [0, 0],
         ),
-        Effect::Gradient { .. } | Effect::Noise { .. } => return None,
+        // Tones that crossfade (no LED off the first accent) are the firmware's breathe from
+        // the accent to the second one, the same maths (#871); split ones need frames.
+        Effect::Tones {
+            colours,
+            tones,
+            period_ms,
+            ..
+        } if !foxglove_scene::tones_split(tones) && !colours.is_empty() => (
+            EffectKind::Breathe,
+            vec![c(&colours[0]), c(colours.get(1).unwrap_or(&colours[0]))],
+            *period_ms,
+            0.0,
+            0.0,
+            [0, 0],
+        ),
+        // Tide's per-key wave has no firmware effect: frames.
+        Effect::Gradient { .. }
+        | Effect::Noise { .. }
+        | Effect::Tones { .. }
+        | Effect::Tide { .. } => return None,
     };
     let wire = foxglove_link::protocol::Effect {
         kind,
@@ -1868,6 +1887,39 @@ mod tests {
             seed: 1,
         };
         assert!(keyboard_effect(&noise, &room).is_none());
+        // #871: tones with no LED off the first accent are the firmware's breathe from the
+        // accent to the second one; split tones and Tide need frames.
+        let fade = Effect::Tones {
+            colours: vec![ORANGE, blue],
+            tones: Default::default(),
+            period_ms: 8000,
+            floor: 0.35,
+        };
+        let e = keyboard_effect(&fade, &room).unwrap();
+        assert_eq!(
+            (e.effect.kind, e.effect.colours.clone(), e.effect.period_ms),
+            (EffectKind::Breathe, vec![ORANGE.0, blue.0], 8000)
+        );
+        let split = Effect::Tones {
+            tones: [(foxglove_scene::tone_key("keyboard:left", "0"), 1u8)]
+                .into_iter()
+                .collect(),
+            colours: vec![ORANGE, blue],
+            period_ms: 8000,
+            floor: 0.35,
+        };
+        assert!(keyboard_effect(&split, &room).is_none());
+        let tide = Effect::Tide {
+            colours: vec![ORANGE, blue],
+            tones: Default::default(),
+            period_ms: 12_000,
+            centre_x: 0.0,
+            inner_mm: 0.0,
+            outer_mm: 100.0,
+            floor: 0.4,
+            dip_ms: 2000,
+        };
+        assert!(keyboard_effect(&tide, &room).is_none());
         let slow = Effect::Breathe {
             from: ORANGE,
             to: blue,

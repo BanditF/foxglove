@@ -15,7 +15,7 @@ pub use ambient::Ambient;
 pub use burst::{Burst, Bursts};
 pub use clock::{Clock, SceneTime};
 pub use colour::Rgb;
-pub use effects::{Effect, Frame};
+pub use effects::{tone_key, tones_split, Effect, Frame};
 pub use room::{DeviceInfo, DeviceKind, Layout, LightRole, LightSpec, MonitorInfo, RoomMap, Side};
 pub use space::{Point, Rect};
 pub use wallpaper::WallpaperScene;

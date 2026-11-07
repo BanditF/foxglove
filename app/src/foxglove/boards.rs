@@ -140,6 +140,23 @@ pub struct Lighting {
     /// anything else (`provisional`) and scenes light each half as one.
     #[serde(default)]
     pub led_map: String,
+    /// The keys a harmony palette lights in its second accent (docs/palette.md, "Lights": the
+    /// thumb keys), as indices into each part's drawing keys, as `led_keys` names them; the
+    /// other half of a split takes the same indices (its drawing mirrors). An LED takes the
+    /// accent only when most of the keys it lights have it, so a board whose LEDs light a
+    /// column at a time keeps `accent` everywhere (#871).
+    #[serde(default)]
+    pub accent2_keys: Vec<u8>,
+    /// The keys in the third accent (the homing keys), the same way.
+    #[serde(default)]
+    pub accent3_keys: Vec<u8>,
+    /// A bold-tier palette's second-accent keys (docs/palette.md, "Bold tier": the thumbs and
+    /// the outer, modifier column); empty takes `accent2_keys`.
+    #[serde(default)]
+    pub bold_accent2_keys: Vec<u8>,
+    /// A bold-tier palette's third-accent keys; empty takes `accent3_keys`.
+    #[serde(default)]
+    pub bold_accent3_keys: Vec<u8>,
     /// Where "Find my LEDs" saw each LED (the user's override, the store's `[led_map]`): one
     /// entry per lamp in SET_FRAME order, a point on its half's drawing in key units, `None`
     /// for one the user couldn't see. Wins over `led_keys` when set.

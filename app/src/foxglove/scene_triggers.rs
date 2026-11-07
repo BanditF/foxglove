@@ -24,11 +24,15 @@ use super::scene_looks::Chosen;
 
 static RIPPLE: AtomicBool = AtomicBool::new(false);
 static SWEEP: AtomicBool = AtomicBool::new(false);
+/// The ripples' colour when the look's palette has a second accent (#871).
+static RIPPLE_COLOUR: Mutex<Option<Rgb>> = Mutex::new(None);
 
 /// The active profile's trigger boxes (the Scenes page and profile switches keep it current).
 pub fn set_flags(c: &Chosen) {
     RIPPLE.store(c.ripple_keys, Ordering::Relaxed);
     SWEEP.store(c.sweep_layers, Ordering::Relaxed);
+    *RIPPLE_COLOUR.lock().unwrap_or_else(|e| e.into_inner()) =
+        super::scene_looks::ripple_colour(&c.look);
 }
 
 /// What a profile switch does to the scene.
@@ -153,7 +157,10 @@ pub fn ripple(
         shape: Shape::Ring {
             origin: key_point(keys, row, col, room)?,
         },
-        colour: effect_colour(effect),
+        colour: RIPPLE_COLOUR
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|| effect_colour(effect)),
         start: now,
         duration_ms: RIPPLE_MS,
         width_mm: RIPPLE_WIDTH_MM,
@@ -181,6 +188,12 @@ pub fn effect_colour(e: &Effect) -> Rgb {
     match e {
         Effect::Scanline { colour, .. } | Effect::Ripple { colour, .. } => *colour,
         Effect::Breathe { to, .. } => *to,
+        // The second accent: ripples over the tones are accent ripples.
+        Effect::Tones { colours, .. } | Effect::Tide { colours, .. } => colours
+            .get(1)
+            .or(colours.first())
+            .copied()
+            .unwrap_or(Rgb([255, 255, 255])),
         Effect::Sweep { stops, .. }
         | Effect::Gradient { stops, .. }
         | Effect::Noise { stops, .. } => stops.first().copied().unwrap_or(Rgb([255, 255, 255])),

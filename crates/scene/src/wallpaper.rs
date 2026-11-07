@@ -93,6 +93,21 @@ fn shape(effect: &Effect) -> (&'static str, u32, f32, f32, Rgb, Rgb) {
         Effect::Noise {
             stops, period_ms, ..
         } => ("noise", *period_ms, 0.0, 0.0, last(stops), first(stops)),
+        // A wallpaper has no keys: the two tones take turns, as a breathe from the accent to
+        // the second one.
+        Effect::Tones {
+            colours, period_ms, ..
+        }
+        | Effect::Tide {
+            colours, period_ms, ..
+        } => (
+            "breathe",
+            *period_ms,
+            0.0,
+            0.0,
+            colours.get(1).copied().unwrap_or_else(|| first(colours)),
+            first(colours),
+        ),
     }
 }
 

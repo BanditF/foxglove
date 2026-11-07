@@ -6,6 +6,8 @@
 //! Directions are angles: 0 runs left to right, 90 top to bottom (room space has y down).
 //! Periods are milliseconds on the scene clock; sizes are millimetres.
 
+use std::collections::BTreeMap;
+
 use noise::{NoiseFn, Perlin};
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +54,155 @@ pub enum Effect {
         period_ms: u32,
         seed: u32,
     },
+    /// A palette's tones (#871, docs/palette.md "Lights"): each light shows the colour of its
+    /// tone, `colours[0]` (the accent) by default. `tones` gives a light another one, keyed
+    /// `device/light` ([`tone_key`]): 1 the second accent (the thumb keys), 2 the third (the
+    /// homing keys). Once per period tone 0 and tone 1 breathe in opposite phase between
+    /// `floor` and full, and tone 2 holds steady. When no light has tone 1 (a board whose LEDs
+    /// each light keys of several roles), every light crossfades `colours[0]` and `colours[1]`
+    /// instead, so the two tones take turns in time rather than in place. Period 0 stands
+    /// still at full.
+    Tones {
+        colours: Vec<Rgb>,
+        #[serde(default)]
+        tones: BTreeMap<String, u8>,
+        period_ms: u32,
+        floor: f32,
+    },
+    /// Tide (#871, docs/palette.md "Bold tier"): a wave of `colours[1]` that rolls in from the
+    /// keyboard's outer edges to its inner keys and back, once per period. A light swaps
+    /// between `colours[0]` and `colours[1]` only at the bottom of a slow dip to `floor`
+    /// (`dip_ms` from full to the swap, and as long back), so it never jumps or blends one
+    /// into the other. Lights `tones` gives tone 1 or 2 (the thumbs, the outer column, the
+    /// homing keys) hold `colours[1]` or `colours[2]`. Where a light sits along the wave is its
+    /// distance from `centre_x`: `inner_mm` or nearer is the inner edge, `outer_mm` or further
+    /// the outer one. Period 0 stands still in `colours[0]`.
+    Tide {
+        colours: Vec<Rgb>,
+        #[serde(default)]
+        tones: BTreeMap<String, u8>,
+        period_ms: u32,
+        centre_x: f32,
+        inner_mm: f32,
+        outer_mm: f32,
+        floor: f32,
+        dip_ms: u32,
+    },
+}
+
+/// Where a light at `x` sits along Tide's wave: 0 at the outer edge, 1 at the inner one.
+fn tide_depth(x: f32, centre_x: f32, inner_mm: f32, outer_mm: f32) -> f32 {
+    let span = outer_mm - inner_mm;
+    if span.is_nan() || span <= 0.0 {
+        return 0.0;
+    }
+    1.0 - (((x - centre_x).abs() - inner_mm) / span).clamp(0.0, 1.0)
+}
+
+/// [`Effect::Tide`]'s colour at `x` for a light of tone 0.
+#[allow(clippy::too_many_arguments)]
+pub fn tide_colour(
+    colours: &[Rgb],
+    x: f32,
+    t: SceneTime,
+    period_ms: u32,
+    (centre_x, inner_mm, outer_mm): (f32, f32, f32),
+    floor: f32,
+    dip_ms: u32,
+) -> Rgb {
+    let pick = |i: usize| {
+        colours
+            .get(i)
+            .or_else(|| colours.last())
+            .copied()
+            .unwrap_or(Rgb::BLACK)
+    };
+    if period_ms == 0 {
+        return pick(0);
+    }
+    use std::f32::consts::TAU;
+    // The wave's reach, 0 (out at the edges) to 1 (at the inner keys) and back.
+    let p = t.phase(period_ms);
+    let reach = 0.5 - 0.5 * (p * TAU).cos();
+    // Kept off both ends so every light is crossed twice per loop.
+    let at = 0.1 + 0.8 * tide_depth(x, centre_x, inner_mm, outer_mm);
+    let inside = reach > at;
+    // When the wave crosses this light: on its way in and on its way out.
+    let cross = (1.0 - 2.0 * at).clamp(-1.0, 1.0).acos() / TAU;
+    let gap = |c: f32| {
+        let d = (p - c).rem_euclid(1.0);
+        d.min(1.0 - d)
+    };
+    let nearest_ms = gap(cross).min(gap(1.0 - cross)) * period_ms as f32;
+    let floor = if floor.is_finite() {
+        floor.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let k = if dip_ms == 0 {
+        1.0
+    } else {
+        let x = (nearest_ms / dip_ms as f32).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    let level = floor + (1.0 - floor) * k;
+    let c = if inside { pick(1) } else { pick(0) };
+    Rgb::from_linear(c.linear().map(|v| v * level))
+}
+
+/// The key of a light in [`Effect::Tones`]' map.
+pub fn tone_key(device: &str, light: &str) -> String {
+    format!("{device}/{light}")
+}
+
+/// Whether a tones map splits the room (some light has tone 1); else the tones crossfade.
+pub fn tones_split(tones: &BTreeMap<String, u8>) -> bool {
+    tones.values().any(|&t| t == 1)
+}
+
+/// [`Effect::Tones`]' colour for one tone at `t`.
+pub fn tone_colour(
+    colours: &[Rgb],
+    split: bool,
+    tone: u8,
+    t: SceneTime,
+    period_ms: u32,
+    floor: f32,
+) -> Rgb {
+    let pick = |i: usize| {
+        colours
+            .get(i)
+            .or_else(|| colours.last())
+            .copied()
+            .unwrap_or(Rgb::BLACK)
+    };
+    // 0 at the start of the loop, 1 half way.
+    let w = if period_ms == 0 {
+        0.0
+    } else {
+        0.5 - 0.5 * (t.phase(period_ms) * std::f32::consts::TAU).cos()
+    };
+    if !split {
+        return pick(0).mix(pick(1), w);
+    }
+    let floor = if floor.is_finite() {
+        floor.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let level = |up: f32| {
+        if period_ms == 0 {
+            1.0
+        } else {
+            floor + (1.0 - floor) * up
+        }
+    };
+    let scaled = |c: Rgb, k: f32| Rgb::from_linear(c.linear().map(|v| v * k));
+    match tone {
+        1 => scaled(pick(1), level(w)),
+        2 => pick(2),
+        _ => scaled(pick(0), level(1.0 - w)),
+    }
 }
 
 /// One light's colour in a frame.
@@ -119,6 +270,18 @@ impl Effect {
     }
 
     fn colour_with(&self, at: Point, t: SceneTime, bounds: &Rect, perlin: Option<&Perlin>) -> Rgb {
+        self.colour_of(at, None, t, bounds, perlin)
+    }
+
+    /// The colour at a point, for the light `key` ([`tone_key`]) when it is one.
+    fn colour_of(
+        &self,
+        at: Point,
+        key: Option<&str>,
+        t: SceneTime,
+        bounds: &Rect,
+        perlin: Option<&Perlin>,
+    ) -> Rgb {
         match self {
             Effect::Scanline {
                 colour,
@@ -188,6 +351,40 @@ impl Effect {
                 };
                 gradient(stops, (n * 0.5 + 0.5) as f32, false)
             }
+            Effect::Tones {
+                colours,
+                tones,
+                period_ms,
+                floor,
+            } => {
+                let tone = key.and_then(|k| tones.get(k)).copied().unwrap_or(0);
+                tone_colour(colours, tones_split(tones), tone, t, *period_ms, *floor)
+            }
+            Effect::Tide {
+                colours,
+                tones,
+                period_ms,
+                centre_x,
+                inner_mm,
+                outer_mm,
+                floor,
+                dip_ms,
+            } => match key.and_then(|k| tones.get(k)).copied().unwrap_or(0) {
+                tone @ (1 | 2) => colours
+                    .get(usize::from(tone))
+                    .or_else(|| colours.last())
+                    .copied()
+                    .unwrap_or(Rgb::BLACK),
+                _ => tide_colour(
+                    colours,
+                    at.x,
+                    t,
+                    *period_ms,
+                    (*centre_x, *inner_mm, *outer_mm),
+                    *floor,
+                    *dip_ms,
+                ),
+            },
         }
     }
 
@@ -207,7 +404,13 @@ impl Effect {
                     device: d.id.clone(),
                     light: l.id.clone(),
                     colour: match l.role {
-                        LightRole::Point => self.colour_with(l.at, t, &room.bounds, perlin),
+                        LightRole::Point => self.colour_of(
+                            l.at,
+                            Some(&tone_key(&d.id, &l.id)),
+                            t,
+                            &room.bounds,
+                            perlin,
+                        ),
                         LightRole::Ambient => self.area(&d.rect, t, &room.bounds, perlin),
                     },
                 })
