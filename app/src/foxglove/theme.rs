@@ -12,6 +12,7 @@ use foxglove_scene::Rgb;
 use serde::{Deserialize, Serialize};
 
 use super::palette_file::{self, Roles};
+use super::windows_theme::AppMode;
 
 /// One theme's colour tokens.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -318,12 +319,52 @@ pub enum Choice {
 }
 
 impl Choice {
-    fn preference(self) -> egui::ThemePreference {
-        match self {
-            Choice::Dark => egui::ThemePreference::Dark,
-            Choice::Light => egui::ThemePreference::Light,
-            Choice::System => egui::ThemePreference::System,
+    /// What egui is told for this choice. System takes Windows' app mode from
+    /// `windows_theme` (the source the wallpapers' "Follow Windows" uses too), and egui's own
+    /// reading of the system theme only when Windows doesn't say.
+    fn preference(self, windows: Option<AppMode>) -> egui::ThemePreference {
+        match (self, windows) {
+            (Choice::Dark, _) | (Choice::System, Some(AppMode::Dark)) => {
+                egui::ThemePreference::Dark
+            }
+            (Choice::Light, _) | (Choice::System, Some(AppMode::Light)) => {
+                egui::ThemePreference::Light
+            }
+            (Choice::System, None) => egui::ThemePreference::System,
         }
+    }
+}
+
+/// Where a context keeps the user's choice (System shows as Dark or Light to egui).
+fn choice_id() -> egui::Id {
+    egui::Id::new("foxglove.theme.choice")
+}
+
+/// The window theme the user chose on `ctx`.
+pub fn choice(ctx: &egui::Context) -> Choice {
+    ctx.data(|d| d.get_temp::<Choice>(choice_id()))
+        .unwrap_or_else(|| match ctx.options(|o| o.theme_preference) {
+            egui::ThemePreference::Dark => Choice::Dark,
+            egui::ThemePreference::Light => Choice::Light,
+            egui::ThemePreference::System => Choice::System,
+        })
+}
+
+/// Picks `choice` on `ctx`, with Windows' app mode `windows` for System.
+fn set_choice(ctx: &egui::Context, choice: Choice, windows: Option<AppMode>) {
+    ctx.data_mut(|d| d.insert_temp(choice_id(), choice));
+    ctx.set_theme(choice.preference(windows));
+}
+
+/// The app's own context, for following Windows' app mode (`windows_theme`).
+static APP: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
+/// Windows' app mode changed (`windows_theme`): the app follows it when its choice is System.
+pub fn windows_changed(windows: Option<AppMode>) {
+    let Some(ctx) = APP.get() else { return };
+    if choice(ctx) == Choice::System {
+        set_choice(ctx, Choice::System, windows);
+        ctx.request_repaint();
     }
 }
 
@@ -340,13 +381,18 @@ pub fn apply_choice(ctx: &egui::Context, choice: Choice) {
     ctx.set_visuals_of(egui::Theme::Dark, visuals(&DARK));
     ctx.set_visuals_of(egui::Theme::Light, visuals(&LIGHT));
     ctx.all_styles_mut(style_text);
-    ctx.set_theme(choice.preference());
+    let windows = (choice == Choice::System)
+        .then(super::windows_theme::current)
+        .flatten();
+    set_choice(ctx, choice, windows);
 }
 
-/// Startup: the saved theme choice (dark when none is saved).
+/// Startup: the saved theme choice (dark when none is saved). The app then follows Windows'
+/// app mode while the choice is System.
 pub fn apply(ctx: &egui::Context) {
     let saved = super::store::try_load::<UiSettings>("ui").unwrap_or_default();
     apply_choice(ctx, saved.theme);
+    let _ = APP.set(ctx.clone());
 }
 
 /// A section or card heading in the HUD face.
@@ -756,11 +802,7 @@ pub fn info_bar(
 
 /// The window theme picker, saved in the store's `[ui]` section.
 pub fn picker(ui: &mut egui::Ui) {
-    let current = match ui.ctx().options(|o| o.theme_preference) {
-        egui::ThemePreference::Dark => Choice::Dark,
-        egui::ThemePreference::Light => Choice::Light,
-        egui::ThemePreference::System => Choice::System,
-    };
+    let current = choice(ui.ctx());
     ui.horizontal_wrapped(|ui| {
         ui.label("Window theme");
         for (choice, label) in [
@@ -769,7 +811,10 @@ pub fn picker(ui: &mut egui::Ui) {
             (Choice::System, "System"),
         ] {
             if pill(ui, current == choice, label).clicked() && current != choice {
-                ui.ctx().set_theme(choice.preference());
+                let windows = (choice == Choice::System)
+                    .then(super::windows_theme::current)
+                    .flatten();
+                set_choice(ui.ctx(), choice, windows);
                 if let Err(e) = super::store::save("ui", &UiSettings { theme: choice }) {
                     eprintln!("Foxglove: can't save the theme: {e}");
                 }
@@ -1672,6 +1717,23 @@ mod tests {
         assert_eq!(text.trim(), "theme = \"system\"");
         let back: UiSettings = toml::from_str("").unwrap();
         assert_eq!(back.theme, Choice::Dark);
+    }
+
+    #[test]
+    fn system_follows_windows_app_mode() {
+        use egui::ThemePreference as P;
+        assert_eq!(Choice::System.preference(Some(AppMode::Light)), P::Light);
+        assert_eq!(Choice::System.preference(Some(AppMode::Dark)), P::Dark);
+        // Windows doesn't say: egui's own reading of the system theme.
+        assert_eq!(Choice::System.preference(None), P::System);
+        // An explicit choice wins.
+        assert_eq!(Choice::Dark.preference(Some(AppMode::Light)), P::Dark);
+        assert_eq!(Choice::Light.preference(Some(AppMode::Dark)), P::Light);
+        // The picker still shows System while egui is told Light.
+        let ctx = egui::Context::default();
+        set_choice(&ctx, Choice::System, Some(AppMode::Light));
+        assert_eq!(ctx.options(|o| o.theme_preference), P::Light);
+        assert_eq!(choice(&ctx), Choice::System);
     }
 
     #[test]
