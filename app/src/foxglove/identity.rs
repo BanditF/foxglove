@@ -143,6 +143,15 @@ pub fn start() {
     }
 }
 
+/// Whether the identity package is next to this exe (an install or a dev registration's
+/// folder): then this copy is expected to run with identity.
+pub fn package_here() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(PACKAGE_FILE).is_file()))
+        .unwrap_or(false)
+}
+
 /// Whether this process runs with package identity.
 #[cfg(windows)]
 pub fn has_identity() -> bool {

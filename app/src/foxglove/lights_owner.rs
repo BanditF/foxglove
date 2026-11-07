@@ -34,6 +34,13 @@
 //!   (`lamp_hold`): an owner byte naming a LampArray transport Foxglove holds, with Windows'
 //!   leave to drive it, is Foxglove ([`Who::FoxgloveLamp`], [`ours`]), never "Windows holds the
 //!   lights".
+//! - While Windows Dynamic Lighting has the lights and no scene waits, the Keyboard card's bar is
+//!   quiet (an info bar, [`QUIET`]) with the button to the Dynamic Lighting settings; with
+//!   identity its sentence says to put Foxglove first under Background light control. Foxglove
+//!   never writes that setting.
+//! - After a flash ([`FlashWatch`]): when the keyboard comes back with another firmware build
+//!   and Windows Dynamic Lighting (not Foxglove's own hold) then takes its lights, which it
+//!   didn't before, the health view gets a WARN row ([`flash_row`]) and a notification.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
@@ -67,6 +74,53 @@ pub struct State {
     probe: Probe,
     /// Retries since Foxglove started.
     retries: u32,
+    /// Whether Windows took the lights after a flash (#179).
+    flash: FlashWatch,
+}
+
+/// Watches for Windows Dynamic Lighting taking the keyboard's lights after a flash (#179): a
+/// new device instance (a re-pair after a settings reset, another port) can come back with
+/// Windows' own controller first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FlashWatch {
+    /// The firmware build last connected.
+    build: Option<String>,
+    /// This connection follows a flash: its new build, and whether a LampArray had the lights
+    /// before it.
+    after: Option<(String, bool)>,
+    /// Windows took the lights after the flash to this build.
+    pub warn: Option<String>,
+}
+
+impl FlashWatch {
+    /// A keyboard connected with firmware `build` (`None`: unreadable); `before` is its owner as
+    /// last known. Another build than the last one is a flash.
+    pub fn connected(&mut self, build: Option<String>, before: Option<Owner>) {
+        let flashed = matches!((&self.build, &build), (Some(old), Some(new)) if old != new);
+        if flashed {
+            let was = before.is_some_and(Owner::lamp_array);
+            self.after = build.clone().map(|b| (b, was));
+        } else if build.is_some() {
+            self.after = None;
+        }
+        self.warn = None;
+        if build.is_some() {
+            self.build = build;
+        }
+    }
+
+    /// The keyboard says who has its lights; `ours` when it is Foxglove's own LampArray hold.
+    /// True when the warning came or went.
+    pub fn observed(&mut self, owner: Option<Owner>, ours: bool) -> bool {
+        let windows = owner.is_some_and(Owner::lamp_array) && !ours;
+        let warn = match &self.after {
+            Some((build, false)) if windows => Some(build.clone()),
+            _ => None,
+        };
+        let changed = warn != self.warn;
+        self.warn = warn;
+        changed
+    }
 }
 
 /// Where a retry stands.
@@ -281,6 +335,22 @@ pub fn attach(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
             // The lighting facts follow what Foxglove draws through Windows while it holds
             // the keyboard, and the keyboard's own report again when it lets go (#789).
             super::keyboard_facts::held(through_windows().is_some());
+            // After a flash, Windows taking the lights is a WARN and a notification (#179).
+            let ours = now.is_some_and(super::lamp_hold::holds);
+            let warned = {
+                let mut s = lock(&state);
+                s.flash
+                    .observed(now, ours)
+                    .then(|| s.flash.warn.clone())
+                    .flatten()
+            };
+            if let Some(build) = warned {
+                eprintln!(
+                    "Foxglove: lights owner: Windows Dynamic Lighting took the keyboard's lights \
+                     after the flash to {build}"
+                );
+                super::health_notice::check(&super::health::all_rows());
+            }
         }
     });
     *tap = Some((kb.link().clone(), watch));
@@ -296,7 +366,13 @@ pub fn device_connected(device: &str) {
     if kb.info().id.to_string() != device {
         return;
     }
-    lock(&STATE).connected();
+    let build = super::devices::firmware_build();
+    {
+        let mut s = lock(&STATE);
+        let before = s.owner();
+        s.flash.connected(build, before);
+        s.connected();
+    }
     // Nothing known until the keyboard says: its own report is the lighting facts' source.
     super::keyboard_facts::held(false);
     attach(&kb);
@@ -394,14 +470,17 @@ pub struct Line {
     /// The Keyboard card's short form (#794): the chip's text, or while Windows holds the
     /// lights the info bar's one line (60 characters or less); `text` is its hover and ⓘ.
     pub short: String,
+    /// While Windows holds the lights: nothing waits for them and Foxglove doesn't draw through
+    /// it, so the bar is a quiet info bar (#179); amber otherwise (#794).
+    pub quiet: bool,
 }
 
 /// The info bar's line while Windows holds the lights (#794, K2), with the waiting scene's name
-/// cut to fit the bar's 60 characters.
+/// cut to fit the bar's 60 characters; [`QUIET`] when no scene waits.
 fn windows_short(scene: Option<&str>) -> String {
     const HELD: &str = "Windows has the keyboard's lights";
     let Some(name) = scene else {
-        return HELD.to_string();
+        return QUIET.to_string();
     };
     let room = super::theme::BAR_MAX_CHARS
         - HELD.chars().count()
@@ -436,6 +515,22 @@ pub const TIP: &str = "Who drives the keyboard's lights, as the keyboard says. W
 /// What the pages say while a LampArray (Windows Dynamic Lighting) has the keyboard's lights
 /// (#749).
 pub const NOTICE: &str = "Windows Dynamic Lighting holds the keyboard's lights";
+
+/// The Keyboard card's quiet line while Windows Dynamic Lighting has the lights and nothing waits
+/// for them (#179).
+pub const QUIET: &str = "Windows Dynamic Lighting is controlling this keyboard";
+
+/// [`windows_line`] with package identity (#179): Foxglove can be the background controller, so
+/// the fix is the order, which only the user sets.
+pub fn identity_line(device: Option<&str>) -> String {
+    let device = device.map(str::trim).filter(|d| !d.is_empty());
+    format!(
+        "{QUIET}: another controller comes before Foxglove for it. In Settings > Personalization > \
+         Dynamic Lighting > Background light control, drag Foxglove to the top, and check {}'s \
+         own device pages (USB and Bluetooth). Foxglove never changes that setting.",
+        device.unwrap_or("the keyboard")
+    )
+}
 
 /// The Windows setting that gives the lights back, for the keyboard as Windows lists it (its
 /// USB product name; "your keyboard" while unknown). Foxglove never changes it.
@@ -505,6 +600,7 @@ pub fn line_through(
             warn: true,
             who: who.clone(),
             short,
+            quiet: scene.is_none() && through.is_none(),
         };
     }
     let text = format!("Lights now: {}", who.words());
@@ -513,7 +609,24 @@ pub fn line_through(
         text,
         warn: false,
         who: who.clone(),
+        quiet: false,
     }
+}
+
+/// [`line_through`] as the app draws it: with package identity and nothing drawn through
+/// Windows, the sentence says to put Foxglove first ([`identity_line`]).
+pub fn line_for(
+    who: &Who,
+    scene: Option<&str>,
+    device: Option<&str>,
+    through: Option<bool>,
+    identity: bool,
+) -> Line {
+    let mut line = line_through(who, scene, device, through);
+    if identity && matches!(who, Who::Windows) && through.is_none() && scene.is_none() {
+        line.text = identity_line(device);
+    }
+    line
 }
 
 /// For whom a running scene steps aside now, in words: `None` while it doesn't.
@@ -575,15 +688,17 @@ fn who_now(owner: Option<Owner>) -> (Who, Option<String>) {
 pub fn line_now() -> Line {
     let owner = lock(&STATE).owner();
     let (who, scene) = who_now(owner);
+    let identity = super::scene_lamps::identity();
     let through = (who == Who::Windows)
         .then(paired_lamp_key)
         .flatten()
-        .map(|_| super::scene_lamps::identity());
-    line_through(
+        .map(|_| identity);
+    line_for(
         &who,
         scene.as_deref(),
         super::devices::keyboard_name().as_deref(),
         through,
+        identity,
     )
 }
 
@@ -658,13 +773,12 @@ pub fn show_line(ui: &mut egui::Ui, space: f32) -> bool {
 /// ⓘ, and the button to the Windows setting. Never collapsed.
 pub fn notice_bar(ui: &mut egui::Ui, line: &Line) {
     let full = format!("{}\n\n{TIP}", line.text);
-    let bar = super::theme::info_bar(
-        ui,
-        super::theme::Level::Warn,
-        &line.short,
-        &full,
-        Some(DL_BUTTON),
-    );
+    let level = if line.quiet {
+        super::theme::Level::Info
+    } else {
+        super::theme::Level::Warn
+    };
+    let bar = super::theme::info_bar(ui, level, &line.short, &full, Some(DL_BUTTON));
     if bar.clicked() {
         super::notifications_ui::open_settings_page(DL_SETTINGS);
     }
@@ -683,9 +797,32 @@ pub fn chip(ui: &mut egui::Ui, line: &Line) -> egui::Response {
 
 /// The health view's row now (registered with `health::register` as "lights_owner").
 pub fn rows_now() -> Vec<HealthRow> {
-    let now = lock(&STATE).now();
+    let (now, warn) = {
+        let s = lock(&STATE);
+        (s.now(), s.flash.warn.clone())
+    };
     let (who, _) = who_now(now.owner);
-    rows(&now, &who)
+    let mut out = rows(&now, &who);
+    out.extend(flash_row(warn.as_deref()));
+    out
+}
+
+/// The WARN row while Windows Dynamic Lighting has the lights it took after a flash to `build`
+/// (#179). Foxglove never changes the setting; the row says where it is.
+pub fn flash_row(build: Option<&str>) -> Option<HealthRow> {
+    build.map(|b| {
+        HealthRow::new(
+            SUBSYSTEM,
+            "Lights owner after the flash",
+            Level::Warn,
+            format!(
+                "Windows Dynamic Lighting took the keyboard's lights after the flash to {b}: \
+                 open Settings > Personalization > Dynamic Lighting and put Foxglove first under \
+                 Background light control for both keyboard entries (or turn off \
+                 \u{201c}Use Dynamic Lighting on my devices\u{201d} on them)"
+            ),
+        )
+    })
 }
 
 /// The health view's row: who has the lights, and how often a scene stepped aside.
@@ -885,7 +1022,7 @@ mod tests {
             lines[0].short
         );
         assert!(lines[0].text.contains(long));
-        assert_eq!(lines[2].short, "Windows has the keyboard's lights");
+        assert_eq!(lines[2].short, QUIET);
         assert_eq!(
             lines[3].short,
             "Windows has the lights · Foxglove draws through it in front"
@@ -1105,5 +1242,60 @@ mod tests {
         );
         assert_eq!(r[0].level, Level::Ok);
         assert!(r[0].detail.contains("Foxglove, through"), "{}", r[0].detail);
+    }
+
+    /// #179: with nothing waiting the bar is quiet and says Windows is controlling the keyboard;
+    /// a waiting scene keeps the amber bar; with identity the sentence says to put Foxglove first
+    /// and never offers to change the setting itself.
+    #[test]
+    fn the_windows_line_is_quiet_unless_a_scene_waits() {
+        let corne = Some("Eyelash Corne");
+        let quiet = line(&Who::Windows, None, corne);
+        assert!(quiet.warn && quiet.quiet);
+        assert_eq!(quiet.short, QUIET);
+        let waits = line(&Who::Windows, Some("Ember"), corne);
+        assert!(waits.warn && !waits.quiet, "a scene waits: amber");
+        let through = line_through(&Who::Windows, None, corne, Some(true));
+        assert!(!through.quiet, "drawn through Windows: amber stays (#794)");
+        let ranked = line_for(&Who::Windows, None, corne, None, true);
+        assert!(
+            ranked.text.contains("drag Foxglove to the top"),
+            "{}",
+            ranked.text
+        );
+        assert!(ranked.text.contains("never changes"), "{}", ranked.text);
+        assert_eq!(ranked.short, QUIET);
+        let plain = line_for(&Who::Windows, None, corne, None, false);
+        assert_eq!(plain.text, quiet.text, "unpackaged: as before");
+        assert!(QUIET.chars().count() <= crate::foxglove::theme::BAR_MAX_CHARS);
+    }
+
+    /// #179: after a flash (another build), Windows taking the lights is a WARN until it lets go;
+    /// not when it had them before the flash, not for Foxglove's own hold, not on a plain
+    /// reconnect.
+    #[test]
+    fn windows_taking_the_lights_after_a_flash_warns() {
+        let lamp = Some(Owner::LampArrayUsb);
+        let mut w = FlashWatch::default();
+        w.connected(Some("0.3.0 dev 5be702c".into()), None);
+        assert!(!w.observed(lamp, false), "the first build seen: no flash");
+        w.connected(Some("0.3.0 dev c9bf83b".into()), Some(Owner::HostLink));
+        assert!(!w.observed(Some(Owner::HostLink), false));
+        assert!(w.observed(lamp, false), "Windows took them after the flash");
+        assert_eq!(w.warn.as_deref(), Some("0.3.0 dev c9bf83b"));
+        assert_eq!(flash_row(w.warn.as_deref()).unwrap().level, Level::Warn);
+        assert!(
+            w.observed(Some(Owner::HostLink), false),
+            "it let go: the row goes"
+        );
+        assert_eq!(w.warn, None);
+        assert!(!w.observed(lamp, true), "Foxglove's own hold isn't Windows");
+        // A reconnect with the same build isn't a flash.
+        w.connected(Some("0.3.0 dev c9bf83b".into()), lamp);
+        assert!(!w.observed(lamp, false));
+        // Windows had them before the flash too: nothing new to say.
+        w.connected(Some("0.3.1 dev 0000000".into()), lamp);
+        assert!(!w.observed(lamp, false));
+        assert_eq!(flash_row(None), None);
     }
 }

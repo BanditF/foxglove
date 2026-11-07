@@ -1983,8 +1983,8 @@ fn lights_owner_line_renders() {
 }
 
 /// #749: Windows Dynamic Lighting holds the keyboard's lights. Only the Lights page's Keyboard
-/// card says so: one amber line naming the Windows setting, then a small button that opens it.
-/// With the lights free, it doesn't show. Saved as the review image.
+/// card says so: one quiet line (#179; amber only while a scene waits), then a small button that
+/// opens the Windows setting. With the lights free, it doesn't show. Saved as the review image.
 #[test]
 fn dynamic_lighting_notice_renders() {
     use crate::foxglove::lights_owner::{line, Who, PREVIEW};
@@ -2006,9 +2006,10 @@ fn dynamic_lighting_notice_renders() {
     PREVIEW.set(None);
     keep("ui-749-dl-notice.png", &lights);
     assert_ne!(lights, lights_free, "the Lights page shows the notice");
+    // #179: with nothing waiting for the lights the notice is a quiet info bar, not amber.
     assert!(
-        near(&lights, DARK.warn) > near(&lights_free, DARK.warn),
-        "the notice is amber"
+        near(&lights, DARK.warn) <= near(&lights_free, DARK.warn),
+        "the quiet notice isn't amber"
     );
 }
 
@@ -3887,4 +3888,76 @@ fn palette_effects_on_the_corne_render() {
             );
         }
     }
+}
+
+/// #179: the Keyboard card's Dynamic Lighting states, for the review (ux-dl-*.png): Windows
+/// controlling the keyboard (the quiet bar, unpackaged and with identity), a scene waiting for
+/// it (amber), Foxglove's own LampArray hold; and the health card's identity and post-flash rows.
+#[test]
+fn dl_identity_states_render() {
+    use crate::foxglove::battery_dim_ui::tests as dim;
+    use crate::foxglove::lights_owner::{line, line_for, Who};
+    use crate::foxglove::lights_page::tests::sample;
+    use crate::foxglove::theme::{Choice, DARK};
+    let corne = Some("Eyelash Corne");
+    let width = 980.0;
+    let card =
+        |choice, owner| keyboard_card(choice, &sample(), Some(owner), dim::sample(), width).0;
+    let windows = card(Choice::Dark, line(&Who::Windows, None, corne));
+    let windows_light = card(Choice::Light, line(&Who::Windows, None, corne));
+    let ranked = card(
+        Choice::Dark,
+        line_for(&Who::Windows, None, corne, None, true),
+    );
+    let waits = card(
+        Choice::Dark,
+        line(&Who::Windows, Some("Bandit scanline"), corne),
+    );
+    let ours = card(Choice::Dark, line(&Who::FoxgloveLamp, None, corne));
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    assert!(
+        count(&waits, DARK.warn) > count(&windows, DARK.warn),
+        "only a waiting scene is amber"
+    );
+    assert_ne!(windows, ours);
+    let mut health = crate::foxglove::health::tests::sample();
+    health.rows = crate::foxglove::health::ordered(
+        &[
+            crate::foxglove::lamp_health::identity_row(true, false, true),
+            crate::foxglove::lights_owner::flash_row(Some("0.3.0 dev c9bf83b")),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(crate::foxglove::lamp_health::hold_rows(
+            crate::foxglove::lamp_hold::Holds {
+                usb: Some(true),
+                ble: Some(false),
+            },
+        ))
+        .collect::<Vec<_>>(),
+    );
+    let health_img = render_ui(
+        &preview_ctx(),
+        egui::vec2(640.0, 360.0),
+        DARK.ground,
+        move |ui| {
+            egui::Frame::new()
+                .fill(DARK.ground)
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    crate::foxglove::health::draw(ui, &health);
+                });
+        },
+    );
+    assert!(count(&health_img, DARK.warn) > 20, "the WARN rows");
+    keep("ux-dl-windows.png", &windows);
+    keep("ux-dl-windows-light.png", &windows_light);
+    keep("ux-dl-identity-rank.png", &ranked);
+    keep("ux-dl-scene-waits.png", &waits);
+    keep("ux-dl-foxglove-hold.png", &ours);
+    keep("ux-dl-health.png", &health_img);
 }
