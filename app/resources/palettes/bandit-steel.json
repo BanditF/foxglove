@@ -1,0 +1,20 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Steel",
+  "harmony": "complementary",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "accent2": "#6ca5d0",
+    "accent2_light": "#1c649c",
+    "base": "#050a13",
+    "ink": "#e8dcc4",
+    "paper": "#e6e7e4",
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#050a13",
+    "wall_ground": "#08090b"
+  },
+  "stops": ["#f08a3c", "#050a13", "#6ca5d0"]
+}

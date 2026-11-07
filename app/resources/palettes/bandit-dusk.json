@@ -1,0 +1,22 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Dusk",
+  "harmony": "split-complementary",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "accent2": "#62bcb6",
+    "accent2_light": "#0b6e68",
+    "accent3": "#999ee6",
+    "accent3_light": "#3941ac",
+    "base": "#07081a",
+    "ink": "#e8dcc4",
+    "paper": "#e7e6e2",
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#07081a",
+    "wall_ground": "#09090c"
+  },
+  "stops": ["#f08a3c", "#07081a", "#62bcb6", "#999ee6"]
+}
