@@ -572,10 +572,10 @@ pub fn effect_presets() -> Vec<Preset> {
             },
         ),
         preset(
-            "Dusk tide",
+            "Dusk Bold tide",
             Look {
                 kind: Kind::Tide,
-                palette: "Bandit Dusk".into(),
+                palette: "Bandit Dusk Bold".into(),
                 ..Look::default()
             },
         ),
