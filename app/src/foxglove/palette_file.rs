@@ -183,6 +183,28 @@ pub struct PaletteFile {
     pub name: String,
     pub roles: Roles,
     pub stops: Vec<Rgb>,
+    /// Which area budget its accents follow (docs/palette.md, "Bold tier").
+    #[allow(dead_code)] // the lights' key map reads it (#871 P2)
+    pub tier: Tier,
+}
+
+/// A palette's tier (the optional `tier` field): `harmony`, the default, keeps `accent2` to
+/// 15 % and `accent3` to 3 %; `bold` lets them lead (35 % / 5 %) and lights more keys in them.
+/// A tier this reader doesn't know reads as `harmony`, the quieter one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tier {
+    #[default]
+    Harmony,
+    Bold,
+}
+
+impl Tier {
+    fn of(label: Option<&str>) -> Tier {
+        match label {
+            Some("bold") => Tier::Bold,
+            _ => Tier::Harmony,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -195,6 +217,8 @@ struct File {
     roles: FileRoles,
     #[serde(default)]
     stops: Vec<String>,
+    #[serde(default)]
+    tier: Option<String>,
 }
 
 /// Reads a palette file. `Ok(None)` for a later version, which this reader skips as a whole.
@@ -222,6 +246,7 @@ pub fn parse(text: &str, fallback: Option<&Roles>) -> Result<Option<PaletteFile>
         name: f.name,
         roles: f.roles.resolve(accent, fallback)?,
         stops,
+        tier: Tier::of(f.tier.as_deref()),
     }))
 }
 
@@ -537,6 +562,21 @@ mod tests {
         let r = parse(&lone, Some(&bandit().roles)).unwrap().unwrap().roles;
         assert_eq!((r.accent2, r.accent3, r.accent3_light), (None, None, None));
         assert_eq!(r.third(), r.accent);
+        // The optional tier: bold when it says so, harmony when absent or unknown.
+        let tiered = |label: &str| {
+            let t = text.replace(
+                r##""name": "Reef","##,
+                &format!(r##""name": "Reef", "tier": "{label}","##),
+            );
+            parse(&t, Some(&bandit().roles)).unwrap().unwrap().tier
+        };
+        assert_eq!(tiered("bold"), Tier::Bold);
+        assert_eq!(tiered("loud"), Tier::Harmony);
+        assert_eq!(
+            parse(text, Some(&bandit().roles)).unwrap().unwrap().tier,
+            Tier::Harmony
+        );
+        assert_eq!(bandit().tier, Tier::Harmony);
         // A bad optional role refuses the file, as a bad required one does.
         let bad = text.replace(r##""#62bcb6", "accent3""##, r##""teal", "accent3""##);
         assert!(parse(&bad, Some(&bandit().roles)).is_err());
