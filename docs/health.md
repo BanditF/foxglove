@@ -67,7 +67,7 @@ the half has built in.
 | 24 | 4 | boot self-test, one byte per check: display, settings, relay, LEDs (below) |
 | 28 | 10 | the left: HELLO's relay debug bytes for this link (chrcs, ends, last ret, ATT error, timeouts, answered, in flight, security, MTU u16), folded in here rather than kept twice |
 | 38 | 2 | relay requests let go without an answer, since boot |
-| 40 | 2 | split links dropped to end a stuck request (the unstick) |
+| 40 | 2 | split links dropped to end a stuck request (the unstick) or a stuck relay discovery (#873) |
 | 42 | 2 | the left: times the relay was found; the right: times the left subscribed |
 | 44 | 1 | relay requests in flight now (the left) |
 | 45 | 1 | relay discovery result (int8: 0 idle, 1 running, 2 no service, 3 no characteristics, 4 found; negative a `bt_gatt_discover` error) |

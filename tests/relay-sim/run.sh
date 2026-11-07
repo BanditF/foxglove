@@ -27,7 +27,7 @@ DEFINES=(
     -DCONFIG_FOXGLOVE_HEALTH_RELAY_S=60
     -DCONFIG_ZMK_LOG_LEVEL=0
 )
-SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency polarity-relink playlist-store playlist-store-old restore-update health art-step-toast art-step-cycles art-step-cycles-lag art-step-boot)
+SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency polarity-relink playlist-store playlist-store-old restore-update health art-step-toast art-step-cycles art-step-cycles-lag art-step-boot right-reflash right-reflash-stall)
 # Known gaps: each must still FAIL (README.md, "Known gaps"). None at the moment.
 KNOWN_GAPS=()
 if [ "$#" -gt 0 ]; then

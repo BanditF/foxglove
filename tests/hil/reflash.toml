@@ -1,0 +1,23 @@
+schema = 1
+
+# After a batch flash's right write (#873). Not run on its own: On-call's batch flash runs it
+# right after `foxglove_flash.py --half right` returns, with no left write in between, and
+# Foxglove quit. It checks the left finds the reflashed right's relay by itself. That the left
+# did NOT reboot for it is the batch script's check, not a step here: flash-history.log has no
+# left write between the right's write and this case, and the health row "Left half: up N min"
+# is older than the right's write.
+
+[[cases]]
+name = "right-reflash-relay-recovers"
+description = "#873: right after the right half is reflashed (to a build with a different relay attribute table or the same one, either direction: the c9bf83b flash added the slot CRC characteristic of #863), the left finds the right's relay by itself, without a left reboot: up within 60 s of this case starting (the flasher has already waited for it after the write; the batch script checks 75 s from the write). Before #873 a left whose discovery request never went on the air stayed at HELLO right link 1, discovery 1 until rebooted (the c9bf83b flash, 02:24Z); the fix drops such a link after 20 s and discovers again (relay-sim right-reflash-stall: about 57 s; a clean reflash about 19 s). Then the relay works: the right's build reads back over it, a right key reaches the left over the split, and a SELECT lands. Needs a dev build on both halves (D7 05) and Foxglove quit. Leaves built-in set 0 on the right"
+tags = ["reflash"]
+requires = ["position_press"]
+steps = [
+  { wait_relay = { within_ms = 60000 } },
+  { expect_build = { half = "right" } },
+  { press_position = { pos = 46, state = "down" } },
+  { expect_layer = { active_contains = [2], within_ms = 2000 } },
+  { press_position = { pos = 46, state = "up" } },
+  { expect_layer = { top = 0 } },
+  { art_select = { set = 0, restore = false, replace_pushed = true } },
+]

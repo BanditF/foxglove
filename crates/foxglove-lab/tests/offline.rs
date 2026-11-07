@@ -133,6 +133,11 @@ fn parses_seed_suites_and_all_step_kinds() {
             .len(),
         14
     );
+    // #873: the batch flash's check after the right's write.
+    assert_eq!(
+        spec::load(&root.join("reflash.toml")).unwrap().cases.len(),
+        1
+    );
     assert_eq!(
         spec::load(&root.join("app-actions.toml"))
             .unwrap()

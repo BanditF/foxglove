@@ -54,7 +54,20 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 // of ours running alongside that wedged both (requests never answered), so wait it out.
 #define DISCOVER_DELAY K_SECONDS(15)
 #define DISCOVER_RETRY K_SECONDS(5)
-#define DISCOVER_TRIES 20
+/* #873: a discovery that ends empty or with an error is tried again after 5 s, then 10, 20, 40
+ * and 60 s (the most), DISCOVER_TRIES times in all (about 8 minutes), then left until the next
+ * link. Every new split link starts over from the first try. */
+#define DISCOVER_RETRY_MAX_S 60
+#define DISCOVER_TRIES 12
+/* #873: a discovery that hasn't ended DISCOVER_STUCK_MS after it started has a request that
+ * never went on the air or never got an answer (HELLO "discovery 1" with no ends, for minutes,
+ * after the c9bf83b right flash; only a left reboot ended it). Zephyr's 30 s ATT timeout starts
+ * only once a request is on the air, so it can't end it. The watch drops the split link once,
+ * as the unstick does for relay requests; ZMK reconnects and discovery runs fresh. At most
+ * DISCOVER_DROPS_IN_ROW drops until a discovery finishes again. A discovery normally takes 1-2 s
+ * (one request per attribute, the right listening at least every ~230 ms). */
+#define DISCOVER_STUCK_MS 20000
+#define DISCOVER_DROPS_IN_ROW 3
 
 static uint8_t blob[CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
 static uint16_t blob_len;
@@ -101,11 +114,17 @@ static void effect_link_up(void);
 static void doorbell_link_up(void);
 static void activity_link_up(void);
 
-// Tries again a little later, in case ZMK's own setup of the link got in the way.
+static void discover_watch_stop(bool found);
+
+// Tries again a little later, in case ZMK's own setup of the link got in the way: 5 s after the
+// first try, doubling up to DISCOVER_RETRY_MAX_S.
 static void discovery_failed(int8_t result) {
     discovery = result;
+    discover_watch_stop(false);
     if (peer != NULL && discovery_tries < DISCOVER_TRIES) {
-        k_work_reschedule(&discover_work, DISCOVER_RETRY);
+        uint32_t s = MIN(5U << MIN(discovery_tries > 0 ? discovery_tries - 1 : 0, 4),
+                         DISCOVER_RETRY_MAX_S);
+        k_work_reschedule(&discover_work, K_SECONDS(s));
     }
 }
 
@@ -125,6 +144,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         LOG_INF("art relay: right half %s", data_handle ? "ready" : "has no relay");
         if (data_handle && status_handle) {
             discovery = ART_DISCOVERY_DONE;
+            discover_watch_stop(true);
             health_relay_found();
             rgb_sync_link_up();
             lamps_link_up();
@@ -154,6 +174,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         // queued after it on the split link (ZMK's own included).
         dbg.ends++;
         discovery = ART_DISCOVERY_DONE;
+        discover_watch_stop(true);
         health_relay_found();
         atomic_clear(&discovering); // Zephyr gets no callback after a STOP
         rgb_sync_link_up();
@@ -196,6 +217,8 @@ static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *at
     return BT_GATT_ITER_STOP;
 }
 
+static void discover_watch_start(void);
+
 static void discover_cb(struct k_work *work) {
     if (peer == NULL || (data_handle && status_handle)) {
         return;
@@ -206,6 +229,7 @@ static void discover_cb(struct k_work *work) {
     }
     discovery_tries++;
     discovery = ART_DISCOVERY_RUNNING;
+    discover_watch_start();
     discover_params.uuid = &service_uuid.uuid;
     discover_params.func = service_found;
     discover_params.start_handle = 0x0001;
@@ -226,6 +250,7 @@ static void cmds_link_changed(void);
 // Forgets the split connection and everything found on it.
 static void drop_peer(void) {
     k_work_cancel_delayable(&discover_work);
+    discover_watch_stop(false);
     unstick_reset();
     cmds_link_changed();
     if (peer != NULL) {
@@ -467,6 +492,52 @@ static void unstick_cb(struct k_work *work) {
     bt_conn_unref(conn);
 }
 static K_WORK_DELAYABLE_DEFINE(unstick_work, unstick_cb);
+
+/* The discovery watch (#873, DISCOVER_STUCK_MS). Start/stop: started when a discovery request
+ * goes to Zephyr (discover_cb); stopped when the discovery ends (found, empty, or an error) or the
+ * link goes (drop_peer). It fires once per start and drops the link at most DISCOVER_DROPS_IN_ROW
+ * times until a discovery finishes; the count starts over when one does. On unstick_q (started
+ * on first use, never at boot): bt_conn_disconnect waits for the controller. */
+static atomic_t discover_drops_in_row;
+
+static void discover_watch_cb(struct k_work *work) {
+    struct bt_conn *conn = NULL;
+    unsigned int key = irq_lock(); // the discovery callbacks and disconnected() run elsewhere
+    if (peer != NULL && discovery == ART_DISCOVERY_RUNNING) {
+        conn = bt_conn_ref(peer);
+    }
+    irq_unlock(key);
+    if (conn == NULL) {
+        return; // ended meanwhile, or the link went: that ends it too
+    }
+    if (atomic_get(&discover_drops_in_row) < DISCOVER_DROPS_IN_ROW) {
+        atomic_inc(&discover_drops_in_row);
+        LOG_WRN("art relay: discovery of the right's relay hasn't ended after %d s; dropping the "
+                "split link to start it fresh (%d in a row)",
+                DISCOVER_STUCK_MS / 1000, (int)atomic_get(&discover_drops_in_row));
+        health_inc(HEALTH_RELAY_UNSTICKS);
+        bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    } else {
+        LOG_WRN("art relay: discovery stuck again; leaving the link");
+    }
+    bt_conn_unref(conn);
+}
+static K_WORK_DELAYABLE_DEFINE(discover_watch_work, discover_watch_cb);
+
+static void discover_watch_start(void) {
+    if (atomic_cas(&unstick_q_started, 0, 1)) {
+        k_work_queue_start(&unstick_q, unstick_stack, K_THREAD_STACK_SIZEOF(unstick_stack),
+                           K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
+    }
+    k_work_reschedule_for_queue(&unstick_q, &discover_watch_work, K_MSEC(DISCOVER_STUCK_MS));
+}
+
+static void discover_watch_stop(bool found) {
+    k_work_cancel_delayable(&discover_watch_work);
+    if (found) {
+        atomic_clear(&discover_drops_in_row);
+    }
+}
 
 // A slot for the next request (relay_q only), or NULL while Zephyr holds every slot.
 static struct relay_req *req_new(void) {
