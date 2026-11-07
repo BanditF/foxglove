@@ -404,6 +404,39 @@ pub fn kept(s: &Snapshot, pcs: &[PcPiece]) -> Vec<Option<Kept>> {
         .collect()
 }
 
+/// The PC piece that holds a kept place's very bytes, for drawing its literal frames (the live
+/// feed, `live_art`): with a CRC (#863) only the piece with that CRC, never a name-alike that
+/// was paced or changed since; without one (older firmware), the piece with its name and length.
+pub fn holding(info: &foxglove_link::protocol::SlotInfo, pcs: &[PcPiece]) -> Option<usize> {
+    match info.crc {
+        Some(crc) => pcs.iter().position(|p| p.crcs.contains(&crc)),
+        None => pcs
+            .iter()
+            .position(|p| p.answers_to(&info.name) && p.bytes == usize::from(info.len)),
+    }
+}
+
+/// A piece's bytes as made for the art screen and sent (the bytes a kept place holds): its
+/// library file as pushed, else its bundled set or converted folder as made for the screen.
+pub fn piece_blob(piece: &PcPiece, library: &art_library::Library) -> Option<Vec<u8>> {
+    piece.origins.iter().find_map(|o| match o {
+        Origin::Library(path) => super::art_service::pushed_bytes(path).ok(),
+        Origin::Bundled(i) => {
+            let (_, bytes, _) = BUNDLED.get(*i)?;
+            let bytes = super::art_encode::normalise_blob(bytes, Default::default());
+            let target = super::art_encode::ArtTarget::resolve();
+            let (bytes, _) = super::art_encode::for_screen(&bytes, &target).ok()?;
+            Some(super::art_encode::Pace::current().blob(bytes))
+        }
+        Origin::Source(folder) => library
+            .sources
+            .iter()
+            .find(|s| &s.folder == folder)
+            .and_then(|s| s.blob.as_ref().ok())
+            .map(|b| b.to_vec()),
+    })
+}
+
 /// Whether a kept place is the user's: places lent to the playlist (#522) change under it, so
 /// they never count as keeping a piece.
 fn yours(s: &Snapshot, k: &Kept) -> bool {

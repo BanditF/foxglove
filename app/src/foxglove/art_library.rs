@@ -1,6 +1,6 @@
 //! Shared art library, loaded away from the UI and tray threads.
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Clone)]
@@ -61,6 +61,14 @@ static LOADING: AtomicBool = AtomicBool::new(false);
 type Target = Result<super::art_encode::ArtTarget, String>;
 static MADE_FOR: Mutex<Option<Target>> = Mutex::new(None);
 pub static PICK_FILE: AtomicBool = AtomicBool::new(false);
+/// Counts finished scans, so what reads pieces by content (the live feed's kept places,
+/// `live_art`) reads them again when the library changed under it.
+static SCANS: AtomicU64 = AtomicU64::new(0);
+
+/// How many scans have finished: a new value means the library may hold other pieces now.
+pub fn generation() -> u64 {
+    SCANS.load(Ordering::Relaxed)
+}
 
 /// A `.bin` the right screen can play. `<name>.left.bin` is a wallpaper's left-screen companion
 /// (the wallpaper manifest names it): a different size, never right art, so it stays out.
@@ -174,6 +182,9 @@ fn scan(state: Arc<Mutex<Library>>) {
             library.error = result.err();
             *state.lock().unwrap_or_else(|e| e.into_inner()) = library;
             LOADING.store(false, Ordering::Relaxed);
+            SCANS.fetch_add(1, Ordering::Relaxed);
+            // A kept place's piece may be here now (the live feed's frames, `live_art`).
+            super::live_feed::art_changed();
         })
         .is_err()
     {
