@@ -32,7 +32,7 @@
 // Counters (saturating: u16 fields stop at 0xffff, u32 ones at 0x7fffffff).
 enum health_counter {
     HEALTH_RELAY_TIMEOUTS,    // relay requests let go without an answer, since boot
-    HEALTH_RELAY_UNSTICKS,    // split links dropped to end a stuck request
+    HEALTH_RELAY_UNSTICKS,    // split links dropped to end a stuck request or discovery (#873)
     HEALTH_RELAY_READY,       // left: the relay found on a link; right: the left subscribed
     HEALTH_RELAY_REFUSED,     // left: relay requests that failed; right: ops refused (ATT error)
     HEALTH_HID_REPLY_DROPS,   // host link replies dropped: its reply queue was full

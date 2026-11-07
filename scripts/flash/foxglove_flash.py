@@ -746,7 +746,8 @@ def recover_drive(half, serials, backend, log, why, sha='', clock=time.monotonic
 
 def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
           settings_reset=False, allow_unknown_half=False, clock=time.monotonic, sleep=time.sleep,
-          allow_profile_mix=False, yes=False, force=False, resume=False, pnp_rescan=False):
+          allow_profile_mix=False, yes=False, force=False, resume=False, pnp_rescan=False,
+          left_reboot_image=None):
     """Flashes the halves in `images`, left first. Resume (#654): before any half is asked into
     its bootloader, the bootloaders already connected are listed. A half already in its
     bootloader (a run that stopped after the entry, or a double tap) is written first, scoped to
@@ -774,7 +775,34 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         confirm('Type FLASH to continue: ', 'FLASH', stdin, ask)
         if settings_reset:
             confirm('This erases saved settings. Type ERASE SETTINGS to confirm: ', 'ERASE SETTINGS', stdin, ask)
-    def one(half, resumed):
+    # #873: --left-reboot-image, the build the left runs now, for a hands-free left restart when
+    # the relay to the right is down while the right must be asked into its bootloader.
+    left_reboot = None
+    if left_reboot_image is not None and 'right' in images and not settings_reset:
+        mark = preflight(left_reboot_image, 'left', allow_unknown_half)
+        if not mark.ok:
+            raise Refused('--left-reboot-image: ' + '; '.join(mark.reasons))
+        now = backend.build_info('left') or {}
+        if not mark.sha or now.get('sha') != mark.sha:
+            raise Refused(f"--left-reboot-image is {mark.sha or 'a build without a SHA'}, but the left runs "
+                          f"{describe(now) if now else 'an unknown build'}: it must be the build the left "
+                          'runs now (a restart, not an update). Nothing was changed.')
+        left_reboot = (left_reboot_image, mark.sha)
+        log(f'left: restart image ready ({mark.sha}), used only if the relay to the right is down when '
+            'the right must be asked into its bootloader.')
+
+    def relay_down():
+        if backend.enumerate_bootloaders():
+            return False  # a late entry: the normal wait takes it from here
+        try:
+            return backend.right_link() != 2
+        except (subprocess.SubprocessError, OSError, ValueError):
+            return True
+
+    def one(half, resumed, image=None, sha=None, reboot_only=False):
+        # image/sha: a same-build left reboot (#873) writes this image instead of the run's own.
+        image = images[half] if image is None else image
+        sha = expected.get(half) if sha is None else sha
         entered = attempted = False
         if not settings_reset and not resumed:
             # The right goes through the left's relay, which comes back about 20-40 s after the
@@ -785,6 +813,20 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             if half == 'right' and not wait_relay(backend, RELAY_WAIT_SECONDS, clock, sleep):
                 log(f'right: the relay to the right half is not up after {RELAY_WAIT_SECONDS} s; trying anyway.')
             entered, attempted = enter_with_retries(half, backend, log, clock, sleep)
+            if half == 'right' and not entered and left_reboot is not None and relay_down():
+                # #873: the right's hands-free entry needs the left (the relay, or ZMK's split as
+                # its fallback): the right's own USB has no Foxglove link. A left that lost the
+                # relay gets it back by restarting, so reflash the left with the build it already
+                # runs (its own USB, no relay needed), wait for the relay, and ask the right once more.
+                log('right: the relay to the right half is down, so the right cannot be asked in; '
+                    'restarting the left hands-free with the build it already runs, then asking again '
+                    '(once).')
+                require_usb('left', usb_presence(backend, 'left'))
+                one('left', False, image=left_reboot[0], sha=left_reboot[1], reboot_only=True)
+                if not wait_relay(backend, RELAY_WAIT_SECONDS, clock, sleep):
+                    log(f'right: the relay to the right half is still not up {RELAY_WAIT_SECONDS} s after '
+                        'the left restarted; trying anyway.')
+                entered, attempted = enter_with_retries(half, backend, log, clock, sleep)
         asked = entered or (attempted and not settings_reset)
         if entered:
             log(f'Asked the {half} half to enter its bootloader. Waiting up to {seconds:g} seconds for its drive.')
@@ -839,7 +881,7 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                     serial, volume = recover_drive(
                         half, gone[0], backend, log,
                         f'it left its normal firmware ({" / ".join(APP_DEVICE + s for s in gone[0])} gone), '
-                        f'but no bootloader showed up in {VANISH_SECONDS} s', expected.get(half, ''), clock, sleep,
+                        f'but no bootloader showed up in {VANISH_SECONDS} s', (sha or ''), clock, sleep,
                         pnp_rescan)
                     chosen[:] = [serial]
                 else:
@@ -855,7 +897,7 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                 # isn't coming without a replug (#664).
                 _, volume = recover_drive(half, chosen[0], backend, log,
                                        f'its bootloader ({chosen[0]}) is on USB, but no drive mounted: {exc}',
-                                       expected.get(half, ''), clock, sleep, pnp_rescan)
+                                       (sha or ''), clock, sleep, pnp_rescan)
         info = volume / 'INFO_UF2.TXT'
         if not backend.exists(info):
             raise Refused('INFO_UF2.TXT disappeared before writing')
@@ -863,7 +905,7 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         if len(board) != 1:
             raise Refused('INFO_UF2.TXT has no unambiguous Board-ID line')
         log(f'{half}: {board[0]}')
-        result = preflight(images[half], half, allow_unknown_half, settings_reset)
+        result = preflight(image, half, allow_unknown_half, settings_reset)
         if not result.ok:
             raise Refused('; '.join(result.reasons))
         # A UF2 written about 1 s after the drive appears is sometimes ignored by the bootloader
@@ -877,11 +919,11 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                     or backend.find_volume(chosen[0]) != volume):
                 raise Refused('Bootloader identity or volume changed before writing')
             try:
-                backend.write_file(volume / 'flash.uf2', images[half])
+                backend.write_file(volume / 'flash.uf2', image)
             except DriveGone as gone:
                 # Don't retry and don't call it a failure yet: the build read-back decides.
                 log(f'{half}: {gone}; the bootloader may have taken the whole image, checking the build.')
-                record(half, expected.get(half), 'written-drive-gone', str(gone))
+                record(half, sha, 'written-drive-gone', str(gone))
                 unconfirmed = True
                 break
             try:
@@ -893,23 +935,23 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                     raise
                 log(f'{half}: the bootloader did not take the image; writing it once more.')
         if unconfirmed:
-            if not expected.get(half):
+            if not sha:
                 raise FlashFailed(f"{half}: the drive went away mid-write and this image has no SHA to check "
                                   "against; can't tell whether it was flashed. Re-run to be sure.")
         log(f'{half} bootloader drive disappeared.')
         if half == 'left' and not settings_reset:
             wait_for(lambda: backend.running_keyboard(chosen[0]), seconds, 'Left keyboard did not re-enumerate (1D50:615E)', clock, sleep)
         if not unconfirmed:
-            record(half, expected.get(half), 'written')
+            record(half, sha, 'written')
         if not settings_reset:
             try:
-                verified = verify_build(half, expected.get(half), backend, log, clock, sleep, strict=unconfirmed)
+                verified = verify_build(half, sha, backend, log, clock, sleep, strict=unconfirmed)
             except FlashFailed as exc:
-                record(half, expected.get(half), 'verify-failed', str(exc))
+                record(half, sha, 'verify-failed', str(exc))
                 raise
             # The history says exactly what the console said.
-            record(half, expected.get(half), 'verified' if verified else 'unverified')
-        if settings_reset:
+            record(half, sha, 'verified' if verified else 'unverified')
+        if settings_reset or reboot_only:
             return
         if yes:
             # The right is flashed only after the left is proven to type. The right's own check
@@ -1004,6 +1046,11 @@ def main(argv=None):
                         help='when a bootloader drive does not mount (#664), run pnputil /scan-devices '
                              'once before asking for a replug. Needs an elevated prompt (skipped, and '
                              'logged, otherwise); a port that failed to enumerate still needs the replug')
+    parser.add_argument('--left-reboot-image', type=Path,
+                        help='the left UF2 the left runs now (same SHA, checked). Only used when the right '
+                             'must be asked into its bootloader while the relay to it is down (#873): the '
+                             'left is restarted hands-free by writing this same build, then the right is '
+                             'asked once more before any double-tap prompt')
     parser.add_argument('--resume', action='store_true',
                         help='doctor mode (#654): write only the halves already in their bootloaders '
                              '(stranded by an earlier run, or double-tapped), each scoped to its USB '
@@ -1047,7 +1094,8 @@ def main(argv=None):
                 flash(images, WindowsOS(log=log), args.wait_seconds, log=log, ask=ask_terminal,
                       settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
                       allow_profile_mix=args.allow_profile_mix, yes=args.yes, force=args.force,
-                      resume=args.resume, pnp_rescan=args.pnp_rescan)
+                      resume=args.resume, pnp_rescan=args.pnp_rescan,
+                      left_reboot_image=args.left_reboot_image.read_bytes() if args.left_reboot_image else None)
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         code = 2
         log('TIMEOUT: ' + str(exc))

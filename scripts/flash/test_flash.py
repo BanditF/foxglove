@@ -1422,3 +1422,73 @@ class DriveNotMountedTests(unittest.TestCase):
             ran, why = backend.pnp_rescan()
         self.assertFalse(ran)
         self.assertIn('administrator', why)
+
+
+class LeftRestartTests(unittest.TestCase):
+    """#873: the right's hands-free entry needs the left's relay (or ZMK's split). With the relay
+    down, --left-reboot-image restarts the left by writing the build it already runs, then asks
+    the right once more, instead of a double tap nobody is there to do."""
+    LEFT_IMG = uf2(b'FOXGLOVE_HALF=left;VER=0.3.0;PROFILE=dev;SHA=c9bf83b')
+    RIGHT_IMG = uf2(b'FOXGLOVE_HALF=right;VER=0.3.0;PROFILE=dev;SHA=5be702c')
+
+    class RelayDownOS(BootloaderOS):
+        """The right's entry fails and the relay stays at link 1 until the left is rewritten."""
+        def __init__(self):
+            super().__init__()
+            self.builds = {'left': {'version': '0.3.0', 'profile': 'dev', 'sha': 'c9bf83b'}}
+            self.left_restarted = False
+
+        def right_link(self):
+            self.link_polls += 1
+            return 2 if self.left_restarted else 1
+
+        def enter_bootloader(self, half, log):
+            if half == 'right' and not self.left_restarted:
+                self.entered.append(half)
+                return False
+            return super().enter_bootloader(half, log)
+
+        def write_file(self, path, data):
+            super().write_file(path, data)
+            if data == LeftRestartTests.LEFT_IMG:
+                self.left_restarted = True
+
+    def run_yes(self, backend, left_image):
+        clock = Clock()
+        logs = []
+        f.flash({'right': self.RIGHT_IMG}, backend, 120, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep,
+                yes=True, left_reboot_image=left_image)
+        return logs
+
+    def test_relay_down_restarts_the_left_then_writes_the_right(self):
+        backend = self.RelayDownOS()
+        logs = self.run_yes(backend, self.LEFT_IMG)
+        self.assertEqual([(s, d) for s, d in backend.writes],
+                         [(LEFT, self.LEFT_IMG), (RIGHT, self.RIGHT_IMG)])
+        self.assertEqual(backend.entered.count('left'), 1)
+        self.assertEqual(backend.entered[-1], 'right')
+        self.assertTrue(any('restarting the left hands-free' in m for m in logs), logs)
+        self.assertFalse(any(m.startswith('Double-tap reset on') for m in logs), logs)
+        self.assertEqual(backend.typing, ['right'], 'the restart is not a left update: no left typing check')
+
+    def test_restart_image_must_be_the_running_build(self):
+        backend = self.RelayDownOS()
+        other = uf2(b'FOXGLOVE_HALF=left;VER=0.3.0;PROFILE=dev;SHA=5be702c')
+        with self.assertRaises(f.Refused):
+            self.run_yes(backend, other)
+        self.assertEqual(backend.writes, [])
+        self.assertEqual(backend.entered, [])
+
+    def test_restart_image_must_be_a_left_image(self):
+        backend = self.RelayDownOS()
+        with self.assertRaises(f.Refused):
+            self.run_yes(backend, self.RIGHT_IMG)
+        self.assertEqual(backend.writes, [])
+
+    def test_relay_up_never_restarts_the_left(self):
+        backend = self.RelayDownOS()
+        backend.left_restarted = True  # the relay is up: the right enters as asked
+        self.run_yes(backend, self.LEFT_IMG)
+        self.assertEqual([s for s, _ in backend.writes], [RIGHT])
+        self.assertNotIn('left', backend.entered)

@@ -1295,6 +1295,69 @@ static void art_step_boot(void) {
 }
 #endif
 
+/* #873: the right reflashed with a different relay attribute table (the slot CRC characteristic
+ * of #863 added, then gone again), both directions; the left finds the relay by itself, within
+ * REFLASH_RELAY_S, with no left reboot. With `stall`, the left's TX stalls once the new link is
+ * encrypted, before its discovery goes out (the c9bf83b flash: HELLO discovery 1 with no ends
+ * for minutes, the split fallback for the bootloader not landing either): the discovery watch
+ * has to drop that link for the relay to come back. */
+#define REFLASH_RELAY_S 30
+#define REFLASH_RELAY_STALL_S 75
+
+static void right_reflash(bool stall) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    const uint8_t versions[] = {ART_RELAY_STORE_STATUS_VERSION, ART_RELAY_SLOT_CRC_STATUS_VERSION};
+    const char *names[] = {"to-old-table", "to-new-table"};
+    for (int i = 0; i < 2; i++) {
+        int drops = sim_bt_stats.link_drops;
+        uint8_t was = sim_right.version;
+        sim_right.version = versions[i]; // the new firmware's table, from its first boot
+        int64_t start = k_uptime_get();
+        sim_bt_right_update(false, 3000000);
+        if (stall) {
+            k_msleep(3000 + 500 + 1000); // the link is back and encrypted; discovery is due at +15 s
+            sim_bt_stall_left_tx();
+        }
+        int limit = stall ? REFLASH_RELAY_STALL_S : REFLASH_RELAY_S;
+        k_msleep(1000);
+        while (art_relay_link() != 2 && k_uptime_get() - start < limit * 1000LL) {
+            k_msleep(100);
+        }
+        int64_t took = k_uptime_get() - start;
+        int8_t result;
+        uint8_t tries;
+        art_relay_discovery(&result, &tries);
+        char name[40];
+        snprintf(name, sizeof(name), "%s-relay", names[i]);
+        check(name, art_relay_link() == 2 && result == ART_DISCOVERY_DONE,
+              "version %d -> %d: link %d, discovery %d (tries %d) after %.1f s (limit %d s), %d "
+              "link drop(s) by the left",
+              was, versions[i], art_relay_link(), result, tries, took / 1000.0, limit,
+              sim_bt_stats.link_drops - drops - 1);
+        debug_line(names[i]);
+        // The relay works on the new table: a slot read (with the CRC only from version 11 on)
+        // and a SELECT. STATUS first, as Foxglove and the lab do: the left reads the right's
+        // status (its version) on the first one after a re-link.
+        status();
+        k_msleep(500);
+        status();
+        bool used = false;
+        uint16_t len = 0;
+        char slot_name[17];
+        bool read = lab_slot(0, &used, &len, slot_name);
+        snprintf(name, sizeof(name), "%s-slot", names[i]);
+        bool want_crc = versions[i] >= ART_RELAY_SLOT_CRC_STATUS_VERSION;
+        check(name, read && (slot_crc_version == HOST_LINK_SLOT_CRC_V1) == want_crc,
+              "read %s, CRC %s (want %s)", read ? "ok" : "failed",
+              slot_crc_version == HOST_LINK_SLOT_CRC_V1 ? "present" : "absent",
+              want_crc ? "present" : "absent");
+        char why[200];
+        snprintf(name, sizeof(name), "%s-select", names[i]);
+        check(name, lab_select(0, why, sizeof(why)), "%s", why);
+    }
+}
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -1330,6 +1393,10 @@ static void lab_thread(void *arg) {
         playlist_store_old();
     } else if (!strcmp(scenario, "restore-update")) {
         restore_update();
+    } else if (!strcmp(scenario, "right-reflash")) {
+        right_reflash(false);
+    } else if (!strcmp(scenario, "right-reflash-stall")) {
+        right_reflash(true);
 #if __has_include("art_toast.h")
     } else if (!strcmp(scenario, "art-step-toast")) {
         art_step_toast();

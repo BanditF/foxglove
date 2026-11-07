@@ -42,6 +42,18 @@ again" before the left is touched; a later entry looks again. A half already in
 its bootloader is written without this check, and a settings reset (double tap)
 isn't gated.
 
+**The right needs the left to reach its bootloader (#873).** The right's USB carries no
+Foxglove link (a ZMK peripheral: USB power only, problem 28), so its hands-free entry always
+goes through the left: the relay's BOOT write, or ZMK's split run-behavior write when the
+relay is down. A left whose link to the right stopped sending (the c9bf83b flash: relay
+discovery stuck, so neither write reached the right) can't ask it in. Pass
+`--left-reboot-image <the left UF2 the left runs now>`: when the right's request fails while
+the relay is down (right link not 2, no bootloader showing up), the flasher restarts the left
+hands-free by writing that same build (its own USB; the SHA must match the left's running
+build, else it refuses before touching anything), waits for the relay, and asks the right
+once more before any double-tap prompt. No left typing check: it's a restart, not an update.
+Firmware with #873 also recovers by itself (the left drops a link whose discovery hangs).
+
 **A bootloader drive that never mounts (#664).** After Modern Standby a USB port can
 fail to re-enumerate (`Unknown USB Device (Device Descriptor Request Failed)`,
 `USB\VID_0000&PID_0002\...`, Code 43): the half leaves its firmware for its
