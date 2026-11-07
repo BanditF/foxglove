@@ -17,8 +17,9 @@ use super::art_library;
 use super::art_service::{Choice, JobKind, Retry, Snapshot};
 use super::art_words::{showing, Badge, Showing};
 
-/// Sets that ship with the app: the lighting presets' art (#273) and the plugins' (#238, #259).
-/// The flag marks plugin art.
+/// Sets that ship with the app: the lighting presets' art (#273), the plugins' (#238, #259) and
+/// the Bandit Motion set (movement and distortion styles of the Bandit emblem, made by
+/// `tools/art-src/bandit/motion/bandit_motion.py`). The flag marks plugin art.
 pub const BUNDLED: &[(&str, &[u8], bool)] = &[
     (
         "fury.bin",
@@ -49,6 +50,41 @@ pub const BUNDLED: &[(&str, &[u8], bool)] = &[
         "bandit-onair.bin",
         include_bytes!("../../../assets/plugins/org.foxglove.broadcast-status/onair.bin"),
         true,
+    ),
+    (
+        "bandit-scanline.bin",
+        include_bytes!("../../resources/art/bandit-motion/bandit-scanline.bin"),
+        false,
+    ),
+    (
+        "bandit-glitch.bin",
+        include_bytes!("../../resources/art/bandit-motion/bandit-glitch.bin"),
+        false,
+    ),
+    (
+        "bandit-cloak.bin",
+        include_bytes!("../../resources/art/bandit-motion/bandit-cloak.bin"),
+        false,
+    ),
+    (
+        "bandit-drift.bin",
+        include_bytes!("../../resources/art/bandit-motion/bandit-drift.bin"),
+        false,
+    ),
+    (
+        "bandit-ghost.bin",
+        include_bytes!("../../resources/art/bandit-motion/bandit-ghost.bin"),
+        false,
+    ),
+    (
+        "bandit-compass.bin",
+        include_bytes!("../../resources/art/bandit-motion/bandit-compass.bin"),
+        false,
+    ),
+    (
+        "bandit-signal-v2.bin",
+        include_bytes!("../../resources/art/bandit-motion/bandit-signal-v2.bin"),
+        false,
     ),
 ];
 
@@ -1268,6 +1304,17 @@ pub mod tests {
         let k = kept(&s, &pcs);
         assert!(on_screen(&s, &pcs[0], &k, 0), "Orbit sent from this PC");
         assert_eq!(showing_name(&s), "Orbit");
+    }
+
+    /// Every bundled set fits a pushed set (the right half's 16 KiB) with the art budget's
+    /// headroom (12 KiB), and its file name is the name the library shows.
+    #[test]
+    fn bundled_sets_fit_the_push_budget() {
+        for (file, bytes, _) in BUNDLED {
+            assert!(bytes.starts_with(b"NVA1"), "{file} is an NVA1 blob");
+            assert!(bytes.len() <= 12 * 1024, "{file}: {} bytes", bytes.len());
+            assert!(file.ends_with(".bin"), "{file}");
+        }
     }
 
     /// #340: on another board's art screen the bundled (Corne-made) sets are fitted and marked
