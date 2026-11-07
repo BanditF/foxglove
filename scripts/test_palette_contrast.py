@@ -1,5 +1,5 @@
 """Every bundled palette holds its contrast promises, and the harmony palettes keep Bandit's
-orange as their anchor (docs/palette.md, "Harmony palettes")."""
+orange as their anchor (docs/palette.md, "Harmony palettes" and "Bold tier")."""
 
 import json
 import sys
@@ -32,6 +32,34 @@ class PaletteContrast(unittest.TestCase):
             self.assertEqual(r["app_ground"], r["base"], f.name)
             self.assertIn(pc.BANDIT_ACCENT, data["stops"] + [r["accent"]], f.name)
             self.assertTrue(2 <= len(data["stops"]) <= 8, f.name)
+
+    def test_bold_tier_keeps_its_promises(self):
+        bold = [f for f in sorted(pc.PALETTES.glob("*.json")) if pc.resolve(f)["tier"] == "bold"]
+        self.assertTrue(bold, "the bold tier has palettes")
+        names = {json.loads(f.read_text(encoding="utf-8"))["name"] for f in pc.PALETTES.glob("*.json")}
+        for f in bold:
+            p = pc.resolve(f)
+            self.assertEqual(pc.tier_problems(p), [], f.name)
+            self.assertIn("accent2", p["roles"], f.name)
+            # A "Bold" variant sits next to the palette it pushes further.
+            if p["name"].endswith(" Bold"):
+                self.assertIn(p["name"][: -len(" Bold")], names, f.name)
+                self.assertTrue(f.name.endswith("-bold.json"), f.name)
+
+    def test_unknown_tier_is_refused(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "x.json"
+            f.write_text(json.dumps({"format": "foxglove-palette", "version": 1, "name": "X",
+                                     "tier": "loud", "roles": {"accent": "#f08a3c"},
+                                     "stops": ["#f08a3c", "#000000"]}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                pc.resolve(f)
+
+    def test_wash_is_an_srgb_mix(self):
+        self.assertEqual(pc.mix("#000000", "#ffffff", 0.5), "#808080")
+        self.assertEqual(pc.mix("#06172a", "#4c9ee0", 0.0), "#06172a")
 
     def test_readable_matches_the_rust_rule(self):
         # palette_file.rs: the derived `deep` and `accent_light` for Bandit's orange on paper.

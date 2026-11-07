@@ -1,0 +1,24 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Frost",
+  "harmony": "complementary",
+  "tier": "bold",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "deep": "#d16310",
+    "accent2": "#8fd3f2",
+    "accent2_light": "#126d97",
+    "accent3": "#b3c1d1",
+    "accent3_light": "#506884",
+    "base": "#0a121b",
+    "ink": "#e8dcc4",
+    "paper": "#e1e8ee",
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#0a121b",
+    "wall_ground": "#080d13"
+  },
+  "stops": ["#f08a3c", "#8fd3f2", "#b3c1d1", "#0a121b"]
+}

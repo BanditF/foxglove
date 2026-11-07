@@ -1,0 +1,24 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Dusk Bold",
+  "harmony": "split-complementary",
+  "tier": "bold",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "deep": "#ca6010",
+    "accent2": "#2fc0b3",
+    "accent2_light": "#1b6e66",
+    "accent3": "#8e96f0",
+    "accent3_light": "#414ee6",
+    "base": "#0b0c2a",
+    "ink": "#e8dcc4",
+    "paper": "#e2e3ec",
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#0b0c2a",
+    "wall_ground": "#090a1e"
+  },
+  "stops": ["#f08a3c", "#2fc0b3", "#8e96f0", "#0b0c2a"]
+}
