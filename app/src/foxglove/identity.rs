@@ -115,10 +115,24 @@ pub fn needs_update(registered: [u16; 4], shipped: &str) -> bool {
     registered < shipped
 }
 
+/// The package this process runs in, when it is Foxglove's own ([`NAME`]); another app's
+/// package (a run started inside it) is none.
+#[cfg(windows)]
+fn own_package() -> Option<windows::ApplicationModel::Package> {
+    let package = windows::ApplicationModel::Package::Current().ok()?;
+    let name = package.Id().and_then(|id| id.Name()).ok()?;
+    is_own(&name.to_string()).then_some(package)
+}
+
+/// A package name is Foxglove's.
+pub fn is_own(name: &str) -> bool {
+    name.eq_ignore_ascii_case(NAME)
+}
+
 /// This process has identity from the package this build ships (not an older one).
 #[cfg(windows)]
 fn identity_is_current() -> bool {
-    let Ok(package) = windows::ApplicationModel::Package::Current() else {
+    let Some(package) = own_package() else {
         return false;
     };
     match package.Id().and_then(|id| id.Version()) {
@@ -180,10 +194,11 @@ pub fn package_here() -> bool {
         .unwrap_or(false)
 }
 
-/// Whether this process runs with package identity.
+/// Whether this process runs with Foxglove's own package identity (another app's package never
+/// counts: it can't claim lamps or register for Foxglove).
 #[cfg(windows)]
 pub fn has_identity() -> bool {
-    windows::ApplicationModel::Package::Current().is_ok()
+    own_package().is_some()
 }
 
 #[cfg(not(windows))]
@@ -321,6 +336,16 @@ fn unregister_for_user() -> windows::core::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only Foxglove's own package is identity: a run inside another app's (Claude's) isn't.
+    #[test]
+    fn only_foxglove_s_package_is_its_identity() {
+        assert!(is_own("BanditF.Foxglove"));
+        assert!(is_own("banditf.foxglove"));
+        assert!(!is_own("Claude"));
+        assert!(!is_own("BanditF.Foxglove.Dev"));
+        assert!(!is_own(""));
+    }
 
     const APPX: &str = include_str!("../../packaging/identity/AppxManifest.xml");
     const EXE: &str = include_str!("../../packaging/identity/msix.xml");

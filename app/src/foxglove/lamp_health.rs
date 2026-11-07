@@ -61,7 +61,11 @@ pub fn rows_now() -> Vec<HealthRow> {
         super::identity::package_here(),
     ));
     if identity && !keyboards.is_empty() {
-        out.extend(hold_rows(super::lamp_hold::now()));
+        let holds = super::lamp_hold::now();
+        out.extend(hold_rows(holds));
+        if let Some(listed) = super::lamp_hold::listed_now() {
+            out.extend(unheld_rows(holds, listed));
+        }
     }
     out
 }
@@ -122,6 +126,29 @@ pub fn hold_rows(holds: super::lamp_hold::Holds) -> Vec<HealthRow> {
             })
         })
         .collect()
+}
+
+/// With identity, a WARN per transport Windows lists the keyboard's LampArray on (`listed`,
+/// `(usb, ble)`) while Foxglove holds none there: Windows' own controller may take that one and
+/// turn the keyboard's host link off (#179). [`hold_rows`] covers the ones held.
+pub fn unheld_rows(holds: super::lamp_hold::Holds, listed: (bool, bool)) -> Vec<HealthRow> {
+    [
+        ("USB", listed.0, holds.usb),
+        ("Bluetooth", listed.1, holds.ble),
+    ]
+    .into_iter()
+    .filter(|(_, listed, held)| *listed && held.is_none())
+    .map(|(via, _, _)| {
+        HealthRow::new(
+            SUBSYSTEM,
+            format!("Keyboard LampArray over {via}"),
+            Level::Warn,
+            format!(
+                "Listed by Windows, not held: Foxglove didn't open the keyboard's {via}                  LampArray, so Windows' own background controller may take it. Reconnecting the                  keyboard opens it again; the log's \"keyboard LampArrays after\" line says what                  the last open found"
+            ),
+        )
+    })
+    .collect()
 }
 
 /// One row per keyboard that is also a LampArray (#754): Windows lists it under Dynamic
@@ -410,5 +437,31 @@ mod tests {
             hold_rows(Holds::default()).is_empty(),
             "nothing held: no rows"
         );
+    }
+
+    /// The 11/07 runs held nothing over Bluetooth and nothing said so: a listed transport not
+    /// held is a WARN; a held one or one not listed adds no row.
+    #[test]
+    fn a_listed_lamp_array_not_held_warns() {
+        use crate::foxglove::lamp_hold::Holds;
+        let usb_only = Holds {
+            usb: Some(true),
+            ble: None,
+        };
+        let r = unheld_rows(usb_only, (true, true));
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].level, Level::Warn);
+        assert_eq!(r[0].item, "Keyboard LampArray over Bluetooth");
+        assert!(r[0].detail.contains("not held"), "{}", r[0].detail);
+        assert!(unheld_rows(usb_only, (true, false)).is_empty());
+        let both = Holds {
+            usb: Some(true),
+            ble: Some(false),
+        };
+        assert!(
+            unheld_rows(both, (true, true)).is_empty(),
+            "held by another controller is hold_rows' WARN"
+        );
+        assert_eq!(unheld_rows(Holds::default(), (true, true)).len(), 2);
     }
 }

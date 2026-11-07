@@ -144,6 +144,7 @@ pub mod shell;
 pub mod single_instance;
 pub mod startup;
 pub mod store;
+pub mod store_split;
 #[cfg(test)]
 pub(crate) mod studio_fake;
 pub mod studio_session;
