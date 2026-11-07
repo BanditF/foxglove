@@ -43,9 +43,33 @@ call "$vcvars" >nul && cd /d "$Out" && cl $common /c "$here\sim_coro.c" /Fo"$Out
 "@
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw "relay-sim: build failed" }
+# hooks-real-keys (#851, hooks_sim.c): test_hooks.c alone, built as the left and as the right.
+$hooksExe = @{}
+$hooksFile = Join-Path $Widgets "test_hooks.c"
+if ((Test-Path $hooksFile) -and (Select-String -Quiet -Path $hooksFile -Pattern "HOLD_MAX_MS")) {
+    $rightDefs = ($RelaySimDefines | Where-Object { $_ -ne "CONFIG_ZMK_SPLIT_ROLE_CENTRAL=1" } | ForEach-Object { "/D$_" }) -join " "
+    $rightDefs += " /DLAMP_STRIP_LEN=21" # the right's own chain (lamp_parts.h)
+    foreach ($h in @(@("left", $defs), @("right", $rightDefs))) {
+        $dir = Join-Path $Out ("hooks-" + $h[0])
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        $hexe = Join-Path $dir "hooks.exe"
+        $hcmd = "call `"$vcvars`" >nul && cd /d `"$dir`" && cl $common /Zp1 $($h[1]) $inc /Fe`"$hexe`" `"$here\sim_kernel.c`" `"$here\hooks_sim.c`" `"$hooksFile`" `"$Out\sim_coro.obj`""
+        cmd /c $hcmd
+        if ($LASTEXITCODE -ne 0) { throw "relay-sim: hooks-$($h[0]) build failed" }
+        $hooksExe[$h[0]] = $hexe
+    }
+}
 $list = if ($Scenarios) { $Scenarios -split "," } else { $RelaySimScenarios }
 $fail = 0
 foreach ($s in $list) {
+    if ($s -eq "hooks-real-keys") {
+        foreach ($h in @("left", "right")) {
+            if (-not $hooksExe[$h]) { Write-Host "relay-sim: hooks-$h not built"; $fail++; continue }
+            & $hooksExe[$h]
+            if ($LASTEXITCODE -ne 0) { $fail++ }
+        }
+        continue
+    }
     & $exe $s $Log
     if ($LASTEXITCODE -ne 0) { $fail++ }
 }
