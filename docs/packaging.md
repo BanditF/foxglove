@@ -160,23 +160,26 @@ interrupted download, successful upgrade/relaunch, and settings preservation on
 a Windows test installation. The development sandbox cannot validate a real MSI
 upgrade.
 
-## Sparse identity for Dynamic Lighting (#179, prototype)
+## Sparse identity for Dynamic Lighting (#179)
 
 Windows lists an app under **Settings → Personalization → Dynamic Lighting → Background light control** only if it has package identity and declares the `com.microsoft.windows.lighting` app extension. Scout's #178 settled the approach: keep the MSI and add a signed sparse package with no payload.
 
-None of this is on by default. Ordinary builds and MSIs don't change.
+None of this is on by default. Ordinary builds and MSIs don't change: `FOXGLOVE_SPARSE_IDENTITY` stays off until the signing identity exists.
 
 **Pieces**
 - **`app/packaging/identity/`:**
-  - `AppxManifest.xml`: `AllowExternalContent`, mediumIL, `win32App`, the lighting app extension, `AppListEntry="none"`.
-  - Logos.
+  - `AppxManifest.xml`: `AllowExternalContent`, mediumIL, `win32App`, the lighting app extension, `AppListEntry="none"`, architecture `neutral` (Microsoft's sparse template). Capabilities: `runFullTrust`, `unvirtualizedResources` and `userNotificationListener` (below).
+  - Logos in `Assets\`. The manifest's logo paths resolve in the **external location**, the exe's folder, so the logos ship there too: the MSI's `IdentityLogos` component, or `pack-identity.ps1 -Stage <exe folder>` for a dev build. Without them Settings may show a blank icon (Foxglove logs which are missing when it registers).
   - `msix.xml`: the `<msix>` element tying the exe to the package.
 - **Build:** `FOXGLOVE_SPARSE_IDENTITY=1 cargo build --release --manifest-path app/Cargo.toml` adds that element to the application manifest (`app/build.rs`) and turns on registration (`app/src/foxglove/identity.rs`).
-- **Package:** `scripts\pack-identity.ps1` builds `target\identity\foxglove-identity.msix`. `-Thumbprint <sha1>` signs it.
-- **Installer:** `cargo wix -C -dSparseIdentity=<path to signed msix>` installs it next to the exe. It also adds an uninstall step, `foxglove.exe --unregister-identity`, which runs elevated and removes the package for every user. A major upgrade doesn't run that step, so the registration survives. In-place auto-updates keep the same folder and the same embedded manifest, so they keep the identity.
+- **Package:** `scripts\pack-identity.ps1` builds `target\identity\foxglove-identity.msix` (`-Out <folder>` elsewhere). `-Thumbprint <sha1>` signs it. `-Stage <exe folder>` copies the msix and `Assets\` next to the exe. The gate packs it unsigned when the Windows SDK is installed (`scripts/test_identity_package.py`; schema only, nothing signed or registered).
+- **Installer:** `cargo wix -C -dSparseIdentity=<path to signed msix>` installs it and the logos next to the exe. It also adds an uninstall step, `foxglove.exe --unregister-identity`, which runs **as the user** (`Impersonate="yes"`, per-user MSI, #444) and removes the package for that user only; the package was registered per user. A major upgrade doesn't run that step, so the registration survives. In-place auto-updates keep the same folder and the same embedded manifest, so they keep the identity.
 - **Registration:**
-  - On an unelevated start without identity, Foxglove registers the msix for the user (`AddPackageByUriAsync` with the install folder as `ExternalLocationUri`).
-  - The identity applies from the next start.
+  - On an unelevated start without identity, Foxglove registers the msix for the user (`AddPackageByUriAsync` with the install folder as `ExternalLocationUri`). A run with `FOXGLOVE_CONFIG_DIR` (tests, the Test lab) never registers.
+  - Identity applies only to processes started after that, so Foxglove then **starts itself again once**: the lights, panel and art go back as on Quit, the single-instance guard is let go, and the copy (marked `FOXGLOVE_IDENTITY_RELAUNCHED=1`) takes over. The copy never relaunches, so a registration that gives no identity (another folder, a build without the flag) can't loop; it logs and carries on.
   - Failures are logged and Foxglove carries on without identity. Foreground-only Dynamic Lighting control needs no identity.
+- **Version rule:** Windows refuses to register the same version with other contents (0x80073CF9). Every change to `AppxManifest.xml` or the logos bumps its `Version` and `identity::VERSION` (a test checks they agree). A dev re-registration of the same version needs the old one removed first (`scripts\dev-identity.ps1 undo`).
+- **Notifications with identity (#507):** a packaged process reads notifications only with the `userNotificationListener` capability, and Windows then decides per app (it starts at "not asked"; the desktop-apps switch no longer applies). So the manifest declares it, Foxglove appears under Settings → Privacy & security → Notifications, and the Notifications card offers **Allow Foxglove**, which asks Windows on that click only. The arrival event works with identity; any refusal still falls back to the folder watch. Both paths have tests (`notify_windows`).
+- **Dev builds (app-main rebuilds):** a dev registration points the external location at the build's folder, e.g. `foxglove\app\target\release`. Once it is registered, **every rebuild of that exe must set `FOXGLOVE_SPARSE_IDENTITY=1`**, or the new exe has no `<msix>` element and silently runs without identity (Windows' background order then skips it). The identity health row says so.
 
-**Blocked on signing (#90):** Windows registers the package only with a trusted signature whose subject equals `Publisher` (now the placeholder `CN=Foxglove Placeholder`, in both manifests and `identity.rs`; a test checks they agree). The plan is Azure Artifact Signing (ties to #158/#159). The proof the issue asks for (Foxglove listed under Background light control, and keeping control from the tray) also needs the LampArray controller (#88), so it waits for both. The WiX additions are behind the `SparseIdentity` define and haven't been built yet; no WiX locally, and the app CI is manual.
+**Signing (#90, #383):** Windows registers the package only with a trusted signature whose subject equals `Publisher` (now the placeholder `CN=Foxglove Placeholder`, in both manifests and `identity.rs`; a test checks they agree). Public builds wait for SignPath Foundation (#383); a dev cert made on the user's PC is the interim route (`scripts\dev-identity.ps1`, run only on the user's go). A publisher change is a new provider to Windows, so the user re-orders Background light control once.

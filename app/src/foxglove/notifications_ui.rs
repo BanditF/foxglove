@@ -64,11 +64,13 @@ pub(crate) fn contents(
          in Do not disturb, or in a full-screen game.",
     );
     if settings.enabled && *state == State::NoAccess {
+        let (text, ask) = no_access(super::scene_lamps::identity());
         ui.horizontal_wrapped(|ui| {
-            ui.colored_label(
-                super::theme::palette(ui).warn,
-                "Windows doesn't let Foxglove see notifications.",
-            );
+            ui.colored_label(super::theme::palette(ui).warn, text);
+            // With package identity Windows asks the user itself, on this click only.
+            if ask.is_some_and(|label| ui.button(label).clicked()) {
+                super::notify_windows::request_access();
+            }
             if ui.button("Open Windows settings").clicked() {
                 open_privacy_settings();
             }
@@ -112,6 +114,21 @@ pub(crate) fn contents(
         }
     });
     changed
+}
+
+/// The hint while Windows doesn't give access, and the button that asks Windows, if any.
+/// Unpackaged, the desktop-apps switch on Windows' privacy page decides. With package identity
+/// (#179) Windows decides per app and asks the user once: the card offers that ask, only on a
+/// click, and never asks by itself.
+pub(crate) fn no_access(identity: bool) -> (&'static str, Option<&'static str>) {
+    if identity {
+        (
+            "Windows asks before Foxglove may see notifications.",
+            Some("Allow Foxglove"),
+        )
+    } else {
+        ("Windows doesn't let Foxglove see notifications.", None)
+    }
 }
 
 /// Windows' notification privacy page, where access is turned on.

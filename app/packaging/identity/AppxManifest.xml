@@ -3,7 +3,12 @@
      installed foxglove.exe (AllowExternalContent), so Windows lists Foxglove under
      Settings > Personalization > Dynamic Lighting > Background light control.
      Publisher must equal the signing certificate's subject and the exe manifest's
-     <msix publisher>; the placeholder is replaced once the signing identity exists (#90). -->
+     <msix publisher>; the placeholder is replaced once the signing identity exists (#90).
+     Version: bump it with every change to this file or the logos (Windows refuses the same
+     version with other contents, 0x80073CF9), and identity.rs VERSION with it.
+     ProcessorArchitecture is neutral, as Microsoft's sparse-package template recommends. The
+     logo paths resolve in the external location (the install folder): the MSI and
+     scripts\dev-identity.ps1 put Assets\ next to foxglove.exe. -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
@@ -11,7 +16,7 @@
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   IgnorableNamespaces="uap uap3 uap10 rescap">
-  <Identity Name="BanditF.Foxglove" Publisher="CN=Foxglove Placeholder" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Identity Name="BanditF.Foxglove" Publisher="CN=Foxglove Placeholder" Version="1.0.1.0" ProcessorArchitecture="neutral" />
   <Properties>
     <DisplayName>Foxglove</DisplayName>
     <PublisherDisplayName>BanditF</PublisherDisplayName>
@@ -26,6 +31,10 @@
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22621.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
   <Capabilities>
+    <!-- With identity Windows asks per app before notifications can be read (#507): without
+         this the listener's access is refused outright, with it Foxglove is listed under
+         Settings > Privacy & security > Notifications. -->
+    <uap3:Capability Name="userNotificationListener" />
     <rescap:Capability Name="runFullTrust" />
     <rescap:Capability Name="unvirtualizedResources" />
   </Capabilities>
