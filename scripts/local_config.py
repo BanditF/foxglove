@@ -6,7 +6,8 @@ value comes from the first of these that has it:
 2. `tools/local.toml`, looked for in `FOXGLOVE_LOCAL_TOML`, then the checkout's own `tools/`,
    then the workspace's `tools/` (the folder holding the main checkout, e.g.
    `C:\\Users\\fuchs\\splitkeeb\\tools\\local.toml`);
-3. the defaults below, which are this PC's values, so nothing changes here without the file.
+3. the defaults below, which are this PC's values, so nothing changes here without the file
+   (except `[identity]`, which is off unless a local.toml or the environment turns it on).
 
 `tools/local.example.toml` lists every key. From a shell:
     python scripts/local_config.py get worktrees.root
@@ -33,6 +34,12 @@ DEFAULTS = {
     'worktrees': {
         'root': r'C:\Users\fuchs\splitkeeb\worktrees',
     },
+    # The one exception: off by default, so the repo, CI and other PCs build without identity.
+    # app/build.rs reads the same keys (app/src/foxglove/identity_build.rs, #179).
+    'identity': {
+        'sparse': False,
+        'publisher': '',
+    },
 }
 
 # Environment variables that override a key.
@@ -42,6 +49,8 @@ ENV = {
     'FOXGLOVE_ROLLBACK': ('flash', 'rollback'),
     'FOXGLOVE_WORKSPACE': ('workspace', 'root'),
     'FOXGLOVE_WORKTREES': ('worktrees', 'root'),
+    'FOXGLOVE_SPARSE_IDENTITY': ('identity', 'sparse'),
+    'FOXGLOVE_IDENTITY_PUBLISHER': ('identity', 'publisher'),
 }
 
 REPO = Path(__file__).resolve().parent.parent
@@ -88,8 +97,12 @@ def load(env=os.environ, files=None):
                 config = merge(config, tomllib.load(f))
             break
     for var, (section, key) in ENV.items():
-        if env.get(var):
-            config.setdefault(section, {})[key] = env[var]
+        if env.get(var, '').strip():
+            config.setdefault(section, {})[key] = env[var].strip()
+    # As build.rs: the variable is on only as "1" (any other value, e.g. "0", is off).
+    sparse = config['identity']['sparse']
+    if isinstance(sparse, str):
+        config['identity']['sparse'] = sparse == '1'
     return config
 
 

@@ -26,7 +26,9 @@
 # The exe must have been built with the same publisher:
 #   $env:FOXGLOVE_SPARSE_IDENTITY = '1'; $env:FOXGLOVE_IDENTITY_PUBLISHER = '<-Publisher>'
 #   cargo build --release --manifest-path app/Cargo.toml
-# and every later rebuild of that exe must set both again, or it runs without identity.
+# and every later rebuild of that exe needs both again, or it runs without identity: on a PC
+# with the identity registered, [identity] sparse = true and publisher = '<-Publisher>' in
+# tools\local.toml give them to every build (docs/packaging.md, Dev builds).
 param(
     [ValidateSet('plan', 'apply', 'undo')][string]$Mode = 'plan',
     [string]$ExeDir,

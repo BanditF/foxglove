@@ -26,3 +26,13 @@ root = 'C:\Users\fuchs\splitkeeb'
 [worktrees]
 # Where job worktrees live (scripts/merge-pr.sh, docs/agents.md). FOXGLOVE_WORKTREES.
 root = 'C:\Users\fuchs\splitkeeb\worktrees'
+
+[identity]
+# The sparse package identity (#179, docs/packaging.md) for app builds on this PC: app/build.rs
+# reads it when FOXGLOVE_SPARSE_IDENTITY / FOXGLOVE_IDENTITY_PUBLISHER are unset (they win,
+# FOXGLOVE_SPARSE_IDENTITY=0 included). Off here, so CI and other PCs build without identity.
+# On a PC with a registered dev identity (scripts\dev-identity.ps1), set:
+#   sparse = true
+#   publisher = "CN=Foxglove Dev, O=BanditF"
+sparse = false
+publisher = ""
