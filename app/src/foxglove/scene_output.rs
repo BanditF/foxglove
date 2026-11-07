@@ -401,7 +401,22 @@ pub fn keyboard_effect(
             0.0,
             [0, 0],
         ),
-        Effect::Gradient { .. } | Effect::Noise { .. } => return None,
+        // Tones that crossfade (no LED off the first accent) are the firmware's breathe from
+        // the accent to the second one, the same maths (#871); split ones need frames.
+        Effect::Tones {
+            colours,
+            tones,
+            period_ms,
+            ..
+        } if !foxglove_scene::tones_split(tones) && !colours.is_empty() => (
+            EffectKind::Breathe,
+            vec![c(&colours[0]), c(colours.get(1).unwrap_or(&colours[0]))],
+            *period_ms,
+            0.0,
+            0.0,
+            [0, 0],
+        ),
+        Effect::Gradient { .. } | Effect::Noise { .. } | Effect::Tones { .. } => return None,
     };
     let wire = foxglove_link::protocol::Effect {
         kind,

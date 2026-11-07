@@ -319,3 +319,71 @@ fn effects_survive_odd_parameters_and_round_trip() {
         assert_eq!(toml::from_str::<Effect>(&text).unwrap(), e, "{text}");
     }
 }
+
+/// #871: tones breathe in opposite phase where the map splits the room, and crossfade where it
+/// doesn't; tone 2 holds; period 0 stands still at full.
+#[test]
+fn tones_breathe_in_opposite_phase_or_crossfade() {
+    let colours = vec![RED, BLUE, PINE];
+    let mut tones = BTreeMap::new();
+    tones.insert(tone_key("strip", "1"), 1u8);
+    tones.insert(tone_key("strip", "2"), 2u8);
+    let fx = Effect::Tones {
+        colours: colours.clone(),
+        tones,
+        period_ms: 8000,
+        floor: 0.35,
+    };
+    let at = |ms: i64| {
+        let f = fx.render(&room(), SceneTime(ms));
+        let c = |id: &str| {
+            f.lights
+                .iter()
+                .find(|l| l.device == "strip" && l.light == id)
+                .unwrap()
+                .colour
+        };
+        (c("0"), c("1"), c("2"))
+    };
+    // The start: tone 0 full, tone 1 at its floor, tone 2 steady.
+    let (a, b, c) = at(0);
+    assert_eq!(a, RED);
+    assert!(b.0[2] < 255 && b.0[2] > 100, "{b:?}");
+    assert_eq!(c, PINE);
+    // Half way the two have swapped.
+    let (a, b, c) = at(4000);
+    assert!(a.0[0] < 255 && a.0[0] > 100, "{a:?}");
+    assert_eq!(b, BLUE);
+    assert_eq!(c, PINE);
+    // Never below the floor (linear 0.35 of full).
+    for ms in (0..8000).step_by(250) {
+        let (a, b, _) = at(ms);
+        assert!(a.linear()[0] >= 0.349, "{ms}: {a:?}");
+        assert!(b.linear()[2] >= 0.349, "{ms}: {b:?}");
+    }
+    // No light has tone 1: everything crossfades the two tones.
+    let fade = Effect::Tones {
+        colours,
+        tones: BTreeMap::new(),
+        period_ms: 8000,
+        floor: 0.35,
+    };
+    let bounds = room().bounds;
+    let p = Point::new(10.0, 10.0);
+    assert_eq!(fade.colour(p, SceneTime(0), &bounds), RED);
+    assert_eq!(fade.colour(p, SceneTime(4000), &bounds), BLUE);
+    // Still: full colours.
+    let still = Effect::Tones {
+        colours: vec![RED, BLUE],
+        tones: [(tone_key("strip", "1"), 1u8)].into_iter().collect(),
+        period_ms: 0,
+        floor: 0.35,
+    };
+    let f = still.render(&room(), SceneTime(1234));
+    let one = f
+        .lights
+        .iter()
+        .find(|l| l.light == "1" && l.device == "strip")
+        .unwrap();
+    assert_eq!(one.colour, BLUE);
+}

@@ -210,6 +210,62 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
     halves
 }
 
+/// The keyboard's LEDs that a harmony palette lights in another accent (#871): `tone_key` of
+/// each LED (`keyboard:left/3`) to its tone, 1 the second accent, 2 the third, from the board
+/// profile's `accent2_keys` / `accent3_keys` and its LED map. Only LEDs off the first accent
+/// are in it; a board without a usable map, or whose LEDs each light keys of mixed roles (the
+/// Eyelash Corne's columns), gives an empty map.
+pub fn keyboard_tones() -> BTreeMap<String, u8> {
+    tones(super::boards::current().as_ref())
+}
+
+/// [`keyboard_tones`] for `board`.
+pub fn tones(board: Option<&Board>) -> BTreeMap<String, u8> {
+    let mut out = BTreeMap::new();
+    let Some(b) = board else { return out };
+    let Some(l) = b.lighting.as_ref() else {
+        return out;
+    };
+    if !l.led_map_usable() || (l.accent2_keys.is_empty() && l.accent3_keys.is_empty()) {
+        return out;
+    }
+    let Some(parts) = l.lamp_parts(b.halves) else {
+        return out;
+    };
+    let ids: &[&str] = if super::parts::Parts::of(board).is_split() {
+        &["keyboard:left", "keyboard:right"]
+    } else {
+        &["keyboard"]
+    };
+    for (part, id) in ids.iter().enumerate() {
+        let Some(lamps) = l.part_keys(&parts, part) else {
+            continue;
+        };
+        for (i, lamp) in lamps.iter().enumerate() {
+            let tone = lamp_tone(&lamp.0, &l.accent2_keys, &l.accent3_keys);
+            if tone != 0 {
+                out.insert(foxglove_scene::tone_key(id, &i.to_string()), tone);
+            }
+        }
+    }
+    out
+}
+
+/// One LED's tone from the keys it lights: 2 when most of them are third-accent keys, 1 when
+/// most are second-accent keys, else 0. An LED of one key is that key's.
+pub fn lamp_tone(keys: &[u8], accent2: &[u8], accent3: &[u8]) -> u8 {
+    let most = |set: &[u8]| {
+        !keys.is_empty() && keys.iter().filter(|k| set.contains(k)).count() * 2 > keys.len()
+    };
+    if most(accent3) {
+        2
+    } else if most(accent2) {
+        1
+    } else {
+        0
+    }
+}
+
 /// One part's LEDs at their keys (part 0 the left half or the one piece, 1 the right half),
 /// numbered in its strip's order (the scene output's SET_FRAME lamps of that part), from the
 /// board profile's LED map once it is checked on the board (#90 row G) or shipped with the
@@ -889,6 +945,50 @@ pub(crate) mod tests {
             .map(|i| (i % 21 < 6).then_some([1.0, 1.0]))
             .collect();
         assert!(keyboard(Some(&found)).iter().all(|d| d.lights.len() == 6));
+    }
+
+    /// #871: the thumbs and homing keys take the palette's other accents on a per-key board;
+    /// the Corne's column pixels keep the first accent (each lights three alphas and a thumb).
+    #[test]
+    fn harmony_tones_follow_the_profile_and_need_per_key_leds() {
+        let corne = users_desk::board();
+        assert!(tones(Some(&corne)).is_empty(), "column pixels stay orange");
+        let mut board = corne.clone();
+        board.lighting.as_mut().unwrap().led_keys = super::super::boards::Lamp::chain(&PER_KEY);
+        let t = tones(Some(&board));
+        // PER_KEY: LEDs 0, 7 and 8 sit under the thumbs (20, 19, 18), LED 5 under F (13).
+        for half in ["keyboard:left", "keyboard:right"] {
+            for led in ["0", "7", "8"] {
+                assert_eq!(
+                    t.get(&foxglove_scene::tone_key(half, led)),
+                    Some(&1),
+                    "{half} {led}"
+                );
+            }
+            assert_eq!(
+                t.get(&foxglove_scene::tone_key(half, "5")),
+                Some(&2),
+                "{half}"
+            );
+        }
+        assert_eq!(t.len(), 8, "{t:?}");
+        // The ids are the room's.
+        let ids: Vec<String> = keyboard(Some(&board))
+            .iter()
+            .flat_map(|d| {
+                d.lights
+                    .iter()
+                    .map(|l| foxglove_scene::tone_key(&d.id, &l.id))
+            })
+            .collect();
+        assert!(t.keys().all(|k| ids.contains(k)));
+        // A provisional map, or a profile without accent keys: nothing.
+        board.lighting.as_mut().unwrap().led_map = "provisional".into();
+        assert!(tones(Some(&board)).is_empty());
+        assert!(tones(None).is_empty());
+        assert_eq!(lamp_tone(&[15, 16, 17, 20], &[18, 19, 20], &[13]), 0);
+        assert_eq!(lamp_tone(&[19, 20], &[18, 19, 20], &[13]), 1);
+        assert_eq!(lamp_tone(&[], &[18], &[13]), 0);
     }
 
     #[test]

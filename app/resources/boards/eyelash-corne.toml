@@ -79,6 +79,12 @@ led_keys = [
   [], [], [], [], [], [], [], [], [], [], [], [], [], [], # pixels 7-20: nothing
 ]
 led_map = "shipped"
+# Harmony palettes (docs/palette.md, "Lights", #871): the keys in the second accent (the thumbs,
+# outer first: 18-20) and the third (F, the homing key; J on the right half, which mirrors it).
+# An LED takes an accent only when most of its keys have it; this board's pixels each light a
+# column with its thumb, so its LEDs stay orange and the palette effects crossfade instead.
+accent2_keys = [18, 19, 20]
+accent3_keys = [13]
 
 # How the Keyboard page draws one half (the left; the right mirrors it), in key units: the
 # key grid, each column's drop from the highest (outer column first), and the thumb keys.

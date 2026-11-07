@@ -46,16 +46,19 @@ pub enum Kind {
     Gradient,
     /// A drifting noise field (the crate's `Noise`).
     Drift,
+    /// The palette's two accents breathing in turn (the crate's `Tones`, #871).
+    TwoTone,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::Scanline,
         Kind::Sweep,
         Kind::Ripple,
         Kind::Breathe,
         Kind::Gradient,
         Kind::Drift,
+        Kind::TwoTone,
     ];
 
     pub fn label(self) -> &'static str {
@@ -66,6 +69,7 @@ impl Kind {
             Kind::Breathe => "Breathe",
             Kind::Gradient => "Gradient",
             Kind::Drift => "Drift",
+            Kind::TwoTone => "Two-tone",
         }
     }
 
@@ -78,6 +82,10 @@ impl Kind {
             Kind::Breathe => "Every light fades in and out together",
             Kind::Gradient => "A still palette across the room",
             Kind::Drift => "Soft patches of a palette drift through the room",
+            Kind::TwoTone => {
+                "The palette's two accents breathe in turn, once every 8 s: the thumbs against \
+                 the letters on a per-key board, the whole board elsewhere"
+            }
         }
     }
 
@@ -87,7 +95,8 @@ impl Kind {
     }
 
     pub fn uses_speed(self) -> bool {
-        self != Kind::Gradient
+        // Two-tone keeps the palette rule's 8 s loop (docs/palette.md).
+        !matches!(self, Kind::Gradient | Kind::TwoTone)
     }
 
     pub fn uses_direction(self) -> bool {
@@ -312,6 +321,30 @@ pub fn palette(name: &str) -> Vec<Rgb> {
     PALETTES[0].1.iter().map(|c| Rgb(*c)).collect()
 }
 
+/// Two-tone's loop (docs/palette.md: slow, 8 s) and the least its tones fall to (35 %).
+pub const TWO_TONE_MS: u32 = 8_000;
+pub const TWO_TONE_FLOOR: f32 = 0.35;
+
+/// The colours a Two-tone look breathes: a harmony palette's accent, second and third accents;
+/// any other palette's first two stops.
+pub fn tone_colours(palette_name: &str) -> Vec<Rgb> {
+    if let Some(p) = palette_file::by_name(palette_name).filter(|p| p.roles.is_harmony()) {
+        let r = p.roles;
+        return vec![r.accent, r.second(), r.third()];
+    }
+    let stops = palette(palette_name);
+    stops.into_iter().take(2).collect()
+}
+
+/// The colour of a key-press ripple over a look (#489): a harmony palette's second accent for
+/// the looks that take a palette (accent ripples, #871); `None` keeps the effect's own colour.
+pub fn ripple_colour(look: &Look) -> Option<Rgb> {
+    if look.kind.uses_colour() {
+        return None;
+    }
+    palette_file::by_name(&look.palette)?.roles.accent2
+}
+
 /// Speed 1 (slowest) to 10: one cycle's length, in milliseconds. Speed 5 is the demo's 4 s.
 const PERIODS: [u32; 10] = [
     12_000, 9_000, 7_000, 5_500, 4_000, 3_000, 2_200, 1_600, 1_200, 1_000,
@@ -428,8 +461,27 @@ impl Look {
                 period_ms: period_ms.saturating_mul(4),
                 seed: 7,
             },
+            Kind::TwoTone => Effect::Tones {
+                colours: tone_colours(&l.palette),
+                tones: tones_for(room),
+                period_ms: TWO_TONE_MS,
+                floor: TWO_TONE_FLOOR,
+            },
         }
     }
+}
+
+/// The keyboard's tones (`scene_room::keyboard_tones`) for the LEDs `room` has.
+fn tones_for(room: &RoomMap) -> std::collections::BTreeMap<String, u8> {
+    let mut tones = super::scene_room::keyboard_tones();
+    tones.retain(|k, _| {
+        room.devices.iter().any(|d| {
+            d.lights
+                .iter()
+                .any(|l| foxglove_scene::tone_key(&d.id, &l.id) == *k)
+        })
+    });
+    tones
 }
 
 /// A named look.
@@ -463,6 +515,25 @@ pub fn effect_presets() -> Vec<Preset> {
     };
     vec![
         preset("Bandit scanline", Look::default()),
+        // The harmony palettes' slow looks (#871, docs/palette.md "Lights").
+        preset(
+            "Dusk two-tone",
+            Look {
+                kind: Kind::TwoTone,
+                palette: "Bandit Dusk".into(),
+                ..Look::default()
+            },
+        ),
+        preset(
+            "Ember sweep",
+            Look {
+                kind: Kind::Sweep,
+                palette: "Bandit Ember".into(),
+                speed: 1,
+                direction: Direction::Right,
+                ..Look::default()
+            },
+        ),
         preset(
             "Ripple from the keys",
             Look {
@@ -984,7 +1055,7 @@ mod tests {
     }
 
     #[test]
-    fn every_effect_has_a_look_and_presets_cover_all_six() {
+    fn every_effect_has_a_look_and_presets_cover_them_all() {
         let room = RoomMap::default();
         let kinds: Vec<Kind> = effect_presets().iter().map(|p| p.look.kind).collect();
         for k in Kind::ALL {
@@ -996,6 +1067,7 @@ mod tests {
             let name = format!("{:?}", look.effect(&room));
             let want = match k {
                 Kind::Drift => "Noise".to_string(),
+                Kind::TwoTone => "Tones".to_string(),
                 k => format!("{k:?}"),
             };
             assert!(name.starts_with(&want), "{k:?}: {name}");

@@ -6,6 +6,8 @@
 //! Directions are angles: 0 runs left to right, 90 top to bottom (room space has y down).
 //! Periods are milliseconds on the scene clock; sizes are millimetres.
 
+use std::collections::BTreeMap;
+
 use noise::{NoiseFn, Perlin};
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +54,76 @@ pub enum Effect {
         period_ms: u32,
         seed: u32,
     },
+    /// A palette's tones (#871, docs/palette.md "Lights"): each light shows the colour of its
+    /// tone, `colours[0]` (the accent) by default. `tones` gives a light another one, keyed
+    /// `device/light` ([`tone_key`]): 1 the second accent (the thumb keys), 2 the third (the
+    /// homing keys). Once per period tone 0 and tone 1 breathe in opposite phase between
+    /// `floor` and full, and tone 2 holds steady. When no light has tone 1 (a board whose LEDs
+    /// each light keys of several roles), every light crossfades `colours[0]` and `colours[1]`
+    /// instead, so the two tones take turns in time rather than in place. Period 0 stands
+    /// still at full.
+    Tones {
+        colours: Vec<Rgb>,
+        #[serde(default)]
+        tones: BTreeMap<String, u8>,
+        period_ms: u32,
+        floor: f32,
+    },
+}
+
+/// The key of a light in [`Effect::Tones`]' map.
+pub fn tone_key(device: &str, light: &str) -> String {
+    format!("{device}/{light}")
+}
+
+/// Whether a tones map splits the room (some light has tone 1); else the tones crossfade.
+pub fn tones_split(tones: &BTreeMap<String, u8>) -> bool {
+    tones.values().any(|&t| t == 1)
+}
+
+/// [`Effect::Tones`]' colour for one tone at `t`.
+pub fn tone_colour(
+    colours: &[Rgb],
+    split: bool,
+    tone: u8,
+    t: SceneTime,
+    period_ms: u32,
+    floor: f32,
+) -> Rgb {
+    let pick = |i: usize| {
+        colours
+            .get(i)
+            .or_else(|| colours.last())
+            .copied()
+            .unwrap_or(Rgb::BLACK)
+    };
+    // 0 at the start of the loop, 1 half way.
+    let w = if period_ms == 0 {
+        0.0
+    } else {
+        0.5 - 0.5 * (t.phase(period_ms) * std::f32::consts::TAU).cos()
+    };
+    if !split {
+        return pick(0).mix(pick(1), w);
+    }
+    let floor = if floor.is_finite() {
+        floor.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let level = |up: f32| {
+        if period_ms == 0 {
+            1.0
+        } else {
+            floor + (1.0 - floor) * up
+        }
+    };
+    let scaled = |c: Rgb, k: f32| Rgb::from_linear(c.linear().map(|v| v * k));
+    match tone {
+        1 => scaled(pick(1), level(w)),
+        2 => pick(2),
+        _ => scaled(pick(0), level(1.0 - w)),
+    }
 }
 
 /// One light's colour in a frame.
@@ -119,6 +191,18 @@ impl Effect {
     }
 
     fn colour_with(&self, at: Point, t: SceneTime, bounds: &Rect, perlin: Option<&Perlin>) -> Rgb {
+        self.colour_of(at, None, t, bounds, perlin)
+    }
+
+    /// The colour at a point, for the light `key` ([`tone_key`]) when it is one.
+    fn colour_of(
+        &self,
+        at: Point,
+        key: Option<&str>,
+        t: SceneTime,
+        bounds: &Rect,
+        perlin: Option<&Perlin>,
+    ) -> Rgb {
         match self {
             Effect::Scanline {
                 colour,
@@ -188,6 +272,15 @@ impl Effect {
                 };
                 gradient(stops, (n * 0.5 + 0.5) as f32, false)
             }
+            Effect::Tones {
+                colours,
+                tones,
+                period_ms,
+                floor,
+            } => {
+                let tone = key.and_then(|k| tones.get(k)).copied().unwrap_or(0);
+                tone_colour(colours, tones_split(tones), tone, t, *period_ms, *floor)
+            }
         }
     }
 
@@ -207,7 +300,13 @@ impl Effect {
                     device: d.id.clone(),
                     light: l.id.clone(),
                     colour: match l.role {
-                        LightRole::Point => self.colour_with(l.at, t, &room.bounds, perlin),
+                        LightRole::Point => self.colour_of(
+                            l.at,
+                            Some(&tone_key(&d.id, &l.id)),
+                            t,
+                            &room.bounds,
+                            perlin,
+                        ),
                         LightRole::Ambient => self.area(&d.rect, t, &room.bounds, perlin),
                     },
                 })
