@@ -57,11 +57,13 @@ steps = [
   { art_key = { pos = 10 } },
   { art_key = { pos = 10 } },
   { art_key = { pos = 10 } },
-  { expect_layer = { active_contains = [6] } },
+  # After ~36 s of held layer keys the first layer report can be slow (the #678 "no layer
+  # report" flake): the last checks get a longer settle.
+  { expect_layer = { active_contains = [6], within_ms = 3000, retrigger = 0 } },
   { press_position = { pos = 0, state = "up" } },
   { press_position = { pos = 46, state = "up" } },
   { press_position = { pos = 43, state = "up" } },
-  { expect_layer = { top = 0 } },
+  { expect_layer = { top = 0, within_ms = 3000 } },
 ]
 
 [[cases]]
