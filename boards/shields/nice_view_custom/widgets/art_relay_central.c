@@ -33,6 +33,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "art_relay.h"
 #include "art_relay_doorbell.h"
+#include "art_toast.h"
 #include "pc_state.h"
 #include "panel_polarity.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
@@ -871,6 +872,13 @@ static void select_cb(struct k_work *work) {
         fail(ART_ERR_BLE);
         return;
     }
+    // A right before #851 names a built-in in its status only once its display queue has played
+    // it, so the read just now may still hold the set before. The SELECT it took (IDLE, no ATT
+    // error) is the set on screen: keep that, so the next on-board step starts from it and not
+    // from the old one (which stepped to the same set again: the stall at the wrap).
+    if (select_set >= 0 && select_set < right.set_count && right.state == ART_RIGHT_IDLE) {
+        right.set = select_set;
+    }
     done();
 }
 static K_WORK_DEFINE(select_work, select_cb);
@@ -1302,7 +1310,15 @@ void art_relay_step(int dir) {
             at = i;
         }
     }
-    art_relay_select(ids[((at + dir) % total + total) % total]);
+    int next = ((at + dir) % total + total) % total;
+    if (art_relay_select(ids[next]) == 0) {
+        // The toast (#852) counts this same list: its place and length, whatever the list holds.
+        struct art_toast t = {.index = (uint8_t)next,
+                              .total = (uint8_t)total,
+                              .dir = dir > 0 ? 1 : -1,
+                              .kept = ids[next] >= right.set_count};
+        art_toast_show(&t);
+    }
 }
 
 void art_relay_discovery(int8_t *result, uint8_t *tries) {

@@ -74,6 +74,10 @@ void art_store_data(uint16_t at, const uint8_t *d, uint16_t n);
 void art_store_commit(void);
 // SELECT: a built-in set (-1 random), or set_count + n for flash slot n.
 int art_store_select(int8_t set);
+// The drawer's boot art (#868): the built-in it put on screen itself, before any op. The status
+// names it from then on, not -1 (a pushed set), so the first on-board step moves on from it.
+// Ignored once an op has shown something else.
+void art_store_booted(int set);
 // SAVE: the pushed set on screen into flash slot n. STORE (#522): the set received since BEGIN,
 // checked, into slot n without showing it. ERASE: empties slot n. Each runs on art_slots.c's queue:
 // SAVING, then SAVED / SAVE_FAILED (STORE: back to the shown set's state).

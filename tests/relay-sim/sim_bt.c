@@ -700,10 +700,10 @@ static uint16_t status_value(uint8_t *out) {
     s.state = sim_right.state;
     s.received = sim_right.received;
     s.capacity = 16384;
-    s.set = sim_right.set;
+    s.set = sim_now_us() < sim_right.builtin_shown_at_us ? sim_right.set_before : sim_right.set;
     // One built-in since #671 (Bandit_Emblem); a SELECT above it is a kept slot (set_count + n),
     // which this right plays like any other set.
-    s.set_count = 1;
+    s.set_count = sim_right.set_count ? sim_right.set_count : 1;
     s.rgb.on = sim_right.rgb_on;
     s.rgb.hue = sys_get_le16(sim_right.look);
     s.rgb.saturation = sim_right.look[2];
@@ -901,6 +901,15 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
     case ART_RELAY_SELECT:
         if (sim_right.state == ART_RIGHT_SAVING) {
             return 0x82;
+        }
+        if (sim_right.builtin_lag_us && (int8_t)d[1] >= 0 &&
+            (int8_t)d[1] < (sim_right.set_count ? sim_right.set_count : 1)) {
+            sim_right.set_before = sim_now_us() < sim_right.builtin_shown_at_us
+                                       ? sim_right.set_before
+                                       : sim_right.set;
+            sim_right.builtin_shown_at_us = sim_now_us() + sim_right.builtin_lag_us;
+        } else {
+            sim_right.builtin_shown_at_us = 0; // a kept slot's SELECT set the status at once
         }
         sim_right.set = (int8_t)d[1];
         sim_right.state = ART_RIGHT_IDLE;

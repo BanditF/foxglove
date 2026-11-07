@@ -84,6 +84,8 @@ static bool parse(const uint8_t *b, uint16_t slot_len, const uint8_t **deltas,
 // Fills ram_sets[rx] from the blob in slots[rx].
 static bool parse_blob(void) { return parse(slots[rx], rx_len, ram_deltas[rx], &ram_sets[rx]); }
 
+// The built-in set to play when neither a kept nor a pushed set is shown, already resolved
+// (art_builtin_index), and status.set with it before the op returns (#851).
 static int8_t select_set;
 
 static void play_cb(struct k_work *work) {
@@ -92,8 +94,7 @@ static void play_cb(struct k_work *work) {
     } else if (shown >= 0) {
         art_play(&ram_sets[shown]);
     } else {
-        status.set = art_builtin_index(select_set);
-        art_play(&custom_art_sets[status.set]);
+        art_play(&custom_art_sets[art_builtin_index(select_set)]);
     }
     health_set(HEALTH_ART_SET, (uint8_t)status.set); // -1 (0xff): the pushed set (#705)
     // The art alone rewrites its rows; this also covers a panel that lost power since (#613).
@@ -174,24 +175,31 @@ void art_store_commit(void) {
     }
 }
 
+void art_store_booted(int set) {
+    if (status.set == -1 && shown < 0 && flash_shown < 0 && set >= 0 &&
+        set < custom_art_set_count) {
+        select_set = (int8_t)set;
+        status.set = (int8_t)set;
+        health_set(HEALTH_ART_SET, (uint8_t)status.set);
+    }
+}
+
 int art_store_select(int8_t set) {
     if (status.state == ART_RIGHT_SAVING) {
         return ART_STORE_BUSY;
     }
-    select_set = set;
-    if (select_set >= custom_art_set_count &&
-        select_set < custom_art_set_count + art_slots_count()) {
+    if (set >= custom_art_set_count && set < custom_art_set_count + art_slots_count()) {
         uint16_t blob_len;
-        const uint8_t *blob = art_slots_blob(select_set - custom_art_set_count, &blob_len);
+        const uint8_t *blob = art_slots_blob(set - custom_art_set_count, &blob_len);
         art_hold(); // flash_set may be on screen while parse fills it
         if (blob == NULL || !parse(blob, blob_len, flash_deltas, &flash_set)) {
             status.state = ART_RIGHT_BAD_BLOB;
             play(); // carry on with whatever was showing
             return 0;
         }
-        flash_shown = select_set - custom_art_set_count;
+        flash_shown = set - custom_art_set_count;
         shown = -1;
-        status.set = select_set;
+        status.set = set;
         status.state = ART_RIGHT_IDLE;
         play();
         return 0;
@@ -199,6 +207,11 @@ int art_store_select(int8_t set) {
     art_hold(); // as for COMMIT: a push may reuse the shown slot before play_cb runs
     shown = -1;
     flash_shown = -1;
+    // The status names the built-in now, not once the display queue gets to play_cb: a status
+    // read right after the SELECT (the left's, art_relay_central.c) must see the new set, or the
+    // next on-board step starts from the old one (#851).
+    select_set = (int8_t)art_builtin_index(set);
+    status.set = select_set;
     status.state = ART_RIGHT_IDLE;
     play();
     return 0;
@@ -253,7 +266,8 @@ int art_store_erase(uint8_t slot) {
     if (flash_shown == slot) { // don't play from pages about to be erased
         art_hold();
         flash_shown = -1;
-        select_set = -1;
+        select_set = (int8_t)art_builtin_index(-1);
+        status.set = select_set;
         play();
     }
     status.state = ART_RIGHT_SAVING;

@@ -16,5 +16,10 @@ struct sim_left {
     uint8_t polarity; // the panel polarity the PC set (#666, panel_polarity.c)
     int health_status; // the last D7 13 half 1 read's status (host_link_health_right), -1 none
     int health_replies;
+    // The on-board step's toast (#852, status.c's art_toast_show): how many, and the last one.
+    int toasts;
+    uint8_t toast_index, toast_total;
+    int8_t toast_dir;
+    bool toast_kept;
 };
 extern struct sim_left sim_left;

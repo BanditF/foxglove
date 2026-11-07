@@ -429,7 +429,8 @@ show. To change what Rotation shows, keep or remove pieces on the keyboard, or p
     next and **O** for previous. While Foxglove runs, the left screen shows **ART** with the
     piece's place (3/7), a triangle the way it stepped and the piece's name, for about a second.
     Paused, quit, or without the app, the keyboard steps through its own built-ins and saved
-    slots.
+    slots, and the left screen shows **ART** with the place in that list (2/3), the triangle and
+    **BUILT-IN** or **KEPT** for about a second (the keyboard doesn't know the pieces' names).
   - **Lights wake**: the next piece each time the keyboard's lights come back on.
   - **every N minutes**.
 - **Wallpaper:** the right screen shows the art that goes with the wallpaper on

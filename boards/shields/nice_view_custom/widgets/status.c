@@ -5,6 +5,8 @@
  *
  */
 
+#include <stdlib.h>
+
 #include <zephyr/kernel.h>
 
 #include <zephyr/logging/log.h>
@@ -13,6 +15,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/battery.h>
 #include <zmk/display.h>
 #include "status.h"
+#include "art_toast.h"
 #include "screen_snap.h"
 #include "host_link.h"
 #include "icons.h"
@@ -90,6 +93,83 @@ static void draw_host_panel(lv_obj_t *c, int oy, const uint8_t *panel) {
     }
 }
 
+/* The on-board art step's toast (#852, art_toast.h) */
+
+static struct k_spinlock toast_lock;
+static struct art_toast toast;
+static bool toast_on;
+
+static bool toast_get(struct art_toast *out) {
+    k_spinlock_key_t key = k_spin_lock(&toast_lock);
+    bool on = toast_on;
+    *out = toast;
+    k_spin_unlock(&toast_lock, key);
+    return on;
+}
+
+static void toast_set(const struct art_toast *t) {
+    k_spinlock_key_t key = k_spin_lock(&toast_lock);
+    toast_on = t != NULL;
+    if (t != NULL) {
+        toast = *t;
+    }
+    k_spin_unlock(&toast_lock, key);
+}
+
+// One pixel of the toast in portrait coordinates, if it falls inside the panel area (the toast
+// never leaves it: the layer tab, mods and profiles above stay readable) and on this canvas.
+static void px(lv_obj_t *c, int oy, int x, int y, lv_color_t color) {
+    if (x >= HOST_PANEL_X && x < HOST_PANEL_X + HOST_PANEL_W && y >= HOST_PANEL_Y &&
+        y < HOST_PANEL_Y + HOST_PANEL_H && y - oy >= 0 && y - oy < CANVAS_SIZE) {
+        lv_canvas_set_px_color(c, x, y - oy, color);
+    }
+}
+
+// Over the panel area (HOST_PANEL_X/Y/W/H): corner brackets, "ART", the place large with a
+// triangle on the side it stepped to, and BUILT-IN or KEPT. As the app's card (render.rs
+// draw_art_card), without the piece's name: the left doesn't hold the right's names.
+static void draw_art_toast(lv_obj_t *c, int oy, const struct art_toast *t) {
+    lv_color_t fg = LVGL_FOREGROUND;
+    const int x0 = HOST_PANEL_X, y0 = HOST_PANEL_Y, w = HOST_PANEL_W, h = HOST_PANEL_H;
+    for (int i = 0; i < 4; i++) {
+        int x = (i & 1) ? x0 + w - 1 : x0, y = (i & 2) ? y0 + h - 1 : y0;
+        int dx = (i & 1) ? -1 : 1, dy = (i & 2) ? -1 : 1;
+        for (int k = 0; k < 4; k++) {
+            px(c, oy, x + k * dx, y, fg);
+            px(c, oy, x, y + k * dy, fg);
+        }
+    }
+    icons_text(c, oy, x0, y0 + 3, w, "ART", fg, LV_TEXT_ALIGN_CENTER);
+
+    char count[10];
+    snprintf(count, sizeof(count), "%d/%d", t->index + 1, t->total);
+    const lv_font_t *font = &lv_font_unscii_16; // 8x16, crisp on the 1-bit panel
+    lv_point_t size;
+    lv_txt_get_size(&size, count, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    if (size.x > w - 20) {
+        font = &lv_font_unscii_8;
+        lv_txt_get_size(&size, count, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    }
+    int top = y0 + 23 - size.y / 2;
+    lv_draw_label_dsc_t dsc;
+    init_label_dsc(&dsc, fg, font, LV_TEXT_ALIGN_CENTER);
+    lv_canvas_draw_text(c, x0, top - oy, w, &dsc, count);
+
+    // A filled triangle, 5 wide and 11 tall, its tip pointing the way the key stepped.
+    int half = size.x / 2, mid = x0 + w / 2, cy = y0 + 23;
+    int tip = t->dir > 0 ? mid + half + 8 : mid - half - 8;
+    int back = t->dir > 0 ? mid + half + 3 : mid - half - 3;
+    for (int x = MIN(tip, back); x <= MAX(tip, back); x++) {
+        int reach = 5 - 5 * abs(x - back) / MAX(abs(tip - back), 1);
+        for (int y = cy - reach; y <= cy + reach; y++) {
+            px(c, oy, x, y, fg);
+        }
+    }
+
+    icons_text(c, oy, x0, y0 + h - 13, w, t->kept ? "KEPT" : "BUILT-IN", fg,
+               LV_TEXT_ALIGN_CENTER);
+}
+
 // Bluetooth profiles, so the one in use is obvious (wrong-profile mix-ups): numbered boxes, the
 // active one filled, connected ones outlined; below, the active profile's state, or USB when the
 // output is USB. Inverted while the SYSTEM layer (Bluetooth keys) is up and just after a change.
@@ -121,7 +201,7 @@ static void draw_profiles(lv_obj_t *c, int oy, const struct status_state *state)
 }
 
 static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
-                        const uint8_t *panel) {
+                        const uint8_t *panel, const struct art_toast *art) {
     lv_color_t fg = LVGL_FOREGROUND;
     lv_color_t bg = LVGL_BACKGROUND;
 
@@ -159,6 +239,10 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
     draw_profiles(c, oy, state);
     icons_rect(c, oy, 6, 104, SCREEN_W - 12, 1, 0, true, false, fg);
 
+    if (art != NULL) {
+        draw_art_toast(c, oy, art); // over the PC's panel too: the step is the newer news
+        return;
+    }
     if (panel != NULL) {
         draw_host_panel(c, oy, panel);
         return;
@@ -211,10 +295,12 @@ static void draw_all(struct zmk_widget_status *widget) {
         panel = panel_buf;
     }
 #endif
+    struct art_toast art;
+    bool art_on = toast_get(&art);
     lv_color_t *bufs[] = {widget->cbuf, widget->cbuf2, widget->cbuf3};
     for (int i = 0; i < 3; i++) {
         lv_obj_t *canvas = lv_obj_get_child(widget->obj, i);
-        draw_screen(canvas, i * CANVAS_SIZE, &widget->state, panel);
+        draw_screen(canvas, i * CANVAS_SIZE, &widget->state, panel, art_on ? &art : NULL);
         rotate_canvas(canvas, bufs[i]);
     }
 }
@@ -222,6 +308,26 @@ static void draw_all(struct zmk_widget_status *widget) {
 void host_panel_redraw(void) {
     struct zmk_widget_status *widget;
     SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) { draw_all(widget); }
+}
+
+// The toast's start and end, both on the display queue: a step redraws with it, and
+// ART_TOAST_MS after the newest step it goes and the screen redraws without it.
+static void toast_redraw(struct k_work *work) { host_panel_redraw(); }
+static K_WORK_DEFINE(toast_start_work, toast_redraw);
+
+static void toast_end(struct k_work *work) {
+    toast_set(NULL);
+    host_panel_redraw();
+}
+static K_WORK_DELAYABLE_DEFINE(toast_end_work, toast_end);
+
+void art_toast_show(const struct art_toast *t) {
+    if (!zmk_display_is_initialized()) {
+        return;
+    }
+    toast_set(t);
+    k_work_submit_to_queue(zmk_display_work_q(), &toast_start_work);
+    k_work_reschedule_for_queue(zmk_display_work_q(), &toast_end_work, K_MSEC(ART_TOAST_MS));
 }
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_PANEL_POLARITY)

@@ -1151,6 +1151,150 @@ static void health_scenario(void) {
 }
 #endif
 
+#if __has_include("art_toast.h")
+// The on-board art step's toast (#852): &art_next / &art_prev without the app holding the keys
+// (art_keys.c calls art_relay_step). The right holds its built-in (set 0) and kept places 0 and 2
+// (sets 1 and 3), so the step list is 0, 1, 3. Every step that goes out shows the toast with its
+// place in that list and the list's length, without the app and with its traffic (Foxglove
+// running but paused); the right lands on the piece the toast names. A press while a SELECT is
+// still going steps nothing and shows nothing, and so does one with the link down.
+static bool board_step(int dir, int8_t want, char *why, size_t n) {
+    int toasts = sim_left.toasts;
+    art_relay_step(dir);
+    if (sim_left.toasts != toasts + 1) {
+        snprintf(why, n, "no toast");
+        return false;
+    }
+    int64_t start = k_uptime_get();
+    while (sim_right.set != want && k_uptime_get() - start < 5000) {
+        k_msleep(50);
+    }
+    k_msleep(1000); // the SELECT's status read lands, so the next step starts from here
+    snprintf(why, n, "toast %d/%d dir %d %s; right on set %d after %lld ms",
+             sim_left.toast_index + 1, sim_left.toast_total, sim_left.toast_dir,
+             sim_left.toast_kept ? "kept" : "built-in", sim_right.set,
+             (long long)(k_uptime_get() - start));
+    return sim_right.set == want;
+}
+
+static void art_step_toast(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    sim_right.flash[0].used = true;
+    sim_right.flash[2].used = true;
+    char why[200];
+    check("start-on-built-in", lab_select(0, why, sizeof(why)), "%s", why);
+    const int8_t list[] = {0, 1, 3};
+    const int total = (int)ARRAY_SIZE(list);
+    const struct {
+        int8_t dir;
+        bool app;
+    } steps[] = {{1, false}, {1, false}, {1, false}, {-1, false}, {-1, true}, {1, true}, {1, true}};
+    for (int i = 0; i < (int)ARRAY_SIZE(steps); i++) {
+        app_on = steps[i].app;
+        int at = 0;
+        for (int k = 0; k < total; k++) {
+            if (list[k] == sim_right.set) {
+                at = k;
+            }
+        }
+        int next = ((at + steps[i].dir) % total + total) % total;
+        char name[24];
+        snprintf(name, sizeof(name), "step-%d%s", i, steps[i].app ? "-app" : "");
+        bool ok = board_step(steps[i].dir, list[next], why, sizeof(why));
+        ok = ok && sim_left.toast_index == next && sim_left.toast_total == total &&
+             sim_left.toast_dir == steps[i].dir && sim_left.toast_kept == (list[next] >= 1);
+        check(name, ok, "want %d/%d (set %d): %s", next + 1, total, list[next], why);
+    }
+    app_on = false;
+
+    // A press while a SELECT is still going: nothing steps, so no toast.
+    int toasts = sim_left.toasts;
+    art_relay_select(0);
+    art_relay_step(1);
+    check("busy-no-toast", sim_left.toasts == toasts, "%d toast(s)", sim_left.toasts - toasts);
+    k_msleep(2000);
+
+    // The link down: nothing steps, no toast.
+    sim_bt_drop(2000000);
+    k_msleep(500);
+    toasts = sim_left.toasts;
+    art_relay_step(1);
+    check("no-link-no-toast", sim_left.toasts == toasts, "link %d, %d toast(s)", art_relay_link(),
+          sim_left.toasts - toasts);
+    wait_relay(40);
+    debug_line("at the end");
+}
+
+// The wrap (#851): M = 2 built-ins and N = 4 kept places (0-3), so the step list is sets 0-5.
+// From the last set, two full laps with &art_next and then two with &art_prev, Foxglove quit (no
+// STATUS reads between presses), a press a little over a second after the last one landed. Each
+// press must land on the next set round the list, the wrap included, with the toast's n/6.
+// With lag, the right is one before #851: a built-in shows in its status 2 s after its SELECT
+// (its display queue), so the left's read right after the SELECT still holds the set before.
+// The left stepped from that set again (to the set already on screen): the stall at the wrap.
+static void art_step_cycles(bool lag) {
+    sim_right.set_count = 2;
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    for (int i = 0; i < 4; i++) {
+        sim_right.flash[i].used = true;
+    }
+    const int total = 6, last = total - 1;
+    char why[200];
+    check("start-on-last", lab_select((int8_t)last, why, sizeof(why)), "%s", why);
+    sim_right.builtin_lag_us = lag ? 2000000 : 0;
+    app_on = false;
+    int fails = 0;
+    for (int lap = 0; lap < 4; lap++) {
+        int8_t dir = lap < 2 ? 1 : -1;
+        for (int i = 0; i < total; i++) {
+            int8_t want = (int8_t)(((sim_right.set + dir) % total + total) % total);
+            bool ok = board_step(dir, want, why, sizeof(why));
+            ok = ok && sim_left.toast_index == want && sim_left.toast_total == total &&
+                 sim_left.toast_dir == dir && sim_left.toast_kept == (want >= 2);
+            if (!ok || (want == 0 && dir > 0) || (want == last && dir < 0)) {
+                char name[24];
+                snprintf(name, sizeof(name), "lap-%d-%s-%d", lap, dir > 0 ? "next" : "prev", want);
+                check(name, ok, "want %d/%d: %s", want + 1, total, why); // the wraps, and any miss
+            }
+            fails += !ok;
+        }
+    }
+    check("four-laps", fails == 0, "%d of %d presses missed", fails, 4 * total);
+    debug_line("at the end");
+}
+#endif
+
+#if __has_include("art_toast.h")
+// The first press after a boot (#868): the right starts on its built-in, and its status names it
+// (set 0), as art_store_booted makes it say; before, it said -1 (a pushed set), and the first
+// &art_next selected the emblem on screen again. Kept places 0 and 1 (list 0, 1, 2), Foxglove
+// quit, no SELECT from anyone: the first next press steps to set 1 (2/3). Then the right restarts
+// (an update that keeps the places) and the first previous press steps to the last set (3/3).
+static void art_step_boot(void) {
+    sim_right.flash[0].used = true;
+    sim_right.flash[1].used = true;
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    k_msleep(2000); // the left's first status read after the relay is found
+    char why[200];
+    check("boot-names-built-in", status().right.set == 0, "status set %d", status().right.set);
+    bool ok = board_step(1, 1, why, sizeof(why));
+    check("first-next-steps", ok && sim_left.toast_index == 1 && sim_left.toast_total == 3,
+          "%s", why);
+    sim_bt_right_update(false, 3000000);
+    k_msleep(3000);
+    wait_relay(40);
+    k_msleep(2000);
+    ok = board_step(-1, 2, why, sizeof(why));
+    check("first-prev-after-restart",
+          ok && sim_left.toast_index == 2 && sim_left.toast_total == 3 && sim_left.toast_dir == -1,
+          "%s", why);
+    debug_line("at the end");
+}
+#endif
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -1186,6 +1330,16 @@ static void lab_thread(void *arg) {
         playlist_store_old();
     } else if (!strcmp(scenario, "restore-update")) {
         restore_update();
+#if __has_include("art_toast.h")
+    } else if (!strcmp(scenario, "art-step-toast")) {
+        art_step_toast();
+    } else if (!strcmp(scenario, "art-step-boot")) {
+        art_step_boot();
+    } else if (!strcmp(scenario, "art-step-cycles")) {
+        art_step_cycles(false);
+    } else if (!strcmp(scenario, "art-step-cycles-lag")) {
+        art_step_cycles(true);
+#endif
 #ifdef SIM_HEALTH
     } else if (!strcmp(scenario, "health")) {
         health_scenario();

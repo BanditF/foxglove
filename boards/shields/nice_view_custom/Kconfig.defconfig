@@ -329,6 +329,8 @@ config NICE_VIEW_WIDGET_STATUS
     select LV_FONT_MONTSERRAT_18
     select LV_FONT_MONTSERRAT_14
     select LV_FONT_UNSCII_8
+    # The on-board art step toast's count (#852, status.c).
+    select LV_FONT_UNSCII_16
     select ZMK_WPM
     select ZMK_HID_INDICATORS
 
