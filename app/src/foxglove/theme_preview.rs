@@ -3726,7 +3726,7 @@ fn scenes_room_two_keyboards_renders() {
 }
 
 /// #871: the Lights page's palette picker for the taste check: Bandit (the default, no palette
-/// effects), Dusk running Two-tone, and Dusk Bold running Tide.
+/// effects), Dusk running Two-tone, Dusk Bold running the Tide effect, and the Tide palette.
 #[test]
 fn lights_palette_picker_renders() {
     use crate::foxglove::lights_page::{tests::sample, PaletteView};
@@ -3748,8 +3748,14 @@ fn lights_palette_picker_renders() {
         "ux-p2-lights-dusk-bold.png",
         with("Bandit Dusk Bold", Some(Kind::Tide)),
     );
+    // The Tide palette running the Tide effect: both say which they are (docs/palette.md).
+    let tide = effect_preview(
+        "ux-terms-lights-tide.png",
+        with("Bandit Tide", Some(Kind::Tide)),
+    );
     assert_ne!(bandit, dusk);
     assert_ne!(dusk, bold);
+    assert_ne!(bold, tide);
     // Dusk's sea glass swatch shows only once Dusk is chosen.
     let teal = |img: &image::RgbaImage| {
         img.pixels()

@@ -73,7 +73,8 @@ impl Kind {
             Kind::Gradient => "Gradient",
             Kind::Drift => "Drift",
             Kind::TwoTone => "Two-tone",
-            Kind::Tide => "Tide",
+            // Tide is also a palette and a wallpaper: the effect says so (docs/palette.md).
+            Kind::Tide => "Tide effect",
         }
     }
 
@@ -87,7 +88,7 @@ impl Kind {
             Kind::Gradient => "A still palette across the room",
             Kind::Drift => "Soft patches of a palette drift through the room",
             Kind::Tide => {
-                "A slow wave of the palette's second accent rolls in from the outer keys and                  back, 12 s a loop; each key changes colour only at a soft dip"
+                "A slow wave of the palette's second accent rolls in from the outer keys and back, 12 s a loop; each key changes colour only at a soft dip"
             }
             Kind::TwoTone => {
                 "The palette's two accents breathe in turn, once every 8 s: the thumbs against \
@@ -235,6 +236,10 @@ pub static PALETTES: LazyLock<Vec<Stops>> = LazyLock::new(|| {
 /// The palette that follows the wallpaper on screen (#40): its manifest's palette, else its
 /// picture's colours (`wallpaper_image::stops`). Offered after [`PALETTES`].
 pub const WALLPAPER: &str = "Wallpaper";
+
+/// What the [`WALLPAPER`] palette's pill says: it is a palette taken from the wallpaper, not a
+/// wallpaper (docs/palette.md, "Glossary"). The saved name stays [`WALLPAPER`].
+pub const WALLPAPER_LABEL: &str = "From wallpaper";
 
 /// The hover of the [`WALLPAPER`] palette's pill.
 pub const WALLPAPER_HINT: &str = "The colours of the wallpaper on screen: its Foxglove palette \
@@ -874,7 +879,7 @@ pub fn name_problem(name: &str) -> Option<&'static str> {
         return Some("Keep the name to 40 letters");
     }
     if built_in().iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
-        return Some("A built-in preset has that name");
+        return Some("A built-in look has that name");
     }
     None
 }

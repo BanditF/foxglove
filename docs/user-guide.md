@@ -176,7 +176,12 @@ The sidebar has six pages, top to bottom:
   them take the accent of the wallpaper on screen whenever it changes: a wallpaper that comes
   with a `foxglove.json` palette gives its own accent, any other the Windows accent colour. The
   lights set to **Match keyboard** follow along, and a running scene keeps the lights until it
-  ends. These controls need an RGB key in the keymap. The
+  ends. **Palette** (beside Off / On) picks a colour set: Bandit, the default, changes nothing;
+  the others add their accents to the swatches and their effects after the keyboard's own
+  (**Two-tone**, **Slow sweep**, and the **Tide effect** for the bold palettes). The **Tide
+  palette**, **Nightshade palette** and **Frost palette** share their names with Bandit
+  wallpapers, but they are colours only: picking one never changes the wallpaper. These
+  controls need an RGB key in the keymap. The
   same card shows what both halves report now (**Refresh** asks them again) and
   **Calibrate…** for the keyboard. **Other devices** lists the rest of the PC's lights
   ([below](#the-pcs-case-lights-hp-omen-45l)); the keyboard is only in its own card.
@@ -286,7 +291,7 @@ Two labels in this section:
 
 ### Lighting presets *(next app update)*
 
-**Lights → Presets** offers seven ready-made looks, each matched to a
+**Lights → Presets** offers seven ready-made lighting presets, each matched to a
 Bandit wallpaper family:
 
 | preset | lights | right screen |
@@ -303,7 +308,7 @@ Bandit wallpaper family:
   "none" and your own art comes back.
 - **Accent colour:** picking a preset turns off **Follow the Windows accent colour**, since the
   two would fight over the colour.
-- **Profiles:** each profile can have its own preset, and switching profile switches the look.
+- **Profiles:** each profile can have its own preset, and switching profile switches the preset.
 
 ### The PC's case lights (HP OMEN 45L)
 
@@ -378,15 +383,17 @@ scanline can run down the monitors, through the case's fans and on into the keys
   page) gives the lights back as they were. To check the map again, open **Check LED map…**:
   once saved, the map is yours (a later Foxglove's map for the board doesn't replace it), and
   to start over, **Click each LED…** under **Doesn't match?**.
-- **Effect:** Scanline, Sweep, Ripple, Breathe, Gradient or Drift, then its colour (and
-  background) or palette, speed, direction and width. Changes show on the map at once, and on
+- **Effect:** Scanline, Sweep, Ripple, Breathe, Gradient, Drift, Two-tone or **Tide effect**,
+  then its colour (and background) or palette (**From wallpaper** takes the colours of the
+  wallpaper on screen), speed, direction and width. Changes show on the map at once, and on
   the lights too while the scene runs.
 - **Start** sends the scene to the lights; **Stop** puts back the colours from before (or the
   ones you picked for the keyboard or the case meanwhile). A plugin's notification still shows
   over a scene, and nothing is sent while the PC is locked, the display is off or Foxglove is
   paused.
-- **Presets:** pick one to load its look. To keep your own, type a name under **Save as
-  preset** and click **Save**; **Remove** deletes one of yours.
+- **Looks:** a look is a saved scene: its effect, palette or colour, speed, direction and
+  width. Pick one to load it. To keep your own, type a name under **Save as look** and click
+  **Save**; it shows under **Yours**, and **Remove** deletes one of yours.
 - **Wallpapers:** when a Wallpaper Engine wallpaper on your PC comes with looks for Foxglove
   (a `foxglove.json` in its folder, such as the Bandit wallpapers), its looks show first under
   **Wallpapers**, in its own colours. They work with any wallpaper on screen, or none. The one
@@ -407,7 +414,7 @@ scanline can run down the monitors, through the case's fans and on into the keys
   - Ripples and sweeps show only while a scene runs.
 
 Each profile keeps its own scene, so switching to Game can bring a different look; your saved
-presets are the same in every profile.
+looks are the same in every profile.
 
 ### Cycling the right screen's art
 
@@ -612,7 +619,7 @@ sluggish after sleep:
 
 | what | where |
 |---|---|
-| Foxglove's settings, profiles, presets, plugin settings | `%APPDATA%\Foxglove\foxglove.toml` (one file; older `*.ini` files are imported once and renamed `*.migrated`) |
+| Foxglove's settings, profiles, saved looks, plugin settings | `%APPDATA%\Foxglove\foxglove.toml` (one file; older `*.ini` files are imported once and renamed `*.migrated`) |
 | the overlay's own settings (KeyPeek's) | `%APPDATA%\Foxglove\config\settings.ini` |
 | keymap cache | `%APPDATA%\Foxglove\config\keymap-*.studio` |
 | art library (pushed animations, wallpaper art, converted source sets) | `%APPDATA%\Foxglove\config\art\` |

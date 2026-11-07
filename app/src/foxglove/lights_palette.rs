@@ -44,9 +44,20 @@ pub fn set(name: &str) {
     }
 }
 
-/// The name a pill shows: Bandit's own, and the harmony palettes without "Bandit ".
-pub fn short(p: &PaletteFile) -> &str {
-    p.name.strip_prefix("Bandit ").unwrap_or(&p.name)
+/// Short names a palette shares with a Bandit wallpaper or an effect (docs/palette.md,
+/// "Glossary"): the picker adds "palette" to these so "Tide" never reads as the wallpaper or
+/// the Tide effect.
+pub const SHARED_NAMES: [&str; 3] = ["Tide", "Nightshade", "Frost"];
+
+/// The name a pill shows: Bandit's own, and the harmony palettes without "Bandit "; a name
+/// shared with a wallpaper or an effect gets "palette" ("Tide palette").
+pub fn short(p: &PaletteFile) -> String {
+    let short = p.name.strip_prefix("Bandit ").unwrap_or(&p.name);
+    if SHARED_NAMES.contains(&short) {
+        format!("{short} palette")
+    } else {
+        short.to_string()
+    }
 }
 
 /// A palette's colours as the pill's dots: accent, then the second and third accents, else its
@@ -73,10 +84,10 @@ pub fn swatches(p: &PaletteFile) -> Vec<(String, [u8; 3])> {
     let extra = [
         p.roles
             .accent2
-            .map(|c| (format!("{}: second accent", p.name), c.0)),
+            .map(|c| (format!("{} palette: second accent", p.name), c.0)),
         p.roles
             .accent3
-            .map(|c| (format!("{}: third accent", p.name), c.0)),
+            .map(|c| (format!("{} palette: third accent", p.name), c.0)),
     ];
     let mut at = 1;
     for (name, c) in extra.into_iter().flatten() {
@@ -103,11 +114,11 @@ pub fn effects(p: &PaletteFile) -> Vec<Kind> {
     }
 }
 
-/// What a palette effect's pill says.
+/// What a palette effect's pill says: the scene effect's own label ("Tide effect", since Tide
+/// is also a palette and a wallpaper), and "Slow sweep" for the sweep.
 pub fn effect_label(kind: Kind) -> &'static str {
     match kind {
-        Kind::TwoTone => "Two-tone",
-        Kind::Tide => "Tide",
+        Kind::TwoTone | Kind::Tide => kind.label(),
         _ => "Slow sweep",
     }
 }
@@ -197,6 +208,12 @@ mod tests {
             }))
         );
         assert_eq!(short(dusk), "Dusk");
+        // A name shared with a wallpaper or an effect says what it is (docs/palette.md).
+        assert_eq!(short(of("Bandit Tide")), "Tide palette");
+        assert_eq!(short(of("Bandit Frost")), "Frost palette");
+        assert_eq!(effect_label(Kind::Tide), "Tide effect");
+        assert_eq!(effect_label(Kind::TwoTone), "Two-tone");
+        assert_eq!(s[1].0, "Bandit Dusk palette: second accent");
         assert_eq!(dots(dusk).len(), 3);
         assert_eq!(dots(palette_file::bandit()).len(), 3);
         let two = look(dusk, Kind::TwoTone);

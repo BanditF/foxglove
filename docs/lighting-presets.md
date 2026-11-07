@@ -1,6 +1,6 @@
 # Lighting presets
 
-Curated underglow looks that match the Bandit wallpapers and screen art, for the **Lights**
+Curated underglow presets that match the Bandit wallpapers and screen art, for the **Lights**
 page and for profiles (M7). The data ships; the page that applies them is #306 (not in the app
 yet). The data is `app/resources/lighting-presets.json`, with a
 preview chip per preset in `app/resources/lighting/<id>.svg`. Both are written by
@@ -49,7 +49,7 @@ preview chip per preset in `app/resources/lighting/<id>.svg`. Both are written b
 ## Right-screen art per preset
 
 Each preset carries an `art` entry, so picking a preset changes the right screen as well as the
-lights, and reads as a look rather than a colour:
+lights, and reads as more than a colour:
 
 | preset | art | | preview |
 |---|---|---|---|

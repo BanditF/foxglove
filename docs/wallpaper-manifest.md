@@ -9,7 +9,7 @@ The code is `app/src/foxglove/wallpaper_manifest.rs`.
 
 ## What Foxglove does with it
 
-- **Scenes page, Presets:** each motif is a lighting look under a **Wallpapers** heading, with
+- **Scenes page, Looks:** each motif is a lighting look under a **Wallpapers** heading, with
   the wallpaper's title and pack in its hover. With no manifest found, that group and **Right
   screen too** don't show, and only the effects are offered.
 - **On screen:** a look whose wallpaper Wallpaper Engine shows now is tagged **On screen**.
@@ -100,13 +100,13 @@ One of the Scenes page's six effects, with only the parameters it uses:
 | `kind` | `scanline`, `sweep`, `ripple`, `breathe`, `gradient`, `drift` | (required) |
 | `colour` | `#rrggbb` (scanline, ripple, breathe) | Foxglove's orange |
 | `background` | `night`, `off` | `night` |
-| `palette` | Foxglove's (`Bandit`, `Forest`, `Steel`, `Ember`, `Spectrum`, or `Wallpaper`: the colours of whichever wallpaper is on screen) or the manifest's own `palette.name` (sweep, gradient, drift) | `Bandit` |
+| `palette` | Foxglove's (`Bandit`, `Forest`, `Steel`, `Ember`, `Spectrum`, or `Wallpaper`, shown as **From wallpaper**: the colours of whichever wallpaper is on screen) or the manifest's own `palette.name` (sweep, gradient, drift) | `Bandit` |
 | `speed` | 1–10 | 5 |
 | `direction` | `down`, `up`, `right`, `left` | `down` |
 | `width_mm` | 20–400 (the band's width, or Drift's size) | 80 |
 
 A palette whose name is already taken (by Foxglove, or by another wallpaper with other colours)
-is shown as `Name (Title)`, and so is a motif named like a preset already offered.
+is shown as `Name (Title)`, and so is a motif named like a look already offered.
 
 ### `art`
 
