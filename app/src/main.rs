@@ -56,6 +56,7 @@ fn main() {
     foxglove::store::init_profiles();
     foxglove::foreground::start();
     foxglove::accent::start();
+    foxglove::windows_theme::start(); // Foxglove: Windows' app mode for the System theme and the wallpapers
     foxglove::wallpaper::start();
     foxglove::api::start();
     foxglove::health::start(); // Foxglove (#705): the keyboard's self-report on each connect

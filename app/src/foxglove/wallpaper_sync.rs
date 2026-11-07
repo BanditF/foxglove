@@ -1,7 +1,8 @@
 //! Wallpaper sync, stage 1 (#493, #377; the plan on #39): Foxglove tells each wallpaper that
 //! asks for them (its `foxglove.json` `supports`, #562, docs/wallpaper-manifest.md) the
-//! keyboard's layer, whether game mode is on, the running scene's clock and the live feed's
-//! port, through Wallpaper Engine's own command line:
+//! keyboard's layer, whether game mode is on, the running scene's clock, the live feed's port
+//! and Windows' app mode (`windows_theme`, for the wallpapers' "Follow Windows" theme), through
+//! Wallpaper Engine's own command line:
 //!
 //! ```text
 //! wallpaper64.exe -control applyProperties -location <monitor> -properties RAW~({"foxglove_game":true,"foxglove_layer":"GAME","foxglove_scene":"v=1;..."})~END
@@ -64,6 +65,9 @@ pub const SCENE: &str = "foxglove_scene";
 /// The live feed's port while it listens, 0 when it doesn't (#499): the wallpaper connects
 /// when this changes, so it never retries on a timer. The pairing token never goes here.
 pub const LIVE: &str = "foxglove_live";
+/// Windows' app mode, `"light"` or `"dark"` (`""` when Windows doesn't say, or Foxglove has
+/// gone): every wallpaper set to "Follow Windows" takes it, so two monitors never disagree.
+pub const THEME: &str = "foxglove_theme";
 
 /// How long one push may take before it is given up (and its process ended).
 const PUSH_LIMIT: Duration = Duration::from_secs(5);
@@ -104,6 +108,8 @@ pub struct State {
     pub scene: Option<Scene>,
     /// The live feed's port while it listens (`live_feed`).
     pub live: Option<u16>,
+    /// Windows' app mode (`windows_theme`).
+    pub theme: Option<super::windows_theme::AppMode>,
 }
 
 /// A layer name as a property: letters, digits, `+`, `-` and `_`, upper case, at most 16.
@@ -150,6 +156,12 @@ pub fn properties(state: &State, monitor: Option<Rect>, supports: Supports) -> S
     }
     if supports.live {
         out.insert(LIVE.into(), state.live.unwrap_or(0).into());
+    }
+    if supports.theme {
+        let mode = state
+            .theme
+            .map_or("", super::windows_theme::AppMode::property);
+        out.insert(THEME.into(), mode.into());
     }
     if supports.clock {
         let scene = state.scene.as_ref().map_or_else(String::new, |s| {
@@ -587,6 +599,13 @@ pub fn live(port: Option<u16>) {
     changed(Reason::Live, |s| s.state.live = port);
 }
 
+/// Windows' app mode now (`windows_theme`, at start and on each change).
+pub fn theme(mode: Option<super::windows_theme::AppMode>) {
+    if with(|s| s.state.theme) != mode {
+        changed(Reason::Theme, |s| s.state.theme = mode);
+    }
+}
+
 /// The scene ended: the wallpapers go back to their own clocks.
 pub fn scene_stopped() {
     changed(Reason::Scene, |s| s.state.scene = None);
@@ -768,9 +787,12 @@ fn run(
             last_scene = scene;
         } else if pushed > 0 {
             eprintln!(
-                "Foxglove: wallpaper sync: sent to {pushed} monitor(s): layer {}, game mode {} ({why})",
+                "Foxglove: wallpaper sync: sent to {pushed} monitor(s): layer {}, game mode {}, Windows {} ({why})",
                 state.layer.as_deref().unwrap_or("none"),
-                if state.game { "on" } else { "off" }
+                if state.game { "on" } else { "off" },
+                state
+                    .theme
+                    .map_or("unknown", super::windows_theme::AppMode::property)
             );
         }
     }
@@ -887,6 +909,7 @@ fn interfaces() -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foxglove::windows_theme::AppMode;
     use foxglove_scene::{Layout, MonitorInfo};
 
     fn names() -> Vec<Option<String>> {
@@ -989,11 +1012,12 @@ mod tests {
             game: true,
             scene: None,
             live: Some(8768),
+            theme: Some(AppMode::Dark),
         };
         let props = properties(&state, None, Supports::ALL);
         assert_eq!(
             props,
-            r#"{"foxglove_game":true,"foxglove_layer":"GAME","foxglove_live":8768,"foxglove_scene":""}"#
+            r#"{"foxglove_game":true,"foxglove_layer":"GAME","foxglove_live":8768,"foxglove_scene":"","foxglove_theme":"dark"}"#
         );
         // A wallpaper gets only what its manifest says it reads.
         let live_only = Supports {
@@ -1022,7 +1046,81 @@ mod tests {
         assert_eq!(raw.matches(' ').count(), 1, "one space, after -properties");
         assert_eq!(
             gone(Supports::ALL),
-            r#"{"foxglove_game":false,"foxglove_layer":"","foxglove_live":0,"foxglove_scene":""}"#
+            r#"{"foxglove_game":false,"foxglove_layer":"","foxglove_live":0,"foxglove_scene":"","foxglove_theme":""}"#
+        );
+    }
+
+    /// "Follow Windows" (`foxglove_theme`): every monitor showing a wallpaper that reads it gets
+    /// the same mode, again on each change, and "" once Foxglove has gone (the wallpaper then
+    /// falls back to its own reading).
+    #[test]
+    fn every_monitor_hears_the_same_windows_app_mode() {
+        let theme_only = Supports {
+            theme: true,
+            ..Supports::default()
+        };
+        assert_eq!(theme_only, Supports::from_names(&["theme"]));
+        let targets = vec![
+            Target {
+                location: WE_LEFT.into(),
+                file: "hud/index.html".into(),
+                supports: Supports::ALL,
+            },
+            Target {
+                location: WE_RIGHT.into(),
+                file: "live-board/index.html".into(),
+                supports: theme_only,
+            },
+        ];
+        let mut fake = Fake {
+            running: true,
+            ..Fake::default()
+        };
+        let mut state = State {
+            theme: Some(AppMode::Light),
+            ..State::default()
+        };
+        {
+            let mut p = Pusher::new(&mut fake);
+            assert_eq!(p.sync(&state, &targets), 2);
+            assert_eq!(p.sync(&state, &targets), 0, "no change, no push");
+            state.theme = Some(AppMode::Dark);
+            assert_eq!(p.sync(&state, &targets), 2);
+            p.quit();
+        }
+        let modes = |props: &str| {
+            let v: serde_json::Value = serde_json::from_str(props).unwrap();
+            v[THEME].as_str().unwrap().to_string()
+        };
+        let sent: Vec<(String, String)> = fake
+            .pushes
+            .iter()
+            .map(|(at, props)| (at.clone(), modes(props)))
+            .collect();
+        assert_eq!(sent.len(), 6);
+        assert_eq!(
+            sent[..4],
+            [
+                (WE_LEFT.to_string(), "light".to_string()),
+                (WE_RIGHT.to_string(), "light".to_string()),
+                (WE_LEFT.to_string(), "dark".to_string()),
+                (WE_RIGHT.to_string(), "dark".to_string()),
+            ]
+        );
+        // Quitting tells both (in the monitors' order).
+        let mut gone: Vec<&(String, String)> = sent[4..].iter().collect();
+        gone.sort();
+        assert_eq!(
+            gone,
+            [
+                &(WE_RIGHT.to_string(), String::new()),
+                &(WE_LEFT.to_string(), String::new()),
+            ]
+        );
+        // Windows doesn't say: "" (the wallpaper's own fallback).
+        assert_eq!(
+            properties(&State::default(), None, theme_only),
+            r#"{"foxglove_theme":""}"#
         );
     }
 
@@ -1108,7 +1206,7 @@ mod tests {
         );
         let scene_push = &fake.pushes[4].1;
         assert!(scene_push.contains("v=1;id=demo-scanline;fx=scanline"));
-        assert!(fake.pushes[7].1.ends_with(r#""foxglove_scene":""}"#));
+        assert!(fake.pushes[7].1.contains(r#""foxglove_scene":"""#));
     }
 
     #[test]
@@ -1123,6 +1221,7 @@ mod tests {
             game: true,
             scene: Some(scene()),
             live: None,
+            theme: None,
         };
         {
             let mut p = Pusher::new(&mut fake);

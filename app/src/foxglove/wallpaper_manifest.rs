@@ -4,7 +4,7 @@
 //! wallpapers ship their manifests like anyone else's.
 //!
 //! A manifest gives the wallpaper's id, title and pack, the Foxglove properties it reads
-//! (`supports`: `clock`, `layer`, `gamemode`, `foxglove_live`), its palette, its motifs (the
+//! (`supports`: `clock`, `layer`, `gamemode`, `foxglove_live`, `theme`), its palette, its motifs (the
 //! Scenes page's lighting looks) and the right-screen art paired with it. From them:
 //! - the Scenes page offers the motifs under "Wallpapers" ([`super::scene_looks::scenes`]);
 //! - "On screen" and wallpaper sync (#493) know which monitor shows which wallpaper, and sync
@@ -52,6 +52,8 @@ pub struct Supports {
     pub game: bool,
     /// `foxglove_live`: the live feed's port (`foxglove_live`, docs/live-feed.md).
     pub live: bool,
+    /// `theme`: Windows' app mode, for the "Follow Windows" theme (`foxglove_theme`).
+    pub theme: bool,
 }
 
 impl Supports {
@@ -61,6 +63,7 @@ impl Supports {
         layer: true,
         game: true,
         live: true,
+        theme: true,
     };
 
     /// From the manifest's list; names Foxglove doesn't know yet are skipped.
@@ -71,6 +74,7 @@ impl Supports {
             layer: has("layer"),
             game: has("gamemode"),
             live: has("foxglove_live"),
+            theme: has("theme"),
         }
     }
 

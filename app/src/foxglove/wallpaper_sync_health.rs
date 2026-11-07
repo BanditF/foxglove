@@ -37,6 +37,8 @@ pub enum Reason {
     Scene,
     /// The live feed started or stopped listening.
     Live,
+    /// Windows' app mode changed (light or dark apps).
+    Theme,
     /// The keyboard's layer settled.
     Layer,
     /// A full-screen program left the front and Wallpaper Engine's reload had time to finish.
@@ -50,6 +52,7 @@ impl Reason {
             Reason::Wallpapers => "wallpapers on screen changed",
             Reason::Scene => "scene changed",
             Reason::Live => "live feed changed",
+            Reason::Theme => "Windows app mode changed",
             Reason::Layer => "layer change",
             Reason::Reload => "after a full-screen program (Wallpaper Engine's reload)",
         }
