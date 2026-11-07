@@ -55,6 +55,7 @@ them and drifted.
 | `roles.accent3` | no | A third accent, used even more sparingly. Only read when `accent2` is set. |
 | `roles.accent3_light` | no | `accent3` for text on light grounds. Derived: `accent3` clamped to 4.5:1 on `paper`. |
 | `harmony` | no | A label for people: `complementary`, `split-complementary`, `triadic` or `analogous`. No reader acts on it. |
+| `tier` | no | `harmony` (the default) or `bold`: which area budget the palette's accents follow (see [Bold tier](#bold-tier)). A reader that doesn't know it skips it. |
 
 ### The two night grounds
 
@@ -188,3 +189,94 @@ promise fails the gate.
   hues. Radix Colors' habit of publishing contrast with every step.
 - **Design our own:** only the usage budget per surface (15 % / 3 %, the fox never recoloured)
   and the light mapping (thumbs, homing keys).
+
+## Bold tier
+
+Taste batch 2: the user liked the harmony palettes and asked for a round where the other colours
+lead more. The bold tier adds to the library and changes nothing above: the harmony palettes and
+`bandit.json` keep their rules. A bold palette says `"tier": "bold"`; a file without `tier` is
+`harmony`. Today's reader skips the field (and `accent2` / `accent3`) like any unknown key.
+
+Every bold palette still keeps Bandit's `accent`, `highlight` and `accent_light` exactly, and
+the fox is never recoloured. Orange stays the anchor by **role**, not by area: it is the fox,
+the headers, the title's INC. and tagline, the clock's seconds, the major ring ticks and the
+alpha keys.
+
+| File | Name | Harmony | `accent2` | `accent3` | Night (`base`) | `paper` |
+|---|---|---|---|---|---|---|
+| `bandit-steel-bold.json` | Bandit Steel Bold | complementary | steel blue `#4c9ee0` (207°) | — | deep navy `#06172a` | `#dfe5ec` |
+| `bandit-dusk-bold.json` | Bandit Dusk Bold | split-complementary | sea glass `#2fc0b3` (175°) | periwinkle `#8e96f0` (235°) | indigo `#0b0c2a` | `#e2e3ec` |
+| `bandit-foxglove-bold.json` | Bandit Foxglove Bold | triadic | foxglove violet `#a988e3` (262°) | jade `#4fc287` (149°) | deep violet `#150b28` | `#e7e2ec` |
+| `bandit-ember-bold.json` | Bandit Ember Bold | analogous | gold `#f3b230` (40°) | ember red `#f0573f` (8°) | oxblood `#1c0907` | `#efe3d3` |
+| `bandit-tide.json` | Bandit Tide | split-complementary | teal `#22b8a8` (174°) | sky `#7cc6f2` (202°) | deep teal `#03181b` | `#dde9e7` |
+| `bandit-nightshade.json` | Bandit Nightshade | triadic | violet `#9a7df0` (255°) | orchid `#e874b4` (327°) | violet dusk `#120a26` | `#e7e2ee` |
+| `bandit-frost.json` | Bandit Frost | complementary | ice `#8fd3f2` (199°) | steel `#b3c1d1` (212°) | cold steel `#0a121b` | `#e1e8ee` |
+
+A **Bold** variant (`<file>-bold.json`, name `<name> Bold`) pushes a harmony palette further: the
+same hues, `accent2` more saturated, and the ground taken over by the palette's cool side. It
+always sits next to the palette it comes from (the unit test checks this). Tide, Nightshade and
+Frost are new: a deep teal night, a violet dusk and a cold steel-and-ice.
+
+### Usage rule (bold tier)
+
+- **The fox is never recoloured**, as in every palette.
+- **Area:** `accent2` covers up to **35 %** of a still surface's marks, `accent3` up to **5 %**.
+  Marks are everything that isn't ground or wash: text, lines, fills, the fox. (The harmony
+  tier stays at 15 % / 3 %.) The mocks measure it: 21–30 % `accent2` and about 43 % orange,
+  most of it the fox.
+- **Duotone ground:** the night grounds (`base`, `app_ground`, `wall_ground`) are deep shades
+  of the palette's cool side, at most 14 % HSL lightness. `paper` leans the same way, lightly.
+- **The wash:** `accent2` may tint a ground by up to **12 %** on the dark grounds and **8 %**
+  on `paper` (an sRGB mix): the glow around the ring, the disc inside it, soft bands behind the
+  columns and the scanlines. Still, never animated. Text is checked on the washed grounds too.
+- **Where `accent2` goes** (in addition to the harmony places): the dashed main ring, the inner
+  ring and the halo arcs, the corner brackets and rails, the compass nodes and their labels, the
+  audio bars, the header rules, the title brackets and chevrons, the status frame.
+- **Where `accent3` goes:** the audio peak caps and the HUD's one marker; F and J on the keys.
+- **Still orange:** the fox, headers, `STATUS` value, `MAXIMUM`, INC., the tagline, clock seconds,
+  the major ticks, the sweep arc, the lock, the album frame, every seventh audio bar.
+- **Lights:** orange on 28 keys; `accent2` on the 6 thumbs **and** the outer column (Tab, Esc,
+  Shift and their mirror, the modifier column), 12 of 42 keys (29 %); `accent3` on F and J (2
+  keys, 5 %). Effects: **Tide** for the cool palettes, a wave of `accent2` that rolls in from the
+  outer edges to the inner keys and back, 12 s loop; a key swaps colour only at a slow dip to
+  40 % (at least 2 s from full to the swap and back), so there is no jump and no muddy blend of
+  orange into its complement. Ember Bold keeps the slow gradient sweep through its warm stops
+  (8 s). Effects may pass the area budget while they run. No flashes and no strobing; nothing
+  changes faster than once per 2 s; no key goes dark.
+- **Light grounds** use the `_light` roles for text. In the bold tier they are derived against
+  the washed `paper` (the darker light ground), so they hold on `paper` and on the wash. `deep`
+  is written out for the same reason (the Rust reader derives it on plain `paper`).
+
+### Contrast (bold tier)
+
+`palette_contrast.py` reads `tier`, refuses an unknown one, adds the washed grounds
+(`base_wash`, `app_ground_wash`, `wall_ground_wash`, `paper_wash`) to every bold palette's pairs
+and fails a bold palette whose night ground is lighter than 14 %. The lowest ratio per role,
+over the plain and the washed grounds:
+
+| Role | Needs | Steel Bold | Dusk Bold | Foxglove Bold | Ember Bold | Tide | Nightshade | Frost |
+|---|---|---|---|---|---|---|---|---|
+| `ink` (dark) | 4.5 | 11.18 | 11.80 | 11.86 | 11.63 | 11.12 | 12.19 | 10.95 |
+| `accent` (dark) | 4.5 | 6.08 | 6.42 | 6.45 | 6.28 | 6.04 | 6.63 | 5.95 |
+| `highlight` (dark) | 4.5 | 8.46 | 8.93 | 8.97 | 8.74 | 8.41 | 9.22 | 8.28 |
+| `accent2` (dark) | 4.5 | 5.26 | 7.11 | 5.61 | 8.39 | 6.10 | 5.18 | 9.04 |
+| `accent3` (dark) | 4.5 | — | 5.93 | 7.21 | 4.59 | 8.06 | 5.98 | 8.12 |
+| `paper_ink` (light) | 4.5 | 12.72 | 12.80 | 12.76 | 13.25 | 13.06 | 12.67 | 13.55 |
+| `accent2_light` (light) | 4.5 | 4.53 | 4.50 | 4.50 | 4.50 | 4.55 | 4.51 | 4.52 |
+| `accent3_light` (light) | 4.5 | — | 4.52 | 4.50 | 4.53 | 4.50 | 4.52 | 4.52 |
+| `accent_light` on the app's cards | 4.5 | 4.98 | 4.98 | 4.98 | 4.98 | 4.98 | 4.98 | 4.98 |
+| `accent_light` (light, graphics) | 3 | 3.68 | 3.70 | 3.69 | 3.80 | 3.78 | 3.67 | 3.92 |
+| `deep` (light, graphics) | 3 | 3.01 | 3.01 | 3.01 | 3.01 | 3.01 | 3.01 | 3.00 |
+
+### Research (bold tier)
+
+- **Reuse:** the harmony palettes' roles, contrast script and review renderer; the format needs
+  no new role, only the optional `tier` label.
+- **Emulate:** duotone posters and album art (two inks, one carrying the ground), Material 3's
+  tonal surfaces (a ground tinted with the primary, with on-colours checked on the tint), and
+  the 60-30-10 rule with the second accent taking the 30. Keyboard lighting that colours the
+  modifier cluster apart from the alphas (common on enthusiast boards and in QMK's per-key
+  layouts). WCAG 2.3.1 (three flashes) and the Harding / Ofcom guidance for the effects: no
+  flashes, a slow luminance change only.
+- **Design our own:** the bold budget (35 % / 5 % of the marks, 12 % / 8 % wash, grounds at most
+  14 % lightness), the modifier-column light mapping and the Tide effect.

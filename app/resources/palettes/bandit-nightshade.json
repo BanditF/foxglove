@@ -1,0 +1,24 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Nightshade",
+  "harmony": "triadic",
+  "tier": "bold",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "deep": "#c8600f",
+    "accent2": "#9a7df0",
+    "accent2_light": "#683de9",
+    "accent3": "#e874b4",
+    "accent3_light": "#b61e72",
+    "base": "#120a26",
+    "ink": "#e8dcc4",
+    "paper": "#e7e2ee",
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#120a26",
+    "wall_ground": "#0e0919"
+  },
+  "stops": ["#f08a3c", "#9a7df0", "#e874b4", "#120a26"]
+}

@@ -1,0 +1,24 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Ember Bold",
+  "harmony": "analogous",
+  "tier": "bold",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "deep": "#cc6210",
+    "accent2": "#f3b230",
+    "accent2_light": "#875c08",
+    "accent3": "#f0573f",
+    "accent3_light": "#c0270f",
+    "base": "#1c0907",
+    "ink": "#ecdcc0",
+    "paper": "#efe3d3",
+    "paper_ink": "#1c1a18",
+    "app_ground": "#1c0907",
+    "wall_ground": "#160807"
+  },
+  "stops": ["#f08a3c", "#f3b230", "#f0573f", "#1c0907"]
+}

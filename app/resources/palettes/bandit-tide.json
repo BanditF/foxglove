@@ -1,0 +1,24 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Tide",
+  "harmony": "split-complementary",
+  "tier": "bold",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "deep": "#cc6110",
+    "accent2": "#22b8a8",
+    "accent2_light": "#156f66",
+    "accent3": "#7cc6f2",
+    "accent3_light": "#10699e",
+    "base": "#03181b",
+    "ink": "#e8dcc4",
+    "paper": "#dde9e7",
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#03181b",
+    "wall_ground": "#041315"
+  },
+  "stops": ["#f08a3c", "#22b8a8", "#7cc6f2", "#03181b"]
+}

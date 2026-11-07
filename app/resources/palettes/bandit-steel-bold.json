@@ -1,0 +1,22 @@
+{
+  "format": "foxglove-palette",
+  "version": 1,
+  "name": "Bandit Steel Bold",
+  "harmony": "complementary",
+  "tier": "bold",
+  "roles": {
+    "accent": "#f08a3c",
+    "highlight": "#ffb070",
+    "accent_light": "#b4540f",
+    "deep": "#c9600f",
+    "accent2": "#4c9ee0",
+    "accent2_light": "#1c65a1",
+    "base": "#06172a",
+    "ink": "#e8dcc4",
+    "paper": "#dfe5ec",
+    "paper_ink": "#1b1b1c",
+    "app_ground": "#06172a",
+    "wall_ground": "#06111d"
+  },
+  "stops": ["#f08a3c", "#4c9ee0", "#06172a"]
+}
