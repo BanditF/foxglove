@@ -1128,7 +1128,11 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         ui.add_space(4.0);
         ui.label(theme::caps_label(ui, "Effect"));
         ui.horizontal_wrapped(|ui| {
-            let current = left.map(|l| l.effect);
+            // While a palette effect runs as the scene, it alone is the selected effect: the
+            // keyboard's own effect (still reported underneath) isn't shown as picked.
+            let current = left
+                .map(|l| l.effect)
+                .filter(|_| v.palette.running.is_none());
             for (i, e) in (0u8..).zip(&EFFECT_TABLE) {
                 let pill = theme::pill(ui, current == Some(i), e.name);
                 let pill = match e.note {

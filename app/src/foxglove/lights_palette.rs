@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::palette_file::{self, PaletteFile, Tier};
-use super::scene_looks::{Direction, Kind, Look};
+use super::scene_looks::{Kind, Look};
 
 /// The store section.
 pub const SECTION: &str = "lights_palette";
@@ -120,9 +120,13 @@ pub fn effect_hint(kind: Kind) -> &'static str {
              Runs as a scene."
         }
         Kind::Tide => {
-            "A slow wave of the second accent rolls in from the outer keys and back, 12 s a              loop; each key changes colour only at a soft dip. Runs as a scene."
+            "A slow wave of the second accent rolls in from the outer keys and back, 12 s a \
+             loop; each key changes colour only at a soft dip. Runs as a scene."
         }
-        _ => "The palette's colours drift slowly across the split, one turn every 12 s. Runs as a scene.",
+        _ => {
+            "The palette's colours drift slowly across the split, one turn every 12 s (9 s for \
+             a bold palette). Runs as a scene."
+        }
     }
 }
 
@@ -135,12 +139,7 @@ pub fn look(p: &PaletteFile, kind: Kind) -> Look {
     };
     match kind {
         Kind::TwoTone | Kind::Tide => Look { kind, ..base },
-        _ => Look {
-            kind: Kind::Sweep,
-            speed: 1,
-            direction: Direction::Right,
-            ..base
-        },
+        _ => super::scene_looks::slow_sweep(&p.name),
     }
 }
 
@@ -155,6 +154,7 @@ pub fn running(p: &PaletteFile, scene_runs: bool, chosen: &Look) -> Option<Kind>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::foxglove::scene_looks::Direction;
 
     #[test]
     fn bandit_is_the_default_and_changes_nothing() {
@@ -205,9 +205,14 @@ mod tests {
             (Kind::TwoTone, "Bandit Dusk")
         );
         let sweep = look(dusk, Kind::Sweep);
-        // Nothing faster than the slowest speed (12 s a turn), left to right.
+        // The slow sweep: 12 s a turn (9 s for a bold palette), left to right.
         assert_eq!(super::super::scene_looks::period_ms(sweep.speed), 12_000);
         assert_eq!(sweep.direction, Direction::Right);
+        let bold_sweep = look(of("Bandit Ember Bold"), Kind::Sweep);
+        assert_eq!(
+            super::super::scene_looks::period_ms(bold_sweep.speed),
+            9_000
+        );
         assert_eq!(running(dusk, true, &two), Some(Kind::TwoTone));
         assert_eq!(running(dusk, false, &two), None);
         assert_eq!(running(dusk, true, &Look::default()), None);
