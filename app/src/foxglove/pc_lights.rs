@@ -591,6 +591,9 @@ pub struct Worker {
     lamp_arrays: LampArrays,
     lamp_info: BTreeMap<(u16, u16), LampArrayDesc>,
     lamp_opener: LampOpener,
+    /// Windows' background controller (package identity, #179): a device Windows gives
+    /// Foxglove gets its resting look even when Foxglove set nothing on it yet.
+    background: bool,
     found: Vec<Found>,
     unknown: Vec<Unknown>,
     /// Keyboards' own LampArrays, from the last scan (#754).
@@ -686,6 +689,7 @@ impl Worker {
             lamp_arrays,
             lamp_info: BTreeMap::new(),
             lamp_opener: Box::new(|_| None),
+            background: false,
             found: Vec::new(),
             unknown: Vec::new(),
             keyboard_lamps: Vec::new(),
@@ -816,6 +820,12 @@ impl Worker {
     }
 
     /// Drives Dynamic Lighting devices through `opener` (#691); without one they are listed only.
+    /// As Windows' background light controller (package identity, #179).
+    pub fn with_background(mut self, background: bool) -> Self {
+        self.background = background;
+        self
+    }
+
     pub fn with_lamp_opener(mut self, opener: LampOpener) -> Self {
         self.lamp_opener = opener;
         self
@@ -1240,18 +1250,31 @@ impl Worker {
             self.keyboard_lamp_again();
             return;
         }
+        // As the background controller (#179), a device Foxglove set nothing on yet gets the
+        // resting look: its saved colours, else white (never dark, never left as it was).
+        let saved = self
+            .found
+            .iter()
+            .find(|f| f.key == key)
+            .filter(|_| self.background)
+            .map(|f| self.saved_colors(f));
         let Some(d) = self.drivers.get_mut(key) else {
             return;
         };
         if !d.lamp_access().is_some_and(|a| a.available && a.enabled) {
             return;
         }
-        let colors: Vec<(usize, Rgb)> = d
+        let mut colors: Vec<(usize, Rgb)> = d
             .colors()
             .into_iter()
             .enumerate()
             .filter_map(|(i, c)| Some((i, c?)))
             .collect();
+        if colors.is_empty() {
+            if let Some(saved) = saved {
+                colors = pcl::restore_colors(&d.colors(), &saved);
+            }
+        }
         if colors.is_empty() {
             return;
         }
@@ -1797,6 +1820,7 @@ pub fn start() {
             writers,
             Box::new(lamp_arrays),
         )
+        .with_background(super::scene_lamps::identity())
         .with_lamp_opener({
             // Windows' AvailabilityChanged, on its thread: one message to this queue.
             let tx = tx.clone();
@@ -1875,6 +1899,8 @@ pub fn start() {
             // A running scene places the boards found now (#485).
             if scanned {
                 super::scene_run::devices_changed();
+                // And Foxglove's hold on the keyboard's LampArrays (identity, #179).
+                super::lamp_hold::devices_changed();
             }
             if let Some(seen) = lamp_keyboards {
                 super::keyboard_focus::report(super::keyboard_focus::Source::LampArray, seen);
@@ -3291,6 +3317,33 @@ mod tests {
         w.handle(Msg::SceneEnd, false, &mut no_wait());
         let back = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
         assert_eq!(back, vec![(MOUSE.to_string(), None, [0, 0, 255])]);
+    }
+
+    /// #179: as Windows' background controller, a device Windows hands to Foxglove that it set
+    /// nothing on yet gets the resting look (white without saved colours), not whatever another
+    /// controller left; in front only, it is left alone as before.
+    #[test]
+    fn the_background_controller_gives_a_new_device_its_resting_look() {
+        for background in [false, true] {
+            let calls = LampCalls::default();
+            let access = Arc::new(Mutex::new(pcl::LampAccess::default()));
+            let (w, _) = worker(Settings::default());
+            let mut w = w
+                .with_background(background)
+                .with_lamp_opener(fake_lamps_with(&calls, &access));
+            w.scan(&case_hid(), &mut nothing(), false, true);
+            calls.lock().unwrap().clear();
+            w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+            let wrote = calls.lock().unwrap().clone();
+            if background {
+                assert!(!wrote.is_empty(), "the resting look");
+                assert!(wrote
+                    .iter()
+                    .all(|(k, _, c)| k == MOUSE && *c == [255, 255, 255]));
+            } else {
+                assert!(wrote.is_empty(), "front only: nothing it didn't set");
+            }
+        }
     }
 
     /// #691: Windows takes the device (Foxglove's window went to the back, another app came

@@ -70,6 +70,7 @@ pub fn hand_back(why: &str) {
                 super::hold_lease::stop(); // no lease left for a later app
                 super::calibrate_ui::cancel(); // mid-calibration: the colours go back
                 super::led_map_ui::quit(); // mid "Find my LEDs": the lights go back
+                super::lamp_hold::stop(); // the keyboard's LampArrays to the next controller
             }),
         ),
         (

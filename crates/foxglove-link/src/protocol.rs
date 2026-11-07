@@ -1601,6 +1601,50 @@ pub fn parse_lamp_parts(r: &[u8; REPORT]) -> std::result::Result<crate::lamps::L
     crate::lamps::LampParts::new(&counts).map_err(|_| 5)
 }
 
+/// The HID LampArray's state in the LAMP_PARTS reply's bytes 12-23 (#88; all 0 on firmware
+/// without one): who has the lights and the counters since boot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LampArrayState {
+    /// Bit 0 USB built in, 1 BLE built in, 2 its USB interface registered, 3 its BLE service up.
+    pub flags: u8,
+    /// SET_FRAME's owner byte now (`lights_owner::Owner`).
+    pub owner: u8,
+    /// Take-overs: a LampArray host turned autonomous mode off.
+    pub takes: u16,
+    /// Hand-backs (the host's or the board's).
+    pub hand_backs: u16,
+    /// Frames drawn (LampUpdateComplete).
+    pub frames: u16,
+    /// The host link's SHOWs and effects refused busy.
+    pub host_refused: u16,
+    /// LampArray reports refused (short or unknown).
+    pub refused: u16,
+}
+
+impl LampArrayState {
+    /// The firmware has a LampArray over USB or BLE.
+    pub fn built(&self) -> bool {
+        self.flags & 0b11 != 0
+    }
+}
+
+/// [`LampArrayState`] from a LAMP_PARTS reply; `None` when the reply's status isn't 0.
+pub fn parse_lamparray_state(r: &[u8; REPORT]) -> Option<LampArrayState> {
+    if r[2] != 0 {
+        return None;
+    }
+    let u16_at = |i: usize| u16::from_le_bytes([r[i], r[i + 1]]);
+    Some(LampArrayState {
+        flags: r[12],
+        owner: r[13],
+        takes: u16_at(14),
+        hand_backs: u16_at(16),
+        frames: u16_at(18),
+        host_refused: u16_at(20),
+        refused: u16_at(22),
+    })
+}
+
 /// FRAME RELEASE: both halves go back to their own effect.
 pub fn frame_release() -> Vec<u8> {
     vec![SETTINGS, settings::FRAME, frame::RELEASE]
@@ -3081,5 +3125,27 @@ mod build_info_tests {
             "1.0.0 (dev)"
         );
         assert_eq!(build_info(0), [0xD7, 0x09, 0]);
+    }
+
+    /// LAMP_PARTS bytes 12-23 (#88, lamparray.c `lamparray_state`), as the lab's H1 case reads
+    /// them (#179).
+    #[test]
+    fn lamparray_state_is_read_from_lamp_parts() {
+        let mut r = [0u8; REPORT];
+        r[0] = SETTINGS;
+        r[1] = 0x90;
+        r[3] = 3;
+        r[4..7].copy_from_slice(&[2, 21, 21]);
+        r[12] = 0b1111;
+        r[13] = 2;
+        r[14..24].copy_from_slice(&[5, 0, 4, 0, 0x34, 0x12, 1, 0, 0, 1]);
+        let s = parse_lamparray_state(&r).unwrap();
+        assert!(s.built());
+        assert_eq!((s.owner, s.takes, s.hand_backs), (2, 5, 4));
+        assert_eq!((s.frames, s.host_refused, s.refused), (0x1234, 1, 256));
+        r[12] = 0;
+        assert!(!parse_lamparray_state(&r).unwrap().built(), "no LampArray");
+        r[2] = 4;
+        assert_eq!(parse_lamparray_state(&r), None, "LAMP_PARTS not built in");
     }
 }
