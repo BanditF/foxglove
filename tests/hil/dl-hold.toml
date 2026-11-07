@@ -1,0 +1,27 @@
+# Windows Dynamic Lighting background control (#179): does Foxglove's hold keep Windows out?
+#
+# H1: Foxglove with package identity, ranked first under Settings > Personalization > Dynamic
+# Lighting > Background light control, holds both of the keyboard's LampArrays (USB and BLE) and
+# never writes to them (app lamp_hold.rs). If Windows only turns the keyboard's autonomous mode
+# off on a write, the keyboard stays on Foxglove's host link: no LampArray take-over, owner never
+# 1 (USB) or 2 (BLE). The firmware counts take-overs in LAMP_PARTS bytes 12-23 (D7 90).
+#
+# FAIL means H1 is false: switch to the fallback, drawing the keyboard through Windows on its
+# link's transport only (lights_owner::through_windows with lamp_hold::draw_on; the other
+# transport stays held, unwritten). docs/packaging.md, "Dynamic Lighting controller".
+#
+# Not run by agents: it needs the user's dev identity (scripts/dev-identity.ps1, the user's go),
+# Foxglove running with it, and On-call at the keyboard. Measure only; nothing is written.
+schema = 1
+
+[[cases]]
+name = "dl-hold-keeps-windows-out"
+description = "H1 (#179): Foxglove's identity hold on both keyboard LampArrays, without writes, keeps Windows' background controller from taking the lights for 2 minutes (no take-over, owner never a LampArray). FAIL: fall back to drawing through Windows on the link's transport"
+tags = ["dl-identity"]
+manual = true
+requires = ["lamp_parts"]
+steps = [
+  { prompt = { ask = "Foxglove runs with package identity (Keyboard health: Dynamic Lighting identity OK), is first under Settings > Personalization > Dynamic Lighting > Background light control and on both keyboard device pages, and its window is NOT in front (minimise it; leave no Dynamic Lighting app in front). Press Enter when ready." } },
+  { note_lamp_array = {} },
+  { expect_lamp_array_held = { hold_ms = 120000 } },
+]

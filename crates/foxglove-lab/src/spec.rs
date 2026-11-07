@@ -58,6 +58,8 @@ pub enum Step {
     NoteRightRedraws(NoteRedraws),
     ExpectRightRedraws(RightRedraws),
     WaitRelay(RelayWait),
+    NoteLampArray(NoteLampArray),
+    ExpectLampArrayHeld(LampArrayHeld),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -427,6 +429,27 @@ pub struct ScreenStill {
 #[serde(deny_unknown_fields)]
 pub struct NoteRedraws {}
 
+/// Notes the HID LampArray's take-over and hand-back counters (LAMP_PARTS bytes 12-23, #88)
+/// for a following expect_lamp_array_held (#179).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoteLampArray {}
+
+/// H1 (#179): for `hold_ms`, no LampArray takes the lights: the take-overs since the case's
+/// note_lamp_array stay at most `max_takes` and the owner byte never says a LampArray (1 USB,
+/// 2 BLE). Read once a second, bounded by `hold_ms`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LampArrayHeld {
+    #[serde(default = "hold_timeout")]
+    pub hold_ms: u64,
+    #[serde(default)]
+    pub max_takes: u16,
+}
+fn hold_timeout() -> u64 {
+    60_000
+}
+
 /// The right's redraw count grew by at least `at_least` since the case's note_right_redraws,
 /// within `within_ms` (the D7 0E read is asked every 300 ms; each answer is the left's last read
 /// of the right, so allow a second for it).
@@ -695,7 +718,11 @@ impl Step {
                     );
                 }
             }
-            Self::NoteRightRedraws(_) => {}
+            Self::NoteRightRedraws(_) | Self::NoteLampArray(_) => {}
+            Self::ExpectLampArrayHeld(h) => ensure!(
+                (1_000..=600_000).contains(&h.hold_ms),
+                "expect_lamp_array_held hold_ms must be 1000..=600000"
+            ),
             Self::WaitRelay(w) => ensure!(
                 (1..=60_000).contains(&w.within_ms),
                 "wait_relay within_ms must be 1..=60000"
@@ -770,7 +797,8 @@ pub fn load(path: &Path) -> Result<Suite> {
                     "app_panel",
                     "activity_relay",
                     "rgb_shown",
-                    "right_redraws"
+                    "right_redraws",
+                    "lamp_parts"
                 ]
                 .contains(&r.as_str())
                     || r.strip_prefix("host_link>=")
@@ -783,4 +811,28 @@ pub fn load(path: &Path) -> Result<Suite> {
         }
     }
     Ok(s)
+}
+
+#[cfg(test)]
+mod dl_hold_tests {
+    use super::*;
+
+    /// #179's H1 case loads: a manual case with its prompt, the note and the held check.
+    #[test]
+    fn the_dl_hold_suite_loads() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil/dl-hold.toml");
+        let suite = load(&path).unwrap();
+        let case = &suite.cases[0];
+        assert_eq!(case.name, "dl-hold-keeps-windows-out");
+        assert!(case.manual);
+        assert!(case
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::NoteLampArray(_))));
+        assert!(case
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::ExpectLampArrayHeld(h) if h.max_takes == 0)));
+    }
 }

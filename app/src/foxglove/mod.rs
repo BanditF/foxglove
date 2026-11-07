@@ -74,6 +74,7 @@ pub mod knob;
 pub mod knob_health;
 pub mod knob_popup;
 pub mod lamp_health;
+pub mod lamp_hold;
 pub mod last_device;
 pub mod layer_access;
 pub mod layer_names;

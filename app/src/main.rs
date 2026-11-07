@@ -73,6 +73,7 @@ fn main() {
     foxglove::via_host::start();
     foxglove::follow_typing::start(); // Foxglove (#802): only when "Follow the keyboard I type on" is on
     foxglove::pc_lights::start(); // Foxglove (#423): case and peripheral lights
+    foxglove::lamp_hold::start(); // Foxglove (#179): with identity, hold the keyboard's LampArrays
     foxglove::scene_run::start_from_env(); // Foxglove (#485): the live check's demo scene
     foxglove::scene_triggers::start(); // Foxglove (#489): layer sweeps
     foxglove::scenes_ui::startup(); // Foxglove (#489): "Start with this profile"

@@ -18,6 +18,9 @@
 //! keyboard's lights (#749 b): the scene output sends it frames under its key like any other,
 //! and each change of who may drive a device is passed on ([`LampWriter::spawn`]'s `notify`), so
 //! a held keyboard tries its host link once on it (`lights_owner::retry`).
+//!
+//! With package identity (#179) the keyboard's own LampArrays are written only on the transport
+//! its host link uses now (`lamp_hold::draw_on`); `lamp_hold` holds both meanwhile, unwritten.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc;
@@ -379,9 +382,41 @@ mod imp {
         Some((vid, pid))
     }
 
+    /// Every LampArray Windows lists with this vendor and product, with its device id, skipping
+    /// the ids `skip` says.
+    fn matching(
+        vid: u16,
+        pid: u16,
+        skip: &dyn Fn(&str) -> bool,
+        one_only: bool,
+    ) -> windows::core::Result<Vec<(String, LampArray)>> {
+        let selector = LampArray::GetDeviceSelector()?;
+        let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
+        let mut out = Vec::new();
+        for info in &list {
+            if one_only && !out.is_empty() {
+                break;
+            }
+            let id = info.Id()?.to_string();
+            if skip(&id) {
+                continue;
+            }
+            let hid = windows::core::HSTRING::from(id.as_str());
+            let Ok(array) = LampArray::FromIdAsync(&hid).and_then(|op| op.join()) else {
+                continue;
+            };
+            if array.HardwareVendorId()? != vid || array.HardwareProductId()? != pid {
+                continue;
+            }
+            out.push((id, array));
+        }
+        Ok(out)
+    }
+
     /// The LampArrays behind a Lights page key: those whose vendor and product match, not
     /// claimed by another key; one only for a key with a serial. What `key` claimed before is
-    /// let go first (it is opened afresh). Shared by scenes and the Lights worker (#691).
+    /// let go first (it is opened afresh). Shared by scenes and the Lights worker (#691). The
+    /// host-link keyboard's own are only those on its link's transport (`lamp_hold::draw_on`).
     pub(super) fn arrays_for(
         key: &str,
         claimed: &mut BTreeMap<String, String>,
@@ -391,27 +426,53 @@ mod imp {
         };
         claimed.retain(|_, k| k != key);
         let one_only = key.split(':').count() > 2;
-        let selector = LampArray::GetDeviceSelector()?;
-        let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
+        let transport = super::super::lamp_hold::draw_on((vid, pid));
+        let skip = |id: &str| {
+            claimed.contains_key(id)
+                || transport
+                    .is_some_and(|ble| foxglove_devices::pc_lighting::bluetooth_path(id) != ble)
+        };
+        let found = matching(vid, pid, &skip, one_only)?;
         let mut out = Vec::new();
-        for info in &list {
-            if one_only && !out.is_empty() {
-                break;
-            }
-            let id = info.Id()?;
-            if claimed.contains_key(&id.to_string()) {
-                continue;
-            }
-            let Ok(array) = LampArray::FromIdAsync(&id).and_then(|op| op.join()) else {
-                continue;
-            };
-            if array.HardwareVendorId()? != vid || array.HardwareProductId()? != pid {
-                continue;
-            }
-            claimed.insert(id.to_string(), key.to_string());
+        for (id, array) in found {
+            claimed.insert(id, key.to_string());
             out.push(array);
         }
         Ok(out)
+    }
+
+    /// Holds the host-link keyboard's LampArrays, both transports, without writing (#179).
+    impl super::super::lamp_hold::HoldOpener for super::WindowsHolds {
+        fn open(
+            &mut self,
+            vid: u16,
+            pid: u16,
+            changed: Changed,
+        ) -> Vec<(bool, Box<dyn LampDevice>)> {
+            let found = matching(vid, pid, &|_| false, false).unwrap_or_else(|e| {
+                eprintln!("Foxglove: holding the keyboard's Dynamic Lighting devices: {e}");
+                Vec::new()
+            });
+            found
+                .into_iter()
+                .map(|(id, array)| {
+                    let tell = changed.clone();
+                    let token = array
+                        .AvailabilityChanged(&TypedEventHandler::new(move |_, _| {
+                            tell();
+                            Ok(())
+                        }))
+                        .ok();
+                    let ble = foxglove_devices::pc_lighting::bluetooth_path(&id);
+                    let device = Device {
+                        count: array.LampCount().unwrap_or(0),
+                        array,
+                        token,
+                    };
+                    (ble, Box::new(device) as Box<dyn LampDevice>)
+                })
+                .collect()
+        }
     }
 
     impl Opener for super::WindowsLamps {
@@ -573,6 +634,17 @@ pub fn worker_opener(_notify: Notify) -> super::pc_lights::LampOpener {
 #[cfg(not(target_os = "windows"))]
 #[derive(Default)]
 pub struct WindowsLamps;
+
+/// Windows' holds on the keyboard's own LampArrays (`lamp_hold`, #179).
+#[derive(Default)]
+pub struct WindowsHolds;
+
+#[cfg(not(target_os = "windows"))]
+impl super::lamp_hold::HoldOpener for WindowsHolds {
+    fn open(&mut self, _: u16, _: u16, _: Changed) -> Vec<(bool, Box<dyn LampDevice>)> {
+        Vec::new()
+    }
+}
 
 #[cfg(not(target_os = "windows"))]
 impl Opener for WindowsLamps {

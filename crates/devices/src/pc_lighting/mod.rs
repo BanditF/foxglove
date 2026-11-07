@@ -292,6 +292,11 @@ pub struct KeyboardLampArray {
 /// HID over GATT's service in a Windows interface path: the interface is Bluetooth LE.
 const HOGP_SERVICE: &str = "00001812-0000-1000-8000-00805f9b34fb";
 
+/// A Windows interface path (or a LampArray's device id, which is one) over Bluetooth LE.
+pub fn bluetooth_path(path: &str) -> bool {
+    path.to_ascii_lowercase().contains(HOGP_SERVICE)
+}
+
 /// The LampArray interfaces of keyboards with a Raw HID interface (the ones [`discover`] leaves
 /// to the keyboard's link), one per interface key; over USB and Bluetooth they are two.
 pub fn keyboard_lamp_arrays(hid: &[HidEntry]) -> Vec<KeyboardLampArray> {
@@ -314,7 +319,7 @@ pub fn keyboard_lamp_arrays(hid: &[HidEntry]) -> Vec<KeyboardLampArray> {
             name: lamp_array_name(hid, entry),
             vid: entry.vid,
             pid: entry.pid,
-            bluetooth: entry.path.to_ascii_lowercase().contains(HOGP_SERVICE),
+            bluetooth: bluetooth_path(&entry.path),
         });
     }
     out

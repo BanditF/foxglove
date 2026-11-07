@@ -30,6 +30,10 @@
 //!   picks (`pc_lights`' worker, [`through_windows`]). The line then says so ([`THROUGH`]).
 //!   The report that frees the lights lets the Keyboard card's LampArray go.
 //! - The pages repaint on the owner's change ([`set_wake`]), not on a timer.
+//! - With package identity (#179) Foxglove holds the keyboard's LampArrays itself
+//!   (`lamp_hold`): an owner byte naming a LampArray transport Foxglove holds, with Windows'
+//!   leave to drive it, is Foxglove ([`Who::FoxgloveLamp`], [`ours`]), never "Windows holds the
+//!   lights".
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
@@ -307,6 +311,13 @@ pub fn retry(why: &str) {
     }
 }
 
+/// Repaints the pages that show the line (Foxglove's own LampArray hold changed, #179).
+pub fn repaint() {
+    if let Some(w) = &lock(&STATE).wake {
+        w.request_repaint();
+    }
+}
+
 /// Repaints the page showing the line when the owner changes.
 #[cfg_attr(test, allow(dead_code))]
 pub fn set_wake(ctx: &egui::Context) {
@@ -334,6 +345,9 @@ pub enum Who {
     OtherApp,
     /// Foxglove itself without a scene (the Lights page, Find my LEDs).
     Foxglove,
+    /// Foxglove through its own hold on the keyboard's LampArray (#179): the owner byte says a
+    /// LampArray, and it is Foxglove's.
+    FoxgloveLamp,
     /// The keyboard's own effect.
     Keyboard,
 }
@@ -363,6 +377,7 @@ impl Who {
             Who::Windows => "Windows Dynamic Lighting".into(),
             Who::OtherApp => "another app".into(),
             Who::Foxglove => "Foxglove".into(),
+            Who::FoxgloveLamp => "Foxglove, through Windows Dynamic Lighting".into(),
             Who::Keyboard => "the keyboard itself (its own effect)".into(),
         }
     }
@@ -532,10 +547,27 @@ fn lease_now() -> Option<u64> {
         .map(|(conn, _)| *conn)
 }
 
+/// [`who`]'s answer when Foxglove itself holds the LampArray the owner byte names
+/// (`held_by_foxglove`, #179): Foxglove (or its running scene), not Windows.
+pub fn ours(who: Who, held_by_foxglove: bool, scene: Option<&str>) -> Who {
+    match who {
+        Who::Windows if held_by_foxglove => {
+            scene.map_or(Who::FoxgloveLamp, |name| Who::Scene(name.to_string()))
+        }
+        other => other,
+    }
+}
+
 /// Who drives the lights now, and the running scene's name.
 fn who_now(owner: Option<Owner>) -> (Who, Option<String>) {
     let scene = super::scene_run::running().map(|(name, _)| name);
-    (who(owner, scene.as_deref(), lease_now()), scene)
+    let held = owner.is_some_and(super::lamp_hold::holds);
+    let who = ours(
+        who(owner, scene.as_deref(), lease_now()),
+        held,
+        scene.as_deref(),
+    );
+    (who, scene)
 }
 
 /// The line as it stands now (no blocking: the arbiter's published holders, the cached device).
@@ -643,7 +675,7 @@ pub fn notice_bar(ui: &mut egui::Ui, line: &Line) {
 pub fn chip(ui: &mut egui::Ui, line: &Line) -> egui::Response {
     use super::theme::Dot;
     let dot = match line.who {
-        Who::Foxglove | Who::Scene(_) => Dot::Ok,
+        Who::Foxglove | Who::FoxgloveLamp | Who::Scene(_) => Dot::Ok,
         _ => Dot::Muted,
     };
     super::theme::hint_chip(ui, &line.short, Some(TIP), Some(dot))
@@ -1043,5 +1075,35 @@ mod tests {
         );
         s.observe(&frame_report(9, false));
         assert_eq!(row(&s, &Who::OtherApp).level, Level::Warn);
+    }
+
+    /// #179: with identity Foxglove holds the keyboard's LampArrays itself; an owner byte naming
+    /// one of them is Foxglove (or its scene), with no "Windows holds the lights" notice.
+    #[test]
+    fn foxgloves_own_lamparray_hold_is_foxglove() {
+        let lamp = Some(Owner::LampArrayBle);
+        let windows = who(lamp, None, None);
+        assert_eq!(windows, Who::Windows);
+        assert_eq!(ours(windows.clone(), false, None), Who::Windows, "not ours");
+        let me = ours(windows.clone(), true, None);
+        assert_eq!(me, Who::FoxgloveLamp);
+        assert_eq!(
+            ours(windows, true, Some("Ember")),
+            Who::Scene("Ember".into())
+        );
+        assert_eq!(ours(Who::Keyboard, true, None), Who::Keyboard);
+        let l = line(&me, None, Some("Eyelash Corne"));
+        assert!(!l.warn, "no amber notice about Foxglove's own hold");
+        assert!(!l.text.contains(NOTICE), "{}", l.text);
+        assert!(l.text.contains("Foxglove"), "{}", l.text);
+        let r = rows(
+            &Now {
+                owner: lamp,
+                ..Now::default()
+            },
+            &me,
+        );
+        assert_eq!(r[0].level, Level::Ok);
+        assert!(r[0].detail.contains("Foxglove, through"), "{}", r[0].detail);
     }
 }

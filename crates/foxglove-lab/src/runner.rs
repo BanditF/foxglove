@@ -246,6 +246,8 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         "position_press" => {
             "firmware has no position press with refusal (HELLO bits 5 and 7; test-hooks build)"
         }
+        "lamp_parts" if has(caps::LAMP_PARTS) => return None,
+        "lamp_parts" => "firmware has no LAMP_PARTS (HELLO bit 22), so no LampArray counters",
         r if r.starts_with("host_link>=") => {
             if r[11..].parse::<u8>().is_ok_and(|v| hello.version >= v) {
                 return None;
@@ -288,6 +290,8 @@ pub struct Runner<'a, D: Device> {
     needs_panel: bool,
     /// The right's redraw count at the case's note_right_redraws (#618).
     redraw_note: Option<u32>,
+    /// The LampArray's counters at the case's note_lamp_array (#179).
+    lamparray_note: Option<protocol::LampArrayState>,
     /// Where key presses are recorded as the harness's own input (`injections`, #618); None
     /// records nothing (offline tests). `foxglove-lab run` sets the shared file.
     pub injections: Option<PathBuf>,
@@ -328,6 +332,7 @@ impl<'a, D: Device> Runner<'a, D> {
             app_panel: crate::host::app_panel_now,
             needs_panel: false,
             redraw_note: None,
+            lamparray_note: None,
             injections: None,
             app: None,
             pc_saved: None,
@@ -953,6 +958,7 @@ impl<'a, D: Device> Runner<'a, D> {
         }
         self.baselines.clear();
         self.redraw_note = None;
+        self.lamparray_note = None;
         if let Some((path, original)) = self.screens_ini.take() {
             let _ = match original {
                 Some(bytes) => std::fs::write(&path, bytes),
@@ -1525,6 +1531,50 @@ impl<'a, D: Device> Runner<'a, D> {
                     std::thread::sleep(Duration::from_millis(500));
                 }
             }
+            Step::NoteLampArray(_) => {
+                let s = settings::lamparray_state(self.device)?;
+                if !s.built() {
+                    return Err(Blocked(
+                        "this firmware has no HID LampArray (LAMP_PARTS byte 12 is 0)".into(),
+                    )
+                    .into());
+                }
+                self.lamparray_note = Some(s);
+                Ok(format!(
+                    "LampArray owner {}, take-overs {}, hand-backs {}",
+                    s.owner, s.takes, s.hand_backs
+                ))
+            }
+            Step::ExpectLampArrayHeld(c) => {
+                let base = self
+                    .lamparray_note
+                    .ok_or_else(|| anyhow::anyhow!("no note_lamp_array earlier in the case"))?;
+                let started = Instant::now();
+                let end = started + Duration::from_millis(c.hold_ms);
+                loop {
+                    self.check()?;
+                    let s = settings::lamparray_state(self.device)?;
+                    let takes = s.takes.wrapping_sub(base.takes);
+                    if takes > c.max_takes || matches!(s.owner, 1 | 2) {
+                        bail!(
+                            "a LampArray took the lights while Foxglove held them: take-overs {} -> {}, \
+                             owner {} after {} ms. H1 fails: draw the keyboard through Windows on \
+                             its link's transport instead (docs/packaging.md, Dynamic Lighting)",
+                            base.takes,
+                            s.takes,
+                            s.owner,
+                            started.elapsed().as_millis()
+                        );
+                    }
+                    if Instant::now() >= end {
+                        return Ok(format!(
+                            "no take-over in {} ms (take-overs {}, owner {})",
+                            c.hold_ms, s.takes, s.owner
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
             Step::ExpectRightRedraws(c) => {
                 let base = self
                     .redraw_note
@@ -1650,6 +1700,9 @@ impl<'a, D: Device> Runner<'a, D> {
                 | Step::ExpectScreenStill(_) => unsupported("screen_readback", &self.hello),
                 Step::NoteRightRedraws(_) | Step::ExpectRightRedraws(_) => {
                     unsupported("right_redraws", &self.hello)
+                }
+                Step::NoteLampArray(_) | Step::ExpectLampArrayHeld(_) => {
+                    unsupported("lamp_parts", &self.hello)
                 }
                 Step::PressPosition(p) => {
                     unsupported("position_press", &self.hello).or_else(|| {

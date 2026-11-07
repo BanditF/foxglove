@@ -183,6 +183,19 @@ pub fn lamp_parts(t: &impl Transport) -> Result<crate::lamps::LampParts> {
         .map_err(|status| anyhow::anyhow!("the keyboard didn't give its LEDs (status {status})"))
 }
 
+/// The HID LampArray's state and counters (LAMP_PARTS bytes 12-23, #88): who has the lights,
+/// take-overs and hand-backs since boot. Needs HELLO bit 22.
+pub fn lamparray_state(t: &impl Transport) -> Result<protocol::LampArrayState> {
+    let r = t.request(
+        &protocol::lamp_parts(),
+        protocol::SETTINGS,
+        protocol::settings::LAMP_PARTS,
+        Duration::from_millis(500),
+    )?;
+    protocol::parse_lamparray_state(&r)
+        .ok_or_else(|| anyhow::anyhow!("the keyboard didn't give its LEDs (status {})", r[2]))
+}
+
 /// Hands both halves back to their own effect (SET_FRAME RELEASE).
 pub fn release_frame(t: &impl Transport) -> Result<protocol::FrameReply> {
     let r = t.request(
