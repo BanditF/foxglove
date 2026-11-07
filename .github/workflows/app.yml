@@ -10,6 +10,11 @@ on:
         description: 'A throwaway test build (MAJOR.MINOR.PATCH): the exe and MSI get this version, uploaded only as a workflow artifact named for it. Never a release.'
         required: false
         default: ''
+      sparse_identity:
+        description: 'Also build the sparse identity variant (#179): an exe with FOXGLOVE_SPARSE_IDENTITY=1 and an MSI with the unsigned identity package, as a test artifact only. Never a release.'
+        type: boolean
+        required: false
+        default: false
   push:
     tags:
       - 'app-v*'
@@ -84,6 +89,35 @@ jobs:
           path: |
             app/target/release/foxglove.exe
             app/target/wix/foxglove-x64.msi
+          if-no-files-found: error
+      # #179: the SparseIdentity variant, by hand only and after the plain artifact is kept (it
+      # rebuilds the exe with the identity manifest). The package is unsigned, so Windows won't
+      # register it: this proves the WiX variant builds, for a test account with a dev cert.
+      - name: Build the sparse identity variant (test only)
+        if: inputs.sparse_identity && !startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          FOXGLOVE_SPARSE_IDENTITY: '1'
+          TEST_VERSION: ${{ inputs.test_version }}
+        run: |
+          cargo build --release
+          if ($LASTEXITCODE) { throw 'identity build failed' }
+          powershell -ExecutionPolicy Bypass -File ../scripts/pack-identity.ps1 -Out target/identity
+          if ($LASTEXITCODE) { throw 'pack-identity failed' }
+          $env:PATH = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin;$env:PATH"
+          $msix = (Resolve-Path target/identity/foxglove-identity.msix).Path
+          $version = if ($env:TEST_VERSION) { @('--install-version', $env:TEST_VERSION) } else { @() }
+          cargo wix --no-build --nocapture @version "--compiler-arg=-dSparseIdentity=$msix" --output target/wix/foxglove-x64-identity.msi
+          if ($LASTEXITCODE) { throw 'identity MSI build failed' }
+          if (-not (Test-Path target/wix/foxglove-x64-identity.msi)) { throw 'No identity MSI was built' }
+      - uses: actions/upload-artifact@v4
+        if: inputs.sparse_identity && !startsWith(github.ref, 'refs/tags/')
+        with:
+          name: foxglove-windows-identity-test
+          path: |
+            app/target/release/foxglove.exe
+            app/target/wix/foxglove-x64-identity.msi
+            app/target/identity/foxglove-identity.msix
           if-no-files-found: error
 
   release:
