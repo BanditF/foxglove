@@ -277,12 +277,16 @@ static void driver(void) {
         const uint8_t d[] = {0xD7, 0x05, 1}; // no state byte: 5, not a release
         send_len(d, sizeof(d), sizeof(d));
     }
-    note("position: W (pos 2) held, released by the firmware after 10 s");
+    // #851: an owned down stays while the PC keeps talking (60 s at most), and goes 10 s after
+    // the PC's last report. Before, it went 10 s after the down even with host traffic.
+    note("position: W (pos 2) held while the PC talks, released 10 s after it goes quiet");
     SEND(0xD7, 0x05, 2, 1);
     for (int i = 0; i < 6; i++) {
-        SEND(0xD7, 0x04); // host traffic, so only the 10 s limit applies
+        SEND(0xD7, 0x04); // host traffic: W stays down past 10 s
         k_msleep(1800);
     }
+    note("position: W still held after 10.8 s of host traffic");
+    k_msleep(11000); // no host traffic
     note("position: W released");
 
     note("bootloader: trigger without arm, wrong nonce, used nonce, expired nonce");

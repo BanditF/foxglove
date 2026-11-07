@@ -104,6 +104,22 @@ void art_toast_show(const struct art_toast *t) {
 }
 #endif
 
-/* Test hooks (dev builds); the relay's press and boot jobs answer here. */
-void test_hooks_relay_done(uint8_t status) { (void)status; }
-void test_hooks_boot_relay_done(uint8_t status) { (void)status; }
+/* Test hooks (#851): test_hooks.c itself is built in (the D7 05 position press, as dev builds
+ * have it); these are what it calls on the left. */
+#include "sim_hooks.h"
+uint64_t sim_hooks_positions;
+int raise_zmk_position_state_changed(struct zmk_position_state_changed ev) {
+    uint64_t bit = (uint64_t)1 << ev.position;
+    sim_hooks_positions = ev.state ? sim_hooks_positions | bit : sim_hooks_positions & ~bit;
+    return 0;
+}
+uint32_t sys_rand32_get(void) { return 0x5eed1234; }
+void host_link_position_reply(uint8_t status, uint8_t pos) {
+    sim_left.position_replies++;
+    sim_left.position_status = status;
+    sim_left.position_pos = pos;
+}
+void host_link_bootloader_reply(uint8_t status, uint8_t half) {
+    (void)status;
+    (void)half;
+}

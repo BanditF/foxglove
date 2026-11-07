@@ -28,6 +28,43 @@ steps = [
 ]
 
 [[cases]]
+name = "art-keys-long-hold-cycles"
+description = "#851 after #867 (the c9bf83b trace): SYSTEM held through ten SYSTEM+P steps, then ten SYSTEM+O steps, every press steps (two laps each way on the emblem plus 4 kept places, wraps included). The layer keys stay down about 18 s each way, past the old 10 s test-hook release that dropped SYSTEM mid-cycle (forward: the 6th tap refused busy_or_no_relay; back: the 7th stepped nothing). Needs firmware with #851's hold fix on both halves (held while the PC keeps talking, up to 60 s), no app opt-in, Foxglove quit"
+tags = ["art-keys"]
+requires = ["art_keys", "position_press"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6], retrigger = 0 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { art_key = { pos = 10 } },
+  { expect_layer = { active_contains = [6] } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
+
+[[cases]]
 name = "art-keys-app-opt-in"
 description = "With D7 0D 01: SYSTEM+P / O send D7 8D 01 01 / FF and the art stays put; the opt-in is ended after"
 tags = ["art-keys"]

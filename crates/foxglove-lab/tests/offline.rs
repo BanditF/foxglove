@@ -1079,6 +1079,10 @@ fn board_steps_hand_the_art_keys_back_first() {
         .iter()
         .all(|k| !k.subscribed && !k.keep_found_opt_in));
     assert!(art_keys("art-keys-unplug-check")[0].keep_found_opt_in);
+    // #851: the long hold, ten steps each way with the layer keys held throughout.
+    let long = art_keys("art-keys-long-hold-cycles");
+    assert_eq!(long.len(), 20);
+    assert!(long.iter().all(|k| !k.subscribed && !k.keep_found_opt_in));
     let bad = case("[{art_key={pos=11,subscribed=true,keep_found_opt_in=true}}]");
     assert!(bad.steps[0].validate().is_err());
 }

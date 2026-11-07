@@ -205,7 +205,10 @@
  *      Active layers resolve top-down through &trans, stopping at the default layer.
  *      Left events run on the system queue; right events go over ART_RELAY_PRESS then
  *      return through ZMK's normal split link. Duplicate downs and unowned ups are no-op ok.
- *      Owned downs release after 10 s or after 10 s without a host-link report.
+ *      Owned downs stay while the PC keeps talking: the left releases them after 10 s without
+ *      a host-link report, or 60 s after the down at the latest (#851; before, 10 s after the
+ *      down). The right releases the downs relayed to it when the split link goes, or 65 s
+ *      after the down.
  *      CONFIG_FOXGLOVE_TEST_HOOKS=n omits the handler and returns status 4.
  *      Replies use the existing nonblocking queue and are zero-padded to the report size.
  *   06 SCREEN_SNAP half u8 (0 left, 1 right), request bytes 0..2 = D7 06 half.

@@ -20,6 +20,10 @@
 #include "sim_bt.h"
 #include "sim_kernel.h"
 #include "sim_stubs.h"
+#ifdef SIM_TEST_HOOKS
+#include "sim_hooks.h"
+#include "test_hooks.h"
+#endif
 
 extern int (*const sim_sys_init_art_relay_init)(void);
 extern int sim_log_level;
@@ -1295,6 +1299,108 @@ static void art_step_boot(void) {
 }
 #endif
 
+#ifdef SIM_TEST_HOOKS
+/* #851 after #867, the c9bf83b hardware trace (batch-c9bf83b/lab art-cycle-fwd, art-cycle-back):
+ * the lab holds SYSTEM (D7 05 downs of 43 and 0 on the left, 46 on the right), then taps P (pos
+ * 11) ten times, then O (pos 10) ten times, each tap's step awaited (up to 6 s) before the next.
+ * The board has the emblem and 4 kept places (5 sets). The hardware stepped five or six times,
+ * then a tap was refused busy (forward) or stepped nothing (back), about 10.5 s after the layer
+ * keys went down every time: the left let its test-hook downs go 10 s after each down
+ * (test_hooks.c), relaying 46's up and dropping SYSTEM mid-cycle. The keys stay held while the PC
+ * keeps talking (up to HOLD_MAX_MS) since #851's fix. The keymap is modelled here: a P or O tap
+ * steps the art only while all three layer keys are held. */
+static int lab_press(uint8_t pos, uint8_t state) {
+    test_hooks_host_seen();
+    int replies = sim_left.position_replies;
+    uint8_t r = test_hooks_press(pos, state);
+    if (r != 0) {
+        return r;
+    }
+    int64_t start = k_uptime_get();
+    while (sim_left.position_replies == replies && k_uptime_get() - start < 4000) {
+        k_msleep(10);
+    }
+    return sim_left.position_replies == replies ? -1 : sim_left.position_status;
+}
+
+static bool system_held(void) {
+    return (sim_hooks_positions & ((uint64_t)1 << 43)) && (sim_hooks_positions & 1) &&
+           (sim_right.held & ((uint64_t)1 << 46));
+}
+
+static void art_hold_cycles(void) {
+    sim_right.set_count = 1;
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    for (int i = 0; i < 4; i++) {
+        sim_right.flash[i].used = true;
+    }
+    const int total = 5;
+    char why[200];
+    check("start-on-0", lab_select(0, why, sizeof(why)), "%s", why);
+    app_on = false;
+    k_msleep(1000);
+    const struct {
+        uint8_t pos;
+        int8_t dir;
+        const char *name;
+    } runs[] = {{11, 1, "fwd"}, {10, -1, "back"}};
+    for (int run = 0; run < 2; run++) {
+        int64_t held_at = k_uptime_get();
+        int st[3] = {lab_press(43, 1), lab_press(46, 1), lab_press(0, 1)};
+        char name[32];
+        snprintf(name, sizeof(name), "%s-hold", runs[run].name);
+        check(name, st[0] == 0 && st[1] == 0 && st[2] == 0 && system_held(),
+              "43 %d, 46 %d, 0 %d; SYSTEM %s", st[0], st[1], st[2], system_held() ? "on" : "off");
+        int stepped = 0;
+        for (int i = 0; i < 10; i++) {
+            int8_t want = (int8_t)(((sim_right.set + runs[run].dir) % total + total) % total);
+            int down = lab_press(runs[run].pos, 1);
+            k_msleep(40);
+            int up = lab_press(runs[run].pos, 0);
+            bool layer = system_held();
+            if (down == 0 && layer) {
+                art_relay_step(runs[run].dir); // the keymap's &art_next / &art_prev on SYSTEM
+            }
+            int64_t start = k_uptime_get();
+            while (sim_right.set != want && k_uptime_get() - start < 6000) {
+                test_hooks_host_seen(); // the lab's D6 STATUS reads while it waits
+                k_msleep(100);
+            }
+            bool ok = down == 0 && up == 0 && layer && sim_right.set == want;
+            stepped += ok;
+            if (!ok) {
+                snprintf(name, sizeof(name), "%s-press-%d", runs[run].name, i + 1);
+                check(name, false,
+                      "%.1f s after the layer keys: tap %d/%d, SYSTEM %s, right on set %d (want %d)",
+                      (k_uptime_get() - held_at) / 1000.0, down, up, layer ? "on" : "off",
+                      sim_right.set, want);
+                break;
+            }
+            k_msleep(750); // the lab's report between steps: about 1.75 s a step, as on hardware
+        }
+        snprintf(name, sizeof(name), "%s-ten-steps", runs[run].name);
+        check(name, stepped == 10, "%d of 10 steps, %.1f s after the layer keys went down", stepped,
+              (k_uptime_get() - held_at) / 1000.0);
+        int rel[3] = {lab_press(0, 0), lab_press(46, 0), lab_press(43, 0)};
+        snprintf(name, sizeof(name), "%s-release", runs[run].name);
+        check(name, rel[0] == 0 && rel[1] == 0 && rel[2] == 0 && sim_hooks_positions == 0 &&
+                        sim_right.held == 0,
+              "0 %d, 46 %d, 43 %d; held left 0x%llx right 0x%llx", rel[0], rel[1], rel[2],
+              (unsigned long long)sim_hooks_positions, (unsigned long long)sim_right.held);
+        k_msleep(1000);
+    }
+    // The safety net stays: once the PC goes quiet, the left lets its held keys go.
+    int st = lab_press(43, 1);
+    int st2 = lab_press(46, 1);
+    k_msleep(12000); // no host traffic
+    check("quiet-releases", st == 0 && st2 == 0 && sim_hooks_positions == 0 && sim_right.held == 0,
+          "after 12 s without the PC: held left 0x%llx right 0x%llx",
+          (unsigned long long)sim_hooks_positions, (unsigned long long)sim_right.held);
+    debug_line("at the end");
+}
+#endif
+
 /* #873: the right reflashed with a different relay attribute table (the slot CRC characteristic
  * of #863 added, then gone again), both directions; the left finds the relay by itself, within
  * REFLASH_RELAY_S, with no left reboot. With `stall`, the left's TX stalls once the new link is
@@ -1393,6 +1499,10 @@ static void lab_thread(void *arg) {
         playlist_store_old();
     } else if (!strcmp(scenario, "restore-update")) {
         restore_update();
+#ifdef SIM_TEST_HOOKS
+    } else if (!strcmp(scenario, "art-hold-cycles")) {
+        art_hold_cycles();
+#endif
     } else if (!strcmp(scenario, "right-reflash")) {
         right_reflash(false);
     } else if (!strcmp(scenario, "right-reflash-stall")) {

@@ -128,5 +128,7 @@ struct sim_right {
     uint32_t shown_crc;
     int saves_ok, stores_ok;
     int updates; // sim_bt_right_update calls
+    uint64_t held; // positions the left's D7 05 holds down on the right (ART_RELAY_PRESS, #851)
+    int presses;   // ART_RELAY_PRESS ops it took
 };
 extern struct sim_right sim_right;

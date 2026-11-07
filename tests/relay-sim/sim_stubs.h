@@ -21,5 +21,8 @@ struct sim_left {
     uint8_t toast_index, toast_total;
     int8_t toast_dir;
     bool toast_kept;
+    // D7 05 POSITION replies (test_hooks.c, #851): how many, and the last one.
+    int position_replies;
+    uint8_t position_status, position_pos;
 };
 extern struct sim_left sim_left;
