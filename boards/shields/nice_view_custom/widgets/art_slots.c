@@ -98,6 +98,14 @@ void art_slots_info(int slot, struct art_relay_slot_info *out) {
     }
 }
 
+uint32_t art_slots_crc(int slot) {
+    if (slot < 0 || slot >= SLOTS) {
+        return 0;
+    }
+    const struct slot_header *h = header(slot);
+    return memcmp(h->magic, SLOT_MAGIC, 4) == 0 ? h->crc : 0;
+}
+
 const uint8_t *art_slots_blob(int slot, uint16_t *len) {
     if (slot < 0 || slot >= SLOTS || !valid(slot)) {
         return NULL;
@@ -200,6 +208,7 @@ int art_slots_erase(int slot, void (*done)(int err)) { return start(slot, NULL, 
 int art_slots_count(void) { return 0; }
 uint8_t art_slots_used(void) { return 0; }
 void art_slots_info(int slot, struct art_relay_slot_info *out) { memset(out, 0, sizeof(*out)); }
+uint32_t art_slots_crc(int slot) { return 0; }
 const uint8_t *art_slots_blob(int slot, uint16_t *len) { return NULL; }
 int art_slots_save(int slot, const uint8_t *blob, uint16_t len, const char name[16],
                    void (*done)(int err)) {

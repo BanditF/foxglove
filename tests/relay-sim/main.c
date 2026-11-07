@@ -10,6 +10,7 @@
 #include <stdlib.h>
 
 #include "art_relay.h"
+#include "host_link.h"
 #if __has_include("health.h") // bisect.ps1 builds widgets from before #705 too
 #include "health.h"
 #define SIM_HEALTH 1
@@ -724,7 +725,11 @@ static bool lab_save(uint8_t slot, const char *name, char *why, size_t n) {
     return ok && sim_right.flash[slot].used;
 }
 
-// D6 07 SLOT as the app reads a place back (art::slot, 3 s): used, length and name.
+// D6 07 SLOT as the app reads a place back (art::slot, 3 s): used, length and name, and (#863)
+// the CRC version byte and the CRC after it.
+static uint8_t slot_crc_version;
+static uint32_t slot_crc;
+static int64_t slot_read_ms; // the last read's time to its reply
 static bool lab_slot(uint8_t slot, bool *used, uint16_t *len, char name[17]) {
     int sends = sim_left.sends;
     if (art_relay_slot(slot) != 0) {
@@ -734,6 +739,7 @@ static bool lab_slot(uint8_t slot, bool *used, uint16_t *len, char name[17]) {
     while (sim_left.sends == sends && k_uptime_get() - start < 3000) {
         k_msleep(10);
     }
+    slot_read_ms = k_uptime_get() - start;
     const uint8_t *r = sim_left.last_send;
     if (sim_left.sends == sends || r[1] != 0x87 || r[2] != 0 || r[3] != slot) {
         return false;
@@ -742,6 +748,8 @@ static bool lab_slot(uint8_t slot, bool *used, uint16_t *len, char name[17]) {
     *len = sys_get_le16(&r[9]);
     memcpy(name, &r[11], 16);
     name[16] = 0;
+    slot_crc_version = r[HOST_LINK_SLOT_CRC_AT];
+    slot_crc = sys_get_le32(&r[HOST_LINK_SLOT_CRC_AT + 1]);
     return true;
 }
 
@@ -816,6 +824,25 @@ static void playlist_store(void) {
     check("place-reads-back", read && used && len == sim_right.flash[on].len &&
                                   !strncmp(name, sim_right.flash[on].name, 16),
           "place %u: %s, %u bytes, \"%s\"", on, used ? "used" : "free", len, read ? name : "?");
+    // Its CRC (#863): version 1, the CRC of the set as BEGIN announced it, so the app matches the
+    // place to a piece by content.
+    check("place-crc",
+          read && slot_crc_version == HOST_LINK_SLOT_CRC_V1 && slot_crc == sim_right.flash[on].crc &&
+              slot_crc != 0,
+          "version %u, crc %08x, the place's %08x, in %lld ms", slot_crc_version, slot_crc,
+          sim_right.flash[on].crc, (long long)slot_read_ms);
+    // The CRC read is one more request under the link's latency: still well inside art::slot's
+    // 3 s.
+    check("slot-read-budget", slot_read_ms < 2000, "%lld ms", (long long)slot_read_ms);
+    uint8_t empty = 0;
+    while (empty < ART_RELAY_FLASH_SLOTS && sim_right.flash[empty].used) {
+        empty++;
+    }
+    read = empty < ART_RELAY_FLASH_SLOTS && lab_slot(empty, &used, &len, name);
+    check("empty-place-crc", read && !used && slot_crc_version == HOST_LINK_SLOT_CRC_V1 &&
+                                 slot_crc == 0,
+          "place %u: %s, version %u, crc %08x", empty, used ? "used" : "free", slot_crc_version,
+          slot_crc);
     check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
           sim_bt_stats.link_drops - drops);
     check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
@@ -852,6 +879,19 @@ static void playlist_store_old(void) {
           (long long)store_took_ms, sim_bt_stats.requests_sent - requests);
     check("fallback-push", lab_push(3599, why, sizeof(why)), "%s", why);
     check("fallback-save", lab_save(6, "radar", why, sizeof(why)), "%s", why);
+    // Its slot reads back without a CRC (#863): version 0, and the left never asked for one, so
+    // the app matches the place by name and length.
+    int crc_reads = sim_bt_stats.crc_reads;
+    bool used;
+    uint16_t len;
+    char name[17];
+    bool read = lab_slot(6, &used, &len, name);
+    check("old-right-no-crc",
+          read && used && len == 3599 && slot_crc_version == 0 && slot_crc == 0 &&
+              sim_bt_stats.crc_reads == crc_reads,
+          "read %d, %s, %u bytes, version %u, crc %08x, %d CRC reads, in %lld ms", read,
+          used ? "used" : "free", len, slot_crc_version, slot_crc,
+          sim_bt_stats.crc_reads - crc_reads, (long long)slot_read_ms);
     check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
           sim_bt_stats.link_drops - drops);
     debug_line("at the end");

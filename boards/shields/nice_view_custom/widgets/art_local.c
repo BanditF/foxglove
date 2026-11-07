@@ -15,7 +15,7 @@
  *   TIMEOUT (the PC stopped mid-set), and BLE (6) for an op the store refused (busy saving, no such
  *   slot, nothing to save), where the relay's write to the right would have failed;
  * - the status version is ART_LOCAL_STATUS_VERSION: slots, STORE.
- * D6 87 SLOT answers at once.
+ * D6 87 SLOT answers at once, with the slot's CRC (#863).
  *
  * Start/stop of the one timer: a receive that sees no BEGIN or DATA for
  * ART_RELAY_RECEIVE_TIMEOUT drops its partial set (as the relay's left does). Starts on BEGIN and
@@ -151,13 +151,17 @@ int art_local_animate(uint8_t flags) {
     return 0;
 }
 
+BUILD_ASSERT(4 + sizeof(struct art_relay_slot_info) == HOST_LINK_SLOT_CRC_AT, "host_link.h");
+
 int art_local_slot(uint8_t slot) {
     struct art_relay_slot_info info;
-    uint8_t r[4 + sizeof(info)] = {HOST_LINK_ART, 0x87, 4, slot}; // 4: no such slot here
+    uint8_t r[HOST_LINK_SLOT_CRC_AT + 5] = {HOST_LINK_ART, 0x87, 4, slot}; // 4: no such slot
     if (slot < art_slots_count()) {
         art_slots_info(slot, &info);
         r[2] = 0;
         memcpy(&r[4], &info, sizeof(info));
+        r[HOST_LINK_SLOT_CRC_AT] = HOST_LINK_SLOT_CRC_V1; // the store is here: its CRC at once
+        sys_put_le32(art_slots_crc(slot), &r[HOST_LINK_SLOT_CRC_AT + 1]);
     }
     host_link_send(r, sizeof(r));
     return 0;

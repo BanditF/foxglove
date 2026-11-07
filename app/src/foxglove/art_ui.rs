@@ -2322,6 +2322,7 @@ pub mod tests {
                         .map_err(str::to_owned),
                     bytes: bytes.len(),
                     hash: art_library::blob_hash(&bytes),
+                    crcs: art_library::blob_crcs(&bytes, Default::default()),
                     fit: super::super::art_encode::Fit::AsMade,
                 }
             })
@@ -2332,6 +2333,7 @@ pub mod tests {
             writes: 1,
             len: len as u16,
             name: name.into(),
+            crc: None,
         };
         let slots = vec![
             slot(0, "fury", bundled("fury.bin").len()),

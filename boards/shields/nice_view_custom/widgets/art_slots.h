@@ -16,6 +16,9 @@ int art_slots_count(void);
 // Bit n set: slot n holds a valid set.
 uint8_t art_slots_used(void);
 void art_slots_info(int slot, struct art_relay_slot_info *out);
+// The CRC slot n's header keeps for its blob (#863: the PC matches a kept set by content), or 0
+// for an empty slot. The header's word, not checked against the blob here (art_slots_blob does).
+uint32_t art_slots_crc(int slot);
 // The slot's blob in (memory-mapped) flash, or NULL if the slot is empty or doesn't check out.
 const uint8_t *art_slots_blob(int slot, uint16_t *len);
 

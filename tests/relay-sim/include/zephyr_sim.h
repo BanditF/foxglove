@@ -267,6 +267,7 @@ int bt_conn_disconnect(struct bt_conn *conn, uint8_t reason);
 #define BT_HCI_ERR_REMOTE_USER_TERM_CONN 0x13
 
 /* gatt.h */
+#define BT_ATT_ERR_INVALID_HANDLE 0x01
 #define BT_ATT_ERR_INVALID_OFFSET 0x07
 #define BT_ATT_ERR_INVALID_ATTRIBUTE_LEN 0x0d
 #define BT_ATT_ERR_UNLIKELY 0x0e

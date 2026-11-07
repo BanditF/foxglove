@@ -5,8 +5,10 @@
 //! Pieces on this PC come from the library folder, the sets bundled with the app (the lighting
 //! presets' and the plugins' art) and the source folders of frames (`art_sources`). The same
 //! bytes in two places are one piece. A kept place can't be read back from the keyboard (its
-//! report has a name and a length, not its CRC or a frame), so a place matches a PC piece by
-//! both, and two places that match the same piece hold the same bytes.
+//! report has a name, a length and, from firmware with #863, the CRC of its set, but no frame).
+//! A place with a CRC matches the PC piece with those bytes and another place by content; one
+//! without (older firmware) matches a piece by name and length, and two places that match the
+//! same piece hold the same bytes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -76,6 +78,9 @@ pub struct PcPiece {
     /// A hash of the bytes: the piece's identity and its texture key.
     pub key: u64,
     pub bytes: usize,
+    /// The CRCs a kept place holding it reports (#863; `art_library::blob_crcs`), of every copy
+    /// merged into it.
+    pub crcs: Vec<u32>,
     /// One of the wallpaper looks (`wallpapers.json` names it).
     pub wallpaper: bool,
     pub plugin: bool,
@@ -119,6 +124,8 @@ pub struct Found {
     pub image: Arc<egui::ColorImage>,
     pub bytes: usize,
     pub key: u64,
+    /// See [`PcPiece::crcs`].
+    pub crcs: Vec<u32>,
     pub plugin: bool,
     /// Not made for this board's art screen (#340): the rule that fitted it.
     pub fitted: Option<String>,
@@ -159,6 +166,7 @@ pub fn found_for(
                 image: image.clone(),
                 bytes: e.bytes,
                 key: e.hash,
+                crcs: e.crcs.clone(),
                 plugin: false,
                 fitted: note(e.fit),
             }),
@@ -172,12 +180,13 @@ pub fn found_for(
         let (file, _, plugin) = BUNDLED[b.index];
         let name = file.trim_end_matches(".bin").to_string();
         match &b.made {
-            Ok((image, key, bytes, fit)) => out.push(Found {
+            Ok((image, key, bytes, crc, fit)) => out.push(Found {
                 origin: Origin::Bundled(b.index),
                 name,
                 image: image.clone(),
                 bytes: *bytes,
                 key: *key,
+                crcs: vec![*crc],
                 plugin,
                 fitted: note(*fit),
             }),
@@ -206,6 +215,7 @@ pub fn found_for(
             image: image.clone(),
             bytes: blob.len(),
             key: art_library::blob_hash(blob),
+            crcs: vec![foxglove_link::protocol::blob_crc(blob)],
             plugin: false,
             fitted: src.fit.and_then(note),
         });
@@ -217,10 +227,20 @@ pub fn found_for(
     }
 }
 
-/// A bundled set as made for the art screen: its picture, hash, size and fit, or why it can't.
+/// A bundled set as made for the art screen: its picture, hash, size, CRC and fit, or why it
+/// can't. (Keep copies it into the library first, so the paced CRC comes with that copy.)
 struct Bundled {
     index: usize,
-    made: Result<(Arc<egui::ColorImage>, u64, usize, super::art_encode::Fit), String>,
+    made: Result<
+        (
+            Arc<egui::ColorImage>,
+            u64,
+            usize,
+            u32,
+            super::art_encode::Fit,
+        ),
+        String,
+    >,
 }
 
 type Target = Result<super::art_encode::ArtTarget, String>;
@@ -246,6 +266,7 @@ fn bundled(target: &Target) -> Arc<Vec<Bundled>> {
                         Arc::new(super::art_preview::first_frame(&bytes).ok()?),
                         art_library::blob_hash(&bytes),
                         bytes.len(),
+                        foxglove_link::protocol::blob_crc(&bytes),
                         fit,
                     )),
                     Err(why) => Err(why
@@ -303,6 +324,11 @@ pub fn pc_pieces(found: Vec<Found>, is_wallpaper: &dyn Fn(&str) -> bool) -> Vec<
                 if !p.names.contains(&f.name) {
                     p.names.push(f.name);
                 }
+                for crc in f.crcs {
+                    if !p.crcs.contains(&crc) {
+                        p.crcs.push(crc);
+                    }
+                }
             }
             None => out.push(PcPiece {
                 wallpaper: is_wallpaper(&format!("{}.bin", f.name)),
@@ -312,6 +338,7 @@ pub fn pc_pieces(found: Vec<Found>, is_wallpaper: &dyn Fn(&str) -> bool) -> Vec<
                 image: f.image,
                 key: f.key,
                 bytes: f.bytes,
+                crcs: f.crcs,
                 plugin: f.plugin,
                 fitted: f.fitted,
             }),
@@ -326,8 +353,22 @@ pub fn pc_pieces(found: Vec<Found>, is_wallpaper: &dyn Fn(&str) -> bool) -> Vec<
 pub struct Kept {
     pub slot: u8,
     pub name: String,
-    /// The PC piece with this name and length, when this PC has it.
+    /// The PC piece it holds, when this PC has it: the one with its CRC, else (no CRC, or a
+    /// piece paced or changed since) the one with its name and length.
     pub piece: Option<usize>,
+    /// The CRC of its set, from firmware that reports it (#863).
+    pub crc: Option<u32>,
+}
+
+impl Kept {
+    /// Whether two places hold the same set: by CRC when both report one (#863), else by the
+    /// PC piece both match.
+    fn same_set(&self, other: &Kept) -> bool {
+        match (self.crc, other.crc) {
+            (Some(a), Some(b)) => a == b,
+            _ => self.piece.is_some() && self.piece == other.piece,
+        }
+    }
 }
 
 /// How many kept places the keyboard has: its art report's count (at most 8), and never more
@@ -346,13 +387,18 @@ pub fn kept(s: &Snapshot, pcs: &[PcPiece]) -> Vec<Option<Kept>> {
     (0..places(s))
         .map(|n| {
             let info = s.slots.iter().find(|i| i.slot == n && i.used)?;
-            let piece = pcs
-                .iter()
-                .position(|p| p.answers_to(&info.name) && p.bytes == usize::from(info.len));
+            let by_crc = info
+                .crc
+                .and_then(|crc| pcs.iter().position(|p| p.crcs.contains(&crc)));
+            let piece = by_crc.or_else(|| {
+                pcs.iter()
+                    .position(|p| p.answers_to(&info.name) && p.bytes == usize::from(info.len))
+            });
             Some(Kept {
                 slot: n,
                 name: info.name.clone(),
                 piece,
+                crc: info.crc,
             })
         })
         .collect()
@@ -365,7 +411,8 @@ fn yours(s: &Snapshot, k: &Kept) -> bool {
 }
 
 /// The kept place that already holds PC piece `index` (the same bytes: a place matches a piece
-/// by name and length, and the same bytes on this PC are one piece), so Keep refuses a second.
+/// by CRC, else by name and length, and the same bytes on this PC are one piece), so Keep
+/// refuses a second.
 pub fn kept_as<'a>(s: &Snapshot, kept: &'a [Option<Kept>], index: usize) -> Option<&'a Kept> {
     kept.iter()
         .flatten()
@@ -403,22 +450,23 @@ fn in_use(s: &Snapshot, slot: u8) -> bool {
             .is_some_and(|st| showing(&st) == Showing::Kept(slot))
 }
 
-/// The user's kept places that hold a piece another of them already holds. Of each set the one
+/// The user's kept places that hold a set another of them already holds: the same CRC when the
+/// firmware reports it (#863; no PC piece needed), else the same PC piece. Of each set the one
 /// in use stays (else the first); the rest are duplicates, each with the place that stays.
 pub fn duplicates(s: &Snapshot, kept: &[Option<Kept>]) -> Vec<Duplicate> {
     let mine: Vec<&Kept> = kept
         .iter()
         .flatten()
-        .filter(|k| k.piece.is_some() && yours(s, k))
+        .filter(|k| (k.piece.is_some() || k.crc.is_some()) && yours(s, k))
         .collect();
     let mut out = Vec::new();
-    let mut seen = Vec::new();
+    let mut seen: Vec<u8> = Vec::new();
     for k in &mine {
-        if seen.contains(&k.piece) {
+        if seen.contains(&k.slot) {
             continue;
         }
-        seen.push(k.piece);
-        let same: Vec<&&Kept> = mine.iter().filter(|o| o.piece == k.piece).collect();
+        let same: Vec<&&Kept> = mine.iter().filter(|o| o.same_set(k)).collect();
+        seen.extend(same.iter().map(|o| o.slot));
         let stays = same.iter().find(|o| in_use(s, o.slot)).unwrap_or(&same[0]);
         out.extend(
             same.iter()
@@ -674,6 +722,7 @@ pub mod tests {
             image: image(),
             bytes,
             key,
+            crcs: Vec::new(),
             fitted: None,
         }
     }
@@ -702,6 +751,7 @@ pub mod tests {
             writes: 1,
             len,
             name: name.into(),
+            crc: None,
         }
     }
 
@@ -903,6 +953,174 @@ pub mod tests {
             ..Default::default()
         };
         assert!(duplicates(&one, &kept(&one, &pcs)).is_empty());
+    }
+
+    /// A found piece with the CRCs a place holding it reports (#863).
+    fn found_crc(origin: Origin, name: &str, key: u64, bytes: usize, crc: u32) -> Found {
+        Found {
+            crcs: vec![crc],
+            ..found(origin, name, key, bytes)
+        }
+    }
+
+    fn slot_crc(n: u8, name: &str, len: u16, crc: u32) -> SlotInfo {
+        SlotInfo {
+            crc: Some(crc),
+            ..slot(n, name, len)
+        }
+    }
+
+    /// #863: a place that reports its CRC finds the piece with those bytes whatever it is
+    /// named, so Keep refuses that piece and the screen shows its picture. A CRC no piece has
+    /// (a piece paced or changed since) falls back to the name and length, as a place without
+    /// one (older firmware) does.
+    #[test]
+    fn a_kept_place_with_a_crc_finds_its_piece_by_content() {
+        let pcs = pc_pieces(
+            vec![
+                found_crc(lib("orbit"), "orbit", 1, 3000, 0x1111),
+                found_crc(lib("radar"), "radar", 2, 3000, 0x2222),
+            ],
+            &|_| false,
+        );
+        let s = Snapshot {
+            status: Some(status(0b111)),
+            slots: vec![
+                // Named after a copy this PC no longer has, same length as both pieces.
+                slot_crc(0, "renamed", 3000, 0x2222),
+                // Named after orbit but holding radar's bytes: the CRC wins over the name.
+                slot_crc(1, "orbit", 3000, 0x2222),
+                // A CRC no piece has: radar by name and length.
+                slot_crc(2, "radar", 3000, 0x9999),
+            ],
+            ..Default::default()
+        };
+        let k = kept(&s, &pcs);
+        let pieces: Vec<_> = k
+            .iter()
+            .take(3)
+            .map(|p| p.as_ref().unwrap().piece)
+            .collect();
+        assert_eq!(pieces, [Some(1), Some(1), Some(1)]);
+        assert_eq!(k[0].as_ref().unwrap().crc, Some(0x2222));
+        assert_eq!(kept_as(&s, &k, 1).map(|k| k.slot), Some(0));
+        assert_eq!(kept_as(&s, &k, 0), None, "orbit's bytes are kept nowhere");
+        assert_eq!(badge(&s, &pcs[0], &k, 0), Badge::ThisPc);
+        // The screen plays place 0 (set_count 17 + 0): radar's picture, found by CRC alone.
+        let showing = Snapshot {
+            status: Some(ArtStatus {
+                right_set: 17,
+                ..status(0b111)
+            }),
+            ..s.clone()
+        };
+        assert_eq!(showing_picture(&showing, &pcs).map(|p| p.0), Some(2));
+        // The same places from firmware without CRCs: by name and length only.
+        let old = Snapshot {
+            slots: s
+                .slots
+                .iter()
+                .map(|i| SlotInfo {
+                    crc: None,
+                    ..i.clone()
+                })
+                .collect(),
+            ..s.clone()
+        };
+        let pieces: Vec<_> = kept(&old, &pcs)
+            .iter()
+            .take(3)
+            .map(|p| p.as_ref().unwrap().piece)
+            .collect();
+        assert_eq!(pieces, [None, Some(0), Some(1)]);
+    }
+
+    /// #863: places with CRCs are duplicates when their CRCs match, even of a piece this PC
+    /// doesn't have; the same name and length with different CRCs is no duplicate.
+    #[test]
+    fn places_with_the_same_crc_are_duplicates() {
+        let pcs = pc_pieces(
+            vec![found_crc(lib("radar"), "radar", 2, 3000, 0x2222)],
+            &|_| false,
+        );
+        let s = Snapshot {
+            status: Some(status(0b1111)),
+            slots: vec![
+                slot_crc(0, "lost-piece", 4000, 0x7777),
+                slot_crc(1, "radar", 3000, 0x2222),
+                slot_crc(2, "lost-copy", 4000, 0x7777),
+                // radar by name and length (a CRC no piece has), but other bytes than place 1.
+                slot_crc(3, "radar", 3000, 0x3333),
+            ],
+            ..Default::default()
+        };
+        let k = kept(&s, &pcs);
+        assert_eq!(k[0].as_ref().unwrap().piece, None, "no piece on this PC");
+        assert_eq!(k[3].as_ref().unwrap().piece, Some(0), "by name and length");
+        let dup = Duplicate {
+            slot: 2,
+            name: "lost-copy".into(),
+            of_slot: 0,
+            of_name: "lost-piece".into(),
+        };
+        assert_eq!(duplicates(&s, &k), [dup]);
+        // In use, the second copy stays and the first goes.
+        let pinned = Snapshot {
+            pinned: Some(Choice::Slot(2)),
+            ..s.clone()
+        };
+        let d = duplicates(&pinned, &kept(&pinned, &pcs));
+        assert_eq!(
+            d.iter().map(|d| (d.slot, d.of_slot)).collect::<Vec<_>>(),
+            [(0, 2)]
+        );
+        // Lent to the playlist: never a duplicate.
+        let mut lent = s.clone();
+        lent.cycle.places = vec![2];
+        assert!(duplicates(&lent, &kept(&lent, &pcs)).is_empty());
+    }
+
+    /// A piece's CRCs are every merged copy's (#863), so a place holding any of them finds it.
+    #[test]
+    fn a_merged_piece_keeps_every_copys_crc() {
+        let pcs = pc_pieces(
+            vec![
+                found_crc(lib("fury"), "fury", 1, 900, 0xAAAA),
+                found_crc(Origin::Bundled(0), "fury", 1, 900, 0xAAAA),
+                found_crc(lib("Fury"), "Fury", 5, 900, 0xBBBB),
+            ],
+            &|_| false,
+        );
+        assert_eq!(pcs.len(), 1);
+        assert_eq!(pcs[0].crcs, [0xAAAA, 0xBBBB]);
+    }
+
+    /// The CRCs a place reports for a library piece (#863): the piece's own, and as paced for
+    /// a still e-paper screen, which sends its first frame only. A fast screen with no limit
+    /// sends the bytes as they are: one CRC, the one BEGIN announces.
+    #[test]
+    fn a_piece_has_the_crc_it_is_sent_with() {
+        use super::super::art_encode::Pace;
+        use super::super::boards::Refresh;
+        use foxglove_link::protocol::blob_crc;
+        let bytes = super::super::art_encode::normalise_blob(BUNDLED[0].1, Default::default());
+        assert_eq!(
+            art_library::blob_crcs(&bytes, Pace::default()),
+            [blob_crc(&bytes)]
+        );
+        let still = Pace {
+            refresh: Refresh::EpaperPartial,
+            ..Pace::default()
+        };
+        let sent = still.blob(bytes.clone());
+        assert_ne!(
+            sent, bytes,
+            "fury is animated: e-paper gets its first frame only"
+        );
+        assert_eq!(
+            art_library::blob_crcs(&bytes, still),
+            [blob_crc(&bytes), blob_crc(&sent)]
+        );
     }
 
     /// The meter and the free place come from the keyboard's report, never a guess.

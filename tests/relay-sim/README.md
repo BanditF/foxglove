@@ -103,6 +103,16 @@ screen flickering through them. The fake right models SAVE, STORE and the places
 takes `flash_write_us`, 650 ms by default, on the right's own queue; status SAVING meanwhile, a
 BEGIN or SELECT then gets 0x82), and `sim_bt_right_update` restarts it with new firmware.
 
+## Slot CRCs (#863)
+
+D6 87 carries the CRC each place keeps for its set (crc_version 1 at byte 27, the CRC after it),
+so the app matches kept places to pieces and to each other by content. The right's slot CRC
+characteristic sits right after the screen one (value handle screen + 2), and the left reads it
+only from a right with status version 11, so discovery still ends at the screen. The fake right
+has it at version 11 and answers a read of that handle with an invalid-handle error below it.
+`playlist-store` reads a staged place's CRC and an empty place's 0; `playlist-store-old` (a right
+before STORE) reads its place back with version 0 and no CRC read on the link.
+
 ## Known gaps (run in CI, must still fail)
 
 None at the moment. `run.sh` and `build.ps1` still take a list (`KNOWN_GAPS`,

@@ -53,7 +53,7 @@ artlocal: pc sends D6 05
 artlocal: reply 85 done error 0, 0/0, link 2; v10 store 7 received 0 of 32768, set -1 of 2, slots 2 used 0x01
 artlocal: -- slot 0, then a slot the board doesn't have: D6 87 at once
 artlocal: pc sends D6 07 00
-hostlink: rx D6 87 00 00 01 01 00 00 00 14 00 70 75 73 68 65 64
+hostlink: rx D6 87 00 00 01 01 00 00 00 14 00 70 75 73 68 65 64 00 00 00 00 00 00 00 00 00 00 01 C8 EF 8A 78
 artlocal: pc sends D6 07 05
 hostlink: rx D6 87 04 05
 artlocal: -- play slot 0 (select set_count + 0)

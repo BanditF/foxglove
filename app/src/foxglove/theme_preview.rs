@@ -1485,6 +1485,7 @@ fn screens_playlist_renders() {
         writes: 14,
         len: 900,
         name: "moon-garden".into(),
+        crc: None,
     });
     if let Some(st) = s.status.as_mut() {
         st.flash_used |= 1 << 6;

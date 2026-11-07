@@ -109,7 +109,12 @@
  *   06 SAVE    slot u8, name[16]    save the pushed set now on the right into flash slot n
  *   07 SLOT    slot u8              reply D6 87: status, slot, used u8, writes u32, len u16,
  *                                   name[16] (status 0 ok, 1 busy, 2 no link, 3 BLE error,
- *                                   4 right without slots); comes once the right has answered
+ *                                   4 right without slots); comes once the right has answered.
+ *                                   Then (#863) crc_version u8, crc32 u32: version 1 means the
+ *                                   CRC the slot keeps for its set follows (that of the blob
+ *                                   BEGIN announced; 0 when empty); 0, as from firmware before
+ *                                   it or a right before status version 11, means no CRC: match
+ *                                   by name and length
  *   08 ERASE   slot u8              empty flash slot n
  *   09 STORE   slot u8, name[16]    in place of COMMIT (#522): check the CRC, push the blob and
  *                                   have the right keep it in flash slot n without showing it;
@@ -476,6 +481,9 @@
 
 #define HOST_LINK_PANEL 0xD5
 #define HOST_LINK_ART 0xD6
+// D6 87's CRC (#863): the version byte at byte 27, the slot's CRC (u32 LE) after it.
+#define HOST_LINK_SLOT_CRC_AT 27
+#define HOST_LINK_SLOT_CRC_V1 1
 #define HOST_LINK_SETTINGS 0xD7
 // HELLO's version byte. 2 (HELLO v2): D5 08 CAPS answers with the capability words past HELLO's.
 #define HOST_LINK_VERSION 2

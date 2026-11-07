@@ -232,6 +232,12 @@ pub mod art {
     pub const DATA_MAX: usize = 27;
     /// Bytes of a slot name.
     pub const NAME_LEN: usize = 16;
+    /// D6 87's CRC version byte (#863, host_link.h `HOST_LINK_SLOT_CRC_AT`); the CRC follows.
+    pub const SLOT_CRC_AT: usize = 27;
+    /// That byte when the slot's CRC follows (`HOST_LINK_SLOT_CRC_V1`).
+    pub const SLOT_CRC_V1: u8 = 1;
+    /// The right's status version with the slot CRC (#863, `ART_RELAY_SLOT_CRC_STATUS_VERSION`).
+    pub const SLOT_CRC_RIGHT_VERSION: u8 = 11;
 }
 
 pub mod settings {
@@ -530,23 +536,37 @@ pub struct SlotInfo {
     pub writes: u32,
     pub len: u16,
     pub name: String,
+    /// The CRC the slot keeps for its set (#863): [`blob_crc`] of the blob as it was sent.
+    /// `None` from firmware before it (a reply's [`art::SLOT_CRC_AT`] byte 0): match by name and
+    /// length then.
+    pub crc: Option<u32>,
+}
+
+/// The CRC of an art blob as BEGIN announces it and a flash slot keeps it (CRC-32/IEEE).
+pub fn blob_crc(blob: &[u8]) -> u32 {
+    crc32fast::hash(blob)
 }
 
 impl SlotInfo {
-    /// D6 87: status, slot, used, writes u32, len u16, name[16]. `Err` carries the status
-    /// (1 busy, 2 no link, 3 BLE error, 4 right without slots).
+    /// D6 87: status, slot, used, writes u32, len u16, name[16], then (#863) crc_version u8,
+    /// crc32 u32 (version 1: the CRC follows; 0 or older firmware's zero padding: none). `Err`
+    /// carries the status (1 busy, 2 no link, 3 BLE error, 4 right without slots).
     pub fn parse(r: &[u8; REPORT]) -> std::result::Result<SlotInfo, u8> {
         if r[2] != 0 {
             return Err(r[2]);
         }
         let name = &r[11..11 + art::NAME_LEN];
         let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        let at = art::SLOT_CRC_AT;
+        let crc = (r[at] == art::SLOT_CRC_V1)
+            .then(|| u32::from_le_bytes(r[at + 1..at + 5].try_into().unwrap()));
         Ok(SlotInfo {
             slot: r[3],
             used: r[4] != 0,
             writes: u32::from_le_bytes(r[5..9].try_into().unwrap()),
             len: u16::from_le_bytes([r[9], r[10]]),
             name: String::from_utf8_lossy(&name[..end]).into_owned(),
+            crc,
         })
     }
 }
@@ -2962,8 +2982,27 @@ mod slot_tests {
                 used: true,
                 writes: 5,
                 len: 10000,
-                name: "fox".into()
+                name: "fox".into(),
+                crc: None,
             })
+        );
+        // #863: version 1 at byte 27, the slot's CRC (LE) after it. Older firmware's zero
+        // padding, or a version this app doesn't know, is no CRC.
+        r[27..32].copy_from_slice(&[1, 0xC8, 0xEF, 0x8A, 0x78]);
+        assert_eq!(SlotInfo::parse(&r).unwrap().crc, Some(0x788A_EFC8));
+        r[27] = 0;
+        assert_eq!(SlotInfo::parse(&r).unwrap().crc, None);
+        r[27] = 2;
+        assert_eq!(SlotInfo::parse(&r).unwrap().crc, None);
+        // The CRC the firmware keeps is the CRC-32 BEGIN announced: the art-local sim's slot 0
+        // set (tests/zmk-sim/module/art_local_sim.c blob(144, 112)) reads back as C8 EF 8A 78.
+        let set = [
+            b'N', b'V', b'A', b'1', 144, 112, 4, 1, 1, 0, 2, 0, 0, 0, 16, 0, 1, 2, 3, 4,
+        ];
+        assert_eq!(blob_crc(&set), 0x788A_EFC8);
+        assert_eq!(
+            art_begin(20, blob_crc(&set))[4..8],
+            [0xC8, 0xEF, 0x8A, 0x78]
         );
         r[2] = 4;
         assert_eq!(SlotInfo::parse(&r), Err(4));

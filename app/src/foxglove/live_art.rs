@@ -334,6 +334,7 @@ mod tests {
             writes: 1,
             len: 900,
             name: "Fox run".into(),
+            crc: None,
         }];
         s.status = Some(ArtStatus {
             right_set: 1,

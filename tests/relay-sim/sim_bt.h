@@ -29,6 +29,7 @@ struct sim_bt_stats {
     int rsp_dropped;      // responses the right couldn't send ("already processing a REQ/RSP")
     int screen_pushes;    // screen images the right pushed as notifications
     int screen_chunks;    // their chunks
+    int crc_reads;        // reads of the slot CRC characteristic the right answered (#863)
 };
 extern struct sim_bt_stats sim_bt_stats;
 

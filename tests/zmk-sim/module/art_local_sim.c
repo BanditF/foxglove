@@ -152,6 +152,11 @@ uint8_t art_slots_used(void) {
     return used;
 }
 void art_slots_info(int slot, struct art_relay_slot_info *out) { *out = info[slot]; }
+// The header's CRC as art_slots.c keeps it: the set's, as BEGIN announced it (#863).
+uint32_t art_slots_crc(int slot) {
+    return slot >= 0 && slot < SIM_SLOTS && info[slot].used ? crc32_ieee(flash[slot], info[slot].len)
+                                                            : 0;
+}
 const uint8_t *art_slots_blob(int slot, uint16_t *len) {
     if (slot < 0 || slot >= SIM_SLOTS || !info[slot].used) {
         return NULL;
