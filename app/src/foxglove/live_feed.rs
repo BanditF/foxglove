@@ -849,7 +849,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
     let mut fullscreen = fullscreen_now();
     hub.quiet = wire::quiet(super::pause::paused(), super::away::away(), fullscreen);
     let mut art = ArtWatch::default();
-    hub.art = art.read(&hub.state).unwrap_or_default();
+    hub.art = art.read().unwrap_or_default();
     hub.panel = PANEL.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let mut panel = PanelPace::default();
     let mut batch_started: Option<Instant> = None;
@@ -920,7 +920,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
             }
             Some(Msg::State) => {
                 dead = hub.set_state(read_state(facts), &mut Streams(&mut clients));
-                if let Some(piece) = art.read(&hub.state) {
+                if let Some(piece) = art.read() {
                     dead.extend(hub.set_art(piece, &mut Streams(&mut clients)));
                 }
             }
@@ -938,7 +938,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
                 }
                 dead = hub.set_board(board_for(fed.as_ref()), &mut Streams(&mut clients));
                 dead.extend(hub.set_state(read_state(facts), &mut Streams(&mut clients)));
-                if let Some(piece) = art.read(&hub.state) {
+                if let Some(piece) = art.read() {
                     dead.extend(hub.set_art(piece, &mut Streams(&mut clients)));
                 }
             }
@@ -1150,28 +1150,44 @@ impl PanelPace {
 /// battery or layer change re-reads the state, not the art file).
 #[derive(Default)]
 struct ArtWatch {
+    seen: Option<ArtKey>,
+}
+
+/// What the frames were read for: the source, the name the state gives it (the wallpaper
+/// draws frames only for the piece `state.art` names, so the two come from one snapshot), and
+/// the library's scan (a kept place's piece may arrive with a rescan).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArtKey {
     source: Option<super::live_art::Source>,
+    name: Option<String>,
+    library: u64,
 }
 
 impl ArtWatch {
     /// The piece's `art` body when what plays changed since the last call, else `None`.
-    fn read(&mut self, state: &wire::State) -> Option<Option<wire::Art>> {
-        let source =
-            super::art_service::handle().and_then(|h| super::live_art::source(&h.snapshot()));
-        self.changed(source, state)
+    fn read(&mut self) -> Option<Option<wire::Art>> {
+        let snap = super::art_service::handle().map(|h| h.snapshot());
+        let source = snap.as_ref().and_then(super::live_art::source);
+        let name = snap.as_ref().and_then(showing_name);
+        // Only a kept place reads the library; the others don't wait on its scans.
+        let library = match source {
+            Some(super::live_art::Source::Slot { .. }) => super::art_library::generation(),
+            _ => 0,
+        };
+        self.changed(ArtKey {
+            source,
+            name,
+            library,
+        })
     }
 
-    fn changed(
-        &mut self,
-        source: Option<super::live_art::Source>,
-        state: &wire::State,
-    ) -> Option<Option<wire::Art>> {
-        if source == self.source {
+    fn changed(&mut self, key: ArtKey) -> Option<Option<wire::Art>> {
+        if self.seen.as_ref() == Some(&key) {
             return None;
         }
-        self.source.clone_from(&source);
-        let name = state.art.clone().unwrap_or_default();
-        Some(source.map(|s| super::live_art::art(&s, name)))
+        self.seen = Some(key.clone());
+        let name = key.name.unwrap_or_default();
+        Some(key.source.map(|s| super::live_art::art(&s, name)))
     }
 }
 
@@ -1999,7 +2015,9 @@ mod tests {
     fn art_frames_go_out_once_per_change() {
         let piece = |n: &str| wire::Art {
             name: n.into(),
+            from: wire::FROM_FILE,
             nva: Some("TlZBMQ==".into()),
+            missing: None,
         };
         let mut hub = Hub::default();
         let mut out = Sent::default();
@@ -2097,21 +2115,55 @@ mod tests {
         assert!(pace.take(ms(900)), "after a quiet window: at once");
     }
 
-    /// The art file is read only when the source changes, not on every state change.
+    /// The art file is read only when the source changes, not on every state change; a new name
+    /// for the same source (the frames go only with the name `state.art` gives) or a library
+    /// rescan reads it again.
     #[test]
     fn art_is_read_only_when_the_piece_changes() {
         use super::super::live_art::Source;
-        let mut w = ArtWatch::default();
-        let state = wire::State {
-            art: Some("Bandit emblem".into()),
-            ..wire::State::default()
+        let key = |source: Option<Source>, name: &str, library: u64| ArtKey {
+            source,
+            name: (!name.is_empty()).then(|| name.to_string()),
+            library,
         };
-        assert_eq!(w.changed(None, &state), None, "nothing, still nothing");
-        let first = w.changed(Some(Source::BuiltIn(0, 1)), &state);
+        let mut w = ArtWatch::default();
+        assert_eq!(
+            w.changed(key(None, "", 0)),
+            Some(None),
+            "no keyboard: art null"
+        );
+        assert_eq!(w.changed(key(None, "", 0)), None, "nothing, still nothing");
+        let emblem = Some(Source::BuiltIn(0, 1));
+        let first = w.changed(key(emblem.clone(), "Bandit emblem", 0));
         let art = first.expect("changed").expect("a piece");
         assert_eq!(art.name, "Bandit emblem");
-        assert_eq!(w.changed(Some(Source::BuiltIn(0, 1)), &state), None);
-        assert_eq!(w.changed(None, &state), Some(None), "the keyboard went");
+        assert_eq!((art.from, art.missing), (wire::FROM_BUILT_IN, None));
+        assert!(art.nva.is_some(), "the firmware's own frames");
+        assert_eq!(w.changed(key(emblem.clone(), "Bandit emblem", 0)), None);
+        let renamed = w.changed(key(emblem, "piece 1", 0)).expect("named again");
+        assert_eq!(
+            renamed.unwrap().name,
+            "piece 1",
+            "the frames follow the state's name"
+        );
+        let kept = Some(Source::Slot {
+            name: "Radar".into(),
+            len: 900,
+            crc: Some(0x1234_5678),
+        });
+        let a = w.changed(key(kept.clone(), "Radar", 3)).unwrap().unwrap();
+        assert_eq!(a.from, wire::FROM_KEPT);
+        assert_eq!(
+            (a.nva, a.missing),
+            (None, Some(wire::MISSING_NOT_ON_PC)),
+            "no piece on this PC has its CRC: a labelled placeholder"
+        );
+        assert_eq!(w.changed(key(kept.clone(), "Radar", 3)), None);
+        assert!(
+            w.changed(key(kept, "Radar", 4)).is_some(),
+            "a rescan reads it again"
+        );
+        assert_eq!(w.changed(key(None, "", 0)), Some(None), "the keyboard went");
     }
 
     /// #40: the keyboard's lights reach the wallpaper once the keyboard reported them.

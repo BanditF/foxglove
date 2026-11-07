@@ -59,7 +59,7 @@ offer the sub-protocols `foxglove-live.v1, <token>`.
 |---|---|---|
 | `hello` | → wallpaper | `v`, `topics`, `board` (`name`, `keys`: `[x, y, w, h, r]` in key units, rotation about the key's centre), `state`, `quiet` |
 | `state` | → wallpaper | `layer` (`index`, `name`), `art`, `battery` (`left`, `right`), `link` (`connected`, `output`, `profile`, `profile_connected`), `lights` (below), `keyboard` (`name`, `source`, `connected`; below) |
-| `art` | → wallpaper | `art`: `name` (as `state.art`), `nva` (the piece's frames, below, or `null`); or `art: null` |
+| `art` | → wallpaper | `art`: `name` (as `state.art`), `from` (`built_in`, `kept` or `file`), `nva` (the piece's frames, below, or `null`), `missing` (why `nva` is `null`, below); or `art: null` |
 | `panel` | → wallpaper | `panel`: `w`, `h`, `bits` (the left screen's PC panel, below), or `null` |
 | `keys` | → wallpaper | `e`: `[index, 1 down / 0 up, ms since the batch's first]` |
 | `board` | → wallpaper | the geometry changed |
@@ -104,9 +104,22 @@ guess from its key count), and no `keys` are sent. A change of keyboard sends a 
   goes out after `live`.
 - **Size:** at most 32 KiB of blob (twice the right half's 16 KiB art slot), so at most about
   43 KiB of text. A piece past that goes with `nva: null`. The art library's Bandit_radar (12 frames) is 2.9 KiB.
-- **What has frames:** a library file the right half plays, a built-in (from the firmware's own
-  `custom_art.c`, when its manifest matches the keyboard), and a kept place when the library has
-  a file of the same name and size. Otherwise `nva` is `null`, and the wallpaper draws a stand-in.
+- **What has frames:** every piece the right screen can show, by the same path:
+  - `built_in`: the firmware's own frames, read from `custom_art.c`, the very file the right half
+    is compiled from (`art_builtins.rs`), when its manifest matches the keyboard. No second copy:
+    `live_art`'s `built_in_frames_are_the_firmwares` test decodes that file on its own and checks
+    every frame the feed sends against it, pixel for pixel.
+  - `kept`: a kept place, matched by content: the PC piece (a library file, a set bundled with
+    Foxglove or a converted folder) whose CRC is the one the keyboard reports for the place
+    (#863, `art_pieces::holding`). A CRC no piece has gets no frames, never a name-alike's.
+    Firmware without CRCs is matched by name and length. Read again after each library scan.
+  - `file`: the library file Foxglove sent, as it sent it.
+- **Without frames:** `nva` is `null` and `missing` says why: `not_on_pc` (a kept place whose
+  bytes no piece on this PC has: the keyboard can't send a place's frames back yet, #878), `other_firmware`
+  (a built-in of firmware whose manifest Foxglove doesn't know), `unreadable` or `too_big`.
+  The wallpaper draws a labelled placeholder then, the same for both screens.
+- **One name:** `art.name` is always the name `state.art` gives the piece at the same moment, so
+  a wallpaper can draw the frames only while the two agree.
 - **The left screen:** it shows the firmware's own status panel, not art. A wallpaper draws it
   from `state` (layer, `battery.left`, `link`) and `panel` below.
 

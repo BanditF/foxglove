@@ -149,10 +149,30 @@ pub struct State {
 pub struct Art {
     /// The piece, by the same name as `state.art`.
     pub name: String,
+    /// Where it lives: [`FROM_BUILT_IN`], [`FROM_KEPT`] or [`FROM_FILE`].
+    pub from: &'static str,
     /// Its animation as an upright NVA1 blob in base64 (docs/live-feed.md), at most
     /// `live_art::MAX_BLOB` bytes before base64; `None` when Foxglove doesn't have its frames.
     pub nva: Option<String>,
+    /// Why `nva` is `None` (one of the `MISSING_*` words); left out with frames.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing: Option<&'static str>,
 }
+
+/// `art.from`: built into the right half's firmware.
+pub const FROM_BUILT_IN: &str = "built_in";
+/// `art.from`: one of the keyboard's kept places.
+pub const FROM_KEPT: &str = "kept";
+/// `art.from`: a library file Foxglove sent, played from the right half's memory.
+pub const FROM_FILE: &str = "file";
+/// `art.missing`: a kept place whose bytes no piece on this PC has (by CRC, #863).
+pub const MISSING_NOT_ON_PC: &str = "not_on_pc";
+/// `art.missing`: a built-in of firmware whose art Foxglove doesn't know.
+pub const MISSING_OTHER_FIRMWARE: &str = "other_firmware";
+/// `art.missing`: the piece's file couldn't be read.
+pub const MISSING_UNREADABLE: &str = "unreadable";
+/// `art.missing`: the upright blob is past `live_art::MAX_BLOB`.
+pub const MISSING_TOO_BIG: &str = "too_big";
 
 /// The left screen's PC panel as Foxglove last sent it to the keyboard (`screens`): the part of the
 /// left screen Foxglove draws (clock, volume, media). `None` while the firmware draws its own.
@@ -569,7 +589,9 @@ mod tests {
             Message::Art {
                 art: Some(Art {
                     name: "Fox run".into(),
+                    from: FROM_FILE,
                     nva: Some("TlZBMUSMBAEBAAEAAA==".into()),
+                    missing: None,
                 }),
             },
             Message::Quiet {
@@ -587,6 +609,14 @@ mod tests {
             },
             Message::Refused {
                 why: Refused::Token,
+            },
+            Message::Art {
+                art: Some(Art {
+                    name: "Radar".into(),
+                    from: FROM_KEPT,
+                    nva: None,
+                    missing: Some(MISSING_NOT_ON_PC),
+                }),
             },
         ]
     }
@@ -636,6 +666,9 @@ mod tests {
             "e",
             "why",
             "nva",
+            // `art`: where the piece lives, and why it has no frames.
+            "from",
+            "missing",
             "profile_connected",
             "panel",
             "w",
@@ -678,7 +711,19 @@ mod tests {
         assert_eq!(m[2].json(), r#"{"t":"keys","e":[[17,1,0],[17,0,9]]}"#);
         assert_eq!(
             m[4].json(),
-            r#"{"t":"art","art":{"name":"Fox run","nva":"TlZBMUSMBAEBAAEAAA=="}}"#
+            r#"{"t":"art","art":{"name":"Fox run","from":"file","nva":"TlZBMUSMBAEBAAEAAA=="}}"#
+        );
+        assert_eq!(
+            Message::Art {
+                art: Some(Art {
+                    name: "Radar".into(),
+                    from: FROM_KEPT,
+                    nva: None,
+                    missing: Some(MISSING_NOT_ON_PC),
+                })
+            }
+            .json(),
+            r#"{"t":"art","art":{"name":"Radar","from":"kept","nva":null,"missing":"not_on_pc"}}"#
         );
         assert_eq!(m[5].json(), r#"{"t":"quiet","why":"fullscreen"}"#);
         assert_eq!(m[6].json(), r#"{"t":"live"}"#);

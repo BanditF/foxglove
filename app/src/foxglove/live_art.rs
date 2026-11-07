@@ -9,8 +9,13 @@
 //!   joins, never per frame; the wallpaper animates it on its own clock.
 //! - **Bounded:** an upright blob over [`MAX_BLOB`] bytes goes out without its frames (the
 //!   name only), and the wallpaper draws its stand-in.
-//! - **Best effort for kept places:** the right half doesn't send a kept piece's bytes back, so
-//!   its frames come from the library file of the same name and size, when there is one.
+//! - **Kept places by content:** the right half doesn't send a kept piece's bytes back, only its
+//!   name, length and (#863) CRC. Its frames come from the PC piece with that CRC
+//!   (`art_pieces::holding`; by name and length on firmware without CRCs). With none, the art
+//!   goes without frames and says why (`missing`), so the wallpaper labels its placeholder.
+//! - **Built-ins from the firmware's own source:** `art_builtins` reads `custom_art.c`, the file
+//!   the right half is compiled from, so the feed's frames are the firmware's by construction;
+//!   `built_in_frames_are_the_firmwares` checks every frame pixel for pixel.
 
 use std::path::PathBuf;
 
@@ -119,8 +124,23 @@ pub enum Source {
     File(PathBuf, u64),
     /// Built-in `index` on firmware with `count` built-ins.
     BuiltIn(i8, u8),
-    /// A kept place, by its name and size.
-    Slot { name: String, len: u16 },
+    /// A kept place, by its name, size and CRC (#863; `None` from older firmware).
+    Slot {
+        name: String,
+        len: u16,
+        crc: Option<u32>,
+    },
+}
+
+impl Source {
+    /// The feed's `art.from`: where the piece lives.
+    pub fn from(&self) -> &'static str {
+        match self {
+            Source::File(..) => wire::FROM_FILE,
+            Source::BuiltIn(..) => wire::FROM_BUILT_IN,
+            Source::Slot { .. } => wire::FROM_KEPT,
+        }
+    }
 }
 
 /// What plays now (the same reading as the feed's `state.art` name).
@@ -144,37 +164,72 @@ pub fn source(s: &Snapshot) -> Option<Source> {
         .map(|i| Source::Slot {
             name: i.name.clone(),
             len: i.len,
+            crc: i.crc,
         })
 }
 
-/// The piece's animation as it was stored, from wherever it lives.
-fn stored(src: &Source) -> Option<Stored> {
+/// The piece's animation as it was stored, from wherever it lives, or why Foxglove has none.
+fn stored(src: &Source) -> Result<Stored, &'static str> {
     match src {
-        Source::File(path, _) => {
-            Stored::from_blob(&super::art_service::pushed_bytes(path).ok()?).ok()
+        Source::File(path, _) => super::art_service::pushed_bytes(path)
+            .ok()
+            .and_then(|b| Stored::from_blob(&b).ok())
+            .ok_or(wire::MISSING_UNREADABLE),
+        Source::BuiltIn(index, count) => {
+            super::art_builtins::animation(*index, *count).ok_or(wire::MISSING_OTHER_FIRMWARE)
         }
-        Source::BuiltIn(index, count) => super::art_builtins::animation(*index, *count),
-        Source::Slot { name, len } => {
-            // A kept place holds what was sent: the library file of that name and size.
-            let lib = super::art_library::snapshot();
-            let entry = lib.entries.iter().find(|e| {
-                let stem = super::art_service::file_name(&e.path);
-                e.bytes == usize::from(*len) && (stem == *name || stem.starts_with(name.as_str()))
-            })?;
-            Stored::from_blob(&super::art_service::pushed_bytes(&entry.path).ok()?).ok()
+        Source::Slot { name, len, crc } => {
+            let info = foxglove_link::protocol::SlotInfo {
+                slot: 0,
+                used: true,
+                writes: 0,
+                len: *len,
+                name: name.clone(),
+                crc: *crc,
+            };
+            kept_in(&info, &super::art_library::snapshot())
         }
     }
 }
 
-/// The feed's `art` body for a piece by `name` from `src`: its upright frames, or none.
+/// A kept place's animation from the pieces in `library` (and the sets bundled with the app).
+fn kept_in(
+    info: &foxglove_link::protocol::SlotInfo,
+    library: &super::art_library::Library,
+) -> Result<Stored, &'static str> {
+    let pcs = super::art_pieces::pc_pieces(super::art_pieces::found(library).found, &|_| false);
+    kept_stored(info, &pcs, |p| super::art_pieces::piece_blob(p, library))
+}
+
+/// A kept place's animation from the PC piece holding its bytes ([`super::art_pieces::holding`]),
+/// its bytes read by `blob`: `not_on_pc` when this PC has no such piece.
+fn kept_stored(
+    info: &foxglove_link::protocol::SlotInfo,
+    pcs: &[super::art_pieces::PcPiece],
+    blob: impl Fn(&super::art_pieces::PcPiece) -> Option<Vec<u8>>,
+) -> Result<Stored, &'static str> {
+    let piece = super::art_pieces::holding(info, pcs).ok_or(wire::MISSING_NOT_ON_PC)?;
+    let bytes = blob(&pcs[piece]).ok_or(wire::MISSING_UNREADABLE)?;
+    Stored::from_blob(&bytes).map_err(|_| wire::MISSING_UNREADABLE)
+}
+
+/// The feed's `art` body for a piece by `name` from `src`: its upright frames, or none and why.
 /// It plays at the art screen's pace (#833), as the keyboard plays it: a built-in or a kept
 /// piece too, whose bytes the app didn't send.
 pub fn art(src: &Source, name: String) -> wire::Art {
+    body(src.from(), name, stored(src))
+}
+
+/// The `art` body for an animation read from `from`, paced and turned upright.
+fn body(from: &'static str, name: String, stored: Result<Stored, &'static str>) -> wire::Art {
     let pace = super::art_encode::Pace::current();
-    let nva = stored(src)
-        .map(|s| pace.stored(s))
-        .and_then(|s| encoded(&s));
-    wire::Art { name, nva }
+    let nva = stored.and_then(|s| encoded(&pace.stored(s)).ok_or(wire::MISSING_TOO_BIG));
+    wire::Art {
+        name,
+        from,
+        missing: nva.as_ref().err().copied(),
+        nva: nva.ok(),
+    }
 }
 
 /// The upright blob as base64, within [`MAX_BLOB`].
@@ -344,7 +399,8 @@ mod tests {
             source(&s),
             Some(Source::Slot {
                 name: "Fox run".into(),
-                len: 900
+                len: 900,
+                crc: None,
             })
         );
         s.sent = Some((PathBuf::from("C:/art/Fox run.bin"), 7));
@@ -356,5 +412,238 @@ mod tests {
             source(&s),
             Some(Source::File(PathBuf::from("C:/art/Fox run.bin"), 7))
         );
+    }
+
+    /// Upright pixel (x, y) of a frame stored a quarter turn clockwise (140x68, the Corne's).
+    fn stored_pixel(bits: &[u8], x: usize, y: usize) -> bool {
+        let (sx, sy) = (139 - y, x);
+        bits[sy * 140usize.div_ceil(8) + sx / 8] & (0x80 >> (sx % 8)) != 0
+    }
+
+    /// The feed's built-in frames are the firmware's: `custom_art.c` (the file the right half
+    /// is compiled from) decoded on its own and turned upright here equals every frame the
+    /// wallpaper gets, in the firmware's play order and at its rate, pixel for pixel.
+    #[test]
+    fn built_in_frames_are_the_firmwares() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../boards/shields/nice_view_custom/widgets/custom_art.json"
+        ))
+        .unwrap();
+        let count = manifest["set_count"].as_u64().unwrap() as u8;
+        let firmware =
+            include_str!("../../../boards/shields/nice_view_custom/widgets/custom_art.c");
+        // The firmware's own arrays, read here without art_builtins.
+        let arr = |name: &str| -> Option<Vec<u8>> {
+            let head = format!("static const uint8_t {name}[] = {{");
+            let at = firmware.find(&head)? + head.len();
+            let body = &firmware[at..at + firmware[at..].find("};")?];
+            Some(
+                body.split(',')
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(|t| match t.strip_prefix("0x") {
+                        Some(hex) => u8::from_str_radix(hex, 16).unwrap(),
+                        None => t.parse().unwrap(),
+                    })
+                    .collect(),
+            )
+        };
+        for i in 0..count {
+            let set = &manifest["sets"][usize::from(i)];
+            let a = art(
+                &Source::BuiltIn(i as i8, count),
+                set["label"].as_str().unwrap().into(),
+            );
+            assert_eq!((a.from, a.missing), (wire::FROM_BUILT_IN, None), "set {i}");
+            let blob = base64::engine::general_purpose::STANDARD
+                .decode(a.nva.expect("frames"))
+                .unwrap();
+            let sent = super::super::art_preview::decode(&blob).unwrap();
+            assert_eq!((sent.width, sent.height, sent.ink), (68, 140, true));
+            assert_eq!(u64::from(blob[6]), set["fps"].as_u64().unwrap(), "the rate");
+            let mut bits = vec![0u8; 140usize.div_ceil(8) * 68];
+            let mut firmware_frames = Vec::new();
+            while let Some(delta) = arr(&format!("set_{i}_delta_{}", firmware_frames.len())) {
+                super::super::art_preview::apply(&delta, &mut bits).unwrap();
+                firmware_frames.push(bits.clone());
+            }
+            // The play order, step by step (the upright blob numbers its unique frames anew).
+            let order = arr(&format!("set_{i}_order")).unwrap();
+            let sent_order = &blob[12..12 + usize::from(u16::from_le_bytes([blob[10], blob[11]]))];
+            assert_eq!(
+                sent_order.len(),
+                order.len(),
+                "every step of the play order"
+            );
+            for (step, (&fw, &up)) in order.iter().zip(sent_order).enumerate() {
+                let (fw, up) = (
+                    &firmware_frames[usize::from(fw)],
+                    &sent.frames[usize::from(up)],
+                );
+                for y in 0..140 {
+                    for x in 0..68 {
+                        let got = up[y * 9 + x / 8] & (0x80 >> (x % 8)) != 0;
+                        assert_eq!(
+                            got,
+                            stored_pixel(fw, x, y),
+                            "set {i} step {step} ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn found(
+        name: &str,
+        origin: super::super::art_pieces::Origin,
+        crc: u32,
+        bytes: usize,
+    ) -> super::super::art_pieces::Found {
+        super::super::art_pieces::Found {
+            origin,
+            name: name.into(),
+            image: std::sync::Arc::new(egui::ColorImage::new([1, 1], vec![egui::Color32::BLACK])),
+            bytes,
+            key: u64::from(crc),
+            crcs: vec![crc],
+            plugin: false,
+            fitted: None,
+        }
+    }
+
+    fn slot(name: &str, len: u16, crc: Option<u32>) -> foxglove_link::protocol::SlotInfo {
+        foxglove_link::protocol::SlotInfo {
+            slot: 0,
+            used: true,
+            writes: 1,
+            len,
+            name: name.into(),
+            crc,
+        }
+    }
+
+    /// #863: a kept place's frames come from the PC piece with its CRC whatever it is named; a
+    /// CRC no piece has gets no frames, not a name-alike's (it was paced or changed since);
+    /// older firmware (no CRC) falls back to the name and length.
+    #[test]
+    fn kept_places_match_by_content() {
+        use super::super::art_pieces::{pc_pieces, Origin, PcPiece};
+        let corne = ArtTarget::FIRMWARE;
+        let blob = |dots: &[(usize, usize)]| {
+            let f = stored_with(dots, true);
+            super::super::art_encode::encode(&[f], 4, corne).unwrap()
+        };
+        let (orbit, radar) = (blob(&[(1, 1)]), blob(&[(2, 2), (3, 3)]));
+        let pcs = pc_pieces(
+            vec![
+                found(
+                    "orbit",
+                    Origin::Library("orbit.bin".into()),
+                    0x1111,
+                    orbit.len(),
+                ),
+                found(
+                    "radar",
+                    Origin::Library("radar.bin".into()),
+                    0x2222,
+                    radar.len(),
+                ),
+            ],
+            &|_| false,
+        );
+        let bytes = |p: &PcPiece| {
+            Some(if p.name == "orbit" {
+                orbit.clone()
+            } else {
+                radar.clone()
+            })
+        };
+        let dots = |s: Stored| {
+            let up = upright(&s, 1).unwrap();
+            (pixel(&up, 0, 2, 2), pixel(&up, 0, 1, 1))
+        };
+        let len = u16::try_from(orbit.len()).unwrap();
+        // Named after orbit, holding radar's bytes: radar's frames.
+        let s = kept_stored(&slot("orbit", len, Some(0x2222)), &pcs, bytes).unwrap();
+        assert_eq!(dots(s), (true, false));
+        // A CRC nobody has: no frames, even with orbit's name and length.
+        assert_eq!(
+            kept_stored(&slot("orbit", len, Some(0x9999)), &pcs, bytes),
+            Err(wire::MISSING_NOT_ON_PC)
+        );
+        // No CRC (older firmware): by name and length.
+        let s = kept_stored(&slot("orbit", len, None), &pcs, bytes).unwrap();
+        assert_eq!(dots(s), (false, true));
+        assert_eq!(
+            kept_stored(&slot("orbit", 1, None), &pcs, bytes),
+            Err(wire::MISSING_NOT_ON_PC)
+        );
+        // The body says why there are no frames.
+        let a = body(
+            wire::FROM_KEPT,
+            "Radar".into(),
+            Err(wire::MISSING_NOT_ON_PC),
+        );
+        assert_eq!((a.nva, a.missing), (None, Some(wire::MISSING_NOT_ON_PC)));
+    }
+
+    /// A bundled set kept on the keyboard is found by its CRC through the app's own pieces, and
+    /// its frames go out. With `FOXGLOVE_LIVE_ART_DUMP` set to a folder, the feed's real `art`
+    /// messages (built-in, kept and matched, kept not on this PC, pushed) are written there for
+    /// the wallpaper's review frames (bandit-wallpapers tools/fixtures).
+    #[test]
+    fn real_pieces_in_the_feeds_form() {
+        use foxglove_link::protocol::blob_crc;
+        let library = super::super::art_library::Library::default();
+        let made = |name: &str| {
+            let (_, bytes, _) = super::super::art_pieces::BUNDLED
+                .iter()
+                .find(|b| b.0 == name)
+                .unwrap();
+            let bytes = super::super::art_encode::normalise_blob(bytes, Default::default());
+            super::super::art_encode::for_screen(&bytes, &Ok(ArtTarget::FIRMWARE))
+                .unwrap()
+                .0
+        };
+        let hearth = made("hearth.bin");
+        let hearth_len = u16::try_from(hearth.len()).unwrap();
+        let kept = body(
+            wire::FROM_KEPT,
+            "Hearth kept".into(),
+            kept_in(
+                &slot("Hearth kept", hearth_len, Some(blob_crc(&hearth))),
+                &library,
+            ),
+        );
+        assert_eq!(kept.missing, None, "found by CRC under another name");
+        assert!(kept.nva.is_some());
+        let unmatched = body(
+            wire::FROM_KEPT,
+            "Night shift".into(),
+            kept_in(&slot("Night shift", 3000, Some(0xdead_beef)), &library),
+        );
+        assert_eq!(unmatched.missing, Some(wire::MISSING_NOT_ON_PC));
+        let pushed = body(
+            wire::FROM_FILE,
+            "fury".into(),
+            Stored::from_blob(&made("fury.bin")).map_err(|_| wire::MISSING_UNREADABLE),
+        );
+        assert!(pushed.nva.is_some());
+        let built_in = art(&Source::BuiltIn(0, 1), "Bandit emblem".into());
+        assert!(built_in.nva.is_some());
+        if let Some(dir) = std::env::var_os("FOXGLOVE_LIVE_ART_DUMP") {
+            let dir = PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (file, a) in [
+                ("builtin", built_in),
+                ("kept", kept),
+                ("kept-unmatched", unmatched),
+                ("pushed", pushed),
+            ] {
+                let json = wire::Message::Art { art: Some(a) }.json();
+                std::fs::write(dir.join(format!("feed-art-{file}.json")), json).unwrap();
+            }
+        }
     }
 }
