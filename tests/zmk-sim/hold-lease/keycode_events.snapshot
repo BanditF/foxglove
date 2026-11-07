@@ -90,12 +90,39 @@ hostlink: rx D7 8D 00 01
 lease: pc quiet 40 s
 lease: art key
 hostlink: rx D7 8D 01 01
+lease: -- master volume (#855, D7 16) is a held mode too: asked for, and it lapses (mask 04)
+lease: pc sends D7 0D 00
+hostlink: rx D7 8D
+lease: pc sends D7 15 1E
+hostlink: rx D7 95 00 00 1E 00 00 01
+lease: pc sends D7 16 01
+hostlink: rx D7 96 00 00 01
+lease: turn 1
+hostlink: rx D7 94 01 01 01 00 04
+lease: pc quiet 35 s
+hostlink: rx D7 95 01 00 1E 14 04 01
+hostlink: rx D7 95 01 00 1E 0A 04 01
+hostlink: rx D7 95 02 00 1E 00 04 02
+lease: turn 1
+kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+lease: pc sends D7 16 FF
+hostlink: rx D7 96
+hostlink: rx D7 95 02 00 1E 00 04 02
+lease: pc sends D7 16 01
+hostlink: rx D7 96 00 00 01
+lease: turn 1
+hostlink: rx D7 94 01 01 01 00 05
+lease: pc sends D7 16 00
+hostlink: rx D7 96
+lease: pc sends D7 0D 01
+hostlink: rx D7 8D 00 01
 lease: -- the link drops (an endpoint change): the holds and the lease go
 lease: pc sends D7 15 1E
-hostlink: rx D7 95 00 00 1E 1E 01 01
+hostlink: rx D7 95 00 00 1E 1E 01 02
 lease: the endpoint changes
 lease: pc sends D7 15 FF
-hostlink: rx D7 95 00 00 00 00 00 01
+hostlink: rx D7 95 00 00 00 00 00 02
 lease: art key
 lease: board steps 1
 lease: -- done

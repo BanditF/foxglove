@@ -4,13 +4,15 @@
  * - &knob C_VOLUME_UP C_VOLUME_DOWN: each detent taps its fallback key (the turn's maths is ZMK's
  *   own sensor-rotate, behavior_sensor_rotate_common.c), unless the PC holds the knob with an app
  *   as its target: then the detents go to the PC as one event per burst (D7 94 01 01 steps).
- *   With master as the target, held or not, the keys go, so Windows' own volume and its popup
- *   work as they always did.
+ *   With master as the target the keys go, so Windows' own volume and its popup work as they
+ *   always did, unless the PC holds master volume (D7 16, #855): then master's turns are events
+ *   too (target master), and the PC sets the level and shows its own card.
  * - &knob_press C_MUTE: its fallback key, pressed and released with the switch, unless the PC
  *   holds the knob: then a click (sent once double-tap-ms passed without a second), a double
  *   click (sent on the second press) and a hold (sent when hold-ms is reached) are events. A
  *   double click with master as the target also taps the fallback key here: master's mute is
- *   Windows' own, the same key as without Foxglove.
+ *   Windows' own, the same key as without Foxglove; with master volume held it doesn't (the PC
+ *   mutes master itself).
  *
  * Start/stop: a hold timer starts on a held press and stops on its release or when it fires; the
  * click timer starts on a held release and stops on the next press or when it fires. Nothing
@@ -40,6 +42,7 @@
 // No host link on this board: the knob is its fallback keys only.
 static inline enum knob_target host_link_knob_target(void) { return KNOB_MASTER; }
 static inline bool host_link_knob_held(void) { return false; }
+static inline bool host_link_knob_volume(void) { return false; }
 static inline int host_link_knob_event(enum knob_event kind, int8_t steps) {
     ARG_UNUSED(kind);
     ARG_UNUSED(steps);
@@ -127,12 +130,14 @@ static int knob_process(struct zmk_behavior_binding *binding,
     if (mode != BEHAVIOR_SENSOR_BINDING_PROCESS_MODE_TRIGGER || triggers == 0) {
         return ZMK_BEHAVIOR_TRANSPARENT;
     }
-    if (host_link_knob_target() == KNOB_APP) {
+    if (host_link_knob_target() == KNOB_APP || host_link_knob_volume()) {
+        // An app, or master with master volume held (#855): the PC sets the level.
         atomic_add(&turn_steps, triggers);
         k_work_submit(&turn_work);
         return ZMK_BEHAVIOR_OPAQUE;
     }
-    // Master (held or not), or no PC: the fallback keys, as &inc_dec_kp taps them.
+    // Master (unless the PC holds master volume), or no PC: the fallback keys, as &inc_dec_kp
+    // taps them.
     struct zmk_behavior_binding key = {
         .behavior_dev = triggers > 0 ? cfg->cw : cfg->ccw,
         .param1 = triggers > 0 ? binding->param1 : binding->param2,
@@ -238,8 +243,9 @@ static int knob_press_pressed(struct zmk_behavior_binding *binding,
         k_work_cancel_delayable(&data->click_work);
         data->state = PRESS_DONE;
         press_event(KNOB_DOUBLE);
-        if (host_link_knob_target() == KNOB_MASTER) {
-            // Master's mute is the system's: the same key as without Foxglove.
+        if (host_link_knob_target() == KNOB_MASTER && !host_link_knob_volume()) {
+            // Master's mute is the system's: the same key as without Foxglove (with master
+            // volume held the PC mutes master itself, #855).
             zmk_behavior_queue_add(&event, fallback_of(data), true, data->cfg->tap_ms);
             zmk_behavior_queue_add(&event, fallback_of(data), false, 0);
             health_inc(HEALTH_KNOB_KEYS);

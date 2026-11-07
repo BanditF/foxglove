@@ -267,6 +267,9 @@ pub mod settings {
     pub const KNOB: u8 = 0x14;
     /// The host-held modes' lease (#847): see [`super::hold_lease`].
     pub const HOLD_LEASE: u8 = 0x15;
+    /// The PC holds master volume, the knob's turns on master (#855): see
+    /// [`super::knob::volume_hold`].
+    pub const KNOB_VOLUME: u8 = 0x16;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -1100,6 +1103,8 @@ pub mod hold_lease {
     /// D7 95's held bits: the modes the PC holds (or, in [`Kind::Lapsed`], the ones let go).
     pub const HELD_ART_KEYS: u8 = 1 << 0;
     pub const HELD_KNOB: u8 = 1 << 1;
+    /// Master volume (#855, [`super::knob::volume_hold`]).
+    pub const HELD_KNOB_VOLUME: u8 = 1 << 2;
 
     /// Sets the lease, `lease_s` seconds (0: none, holds end only with the link): D7 15 lease.
     /// Sent again, it renews.
@@ -1133,7 +1138,7 @@ pub mod hold_lease {
         pub lease_s: u8,
         /// Seconds left before it lapses; 0 when none runs (none set, or nothing held).
         pub left_s: u8,
-        /// [`HELD_ART_KEYS`], [`HELD_KNOB`]: held now, or let go by a lapse.
+        /// [`HELD_ART_KEYS`], [`HELD_KNOB`], [`HELD_KNOB_VOLUME`]: held now, or let go by a lapse.
         pub held: u8,
         /// Lapses since the keyboard's boot (saturating at 255).
         pub lapses: u8,
@@ -1218,6 +1223,13 @@ pub mod hold_lease {
 /// stay the keys, and a double click also taps mute on the board. The board drops the hold on a
 /// USB disconnect, an endpoint change ([`knob::EventKind::HandedBack`] for that one) or a lapsed
 /// [`hold_lease`] (#847), so the PC holds again after each HELLO.
+///
+/// Master volume (#855, D7 16 KNOB_VOLUME, HELLO v2 word 2's
+/// [`crate::hello_v2::capabilities::KNOB_VOLUME`]): its own held mode. While the PC holds it the
+/// turns on master come as [`knob::EventKind::Turn`] events too (target master) and a double click
+/// on master taps no mute, so the PC sets master's level and mute itself (and Windows shows no
+/// popup). It ends as the knob's hold does; the board says so with [`knob::VolumeReport`]'s
+/// `dropped` on an endpoint change.
 pub mod knob {
     use super::{is_reply, settings, SETTINGS};
 
@@ -1262,6 +1274,38 @@ pub mod knob {
         vec![SETTINGS, settings::KNOB, 0xff]
     }
 
+    /// Takes master volume (`true`: master's turns come to the PC) or hands it back: D7 16 hold.
+    pub fn volume_hold(hold: bool) -> Vec<u8> {
+        vec![SETTINGS, settings::KNOB_VOLUME, u8::from(hold)]
+    }
+
+    /// Reads master volume's hold: D7 16 FF.
+    pub fn volume_read() -> Vec<u8> {
+        vec![SETTINGS, settings::KNOB_VOLUME, 0xff]
+    }
+
+    /// D7 96: the reply (kind 0) or the board dropping it (kind 1), status, held.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct VolumeReport {
+        /// The board dropped master volume (an endpoint change): the keys and Windows' popup.
+        pub dropped: bool,
+        /// 0 ok, 4 not built in (no `&knob` in the keymap), 5 bad request.
+        pub status: u8,
+        pub held: bool,
+    }
+
+    /// A D7 96; `None` for anything else, or a kind this app doesn't know.
+    pub fn volume(r: &[u8]) -> Option<VolumeReport> {
+        if !is_reply(r, SETTINGS, settings::KNOB_VOLUME) || r.len() < 5 || r[2] > 1 {
+            return None;
+        }
+        Some(VolumeReport {
+            dropped: r[2] == 1,
+            status: r[3],
+            held: r[4] != 0,
+        })
+    }
+
     /// The keymap has `&knob` (D7 94 reply byte 6, bit 0).
     pub const HAS_TURN: u8 = 1 << 0;
     /// The keymap has `&knob_press` (bit 1).
@@ -1294,7 +1338,8 @@ pub mod knob {
     /// What the knob did while the PC held it (firmware knob.h's `enum knob_event`).
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum EventKind {
-        /// Detents, + clockwise (only while the target is an app).
+        /// Detents, + clockwise (while the target is an app, or on master while the PC holds
+        /// master volume, #855).
         Turn(i8),
         /// A click, sent once the double-click time passed without a second: the next app.
         Click,
@@ -1353,6 +1398,52 @@ pub mod knob {
             assert_eq!(hold(Target::Master), [0xD7, 0x14, 1, 0]);
             assert_eq!(release(), [0xD7, 0x14, 0, 0]);
             assert_eq!(read(), [0xD7, 0x14, 0xff]);
+            assert_eq!(volume_hold(true), [0xD7, 0x16, 1]);
+            assert_eq!(volume_hold(false), [0xD7, 0x16, 0]);
+            assert_eq!(volume_read(), [0xD7, 0x16, 0xff]);
+        }
+
+        // The bytes tests/zmk-sim/knob and hold-lease pin for master volume (#855).
+        #[test]
+        fn master_volume_parses_as_the_simulator_prints_it() {
+            assert_eq!(
+                volume(&report(&[0xD7, 0x96, 0, 0, 1])),
+                Some(VolumeReport {
+                    dropped: false,
+                    status: 0,
+                    held: true
+                })
+            );
+            let read = volume(&report(&[0xD7, 0x96])).unwrap();
+            assert_eq!((read.dropped, read.held), (false, false));
+            assert_eq!(volume(&report(&[0xD7, 0x96, 0, 5])).unwrap().status, 5);
+            assert_eq!(
+                volume(&report(&[0xD7, 0x96, 1])),
+                Some(VolumeReport {
+                    dropped: true,
+                    status: 0,
+                    held: false
+                })
+            );
+            // A turn on master while it is held: an ordinary turn event, target master.
+            let e = event(&report(&[0xD7, 0x94, 1, 1, 2, 0, 8])).unwrap();
+            assert_eq!(
+                (e.kind, e.target, e.seq),
+                (EventKind::Turn(2), Target::Master, 8)
+            );
+            assert!(
+                volume(&report(&[0xD7, 0x96, 2])).is_none(),
+                "an unknown kind"
+            );
+            assert!(volume(&report(&[0xD7, 0x94, 0, 0, 1, 0, 3])).is_none());
+            assert!(event(&report(&[0xD7, 0x96, 1])).is_none());
+            assert!(volume(&[0xD7, 0x96, 0]).is_none(), "cut short");
+            assert_eq!(
+                super::super::hold_lease::parse(&report(&[0xD7, 0x95, 2, 0, 0x1E, 0, 4, 2]))
+                    .unwrap()
+                    .held,
+                super::super::hold_lease::HELD_KNOB_VOLUME
+            );
         }
 
         // The bytes tests/zmk-sim/knob pins.

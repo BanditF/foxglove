@@ -8,7 +8,8 @@
 //!   sleeps on its channel between events and requests. Peaks (IAudioMeterInformation) are read
 //!   only when the knob asks ([`Sessions::peaks`]), one read per active session.
 //! - [`Sessions`]: what the knob asks of it: the sessions in the Active state, in Windows' order,
-//!   their peaks now, a level step and a mute.
+//!   their peaks now, a level step and a mute; and master's (#855: the default output device's
+//!   IAudioEndpointVolume, while the knob holds master volume), a step and a mute.
 //! - [`Heard`] (#854): the sessions heard during this run, the only ones the knob offers. An
 //!   Active session that never sends sound (a background helper holding a silent stream) isn't.
 //! - [`step_level`], [`display_name`], [`Heard`]: the pure parts, tested everywhere.
@@ -50,6 +51,11 @@ pub trait Sessions: Send + Sync {
     fn level(&self, id: &str) -> Result<(u8, bool), String>;
     /// Master's (the default output device's) level in percent, and whether it is muted.
     fn master(&self) -> Result<(u8, bool), String>;
+    /// Moves master's level by `steps` of [`STEP`] and unmutes it, as Windows' own volume keys
+    /// do (#855); the new level in percent.
+    fn step_master(&self, steps: i32) -> Result<u8, String>;
+    /// Mutes or unmutes master (#855); whether it is muted now.
+    fn toggle_master_mute(&self) -> Result<bool, String>;
 }
 
 /// One detent: 2 %, the step Windows' own volume keys take.
@@ -182,6 +188,8 @@ mod imp {
         Mute(String, SyncSender<std::result::Result<bool, String>>),
         Level(String, SyncSender<std::result::Result<(u8, bool), String>>),
         MasterLevel(SyncSender<std::result::Result<(u8, bool), String>>),
+        MasterStep(i32, SyncSender<std::result::Result<u8, String>>),
+        MasterMute(SyncSender<std::result::Result<bool, String>>),
         Master,
         Created(Control),
         State(String, AudioSessionState),
@@ -240,8 +248,13 @@ mod imp {
     #[implement(IAudioEndpointVolumeCallback)]
     struct MasterChanged(Sender<Req>);
     impl IAudioEndpointVolumeCallback_Impl for MasterChanged_Impl {
-        fn OnNotify(&self, _: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> Result<()> {
-            let _ = self.0.send(Req::Master);
+        fn OnNotify(&self, data: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> Result<()> {
+            // SAFETY: Windows passes the notification's data, valid for this call (or null).
+            let own = unsafe { data.as_ref() }.is_some_and(|d| d.guidEventContext == OWN_CHANGES);
+            // Foxglove's own master steps (#855) show its own card: no tab over it.
+            if !own {
+                let _ = self.0.send(Req::Master);
+            }
             Ok(())
         }
     }
@@ -354,6 +367,30 @@ mod imp {
         unsafe {
             let level = e.GetMasterVolumeLevelScalar()?;
             Ok(((level * 100.0).round() as u8, e.GetMute()?.as_bool()))
+        }
+    }
+
+    /// Master moved by `steps` detents and unmuted, as Windows' volume keys do (#855); the new
+    /// level in percent. Marked as Foxglove's own change.
+    fn master_step(e: &IAudioEndpointVolume, steps: i32) -> Result<u8> {
+        // SAFETY: COM calls on the sessions' MTA thread.
+        unsafe {
+            let new = step_level(e.GetMasterVolumeLevelScalar()?, steps);
+            e.SetMasterVolumeLevelScalar(new, &OWN_CHANGES)?;
+            if e.GetMute()?.as_bool() {
+                e.SetMute(false, &OWN_CHANGES)?;
+            }
+            Ok((new * 100.0).round() as u8)
+        }
+    }
+
+    /// Master muted or unmuted (#855); whether it is muted now. Marked as Foxglove's own change.
+    fn master_mute(e: &IAudioEndpointVolume) -> Result<bool> {
+        // SAFETY: COM calls on the sessions' MTA thread.
+        unsafe {
+            let muted = !e.GetMute()?.as_bool();
+            e.SetMute(muted, &OWN_CHANGES)?;
+            Ok(muted)
         }
     }
 
@@ -603,6 +640,20 @@ mod imp {
                     };
                     let _ = reply.send(r);
                 }
+                Req::MasterStep(steps, reply) => {
+                    let r = match &self.endpoint {
+                        None => Err("no output device".to_string()),
+                        Some(e) => master_step(e, steps).map_err(|e| e.to_string()),
+                    };
+                    let _ = reply.send(r);
+                }
+                Req::MasterMute(reply) => {
+                    let r = match &self.endpoint {
+                        None => Err("no output device".to_string()),
+                        Some(e) => master_mute(e).map_err(|e| e.to_string()),
+                    };
+                    let _ = reply.send(r);
+                }
                 Req::Master => (self.notify)(Change::Master),
                 Req::Created(Control(c)) => {
                     self.track(c);
@@ -666,6 +717,12 @@ mod imp {
         }
         fn master(&self) -> std::result::Result<(u8, bool), String> {
             self.ask(Req::MasterLevel)
+        }
+        fn step_master(&self, steps: i32) -> std::result::Result<u8, String> {
+            self.ask(|r| Req::MasterStep(steps, r))
+        }
+        fn toggle_master_mute(&self) -> std::result::Result<bool, String> {
+            self.ask(Req::MasterMute)
         }
     }
 

@@ -332,6 +332,9 @@ void health_fill(struct health_wire *out) {
     if (hold & BIT(1)) {
         out->knob |= HEALTH_KNOB_ON_APP;
     }
+    if (hold & BIT(2)) {
+        out->knob |= HEALTH_KNOB_VOLUME; // master volume held (D7 16, #855)
+    }
     out->knob_last = (uint8_t)atomic_get(&values[HEALTH_KNOB_LAST]);
     out->knob_events = u16_of(HEALTH_KNOB_EVENTS);
     out->knob_keys = u16_of(HEALTH_KNOB_KEYS);

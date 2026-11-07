@@ -166,6 +166,19 @@ void hold_lease_sim_driver(void) {
     quiet(40000);
     art_key();
 
+    note("master volume (#855, D7 16) is a held mode too: asked for, and it lapses (mask 04)");
+    PC(0xD7, 0x0D, 0x00);
+    PC(0xD7, 0x15, 30);
+    PC(0xD7, 0x16, 0x01);
+    turn(); // master's turn goes to the PC
+    quiet(35000);
+    turn(); // the volume key: Windows' own popup again
+    PC(0xD7, 0x16, 0xFF);
+    PC(0xD7, 0x16, 0x01);
+    turn();
+    PC(0xD7, 0x16, 0x00);
+    PC(0xD7, 0x0D, 0x01);
+
     note("the link drops (an endpoint change): the holds and the lease go");
     PC(0xD7, 0x15, 30);
     printk("lease: the endpoint changes\n");

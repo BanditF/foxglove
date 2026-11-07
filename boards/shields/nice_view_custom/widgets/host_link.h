@@ -83,7 +83,8 @@
  *      version 1 is never asked (no timeout). The HELLO reply keeps its layout; only byte 2 changed (1 to 2).
  *      Bit n of word 2 is capability 32 + n (HOST_LINK_CAPS2_*): 32 ART_LOCAL (#834, below),
  *      33 ART_PACE (#842: the art plays at its target's pace, D6 0A ANIMATE below),
- *      34 HOLD_LEASE (#847: D7 15 below). A PC
+ *      34 HOLD_LEASE (#847: D7 15 below), 35 KNOB_VOLUME (#855: D7 16 below; only with a
+ *      &knob in the keymap). A PC
  *      that reads fewer words than n ignores the rest; words past n read as 0.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
  * With CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0, the WPM chart also comes back after that many
@@ -426,14 +427,16 @@
  *      of detents goes as one turn event. The hold drops (held 0, target master) on a USB
  *      disconnect, an endpoint change or a lapsed hold lease (D7 15), as ART_KEYS does; an
  *      endpoint change sends kind 5 (a lapse says so in D7 95 instead). Hold again after HELLO,
- *      and set the target with each change.
+ *      and set the target with each change. With KNOB_VOLUME held (D7 16) the turns on master
+ *      are events too (target 0), and a double click on master taps no key: the PC sets
+ *      master's level and mute itself.
  *   15 HOLD_LEASE  lease s u8 (0 none; 3-120 a lease; 0xff read)   (word 2's bit 34, #847)
  *      reply and events: D7 95, kind (0 the reply, 1 ask: the lease ends soon, 2 lapsed), status
  *             (0 ok, 5 bad: a lease out of range; nothing changes), lease s (the one set, 0 none),
  *             seconds left (0 when no lease runs: none set, or nothing held), held (bit i the
  *             mode in row i of host_link.c's held_modes[]: HOST_LINK_HELD_*; for kind 2 the modes
  *             the lapse let go), lapses (since boot, saturating at 255)
- *      The host-held modes (ART_KEYS, KNOB; #855's master volume next) end when the PC goes
+ *      The host-held modes (ART_KEYS, KNOB, KNOB_VOLUME) end when the PC goes
  *      silent. Without a lease they end only with the link (a USB disconnect, an endpoint
  *      change), as before #847: a PC that never sends D7 15 (every app before #847) is never
  *      timed out. With one, any host-link report (D5, D6, D7) renews it. While a mode is held and
@@ -445,6 +448,20 @@
  *      of it. The PC takes them again as it would after HELLO. The lease stays set until D7 15
  *      00 or the link drops (which clears it: each PC sets its own after HELLO). Nothing runs
  *      while no mode is held or no lease is set; each ask or lapse is one report.
+ *   16 KNOB_VOLUME  hold u8 (0 hand back, 1 hold; 0xff or a report cut short: read)
+ *                                                             (word 2's bit 35, #855)
+ *      reply: D7 96, 00, status (0 ok, 4 not built in: no &knob in the keymap, 5 bad: another
+ *             hold; nothing changes), held (0/1)
+ *      event: D7 96, 01, 00, 00: the board dropped it (an endpoint change; a lapse says so in
+ *             D7 95 instead)
+ *      Master volume, held by the PC: while held, &knob's turns on master (the knob unheld, or
+ *      held with master as its target) go to the PC as D7 94 01 turn events with target 0
+ *      instead of the fallback keys, and a double click on master taps no key. The PC sets
+ *      master's level and mute itself and shows its own card, so Windows' volume popup doesn't
+ *      show. Without it, master is the fallback keys as before: a PC that never sends D7 16
+ *      (every app before #855) keeps Windows' own popup. Its own held mode (row 2 of
+ *      held_modes[], HOST_LINK_HELD_KNOB_VOLUME): it ends with the link (a USB disconnect, an
+ *      endpoint change) and with a lapsed hold lease, as the knob does; hold again after HELLO.
  *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
  *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
@@ -475,6 +492,9 @@
 // Capability 34 (#847): D7 15 HOLD_LEASE, the host-held modes lapse when a PC with a lease goes
 // silent.
 #define HOST_LINK_CAPS2_HOLD_LEASE (1U << 2)
+// Capability 35 (#855): D7 16 KNOB_VOLUME, the PC may take master volume: the knob's turns on
+// master come to it. Only with a &knob in the keymap.
+#define HOST_LINK_CAPS2_KNOB_VOLUME (1U << 3)
 // D7 15's lease byte: read, and the lease's range in seconds (0 is none).
 #define HOST_LINK_HOLD_LEASE_READ 0xff
 #define HOST_LINK_HOLD_LEASE_MIN_S 3
@@ -482,6 +502,7 @@
 // D7 95's held mask: bit i is row i of host_link.c's held_modes[].
 #define HOST_LINK_HELD_ART_KEYS (1U << 0)
 #define HOST_LINK_HELD_KNOB (1U << 1)
+#define HOST_LINK_HELD_KNOB_VOLUME (1U << 2)
 // D6 0A ANIMATE's flags byte: bit 0 lets art animate on an e-paper art target.
 #define HOST_LINK_ART_ANIMATE_EPAPER (1U << 0)
 
@@ -570,11 +591,13 @@ void host_link_battery_dim_changed(void);
 int host_link_art_key(int8_t dir);
 
 // &knob / &knob_press (knob.c, D7 14 KNOB, #719): whether the PC holds the knob, and its target
-// (KNOB_MASTER when it doesn't). host_link_knob_event sends D7 94 01 kind steps target seq and
-// returns 0 while held, -ENOTCONN otherwise (nothing is sent).
+// (KNOB_MASTER when it doesn't); whether it holds master volume (D7 16, #855). 
+// host_link_knob_event sends D7 94 01 kind steps target seq and returns 0 while held (a turn on
+// master: while master volume is held), -ENOTCONN otherwise (nothing is sent).
 #include "knob.h"
 bool host_link_knob_held(void);
 enum knob_target host_link_knob_target(void);
+bool host_link_knob_volume(void);
 int host_link_knob_event(enum knob_event kind, int8_t steps);
 
 // art_relay_central.c: the right acknowledged the PC's colour, or a read-back after another

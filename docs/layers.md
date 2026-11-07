@@ -17,8 +17,10 @@ The knob (#719): on QWERTY, GAME and GAME+ the encoder is `&knob C_VOLUME_UP C_V
 and its click (the key between B and the joystick's down) `&knob_press C_MUTE`. Without Foxglove
 they are the volume keys and mute; the click used to be a second Space on QWERTY. While Foxglove
 runs, it holds the knob: a click points it at the next app playing sound, a double click mutes
-the app (on master: the system mute), a half-second hold goes back to master volume. On master the
-turns are always the plain volume keys. NUMBER, SYMBOL, FUNCTION and SYSTEM keep their scroll
+the app (on master: the system mute), a half-second hold goes back to master volume. On master
+Foxglove also holds master volume (#855): it sets the level and mute itself and shows its own
+card instead of Windows' volume popup. Without Foxglove (or after its hold lease lapses, #847)
+master is the plain volume keys and Windows' popup again. NUMBER, SYMBOL, FUNCTION and SYSTEM keep their scroll
 encoder and their own click keys.
 
 FUNCTION keeps F1-F12 in their previous positions, mouse controls, mute and the
