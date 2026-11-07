@@ -307,3 +307,8 @@ How the app puts a palette on the keyboard. The key map is data in each board pr
   to right across the split. It is a firmware effect (1-4 stops).
 - **Ripples on key press** (Scenes' trigger) take the palette's `accent2` when the look runs a
   harmony palette.
+- **The Lights page** (Keyboard card): a **Palette** menu beside Off / On, Bandit by default. A
+  harmony or bold palette adds its accents to the swatches and its effects after the keyboard's
+  own: Two-tone and Slow sweep, plus Tide for the bold tier. Each runs as a scene
+  (`lights_palette`, `scenes_ui::start_look`); click a running one to stop it. Bandit offers
+  none, so an untouched card and keyboard look exactly as before.

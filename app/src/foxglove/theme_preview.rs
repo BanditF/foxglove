@@ -3723,3 +3723,168 @@ fn scenes_room_two_keyboards_renders() {
     keep("ui-801-scenes-room-corne.png", &on_corne);
     keep("ui-801-scenes-room-k5.png", &on_k5);
 }
+
+/// #871: the Lights page's palette picker for the taste check: Bandit (the default, no palette
+/// effects), Dusk running Two-tone, and Dusk Bold running Tide.
+#[test]
+fn lights_palette_picker_renders() {
+    use crate::foxglove::lights_page::{tests::sample, PaletteView};
+    use crate::foxglove::scene_looks::Kind;
+    let with = |chosen: &str, running: Option<Kind>| {
+        let mut v = sample();
+        v.palette = PaletteView {
+            chosen: chosen.into(),
+            running,
+        };
+        v
+    };
+    let bandit = effect_preview("ux-p2-lights-bandit.png", sample());
+    let dusk = effect_preview(
+        "ux-p2-lights-dusk.png",
+        with("Bandit Dusk", Some(Kind::TwoTone)),
+    );
+    let bold = effect_preview(
+        "ux-p2-lights-dusk-bold.png",
+        with("Bandit Dusk Bold", Some(Kind::Tide)),
+    );
+    assert_ne!(bandit, dusk);
+    assert_ne!(dusk, bold);
+    // Dusk's sea glass swatch shows only once Dusk is chosen.
+    let teal = |img: &image::RgbaImage| {
+        img.pixels()
+            .filter(|p| {
+                let [r, g, b, _] = p.0;
+                g > 150 && b > 140 && r < 130
+            })
+            .count()
+    };
+    assert!(
+        teal(&dusk) > teal(&bandit) + 200,
+        "{} vs {}",
+        teal(&dusk),
+        teal(&bandit)
+    );
+}
+
+/// #871: what the palette effects do on the Eyelash Corne's LEDs, over one loop: one row per
+/// half second, one cell per live pixel (left half outer to inner, a gap, right half inner to
+/// outer), drawn from the scene engine with the Corne's profile tones. For the taste check;
+/// nothing on a device.
+#[test]
+fn palette_effects_on_the_corne_render() {
+    use crate::foxglove::palette_file::Tier;
+    use crate::foxglove::scene_looks::{Direction, Kind, Look};
+    use foxglove_scene::{Effect, SceneTime};
+    let room = crate::foxglove::scene_room::tests::sample_room();
+    let corne = crate::foxglove::fixtures::users_desk::board();
+    let with_tones = |e: Effect, tier: Tier| {
+        let t = crate::foxglove::scene_room::tones(Some(&corne), tier);
+        match e {
+            Effect::Tones {
+                colours,
+                period_ms,
+                floor,
+                ..
+            } => Effect::Tones {
+                colours,
+                tones: t,
+                period_ms,
+                floor,
+            },
+            Effect::Tide {
+                colours,
+                period_ms,
+                centre_x,
+                inner_mm,
+                outer_mm,
+                floor,
+                dip_ms,
+                ..
+            } => Effect::Tide {
+                colours,
+                tones: t,
+                period_ms,
+                centre_x,
+                inner_mm,
+                outer_mm,
+                floor,
+                dip_ms,
+            },
+            e => e,
+        }
+    };
+    let look = |kind: Kind, palette: &str| Look {
+        kind,
+        palette: palette.into(),
+        speed: 1,
+        direction: Direction::Right,
+        ..Look::default()
+    };
+    let cases = [
+        (
+            "ux-p2-led-twotone-dusk.png",
+            look(Kind::TwoTone, "Bandit Dusk"),
+            Tier::Harmony,
+        ),
+        (
+            "ux-p2-led-twotone-dusk-bold.png",
+            look(Kind::TwoTone, "Bandit Dusk Bold"),
+            Tier::Bold,
+        ),
+        (
+            "ux-p2-led-tide-dusk-bold.png",
+            look(Kind::Tide, "Bandit Dusk Bold"),
+            Tier::Bold,
+        ),
+        (
+            "ux-p2-led-sweep-ember.png",
+            look(Kind::Sweep, "Bandit Ember"),
+            Tier::Harmony,
+        ),
+    ];
+    const CELL: u32 = 24;
+    const ROW: u32 = 14;
+    const GAP: u32 = 18;
+    const ROWS: u32 = 25;
+    for (name, look, tier) in cases {
+        let fx = with_tones(look.effect(&room), tier);
+        let mut img = image::RgbaImage::from_pixel(
+            12 * CELL + GAP + 8,
+            ROWS * ROW + 8,
+            image::Rgba([16, 16, 18, 255]),
+        );
+        for row in 0..ROWS {
+            let f = fx.render(&room, SceneTime(i64::from(row) * 500));
+            let led = |half: &str, i: usize| {
+                f.lights
+                    .iter()
+                    .find(|l| l.device == half && l.light == i.to_string())
+                    .map(|l| l.colour)
+                    .expect("a live pixel")
+            };
+            let cells = (0..6)
+                .rev()
+                .map(|i| led("keyboard:left", i))
+                .chain((0..6).map(|i| led("keyboard:right", i)));
+            for (c, colour) in cells.enumerate() {
+                let x0 = 4 + c as u32 * CELL + if c >= 6 { GAP } else { 0 };
+                let y0 = 4 + row * ROW;
+                for y in y0 + 1..y0 + ROW - 1 {
+                    for x in x0 + 1..x0 + CELL - 1 {
+                        let [r, g, b] = colour.0;
+                        img.put_pixel(x, y, image::Rgba([r, g, b, 255]));
+                    }
+                }
+            }
+        }
+        keep(name, &img);
+        // Nothing goes dark on the palette looks.
+        if look.kind != Kind::Sweep {
+            assert!(
+                img.pixels()
+                    .all(|p| p.0 == [16, 16, 18, 255] || p.0[..3].iter().any(|&v| v > 60)),
+                "{name}"
+            );
+        }
+    }
+}
