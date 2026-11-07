@@ -390,9 +390,24 @@ mod imp {
         skip: &dyn Fn(&str) -> bool,
         one_only: bool,
     ) -> windows::core::Result<Vec<(String, LampArray)>> {
+        matching_counted(vid, pid, skip, one_only).map(|(out, _, _)| out)
+    }
+
+    /// The matching arrays (device id, array), how many Windows lists, how many were skipped.
+    type Counted = (Vec<(String, LampArray)>, usize, usize);
+
+    /// [`matching`], with how many LampArrays Windows lists and how many of them another
+    /// vendor and product skipped (the hold's log line, #179).
+    fn matching_counted(
+        vid: u16,
+        pid: u16,
+        skip: &dyn Fn(&str) -> bool,
+        one_only: bool,
+    ) -> windows::core::Result<Counted> {
         let selector = LampArray::GetDeviceSelector()?;
         let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
         let mut out = Vec::new();
+        let mut skipped = 0;
         for info in &list {
             if one_only && !out.is_empty() {
                 break;
@@ -406,11 +421,12 @@ mod imp {
                 continue;
             };
             if array.HardwareVendorId()? != vid || array.HardwareProductId()? != pid {
+                skipped += 1;
                 continue;
             }
             out.push((id, array));
         }
-        Ok(out)
+        Ok((out, list.Size()? as usize, skipped))
     }
 
     /// The LampArrays behind a Lights page key: those whose vendor and product match, not
@@ -448,12 +464,13 @@ mod imp {
             vid: u16,
             pid: u16,
             changed: Changed,
-        ) -> Vec<(bool, Box<dyn LampDevice>)> {
-            let found = matching(vid, pid, &|_| false, false).unwrap_or_else(|e| {
-                eprintln!("Foxglove: holding the keyboard's Dynamic Lighting devices: {e}");
-                Vec::new()
-            });
-            found
+        ) -> super::super::lamp_hold::Opened {
+            let (found, listed, skipped) = matching_counted(vid, pid, &|_| false, false)
+                .unwrap_or_else(|e| {
+                    eprintln!("Foxglove: holding the keyboard's Dynamic Lighting devices: {e}");
+                    (Vec::new(), 0, 0)
+                });
+            let held = found
                 .into_iter()
                 .map(|(id, array)| {
                     let tell = changed.clone();
@@ -469,10 +486,80 @@ mod imp {
                         array,
                         token,
                     };
-                    (ble, Box::new(device) as Box<dyn LampDevice>)
+                    super::super::lamp_hold::HeldArray {
+                        id,
+                        ble,
+                        device: Box::new(device),
+                    }
                 })
-                .collect()
+                .collect();
+            super::super::lamp_hold::Opened {
+                held,
+                listed,
+                skipped,
+            }
         }
+    }
+
+    /// Keeps the LampArray watch running; stops it when dropped.
+    pub struct LampWatch(windows::Devices::Enumeration::DeviceWatcher);
+
+    impl Drop for LampWatch {
+        fn drop(&mut self) {
+            let _ = self.0.Stop();
+        }
+    }
+
+    /// Watches the LampArrays Windows lists (`LampArray::GetDeviceSelector`), as `peripherals`
+    /// watches Bluetooth: after the first enumeration (one [`Watched::Enumerated`]), each arrival
+    /// and removal. Windows' events, no polling.
+    pub fn watch_lamp_arrays(
+        tell: impl Fn(super::super::lamp_hold::Watched) + Send + Sync + 'static,
+    ) -> windows::core::Result<LampWatch> {
+        use super::super::lamp_hold::Watched;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use windows::Devices::Enumeration::{DeviceInformationUpdate, DeviceWatcher};
+        let selector = LampArray::GetDeviceSelector()?;
+        let watcher = DeviceInformation::CreateWatcherAqsFilter(&selector)?;
+        let tell = Arc::new(tell);
+        // The first enumeration's Added events are the arrays already there: one Enumerated
+        // stands for them all.
+        let enumerated = Arc::new(AtomicBool::new(false));
+        let (t, done) = (tell.clone(), enumerated.clone());
+        watcher.Added(&TypedEventHandler::<DeviceWatcher, DeviceInformation>::new(
+            move |_, info| {
+                if let (true, Some(info)) = (done.load(Ordering::Acquire), info.as_ref()) {
+                    t(Watched::Added(info.Id()?.to_string()));
+                }
+                Ok(())
+            },
+        ))?;
+        // Windows sends arrivals after the first enumeration only to a watcher that also
+        // handles Updated.
+        watcher.Updated(
+            &TypedEventHandler::<DeviceWatcher, DeviceInformationUpdate>::new(|_, _| Ok(())),
+        )?;
+        let t = tell.clone();
+        watcher.Removed(
+            &TypedEventHandler::<DeviceWatcher, DeviceInformationUpdate>::new(move |_, info| {
+                if let Some(info) = info.as_ref() {
+                    t(Watched::Removed(info.Id()?.to_string()));
+                }
+                Ok(())
+            }),
+        )?;
+        let t = tell;
+        watcher.EnumerationCompleted(&TypedEventHandler::<
+            DeviceWatcher,
+            windows::core::IInspectable,
+        >::new(move |_, _| {
+            enumerated.store(true, Ordering::Release);
+            t(Watched::Enumerated);
+            Ok(())
+        }))?;
+        watcher.Start()?;
+        Ok(LampWatch(watcher))
     }
 
     impl Opener for super::WindowsLamps {
@@ -614,6 +701,9 @@ pub type Notify = Arc<dyn Fn(&str) + Send + Sync>;
 /// its own claims: scenes open the same devices separately, and both may hold them at once.
 /// `notify` gets the device's key on each `AvailabilityChanged`.
 #[cfg(target_os = "windows")]
+pub use imp::watch_lamp_arrays;
+
+#[cfg(target_os = "windows")]
 pub fn worker_opener(notify: Notify) -> super::pc_lights::LampOpener {
     let mut claimed = BTreeMap::new();
     Box::new(move |f: &foxglove_devices::pc_lighting::Found| {
@@ -641,8 +731,8 @@ pub struct WindowsHolds;
 
 #[cfg(not(target_os = "windows"))]
 impl super::lamp_hold::HoldOpener for WindowsHolds {
-    fn open(&mut self, _: u16, _: u16, _: Changed) -> Vec<(bool, Box<dyn LampDevice>)> {
-        Vec::new()
+    fn open(&mut self, _: u16, _: u16, _: Changed) -> super::lamp_hold::Opened {
+        super::lamp_hold::Opened::default()
     }
 }
 
