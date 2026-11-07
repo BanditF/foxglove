@@ -48,6 +48,20 @@ class IdentityPackage(unittest.TestCase):
             for logo in ('logo50.png', 'logo150.png', 'logo44.png'):
                 self.assertTrue((exe_dir / 'Assets' / logo).is_file(), logo)
 
+    @unittest.skipUnless(makeappx(), 'no Windows SDK makeappx')
+    def test_a_dev_publisher_packs_without_changing_the_manifest(self):
+        manifest = ROOT / 'app' / 'packaging' / 'identity' / 'AppxManifest.xml'
+        before = manifest.read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            r = subprocess.run(
+                ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                 str(ROOT / 'scripts' / 'pack-identity.ps1'), '-Out', tmp,
+                 '-Publisher', 'CN=Foxglove Dev, O=BanditF'],
+                capture_output=True, text=True, timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertTrue((Path(tmp) / 'foxglove-identity.msix').is_file())
+        self.assertEqual(manifest.read_bytes(), before, 'the checked-in manifest stays as is')
+
     def test_the_manifest_is_neutral(self):
         text = (ROOT / 'app' / 'packaging' / 'identity' / 'AppxManifest.xml').read_text(encoding='utf-8')
         self.assertIn('ProcessorArchitecture="neutral"', text)

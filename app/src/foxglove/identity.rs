@@ -25,7 +25,15 @@
 
 /// Must match `AppxManifest.xml` and `msix.xml`.
 pub const NAME: &str = "BanditF.Foxglove";
-pub const PUBLISHER: &str = "CN=Foxglove Placeholder";
+/// The publisher the build names: the placeholder until a signing identity exists (#90,
+/// #383), or a dev certificate's subject from `FOXGLOVE_IDENTITY_PUBLISHER` at build time
+/// (`scripts/dev-identity.ps1`; `build.rs` puts the same one in the `<msix>` element).
+pub const PUBLISHER: &str = match option_env!("FOXGLOVE_IDENTITY_PUBLISHER") {
+    Some(p) => p,
+    None => DEFAULT_PUBLISHER,
+};
+/// The checked-in manifests' publisher.
+pub const DEFAULT_PUBLISHER: &str = "CN=Foxglove Placeholder";
 /// The package version in `AppxManifest.xml`: bumped with every change to the package.
 pub const VERSION: &str = "1.0.1.0";
 /// The package file the installer puts next to the exe.
@@ -284,9 +292,9 @@ mod tests {
     #[test]
     fn manifests_agree() {
         assert!(APPX.contains(&format!(
-            "Name=\"{NAME}\" Publisher=\"{PUBLISHER}\" Version=\"{VERSION}\""
+            "Name=\"{NAME}\" Publisher=\"{DEFAULT_PUBLISHER}\" Version=\"{VERSION}\""
         )));
-        assert!(EXE.contains(&format!("publisher=\"{PUBLISHER}\"")));
+        assert!(EXE.contains(&format!("publisher=\"{DEFAULT_PUBLISHER}\"")));
         assert!(EXE.contains(&format!("packageName=\"{NAME}\"")));
         assert!(
             APPX.contains("Application Id=\"Foxglove\"")
