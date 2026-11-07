@@ -18,6 +18,12 @@
 //!   wallpapers on screen change (a new wallpaper gets the current state). A push goes out only
 //!   when a monitor's properties differ from what it was last sent, and one push runs at a time:
 //!   changes that arrive meanwhile collapse to the newest.
+//! - **Reloads:** Wallpaper Engine reloads a wallpaper from its saved properties, which pushes
+//!   never write, so a reloaded wallpaper is sent everything again (`foxglove_theme` too): when
+//!   its folder changes (installed again or updated in place: the target's [`Version`], held
+//!   [`RELOAD_QUIET`] so the copy and Wallpaper Engine's reload finish first), and when a
+//!   wallpaper connects to the live feed (it just loaded; the monitors sent something in the last
+//!   [`RECONNECT_FRESH`] are not sent again).
 //! - **Settled:** a layer change waits [`SETTLE`] for the next one before it is sent, so a layer
 //!   held for a moment and let go (GAME+ for Win+Tab or Win+1 in a game, a thumb for NUMBER)
 //!   sends nothing: each push starts a Wallpaper Engine process, and these landed just as it
@@ -86,6 +92,13 @@ pub const GAME_SETTLE_MAX: Duration = Duration::from_secs(6);
 /// reloads (Stop) or resumes (Pause) the wallpaper then, and a `-control` command meanwhile is
 /// ignored ("Windows is reentrant") or lands in the wallpaper's boot.
 pub const RELOAD_QUIET: Duration = Duration::from_secs(2);
+/// A wallpaper connecting to the live feed resends only to the monitors not sent anything this
+/// recently (at Foxglove's start the wallpapers connect right after the first push).
+pub const RECONNECT_FRESH: Duration = Duration::from_secs(3);
+
+/// A wallpaper folder's contents as last seen: its newest file's write time and its number of
+/// entries. Installing it again or updating it in place changes it.
+pub type Version = (std::time::SystemTime, u64);
 
 /// A running scene, as the wallpapers need it.
 #[derive(Clone, Debug, PartialEq)]
@@ -230,6 +243,18 @@ pub struct Target {
     pub file: String,
     /// What its manifest says it reads.
     pub supports: Supports,
+    /// Its folder's contents ([`Version`]): when they change, Wallpaper Engine reloads the
+    /// wallpaper from its saved properties, so it is sent again.
+    pub version: Option<Version>,
+}
+
+/// What a monitor was last sent.
+struct Sent {
+    file: String,
+    version: Option<Version>,
+    props: String,
+    supports: Supports,
+    at: Instant,
 }
 
 /// What one sync did.
@@ -246,8 +271,9 @@ pub struct Synced {
 /// What has been sent, per monitor, and the pushes that keep it current.
 pub struct Pusher<A: Apply> {
     apply: A,
-    /// Per monitor: the wallpaper's file, the properties it was sent and what it supports.
-    sent: BTreeMap<String, (String, String, Supports)>,
+    /// Per monitor: the wallpaper's file and folder version, the properties it was sent, what it
+    /// supports and when.
+    sent: BTreeMap<String, Sent>,
     /// The interface paths, read once per scene placement.
     interfaces: Option<Vec<(String, String)>>,
     placement_seen: Option<u64>,
@@ -275,6 +301,15 @@ impl<A: Apply> Pusher<A> {
         self.sent.clear();
     }
 
+    /// Forgets what was sent longer than `fresh` ago (a wallpaper connected to the live feed:
+    /// it just loaded, on a monitor not known); returns how many monitors will be sent again.
+    pub fn resend_stale(&mut self, fresh: Duration, now: Instant) -> usize {
+        let before = self.sent.len();
+        self.sent
+            .retain(|_, s| now.saturating_duration_since(s.at) < fresh);
+        before - self.sent.len()
+    }
+
     /// [`Pusher::sync`], with the monitors that already had the properties and the last failure.
     pub fn sync_counted(&mut self, state: &State, targets: &[Target]) -> Synced {
         let mut out = Synced::default();
@@ -297,6 +332,7 @@ impl<A: Apply> Pusher<A> {
             location,
             file,
             supports,
+            version,
         } in targets
         {
             let monitor = state.scene.as_ref().and_then(|s| {
@@ -309,15 +345,23 @@ impl<A: Apply> Pusher<A> {
             if self
                 .sent
                 .get(location)
-                .is_some_and(|(f, p, _)| f == file && *p == props)
+                .is_some_and(|s| s.file == *file && s.version == *version && s.props == props)
             {
                 out.unchanged += 1;
                 continue;
             }
             match self.apply.apply(location, &props) {
                 Ok(()) => {
-                    self.sent
-                        .insert(location.clone(), (file.clone(), props, *supports));
+                    self.sent.insert(
+                        location.clone(),
+                        Sent {
+                            file: file.clone(),
+                            version: *version,
+                            props,
+                            supports: *supports,
+                            at: Instant::now(),
+                        },
+                    );
                     out.pushed += 1;
                 }
                 Err(e) => {
@@ -336,9 +380,9 @@ impl<A: Apply> Pusher<A> {
         if told.is_empty() || !self.apply.ready() {
             return;
         }
-        for (location, (_, sent, supports)) in told {
-            let props = gone(supports);
-            if sent != props {
+        for (location, sent) in told {
+            let props = gone(sent.supports);
+            if sent.props != props {
                 let _ = self.apply.apply(&location, &props);
             }
         }
@@ -354,6 +398,10 @@ enum Wake {
     Layer,
     /// The program in front changed (`app.foreground`): a full-screen one may have gone.
     Foreground,
+    /// A wallpaper on screen was installed again or updated: sent once the copy settles.
+    Reinstalled,
+    /// A wallpaper connected to the live feed: it just loaded.
+    Reconnected,
     Quit(Sender<()>),
 }
 
@@ -366,6 +414,8 @@ struct Settle {
     game: Duration,
     game_max: Duration,
     reload: Duration,
+    /// A live-feed connect resends to the monitors not sent anything this recently.
+    fresh: Duration,
 }
 
 impl Settle {
@@ -375,6 +425,7 @@ impl Settle {
         game: GAME_SETTLE,
         game_max: GAME_SETTLE_MAX,
         reload: RELOAD_QUIET,
+        fresh: RECONNECT_FRESH,
     };
 }
 
@@ -403,6 +454,8 @@ enum Next {
         reason: Reason,
         /// A full-screen program left the front during the run (Wallpaper Engine reloaded).
         left_full: bool,
+        /// A wallpaper connected to the live feed during the run.
+        reconnected: bool,
     },
     Quit(Sender<()>),
     /// Every sender has gone.
@@ -419,6 +472,9 @@ struct Run {
     /// Nothing is sent before this (Wallpaper Engine's reload after a full-screen program).
     quiet_until: Option<Instant>,
     left_full: bool,
+    /// The latest a reinstall's quiet holds the run.
+    reinstall_cap: Option<Instant>,
+    reconnected: bool,
 }
 
 impl Run {
@@ -429,6 +485,8 @@ impl Run {
             cap,
             quiet_until: None,
             left_full: false,
+            reinstall_cap: None,
+            reconnected: false,
         }
     }
 
@@ -445,6 +503,7 @@ impl Run {
         Next::Sync {
             reason: self.reason,
             left_full: self.left_full,
+            reconnected: self.reconnected,
         }
     }
 }
@@ -453,7 +512,8 @@ impl Run {
 /// to `settle.layer` from now (`settle.game` with a full-screen program in front; never past the
 /// run's cap); any other change clears the deadline, so the run syncs once the queue is empty; a
 /// full-screen program leaving the front holds the run for `settle.reload` from then, whatever
-/// else comes; quitting wins. A foreground change that isn't such an edge sends nothing. The
+/// else comes, and so does a wallpaper reinstalled (from its last change, at most
+/// `settle.game_max` from its first); quitting wins. A foreground change that isn't such an edge sends nothing. The
 /// waits are one-shot deadlines on the channel: nothing wakes without a change.
 fn next<F: FnMut() -> bool>(rx: &Receiver<Wake>, settle: Settle, screen: &mut Screen<F>) -> Next {
     let mut run: Option<Run> = None;
@@ -506,11 +566,26 @@ fn next<F: FnMut() -> bool>(rx: &Receiver<Wake>, settle: Settle, screen: &mut Sc
                 None => run = Some(Run::new(reason, None, now)),
                 Some(r) => {
                     r.deadline = None;
-                    if !r.left_full {
+                    if !r.left_full && r.reinstall_cap.is_none() {
                         r.reason = reason;
                     }
                 }
             },
+            Wake::Reinstalled => {
+                let r = run.get_or_insert_with(|| Run::new(Reason::Reinstalled, None, now));
+                r.deadline = None;
+                let cap = *r.reinstall_cap.get_or_insert(now + settle.game_max);
+                let until = (now + settle.reload).min(cap);
+                r.quiet_until = Some(r.quiet_until.map_or(until, |q| q.max(until)));
+                if !r.left_full {
+                    r.reason = Reason::Reinstalled;
+                }
+            }
+            Wake::Reconnected => {
+                let r = run.get_or_insert_with(|| Run::new(Reason::Reconnect, None, now));
+                r.deadline = None;
+                r.reconnected = true;
+            }
         }
     }
 }
@@ -520,6 +595,8 @@ struct Shared {
     state: State,
     /// The monitors showing a wallpaper that reads Foxglove's properties.
     targets: Vec<Target>,
+    /// Each wallpaper file's folder version as last seen ([`reinstalled`]).
+    versions: BTreeMap<String, Option<Version>>,
     /// The worker's channel, with the worker's number (a dead worker is forgotten by number).
     wake: Option<(u64, Sender<Wake>)>,
     workers: u64,
@@ -599,6 +676,34 @@ pub fn live(port: Option<u16>) {
     changed(Reason::Live, |s| s.state.live = port);
 }
 
+/// A wallpaper connected to the live feed (`live_feed`): it has just loaded, from its saved
+/// properties, so the monitors not sent anything in the last [`RECONNECT_FRESH`] are sent
+/// everything again. Which monitor it is on isn't known.
+pub fn reconnected() {
+    wake(Wake::Reconnected);
+}
+
+fn wake(w: Wake) {
+    if let Some((worker, tx)) = with(|s| s.wake.clone()) {
+        if tx.send(w).is_err() {
+            forget(worker);
+        }
+    }
+}
+
+/// Whether a wallpaper in `now` was seen before (`seen`, per file, kept while it is off screen
+/// or its folder is half copied) with other folder contents: installed again or updated in
+/// place. `seen` takes the new versions.
+fn reinstalled(seen: &mut BTreeMap<String, Option<Version>>, now: &[Target]) -> bool {
+    let mut again = false;
+    for t in now {
+        if let Some(old) = seen.insert(t.file.clone(), t.version) {
+            again |= old != t.version;
+        }
+    }
+    again
+}
+
 /// Windows' app mode now (`windows_theme`, at start and on each change).
 pub fn theme(mode: Option<super::windows_theme::AppMode>) {
     if with(|s| s.state.theme) != mode {
@@ -621,9 +726,17 @@ pub fn wallpapers(targets: Vec<Target>, reloads: bool) {
     if start {
         start_worker();
     }
-    changed(Reason::Wallpapers, |s| {
+    let again = with(|s| {
+        let again = reinstalled(&mut s.versions, &targets);
         s.targets = targets;
         s.reloads = reloads;
+        again
+    });
+    // A reinstall waits for the copy and Wallpaper Engine's reload; anything else goes at once.
+    wake(if again {
+        Wake::Reinstalled
+    } else {
+        Wake::Changed(Reason::Wallpapers)
     });
 }
 
@@ -731,8 +844,12 @@ fn run(
     // A reload under Stop that hasn't been answered yet (the program came back first).
     let mut resend = false;
     loop {
-        let (mut reason, left_full) = match next(rx, settle, &mut screen) {
-            Next::Sync { reason, left_full } => (reason, left_full),
+        let (mut reason, left_full, reconnected) = match next(rx, settle, &mut screen) {
+            Next::Sync {
+                reason,
+                left_full,
+                reconnected,
+            } => (reason, left_full, reconnected),
             Next::Quit(ack) => {
                 pusher.quit();
                 let _ = ack.send(());
@@ -748,6 +865,9 @@ fn run(
             pusher.resend();
             resend = false;
             reason = Reason::Reload;
+        } else if reconnected && pusher.resend_stale(settle.fresh, Instant::now()) > 0 {
+            // A wallpaper just loaded and connected: it starts from its saved properties.
+            reason = Reason::Reconnect;
         }
         let synced = pusher.sync_counted(&state, &targets);
         let pushed = synced.pushed;
@@ -1065,11 +1185,13 @@ mod tests {
                 location: WE_LEFT.into(),
                 file: "hud/index.html".into(),
                 supports: Supports::ALL,
+                version: None,
             },
             Target {
                 location: WE_RIGHT.into(),
                 file: "live-board/index.html".into(),
                 supports: theme_only,
+                version: None,
             },
         ];
         let mut fake = Fake {
@@ -1153,6 +1275,7 @@ mod tests {
             location: location.into(),
             file: file.into(),
             supports: Supports::ALL,
+            version: None,
         }
     }
 
@@ -1262,6 +1385,7 @@ mod tests {
             location: WE_LEFT.into(),
             file: "C:/WE/projects/myprojects/reef/index.html".into(),
             supports: reef.supports,
+            version: None,
         }];
         let mut state = State::default();
         {
@@ -1474,6 +1598,7 @@ mod tests {
             game: Duration::from_millis(1500),
             game_max: Duration::from_secs(10),
             reload: Duration::from_millis(900),
+            fresh: RECONNECT_FRESH,
         }
     }
 
@@ -1493,7 +1618,8 @@ mod tests {
             next(&rx, gaming(), &mut sc),
             Next::Sync {
                 reason: Reason::Live,
-                left_full: false
+                left_full: false,
+                ..
             }
         ));
         assert!(sc.full);
@@ -1509,7 +1635,8 @@ mod tests {
                 got,
                 Next::Sync {
                     reason: Reason::Reload,
-                    left_full: true
+                    left_full: true,
+                    ..
                 }
             ),
             "the reload's run"
@@ -1678,5 +1805,192 @@ mod tests {
         forget(7);
         assert!(with(|s| s.wake.as_ref().is_some_and(|(n, _)| *n == 8)));
         with(|s| s.wake = None);
+    }
+
+    fn version(secs: u64, entries: u64) -> Option<Version> {
+        Some((
+            std::time::UNIX_EPOCH + Duration::from_secs(1_762_000_000 + secs),
+            entries,
+        ))
+    }
+
+    fn theme_of(props: &str) -> String {
+        let v: serde_json::Value = serde_json::from_str(props).unwrap();
+        v[THEME].as_str().unwrap_or("missing").to_string()
+    }
+
+    /// The bug: Live Board was installed again after Foxglove's only theme push, so Wallpaper
+    /// Engine reloaded it from its saved properties (`foxglove_theme` ""), and the same file
+    /// with the same properties counted as already sent. A changed folder is sent again, with
+    /// the theme; the other monitor isn't.
+    #[test]
+    fn a_reinstalled_wallpaper_is_sent_the_theme_again() {
+        let mut fake = Fake {
+            running: true,
+            ..Fake::default()
+        };
+        let state = State {
+            theme: Some(AppMode::Dark),
+            ..State::default()
+        };
+        let board = |v| Target {
+            version: v,
+            ..target(
+                WE_RIGHT,
+                "C:/WE/projects/myprojects/bandit-live-board/index.html",
+            )
+        };
+        let hud = target(WE_LEFT, "C:/WE/projects/myprojects/bandit-hud/index.html");
+        {
+            let mut p = Pusher::new(&mut fake);
+            assert_eq!(p.sync(&state, &[hud.clone(), board(version(0, 14))]), 2);
+            assert_eq!(p.sync(&state, &[hud.clone(), board(version(0, 14))]), 0);
+            assert_eq!(
+                p.sync(&state, &[hud.clone(), board(version(65, 14))]),
+                1,
+                "installed again: only its monitor"
+            );
+            assert_eq!(p.sync(&state, &[hud.clone(), board(version(65, 14))]), 0);
+            assert_eq!(
+                p.sync(&state, &[hud.clone(), board(version(65, 15))]),
+                1,
+                "a file added in place"
+            );
+        }
+        assert_eq!(fake.pushes.len(), 4);
+        for (at, props) in &fake.pushes[2..] {
+            assert_eq!(at, WE_RIGHT);
+            assert_eq!(theme_of(props), "dark", "{props}");
+        }
+
+        // Seen per file, so a folder that vanished mid-copy and came back still counts.
+        let mut seen = BTreeMap::new();
+        assert!(
+            !reinstalled(&mut seen, &[board(version(0, 14))]),
+            "first sight"
+        );
+        assert!(!reinstalled(&mut seen, &[board(version(0, 14))]));
+        assert!(!reinstalled(&mut seen, &[]), "removed by the install");
+        assert!(
+            reinstalled(&mut seen, &[board(version(65, 14))]),
+            "copied anew"
+        );
+        assert!(!reinstalled(&mut seen, &[board(version(65, 14))]));
+    }
+
+    /// A reinstall waits for the copy and Wallpaper Engine's reload: held `reload` from its last
+    /// change (a plain wallpaper change meanwhile doesn't release it), and never past its cap.
+    #[test]
+    fn a_reinstall_is_held_until_the_copy_settles() {
+        let settle = Settle {
+            reload: Duration::from_millis(400),
+            game_max: Duration::from_millis(1500),
+            ..slow()
+        };
+        let (tx, rx) = mpsc::channel();
+        tx.send(Wake::Reinstalled).unwrap();
+        tx.send(Wake::Changed(Reason::Wallpapers)).unwrap();
+        let t = Instant::now();
+        assert!(matches!(
+            next(&rx, settle, &mut windowed()),
+            Next::Sync {
+                reason: Reason::Reinstalled,
+                ..
+            }
+        ));
+        let took = t.elapsed();
+        assert!(took >= Duration::from_millis(400), "{took:?}");
+        assert!(took < Duration::from_secs(5), "{took:?}");
+
+        // A copy that keeps writing is sent at the cap.
+        let (tx, rx) = mpsc::channel();
+        let copying = std::thread::spawn(move || {
+            let end = Instant::now() + Duration::from_secs(4);
+            while Instant::now() < end {
+                if tx.send(Wake::Reinstalled).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let t = Instant::now();
+        assert!(matches!(
+            next(&rx, settle, &mut windowed()),
+            Next::Sync { .. }
+        ));
+        let took = t.elapsed();
+        drop(rx);
+        copying.join().unwrap();
+        assert!(took >= Duration::from_millis(1500), "{took:?}");
+        assert!(took < Duration::from_millis(3500), "{took:?}");
+    }
+
+    /// A wallpaper connecting to the live feed has just loaded from its saved properties: every
+    /// monitor not sent anything in the last `fresh` is sent everything again, the theme too.
+    /// Right after a push (Foxglove's start) a connect sends nothing.
+    #[test]
+    fn a_live_feed_connect_resends_the_theme() {
+        let settle = Settle {
+            fresh: Duration::from_millis(600),
+            ..slow()
+        };
+        let (pushes_tx, pushes) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let read = || {
+                let s = State {
+                    live: Some(8768),
+                    theme: Some(AppMode::Dark),
+                    ..State::default()
+                };
+                (
+                    s,
+                    vec![target(WE_LEFT, "hud"), target(WE_RIGHT, "board")],
+                    false,
+                )
+            };
+            run(&rx, Wire(pushes_tx), read, settle, || false);
+        });
+        let wait = Duration::from_secs(5);
+        tx.send(Wake::Changed(Reason::Start)).unwrap();
+        for _ in 0..2 {
+            assert_eq!(theme_of(&pushes.recv_timeout(wait).unwrap()), "dark");
+        }
+        // The wallpapers connect right after the first push: nothing again.
+        tx.send(Wake::Reconnected).unwrap();
+        assert!(pushes.recv_timeout(Duration::from_millis(300)).is_err());
+        // Later, one reloads and connects: both monitors (which one isn't known).
+        std::thread::sleep(Duration::from_millis(700));
+        let before = health::now();
+        tx.send(Wake::Reconnected).unwrap();
+        for _ in 0..2 {
+            let p = pushes.recv_timeout(wait).expect("sent again on connect");
+            assert_eq!(theme_of(&p), "dark", "{p}");
+            assert!(p.contains(r#""foxglove_live":8768"#), "{p}");
+        }
+        assert!(pushes.recv_timeout(Duration::from_millis(300)).is_err());
+        assert!(health::now().pushes >= before.pushes + 2);
+        let (ack, acked) = mpsc::channel();
+        tx.send(Wake::Quit(ack)).unwrap();
+        acked.recv_timeout(wait).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn only_monitors_sent_long_enough_ago_are_forgotten() {
+        let mut fake = Fake {
+            running: true,
+            ..Fake::default()
+        };
+        let mut p = Pusher::new(&mut fake);
+        let state = State::default();
+        p.sync(&state, &[target(WE_LEFT, "hud"), target(WE_RIGHT, "board")]);
+        let now = Instant::now();
+        assert_eq!(p.resend_stale(Duration::from_secs(60), now), 0);
+        assert_eq!(p.resend_stale(Duration::ZERO, now), 2);
+        assert_eq!(
+            p.sync(&state, &[target(WE_LEFT, "hud"), target(WE_RIGHT, "board")]),
+            2
+        );
     }
 }

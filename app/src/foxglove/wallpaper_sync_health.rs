@@ -43,6 +43,11 @@ pub enum Reason {
     Layer,
     /// A full-screen program left the front and Wallpaper Engine's reload had time to finish.
     Reload,
+    /// A wallpaper on screen was installed again or updated in place: Wallpaper Engine reloads
+    /// it from its saved properties, so it is sent everything again.
+    Reinstalled,
+    /// A wallpaper connected to the live feed (it just loaded): it is sent everything again.
+    Reconnect,
 }
 
 impl Reason {
@@ -55,6 +60,8 @@ impl Reason {
             Reason::Theme => "Windows app mode changed",
             Reason::Layer => "layer change",
             Reason::Reload => "after a full-screen program (Wallpaper Engine's reload)",
+            Reason::Reinstalled => "a wallpaper on screen was reinstalled or updated",
+            Reason::Reconnect => "a wallpaper connected to the live feed",
         }
     }
 }

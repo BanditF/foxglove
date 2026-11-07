@@ -117,6 +117,23 @@ mod imp {
         .ok()?;
         watch(h, true, wake)
     }
+    /// Entries added, removed or renamed right inside an existing folder (a wallpaper installed
+    /// again: its folder removed and copied anew). `contents` also wakes on writes there.
+    pub fn entries(
+        dir: &std::path::Path,
+        contents: bool,
+        wake: Arc<dyn Fn() + Send + Sync>,
+    ) -> Option<Watch> {
+        if !dir.is_dir() {
+            return None;
+        }
+        let mut filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME;
+        if contents {
+            filter |= FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE;
+        }
+        let h = unsafe { FindFirstChangeNotificationW(&HSTRING::from(dir), false, filter) }.ok()?;
+        watch(h, true, wake)
+    }
     pub fn panel(wake: Arc<dyn Fn() + Send + Sync>) -> Option<Watch> {
         let h = unsafe {
             CreateMutexW(
@@ -202,6 +219,13 @@ mod imp {
         None
     }
     pub fn folder(_: &std::path::Path, _: std::sync::Arc<dyn Fn() + Send + Sync>) -> Option<Watch> {
+        None
+    }
+    pub fn entries(
+        _: &std::path::Path,
+        _: bool,
+        _: std::sync::Arc<dyn Fn() + Send + Sync>,
+    ) -> Option<Watch> {
         None
     }
 }

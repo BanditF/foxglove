@@ -312,7 +312,9 @@ fn sync_targets(
         .into_iter()
         .filter_map(|(location, file)| {
             let supports = super::wallpaper_manifest::for_file(manifests, &file, false)?.supports;
-            supports.any().then_some(super::wallpaper_sync::Target {
+            supports.any().then(|| super::wallpaper_sync::Target {
+                version: super::wallpaper_manifest::folder_of(&file)
+                    .and_then(|d| folder_version(&d)),
                 location,
                 file,
                 supports,
@@ -320,6 +322,24 @@ fn sync_targets(
         })
         .collect()
 }
+
+/// A wallpaper folder's contents (`wallpaper_sync::Version`): the newest write time of the
+/// folder and the files right in it, and how many entries it has. Installing it again (the folder
+/// removed and copied anew) or updating it in place changes it; `None` when it can't be read.
+pub fn folder_version(dir: &std::path::Path) -> Option<super::wallpaper_sync::Version> {
+    let mut newest = std::fs::metadata(dir).and_then(|m| m.modified()).ok()?;
+    let mut entries = 0u64;
+    for e in std::fs::read_dir(dir).ok()?.flatten().take(MAX_ENTRIES) {
+        entries += 1;
+        if let Ok(t) = e.metadata().and_then(|m| m.modified()) {
+            newest = newest.max(t);
+        }
+    }
+    Some((newest, entries))
+}
+
+/// At most this many entries of a wallpaper folder are looked at for its version.
+const MAX_ENTRIES: usize = 512;
 
 /// The indexed wallpaper on screen now, if any.
 pub fn current(monitor: Option<&str>) -> Option<Wallpaper> {
@@ -365,11 +385,15 @@ struct Stamp {
     /// The desktop wallpaper as the registry names it: Windows may rewrite its file before the
     /// registry, so the file alone could match while the name is still to change.
     desktop: Option<String>,
+    /// The folders of the wallpapers on screen at the last pass, their contents
+    /// ([`folder_version`]): a wallpaper installed again or updated is sent everything again.
+    folders: Vec<Option<super::wallpaper_sync::Version>>,
 }
 
-fn stamp(paths: &[PathBuf], running: bool, desktop: Option<String>) -> Stamp {
+fn stamp(paths: &[PathBuf], running: bool, desktop: Option<String>, folders: &[PathBuf]) -> Stamp {
     Stamp {
         desktop,
+        folders: folders.iter().map(|d| folder_version(d)).collect(),
         files: paths
             .iter()
             .map(|p| {
@@ -585,6 +609,29 @@ pub fn start() {
         let engine = super::wallpaper_engine::presence();
         let mut paths = watched(&engine);
         let mut watches = watch(&paths);
+        // Wallpaper Engine's project folders (a wallpaper installed again: its folder removed and
+        // copied anew) and the folders of the wallpapers on screen (updated in place), so a
+        // reloaded wallpaper is sent its properties again (`wallpaper_sync`).
+        let watch_folders = |dirs: &[PathBuf], contents: bool| -> Vec<_> {
+            dirs.iter()
+                .filter_map(|d| {
+                    let tx = tx.clone();
+                    super::screens_watch::entries(
+                        d,
+                        contents,
+                        std::sync::Arc::new(move || {
+                            let _ = tx.send(());
+                        }),
+                    )
+                })
+                .collect()
+        };
+        let mut root_watches = (Vec::<PathBuf>::new(), Vec::new());
+        let mut shown_watches = (
+            Vec::<(PathBuf, Option<super::wallpaper_sync::Version>)>::new(),
+            Vec::new(),
+        );
+        let mut shown_folders: Vec<PathBuf> = Vec::new();
         let mut last: Option<String> = None;
         let mut scanner = super::wallpaper_manifest::Scanner::default();
         let mut seen: Option<Stamp> = None;
@@ -602,6 +649,7 @@ pub fn start() {
                 &[paths.as_slice(), roots.as_slice()].concat(),
                 super::wallpaper_engine::running_now(),
                 desktop_wallpaper(),
+                &shown_folders,
             );
             let refresh = RESCAN.load(std::sync::atomic::Ordering::Relaxed);
             let recheck = RECHECK.swap(false, std::sync::atomic::Ordering::Relaxed);
@@ -638,6 +686,20 @@ pub fn start() {
             let shown = text
                 .as_deref()
                 .map_or_else(Vec::new, |t| folders_on_screen(t, &source));
+            if root_watches.0 != roots {
+                root_watches.1.clear();
+                root_watches = (roots.clone(), watch_folders(&roots, false));
+            }
+            // Watched again when a folder was copied anew (the old watch went with the old one).
+            let versions: Vec<_> = shown
+                .iter()
+                .map(|d| (d.clone(), folder_version(d)))
+                .collect();
+            if shown_watches.0 != versions {
+                shown_watches.1.clear();
+                shown_watches = (versions, watch_folders(&shown, true));
+            }
+            shown_folders.clone_from(&shown);
             let manifests = super::wallpaper_manifest::gather(found, &shown);
             let mut repaint = super::wallpaper_manifest::set(&manifests);
             if repaint {
@@ -719,6 +781,8 @@ pub fn start() {
             super::screens::wallpaper_changed();
         }
         drop(watches);
+        drop(root_watches);
+        drop(shown_watches);
     });
 }
 
@@ -931,18 +995,55 @@ mod tests {
         let config = dir.join("config.json");
         std::fs::write(&config, "{}").unwrap();
         let paths = vec![config.clone(), dir.join("missing")];
-        let before = stamp(&paths, true, None);
+        let before = stamp(&paths, true, None, &[]);
         std::fs::write(dir.join("log.txt"), "icon create err: 1008.").unwrap();
-        assert_eq!(stamp(&paths, true, None), before, "its log isn't read");
-        assert_ne!(stamp(&paths, false, None), before, "it quit");
+        assert_eq!(stamp(&paths, true, None, &[]), before, "its log isn't read");
+        assert_ne!(stamp(&paths, false, None, &[]), before, "it quit");
         assert_ne!(
-            stamp(&paths, true, Some("C:/a.jpg".into())),
+            stamp(&paths, true, Some("C:/a.jpg".into()), &[]),
             before,
             "the desktop wallpaper's name changed"
         );
         std::fs::write(&config, r#"{"me":{}}"#).unwrap();
-        assert_ne!(stamp(&paths, true, None), before, "its config changed");
+        assert_ne!(stamp(&paths, true, None, &[]), before, "its config changed");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A wallpaper installed again (its folder removed and copied anew, the files keeping their
+    /// times, as tools/build.py --install does) or updated in place has a new version, and the
+    /// service's stamp sees it, so wallpaper sync sends it its properties (the theme) again.
+    #[test]
+    fn a_wallpaper_folder_copied_anew_has_a_new_version() {
+        let root = std::env::temp_dir().join(format!("foxglove-wp-version-{}", std::process::id()));
+        let src = root.join("dist");
+        let dest = root.join("myprojects").join("bandit-live-board");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("index.html"), "<html>").unwrap();
+        std::fs::write(src.join("project.json"), "{}").unwrap();
+        let install = || {
+            let _ = std::fs::remove_dir_all(&dest);
+            std::fs::create_dir_all(&dest).unwrap();
+            for f in ["index.html", "project.json"] {
+                std::fs::copy(src.join(f), dest.join(f)).unwrap();
+            }
+        };
+        install();
+        let first = folder_version(&dest).expect("a version");
+        assert_eq!(first.1, 2);
+        assert_eq!(folder_version(&dest), Some(first), "nothing changed");
+        let shown = vec![dest.clone()];
+        let before = stamp(&[], true, None, &shown);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        install();
+        let again = folder_version(&dest).unwrap();
+        assert_ne!(again, first, "copied anew");
+        assert_ne!(stamp(&[], true, None, &shown), before);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(dest.join("main.js"), "// new").unwrap();
+        assert_ne!(folder_version(&dest).unwrap(), again, "updated in place");
+        assert_eq!(folder_version(&root.join("gone")), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
