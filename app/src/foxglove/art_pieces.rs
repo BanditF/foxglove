@@ -19,7 +19,7 @@ use super::art_words::{showing, Badge, Showing};
 
 /// Sets that ship with the app: the lighting presets' art (#273), the plugins' (#238, #259) and
 /// the Bandit Motion set (movement and distortion styles of the Bandit emblem, made by
-/// `art-src/bandit/motion/bandit_motion.py`). The flag marks plugin art.
+/// `tools/art-src/bandit/motion/bandit_motion.py`). The flag marks plugin art.
 pub const BUNDLED: &[(&str, &[u8], bool)] = &[
     (
         "fury.bin",
@@ -79,6 +79,11 @@ pub const BUNDLED: &[(&str, &[u8], bool)] = &[
     (
         "bandit-compass.bin",
         include_bytes!("../../resources/art/bandit-motion/bandit-compass.bin"),
+        false,
+    ),
+    (
+        "bandit-signal-v2.bin",
+        include_bytes!("../../resources/art/bandit-motion/bandit-signal-v2.bin"),
         false,
     ),
 ];
