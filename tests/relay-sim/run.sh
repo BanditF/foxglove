@@ -26,8 +26,9 @@ DEFINES=(
     -DCONFIG_FOXGLOVE_HEALTH=1
     -DCONFIG_FOXGLOVE_HEALTH_RELAY_S=60
     -DCONFIG_ZMK_LOG_LEVEL=0
+    -DCONFIG_FOXGLOVE_TEST_HOOKS=1
 )
-SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency polarity-relink playlist-store playlist-store-old restore-update health art-step-toast art-step-cycles art-step-cycles-lag art-step-boot right-reflash right-reflash-stall)
+SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency polarity-relink playlist-store playlist-store-old restore-update health art-step-toast art-step-cycles art-step-cycles-lag art-step-boot right-reflash right-reflash-stall art-hold-cycles)
 # Known gaps: each must still FAIL (README.md, "Known gaps"). None at the moment.
 KNOWN_GAPS=()
 if [ "$#" -gt 0 ]; then
@@ -42,6 +43,12 @@ flags=(-std=c11 -O1 -g -Wall -Wno-unused-function -Wno-unused-variable -Wno-miss
 extra=()
 if [ -f "$widgets/health.c" ]; then
     extra=("$widgets/health.c")
+fi
+# The D7 05 position press (#851): test_hooks.c as dev builds have it, where the widgets have
+# the art relay's press job.
+if grep -q art_relay_press "$widgets/art_relay_central.c"; then
+    extra+=("$widgets/test_hooks.c")
+    DEFINES+=(-DSIM_TEST_HOOKS=1)
 fi
 "$cc" "${flags[@]}" "${DEFINES[@]}" -I"$here/include" -I"$widgets" -I"$here" \
     "$here/sim_kernel.c" "$here/sim_bt.c" "$here/sim_stubs.c" "$here/main.c" \

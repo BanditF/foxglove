@@ -824,6 +824,17 @@ static void flash_start(uint8_t slot, const uint8_t *name, uint16_t len, uint32_
 // The relay op's ATT error (0: accepted).
 static uint8_t right_op(const uint8_t *d, uint16_t len) {
     switch (d[0]) {
+    case ART_RELAY_PRESS: // test_hooks_press on the right (#851): its keys, as it holds them
+        if (len != 3 || d[1] >= 64 || d[2] > 1) {
+            return 0x85;
+        }
+        if (d[2]) {
+            sim_right.held |= (uint64_t)1 << d[1];
+        } else {
+            sim_right.held &= ~((uint64_t)1 << d[1]);
+        }
+        sim_right.presses++;
+        return 0;
     case ART_RELAY_BEGIN:
         if (sim_right.state == ART_RIGHT_SAVING) {
             return 0x82; // the slot being written stays put
@@ -1303,6 +1314,7 @@ void sim_bt_drop(int64_t back_after_us) {
     free_list(&right_in, false);
     free_list(&left_in, false);
     sim_right.ccc_value = 0; // disconnected_cb in gatt.c: the value goes, the bond's cfg stays
+    sim_right.held = 0;      // test_hooks.c on the right lets its keys go with the link (#851)
     sim_right.snap_ready = 0;
     push_live = false;
     push_out = 0;

@@ -29,8 +29,17 @@ if (Test-Path (Join-Path $Widgets "health.c")) {
     $healthSrc = "`"$Widgets\health.c`""
     $healthObj = "`"$Out\health.obj`""
 }
+# The D7 05 position press (#851): test_hooks.c as dev builds have it, where the widgets have
+# the art relay's press job.
+$hooksSrc = ""
+$hooksObj = ""
+if (Select-String -Quiet -Path (Join-Path $Widgets "art_relay_central.c") -Pattern "art_relay_press") {
+    $hooksSrc = "`"$Widgets\test_hooks.c`""
+    $hooksObj = "`"$Out\test_hooks.obj`""
+    $defs += " /DSIM_TEST_HOOKS=1"
+}
 $cmd = @"
-call "$vcvars" >nul && cd /d "$Out" && cl $common /c "$here\sim_coro.c" /Fo"$Out\sim_coro.obj" && cl $common /Zp1 $defs $inc /c "$here\sim_kernel.c" "$here\sim_bt.c" "$here\sim_stubs.c" "$here\main.c" "$Widgets\art_relay_central.c" $healthSrc && cl $common /Fe"$exe" "$Out\sim_coro.obj" "$Out\sim_kernel.obj" "$Out\sim_bt.obj" "$Out\sim_stubs.obj" "$Out\main.obj" "$Out\art_relay_central.obj" $healthObj
+call "$vcvars" >nul && cd /d "$Out" && cl $common /c "$here\sim_coro.c" /Fo"$Out\sim_coro.obj" && cl $common /Zp1 $defs $inc /c "$here\sim_kernel.c" "$here\sim_bt.c" "$here\sim_stubs.c" "$here\main.c" "$Widgets\art_relay_central.c" $healthSrc $hooksSrc && cl $common /Fe"$exe" "$Out\sim_coro.obj" "$Out\sim_kernel.obj" "$Out\sim_bt.obj" "$Out\sim_stubs.obj" "$Out\main.obj" "$Out\art_relay_central.obj" $healthObj $hooksObj
 "@
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw "relay-sim: build failed" }

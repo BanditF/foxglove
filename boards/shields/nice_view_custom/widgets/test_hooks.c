@@ -16,6 +16,9 @@
 #include "behavior_safety.h"
 #include "host_link.h"
 #endif
+#if !FOXGLOVE_CENTRAL
+#include <zephyr/bluetooth/conn.h>
+#endif
 #include "art_relay.h"
 #include "test_hooks.h"
 #include "half_marker.h"
@@ -33,6 +36,17 @@ BUILD_ASSERT(ARRAY_SIZE(position_map) == ZMK_KEYMAP_LEN, "Unexpected Eyelash lay
 static bool is_right(uint8_t pos) {
     return IS_ENABLED(CONFIG_ZMK_SPLIT) && (position_map[pos] & 0xff) >= 7;
 }
+
+/* How long an owned down stays (#851). The safety net is for a PC that went away mid-hold: the
+ * left lets its owned downs go once the PC has sent nothing for HOST_QUIET_MS, and in any case
+ * HOLD_MAX_MS after the down. Before #851 every down went after 10 s even while the PC kept
+ * talking, which dropped a lab's held layer (SYSTEM: 43, 46, 0) in the middle of a 10-step art
+ * cycle: the next tap came back busy (the left was relaying 46's up) or stepped nothing.
+ * The right can't see the PC: its downs (relayed by the left) go when the split link goes, or
+ * HOLD_MAX_MS + RIGHT_HOLD_SLACK_MS after the down, so the left's own up comes first. */
+#define HOST_QUIET_MS 10000
+#define HOLD_MAX_MS 60000
+#define RIGHT_HOLD_SLACK_MS 5000
 
 /* Only system queue callbacks access this bitmap and its deadlines. */
 static uint64_t downs;
@@ -129,7 +143,7 @@ static void press_cb(struct k_work *work) {
 #endif
     if (request_state) {
         downs |= bit;
-        expires[pos] = k_uptime_get() + 10000;
+        expires[pos] = k_uptime_get() + HOLD_MAX_MS + (FOXGLOVE_CENTRAL ? 0 : RIGHT_HOLD_SLACK_MS);
     }
 #if FOXGLOVE_CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     if (is_right(pos)) {
@@ -174,7 +188,7 @@ static void safety_cb(struct k_work *work) {
     int64_t now = k_uptime_get();
     bool quiet = false;
 #if FOXGLOVE_CENTRAL
-    quiet = (uint32_t)(k_uptime_get_32() - atomic_get(&host_seen_at)) >= 10000;
+    quiet = (uint32_t)(k_uptime_get_32() - atomic_get(&host_seen_at)) >= HOST_QUIET_MS;
 #endif
     for (int pos = 0; pos < ZMK_KEYMAP_LEN; pos++) {
         uint64_t bit = UINT64_C(1) << pos;
@@ -200,6 +214,29 @@ static void safety_cb(struct k_work *work) {
         k_work_reschedule(&safety_work, K_MSEC(100));
     }
 }
+
+#if !FOXGLOVE_CENTRAL
+/* The right (#851): the left's downs go with the split link. Start: the link's disconnect; it
+ * releases what is held once, on the system queue (where the bitmap lives). */
+static void link_gone_cb(struct k_work *work) {
+    for (int pos = 0; pos < ZMK_KEYMAP_LEN; pos++) {
+        uint64_t bit = UINT64_C(1) << pos;
+        if (downs & bit) {
+            downs &= ~bit;
+            emit(pos, false);
+        }
+    }
+}
+static K_WORK_DEFINE(link_gone_work, link_gone_cb);
+
+static void hooks_disconnected(struct bt_conn *conn, uint8_t reason) {
+    k_work_submit(&link_gone_work); // the right's only link is the split link
+}
+
+BT_CONN_CB_DEFINE(test_hooks_conn_cb) = {
+    .disconnected = hooks_disconnected,
+};
+#endif
 
 /* BOOTLOADER (D7 08): reboot into the UF2 bootloader without a double tap. */
 

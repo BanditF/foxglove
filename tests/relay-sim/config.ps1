@@ -14,11 +14,12 @@ $RelaySimDefines = @(
     "CONFIG_NICE_VIEW_ART_RELAY=1",
     "CONFIG_FOXGLOVE_HEALTH=1",
     "CONFIG_FOXGLOVE_HEALTH_RELAY_S=60",
-    "CONFIG_ZMK_LOG_LEVEL=0"
+    "CONFIG_ZMK_LOG_LEVEL=0",
+    "CONFIG_FOXGLOVE_TEST_HOOKS=1"
 )
 # Gating: each must pass on this tree. stall and stall-app were known gaps until the left let
 # go of unanswered requests and dropped a link whose request never got an answer (#618).
-$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored", "select-snap", "snap-latency", "polarity-relink", "playlist-store", "playlist-store-old", "restore-update", "health", "art-step-toast", "art-step-cycles", "art-step-cycles-lag", "art-step-boot", "right-reflash", "right-reflash-stall")
+$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored", "select-snap", "snap-latency", "polarity-relink", "playlist-store", "playlist-store-old", "restore-update", "health", "art-step-toast", "art-step-cycles", "art-step-cycles-lag", "art-step-boot", "right-reflash", "right-reflash-stall", "art-hold-cycles")
 # Known gaps: each must still FAIL on this tree (README.md, "Known gaps"); one that passes means
 # the gap closed and the lists and README need updating. None at the moment.
 $RelaySimKnownGaps = @()
