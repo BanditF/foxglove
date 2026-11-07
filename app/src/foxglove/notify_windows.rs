@@ -10,8 +10,12 @@
 //! folder (`%LOCALAPPDATA%\Microsoft\Windows\Notifications`), which Windows makes when a toast
 //! arrives or goes. Each wake leads to one read (`notifications` settles and bounds them).
 //!
-//! **Access.** Read, never requested: `RequestAccessAsync` belongs on a UI thread and may wait
-//! on the user, so the Screens page links to Windows' own notification privacy page instead.
+//! **Access.** Read, never requested by itself: the Screens page links to Windows' own
+//! notification privacy page. Unpackaged, that page's desktop-apps switch decides. With package
+//! identity (the sparse package declares `userNotificationListener`) Windows decides per app and
+//! starts at "not asked", so the card also offers "Allow Foxglove", which calls
+//! `RequestAccessAsync` on that click, on the UI thread as Windows wants, and waits for the
+//! answer on a worker ([`request_access`]). Either way the folder watch stays the fallback wake.
 //!
 //! **Quiet.** Do not disturb / Focus assist comes from the shell's own quiet-hours state
 //! (WNF, read through ntdll; undocumented but stable since Windows 10 1803, and only read when a
@@ -31,6 +35,40 @@ pub struct Arrivals {
 
 pub use imp::{access, quiet, toasts};
 
+/// Asks Windows for access (identity only; the user's click on the Notifications card). Called
+/// on the UI thread; the answer is awaited on a worker, then the service checks access again.
+pub fn request_access() {
+    imp::request_access()
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+/// How arrivals wake the service: Windows' event when it takes the handler, else the folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wake {
+    Event,
+    /// The folder watch; `log` when the event's refusal is worth a line (not the expected
+    /// refusal without identity).
+    Folder {
+        log: bool,
+    },
+}
+
+/// The wake for the event's registration result: `Ok` takes the event; the refusal without
+/// identity (ERROR_NOT_FOUND) falls back quietly; anything else (with identity, an access the
+/// user withdrew) falls back too, with a log line.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn wake_for(event: Result<(), i32>) -> Wake {
+    match event {
+        Ok(()) => Wake::Event,
+        Err(NO_IDENTITY_CODE) => Wake::Folder { log: false },
+        Err(_) => Wake::Folder { log: true },
+    }
+}
+
+/// ERROR_NOT_FOUND as an HRESULT: the event without package identity.
+#[cfg_attr(not(windows), allow(dead_code))]
+const NO_IDENTITY_CODE: i32 = 0x8007_0490_u32 as i32;
+
 /// Wakes `wake` when notifications may have changed: the listener's event when Windows allows
 /// it, else the database folder. `Err` when neither is there.
 pub fn watch(wake: Arc<dyn Fn() + Send + Sync>) -> Result<Arrivals, String> {
@@ -40,7 +78,7 @@ pub fn watch(wake: Arc<dyn Fn() + Send + Sync>) -> Result<Arrivals, String> {
 #[cfg(windows)]
 mod imp {
     use super::*;
-    use windows::core::{s, w, HRESULT};
+    use windows::core::{s, w};
     use windows::Foundation::TypedEventHandler;
     use windows::UI::Notifications::Management::{
         UserNotificationListener, UserNotificationListenerAccessStatus as Status,
@@ -48,9 +86,6 @@ mod imp {
     use windows::UI::Notifications::{
         KnownNotificationBindings, NotificationKinds, UserNotification,
     };
-
-    /// ERROR_NOT_FOUND as an HRESULT: the event without package identity.
-    const NO_IDENTITY: HRESULT = HRESULT(0x8007_0490_u32 as i32);
 
     pub enum Inner {
         Event {
@@ -81,6 +116,24 @@ mod imp {
         status(UserNotificationListener::Current().and_then(|l| l.GetAccessStatus()))
     }
 
+    pub fn request_access() {
+        let asked = UserNotificationListener::Current().and_then(|l| l.RequestAccessAsync());
+        match asked {
+            Ok(op) => {
+                super::super::services::spawn_named("notify-access", move || {
+                    match op.join() {
+                        Ok(s) => eprintln!("Foxglove notifications: Windows answered {}", s.0),
+                        Err(e) => {
+                            eprintln!("Foxglove notifications: asking Windows: {}", e.message())
+                        }
+                    }
+                    super::super::notifications::retry();
+                });
+            }
+            Err(e) => eprintln!("Foxglove notifications: asking Windows: {}", e.message()),
+        }
+    }
+
     pub fn watch(wake: Arc<dyn Fn() + Send + Sync>) -> Result<Arrivals, String> {
         let listener = UserNotificationListener::Current().map_err(|e| e.message())?;
         let event_wake = wake.clone();
@@ -88,15 +141,19 @@ mod imp {
             event_wake();
             Ok(())
         });
-        match listener.NotificationChanged(&handler) {
-            Ok(token) => {
+        let event = listener.NotificationChanged(&handler);
+        let code = event.as_ref().map(|_| ()).map_err(|e| e.code().0);
+        match (super::wake_for(code), event) {
+            (Wake::Event, Ok(token)) => {
                 return Ok(Arrivals {
                     by_event: true,
                     _inner: Inner::Event { listener, token },
                 })
             }
-            Err(e) if e.code() == NO_IDENTITY => {}
-            Err(e) => eprintln!("Foxglove notifications: the arrival event: {}", e.message()),
+            (Wake::Folder { log: true }, Err(e)) => {
+                eprintln!("Foxglove notifications: the arrival event: {}", e.message())
+            }
+            _ => {}
         }
         let dir = std::env::var_os("LOCALAPPDATA")
             .map(std::path::PathBuf::from)
@@ -249,6 +306,7 @@ mod imp {
     pub fn access() -> Access {
         Access::Unavailable("not on Windows".into())
     }
+    pub fn request_access() {}
     pub fn watch(_: Arc<dyn Fn() + Send + Sync>) -> Result<Arrivals, String> {
         Err("not on Windows".into())
     }
@@ -257,5 +315,30 @@ mod imp {
     }
     pub fn quiet() -> Option<Quiet> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both paths (#179): unpackaged, the event is refused and the folder wakes quietly; with
+    /// identity the event wakes, and any other refusal still falls back to the folder.
+    #[test]
+    fn the_wake_follows_the_events_answer() {
+        assert_eq!(wake_for(Ok(())), Wake::Event);
+        assert_eq!(wake_for(Err(NO_IDENTITY_CODE)), Wake::Folder { log: false });
+        let denied = 0x8007_0005_u32 as i32; // E_ACCESSDENIED
+        assert_eq!(wake_for(Err(denied)), Wake::Folder { log: true });
+    }
+
+    #[test]
+    fn the_card_offers_windows_ask_only_with_identity() {
+        let (plain, ask) = crate::foxglove::notifications_ui::no_access(false);
+        assert!(plain.contains("doesn't let Foxglove"), "{plain}");
+        assert_eq!(ask, None, "unpackaged: only Windows' own page");
+        let (packaged, ask) = crate::foxglove::notifications_ui::no_access(true);
+        assert!(packaged.contains("asks before"), "{packaged}");
+        assert_eq!(ask, Some("Allow Foxglove"));
     }
 }

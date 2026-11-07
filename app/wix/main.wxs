@@ -47,13 +47,25 @@
               <RemoveFolder Id="RemoveUserPrograms" Directory="UserPrograms" On="uninstall" />
             </Component>
 <?ifdef SparseIdentity?>
-            <!-- #179 prototype, only with -dSparseIdentity=<signed msix>: the sparse identity
-                 package next to the exe; Foxglove registers it for the user on first launch. -->
+            <!-- #179, only with -dSparseIdentity=<signed msix>: the sparse identity package next
+                 to the exe; Foxglove registers it for the user on first launch. -->
             <Component Id="IdentityPackage" Guid="32B618B1-51A0-4865-8FA0-0FBFC5BB577D" Win64="yes">
               <File Id="IdentityMsix" Name="foxglove-identity.msix" Source="$(var.SparseIdentity)" />
               <RegistryValue Root="HKCU" Key="Software\Foxglove\Installer" Name="Identity"
                              Type="integer" Value="1" KeyPath="yes" />
             </Component>
+            <!-- The package's logos: its manifest's paths resolve in the external location
+                 (this folder), so Settings' Background light control entry gets its icon. -->
+            <Directory Id="IdentityAssets" Name="Assets">
+              <Component Id="IdentityLogos" Guid="7C1D2F4A-3B6E-4E8A-9F21-5A0C8D7E6B13" Win64="yes">
+                <File Id="IdentityLogo50" Name="logo50.png" Source="$(var.CargoManifestDir)\packaging\identity\Assets\logo50.png" />
+                <File Id="IdentityLogo150" Name="logo150.png" Source="$(var.CargoManifestDir)\packaging\identity\Assets\logo150.png" />
+                <File Id="IdentityLogo44" Name="logo44.png" Source="$(var.CargoManifestDir)\packaging\identity\Assets\logo44.png" />
+                <RegistryValue Root="HKCU" Key="Software\Foxglove\Installer" Name="IdentityLogos"
+                               Type="integer" Value="1" KeyPath="yes" />
+                <RemoveFolder Id="RemoveIdentityAssets" On="uninstall" />
+              </Component>
+            </Directory>
 <?endif?>
           </Directory>
         </Directory>
@@ -78,6 +90,7 @@
       <ComponentRef Id="StartMenu" />
 <?ifdef SparseIdentity?>
       <ComponentRef Id="IdentityPackage" />
+      <ComponentRef Id="IdentityLogos" />
 <?endif?>
     </Feature>
 
