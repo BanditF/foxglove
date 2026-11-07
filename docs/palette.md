@@ -12,6 +12,25 @@ them and drifted.
   it came from). Its build turns the copy into the wallpapers' colours and warns when the copy
   differs from foxglove main. Wallpapers fetch nothing at runtime.
 
+## Glossary
+
+Four words, never swapped for each other (in the app, the tray, the docs and the wallpapers):
+
+- **Wallpaper:** a Wallpaper Engine project of its own (Bandit HUD, Live Board, Courier, Tide,
+  Nightshade, Frost, ...).
+- **Palette:** a colour set (Bandit, Dusk Bold, Steel, ...). A wallpaper can be drawn in many
+  palettes; a palette is not a new wallpaper.
+- **Effect:** an animation on the lights (Two-tone, Tide, Slow sweep, Scanline, ...).
+- **Look:** a saved scene preset on the Scenes page: an effect with its palette or colour,
+  speed, direction and width.
+
+Where a name is shared, the noun always goes with it: Tide is a wallpaper, a palette and an
+effect, Nightshade and Frost are a wallpaper and a palette. Write "the Tide wallpaper", "the
+Tide palette", "the Tide effect", never a bare "Tide". The app does the same: the Lights page's
+picker says **Tide palette** and its pill **Tide effect**. The Scenes page's palette that
+follows the screen says **From wallpaper** (saved as `Wallpaper`). Only labels change: palette
+`name`s, file names and saved settings keep their values.
+
 ## The file
 
 ```json
@@ -50,7 +69,7 @@ them and drifted.
 | `roles.paper_ink` | no | Ink on `paper`. Falls back to Bandit's. |
 | `roles.app_ground` | no | The night ground Foxglove draws on: the scenes' **Night** background. Bandit's file keeps it equal to `base`. |
 | `roles.wall_ground` | no | The night ground the wallpapers draw on (`bg` in bandit-wallpapers' `bandit.js`). |
-| `roles.accent2` | no | A second accent, for dark grounds (see [Harmony palettes](#harmony-palettes)). Without it a consumer uses `accent` alone, which is Bandit's look. |
+| `roles.accent2` | no | A second accent, for dark grounds (see [Harmony palettes](#harmony-palettes)). Without it a consumer uses `accent` alone, as Bandit does. |
 | `roles.accent2_light` | no | `accent2` for text on light grounds. Derived: `accent2` clamped to 4.5:1 on `paper`. |
 | `roles.accent3` | no | A third accent, used even more sparingly. Only read when `accent2` is set. |
 | `roles.accent3_light` | no | `accent3` for text on light grounds. Derived: `accent3` clamped to 4.5:1 on `paper`. |
@@ -97,7 +116,7 @@ against the ground. The Rust reader (`palette_file::readable`) and the wallpaper
 ## Who wins
 
 - App chrome always uses the bundled palette; no wallpaper restyles the app.
-- Lights and the scenes' **Wallpaper** palette: the manifest of the wallpaper on screen, then its
+- Lights and the scenes' **From wallpaper** palette: the manifest of the wallpaper on screen, then its
   picture, then the Windows accent or Bandit.
 - Wallpaper drawing: the user's own setting, then the keyboard's light colour (live feed, behind
   its setting), then the wallpaper's built palette.
@@ -199,7 +218,7 @@ promise fails the gate.
 Taste batch 2: the user liked the harmony palettes and asked for a round where the other colours
 lead more. The bold tier adds to the library and changes nothing above: the harmony palettes and
 `bandit.json` keep their rules. A bold palette says `"tier": "bold"`; a file without `tier` is
-`harmony`. The app reads it (`palette_file::Tier`, #871): an unknown tier reads as `harmony`, and a reader from before #871 skips the field like any unknown key. The Scenes page lists each Bold variant beside its harmony palette, then Tide, Nightshade and Frost.
+`harmony`. The app reads it (`palette_file::Tier`, #871): an unknown tier reads as `harmony`, and a reader from before #871 skips the field like any unknown key. The Scenes page lists each Bold variant beside its harmony palette, then the Tide, Nightshade and Frost palettes.
 
 Every bold palette still keeps Bandit's `accent`, `highlight` and `accent_light` exactly, and
 the fox is never recoloured. Orange stays the anchor by **role**, not by area: it is the fox,
@@ -218,8 +237,8 @@ alpha keys.
 
 A **Bold** variant (`<file>-bold.json`, name `<name> Bold`) pushes a harmony palette further: the
 same hues, `accent2` more saturated, and the ground taken over by the palette's cool side. It
-always sits next to the palette it comes from (the unit test checks this). Tide, Nightshade and
-Frost are new: a deep teal night, a violet dusk and a cold steel-and-ice.
+always sits next to the palette it comes from (the unit test checks this). The Tide, Nightshade and
+Frost palettes are new: a deep teal night, a violet dusk and a cold steel-and-ice.
 
 ### Usage rule (bold tier)
 
@@ -241,7 +260,7 @@ Frost are new: a deep teal night, a violet dusk and a cold steel-and-ice.
   the major ticks, the sweep arc, the lock, the album frame, every seventh audio bar.
 - **Lights:** orange on 28 keys; `accent2` on the 6 thumbs **and** the outer column (Tab, Esc,
   Shift and their mirror, the modifier column), 12 of 42 keys (29 %); `accent3` on F and J (2
-  keys, 5 %). Effects: **Tide** for the cool palettes, a wave of `accent2` that rolls in from the
+  keys, 5 %). Effects: the **Tide effect** for the cool palettes, a wave of `accent2` that rolls in from the
   outer edges to the inner keys and back, 12 s loop; a key swaps colour only at a slow dip to
   40 % (at least 2 s from full to the swap and back), so there is no jump and no muddy blend of
   orange into its complement. Ember Bold keeps the slow gradient sweep through its warm stops
@@ -300,15 +319,16 @@ How the app puts a palette on the keyboard. The key map is data in each board pr
   tone 0 and tone 1 breathe in opposite phase and `accent3` holds. Where no LED is off `accent`,
   the whole board crossfades `accent` and `accent2`. That is the firmware's own breathe
   (SET_EFFECT kind 4), so nothing streams.
-- **Tide** (scene effect `Tide`, 12 s, dip to 40 %, 2 s each way): frames from the PC. The
+- **Tide effect** (scene effect `Tide`, 12 s, dip to 40 %, 2 s each way): frames from the PC. The
   firmware has no per-key wave.
 - **Slow sweep:** the scenes' Sweep through the palette's stops at speed 1 (12 s a turn; a bold
   palette at speed 2, 9 s), left
   to right across the split. It is a firmware effect (1-4 stops).
-- **Ripples on key press** (Scenes' trigger) take the palette's `accent2` when the look runs a
+- **Ripples on key press** (Scenes' trigger) take the palette's `accent2` when the look uses a
   harmony palette.
-- **The Lights page** (Keyboard card): a **Palette** menu beside Off / On, Bandit by default. A
+- **The Lights page** (Keyboard card): a **Palette** menu beside Off / On, Bandit by default
+  (shared names read **Tide palette**, **Nightshade palette**, **Frost palette**). A
   harmony or bold palette adds its accents to the swatches and its effects after the keyboard's
-  own: Two-tone and Slow sweep, plus Tide for the bold tier. Each runs as a scene
+  own: Two-tone and Slow sweep, plus the Tide effect for the bold tier. Each runs as a scene
   (`lights_palette`, `scenes_ui::start_look`); click a running one to stop it. Bandit offers
   none, so an untouched card and keyboard look exactly as before.

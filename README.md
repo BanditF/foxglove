@@ -52,7 +52,7 @@ Optional integrations, each one off unless its program is there: Wallpaper Engin
   wallpaper), PC lighting devices by zone, colour calibration, and battery dimming done by the
   keyboard itself.
 - **Scenes:** one effect across the room's lights (monitors, case, keyboard, mouse) on a map from
-  Windows' display layout, with presets, wallpaper looks and triggers (profile, key press, layer
+  Windows' display layout, with saved looks (yours and the wallpapers'), palettes and triggers (profile, key press, layer
   change).
 - **Profiles:** sparse overrides of the settings, switched by hand or by the program in front.
 - **Plugins:** sandboxed, signed plugins with the permissions you approve, a local API

@@ -846,7 +846,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     if width < TWO_COLUMNS {
         card(ui, "Room", |ui| room_card(ui, v, draft, &mut out));
         ui.add_space(10.0);
-        card(ui, "Presets", |ui| presets(ui, v, &mut out));
+        card(ui, "Looks", |ui| presets(ui, v, &mut out));
         ui.add_space(10.0);
         card(ui, "Effect", |ui| effect_card(ui, v, draft, &mut out));
         ui.add_space(10.0);
@@ -875,7 +875,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(right_w);
-                card(ui, "Presets", |ui| presets(ui, v, &mut out));
+                card(ui, "Looks", |ui| presets(ui, v, &mut out));
             },
         );
     });
@@ -1514,7 +1514,12 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
                 .chain([looks::WALLPAPER])
                 .chain(own);
             for name in names {
-                let mut pill = theme::pill(ui, look.palette == name, name);
+                let label = if name == looks::WALLPAPER {
+                    looks::WALLPAPER_LABEL
+                } else {
+                    name
+                };
+                let mut pill = theme::pill(ui, look.palette == name, label);
                 if name == looks::WALLPAPER {
                     pill = pill.on_hover_text(looks::WALLPAPER_HINT);
                 }
@@ -1592,7 +1597,7 @@ fn slid(r: &egui::Response, new: Look, old: &Look, set: &mut impl FnMut(Look, bo
 }
 
 fn save_row(ui: &mut egui::Ui, draft: &mut Draft, out: &mut Vec<Intent>) {
-    ui.label(theme::caps_label(ui, "Save as preset"));
+    ui.label(theme::caps_label(ui, "Save as look"));
     let problem = looks::name_problem(&draft.name);
     let save = std::cell::Cell::new(false);
     split_row(
@@ -1600,7 +1605,7 @@ fn save_row(ui: &mut egui::Ui, draft: &mut Draft, out: &mut Vec<Intent>) {
         |ui| {
             let clicked = ui
                 .add_enabled(problem.is_none(), egui::Button::new("Save"))
-                .on_hover_text("Keep this look in your presets")
+                .on_hover_text("Keep this look under Yours")
                 .clicked();
             save.set(save.get() || clicked);
         },
@@ -1679,7 +1684,7 @@ fn presets(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     ui.add_space(6.0);
     ui.label(theme::caps_label(ui, "Yours"));
     if v.saved.is_empty() {
-        ui.weak("Presets you save show here.");
+        ui.weak("Looks you save show here.");
     }
     for p in &v.saved {
         preset_row(ui, p, v.look == p.look, true, None, p.look.kind.hint(), out);
@@ -1703,7 +1708,7 @@ fn preset_row(
             remove = removable
                 && ui
                     .small_button("Remove")
-                    .on_hover_text("Remove this preset")
+                    .on_hover_text("Remove this look")
                     .clicked();
             if let Some(tag) = tag {
                 ui.weak(tag)
@@ -2177,7 +2182,7 @@ pub(crate) mod tests {
             },
             ..sample_none()
         };
-        let picked = click(&v, looks::WALLPAPER);
+        let picked = click(&v, looks::WALLPAPER_LABEL);
         assert!(
             matches!(&picked[..], [Intent::Look { look, save: true }] if look.follows_wallpaper()),
             "{picked:?}"
@@ -2186,7 +2191,7 @@ pub(crate) mod tests {
             look: Look::default(),
             ..sample_none()
         };
-        assert!(click(&scan, looks::WALLPAPER).is_empty());
+        assert!(click(&scan, looks::WALLPAPER_LABEL).is_empty());
     }
 
     /// A look the user started comes back after a restart; one they stopped doesn't; a store

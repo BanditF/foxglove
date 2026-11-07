@@ -1061,7 +1061,7 @@ fn palette_combo(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
                         r
                     })
                     .inner;
-                if row.on_hover_text(&q.name).clicked() && !selected {
+                if row.on_hover_text(format!("{} palette", q.name)).clicked() && !selected {
                     out.push(Intent::Palette(q.name.clone()));
                 }
             }
@@ -1078,7 +1078,7 @@ fn palette_effects(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     let p = lp::of(&v.palette.chosen);
     for kind in lp::effects(p) {
         let on = v.palette.running == Some(kind);
-        let hint = format!("{}: {}", p.name, lp::effect_hint(kind));
+        let hint = format!("{} palette: {}", p.name, lp::effect_hint(kind));
         let pill = theme::pill(ui, on, lp::effect_label(kind)).on_hover_text(hint);
         if pill.clicked() {
             out.push(if on {
@@ -1091,7 +1091,7 @@ fn palette_effects(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
 }
 
 /// The palette picker's hover.
-pub const PALETTE_HINT: &str = "The colours the keyboard's palette effects use. Bandit is     Foxglove's own orange; the others add one or two accents. Picking one changes nothing until     you start one of its effects or pick one of its swatches.";
+pub const PALETTE_HINT: &str = "The colours the keyboard's palette effects use. Bandit is Foxglove's own orange; the others add one or two accents. Picking one changes nothing until you start one of its effects or pick one of its swatches, and never changes the wallpaper.";
 
 /// A palette's colours as small dots beside its pill, as the keyboard's screen side shows them.
 fn palette_dots(ui: &mut egui::Ui, colours: &[[u8; 3]]) {
