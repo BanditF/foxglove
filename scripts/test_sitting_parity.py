@@ -88,11 +88,12 @@ def hil_cases():
 
 
 def log_lines():
-    """Every source line with a `"Foxglove` string: where the app's log lines are written."""
+    """Every source line with a `"Foxglove` string: where the app's log lines are written. The
+    shell shared with Hideout (app/hub-shell, #932) writes them as `"{app}: ...`."""
     lines = []
-    for root in ('app/src', 'crates'):
+    for root in ('app/src', 'app/hub-shell', 'crates'):
         for f in (REPO / root).rglob('*.rs'):
-            lines += [l for l in f.read_text(encoding='utf-8').splitlines() if '"Foxglove' in l]
+            lines += [l for l in f.read_text(encoding='utf-8').splitlines() if '"Foxglove' in l or '"{app}' in l]
     return lines
 
 

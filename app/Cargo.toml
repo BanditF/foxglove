@@ -17,6 +17,8 @@ via-writes = ["foxglove-via/via-writes"]
 
 [dependencies]
 foxglove-update = { path = "../crates/foxglove-update" }
+# Foxglove (#932): the shell shared with Hideout's hub (GPL, in this workspace).
+hub-shell = { path = "hub-shell" }
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 # Foxglove: the shared link to the keyboard (MIT).
 foxglove-link = { path = "../crates/foxglove-link", features = ["devices"] }
@@ -190,3 +192,9 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Foxglove (#932): the hub shell shared with Hideout, and Hideout's hub itself. Both are GPL like
+# the app, so they live in its workspace and lockfile. `cargo build` here still builds only the
+# app; check.ps1 runs clippy and tests with --workspace.
+[workspace]
+members = ["hub-shell", "hideout"]

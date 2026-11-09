@@ -1,0 +1,26 @@
+[package]
+name = "hideout"
+license = "GPL-3.0-only"
+description = "Hideout: the hub that hosts modules (tray, window, sidebar, status strip); lab only for now"
+authors = ["BanditF"]
+repository = "https://github.com/BanditF/foxglove"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "hideout"
+path = "src/main.rs"
+
+[dependencies]
+hub-shell = { path = "../hub-shell" }
+egui = "0.36.1"
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+toml = "0.9"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+tray-icon = "0.24.2"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+winreg = "0.56.0"

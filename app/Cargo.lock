@@ -1615,6 +1615,7 @@ dependencies = [
  "getrandom 0.3.4",
  "gtk",
  "hidapi",
+ "hub-shell",
  "image",
  "khronos-egl",
  "lzma-rs",
@@ -2371,6 +2372,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hideout"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui 0.36.1",
+ "hub-shell",
+ "image",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+ "tray-icon",
+ "winreg",
+]
+
+[[package]]
 name = "hideout-contract"
 version = "1.0.0"
 dependencies = [
@@ -2395,6 +2411,15 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "hub-shell"
+version = "0.1.0"
+dependencies = [
+ "egui 0.36.1",
+ "serde",
+ "windows 0.62.2",
+]
 
 [[package]]
 name = "iana-time-zone"
