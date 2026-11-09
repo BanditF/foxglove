@@ -48,6 +48,11 @@ void host_link_send(const uint8_t *data, int len) {
     memcpy(sim_left.last_send, data, n);
     sim_left.last_send_len = n;
     sim_left.sends++;
+    if (len >= 7 && data[0] == 0xD6 && data[1] == 0x8B) {
+        memset(sim_left.slot_read, 0, sizeof(sim_left.slot_read));
+        memcpy(sim_left.slot_read, data, len < 32 ? len : 32);
+        sim_left.slot_read_replies++;
+    }
 }
 /* The self-report (#705): host_link.c's D7 93 for the right, and what health.c reads. */
 void host_link_health_right(uint8_t status) {

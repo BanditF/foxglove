@@ -787,6 +787,14 @@ static void right_update_lit(void) {
 
 static bool snap_push; // the capture under way is to be pushed (SNAP with ART_RELAY_SNAP_PUSH)
 
+// The bytes each flash slot holds (art_slots.c's blob), the pushed set on screen (for SAVE), and
+// the bytes a write in flight takes (#878: SLOT_READ pushes them back).
+static uint8_t flash_bytes[ART_RELAY_FLASH_SLOTS][sizeof(blob)];
+static uint8_t shown_bytes[sizeof(blob)];
+static uint8_t job_bytes[sizeof(blob)];
+
+const uint8_t *sim_bt_flash_bytes(int slot) { return flash_bytes[slot]; }
+
 // The flash write SAVE or STORE started (art_slots_save on its own queue), and where it goes.
 static struct {
     uint8_t slot;
@@ -800,6 +808,7 @@ static void flash_done_cb(struct k_work *w) {
     uint32_t writes = s->writes + 1;
     *s = flash_job.to;
     s->writes = writes;
+    memcpy(flash_bytes[flash_job.slot], job_bytes, flash_job.to.len);
     if (flash_job.store) {
         sim_right.stores_ok++;
         sim_right.state = flash_job.resume;
@@ -810,7 +819,9 @@ static void flash_done_cb(struct k_work *w) {
 }
 static K_WORK_DELAYABLE_DEFINE(flash_done_work, flash_done_cb);
 
-static void flash_start(uint8_t slot, const uint8_t *name, uint16_t len, uint32_t crc) {
+static void flash_start(uint8_t slot, const uint8_t *name, const uint8_t *bytes, uint16_t len,
+                        uint32_t crc) {
+    memcpy(job_bytes, bytes, len);
     flash_job.slot = slot;
     flash_job.to.used = true;
     flash_job.to.len = len;
@@ -820,6 +831,8 @@ static void flash_start(uint8_t slot, const uint8_t *name, uint16_t len, uint32_
     int64_t us = sim_bt_faults.flash_write_us ? sim_bt_faults.flash_write_us : 650000;
     k_work_schedule_for_queue(&right_sys_q, &flash_done_work, K_USEC(us));
 }
+
+static void slot_push_start(uint8_t slot, uint16_t at, uint16_t want);
 
 // The relay op's ATT error (0: accepted).
 static uint8_t right_op(const uint8_t *d, uint16_t len) {
@@ -866,6 +879,7 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
             sim_right.set = -1;
             sim_right.shown_len = sim_right.blob_len;
             sim_right.shown_crc = sim_right.blob_crc;
+            memcpy(shown_bytes, blob, sim_right.blob_len);
             sim_right.pushes_ok++;
             sim_right.redraws++;
             right_redraw();
@@ -884,7 +898,7 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
             return 0x85;
         }
         flash_job.store = false;
-        flash_start(d[1], &d[2], sim_right.shown_len, sim_right.shown_crc);
+        flash_start(d[1], &d[2], shown_bytes, sim_right.shown_len, sim_right.shown_crc);
         return 0;
     case ART_RELAY_STORE: // #522: the set received since BEGIN into flash, never shown
         if (sim_right.version < ART_RELAY_STORE_STATUS_VERSION) {
@@ -907,7 +921,7 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
         }
         flash_job.store = true;
         flash_job.resume = sim_right.set == -1 ? ART_RIGHT_PLAYING : ART_RIGHT_IDLE;
-        flash_start(d[1], &d[2], sim_right.blob_len, sim_right.blob_crc);
+        flash_start(d[1], &d[2], blob, sim_right.blob_len, sim_right.blob_crc);
         return 0;
     case ART_RELAY_SELECT:
         if (sim_right.state == ART_RIGHT_SAVING) {
@@ -947,6 +961,24 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
             right_redraw();
         }
         return 0;
+    case ART_RELAY_SLOT_READ: { // #878: push a window of a kept set (art_relay_peripheral.c)
+        if (sim_right.version < ART_RELAY_SLOT_READ_STATUS_VERSION) {
+            return 0; // a right before it: no case for the op, answered like any write
+        }
+        if (len != 6) {
+            return BT_ATT_ERR_INVALID_ATTRIBUTE_LEN;
+        }
+        if (sim_right.state == ART_RIGHT_SAVING) {
+            return 0x82;
+        }
+        uint16_t at = sys_get_le16(&d[2]);
+        if (d[1] >= ART_RELAY_FLASH_SLOTS || !sim_right.flash[d[1]].used ||
+            at > sim_right.flash[d[1]].len) {
+            return 0x85;
+        }
+        slot_push_start(d[1], at, sys_get_le16(&d[4]));
+        return 0;
+    }
     case ART_RELAY_SNAP:
         // art_relay_peripheral.c: one byte reads as before; a second, ART_RELAY_SNAP_PUSH (#662),
         // pushes the image once captured. A right before the push refuses two bytes.
@@ -1096,6 +1128,7 @@ static void right_rx_cb(struct k_work *w) {
 }
 
 static void push_more(void);
+static void slot_push_more(void);
 
 static void right_tx_notify_cb(struct k_work *w) {
     (void)w;
@@ -1104,6 +1137,7 @@ static void right_tx_notify_cb(struct k_work *w) {
         push_out -= right_push_sent; // bt_gatt_notify_cb's func: the next chunks go
         right_push_sent = 0;
         push_more();
+        slot_push_more();
     }
 }
 
@@ -1160,6 +1194,58 @@ static void push_more(void) {
     if (push_at >= SCREEN_SNAP_WIRE) {
         push_live = false;
     }
+}
+
+/* The right's slot push (art_relay_peripheral.c, #878): bytes [at, at + want) of a kept set as
+ * notifications of the status value, ART_RELAY_RANG_SLOT, slot, offset u16 LE, then up to MTU - 7
+ * bytes, an empty chunk at the set's end when the window reaches it; paced like the screen push
+ * (it shares PUSH_OUT here). It runs on the right's system queue. */
+static bool spush_live, spush_end_due;
+static uint8_t spush_slot;
+static uint16_t spush_at, spush_to;
+
+static void slot_push_more(void) {
+    while (spush_live && push_out < PUSH_OUT && (spush_at < spush_to || spush_end_due)) {
+        if (!(sim_right.ccc_value & BT_GATT_CCC_NOTIFY) || !link_up) {
+            spush_live = false;
+            return;
+        }
+        uint16_t n = MIN(SIM_MTU - 3 - ART_RELAY_SLOT_PUSH_HEADER, spush_to - spush_at);
+        struct pdu *p = new_pdu(P_NOTIFY, H_STATUS);
+        p->data[0] = ART_RELAY_RANG_SLOT;
+        p->data[1] = spush_slot;
+        sys_put_le16(spush_at, &p->data[2]);
+        memcpy(&p->data[ART_RELAY_SLOT_PUSH_HEADER], &flash_bytes[spush_slot][spush_at], n);
+        p->len = ART_RELAY_SLOT_PUSH_HEADER + n;
+        p->push = true;
+        if (n == 0) {
+            spush_end_due = false;
+        }
+        spush_at += n;
+        push_out++;
+        sim_bt_stats.slot_chunks++;
+        right_send(p);
+    }
+    if (spush_at >= spush_to && !spush_end_due) {
+        spush_live = false;
+    }
+}
+
+static void slot_push_cb(struct k_work *w) {
+    (void)w;
+    slot_push_more();
+}
+static K_WORK_DEFINE(slot_push_work, slot_push_cb);
+
+static void slot_push_start(uint8_t slot, uint16_t at, uint16_t want) {
+    uint16_t len = sim_right.flash[slot].len;
+    spush_slot = slot;
+    spush_at = at;
+    spush_to = (uint16_t)MIN((uint32_t)len, (uint32_t)at + want);
+    spush_end_due = spush_to == len;
+    spush_live = true;
+    sim_bt_stats.slot_pushes++;
+    k_work_submit_to_queue(&right_sys_q, &slot_push_work);
 }
 
 static uint8_t ring_what;
@@ -1317,6 +1403,7 @@ void sim_bt_drop(int64_t back_after_us) {
     sim_right.held = 0;      // test_hooks.c on the right lets its keys go with the link (#851)
     sim_right.snap_ready = 0;
     push_live = false;
+    spush_live = false;
     push_out = 0;
     right_push_sent = 0;
     snap_push = false;
@@ -1358,7 +1445,7 @@ void sim_bt_init(void) {
     k_work_init_delayable(&att_timeout_work, att_timeout_cb);
     att_timeout_work.target = &k_sys_work_q;
     sim_right.set = 0;
-    sim_right.version = ART_RELAY_SLOT_CRC_STATUS_VERSION;
+    sim_right.version = ART_RELAY_SLOT_READ_STATUS_VERSION;
     sim_right.polarity = -1;
     sim_right.follow = true;
     sim_right.rgb_on = true;

@@ -146,12 +146,23 @@ enum art_relay_op {
     // SAVING, then back to the shown set's state (IDLE or PLAYING), or SAVE_FAILED. Refused
     // (0x85) with nothing received, no such slot, or the slot on screen; 0x82 while saving.
     ART_RELAY_STORE = 19,
+    // SLOT_READ (#878, status version >= ART_RELAY_SLOT_READ_STATUS_VERSION): slot u8, offset
+    // u16 LE, want u16 LE, a write request. The right pushes bytes [offset, offset + want) of the
+    // set kept in that slot as notifications of the status value, ART_RELAY_RANG_SLOT chunks
+    // (below), the way SNAP pushes the screen (#662): a notification takes no response buffer and
+    // a right with data to send skips its latency, where one paced read per chunk waited for it
+    // to wake each time. Where the set ends first, an empty chunk at its end follows the last one.
+    // Refused with 0x82 while a slot is being written, 0x85 for no such slot, an empty one or an
+    // offset past the set's end. A right before it ignores the op: the left asks only from 12 on.
+    ART_RELAY_SLOT_READ = 20,
 };
 
 // The right status version that has ART_RELAY_STORE (#522).
 #define ART_RELAY_STORE_STATUS_VERSION 10
 // The right status version with the slot CRC characteristic (#863, ART_RELAY_SLOT_CRC_UUID).
 #define ART_RELAY_SLOT_CRC_STATUS_VERSION 11
+// The right status version with ART_RELAY_SLOT_READ (#878).
+#define ART_RELAY_SLOT_READ_STATUS_VERSION 12
 
 // The right rings on every CCC write that turns notify on (#618), not only when Zephyr's CCC value
 // changes: for the bonded left, Zephyr restores that value at encryption, ~15 s before the left
@@ -167,6 +178,11 @@ enum art_relay_op {
 // SNAP's second byte: push the image once captured (#662).
 #define ART_RELAY_SNAP_PUSH 1
 #define ART_RELAY_SNAP_PUSH_HEADER 3 // ART_RELAY_RANG_SCREEN, offset u16 LE
+// Byte 0 of a pushed slot chunk (#878, ART_RELAY_SLOT_READ): slot u8, offset u16 LE and the set's
+// bytes from there follow (none: the set ends at offset). Never a ring; only a left that asked
+// gets them.
+#define ART_RELAY_RANG_SLOT 0x81
+#define ART_RELAY_SLOT_PUSH_HEADER 4 // ART_RELAY_RANG_SLOT, slot, offset u16 LE
 
 #define ART_RELAY_HEADER_SIZE 12
 #define ART_RELAY_MAGIC "NVA1"
@@ -298,6 +314,9 @@ int art_relay_erase(uint8_t slot);
 // anything is sent.
 int art_relay_store(uint8_t slot, const uint8_t name[16]);
 int art_relay_slot(uint8_t slot);
+// D6 0B SLOT_READ (#878): the bytes of the set kept in flash slot `slot` from `offset`; replies
+// D6 8B later (host_link.h). -EBUSY while another read runs.
+int art_relay_slot_read(uint8_t slot, uint16_t offset);
 // D7 09 for the right: its build info, by an offset read; replies D7 89 later.
 int art_relay_build_info(void);
 // D7 0E for the right: its battery dim state from the last read; returns its age in seconds

@@ -24,5 +24,8 @@ struct sim_left {
     // D7 05 POSITION replies (test_hooks.c, #851): how many, and the last one.
     int position_replies;
     uint8_t position_status, position_pos;
+    // D6 8B SLOT_READ replies (#878): how many, and the last one (other sends may come between).
+    int slot_read_replies;
+    uint8_t slot_read[32];
 };
 extern struct sim_left sim_left;

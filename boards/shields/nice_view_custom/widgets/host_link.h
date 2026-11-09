@@ -84,7 +84,8 @@
  *      Bit n of word 2 is capability 32 + n (HOST_LINK_CAPS2_*): 32 ART_LOCAL (#834, below),
  *      33 ART_PACE (#842: the art plays at its target's pace, D6 0A ANIMATE below),
  *      34 HOLD_LEASE (#847: D7 15 below), 35 KNOB_VOLUME (#855: D7 16 below; only with a
- *      &knob in the keymap). A PC
+ *      &knob in the keymap), 36 SLOT_READ (#878: D6 0B below; a relaying board, or a local
+ *      store with flash slots). A PC
  *      that reads fewer words than n ignores the rest; words past n read as 0.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
  * With CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0, the WPM chart also comes back after that many
@@ -131,6 +132,19 @@
  *                                   RAM only, off at power-on: the PC sends it on each connect. A
  *                                   change re-times the set on screen. Firmware without ART_PACE
  *                                   (a relaying board, the Corne) doesn't answer it.
+ *   0B SLOT_READ slot u8, offset u16 (#878, only with word 2's bit 36 SLOT_READ)
+ *                                   reply D6 8B: status, slot, offset u16, n u8, data[n]
+ *      The bytes of the NVA1 set kept in flash slot `slot` (its length is D6 87's len), from
+ *      offset on: n = min(len - offset, HOST_LINK_SLOT_READ_MAX), 25 on a 32-byte report; n may
+ *      be less when the relay has fewer at hand (ask again from offset + n). offset = len answers
+ *      0 with n = 0: the end. Status as SLOT's: 0 ok, 1 busy (a push, SAVE, STORE or ERASE runs,
+ *      or another read), 2 no link, 3 BLE error (no answer from the right), 4 right without
+ *      slots or without the op (status version < 12), plus 5 bad request (no such slot, an empty
+ *      slot, offset past len). Every error has n = 0. One read at a time: the PC asks the next
+ *      offset once the reply is in. On the relay the right pushes a window of the slot
+ *      (ART_RELAY_SLOT_READ, art_relay.h) that the left answers several requests from; a local
+ *      store (ART_LOCAL) answers at once from flash. The PC checks the set's CRC (D6 87's) once
+ *      it has all of it: a slot written meanwhile reads as a mix and fails that check.
  *   SAVE and ERASE reply like SELECT; the write then runs on the right, and STATUS shows the
  *   right's state SAVING (6), then SAVED (7) or SAVE_FAILED (8). SELECT set_count + n plays
  *   flash slot n. The right status (version 3) ends with flash_slots u8, flash_used u8 (bits).
@@ -506,6 +520,13 @@
 // Capability 35 (#855): D7 16 KNOB_VOLUME, the PC may take master volume: the knob's turns on
 // master come to it. Only with a &knob in the keymap.
 #define HOST_LINK_CAPS2_KNOB_VOLUME (1U << 3)
+// Capability 36 (#878): D6 0B SLOT_READ, a kept slot's bytes back, so the PC can draw a piece it
+// doesn't have. On a relaying board the right must have it too (status version >= 12, else 4).
+#define HOST_LINK_CAPS2_SLOT_READ (1U << 4)
+// D6 8B's most data bytes: a 32-byte report less its 7-byte head.
+#define HOST_LINK_SLOT_READ_MAX 25
+// D6 8B's statuses past SLOT's 0-4 (#878): no such slot, an empty one, or an offset past its end.
+#define HOST_LINK_SLOT_READ_BAD 5
 // D7 15's lease byte: read, and the lease's range in seconds (0 is none).
 #define HOST_LINK_HOLD_LEASE_READ 0xff
 #define HOST_LINK_HOLD_LEASE_MIN_S 3

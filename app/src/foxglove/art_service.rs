@@ -292,6 +292,8 @@ enum Command {
         plan: Vec<(super::art_seen::Place, PathBuf)>,
         not: Vec<(String, String)>,
     },
+    /// Read the kept place with this CRC back (#878, [`read_kept`]).
+    ReadKept(u32),
 }
 
 /// Whether the UI may send `command` (#404): while Foxglove is paused only reads go out.
@@ -557,6 +559,27 @@ pub fn set_wake(wake: crate::ui_wake::UiWake) {
 
 pub fn handle() -> Option<Handle> {
     SERVICE.get().cloned()
+}
+
+/// The live feed shows a kept place this PC has no piece for (#878): read the bytes of the
+/// place with `crc` back from the keyboard, so its frames can go out. Foxglove's own quiet job:
+/// nothing on the strip, and it gives way to a user's command.
+pub fn read_kept(crc: u32) {
+    if let Some(h) = handle() {
+        let _ = h.commands.send(Command::ReadKept(crc));
+    }
+}
+
+/// The place to read back for `crc` (#878): the used place holding that set, its number and
+/// length. None on firmware without `SLOT_READ`, or when this PC already has its bytes.
+fn kept_to_read(slots: &[SlotInfo], crc: u32, can_read: bool, have: bool) -> Option<(u8, u16)> {
+    if !can_read || have {
+        return None;
+    }
+    slots
+        .iter()
+        .find(|i| i.used && i.crc == Some(crc) && i.len > 0)
+        .map(|i| (i.slot, i.len))
 }
 
 pub fn start() {
@@ -1314,6 +1337,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut art_keys_told: Option<bool> = None;
     // The current keyboard paces its own art and takes D6 0A (HELLO v2 ART_PACE, #842).
     let mut has_pace = false;
+    // The current keyboard reads a kept place's bytes back (HELLO v2 SLOT_READ, #878).
+    let mut has_slot_read = false;
     // The current keyboard can keep a piece without showing it (HELLO bit 30; false once a STORE
     // found a right before it), and when the playlist last wrote each place (#522, flash wear).
     let mut can_store: Option<bool> = None;
@@ -1615,6 +1640,36 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             // After a playlist step (or a change, or a connect): its next piece into a lent
             // place, as Foxglove's own job, so the step to it is a SELECT (#522). Start: that
             // event. Stop: the stage's end; a user's command takes it over.
+            // A kept place the live feed has no piece for (#878): its bytes read back once,
+            // one request at a time, checked against the place's CRC and kept by it. Start: the
+            // feed's ask. Stop: the set is in, any error, a user's command (busy) or a pause.
+            Command::ReadKept(crc) => {
+                let Some((id, _)) = current else {
+                    continue;
+                };
+                let snap = h.snapshot();
+                let have = super::live_art::has_kept_copy(crc);
+                let Some((slot, len)) = kept_to_read(&snap.slots, crc, has_slot_read, have) else {
+                    continue;
+                };
+                let link: &Link = links[id].0.as_ref();
+                let started = Instant::now();
+                let stop = || h.snapshot().busy || super::pause::paused();
+                let read = art::read_slot(link, slot, len, stop).map_err(|e| e.to_string());
+                match read.and_then(|bytes| super::live_art::keep(crc, &bytes)) {
+                    Ok(path) => {
+                        eprintln!(
+                            "Foxglove: art: kept place {slot} ({len} bytes) read back in {} ms \
+                             for the live feed: {}",
+                            started.elapsed().as_millis(),
+                            path.display()
+                        );
+                        super::live_feed::art_changed();
+                    }
+                    Err(e) => eprintln!("Foxglove: art: kept place {slot} not read back: {e}"),
+                }
+                continue;
+            }
             Command::StageNext => {
                 let snap = h.snapshot();
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
@@ -1746,6 +1801,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     // connect takes them again.
                     (has_art_keys, art_keys_told) = (false, None);
                     has_pace = false;
+                    has_slot_read = false;
                     held_art_keys(None);
                     art_keys_health::note(|a| a.disconnected());
                     can_store = None;
@@ -1785,6 +1841,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 // Firmware that paces its own art (#842) gets the user's e-paper choice on each
                 // connect: it keeps it in RAM only, and starts with the first frame only.
                 has_pace = foxglove_link::hello_v2::capabilities::art_pace(caps, word2);
+                has_slot_read = foxglove_link::hello_v2::capabilities::slot_read(caps, word2);
                 tell_animate(link.as_ref(), has_pace, animate_epaper());
                 let wake_events = caps & protocol::capabilities::RGB_STATE_EVENT != 0;
                 // Taken on each connect: the keyboard drops them on a USB disconnect or an
@@ -2117,6 +2174,55 @@ mod tests {
     use super::*;
     use foxglove_link::protocol::{art as cmd, left_state, right_state, REPORT};
     use std::cell::{Cell, RefCell};
+
+    /// #878: the place to read back is the used one with the CRC; firmware without SLOT_READ
+    /// never asks, and a CRC whose bytes this PC already has needs no read.
+    #[test]
+    fn kept_reads_only_with_the_capability_and_no_copy() {
+        let slots = vec![
+            SlotInfo {
+                slot: 0,
+                used: true,
+                len: 900,
+                crc: Some(1),
+                ..SlotInfo::default()
+            },
+            SlotInfo {
+                slot: 3,
+                used: true,
+                len: 4000,
+                crc: Some(0xabcd),
+                ..SlotInfo::default()
+            },
+            SlotInfo {
+                slot: 4,
+                used: false,
+                crc: Some(0xbeef),
+                ..SlotInfo::default()
+            },
+        ];
+        assert_eq!(kept_to_read(&slots, 0xabcd, true, false), Some((3, 4000)));
+        assert_eq!(
+            kept_to_read(&slots, 0xabcd, false, false),
+            None,
+            "no SLOT_READ"
+        );
+        assert_eq!(
+            kept_to_read(&slots, 0xabcd, true, true),
+            None,
+            "a copy is here"
+        );
+        assert_eq!(
+            kept_to_read(&slots, 0xbeef, true, false),
+            None,
+            "an empty place"
+        );
+        assert_eq!(
+            kept_to_read(&slots, 0x9999, true, false),
+            None,
+            "no such place"
+        );
+    }
 
     /// The right half's own switch (HELLO bit 20 sends it as an RGB_STATE event, #543) reads
     /// the lights again, as the left's always did; a report that changes nothing doesn't.

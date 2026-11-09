@@ -55,11 +55,11 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 // (config in RGB, state after build), 7: SET_FRAME's ART_RELAY_LAMPS / LAMP_HOST (#272), 8:
 // SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490), 9: ART_RELAY_EFFECT takes the whole wire, with
 // the PC's LED points (#550), 10: ART_RELAY_STORE keeps a received set in flash without showing it
-// (#522), 11: the slot CRC characteristic (#863)). The rest of struct art_relay_status is the art
-// store's. Builds without host effects have the CRC characteristic too, but the left reads it only
-// from version 11 on.
+// (#522), 11: the slot CRC characteristic (#863), 12: ART_RELAY_SLOT_READ pushes a kept set back
+// (#878)). The rest of struct art_relay_status is the art store's. Builds without host effects
+// have the CRC characteristic and SLOT_READ too, but the left uses them only from 11 and 12 on.
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
-#define STATUS_VERSION ART_RELAY_SLOT_CRC_STATUS_VERSION
+#define STATUS_VERSION ART_RELAY_SLOT_READ_STATUS_VERSION
 #elif IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
 #define STATUS_VERSION 7
 #else
@@ -123,6 +123,7 @@ static struct lamp_effect_wire effect_rx; // ART_RELAY_EFFECT fills it, EFFECT_G
 
 static void screen_push_ask(struct bt_conn *conn);
 static void screen_push_cancel(void);
+static uint8_t slot_push_ask(struct bt_conn *conn, uint8_t slot, uint16_t at, uint16_t want);
 
 // Runs in the Bluetooth RX thread; keep it to copying and checking.
 static ssize_t data_op(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
@@ -279,6 +280,14 @@ static ssize_t data_op(struct bt_conn *conn, const struct bt_gatt_attr *attr, co
             return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
         }
         break;
+    }
+
+    case ART_RELAY_SLOT_READ: { // #878: push a window of a kept set (slot_push_cb below)
+        if (len != 6) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        uint8_t err = slot_push_ask(conn, d[1], sys_get_le16(&d[2]), sys_get_le16(&d[4]));
+        return err ? BT_GATT_ERR(err) : len;
     }
 
     case ART_RELAY_RGB:
@@ -667,10 +676,168 @@ static void push_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(push_work, push_cb);
 
+/* The slot push (#878, ART_RELAY_SLOT_READ): bytes [at, at + want) of the set kept in a flash slot
+ * go to the left as notifications of the status value, ART_RELAY_RANG_SLOT, slot, offset u16 LE,
+ * then up to MTU - 7 bytes (art_relay.h); where the set ends first, an empty chunk at its end
+ * follows. Paced like the screen push: at most PUSH_OUT unsent, each one's sent callback sends the
+ * next. The set is read from memory-mapped flash (art_slots_blob, which checks its CRC once per
+ * window, on the system queue, not in the RX thread).
+ * Start/stop: starts on a SLOT_READ the RX thread took (slot_push_ask); a new one starts over. It
+ * stops once the window (and its end chunk) is handed over, when the slot doesn't check out, when
+ * the link refuses a notification, after PUSH_TRIES x PUSH_RETRY without a buffer, or when the
+ * link goes. No timer otherwise; the left gives up on its own when the chunks stop. */
+
+static struct bt_conn *slot_asked; // the SLOT_READ's link, until the push takes it (irq_lock)
+static uint8_t slot_ask_slot;
+static uint16_t slot_ask_at, slot_ask_want;
+static struct bt_conn *spush_conn; // the push's link (system queue only)
+static atomic_t spush_start, spush_gone, spush_out, spush_epoch;
+static const uint8_t *spush_blob;
+static uint8_t spush_slot, spush_tries;
+static uint16_t spush_at, spush_to;
+static bool spush_end_due; // the set's end comes in this window: one empty chunk after the last
+static struct k_work_delayable spush_work;
+
+// RX thread: checks the request against the slot's header (cheap) and hands it to the push.
+static uint8_t slot_push_ask(struct bt_conn *conn, uint8_t slot, uint16_t at, uint16_t want) {
+    struct art_relay_status st;
+    art_store_status(&st);
+    if (st.state == ART_RIGHT_SAVING) {
+        return ART_STORE_BUSY;
+    }
+    struct art_relay_slot_info info;
+    art_slots_info(slot, &info);
+    if (slot >= art_slots_count() || !info.used || at > info.len) {
+        return ART_STORE_REFUSED;
+    }
+    struct bt_conn *old;
+    unsigned int key = irq_lock();
+    old = slot_asked;
+    slot_asked = bt_conn_ref(conn);
+    slot_ask_slot = slot;
+    slot_ask_at = at;
+    slot_ask_want = want;
+    irq_unlock(key);
+    if (old != NULL) {
+        bt_conn_unref(old);
+    }
+    atomic_set(&spush_start, 1);
+    k_work_reschedule(&spush_work, K_NO_WAIT);
+    return 0;
+}
+
+static void spush_end(void) {
+    if (spush_conn != NULL) {
+        bt_conn_unref(spush_conn);
+        spush_conn = NULL;
+    }
+    spush_tries = 0;
+}
+
+static void spush_sent(struct bt_conn *conn, void *user_data) {
+    if ((atomic_val_t)(uintptr_t)user_data == atomic_get(&spush_epoch) &&
+        atomic_dec(&spush_out) <= 0) {
+        atomic_set(&spush_out, 0);
+    }
+    if (spush_conn != NULL) {
+        k_work_reschedule(&spush_work, K_NO_WAIT);
+    }
+}
+
+static void slot_push_cb(struct k_work *work) {
+    if (atomic_get(&spush_gone)) { // the link went: its ref goes, and the asked one's
+        atomic_clear(&spush_gone);
+        atomic_clear(&spush_start);
+        spush_end();
+        unsigned int key = irq_lock();
+        struct bt_conn *old = slot_asked;
+        slot_asked = NULL;
+        irq_unlock(key);
+        if (old != NULL) {
+            bt_conn_unref(old);
+        }
+        return;
+    }
+    if (atomic_cas(&spush_start, 1, 0)) {
+        unsigned int key = irq_lock();
+        struct bt_conn *conn = slot_asked;
+        slot_asked = NULL;
+        uint8_t slot = slot_ask_slot;
+        uint16_t at = slot_ask_at, want = slot_ask_want;
+        irq_unlock(key);
+        if (conn == NULL) {
+            return;
+        }
+        if (conn != spush_conn) { // a new link: Zephyr drops the old one's sent callbacks
+            atomic_inc(&spush_epoch);
+            atomic_set(&spush_out, 0);
+        }
+        spush_end();
+        uint16_t len = 0;
+        spush_blob = art_slots_blob(slot, &len);
+        if (spush_blob == NULL || at > len) {
+            bt_conn_unref(conn); // written or erased since, or it doesn't check out
+            return;
+        }
+        spush_conn = conn;
+        spush_slot = slot;
+        spush_at = at;
+        spush_to = (uint16_t)MIN((uint32_t)len, (uint32_t)at + want);
+        spush_end_due = spush_to == len;
+    }
+    const struct bt_gatt_attr *status_attr = &art_relay_svc.attrs[STATUS_VALUE];
+    if (spush_conn == NULL ||
+        bt_uuid_cmp(status_attr->uuid, BT_UUID_DECLARE_128(ART_RELAY_STATUS_UUID))) {
+        spush_end();
+        return;
+    }
+    uint8_t chunk[ART_RELAY_SLOT_PUSH_HEADER + 20];
+    int room = MIN((int)bt_gatt_get_mtu(spush_conn) - 3 - ART_RELAY_SLOT_PUSH_HEADER,
+                   (int)sizeof(chunk) - ART_RELAY_SLOT_PUSH_HEADER);
+    while ((spush_at < spush_to || spush_end_due) && atomic_get(&spush_out) < PUSH_OUT &&
+           room > 0) {
+        uint16_t n = MIN(room, spush_to - spush_at); // 0: the set's end
+        chunk[0] = ART_RELAY_RANG_SLOT;
+        chunk[1] = spush_slot;
+        sys_put_le16(spush_at, &chunk[2]);
+        memcpy(&chunk[ART_RELAY_SLOT_PUSH_HEADER], &spush_blob[spush_at], n);
+        struct bt_gatt_notify_params params = {
+            .attr = status_attr,
+            .data = chunk,
+            .len = ART_RELAY_SLOT_PUSH_HEADER + n,
+            .func = spush_sent,
+            .user_data = (void *)(uintptr_t)atomic_get(&spush_epoch),
+        };
+        atomic_inc(&spush_out);
+        int err = bt_gatt_notify_cb(spush_conn, &params);
+        if (err) {
+            atomic_dec(&spush_out);
+            if ((err == -ENOMEM || err == -EAGAIN) && spush_tries++ < PUSH_TRIES) {
+                k_work_reschedule(&spush_work, PUSH_RETRY); // no buffer: the radio catches up
+                return;
+            }
+            LOG_WRN("art relay: slot push stopped at %d (%d)", spush_at, err);
+            spush_end();
+            return;
+        }
+        spush_tries = 0;
+        if (n == 0) {
+            spush_end_due = false;
+        }
+        spush_at += n;
+    }
+    if (spush_at >= spush_to && !spush_end_due) {
+        spush_end(); // the last sent callbacks only count down
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(spush_work, slot_push_cb);
+
 // Never hold a link that has gone (the right takes one connection): the push work lets go of it.
 static void push_disconnected(struct bt_conn *conn, uint8_t reason) {
     atomic_set(&push_gone, 1);
     k_work_reschedule(&push_work, K_NO_WAIT);
+    atomic_set(&spush_gone, 1);
+    k_work_reschedule(&spush_work, K_NO_WAIT);
 }
 
 BT_CONN_CB_DEFINE(art_relay_push_conn_cb) = {

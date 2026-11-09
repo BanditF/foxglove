@@ -2,7 +2,7 @@ artlocal: -- hello: the art bits, word 2's ART_LOCAL, the screens (art target on
 artlocal: pc sends D5 01 01
 artlocal: HELLO art push 1, slots 1, store 1, status events 0
 artlocal: pc sends D5 08
-artlocal: CAPS words 1, word 2 0x00000007 (ART_LOCAL 1, ART_PACE 1)
+artlocal: CAPS words 1, word 2 0x00000017 (ART_LOCAL 1, ART_PACE 1, SLOT_READ 1)
 artlocal: pc sends D5 06 00
 hostlink: rx D5 86 00 03 00 00 00 00 FF 90 00 A8 00 00 00 00 00 00 00 00 00 12 00 00 FF 01
 artlocal: pc sends D5 06 01
@@ -56,6 +56,18 @@ artlocal: pc sends D6 07 00
 hostlink: rx D6 87 00 00 01 01 00 00 00 14 00 70 75 73 68 65 64 00 00 00 00 00 00 00 00 00 00 01 C8 EF 8A 78
 artlocal: pc sends D6 07 05
 hostlink: rx D6 87 04 05
+artlocal: -- SLOT_READ (#878): slot 0's set back at once, then its end (n 0)
+artlocal: pc sends D6 0B 00 00 00
+hostlink: rx D6 8B 00 00 00 00 14 4E 56 41 31 90 70 04 01 01 00 02 00 00 00 10 00 01 02 03 04
+artlocal: pc sends D6 0B 00 14 00
+hostlink: rx D6 8B 00 00 14
+artlocal: -- SLOT_READ refused (5): past the end, an empty slot, a slot the board doesn't have
+artlocal: pc sends D6 0B 00 15 00
+hostlink: rx D6 8B 05 00 15
+artlocal: pc sends D6 0B 01 00 00
+hostlink: rx D6 8B 05 01
+artlocal: pc sends D6 0B 05 00 00
+hostlink: rx D6 8B 05 05
 artlocal: -- play slot 0 (select set_count + 0)
 artlocal: pc sends D6 04 02
 art: play saved, 2 frame(s), 4 fps, every 250 ms

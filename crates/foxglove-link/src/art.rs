@@ -276,6 +276,59 @@ pub fn slot(t: &impl Transport, slot: u8) -> Result<SlotInfo> {
     })
 }
 
+/// The set kept in flash slot `slot`, `len` bytes (its D6 87 length), read back with D6 0B
+/// SLOT_READ (#878, HELLO v2 `SLOT_READ`): one request at a time, each sent once the last reply
+/// is in, no timers. It stops on the first error (busy, no link, a right without the op, a bad
+/// request, a reply for another offset), on `cancelled`, and on a reply that brings nothing
+/// before the end. The caller checks the bytes against the slot's CRC.
+pub fn read_slot(
+    t: &impl Transport,
+    slot: u8,
+    len: u16,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<u8>> {
+    let mut blob = Vec::with_capacity(usize::from(len));
+    loop {
+        ensure!(!cancelled(), "slot read cancelled");
+        let offset = u16::try_from(blob.len())?;
+        let r = t.request(
+            &protocol::art_slot_read(slot, offset),
+            protocol::ART,
+            art::SLOT_READ,
+            Duration::from_secs(3),
+        )?;
+        let chunk = protocol::SlotChunk::parse(&r).map_err(|status| {
+            anyhow::anyhow!(match status {
+                1 => "the relay is busy".to_string(),
+                2 => "the right half is not connected".to_string(),
+                3 => "reading the right half failed".to_string(),
+                4 => "the keyboard can't read a kept place back".to_string(),
+                5 => format!("place {slot} has no set to read at {offset}"),
+                n => format!("slot read error {n}"),
+            })
+        })?;
+        ensure!(
+            chunk.slot == slot && chunk.offset == offset,
+            "a reply for place {} at {}, not {slot} at {offset}",
+            chunk.slot,
+            chunk.offset
+        );
+        if blob.len() >= usize::from(len) {
+            ensure!(
+                chunk.data.is_empty(),
+                "place {slot} holds more than {len} bytes"
+            );
+            return Ok(blob);
+        }
+        ensure!(
+            !chunk.data.is_empty(),
+            "place {slot} ended at {offset} of {len}"
+        );
+        let room = usize::from(len) - blob.len();
+        blob.extend_from_slice(&chunk.data[..chunk.data.len().min(room)]);
+    }
+}
+
 /// How [`wait_relay_ready`] ended.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RelayWait {
@@ -380,6 +433,51 @@ mod tests {
         assert_eq!(&sent[3][5..], &blob[54..]);
         assert_eq!(sent[4], protocol::art_commit());
         assert_eq!(sent[5], protocol::art_status());
+    }
+
+    fn chunk(status: u8, slot: u8, offset: u16, data: &[u8]) -> [u8; protocol::REPORT] {
+        let mut r = reply(art::SLOT_READ, status);
+        r[3] = slot;
+        r[4..6].copy_from_slice(&offset.to_le_bytes());
+        r[6] = data.len() as u8;
+        r[7..7 + data.len()].copy_from_slice(data);
+        r
+    }
+
+    /// SLOT_READ (#878): one request per reply, each from where the last ended (a reply may
+    /// carry fewer than 25 bytes), then the end; any error stops it.
+    #[test]
+    fn read_slot_asks_offset_by_offset() {
+        let set: Vec<u8> = (0..40u8).collect();
+        let t = Mock::default();
+        t.replies.borrow_mut().extend([
+            chunk(0, 3, 0, &set[..25]),
+            chunk(0, 3, 25, &set[25..30]),
+            chunk(0, 3, 30, &set[30..]),
+            chunk(0, 3, 40, &[]),
+        ]);
+        assert_eq!(read_slot(&t, 3, 40, || false).unwrap(), set);
+        let sent = t.sent.borrow();
+        assert_eq!(sent.len(), 4);
+        assert_eq!(sent[1], protocol::art_slot_read(3, 25));
+        assert_eq!(sent[3], protocol::art_slot_read(3, 40));
+
+        // Busy, a short set, and a reply for another offset each stop it.
+        let t = Mock::default();
+        t.replies.borrow_mut().push_back(chunk(1, 3, 0, &[]));
+        assert!(read_slot(&t, 3, 40, || false).is_err());
+        let t = Mock::default();
+        t.replies
+            .borrow_mut()
+            .extend([chunk(0, 3, 0, &set[..25]), chunk(0, 3, 25, &[])]);
+        assert!(read_slot(&t, 3, 40, || false).is_err());
+        let t = Mock::default();
+        t.replies.borrow_mut().push_back(chunk(0, 3, 7, &set[..25]));
+        assert!(read_slot(&t, 3, 40, || false).is_err());
+        // Cancelled: nothing goes out.
+        let t = Mock::default();
+        assert!(read_slot(&t, 3, 40, || true).is_err());
+        assert!(t.sent.borrow().is_empty());
     }
 
     fn with_right(mut r: [u8; protocol::REPORT], error: u8, right: u8) -> [u8; protocol::REPORT] {

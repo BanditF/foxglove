@@ -30,6 +30,8 @@ struct sim_bt_stats {
     int screen_pushes;    // screen images the right pushed as notifications
     int screen_chunks;    // their chunks
     int crc_reads;        // reads of the slot CRC characteristic the right answered (#863)
+    int slot_pushes;      // SLOT_READ windows the right took (#878)
+    int slot_chunks;      // their chunks
 };
 extern struct sim_bt_stats sim_bt_stats;
 
@@ -132,3 +134,5 @@ struct sim_right {
     int presses;   // ART_RELAY_PRESS ops it took
 };
 extern struct sim_right sim_right;
+// The bytes flash slot n holds on the right (#878).
+const uint8_t *sim_bt_flash_bytes(int slot);

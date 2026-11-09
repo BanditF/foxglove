@@ -8,3 +8,4 @@
 /^art: /p
 /^hostlink: rx D5 86/p
 /^hostlink: rx D6 87/p
+/^hostlink: rx D6 8B/p
