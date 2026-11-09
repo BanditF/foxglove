@@ -113,9 +113,16 @@ guess from its key count), and no `keys` are sent. A change of keyboard sends a 
     Foxglove or a converted folder) whose CRC is the one the keyboard reports for the place
     (#863, `art_pieces::holding`). A CRC no piece has gets no frames, never a name-alike's.
     Firmware without CRCs is matched by name and length. Read again after each library scan.
+    A place no piece holds is read back from the keyboard on firmware with HELLO v2 `SLOT_READ`
+    (#878, D6 0B): once per CRC per run, only while a paired wallpaper that isn't paused watches,
+    one request at a time (no timers), checked against the place's CRC and kept by it as
+    `art/kept-<crc>.bin` in the settings folder (not in the library's list), so a later place
+    with the same bytes needs no read. A read that fails or doesn't match keeps the placeholder.
+    Over the Corne's split link a 4 KiB piece takes about 4 s.
   - `file`: the library file Foxglove sent, as it sent it.
 - **Without frames:** `nva` is `null` and `missing` says why: `not_on_pc` (a kept place whose
-  bytes no piece on this PC has: the keyboard can't send a place's frames back yet, #878), `other_firmware`
+  bytes no piece on this PC has, until its read back lands; for good on firmware without
+  `SLOT_READ`, #878), `other_firmware`
   (a built-in of firmware whose manifest Foxglove doesn't know), `unreadable` or `too_big`.
   The wallpaper draws a labelled placeholder then, the same for both screens.
 - **One name:** `art.name` is always the name `state.art` gives the piece at the same moment, so

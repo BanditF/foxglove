@@ -958,6 +958,9 @@ static K_WORK_DEFINE(select_work, select_cb);
 
 static uint8_t slot_op[18]; // the relay write for SAVE or ERASE
 static uint8_t slot_op_len;
+// Counts the ops that may change what a slot holds (SAVE, ERASE, STORE): a slot read's window
+// (D6 0B, below) is good only while it stays the same, and only on the link it came over.
+static atomic_t slots_changed;
 
 static void slot_op_cb(struct k_work *work) {
     struct bt_conn *conn = job_conn();
@@ -980,6 +983,7 @@ static int start_slot_op(const uint8_t *op, uint8_t len) {
         return -EBUSY;
     }
     k_work_cancel_delayable(&receive_timeout);
+    atomic_inc(&slots_changed);
     memcpy(slot_op, op, len);
     slot_op_len = len;
     state = ART_LEFT_PUSHING;
@@ -1267,6 +1271,160 @@ int art_relay_slot(uint8_t slot) {
     return 0;
 }
 
+/* D6 0B SLOT_READ (#878): a kept slot's bytes back to the PC, HOST_LINK_SLOT_READ_MAX a reply.
+ * Paced reads would each wait for the right to wake under the link's latency (~230 ms at worst,
+ * screen_snap_relay.inc), so a 12 KiB set would take a minute or more. Instead the left asks the
+ * right for a window of SLOT_WINDOW bytes (ART_RELAY_SLOT_READ, one write request spaced like
+ * every request) and the right pushes it as notifications (ART_RELAY_RANG_SLOT chunks, taken by
+ * slot_push_chunk); the PC's next requests are answered from the window here, with no relay
+ * traffic, until one falls outside it.
+ * Start: the PC's D6 0B outside the window. Stop: the window is full, the set's end came (an
+ * empty chunk), or the chunks stop (SLOT_PUSH_FIRST_MS for the first, SLOT_PUSH_QUIET_MS after
+ * one): the reply then carries what came, and a later request from there asks again. Chunks are
+ * taken only in order and only for the window asked for. The window is dropped by an op that can
+ * change a slot (slots_changed) and by a new link (cmd_epoch). One read at a time (sr_busy); none
+ * while a push, SAVE, STORE or ERASE runs (status 1). */
+#define SLOT_WINDOW 500 // 20 of the PC's 25-byte replies, so they end where a window does
+#define SLOT_PUSH_FIRST_MS 1000
+#define SLOT_PUSH_QUIET_MS 300
+
+static uint8_t win[SLOT_WINDOW];
+static uint8_t win_slot = 0xff; // the window's slot (0xff none); window fields under irq_lock
+static uint16_t win_at, win_n;  // the set's bytes [win_at, win_at + win_n) are in win
+static bool win_end;            // the set ends at win_at + win_n
+static atomic_val_t win_epoch, win_changed;
+static atomic_t sr_busy, sr_live;
+static uint8_t sr_slot;
+static uint16_t sr_offset;
+static K_SEM_DEFINE(sr_chunk, 0, 1);
+
+// A pushed slot chunk: the doorbell's notify with byte 0 ART_RELAY_RANG_SLOT (Bluetooth RX thread).
+static void slot_push_chunk(const uint8_t *d, uint16_t len) {
+    if (len < ART_RELAY_SLOT_PUSH_HEADER || !atomic_get(&sr_live)) {
+        return; // short, or not asked for (a read given up on)
+    }
+    uint16_t at = sys_get_le16(&d[2]);
+    uint16_t n = len - ART_RELAY_SLOT_PUSH_HEADER;
+    unsigned int key = irq_lock();
+    if (d[1] == win_slot && !win_end && at == win_at + win_n) {
+        if (n == 0) {
+            win_end = true;
+        } else {
+            n = MIN(n, SLOT_WINDOW - win_n);
+            memcpy(&win[win_n], &d[ART_RELAY_SLOT_PUSH_HEADER], n);
+            win_n += n;
+        }
+    }
+    irq_unlock(key);
+    k_sem_give(&sr_chunk);
+}
+
+// Whether the window answers a read of slot at offset (irq_lock held).
+static bool win_has(uint8_t slot, uint16_t offset) {
+    return slot == win_slot && win_epoch == atomic_get(&cmd_epoch) &&
+           win_changed == atomic_get(&slots_changed) && offset >= win_at &&
+           (offset < win_at + win_n || (win_end && offset == win_at + win_n));
+}
+
+// Asks the right for the window at sr_offset and waits for its chunks: a D6 8B status.
+static uint8_t slot_window(struct bt_conn *conn) {
+    unsigned int key = irq_lock();
+    win_slot = sr_slot;
+    win_at = sr_offset;
+    win_n = 0;
+    win_end = false;
+    win_epoch = atomic_get(&cmd_epoch);
+    win_changed = atomic_get(&slots_changed);
+    irq_unlock(key);
+    k_sem_reset(&sr_chunk);
+    atomic_set(&sr_live, 1); // the chunks may come before the write's answer
+    uint8_t op[6] = {ART_RELAY_SLOT_READ, sr_slot};
+    sys_put_le16(sr_offset, &op[2]);
+    sys_put_le16(SLOT_WINDOW, &op[4]);
+    uint8_t status = 0;
+    gatt_err = 0; // a request Zephyr never took leaves it as it was
+    if (write_req(conn, op, sizeof(op))) {
+        // The right's refusals (art_store.h): 0x82 a slot is being written, 0x85 a bad request.
+        status = gatt_err == 0x82 ? 1 : gatt_err == 0x85 ? HOST_LINK_SLOT_READ_BAD : 3;
+    } else {
+        int64_t quiet_until = k_uptime_get() + SLOT_PUSH_FIRST_MS;
+        for (;;) {
+            key = irq_lock();
+            uint16_t have = win_n;
+            bool whole = win_end || win_n == SLOT_WINDOW;
+            irq_unlock(key);
+            int64_t left = quiet_until - k_uptime_get();
+            if (whole || left <= 0) {
+                status = have || whole ? 0 : 3;
+                break;
+            }
+            k_sem_take(&sr_chunk, K_MSEC(left));
+            key = irq_lock();
+            bool more = win_n != have || win_end;
+            irq_unlock(key);
+            if (more) {
+                quiet_until = k_uptime_get() + SLOT_PUSH_QUIET_MS;
+            }
+        }
+    }
+    atomic_clear(&sr_live);
+    if (status != 0) {
+        key = irq_lock();
+        win_slot = 0xff;
+        irq_unlock(key);
+    }
+    return status;
+}
+
+static void slot_rd_job(struct k_work *work) {
+    uint8_t r[7 + HOST_LINK_SLOT_READ_MAX] = {HOST_LINK_ART, 0x8B, 0, sr_slot};
+    sys_put_le16(sr_offset, &r[4]);
+    unsigned int key = irq_lock();
+    bool cached = win_has(sr_slot, sr_offset);
+    irq_unlock(key);
+    uint8_t status = 0;
+    if (!cached) {
+        struct bt_conn *conn = job_conn();
+        if (conn == NULL) {
+            status = 2;
+        } else {
+            if (right.version < ART_RELAY_SLOT_READ_STATUS_VERSION || !atomic_get(&doorbell_live)) {
+                status = 4; // a right without the op, or one that can't push (no subscription)
+            } else if (state == ART_LEFT_PUSHING) {
+                status = 1;
+            } else {
+                status = slot_window(conn);
+            }
+            bt_conn_unref(conn);
+        }
+    }
+    if (status == 0) {
+        key = irq_lock();
+        if (win_has(sr_slot, sr_offset)) {
+            uint16_t from = sr_offset - win_at;
+            r[6] = MIN(HOST_LINK_SLOT_READ_MAX, win_n - from);
+            memcpy(&r[7], &win[from], r[6]);
+        } else {
+            status = 3; // the window went meanwhile (a new link)
+        }
+        irq_unlock(key);
+    }
+    r[2] = status;
+    host_link_send(r, sizeof(r));
+    atomic_clear(&sr_busy);
+}
+static K_WORK_DEFINE(slot_rd_work, slot_rd_job);
+
+int art_relay_slot_read(uint8_t slot, uint16_t offset) {
+    if (!atomic_cas(&sr_busy, 0, 1)) {
+        return -EBUSY;
+    }
+    sr_slot = slot;
+    sr_offset = offset;
+    k_work_submit_to_queue(&relay_q, &slot_rd_work);
+    return 0;
+}
+
 static void status_cb(struct k_work *work) {
     struct bt_conn *conn = job_conn();
     if (conn != NULL) {
@@ -1335,6 +1493,7 @@ int art_relay_store(uint8_t slot, const uint8_t name[16]) {
         fail(ART_ERR_BAD_CRC);
         return -EINVAL;
     }
+    atomic_inc(&slots_changed);
     store_op[0] = ART_RELAY_STORE;
     store_op[1] = slot;
     memcpy(&store_op[2], name, 16);
@@ -1589,6 +1748,10 @@ static uint8_t doorbell_rang(struct bt_conn *conn, struct bt_gatt_subscribe_para
     const uint8_t *d = data;
     if (length >= 1 && d[0] == ART_RELAY_RANG_SCREEN) {
         screen_push_chunk(d, length); // a chunk of the screen push (#662), not a ring
+        return BT_GATT_ITER_CONTINUE;
+    }
+    if (length >= 1 && d[0] == ART_RELAY_RANG_SLOT) {
+        slot_push_chunk(d, length); // a chunk of a slot read (#878), not a ring
         return BT_GATT_ITER_CONTINUE;
     }
     uint8_t what = length >= 1 ? d[0] : ART_RELAY_RANG_RGB;

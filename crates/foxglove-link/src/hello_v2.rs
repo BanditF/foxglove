@@ -9,7 +9,7 @@
 //! | D5 81 HELLO reply | 2 | version: **2** from HELLO v2 firmware on (1 before); the rest as before |
 //! | D5 08 CAPS (PC) | 0-1 | `D5 08`, nothing else |
 //! | D5 88 CAPS reply | 2 | n: the words that follow (1 today, at most [`MAX_WORDS`]) |
-//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`, 34 `HOLD_LEASE`, 35 `KNOB_VOLUME`) |
+//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`, 34 `HOLD_LEASE`, 35 `KNOB_VOLUME`, 36 `SLOT_READ`) |
 //! | | 7-30 | words 3-8, when n says so |
 //!
 //! Both ways stay compatible:
@@ -77,6 +77,16 @@ pub mod capabilities {
     /// card instead of Windows' popup. Only with a `&knob` in the keymap; firmware without it
     /// sends the volume keys on master, as before.
     pub const KNOB_VOLUME: u32 = 1 << 3;
+
+    /// Capability 36 (#878): D6 0B SLOT_READ ([`crate::protocol::art_slot_read`]), a kept slot's
+    /// bytes back, so the PC can draw a kept piece it has no file for. On a relaying board the
+    /// right half needs it too (status version 12): one before it answers 4.
+    pub const SLOT_READ: u32 = 1 << 4;
+
+    /// Whether D6 0B is there: HELLO's word 1 (flash slots) and D5 88's word 2.
+    pub fn slot_read(word1: u32, word2: u32) -> bool {
+        word1 & crate::protocol::capabilities::ART_SLOTS != 0 && word2 & SLOT_READ != 0
+    }
 }
 
 /// The PC's request: D5 08.
@@ -465,6 +475,18 @@ mod tests {
             read(&Board::new(vec![]), &old).word2() & capabilities::KNOB_VOLUME,
             0
         );
+    }
+
+    /// SLOT_READ (#878): capability 36, word 2's bit 4. The art-local sim case's D5 88 (word 2
+    /// 0x17: ART_LOCAL, ART_PACE, HOLD_LEASE, SLOT_READ) says it; it counts only with HELLO's flash
+    /// slots bit.
+    #[test]
+    fn slot_read_is_capability_36() {
+        assert_eq!(capabilities::SLOT_READ, 16);
+        let slots = crate::protocol::capabilities::ART_SLOTS;
+        assert!(capabilities::slot_read(slots, 0x17));
+        assert!(!capabilities::slot_read(0, 0x17), "no flash slots");
+        assert!(!capabilities::slot_read(slots, 0x07), "firmware before it");
     }
 
     /// Word 1 by name: every bit, a few, none, and no HELLO.

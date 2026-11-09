@@ -238,6 +238,13 @@ pub mod art {
     pub const SLOT_CRC_V1: u8 = 1;
     /// The right's status version with the slot CRC (#863, `ART_RELAY_SLOT_CRC_STATUS_VERSION`).
     pub const SLOT_CRC_RIGHT_VERSION: u8 = 11;
+    /// A kept slot's bytes back (#878, HELLO v2 `SLOT_READ`): slot u8, offset u16; replies D6 8B
+    /// ([`SlotChunk`]).
+    pub const SLOT_READ: u8 = 0x0B;
+    /// D6 8B's most data bytes (host_link.h `HOST_LINK_SLOT_READ_MAX`).
+    pub const SLOT_READ_MAX: usize = 25;
+    /// The right's status version with SLOT_READ (`ART_RELAY_SLOT_READ_STATUS_VERSION`).
+    pub const SLOT_READ_RIGHT_VERSION: u8 = 12;
 }
 
 pub mod settings {
@@ -567,6 +574,41 @@ impl SlotInfo {
             len: u16::from_le_bytes([r[9], r[10]]),
             name: String::from_utf8_lossy(&name[..end]).into_owned(),
             crc,
+        })
+    }
+}
+
+/// D6 0B SLOT_READ (#878): the bytes of the set kept in flash slot `slot`, from `offset`.
+pub fn art_slot_read(slot: u8, offset: u16) -> Vec<u8> {
+    let mut r = vec![ART, art::SLOT_READ, slot];
+    r.extend_from_slice(&offset.to_le_bytes());
+    r
+}
+
+/// One D6 8B reply: bytes of a kept set from `offset` (none: the set ends there).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlotChunk {
+    pub slot: u8,
+    pub offset: u16,
+    pub data: Vec<u8>,
+}
+
+impl SlotChunk {
+    /// D6 8B: status, slot, offset u16, n u8, data[n]. `Err` carries the status (1 busy, 2 no
+    /// link, 3 BLE error, 4 right without slots or the op, 5 bad request: no such slot, an empty
+    /// one, an offset past the set's end); an n past the report reads as 5.
+    pub fn parse(r: &[u8; REPORT]) -> std::result::Result<SlotChunk, u8> {
+        if r[2] != 0 {
+            return Err(r[2]);
+        }
+        let n = usize::from(r[6]);
+        if n > art::SLOT_READ_MAX {
+            return Err(5);
+        }
+        Ok(SlotChunk {
+            slot: r[3],
+            offset: u16::from_le_bytes([r[4], r[5]]),
+            data: r[7..7 + n].to_vec(),
         })
     }
 }
@@ -3050,6 +3092,41 @@ mod slot_tests {
         );
         r[2] = 4;
         assert_eq!(SlotInfo::parse(&r), Err(4));
+    }
+
+    /// D6 0B / 8B SLOT_READ (#878; tests/zmk-sim/art-local reads that same slot back).
+    #[test]
+    fn slot_read_request_and_reply() {
+        assert_eq!(
+            art_slot_read(2, 0x0114),
+            [ART, art::SLOT_READ, 2, 0x14, 0x01]
+        );
+        let set = [
+            b'N', b'V', b'A', b'1', 144, 112, 4, 1, 1, 0, 2, 0, 0, 0, 16, 0, 1, 2, 3, 4,
+        ];
+        let mut r = [0u8; REPORT];
+        r[..7].copy_from_slice(&[0xD6, 0x8B, 0, 0, 0, 0, 20]);
+        r[7..27].copy_from_slice(&set);
+        assert_eq!(
+            SlotChunk::parse(&r),
+            Ok(SlotChunk {
+                slot: 0,
+                offset: 0,
+                data: set.to_vec(),
+            })
+        );
+        // The end: offset = len, nothing more.
+        let mut end = [0u8; REPORT];
+        end[..7].copy_from_slice(&[0xD6, 0x8B, 0, 0, 20, 0, 0]);
+        assert_eq!(SlotChunk::parse(&end).unwrap().data, Vec::<u8>::new());
+        assert_eq!(SlotChunk::parse(&end).unwrap().offset, 20);
+        // Errors carry the status; an n past the report is a bad reply.
+        end[2] = 5;
+        assert_eq!(SlotChunk::parse(&end), Err(5));
+        end[2] = 0;
+        end[6] = 26;
+        assert_eq!(SlotChunk::parse(&end), Err(5));
+        assert_eq!(7 + art::SLOT_READ_MAX, REPORT);
     }
 
     /// A local art store's replies (#834; tests/zmk-sim/art-local): the relay's layout, link 2

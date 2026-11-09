@@ -1464,6 +1464,145 @@ static void right_reflash(bool stall) {
     }
 }
 
+/* D6 0B SLOT_READ (#878) as the app's art::read_slot drives it: one request at a time, each from
+ * where the last reply ended, until the end (n 0) or an error. drop_after >= 0 drops the split
+ * link just before that request. Returns the status that ended it (0: the whole set read; 0xfx
+ * the sim's own: no reply in 3 s, a reply for another offset, an early end, too many bytes). */
+static int64_t read_took_ms;
+static int read_requests;
+static uint8_t slot_read_once(uint8_t slot, uint16_t offset) {
+    int before = sim_left.slot_read_replies;
+    if (art_relay_slot_read(slot, offset) != 0) {
+        return 1; // host_link.c answers busy itself
+    }
+    read_requests++;
+    int64_t t0 = k_uptime_get();
+    while (sim_left.slot_read_replies == before && k_uptime_get() - t0 < 3000) {
+        k_msleep(2);
+    }
+    if (sim_left.slot_read_replies == before) {
+        return 0xff;
+    }
+    const uint8_t *r = sim_left.slot_read;
+    if (r[2] == 0 && (r[3] != slot || sys_get_le16(&r[4]) != offset)) {
+        return 0xfe;
+    }
+    return r[2];
+}
+
+static uint8_t lab_read_set(uint8_t slot, uint16_t len, uint8_t *out, uint16_t *got,
+                            int drop_after) {
+    *got = 0;
+    read_requests = 0;
+    int64_t start = k_uptime_get();
+    for (int req = 0;; req++) {
+        if (req == drop_after) {
+            sim_bt_drop(3000000);
+        }
+        uint8_t st = slot_read_once(slot, *got);
+        read_took_ms = k_uptime_get() - start;
+        if (st != 0) {
+            return st;
+        }
+        uint8_t n = sim_left.slot_read[6];
+        if (n == 0) {
+            return *got == len ? 0 : 0xfd;
+        }
+        if (n > HOST_LINK_SLOT_READ_MAX || *got + n > len) {
+            return 0xfc;
+        }
+        memcpy(&out[*got], &sim_left.slot_read[7], n);
+        *got += n;
+    }
+}
+
+// SLOT_READ (#878) under playlist-store's link (latency 30, the response-buffer rule, the right's
+// busy system queue, the app's traffic): a kept place read back whole, in order, its bytes and CRC
+// the place's; the errors: an offset past the end and an empty place (5), a read while a STORE
+// writes (busy, 1), a right before the op (4); the split link lost mid-read (2 or 3), then a
+// whole read again once it is back.
+static void slot_read_scenario(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(2000);
+    sim_bt_faults.rsp_meta_rule = true;
+    sim_bt_faults.right_redraw_busy_us = 20000;
+    char why[200];
+    const uint16_t len = 3599;
+    check("keep", lab_store(2, len, 5, "radar", why, sizeof(why)), "%s", why);
+    int drops = sim_bt_stats.link_drops;
+    int windows = sim_bt_stats.slot_pushes;
+    static uint8_t got_bytes[4096];
+    uint16_t got;
+    uint8_t st = lab_read_set(2, len, got_bytes, &got, -1);
+    make_piece(len, 5);
+    bool same = got == len && !memcmp(got_bytes, piece, len) &&
+                !memcmp(got_bytes, sim_bt_flash_bytes(2), len);
+    windows = sim_bt_stats.slot_pushes - windows;
+    printf("  slot read: %u bytes in %lld ms (simulated), %d requests, %d windows pushed\n", got,
+           (long long)read_took_ms, read_requests, windows);
+    check("read-whole", st == 0 && same && crc32_ieee(got_bytes, got) == sim_right.flash[2].crc,
+          "status %u, %u of %u bytes, %s", st, got, len, same ? "the place's bytes" : "differ");
+    // The PC's 25-byte requests come from the left's window: one relay write per window.
+    check("from-windows", windows == (len + 499) / 500 && read_requests == (len + 24) / 25 + 1,
+          "%d windows for %d requests", windows, read_requests);
+    check("read-budget", read_took_ms < 6000, "%lld ms for %u bytes", (long long)read_took_ms,
+          len);
+    st = slot_read_once(2, len + 1);
+    check("past-the-end", st == HOST_LINK_SLOT_READ_BAD, "status %u", st);
+    uint8_t empty = 0;
+    while (empty < ART_RELAY_FLASH_SLOTS && sim_right.flash[empty].used) {
+        empty++;
+    }
+    st = slot_read_once(empty, 0);
+    check("empty-place", st == HOST_LINK_SLOT_READ_BAD, "place %u: status %u", empty, st);
+    // A read while a STORE is under way: the right is writing the slot (or the left still
+    // pushing), so busy; the store lands all the same.
+    make_piece(1024, 7);
+    uint8_t nm[16];
+    name16(nm, "busy");
+    int64_t start = k_uptime_get();
+    bool stored = art_relay_begin(1024, crc32_ieee(piece, 1024)) == 0;
+    for (int at = 0; stored && at < 1024; at += 27) {
+        art_relay_data(at, &piece[at], (uint8_t)MIN(27, 1024 - at));
+        k_msleep(1);
+    }
+    stored = stored && art_relay_store(5, nm) == 0;
+    st = slot_read_once(2, 0);
+    struct report r = {0};
+    stored = stored && finish_slot_op(start, &r) && place_holds(5, 1024, 7, "busy");
+    check("busy-while-storing", st == 1 && stored, "status %u, the store %s", st,
+          stored ? "landed" : "failed");
+    // A right before SLOT_READ (status version 11): 4, and nothing sent to it.
+    sim_right.version = ART_RELAY_SLOT_READ_STATUS_VERSION - 1;
+    status();
+    k_msleep(1500);
+    windows = sim_bt_stats.slot_pushes;
+    st = slot_read_once(2, 0);
+    check("old-right", st == 4 && sim_bt_stats.slot_pushes == windows, "status %u", st);
+    sim_right.version = ART_RELAY_SLOT_READ_STATUS_VERSION;
+    status();
+    k_msleep(1500);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    // The split link lost mid-read: the read ends with no link (2) or no answer (3), not with
+    // bytes that aren't the place's.
+    // Request 60 starts a window (offset 1500): it finds the link gone.
+    st = lab_read_set(2, len, got_bytes, &got, 60);
+    make_piece(len, 5);
+    check("link-lost", (st == 2 || st == 3) && got < len && !memcmp(got_bytes, piece, got),
+          "status %u after %u bytes, the place's", st, got);
+    wait_relay(40);
+    k_msleep(3000); // the doorbell's subscription, which the push comes through
+    st = lab_read_set(2, len, got_bytes, &got, -1);
+    check("read-after-relink", st == 0 && got == len && !memcmp(got_bytes, piece, len),
+          "status %u, %u bytes in %lld ms", st, got, (long long)read_took_ms);
+    debug_line("at the end");
+}
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -1499,6 +1638,8 @@ static void lab_thread(void *arg) {
         playlist_store_old();
     } else if (!strcmp(scenario, "restore-update")) {
         restore_update();
+    } else if (!strcmp(scenario, "slot-read")) {
+        slot_read_scenario();
 #ifdef SIM_TEST_HOOKS
     } else if (!strcmp(scenario, "art-hold-cycles")) {
         art_hold_cycles();

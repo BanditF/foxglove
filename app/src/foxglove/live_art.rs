@@ -13,6 +13,11 @@
 //!   name, length and (#863) CRC. Its frames come from the PC piece with that CRC
 //!   (`art_pieces::holding`; by name and length on firmware without CRCs). With none, the art
 //!   goes without frames and says why (`missing`), so the wallpaper labels its placeholder.
+//! - **Kept places this PC has no file for** (#878): on firmware with HELLO v2 `SLOT_READ`, the
+//!   art service reads the place's bytes back once (`art_service::read_kept`, asked by the feed
+//!   while a wallpaper watches), checks them against the place's CRC, and keeps them by CRC
+//!   beside the library ([`keep`], `art/kept-<crc>.bin`, not in the library's list). A later
+//!   place with the same bytes finds them there with no read.
 //! - **Built-ins from the firmware's own source:** `art_builtins` reads `custom_art.c`, the file
 //!   the right half is compiled from, so the feed's frames are the firmware's by construction;
 //!   `built_in_frames_are_the_firmwares` checks every frame pixel for pixel.
@@ -188,7 +193,69 @@ fn stored(src: &Source) -> Result<Stored, &'static str> {
                 crc: *crc,
             };
             kept_in(&info, &super::art_library::snapshot())
+                .or_else(|why| or_read_back(why, *crc, kept_copy))
         }
+    }
+}
+
+/// Bumped each time a kept place's bytes read back land ([`keep`]), so the feed reads its piece
+/// again.
+static KEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many read-back copies have landed this run.
+pub fn kept_generation() -> u64 {
+    KEPT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Where the bytes of the kept set with `crc` go once read back.
+fn kept_path(crc: u32) -> Option<PathBuf> {
+    super::art_library::folder().map(|d| d.join(super::art_library::kept_copy_name(crc)))
+}
+
+/// Whether this PC already holds the read-back bytes of the set with `crc`.
+pub fn has_kept_copy(crc: u32) -> bool {
+    kept_copy(crc).is_some()
+}
+
+/// The read-back bytes of the set with `crc`, when they are here and still match it.
+fn kept_copy(crc: u32) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(kept_path(crc)?).ok()?;
+    (foxglove_link::protocol::blob_crc(&bytes) == crc).then_some(bytes)
+}
+
+/// Keeps a kept place's bytes read back from the keyboard (#878). Bytes that don't match `crc`
+/// (the place was written meanwhile, or the read went wrong) are dropped: the placeholder stays.
+pub fn keep(crc: u32, bytes: &[u8]) -> Result<PathBuf, String> {
+    if foxglove_link::protocol::blob_crc(bytes) != crc {
+        return Err(format!(
+            "the bytes read don't match the place's CRC {crc:08x}"
+        ));
+    }
+    Stored::from_blob(bytes).map_err(|e| format!("the bytes read aren't art: {e}"))?;
+    let path = kept_path(crc).ok_or("no settings folder")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let part = path.with_extension("part");
+    std::fs::write(&part, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
+    KEPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(path)
+}
+
+/// A kept place with no PC piece (`not_on_pc`): its bytes read back earlier, if `copy` has
+/// them for its CRC; any other reason stands.
+fn or_read_back(
+    why: &'static str,
+    crc: Option<u32>,
+    copy: impl Fn(u32) -> Option<Vec<u8>>,
+) -> Result<Stored, &'static str> {
+    match crc {
+        Some(crc) if why == wire::MISSING_NOT_ON_PC => copy(crc)
+            .filter(|b| foxglove_link::protocol::blob_crc(b) == crc)
+            .and_then(|b| Stored::from_blob(&b).ok())
+            .ok_or(why),
+        _ => Err(why),
     }
 }
 
@@ -586,6 +653,42 @@ mod tests {
             Err(wire::MISSING_NOT_ON_PC),
         );
         assert_eq!((a.nva, a.missing), (None, Some(wire::MISSING_NOT_ON_PC)));
+    }
+
+    /// #878: a kept place no PC piece holds draws from its bytes read back, but only bytes that
+    /// match its CRC; without a copy (or without a CRC, older firmware) the placeholder stays.
+    #[test]
+    fn kept_places_draw_from_bytes_read_back() {
+        use foxglove_link::protocol::blob_crc;
+        let f = stored_with(&[(4, 4)], true);
+        let blob = super::super::art_encode::encode(&[f], 4, ArtTarget::FIRMWARE).unwrap();
+        let crc = blob_crc(&blob);
+        let copy = |c: u32| (c == crc).then(|| blob.clone());
+        let s = or_read_back(wire::MISSING_NOT_ON_PC, Some(crc), copy).unwrap();
+        assert!(pixel(&upright(&s, 1).unwrap(), 0, 4, 4));
+        // No copy for this CRC, no CRC at all, or another reason: as before.
+        assert_eq!(
+            or_read_back(wire::MISSING_NOT_ON_PC, Some(crc ^ 1), copy),
+            Err(wire::MISSING_NOT_ON_PC)
+        );
+        assert_eq!(
+            or_read_back(wire::MISSING_NOT_ON_PC, None, copy),
+            Err(wire::MISSING_NOT_ON_PC)
+        );
+        assert_eq!(
+            or_read_back(wire::MISSING_UNREADABLE, Some(crc), copy),
+            Err(wire::MISSING_UNREADABLE)
+        );
+        // A copy whose bytes no longer match the CRC is not drawn.
+        let mut bad = blob.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0xff;
+        assert_eq!(
+            or_read_back(wire::MISSING_NOT_ON_PC, Some(crc), |_| Some(bad.clone())),
+            Err(wire::MISSING_NOT_ON_PC)
+        );
+        // A read whose bytes don't match the place's CRC is dropped before it is kept.
+        assert!(keep(crc ^ 1, &blob).unwrap_err().contains("CRC"));
     }
 
     /// A bundled set kept on the keyboard is found by its CRC through the app's own pieces, and

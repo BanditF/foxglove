@@ -80,7 +80,21 @@ pub fn is_right_art_file(path: &std::path::Path) -> bool {
         .file_stem()
         .and_then(|s| s.to_str())
         .is_some_and(|s| s.to_ascii_lowercase().ends_with(".left"));
-    is_bin && !left
+    is_bin && !left && !is_kept_copy(path)
+}
+
+/// The file name of a kept place's bytes read back from the keyboard (#878, `live_art`), by the
+/// set's CRC: `kept-<crc>.bin` in this folder, kept out of the library's list.
+pub fn kept_copy_name(crc: u32) -> String {
+    format!("kept-{crc:08x}.bin")
+}
+
+/// Whether `path` is such a copy (`kept-` and eight hex digits).
+pub fn is_kept_copy(path: &std::path::Path) -> bool {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("kept-"))
+        .is_some_and(|hex| hex.len() == 8 && hex.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 pub fn folder() -> Option<PathBuf> {
@@ -254,5 +268,19 @@ mod tests {
             is_right_art_file(Path::new("left.bin")),
             "a set named left is still right art"
         );
+    }
+
+    /// #878: a kept place's bytes read back are kept by CRC beside the library, not in it.
+    #[test]
+    fn kept_copies_stay_out_of_the_library() {
+        let name = super::kept_copy_name(0x788A_EFC8);
+        assert_eq!(name, "kept-788aefc8.bin");
+        assert!(!is_right_art_file(Path::new(&name)));
+        assert!(super::is_kept_copy(Path::new(&name)));
+        assert!(
+            is_right_art_file(Path::new("kept-fox.bin")),
+            "a piece named kept-"
+        );
+        assert!(is_right_art_file(Path::new("kept-788aefc8x.bin")));
     }
 }

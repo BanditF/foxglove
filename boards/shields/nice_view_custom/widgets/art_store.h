@@ -111,4 +111,6 @@ int art_local_erase(uint8_t slot);
 int art_local_animate(uint8_t flags);
 // D6 07: sends D6 87 at once (status 0, or 4 for a slot the board doesn't have).
 int art_local_slot(uint8_t slot);
+// D6 0B SLOT_READ (#878): sends D6 8B at once, from the slot in flash (host_link.h).
+int art_local_slot_read(uint8_t slot, uint16_t offset);
 void art_local_report(uint8_t out[ART_RELAY_REPORT_SIZE]);

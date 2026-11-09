@@ -85,7 +85,8 @@ enum {
     ART_SLOT,
     ART_ERASE,
     ART_STORE,   // 09 (#522)
-    ART_ANIMATE, // 0A (#842): local art store only (HELLO v2 ART_PACE)
+    ART_ANIMATE,   // 0A (#842): local art store only (HELLO v2 ART_PACE)
+    ART_SLOT_READ, // 0B (#878): a kept slot's bytes (HELLO v2 SLOT_READ)
 };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
@@ -331,6 +332,13 @@ static uint32_t caps_word2(void) {
     if (KNOB_PARTS & KNOB_HAS_TURN) {
         caps |= HOST_LINK_CAPS2_KNOB_VOLUME; // D7 16: the PC may take master volume (#855)
     }
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    caps |= HOST_LINK_CAPS2_SLOT_READ; // D6 0B (#878); the right's status version says too
+#elif IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
+    if (art_slots_count() > 0) {
+        caps |= HOST_LINK_CAPS2_SLOT_READ; // D6 0B (#878), from the store on this half
+    }
+#endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
     caps |= HOST_LINK_CAPS2_ART_LOCAL; // D6 goes to the art store on this half (#834)
     caps |= HOST_LINK_CAPS2_ART_PACE;  // its art follows the target's pace; D6 0A (#842)
@@ -434,6 +442,8 @@ static void panel_command(const uint8_t *d) {
 #define ART_OPS(op) art_local_##op
 #endif
 
+BUILD_ASSERT(7 + HOST_LINK_SLOT_READ_MAX <= REPORT_SIZE, "D6 8B fits one report");
+
 static void art_command(const uint8_t *d) {
     uint8_t r[2 + ART_RELAY_REPORT_SIZE] = {HOST_LINK_ART, 0x80 | d[1]};
 #if defined(ART_OPS)
@@ -477,6 +487,14 @@ static void art_command(const uint8_t *d) {
         }
         r[2] = 1; // busy
         r[3] = d[2];
+        reply(r, sizeof(r));
+        return;
+    case ART_SLOT_READ:
+        if (ART_OPS(slot_read)(d[2], sys_get_le16(&d[3])) == 0) {
+            return; // D6 8B comes from the relay (or, local, has gone already)
+        }
+        r[2] = 1; // busy: one read at a time
+        memcpy(&r[3], &d[2], 3); // slot, offset
         reply(r, sizeof(r));
         return;
     default:

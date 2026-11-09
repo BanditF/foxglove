@@ -167,6 +167,39 @@ int art_local_slot(uint8_t slot) {
     return 0;
 }
 
+// D6 0B SLOT_READ (#878): straight from the slot in flash. The slot's CRC is checked once
+// (art_slots_blob) and the set kept at hand while the slot's header CRC stays the same, so a
+// read of a whole set doesn't check it once per reply.
+int art_local_slot_read(uint8_t slot, uint16_t offset) {
+    static const uint8_t *blob;
+    static uint16_t blob_n;
+    static uint8_t blob_slot = 0xff;
+    static uint32_t blob_crc;
+    uint8_t r[7 + HOST_LINK_SLOT_READ_MAX] = {HOST_LINK_ART, 0x8B, 0, slot};
+    sys_put_le16(offset, &r[4]);
+    if (art_slots_count() == 0) {
+        r[2] = 4; // no slots on this board
+    } else if (store_state() == ART_RIGHT_SAVING) {
+        r[2] = 1; // a slot is being written
+        blob_slot = 0xff;
+    } else {
+        uint32_t crc = art_slots_crc(slot);
+        if (slot != blob_slot || crc != blob_crc || blob == NULL) {
+            blob = slot < art_slots_count() ? art_slots_blob(slot, &blob_n) : NULL;
+            blob_slot = blob != NULL ? slot : 0xff;
+            blob_crc = crc;
+        }
+        if (blob == NULL || offset > blob_n) {
+            r[2] = HOST_LINK_SLOT_READ_BAD; // no such slot, an empty one, or past its end
+        } else {
+            r[6] = MIN(HOST_LINK_SLOT_READ_MAX, blob_n - offset);
+            memcpy(&r[7], &blob[offset], r[6]);
+        }
+    }
+    host_link_send(r, sizeof(r));
+    return 0;
+}
+
 void art_local_report(uint8_t out[ART_RELAY_REPORT_SIZE]) {
     struct art_relay_status st;
     art_store_status(&st);

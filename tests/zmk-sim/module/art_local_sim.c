@@ -188,9 +188,11 @@ static int reply_listener(const zmk_event_t *eh) {
                (caps >> 1) & 1, (caps >> 10) & 1, (caps >> 30) & 1, (caps >> 3) & 1);
     } else if (r[0] == HOST_LINK_PANEL && r[1] == 0x88) {
         uint32_t w2 = sys_get_le32(&r[3]);
-        printk("artlocal: CAPS words %u, word 2 0x%08x (ART_LOCAL %u, ART_PACE %u)\n", r[2], w2,
-               w2 & HOST_LINK_CAPS2_ART_LOCAL ? 1 : 0, w2 & HOST_LINK_CAPS2_ART_PACE ? 1 : 0);
-    } else if (r[0] == HOST_LINK_ART && r[1] != 0x87) {
+        printk("artlocal: CAPS words %u, word 2 0x%08x (ART_LOCAL %u, ART_PACE %u, SLOT_READ "
+               "%u)\n",
+               r[2], w2, w2 & HOST_LINK_CAPS2_ART_LOCAL ? 1 : 0,
+               w2 & HOST_LINK_CAPS2_ART_PACE ? 1 : 0, w2 & HOST_LINK_CAPS2_SLOT_READ ? 1 : 0);
+    } else if (r[0] == HOST_LINK_ART && r[1] != 0x87 && r[1] != 0x8B) {
         static const char *const left[] = {"idle", "receiving", "pushing", "done", "failed"};
         struct art_relay_status st;
         memcpy(&st, &r[9], sizeof(st));
@@ -364,6 +366,13 @@ void art_local_sim_driver(void) {
     note("slot 0, then a slot the board doesn't have: D6 87 at once");
     PC(0xD6, 0x07, 0x00);
     PC(0xD6, 0x07, 0x05);
+    note("SLOT_READ (#878): slot 0's set back at once, then its end (n 0)");
+    PC(0xD6, 0x0B, 0x00, 0x00, 0x00);
+    PC(0xD6, 0x0B, 0x00, 0x14, 0x00);
+    note("SLOT_READ refused (5): past the end, an empty slot, a slot the board doesn't have");
+    PC(0xD6, 0x0B, 0x00, 0x15, 0x00);
+    PC(0xD6, 0x0B, 0x01, 0x00, 0x00);
+    PC(0xD6, 0x0B, 0x05, 0x00, 0x00);
     note("play slot 0 (select set_count + 0)");
     PC(0xD6, 0x04, 0x02);
 

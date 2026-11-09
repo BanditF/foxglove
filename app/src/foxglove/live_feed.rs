@@ -996,6 +996,12 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
             }
         }
         keys.want(hub.wants_keys(), tx);
+        // A kept piece this PC has no file for, on screen while a wallpaper watches: its bytes
+        // are read back once (#878); the feed hears when they land (`art_changed`).
+        let watched = clients.iter().any(|c| !c.paused) && !super::pause::paused();
+        if let Some(crc) = art.to_read(watched) {
+            super::art_service::read_kept(crc);
+        }
         let n = clients.len();
         if CONNECTED.swap(n, Ordering::Relaxed) != n {
             super::tray_panel::wake();
@@ -1155,6 +1161,10 @@ impl PanelPace {
 #[derive(Default)]
 struct ArtWatch {
     seen: Option<ArtKey>,
+    /// The CRC of the kept place on screen that this PC has no piece for (#878), if one is.
+    not_on_pc: Option<u32>,
+    /// The CRCs whose bytes were asked of the keyboard this run: once each.
+    asked: std::collections::HashSet<u32>,
 }
 
 /// What the frames were read for: the source, the name the state gives it (the wallpaper
@@ -1165,6 +1175,8 @@ struct ArtKey {
     source: Option<super::live_art::Source>,
     name: Option<String>,
     library: u64,
+    /// Kept places' bytes read back so far (#878): one may have landed for this place.
+    kept: u64,
 }
 
 impl ArtWatch {
@@ -1174,14 +1186,18 @@ impl ArtWatch {
         let source = snap.as_ref().and_then(super::live_art::source);
         let name = snap.as_ref().and_then(showing_name);
         // Only a kept place reads the library; the others don't wait on its scans.
-        let library = match source {
-            Some(super::live_art::Source::Slot { .. }) => super::art_library::generation(),
-            _ => 0,
+        let (library, kept) = match source {
+            Some(super::live_art::Source::Slot { .. }) => (
+                super::art_library::generation(),
+                super::live_art::kept_generation(),
+            ),
+            _ => (0, 0),
         };
         self.changed(ArtKey {
             source,
             name,
             library,
+            kept,
         })
     }
 
@@ -1191,7 +1207,24 @@ impl ArtWatch {
         }
         self.seen = Some(key.clone());
         let name = key.name.unwrap_or_default();
-        Some(key.source.map(|s| super::live_art::art(&s, name)))
+        let art = key.source.as_ref().map(|s| super::live_art::art(s, name));
+        self.not_on_pc = match (&key.source, &art) {
+            (Some(super::live_art::Source::Slot { crc: Some(crc), .. }), Some(a))
+                if a.missing == Some(wire::MISSING_NOT_ON_PC) =>
+            {
+                Some(*crc)
+            }
+            _ => None,
+        };
+        Some(art)
+    }
+
+    /// The kept place on screen has no frames because this PC has no piece for it (#878): while
+    /// `watched` (a paired wallpaper that isn't paused, Foxglove not paused), the CRC to ask the
+    /// keyboard for, once per CRC per run.
+    fn to_read(&mut self, watched: bool) -> Option<u32> {
+        let crc = self.not_on_pc.filter(|_| watched)?;
+        self.asked.insert(crc).then_some(crc)
     }
 }
 
@@ -2129,6 +2162,7 @@ mod tests {
             source,
             name: (!name.is_empty()).then(|| name.to_string()),
             library,
+            kept: 0,
         };
         let mut w = ArtWatch::default();
         assert_eq!(
@@ -2167,7 +2201,20 @@ mod tests {
             w.changed(key(kept, "Radar", 4)).is_some(),
             "a rescan reads it again"
         );
+        // #878: its bytes are asked of the keyboard only while a wallpaper watches, and once.
+        assert_eq!(w.to_read(false), None, "nobody watching");
+        assert_eq!(w.to_read(true), Some(0x1234_5678));
+        assert_eq!(w.to_read(true), None, "once per CRC per run");
         assert_eq!(w.changed(key(None, "", 0)), Some(None), "the keyboard went");
+        assert_eq!(w.to_read(true), None, "nothing kept on screen");
+        // Older firmware (no CRC): nothing to check a read against, so nothing is asked.
+        let old = Some(Source::Slot {
+            name: "Radar".into(),
+            len: 900,
+            crc: None,
+        });
+        w.changed(key(old, "Radar", 4));
+        assert_eq!(w.to_read(true), None);
     }
 
     /// #40: the keyboard's lights reach the wallpaper once the keyboard reported them.
