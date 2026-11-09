@@ -470,7 +470,7 @@ const HOST_KEYBOARD: &str = "zmk";
 /// keyboard, and the hold never opened (11/07, chain-6211).
 fn job_for_event(e: &foxglove_devices::Event) -> Option<Job> {
     (e.event == foxglove_devices::DeviceEvent::Connected && e.device.backend.0 == HOST_KEYBOARD)
-        .then(|| Job::Keyboard(Some((e.device.vid, e.device.pid))))
+        .then_some(Job::Keyboard(Some((e.device.vid, e.device.pid))))
 }
 
 /// The watch on the LampArrays Windows lists, kept for the app's life (the process's end stops
