@@ -987,6 +987,7 @@ fn draw_rotation(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
     }
     playlist(ui, art, &mut cycle, &mut changed);
     layer_art(ui, art, &mut cycle, &mut changed);
+    typing_art(ui, art, &mut cycle, &mut changed);
     if changed {
         acts.push(Act::Cycle(cycle));
     }
@@ -1198,6 +1199,59 @@ fn layer_art(ui: &mut egui::Ui, art: &Art, cycle: &mut Cycle, changed: &mut bool
             ui.weak("Layers appear once the keymap has been read.");
         }
     });
+}
+
+/// Art while the user types (#886, art_triggers): under layer art, over preset art. Built-ins
+/// and kept places only, so each switch is instant (a file would be pushed every time).
+fn typing_art(ui: &mut egui::Ui, art: &Art, cycle: &mut Cycle, changed: &mut bool) {
+    let s = &art.s;
+    let count = s.status.map_or(0, |st| st.right_set_count);
+    let names = super::art_manifest::sets(count);
+    egui::CollapsingHeader::new("Typing art")
+        .id_salt("art-typing-art")
+        .default_open(cycle.typing.is_some())
+        .show(ui, |ui| {
+            ui.weak(format!(
+                "Shown after {} s of typing, until {} s without a key; then the art before comes back. Foxglove counts that keys moved, never which.",
+                super::art_triggers::TYPING_ENTER.as_secs(),
+                super::art_triggers::TYPING_IDLE.as_secs(),
+            ));
+            let current = cycle.typing.clone();
+            let selected = current.as_ref().map_or_else(|| "none".into(), |i| item_label(i, s));
+            let mut picked: Option<Option<Item>> = None;
+            ui.horizontal(|ui| {
+                ui.label("While typing");
+                egui::ComboBox::from_id_salt("art-typing")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), "none").clicked() {
+                            picked = Some(None);
+                        }
+                        for set in names.unwrap_or_default() {
+                            let item = Item::BuiltIn(set.name.clone());
+                            if ui
+                                .selectable_label(current.as_ref() == Some(&item), &set.label)
+                                .clicked()
+                            {
+                                picked = Some(Some(item));
+                            }
+                        }
+                        for info in s.slots.iter().filter(|i| i.used) {
+                            let item = Item::Slot(info.slot);
+                            if ui
+                                .selectable_label(current.as_ref() == Some(&item), &info.name)
+                                .clicked()
+                            {
+                                picked = Some(Some(item));
+                            }
+                        }
+                    });
+            });
+            if let Some(a) = picked {
+                cycle.typing = a;
+                *changed = true;
+            }
+        });
 }
 
 /// The meter: "Kept: n of m places" and a box per place, lit when used.

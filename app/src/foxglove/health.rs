@@ -201,6 +201,7 @@ pub fn start() {
     register("dynamic_lighting", super::lamp_health::rows_now); // #691
     register("wallpaper_sync", super::wallpaper_sync_health::rows_now); // #586
     register("art_playlist", super::art_health::rows); // #522, #521
+    register("typing_art", super::typing_art::rows_now); // #886
     register("keymap", super::keymap_health::rows_now); // #582, #583
     register("via_writes", super::via_host::health_rows); // #581
     register("knob", super::knob_health::rows_now); // #719

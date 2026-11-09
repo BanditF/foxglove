@@ -67,6 +67,20 @@ layers = { 3 = { builtin = "Bandit_Radar" } }   # layer index -> art while that 
 - **Momentary layers:** show the art only once the layer has been active for 400 ms, so tapping
   a thumb key doesn't flash the screen. That's a one-shot deadline from the event, not a poll.
 
+### While typing (#886)
+
+- **Shows a chosen piece while the user types** (`[art.cycle] typing`; Screens, **Typing art**),
+  then puts back whatever was there. Off (none) by default.
+- **The source** is the Raw Input listener shared with "Follow the keyboard I type on"
+  (`follow_typing`, any keyboard, `RIDEV_INPUTSINK`). It runs while either wants it. **Privacy:**
+  only "a key moved, at this time" (`typing_art::Activity`); key, scan code and VK are never read,
+  kept, logged or sent.
+- **Hysteresis** (`art_triggers`): it comes on after `TYPING_ENTER` (2 s) of typing with no pause
+  over `TYPING_GAP` (1.5 s), and goes after `TYPING_IDLE` (5 s) without a key. Coming on is
+  decided on key events; going is a one-shot deadline. No polling.
+- **Built-ins and saved slots only** in the picker, so each switch is instant.
+- **Health:** the "typing_art" rows count switches on and off, and each switch logs one line.
+
 ### On a preset
 
 - **When a lighting preset is applied** (#265, #273: Settings, tray, or a profile switch), show
@@ -81,9 +95,10 @@ Highest first:
 1. **The user's own pick,** from the tray or Settings. It pins and pauses the triggers until
    the next trigger event.
 2. **Layer art,** while that layer is active.
-3. **Preset art,** while a preset is active.
-4. **The wallpaper match** (`follow = "wallpaper"`).
-5. **The hotlist position,** moved by `step` triggers.
+3. **Typing art,** while the user types.
+4. **Preset art,** while a preset is active.
+5. **The wallpaper match** (`follow = "wallpaper"`).
+6. **The hotlist position,** moved by `step` triggers.
 
 When a higher source ends (layer left, preset cleared), the next one down shows again. The
 store keeps `position` across restarts, as now.

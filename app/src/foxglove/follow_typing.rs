@@ -8,7 +8,8 @@
 //!   device's path and its VID/PID, and nothing else is kept or logged. A source test holds this.
 //! - **Events only:** `WM_INPUT` on a message-only window (`RIDEV_INPUTSINK`, so typing in any
 //!   app counts), whose thread sleeps in `GetMessageW` between events. No timer, no polling. The
-//!   listener runs only while the setting is on.
+//!   listener runs only while the setting is on, or while a typing art is set (#886,
+//!   `typing_art`, which gets only "a key moved, at this time" from it).
 //! - **No flicker** ([`Follower`]): the focus moves only after [`FOLLOW_AFTER`] events in a row
 //!   from another keyboard (about three keys: a key sends one event going down and one coming up),
 //!   each within [`STREAK_GAP`] of the last, and at most once per [`MIN_SWITCH`]. Typing on two
@@ -191,21 +192,30 @@ impl Source for Nothing {
     }
 }
 
-/// At app start: listens when the setting is on.
+/// Whether the listener should run: this setting, or the typing art (#886, `typing_art`), which
+/// shares it because the process has one keyboard Raw Input registration.
+fn wanted() -> bool {
+    keyboard_focus::follow_typing() || super::typing_art::wanted()
+}
+
+/// At app start: listens when the setting (or the typing art) wants it.
 pub fn start() {
-    if keyboard_focus::follow_typing() {
+    refresh();
+}
+
+/// Starts or stops the listener for what wants it now.
+pub fn refresh() {
+    if wanted() {
         listen(default_source());
+    } else {
+        quiet();
     }
 }
 
 /// The switch: saves the setting and starts or stops the listener.
 pub fn set(on: bool) {
     keyboard_focus::set_follow_typing(on);
-    if on {
-        listen(default_source());
-    } else {
-        quiet();
-    }
+    refresh();
 }
 
 /// Starts `source` unless one runs.
@@ -215,7 +225,12 @@ pub fn listen(source: Box<dyn Source>) {
         return;
     }
     match source.start(Box::new(|path| {
-        typed(path, Instant::now());
+        let now = Instant::now();
+        // The typing art (#886) takes only "a key moved, now": no path, no key.
+        super::typing_art::activity(now);
+        if keyboard_focus::follow_typing() {
+            typed(path, now);
+        }
     })) {
         Ok(stop) => *running = Some(stop),
         Err(e) => eprintln!("Foxglove: can't follow the keyboard you type on: {e}"),

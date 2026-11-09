@@ -155,6 +155,7 @@ mod theme_preview;
 pub mod tray;
 pub mod tray_panel;
 pub mod troubleshooting;
+pub mod typing_art;
 
 #[cfg(target_os = "windows")]
 pub(crate) mod device_watch;

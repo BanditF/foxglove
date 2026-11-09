@@ -245,8 +245,13 @@ enum Command {
     },
     /// The keyboard's active layers changed (the device event bus).
     Layers(Vec<u8>),
-    /// A layer's art delay ran out (art_triggers::LAYER_DELAY).
+    /// A trigger's one-shot deadline ran out: a layer's art delay (art_triggers::LAYER_DELAY)
+    /// or the typing art's idle timeout (TYPING_IDLE, #886).
     LayerDue,
+    /// Typing activity (#886): the time a key moved, nothing else.
+    Typed(super::typing_art::Activity),
+    /// The hotlist was read again (a change or a profile switch): the typing art may differ.
+    TypingArtChanged,
     /// A lighting preset's art (`None` = no preset, or the preset doesn't change the art).
     Preset(Option<art_cycle::Item>),
     /// Show a trigger's art without pinning it.
@@ -420,6 +425,11 @@ impl Handle {
     /// with "Art screen too" on (#488, `scene_run::set_art`).
     pub fn preset_art(&self, art: Option<art_cycle::Item>) {
         let _ = self.commands.send(Command::Preset(art));
+    }
+
+    /// Typing activity for the typing art (#886): a time, never a key (`typing_art`).
+    pub fn typed(&self, activity: super::typing_art::Activity) {
+        let _ = self.commands.send(Command::Typed(activity));
     }
 
     pub fn wallpaper(&self, w: super::wallpaper::Wallpaper) {
@@ -1290,6 +1300,8 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         s.pinned_name = pinned_name;
         s.cycle = Cycle::load();
     });
+    // The typing art's listener (#886), for the hotlist just read.
+    let _ = h.commands.send(Command::TypingArtChanged);
     let notifications = h.commands.clone();
     let _subscription = super::link::subscribe_links(move |link| {
         let _ = notifications.send(Command::Available(link));
@@ -1499,6 +1511,26 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     None => continue,
                 }
             }
+            Command::Typed(_) | Command::TypingArtChanged => {
+                let cycle = h.snapshot().cycle;
+                let change = match command {
+                    Command::Typed(activity) => triggers.typed(activity, &cycle),
+                    _ => {
+                        super::typing_art::set_wanted(cycle.typing.is_some());
+                        triggers.typing_art_changed(&cycle)
+                    }
+                };
+                if held(&change, super::pause::paused(), &mut missed) {
+                    continue;
+                }
+                match shown(change, &triggers) {
+                    Some(command) => {
+                        background = true;
+                        command
+                    }
+                    None => continue,
+                }
+            }
             Command::Preset(art) => {
                 let change = triggers.preset(art);
                 if held(&change, super::pause::paused(), &mut missed) {
@@ -1546,6 +1578,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     s.pinned_name = pinned_name;
                     s.cycle = Cycle::load();
                 });
+                let _ = h.commands.send(Command::TypingArtChanged);
                 due = reschedule(current.is_some());
                 let pinned = h.snapshot().pin_now();
                 match pinned.filter(|_| changed && current.is_some() && !h.snapshot().busy) {
@@ -1591,6 +1624,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         let command = match command {
             Command::CycleChanged => {
                 due = reschedule(current.is_some());
+                let _ = h.commands.send(Command::TypingArtChanged);
                 // The playlist turned on, or its list or places changed: stage what's next.
                 let _ = h.commands.send(Command::StageNext);
                 // Turning on "match the wallpaper" shows the current wallpaper's art right away.
