@@ -504,53 +504,59 @@ impl<'a, D: Device> Runner<'a, D> {
             }
         }
     }
-    /// #911: `keep` stores the blob in the first empty flash place; `erase` empties the place
-    /// that keeps it. Never touches a place that holds something else.
-    fn art_keep(&mut self, k: &crate::spec::ArtKeep) -> Result<String> {
+    /// #911: backs up, writes, restores or verifies a kept flash place (see `slot_safe`). Never
+    /// touches an empty place and never writes one without a verified backup on disk.
+    fn art_slot(&mut self, k: &crate::spec::ArtSlot) -> Result<String> {
+        use crate::slot_safe as ss;
         self.right_ready()?;
-        let root = self.golden_dir.join("../..");
-        let blob = std::fs::read(root.join(&k.blob))
-            .map_err(|e| anyhow::anyhow!("blob {}: {e}", k.blob))?;
-        ensure!(art::is_blob(&blob), "{} is not an art blob", k.blob);
-        let crc = protocol::blob_crc(&blob);
-        let mut empty = None;
-        let mut holding = None;
-        for n in 0..16u8 {
-            let Ok(info) = art::slot(self.device, n) else {
-                break;
-            };
-            if info.used && info.crc == Some(crc) && holding.is_none() {
-                holding = Some(n);
-            }
-            if !info.used && empty.is_none() {
-                empty = Some(n);
-            }
-        }
-        if k.action == "erase" {
-            let Some(n) = holding else {
-                return Ok(format!("no place keeps {crc:08x}"));
-            };
-            art::erase(self.device, n)?;
-            return Ok(format!("place {n} ({crc:08x}) erased"));
+        let dev = ss::Real(self.device);
+        let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        let base = if k.path.is_empty() {
+            env("FOXGLOVE_SLOT_READ_BACKUP").unwrap_or_default()
+        } else {
+            k.path.clone()
+        };
+        if k.action == "list" {
+            ensure!(!base.is_empty(), "art_slot list needs a path");
+            let list: Vec<_> = ss::kept(&dev)
+                .iter()
+                .map(|i| {
+                    serde_json::json!({"slot": i.slot, "name": i.name, "len": i.len, "crc": i.crc})
+                })
+                .collect();
+            std::fs::write(&base, serde_json::to_string(&list)?)?;
+            return Ok(format!("{} kept place(s)", list.len()));
         }
         ensure!(
-            holding.is_none(),
-            "place {} already keeps {crc:08x}",
-            holding.unwrap_or(0)
+            !base.is_empty(),
+            "art_slot needs a backup path (path, or FOXGLOVE_SLOT_READ_BACKUP)"
         );
-        let Some(n) = empty else {
-            return Err(Blocked("no empty flash place to keep a piece in".into()).into());
+        let want = k
+            .slot
+            .or_else(|| env("FOXGLOVE_SLOT_READ_SLOT").and_then(|v| v.parse().ok()));
+        // A restore must work on a place a failed write left empty, so it does not need it kept.
+        let n = match (k.action.as_str(), want) {
+            ("restore", Some(n)) => n,
+            ("restore", None) => ss::load_meta(&base)?.slot,
+            _ => ss::pick(&dev, want)?.slot,
         };
-        art::store(self.device, &blob, n, &k.name, |_| {}, || false)?;
-        // The live feed reads back the place on screen, so the piece is shown.
-        art::status(self.device)?;
-        std::thread::sleep(Duration::from_millis(300));
-        let count = art::status(self.device)?.right_set_count;
-        art::select_slot(self.device, count, n)?;
-        Ok(format!(
-            "{} ({crc:08x}) kept in place {n} and shown",
-            k.name
-        ))
+        match k.action.as_str() {
+            "backup" => ss::backup(&dev, n, &base),
+            "verify" => ss::verify(&dev, n, &base),
+            "restore" => ss::restore(&dev, n, &base),
+            _ => {
+                let root = self.golden_dir.join("../..");
+                let blob = std::fs::read(root.join(&k.blob))
+                    .map_err(|e| anyhow::anyhow!("blob {}: {e}", k.blob))?;
+                let msg = ss::write_fixture(&dev, n, &base, &blob, &k.name)?;
+                // The live feed reads back the place on screen, so the fixture is shown.
+                art::status(self.device)?;
+                std::thread::sleep(Duration::from_millis(300));
+                let count = art::status(self.device)?.right_set_count;
+                art::select_slot(self.device, count, n)?;
+                Ok(format!("{msg} and shown"))
+            }
+        }
     }
     fn art_key(&mut self, k: &crate::spec::ArtKey) -> Result<String> {
         self.right_ready()?;
@@ -1419,7 +1425,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 Ok(text)
             }
             Step::ArtPush(a) => self.art_push(a),
-            Step::ArtKeep(k) => self.art_keep(k),
+            Step::ArtSlot(k) => self.art_slot(k),
             Step::PanelShow(p) => {
                 let (w, h) = (self.hello.width, self.hello.height);
                 let frame = crate::resilience::test_frame(w, h, p.pattern);

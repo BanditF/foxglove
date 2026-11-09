@@ -16,5 +16,6 @@ pub mod resilience;
 pub mod rgb_latency;
 pub mod runner;
 pub mod screen;
+pub mod slot_safe;
 pub mod spec;
 pub mod studio;
