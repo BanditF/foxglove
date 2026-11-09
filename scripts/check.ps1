@@ -41,6 +41,9 @@ try {
         cargo deny --log-level error check
         if (!$LASTEXITCODE) { cargo deny --log-level error --manifest-path app/Cargo.toml check }
     }
+    # The Hideout hub (hideout-shell, hideout; #932) is MIT and clean-room (contract §11): every
+    # package in its graph has a permissive licence, and no path dependency points under app/.
+    Step 'hub: dependency licences' { python scripts/check_hub_deps.py }
     Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Step 'crates: tests' { cargo test --workspace }
     # The catalog signer (#785) is behind a feature the app never turns on.
