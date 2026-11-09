@@ -1608,6 +1608,7 @@ dependencies = [
  "foxglove-plugin-api",
  "foxglove-plugin-host",
  "foxglove-plugin-trust",
+ "foxglove-redirect",
  "foxglove-scene",
  "foxglove-update",
  "foxglove-via",
@@ -1721,6 +1722,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "foxglove-redirect"
+version = "0.3.0"
+dependencies = [
+ "windows 0.62.2",
 ]
 
 [[package]]

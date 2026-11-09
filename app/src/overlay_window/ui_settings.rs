@@ -45,7 +45,9 @@ impl OverlayApp {
         if ui
             .add_enabled(shown, egui::Checkbox::without_text(&mut held))
             .on_hover_text(
-                "Keep the overlay up for as long as these layers are active. Untick for                  toggled layers (like a game layer): the overlay then shows when they turn on                  and fades after the display duration.",
+                "Keep the overlay up for as long as these layers are active. Untick for \
+                 toggled layers (like a game layer): the overlay then shows when they turn on \
+                 and fades after the display duration.",
             )
             .changed()
         {

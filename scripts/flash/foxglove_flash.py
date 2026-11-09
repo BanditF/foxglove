@@ -30,6 +30,7 @@ import time
 # (scripts/local_config.py; tools/local.example.toml lists the keys).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import local_config  # noqa: E402
+import appdata_redirect  # noqa: E402
 
 SERIALS = local_config.serials()
 LIMIT = 0xAD000
@@ -237,6 +238,10 @@ def history_path():
     return Path(base) / 'Foxglove' / 'flash-history.log'
 
 
+# #894: from a packaged app's shell the history lands in that app's copy; said once a run.
+HISTORY_NOTICE = appdata_redirect.Notice('the flash history')
+
+
 def record(half, image_sha, outcome, detail=''):
     """Appends 'UTC time, half, image SHA, outcome, detail' to the flash history. Never fails
     the flash: a history that can't be written is reported, not fatal."""
@@ -246,6 +251,7 @@ def record(half, image_sha, outcome, detail=''):
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'a', encoding='utf-8') as fh:
             fh.write(line)
+        HISTORY_NOTICE.after_write(path, sys.stderr)
     except OSError as exc:
         print(f'flash history not written ({exc}): {line.strip()}', file=sys.stderr)
 

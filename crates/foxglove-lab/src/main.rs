@@ -640,7 +640,7 @@ fn main() -> Result<std::process::ExitCode> {
         use foxglove_lab::{health as lab_health, host_lights, knob};
         // The probe guard is dropped at once, so the direct read below can take its own.
         let app_running = replay.is_none() && platform::guard(false).is_err();
-        let out = match (lab_health::source(replay.is_some(), app_running), replay) {
+        let mut out = match (lab_health::source(replay.is_some(), app_running), replay) {
             (lab_health::Source::Replay, Some(path)) => {
                 let r = lab_health::Replay::parse(&std::fs::read_to_string(path)?)?;
                 lab_health::read(&r, r.capabilities)
@@ -700,6 +700,11 @@ fn main() -> Result<std::process::ExitCode> {
                 }
             }
         };
+        // A live run started from a packaged app's shell writes its AppData files into that
+        // app's copy (#894): a WARN, never a failure. A replay is offline and stays as recorded.
+        if replay.is_none() {
+            out.rows.extend(foxglove_lab::appdata::rows());
+        }
         if *json {
             println!("{}", out.json());
         } else {
@@ -1098,7 +1103,14 @@ fn main() -> Result<std::process::ExitCode> {
                 .insert("local_ids".into(), catalog.source.clone());
             let mut runner =
                 Runner::new(&device, &catalog, hello, cancelled, non_interactive, &out);
-            runner.injections = Some(foxglove_lab::injections::path());
+            let injections = foxglove_lab::injections::path();
+            if let Some(r) = foxglove_lab::appdata::redirect() {
+                eprintln!(
+                    "{}",
+                    foxglove_redirect::note("the lab's injection log", &injections, &r)
+                );
+            }
+            runner.injections = Some(injections);
             // While the app runs, art selects go through its API (#618, #622).
             runner.app = guard
                 .app_running()

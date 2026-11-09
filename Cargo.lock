@@ -599,6 +599,7 @@ dependencies = [
  "foxglove-link",
  "foxglove-plugin-api",
  "foxglove-plugin-host",
+ "foxglove-redirect",
  "image",
  "libc",
  "prost",
@@ -674,6 +675,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "foxglove-redirect"
+version = "0.3.0"
+dependencies = [
+ "windows",
 ]
 
 [[package]]

@@ -206,7 +206,9 @@ pub fn keyboard(ui: &mut egui::Ui, line: &Line, check: bool) -> Option<Ask> {
 }
 
 /// The lamp drawing's hover: why each key's colour is a guess (#825).
-pub const LAMPS_SPREAD: &str = "Its keys in the colours Foxglove last set. Windows doesn't say                                 which key each lamp lights, so the lamps' colours go over the                                 keys in order.";
+pub const LAMPS_SPREAD: &str = "Its keys in the colours Foxglove last set. Windows doesn't say \
+                                which key each lamp lights, so the lamps' colours go over the \
+                                keys in order.";
 
 /// A keyboard Foxglove lights through Windows Dynamic Lighting (#825): its own keys (`layout`)
 /// in the colours it was last set (`tint`, spread over the keys as its thumbnail spreads them;
@@ -483,6 +485,11 @@ pub fn check_link(ui: &mut egui::Ui, can: bool) -> egui::Response {
 pub mod tests {
     use super::*;
     use foxglove_devices::pc_lighting::ZoneKey;
+
+    #[test]
+    fn the_lamp_hover_has_no_stray_spaces() {
+        assert!(!LAMPS_SPREAD.contains("  "), "{LAMPS_SPREAD}");
+    }
 
     /// Every text a frame drew, a line each.
     pub fn collect(shape: &egui::Shape, out: &mut String) {

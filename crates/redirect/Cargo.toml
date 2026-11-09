@@ -1,0 +1,9 @@
+[package]
+name = "foxglove-redirect"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+description = "Tells when Windows redirected a file into another app's package copy (#896, #894)"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

@@ -12,6 +12,8 @@ foxglove-link = { path = "../foxglove-link" }
 foxglove-devices = { path = "../devices", features = ["hid"] }
 foxglove-plugin-api = { path = "../plugin-api" }
 foxglove-plugin-host = { path = "../plugin-host" }
+# Redirected AppData (#894): the injection log in another app's package copy.
+foxglove-redirect = { path = "../redirect" }
 serialport = "4.10.0"
 zmk-studio-api = { version = "0.6.0", default-features = false, features = ["serial"] }
 serde = { version = "1", features = ["derive"] }

@@ -38,6 +38,8 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 foxglove-panel = { path = "../crates/panel" }
 foxglove-flash = { path = "../crates/flash" }
+# Foxglove: tells when Windows redirected a file into another app's package (#896, #894).
+foxglove-redirect = { path = "../crates/redirect" }
 toml = "0.9"
 prost = "0.14"
 rust-ini = "0.21.3"

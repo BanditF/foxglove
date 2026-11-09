@@ -8,6 +8,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.append(str(REPO / 'scripts'))
+import appdata_redirect  # noqa: E402  (#894, shared with the flasher)
+
 # Absolute even when CARGO_TARGET_DIR is relative: it is relative to the repository root, as cargo
 # runs there (#618: a relative tool path crashed overlay_tray's lab cases).
 TARGET = REPO / os.environ.get('CARGO_TARGET_DIR', 'target')
@@ -96,6 +99,8 @@ def away(lab):
 # that injection began. Any other input, before or after, is the user's and still blocks.
 INJECTIONS = Path(os.environ.get('FOXGLOVE_LAB_INJECTIONS') or
                   Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir())) / 'Foxglove' / 'lab-injections.log')
+# #894: from a packaged app's shell the log lands in that app's copy; said once a run.
+INJECTIONS_NOTICE = appdata_redirect.Notice("the lab's injection log")
 HARNESS_AFTER = 2.0
 HARNESS_BEFORE = 0.1
 KEEP = 3600  # records older than an hour are dropped when the file is rewritten
@@ -170,6 +175,7 @@ def record_injection(start, end, before, what, path=None):
             path.write_text(''.join(_line(*r) for r in keep), encoding='utf-8')
         with open(path, 'a', encoding='utf-8') as f:
             f.write(_line(start, end, before, what))
+        INJECTIONS_NOTICE.after_write(path, sys.stdout)
     except OSError as e:
         print(f'  (could not record the injection in {path}: {e})', flush=True)
 

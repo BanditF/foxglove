@@ -948,7 +948,8 @@ pub mod tests {
         assert_eq!(
             pieces,
             [Some(0), Some(0), None],
-            "the first place by its 16-byte cut name, the second by the merged name,              the third truly unknown"
+            "the first place by its 16-byte cut name, the second by the merged name, \
+             the third truly unknown"
         );
         assert_eq!(badge(&s, garden, &k, 0), Badge::OnKeyboard);
         let s = Snapshot {

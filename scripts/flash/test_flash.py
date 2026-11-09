@@ -621,6 +621,23 @@ class HistoryMatchesConsoleTests(unittest.TestCase):
         self.assertTrue(f.verify_build('right', 'abc1234', backend, lambda m: None, clock.clock, clock.sleep))
 
 
+class RedirectedHistoryTests(unittest.TestCase):
+    """#894: from a packaged app's shell the history goes to that app's copy; the flasher says
+    where, once a run (a fake GetFinalPathNameByHandleW)."""
+
+    def test_a_redirected_history_is_said_once(self):
+        copy = r'C:\Users\u\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\Foxglove\flash-history.log'
+        notice = f.appdata_redirect.Notice('the flash history', final=lambda p: '\\\\?\\' + copy)
+        with tempfile.TemporaryDirectory() as d, patch.object(f, 'HISTORY_NOTICE', notice), \
+                patch.dict(os.environ, {'FOXGLOVE_FLASH_HISTORY': str(Path(d) / 'h.log')}), \
+                patch('sys.stderr', new_callable=io.StringIO) as err:
+            f.record('left', 'abc', 'written')
+            f.record('left', 'abc', 'verified')
+            self.assertEqual(len((Path(d) / 'h.log').read_text().splitlines()), 2)
+        self.assertEqual(err.getvalue().count("the flash history is in another app's private copy"), 1)
+        self.assertIn(copy, err.getvalue())
+
+
 class NoFocusTests(unittest.TestCase):
     def test_typing_not_checked_is_not_a_failure(self):
         backend = FakeOS()

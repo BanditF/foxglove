@@ -13,7 +13,8 @@
 //! The rule: input from an injection's start (less [`BEFORE`]) to [`AFTER`] past its end is the
 //! harness's. When the PC's last input falls in such a window, the user's last input is the one
 //! recorded when that injection began. Any other input, before or after, is the user's and still
-//! blocks. labkit's `user_idle` reads the file the same way.
+//! blocks. labkit's `user_idle` reads the file the same way. From a packaged app's shell the
+//! file is that app's private copy (#894): `appdata` says so.
 use std::{
     io::Write,
     path::PathBuf,
