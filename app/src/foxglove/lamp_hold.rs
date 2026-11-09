@@ -147,6 +147,10 @@ enum Job {
     /// The keyboard's owner byte changed (`lights_owner`): Bluetooth having the lights while
     /// the USB cable is in is logged once per connect ([`ble_with_cable_in`]).
     Owner(Option<Owner>),
+    /// An event that may hide a silent loss (#925): read the held arrays again.
+    Check(super::lamp_loss::Trigger),
+    /// Another app came to the front (its exe, when known): a check too.
+    Front(Option<String>),
     Stop,
 }
 
@@ -174,14 +178,24 @@ struct Core {
     /// Bluetooth having the lights with the cable in was logged since the last connect, reopen
     /// or LampArray change (once each).
     told_ble: bool,
+    /// Silent losses (#925): detected on [`Job::Check`]s, recovered once each.
+    loss: super::lamp_loss::Tracker,
+    /// The app in front, from the last foreground change.
+    front: Option<String>,
+    /// Redraws what draws through the held arrays (a running scene), after a recovery.
+    redraw: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Core {
     /// Handles a batch; false once stopped.
     fn handle(&mut self, jobs: Vec<Job>) -> bool {
+        use super::lamp_loss::Trigger;
         let mut reopen = false;
         // Open what isn't held, keeping what is.
         let mut fill = false;
+        // Windows said something (AvailabilityChanged) in this batch: no loss is silent.
+        let mut heard = false;
+        let mut check: Option<Trigger> = None;
         for job in jobs {
             match job {
                 Job::Keyboard(k) => {
@@ -194,18 +208,30 @@ impl Core {
                         // since the first open.
                         let (usb, ble) = self.missing();
                         fill |= usb || ble;
+                        check.get_or_insert(Trigger::Device);
                     }
                 }
                 Job::Devices => {
                     self.told_ble = false;
                     reopen = true;
                 }
-                Job::Changed => {}
+                Job::Changed => heard = true,
                 Job::Listed => {
                     self.told_ble = false;
                     fill = true;
+                    check.get_or_insert(Trigger::Device);
+                }
+                Job::Check(t) => {
+                    check.get_or_insert(t);
+                }
+                Job::Front(exe) => {
+                    if exe != self.front {
+                        self.front = exe;
+                        check.get_or_insert(Trigger::Foreground);
+                    }
                 }
                 Job::Owner(o) => {
+                    check.get_or_insert(Trigger::Owner);
                     if ble_with_cable_in(o, self.usb_ours()) && !self.told_ble {
                         self.told_ble = true;
                         // #902 let USB go and held it again here; on 11/09 that never moved the
@@ -243,6 +269,11 @@ impl Core {
         if reopen {
             // Let go first: one unplugged and back is a new device to Windows.
             self.held.clear();
+        } else if let Some(t) = check.filter(|_| !heard && !self.paused) {
+            if self.check_loss(std::time::Instant::now(), t) {
+                // The recovery's open filled whatever was missing.
+                fill = false;
+            }
         }
         if reopen || fill {
             self.open(if reopen {
@@ -251,7 +282,77 @@ impl Core {
                 "a LampArray change"
             });
         }
+        for id in self.loss.heard(&self.readings()) {
+            eprintln!("Foxglove: LampArray {id}: available to Foxglove again (silent loss over)");
+        }
         self.publish();
+        true
+    }
+
+    /// The held arrays' availability now.
+    fn readings(&self) -> Vec<super::lamp_loss::Reading> {
+        self.held
+            .iter()
+            .map(|h| super::lamp_loss::Reading {
+                id: h.id.clone(),
+                ble: h.ble,
+                available: h.device.available(),
+            })
+            .collect()
+    }
+
+    /// Reads the held arrays again on `trigger` (#925); a silent loss is logged and its hold
+    /// re-taken once (within the backoff), then the scene redrawn. True when it opened.
+    fn check_loss(&mut self, now: std::time::Instant, trigger: super::lamp_loss::Trigger) -> bool {
+        if !self.loss.due(now, trigger) {
+            return false;
+        }
+        let front = self.front.clone();
+        let in_front = front.as_deref().unwrap_or("not known");
+        let out = self.loss.check(now, &self.readings(), front.as_deref());
+        for r in &out.lost {
+            eprintln!(
+                "Foxglove: LampArray {} ({}): LOST without an AvailabilityChanged (seen on {}; \
+                 app in front: {in_front}); {} (losses {}, recoveries {})",
+                r.id,
+                if r.ble { "Bluetooth" } else { "USB" },
+                trigger.words(),
+                match out.wait {
+                    Some(w) if out.recover.is_empty() =>
+                        format!("re-taking the hold after the backoff ({} s)", w.as_secs()),
+                    _ => "re-taking the hold".into(),
+                },
+                self.loss.counts.losses,
+                self.loss.counts.recoveries
+            );
+        }
+        for id in &out.back {
+            eprintln!("Foxglove: LampArray {id}: available to Foxglove again (silent loss over)");
+        }
+        if out.recover.is_empty() {
+            return false;
+        }
+        // Let go and hold again: a fresh handle, as after a device change.
+        self.held.retain(|h| !out.recover.contains(&h.id));
+        self.open("a silent loss");
+        let (ok, left) = self.loss.recovered(&out.recover, &self.readings());
+        for id in &ok {
+            eprintln!(
+                "Foxglove: LampArray {id}: RECOVERED: held again and redrawn (losses {}, \
+                 recoveries {})",
+                self.loss.counts.losses, self.loss.counts.recoveries
+            );
+        }
+        for id in &left {
+            eprintln!(
+                "Foxglove: LampArray {id}: still unavailable after re-taking the hold: Windows \
+                 ranks another controller first (app in front: {in_front}); left to it until \
+                 Windows gives it back"
+            );
+        }
+        if !ok.is_empty() {
+            (self.redraw)();
+        }
         true
     }
 
@@ -335,6 +436,7 @@ impl Core {
 
     fn publish(&mut self) {
         PAUSED.store(self.paused, std::sync::atomic::Ordering::Relaxed);
+        *LOSS.lock().unwrap_or_else(|e| e.into_inner()) = self.loss.counts.clone();
         let side = |ble: bool| {
             let mine: Vec<bool> = self
                 .held
@@ -359,6 +461,20 @@ impl Core {
             (self.notify)();
         }
     }
+}
+
+/// The silent-loss counts (#925), for the health row.
+static LOSS: Mutex<super::lamp_loss::Counts> = Mutex::new(super::lamp_loss::Counts {
+    losses: 0,
+    recoveries: 0,
+    left: 0,
+    lost_now: 0,
+    front: None,
+});
+
+/// The silent losses and recoveries since start.
+pub fn loss_counts() -> super::lamp_loss::Counts {
+    LOSS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// What the last open found (its log line without the prefix), for the health rows.
@@ -444,6 +560,7 @@ fn spawn(
     listed: Listed,
     find: Find,
     notify: Arc<dyn Fn() + Send + Sync>,
+    redraw: Arc<dyn Fn() + Send + Sync>,
 ) {
     let (tx, rx) = mpsc::channel();
     let paused = super::pause::paused();
@@ -461,6 +578,9 @@ fn spawn(
         last: None,
         waiting: false,
         told_ble: false,
+        loss: super::lamp_loss::Tracker::new(super::lamp_loss::Policy::default()),
+        front: None,
+        redraw,
     };
     *TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     super::services::spawn_named("lamp-hold", move || {
@@ -502,7 +622,16 @@ pub fn start() {
             super::lights_owner::retry("Foxglove's hold on the keyboard's LampArrays changed");
             super::lights_owner::repaint();
         }),
+        // After a recovered silent loss a running scene draws the keyboard in full again.
+        Arc::new(super::scene_run::devices_changed),
     );
+    // Unlock and the display coming back (resume) may hide a silent loss (#925): one check
+    // each, on the session's own events. Kept for the app's life.
+    std::mem::forget(super::away::subscribe_changes(|c| {
+        if let Some(t) = check_for(c) {
+            send(Job::Check(t));
+        }
+    }));
     // Subscribed before the first ask, so a keyboard found in between still arrives as an event.
     let events = super::devices::bus().subscribe(false);
     watch();
@@ -549,6 +678,22 @@ fn job_for(w: Watched) -> Job {
         Watched::Enumerated | Watched::Added(_) => Job::Listed,
         Watched::Removed(id) => Job::Gone(id),
     }
+}
+
+/// The check (#925) an away change rides on: unlock and display on; none for lock and off.
+fn check_for(c: super::away::Change) -> Option<super::lamp_loss::Trigger> {
+    use super::away::Change;
+    match c {
+        Change::Unlocked => Some(super::lamp_loss::Trigger::Unlock),
+        Change::DisplayOn => Some(super::lamp_loss::Trigger::DisplayOn),
+        Change::Locked | Change::DisplayOff => None,
+    }
+}
+
+/// Another app came to the front (the info panel's foreground hook; `exe` its file name): the
+/// holder reads its arrays again once per change (#925).
+pub fn foreground_changed(exe: Option<String>) {
+    send(Job::Front(exe));
 }
 
 /// The Lights worker scanned the Dynamic Lighting devices: the holds are opened afresh.
@@ -658,6 +803,8 @@ mod tests {
         available: AtomicBool,
         writes: AtomicU32,
         dropped: AtomicU32,
+        /// A fresh hold makes it available again (the silent loss was Windows losing track).
+        back_on_open: AtomicBool,
     }
 
     struct FakeDevice(Arc<Fake>);
@@ -694,6 +841,11 @@ mod tests {
                 return Opened::default();
             }
             self.opened.fetch_add(1, Ordering::SeqCst);
+            for f in [&self.usb, &self.ble] {
+                if f.back_on_open.load(Ordering::SeqCst) {
+                    f.available.store(true, Ordering::SeqCst);
+                }
+            }
             *self.changed.lock().unwrap() = Some(changed);
             let mut held = vec![HeldArray {
                 id: "usb".into(),
@@ -732,6 +884,8 @@ mod tests {
         ble_listed: Arc<AtomicBool>,
         /// The keyboard `find` reports (the device layer's, once discovery is done).
         found: Arc<Mutex<Option<(u16, u16)>>>,
+        /// Redraws after a recovered silent loss.
+        redrawn: Arc<AtomicU32>,
     }
 
     fn rig() -> Rig {
@@ -741,6 +895,7 @@ mod tests {
         let told = Arc::new(AtomicU32::new(0));
         let ble_listed = Arc::new(AtomicBool::new(true));
         let found = Arc::new(Mutex::new(None));
+        let redrawn = Arc::new(AtomicU32::new(0));
         let (tx, rx) = mpsc::channel();
         let t = told.clone();
         let l = ble_listed.clone();
@@ -771,8 +926,17 @@ mod tests {
             last: None,
             waiting: false,
             told_ble: false,
+            loss: crate::foxglove::lamp_loss::Tracker::new(Default::default()),
+            front: None,
+            redraw: {
+                let d = redrawn.clone();
+                Arc::new(move || {
+                    d.fetch_add(1, Ordering::SeqCst);
+                })
+            },
         };
         Rig {
+            redrawn,
             core,
             rx,
             usb,
@@ -797,6 +961,97 @@ mod tests {
     }
 
     const CORNE: (u16, u16) = (0x1d50, 0x615e);
+
+    /// Both held and Foxglove's, then Windows takes BLE without an AvailabilityChanged.
+    fn silently_lost() -> Rig {
+        let mut r = rig();
+        r.usb.available.store(true, Ordering::SeqCst);
+        r.ble.available.store(true, Ordering::SeqCst);
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        r.ble.available.store(false, Ordering::SeqCst);
+        r
+    }
+
+    #[test]
+    fn a_silent_loss_found_on_unlock_is_re_taken_and_redrawn_once() {
+        use crate::foxglove::lamp_loss::Trigger;
+        let mut r = silently_lost();
+        r.ble.back_on_open.store(true, Ordering::SeqCst);
+        let ble_drops = r.ble.dropped.load(Ordering::SeqCst);
+        r.core.handle(vec![Job::Check(Trigger::Unlock)]);
+        assert_eq!(r.core.loss.counts.losses, 1);
+        assert_eq!(r.core.loss.counts.recoveries, 1);
+        assert_eq!(
+            r.ble.dropped.load(Ordering::SeqCst),
+            ble_drops + 1,
+            "BLE let go"
+        );
+        assert_eq!(r.opened.load(Ordering::SeqCst), 2, "and held again");
+        // USB stays held: the open's second handle on it is dropped, the held one kept.
+        assert_eq!(r.core.held.iter().filter(|h| !h.ble).count(), 1);
+        assert_eq!(r.core.holds.usb, Some(true));
+        assert_eq!(r.redrawn.load(Ordering::SeqCst), 1);
+        assert_eq!(r.core.holds.ble, Some(true));
+        assert_eq!(
+            r.usb.writes.load(Ordering::SeqCst) + r.ble.writes.load(Ordering::SeqCst),
+            0,
+            "a hold is never written"
+        );
+    }
+
+    #[test]
+    fn a_controller_windows_ranks_first_keeps_the_lamps_after_one_re_take() {
+        use crate::foxglove::lamp_loss::Trigger;
+        let mut r = silently_lost();
+        r.core.handle(vec![Job::Front(Some("game.exe".into()))]);
+        assert_eq!(r.core.loss.counts.losses, 1);
+        assert_eq!(r.core.loss.counts.left, 1);
+        assert_eq!(r.core.loss.counts.front.as_deref(), Some("game.exe"));
+        assert_eq!(r.redrawn.load(Ordering::SeqCst), 0);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 2);
+        // Later events neither count it again nor re-take it.
+        r.core.handle(vec![Job::Check(Trigger::DisplayOn)]);
+        r.core.handle(vec![Job::Check(Trigger::Device)]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 2, "not fought");
+        assert_eq!(r.core.loss.counts.losses, 1);
+        // Windows gives it back (its event): the loss is over.
+        r.windows_says(true, true);
+        assert_eq!(r.core.loss.counts.lost_now, 0);
+    }
+
+    #[test]
+    fn an_availability_event_is_not_a_silent_loss() {
+        use crate::foxglove::lamp_loss::Trigger;
+        let mut r = silently_lost();
+        r.core
+            .handle(vec![Job::Changed, Job::Check(Trigger::Unlock)]);
+        r.core.handle(vec![Job::Check(Trigger::Unlock)]);
+        assert_eq!(r.core.loss.counts.losses, 0);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_same_app_in_front_again_is_no_check_and_pause_checks_nothing() {
+        let mut r = silently_lost();
+        r.core.front = Some("game.exe".into());
+        r.core.handle(vec![Job::Front(Some("game.exe".into()))]);
+        assert_eq!(r.core.loss.counts.losses, 0, "no change in front, no read");
+        r.core.handle(vec![Job::Paused(true)]);
+        r.core.handle(vec![Job::Check(
+            crate::foxglove::lamp_loss::Trigger::Unlock,
+        )]);
+        assert_eq!(r.core.loss.counts.losses, 0, "paused: nothing held");
+    }
+
+    #[test]
+    fn unlock_and_display_on_check_lock_and_off_do_not() {
+        use super::super::away::Change;
+        use crate::foxglove::lamp_loss::Trigger;
+        assert_eq!(check_for(Change::Unlocked), Some(Trigger::Unlock));
+        assert_eq!(check_for(Change::DisplayOn), Some(Trigger::DisplayOn));
+        assert_eq!(check_for(Change::Locked), None);
+        assert_eq!(check_for(Change::DisplayOff), None);
+    }
 
     #[test]
     fn both_transports_are_held_and_never_written() {

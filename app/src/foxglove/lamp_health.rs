@@ -64,6 +64,7 @@ pub fn rows_now() -> Vec<HealthRow> {
         let holds = super::lamp_hold::now();
         let owner = super::lights_owner::lock(&super::lights_owner::shared()).owner();
         out.extend(hold_rows(holds, owner));
+        out.push(loss_row(&super::lamp_hold::loss_counts()));
         if let Some(listed) = super::lamp_hold::listed_now() {
             out.extend(unheld_rows(
                 holds,
@@ -156,6 +157,35 @@ pub fn hold_rows(
         })
     })
     .collect()
+}
+
+/// With identity, the held LampArrays' silent losses (#925): lost without an
+/// `AvailabilityChanged`, found on a later event, and recovered once each. OK while none is lost
+/// now; WARN while one stays unavailable after its recovery (Windows ranks another controller
+/// first, which Foxglove leaves alone).
+pub fn loss_row(c: &super::lamp_loss::Counts) -> HealthRow {
+    let item = "Keyboard LampArray silent losses";
+    let front = c
+        .front
+        .as_deref()
+        .map(|f| format!("; app in front at the last: {f}"))
+        .unwrap_or_default();
+    let counts = format!(
+        "{} lost without an AvailabilityChanged since start, {} recovered, {} left to another          controller{front}",
+        c.losses, c.recoveries, c.left
+    );
+    match (c.losses, c.lost_now) {
+        (0, _) => HealthRow::new(SUBSYSTEM, item, Level::Ok, "None since start"),
+        (_, 0) => HealthRow::new(SUBSYSTEM, item, Level::Ok, counts),
+        (_, n) => HealthRow::new(
+            SUBSYSTEM,
+            item,
+            Level::Warn,
+            format!(
+                "{n} lost now: Windows ranks another controller first after Foxglove re-took                  the hold, so Foxglove leaves it until Windows gives it back ({counts})"
+            ),
+        ),
+    }
 }
 
 /// With identity, a FAIL per transport Windows lists the keyboard's LampArray on (`listed`,
@@ -524,6 +554,28 @@ mod tests {
     /// The 11/07 runs held nothing and nothing said why: a listed transport not held is a FAIL
     /// (the lab's health exit code) naming the last open's outcome; a held one, one not listed,
     /// or any while paused adds no row.
+    #[test]
+    fn the_loss_row_counts_losses_and_warns_while_one_is_lost() {
+        use crate::foxglove::lamp_loss::Counts;
+        let none = loss_row(&Counts::default());
+        assert_eq!(none.level, Level::Ok);
+        let recovered = loss_row(&Counts {
+            losses: 2,
+            recoveries: 2,
+            front: Some("cod.exe".into()),
+            ..Counts::default()
+        });
+        assert_eq!(recovered.level, Level::Ok);
+        assert!(recovered.detail.contains("2 lost") && recovered.detail.contains("cod.exe"));
+        let lost = loss_row(&Counts {
+            losses: 1,
+            left: 1,
+            lost_now: 1,
+            ..Counts::default()
+        });
+        assert_eq!(lost.level, Level::Warn);
+    }
+
     #[test]
     fn a_listed_lamp_array_not_held_fails_with_the_last_open() {
         use crate::foxglove::lamp_hold::Holds;
