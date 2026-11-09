@@ -1,8 +1,8 @@
-//! The tray icon without a taskbar. Started at sign-in, an app (Foxglove, Hideout) can run before
+//! The tray icon without a taskbar. Started at sign-in, Foxglove can run before
 //! Explorer's taskbar exists, and Explorer can restart under it. Neither may end the app.
 //!
 //! - [`Slot`] holds the tray icon, or nothing when it couldn't be made. Making it fails with a
-//!   message in the log, never a panic, and the app runs on without an icon.
+//!   message in the log, never a panic, and Foxglove runs on without an icon.
 //! - Explorer broadcasts the registered "TaskbarCreated" message to every top-level window when
 //!   its taskbar starts. A hidden window on its own thread waits for it in `GetMessageW` (no
 //!   timer) and wakes the UI, which makes the missing icon then. An icon that already exists
@@ -26,61 +26,54 @@ fn created(wake: &dyn Fn()) {
 }
 
 /// The tray icon, or nothing until a taskbar start lets it be made.
-pub struct Slot<T> {
-    app: &'static str,
-    icon: Option<T>,
-}
+pub struct Slot<T>(Option<T>);
 
 impl<T> Slot<T> {
     /// Makes the icon now; a failure is logged and leaves the slot empty.
-    pub fn new(app: &'static str, build: impl FnOnce() -> Result<T, String>) -> Self {
+    pub fn new(build: impl FnOnce() -> Result<T, String>) -> Self {
         match build() {
-            Ok(icon) => Self {
-                app,
-                icon: Some(icon),
-            },
+            Ok(icon) => Self(Some(icon)),
             Err(e) => {
-                eprintln!("{app}: no tray icon yet ({e}); it's added when the taskbar starts");
-                Self { app, icon: None }
+                eprintln!("Foxglove: no tray icon yet ({e}); it's added when the taskbar starts");
+                Self(None)
             }
         }
     }
 
     /// The taskbar started: makes the icon if it's missing. True when it was made just now.
     pub fn taskbar_created(&mut self, build: impl FnOnce() -> Result<T, String>) -> bool {
-        let app = self.app;
-        if self.icon.is_some() {
-            eprintln!("{app}: the taskbar restarted; the tray icon is added again");
+        if self.0.is_some() {
+            eprintln!("Foxglove: the taskbar restarted; the tray icon is added again");
             return false;
         }
         match build() {
             Ok(icon) => {
-                self.icon = Some(icon);
-                eprintln!("{app}: the taskbar is up; tray icon added");
+                self.0 = Some(icon);
+                eprintln!("Foxglove: the taskbar is up; tray icon added");
                 true
             }
             Err(e) => {
-                eprintln!("{app}: still no tray icon ({e}); trying at the next taskbar start");
+                eprintln!("Foxglove: still no tray icon ({e}); trying at the next taskbar start");
                 false
             }
         }
     }
 
     pub fn get_mut(&mut self) -> Option<&mut T> {
-        self.icon.as_mut()
+        self.0.as_mut()
     }
 }
 
 /// Watches for the taskbar starting, waking the UI each time. Call once.
-pub fn watch(app: &'static str, wake: impl Fn() + Send + Sync + 'static) {
-    imp::watch(app, Box::new(wake));
+pub fn watch(wake: impl Fn() + Send + Sync + 'static) {
+    imp::watch(Box::new(wake));
 }
 
 #[cfg(windows)]
 mod imp {
     use std::sync::OnceLock;
 
-    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
@@ -108,70 +101,64 @@ mod imp {
         unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
     }
 
-    pub fn watch(app: &'static str, wake: Wake) {
+    pub fn watch(wake: Wake) {
         if WAKE.set(wake).is_err() {
             return; // watching already
         }
-        let spawned = std::thread::Builder::new()
-            .name("taskbar-watch".into())
-            .spawn(move || {
-                // SAFETY: registers a message name; no pointers kept.
-                let message = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
-                if message == 0 {
-                    eprintln!("{app}: can't watch for the taskbar (no message id)");
+        super::super::services::spawn_named("taskbar-watch", || {
+            // SAFETY: registers a message name; no pointers kept.
+            let message = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
+            if message == 0 {
+                eprintln!("Foxglove: can't watch for the taskbar (no message id)");
+                return;
+            }
+            let _ = MESSAGE.set(message);
+            let class = w!("FoxgloveTaskbarWatch");
+            // SAFETY: window-class and window creation on this thread; the class name is a
+            // static string, and the window lives as long as this thread's message loop.
+            unsafe {
+                let wc = WNDCLASSW {
+                    lpfnWndProc: Some(window_proc),
+                    lpszClassName: class,
+                    ..Default::default()
+                };
+                if RegisterClassW(&wc) == 0 {
+                    eprintln!("Foxglove: can't watch for the taskbar (no window class)");
                     return;
                 }
-                let _ = MESSAGE.set(message);
-                let class_name = HSTRING::from(format!("{app}TaskbarWatch"));
-                let class = PCWSTR(class_name.as_ptr());
-                // SAFETY: window-class and window creation on this thread; the class name is a
-                // string kept on this thread, and the window lives as long as this thread's message loop.
-                unsafe {
-                    let wc = WNDCLASSW {
-                        lpfnWndProc: Some(window_proc),
-                        lpszClassName: class,
-                        ..Default::default()
-                    };
-                    if RegisterClassW(&wc) == 0 {
-                        eprintln!("{app}: can't watch for the taskbar (no window class)");
-                        return;
-                    }
-                    // A top-level window, never shown: message-only windows get no broadcasts.
-                    let Ok(hwnd) = CreateWindowExW(
-                        WS_EX_TOOLWINDOW,
-                        class,
-                        PCWSTR::null(),
-                        WS_POPUP,
-                        0,
-                        0,
-                        0,
-                        0,
-                        None,
-                        None,
-                        None,
-                        None,
-                    ) else {
-                        eprintln!("{app}: can't watch for the taskbar (no window)");
-                        return;
-                    };
-                    // Let the broadcast through when the app runs elevated.
-                    let _ = ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, None);
-                    let mut msg = MSG::default();
-                    // Sleeps here between messages; ends with the process.
-                    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                        let _ = DispatchMessageW(&msg);
-                    }
+                // A top-level window, never shown: message-only windows get no broadcasts.
+                let Ok(hwnd) = CreateWindowExW(
+                    WS_EX_TOOLWINDOW,
+                    class,
+                    PCWSTR::null(),
+                    WS_POPUP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    None,
+                    None,
+                    None,
+                    None,
+                ) else {
+                    eprintln!("Foxglove: can't watch for the taskbar (no window)");
+                    return;
+                };
+                // Let the broadcast through when Foxglove runs elevated.
+                let _ = ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, None);
+                let mut msg = MSG::default();
+                // Sleeps here between messages; ends with the process.
+                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    let _ = DispatchMessageW(&msg);
                 }
-            });
-        if let Err(e) = spawned {
-            eprintln!("{app}: can't watch for the taskbar (no thread: {e})");
-        }
+            }
+        });
     }
 }
 
 #[cfg(not(windows))]
 mod imp {
-    pub fn watch(_app: &'static str, _wake: Box<dyn Fn() + Send + Sync>) {}
+    pub fn watch(_wake: Box<dyn Fn() + Send + Sync>) {}
 }
 
 #[cfg(test)]
@@ -206,7 +193,7 @@ mod tests {
     #[test]
     fn a_failed_tray_leaves_the_app_running_without_an_icon() {
         let tray = Flaky::new(1);
-        let mut slot = Slot::new("Test", || tray.build());
+        let mut slot = Slot::new(|| tray.build());
         assert!(slot.get_mut().is_none(), "no icon, and no panic");
         assert_eq!(tray.made.get(), 1);
     }
@@ -214,7 +201,7 @@ mod tests {
     #[test]
     fn the_icon_is_made_on_the_taskbar_event_and_only_then() {
         let tray = Flaky::new(2);
-        let mut slot = Slot::new("Test", || tray.build());
+        let mut slot = Slot::new(|| tray.build());
         // No event, no retry: nothing polls.
         for _ in 0..5 {
             assert!(slot.get_mut().is_none());
@@ -232,7 +219,7 @@ mod tests {
     #[test]
     fn an_existing_icon_is_kept_when_explorer_restarts() {
         let tray = Flaky::new(0);
-        let mut slot = Slot::new("Test", || tray.build());
+        let mut slot = Slot::new(|| tray.build());
         assert!(!slot.taskbar_created(|| tray.build()), "not made again");
         assert_eq!(slot.get_mut().copied(), Some(1));
         assert_eq!(tray.made.get(), 1, "tray-icon re-adds its own icon");

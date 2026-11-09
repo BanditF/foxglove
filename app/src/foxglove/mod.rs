@@ -149,7 +149,7 @@ pub mod store_split;
 #[cfg(test)]
 pub(crate) mod studio_fake;
 pub mod studio_session;
-pub use hub_shell::taskbar;
+pub mod taskbar;
 pub mod theme;
 #[cfg(test)]
 mod theme_preview;

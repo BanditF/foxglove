@@ -1004,7 +1004,9 @@ Design §4.7.
   keyboard speaking the link, any GPU tenant, any MCP client). Models and vendor quirks are content
   and catalog data, never code.
 - **Licences:** the contract, the SDKs and every module talk over IPC and MAY use any licence the
-  author picks; first-party SDKs are MIT. The hub is built from Foxglove's shell code and is GPL.
+  author picks; first-party SDKs are MIT. The hub is MIT too, written clean-room from this spec and the design
+  doc; it never uses or adapts code from `app/` (GPL-3.0), and hub crates depend only on MIT or
+  Apache-2.0 code.
 
 ## 12. Trust
 
