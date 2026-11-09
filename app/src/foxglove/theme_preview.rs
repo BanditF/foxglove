@@ -3943,6 +3943,7 @@ fn dl_identity_states_render() {
                 usb: Some(true),
                 ble: Some(false),
             },
+            Some(foxglove_link::lights_owner::Owner::LampArrayBle),
         ))
         .collect::<Vec<_>>(),
     );

@@ -160,6 +160,10 @@ struct Core {
     notify: Arc<dyn Fn() + Send + Sync>,
     /// What the last open found, as logged.
     last: Option<String>,
+    /// An open came before the keyboard was known (at startup the watch's first listing and
+    /// the Lights worker's scan run before discovery): said once, then quiet until the
+    /// keyboard's connect opens them.
+    waiting: bool,
 }
 
 impl Core {
@@ -232,11 +236,17 @@ impl Core {
             self.keyboard = (self.find)();
         }
         let Some((vid, pid)) = self.keyboard else {
-            self.record(format!(
-                "keyboard LampArrays after {why}: none opened: no host-link keyboard found yet"
-            ));
+            // Not a miss: nothing is listed for a keyboard not found yet, and its connect
+            // event (`job_for_event`) opens them. Said once per wait, not per open.
+            if !std::mem::replace(&mut self.waiting, true) {
+                self.record(format!(
+                    "keyboard LampArrays after {why}: waiting for the host-link keyboard \
+                     (discovery not done; its connect opens them)"
+                ));
+            }
             return;
         };
+        self.waiting = false;
         let tx = self.tx.clone();
         let changed: Changed = Arc::new(move || {
             let _ = tx.send(Job::Changed);
@@ -367,7 +377,7 @@ fn words(h: Option<bool>) -> &'static str {
     match h {
         None => "not held",
         Some(true) => "Foxglove's",
-        Some(false) => "held, another controller has it",
+        Some(false) => "held, Windows ranks another controller first",
     }
 }
 
@@ -401,6 +411,7 @@ fn spawn(
         paused,
         notify,
         last: None,
+        waiting: false,
     };
     *TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     super::services::spawn_named("lamp-hold", move || {
@@ -654,6 +665,7 @@ mod tests {
                 t.fetch_add(1, Ordering::SeqCst);
             }),
             last: None,
+            waiting: false,
         };
         Rig {
             core,
@@ -875,15 +887,23 @@ mod tests {
     }
 
     /// An open that comes before any keyboard event (the watch's first listing) asks for the
-    /// keyboard instead of skipping; with none yet it says so, and the keyboard's connect then
-    /// opens both.
+    /// keyboard instead of skipping; with none yet it waits (logged once, not as a miss), and
+    /// the keyboard then opens both.
     #[test]
-    fn an_open_before_the_keyboard_event_finds_it_or_says_why() {
+    fn an_open_before_the_keyboard_event_finds_it_or_waits() {
         let mut r = rig();
         r.core.handle(vec![job_for(Watched::Enumerated)]);
         assert_eq!(r.opened.load(Ordering::SeqCst), 0);
         let last = r.core.last.clone().unwrap();
-        assert!(last.contains("no host-link keyboard found yet"), "{last}");
+        assert!(
+            last.contains("waiting for the host-link keyboard"),
+            "{last}"
+        );
+        assert!(!last.contains("none opened"), "not a miss: {last}");
+        // The Lights worker's scan before discovery: no second line.
+        r.core.last = None;
+        r.core.handle(vec![Job::Devices]);
+        assert_eq!(r.core.last, None, "said once per wait");
         // Discovery done: the next listing finds it without a keyboard event.
         *r.found.lock().unwrap() = Some(CORNE);
         r.core.handle(vec![job_for(Watched::Added("ble".into()))]);
@@ -898,6 +918,23 @@ mod tests {
         // Paused: the open says why nothing was opened.
         r.core.handle(vec![Job::Paused(true)]);
         assert!(r.core.last.clone().unwrap().contains("Foxglove is paused"));
+    }
+
+    /// The 11/09 start (chain-dade): the watch's listing and the Lights scan ran before the
+    /// keyboard's connect; the connect then held both, with no miss logged on the way.
+    #[test]
+    fn startup_opens_before_the_connect_end_with_both_held() {
+        let mut r = rig();
+        r.usb.available.store(true, Ordering::SeqCst);
+        r.ble.available.store(true, Ordering::SeqCst);
+        r.core.handle(vec![job_for(Watched::Enumerated)]);
+        r.core.handle(vec![Job::Devices]);
+        assert_eq!(r.core.holds, Holds::default());
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        assert!(r.core.holds.ours(Owner::LampArrayUsb) && r.core.holds.ours(Owner::LampArrayBle));
+        assert_eq!(r.opened.load(Ordering::SeqCst), 1);
+        assert!(!r.core.waiting);
+        assert!(r.core.last.clone().unwrap().contains("USB held, BLE held"));
     }
 
     #[test]
