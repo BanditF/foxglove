@@ -329,6 +329,8 @@ pub fn attach(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
             // The lights moved to the keyboard's other LampArray (11/09): what draws through it
             // follows (`lamp_hold::follow_draw`).
             super::lamp_hold::follow_draw();
+            // With the cable in, the lights belong on USB: Bluetooth taking them re-claims it.
+            super::lamp_hold::owner_changed(now);
             // Windows let go (#749 b): the Lights page lets go of the keyboard's LampArray.
             if before.is_some_and(Owner::lamp_array) && !now.is_some_and(Owner::lamp_array) {
                 super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
