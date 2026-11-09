@@ -11,13 +11,13 @@ enough), and watch both screens.
 
 | Part | Behaviour |
 |---|---|
-| Left panel (`host_link.c`) | Takes the WPM area at the first PRESENT and keeps the last presented frame until RELEASE or a reboot. `CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S` (default 0 = never) brings the WPM chart back after N s of silence. The back buffer is never shown: ROWS/FILL only write it, PRESENT copies it to the front. |
+| Info screen (`host_link.c`) | Takes the WPM area at the first PRESENT and keeps the last presented frame until RELEASE or a reboot. `CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S` (default 0 = never) brings the WPM chart back after N s of silence. The back buffer is never shown: ROWS/FILL only write it, PRESENT copies it to the front. |
 | Left relay (`art_relay_central.c`) | A receive from the PC with no BEGIN or DATA for 10 s is dropped: state goes back to IDLE with error `ART_ERR_TIMEOUT` (8). A new BEGIN replaces a stuck receive at any time. Pushes to the right hold their own connection reference, so a split link that drops mid-push fails the push (`ART_ERR_BLE`) instead of touching a freed connection. Every request has a 3 s timeout. |
 | Art store (`art_store.c`, behind the right's relay `art_relay_peripheral.c`, or `art_local.c` on a single-screen board, #834) | Receives into a spare RAM slot while the current set keeps playing. The screen switches only after the blob passes CRC and header checks (its NVA1 size must be the target's own). A failed, partial or never-committed push leaves the screen as it was. |
 
 Before this change, the right froze its animation at BEGIN while a pushed set was playing and
 stayed frozen if the push never committed or failed its CRC; the left stayed RECEIVING forever;
-the left panel went back to WPM 65 s after the last report.
+the Info screen went back to WPM 65 s after the last report.
 
 Pushed art and the panel live in RAM only: after a power cycle the right shows a built-in set and
 the left shows the WPM chart. That is expected, not a failure.
@@ -28,7 +28,7 @@ the left shows the WPM chart. That is expected, not a failure.
    so check which half you double-tapped. Left = `eyelash_corne_studio_left`, right =
    `nice_view_custom-eyelash_corne_right`.
 2. Pair and type on both halves before you start the app.
-3. Have the app's status visible: the HELLO reply (left panel, right link, battery, discovery)
+3. Have the app's status visible: the HELLO reply (Info screen, right link, battery, discovery)
    and the art STATUS reply (left state/error, right state/set). In the reports below, left
    states are 0 idle, 1 receiving, 2 pushing, 3 done, 4 failed; right states are 0 built-in,
    1 receiving, 2 playing pushed, 3 bad CRC, 4 bad blob, 5 too big.

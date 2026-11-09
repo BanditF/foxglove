@@ -2,7 +2,7 @@
 name = "plugin-focus-timer"
 version = "1.0.0"
 edition = "2021"
-description = "Pomodoro, a Foxglove plugin: a focus timer on the left panel and the underglow"
+description = "Pomodoro, a Foxglove plugin: a focus timer on the Info screen and the underglow"
 license = "MIT"
 
 [[bin]]

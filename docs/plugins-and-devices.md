@@ -12,7 +12,7 @@ The app grew around one keyboard. Each feature talks to its own thing:
 | Overlay + keymap editor | `app/src/protocols` (`KeyboardProtocol`, upstream KeyPeek) | keymap read/write, `hid_read()` |
 | Screens, art, 0xD7 settings/behaviors | `foxglove_link::link` (`Link`, `Transport`) | one Raw HID owner, request/reply |
 | RGB | `keyboard_settings` over 0xD7 | Corne only |
-| Providers (clock, media, volume, app) | `crates/panel` | Windows-only, in-process |
+| Providers (clock, media, volume, app) | `crates/info-screen` | Windows-only, in-process |
 
 The growth list (QMK, VIA/Vial, other keyboards, six RGB SDKs, plugins, profiles) multiplies
 that. Without one seam, every new feature has to know every backend, and every backend every
@@ -225,7 +225,7 @@ integration follows the same rules:
      it to appear.
    - Installed but not running is a third state with its own hint, not a failure.
 4. **Fall back to Windows where a feature can.**
-   - "Match the wallpaper" (right art) and the left panel's wallpaper frames use the Windows
+   - "Match the wallpaper" (right art) and the Info screen's wallpaper frames use the Windows
      desktop wallpaper. Its file (`HKCU\Control Panel\Desktop` › `WallPaper`) matches a
      `wallpapers.json` entry whose id is the file's name, or whose `match` text is in its path. Its change event is the folder watch
      on `%APPDATA%\Microsoft\Windows\Themes` (Windows rewrites `TranscodedWallpaper`).

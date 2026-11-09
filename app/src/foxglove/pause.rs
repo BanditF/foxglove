@@ -1,10 +1,10 @@
 //! Pause Foxglove (#404): while paused, Foxglove stops driving the keyboard. No lighting,
-//! screen or art writes go out: the left panel goes back to the firmware, the right art stays
+//! screen or art writes go out: the Info screen goes back to the firmware, the right art stays
 //! as it is, the Windows-accent colour waits, the app's own lights and art controls refuse, and
 //! plugin lighting leases give the lights back so the keyboard shows its own effects. The layer
 //! overlay hides and the tray icon shows the paused glyph. Reads (status, lights, battery) go on.
 //!
-//! Resuming brings it back: leases show again, the left panel is drawn again, and art that was
+//! Resuming brings it back: leases show again, the Info screen is drawn again, and art that was
 //! skipped while paused shows. Pause lives in memory only, so a restart starts unpaused.
 //!
 //! Pausing and resuming is the event: [`set`] wakes each service and the UI once; nothing here
@@ -27,7 +27,7 @@ pub fn set(paused: bool) {
         return;
     }
     eprintln!("Foxglove: {}", if paused { "paused" } else { "resumed" });
-    // The left panel's service hands the panel back, or takes it again.
+    // the Info screen's service hands the panel back, or takes it again.
     super::screens::pause_changed();
     // Plugin leases give the lights back, or show again (on their own thread).
     super::api::pause_leases();

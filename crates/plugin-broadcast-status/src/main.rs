@@ -1,5 +1,5 @@
 //! Broadcast Status (#211), a Foxglove plugin: whether OBS is recording or streaming, and its
-//! scene, on the left panel and the underglow.
+//! scene, on the Info screen and the underglow.
 //!
 //! It connects to OBS's WebSocket server (obs-websocket v5, `ws://127.0.0.1:4455`) through
 //! Foxglove (`net.connect:127.0.0.1:4455`), so it stays in the sandbox, and the password comes
@@ -38,7 +38,7 @@ const OBS_EXE: &str = "obs64.exe";
 const TRIES: usize = 10;
 const TRY_GAP: Duration = Duration::from_secs(2);
 
-/// The keyboards: (id, has lights, has a left panel).
+/// The keyboards: (id, has lights, has an Info screen).
 fn keyboards(plugin: &Plugin) -> Vec<(String, bool, bool)> {
     plugin
         .devices()
@@ -106,12 +106,12 @@ impl Out {
         let frame = art.frame(*state, scene.as_deref());
         for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
             // Drawn at the info screen's own size (#560).
-            let Some(target) = plugin.panel_target(&id) else {
+            let Some(target) = plugin.info_screen_target(&id) else {
                 continue;
             };
             let fitted = target.fit(&frame, screens::W, screens::H);
             let ttl = (!state.hold()).then_some(screens::BRIEF);
-            let sent = plugin.panel_show(&id, &target, &fitted, ttl);
+            let sent = plugin.info_screen_show(&id, &target, &fitted, ttl);
             if let Err(e) = sent {
                 eprintln!("broadcast-status: panel: {e}");
             }

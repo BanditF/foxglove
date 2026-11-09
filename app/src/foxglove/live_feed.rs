@@ -290,7 +290,7 @@ impl Hub {
         }
     }
 
-    /// The hello, then the piece's frames and the left panel when there are any.
+    /// The hello, then the piece's frames and the Info screen when there are any.
     fn greet(&self, id: u64, out: &mut impl Out) -> bool {
         out.send(id, &self.hello().json())
             && self.art.as_ref().is_none_or(|_| {
@@ -1120,7 +1120,7 @@ impl KeyTap {
     }
 }
 
-/// Paces the left panel to one frame a [`wire::PANEL_MS`]: the first change goes out at once, a
+/// Paces the Info screen to one frame a [`wire::PANEL_MS`]: the first change goes out at once, a
 /// change within the window waits for its end (the latest frame then), so an animated panel
 /// costs a wallpaper at most four frames a second.
 #[derive(Default)]
@@ -2102,7 +2102,7 @@ mod tests {
         assert_eq!(out.last(1), r#"{"t":"art","art":null}"#);
     }
 
-    /// The left panel: sent on change, to joining wallpapers, after a quiet spell only when it
+    /// the Info screen: sent on change, to joining wallpapers, after a quiet spell only when it
     /// changed; paced to one frame a PANEL_MS.
     #[test]
     fn the_left_panel_goes_out_paced() {

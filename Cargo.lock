@@ -587,6 +587,17 @@ name = "foxglove-flash"
 version = "0.3.0"
 
 [[package]]
+name = "foxglove-info-screen"
+version = "0.3.0"
+dependencies = [
+ "chrono",
+ "embedded-graphics",
+ "foxglove-link",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
 name = "foxglove-lab"
 version = "0.3.0"
 dependencies = [
@@ -627,11 +638,7 @@ dependencies = [
 name = "foxglove-panel"
 version = "0.3.0"
 dependencies = [
- "chrono",
- "embedded-graphics",
- "foxglove-link",
- "windows",
- "windows-core",
+ "foxglove-info-screen",
 ]
 
 [[package]]

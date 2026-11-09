@@ -3,7 +3,7 @@
 Foxglove runs on a temp config with the focus timer auto-installed (test hook), `pause` bound to F13
 and `reset` to F14. Checks:
 - facts: focus.state "focus", focus.remaining counting down;
-- left panel: the countdown frame changes every second in FOXGLOVE_DUMP_PANEL, and the frame the
+- Info screen: the countdown frame changes every second in FOXGLOVE_DUMP_PANEL, and the frame the
   app sent is on the screen (D7 06 readback, tests/hil panel_dump);
 - underglow: the focus lease shows red on both halves;
 - F13 from the keyboard (D7 02 &kp F13, tests/hil/app-actions.toml) pauses: focus.paused, the
@@ -91,7 +91,7 @@ with App(args.app, cfg, {'FOXGLOVE_DEV_UNSIGNED_PLUGINS': '1', 'FOXGLOVE_PLUGINS
     a = remaining(); time.sleep(3); b = remaining()
     check('focus.remaining counts down', a is not None and b is not None and b < a, (a, b))
     n = frames(4)
-    check('left panel ticks every second', n >= 3, f'{n} distinct frames in 4 s')
+    check('Info screen ticks every second', n >= 3, f'{n} distinct frames in 4 s')
     check('the countdown frame is on the left screen (D7 06)', on_screen(), 'panel_dump readback')
     check('focus lease shows red on both halves', *wait(read, hue_is(0), RIGHT_LAG))
 

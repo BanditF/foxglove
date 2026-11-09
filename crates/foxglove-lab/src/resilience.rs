@@ -19,7 +19,7 @@ pub enum Cut {
     Commit,
 }
 
-/// A deterministic test frame for the left panel: a checkerboard of `pattern + 2` pixel squares,
+/// A deterministic test frame for the Info screen: a checkerboard of `pattern + 2` pixel squares,
 /// so frames with different patterns differ everywhere. `stride` bytes a row, MSB first, 1 = ink.
 pub fn test_frame(width: usize, height: usize, pattern: u8) -> Vec<u8> {
     let (stride, square) = (width.div_ceil(8), usize::from(pattern) + 2);

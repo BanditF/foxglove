@@ -4,7 +4,7 @@ The microphone's mute and volume are recorded first (straight from Core Audio, c
 back exactly in a `finally`, whatever happens: nothing stays muted. Foxglove runs on a temp config with
 the plugin auto-installed (test hook) and `toggle`/`mute`/`unmute` bound to F15/F16/F17.
 - Mute from outside (Core Audio): mic.state "muted", red high-priority underglow on both halves,
-  the bright MUTED screen on the left panel (and on the screen, D7 06 readback).
+  the bright MUTED screen on the Info screen (and on the screen, D7 06 readback).
 - Unmute: mic.state "unmuted", the lights go back, LIVE shows and then the panel returns.
 - Keys from the keyboard (D7 02 &kp F15-F17): toggle mutes and unmutes, mute and unmute do just
   that; checked in Core Audio itself. Needs an unlocked PC (BLOCKED otherwise).
@@ -67,7 +67,7 @@ RIGHT_LAG = 10
 
 
 def ink():
-    """The share of lit pixels in the frame the app last sent to the left panel."""
+    """The share of lit pixels in the frame the app last sent to the Info screen."""
     raw = dump.read_bytes()
     bits = raw[raw.index(b'\n', raw.index(b'\n') + 1) + 1:]
     return sum(bin(b).count('1') for b in bits) / (len(bits) * 8)
@@ -101,7 +101,7 @@ try:
         check('Core Audio mute: mic.state muted', *wait(facts, lambda f: f.get('mic.state') == 'muted', 5))
         check('muted: red high-priority underglow on both halves', *wait(read, hue_is(0), RIGHT_LAG))
         ok, level = wait(ink, lambda v: v > 0.5, 5)
-        check('muted: the bright MUTED screen on the left panel', ok, f'{level:.0%} lit (before {base:.0%})')
+        check('muted: the bright MUTED screen on the Info screen', ok, f'{level:.0%} lit (before {base:.0%})')
         check('muted: the MUTED frame is on the screen (D7 06)', on_screen(), 'panel_dump readback')
 
         set_mute(False)

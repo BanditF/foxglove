@@ -82,7 +82,7 @@ pub fn cpu_time() -> Option<Duration> {
 }
 
 /// The PC is locked (or on the secure desktop): the input desktop can't be opened for
-/// switching. Foxglove hands the left panel back while away (#410), and typing goes nowhere.
+/// switching. Foxglove hands the Info screen back while away (#410), and typing goes nowhere.
 #[cfg(windows)]
 pub fn locked() -> bool {
     use windows::Win32::System::StationsAndDesktops::{
@@ -104,7 +104,7 @@ pub fn locked() -> bool {
 }
 
 /// Whether the display is off (GUID_CONSOLE_DISPLAY_STATE 0), as the app reads it (away.rs):
-/// Foxglove is away then too (#410), so it draws no left panel and, since #683, holds display
+/// Foxglove is away then too (#410), so it draws no Info screen and, since #683, holds display
 /// changes until the PC is back. Windows sends the current state at once on registering, so this
 /// waits on that callback (an event, bounded at 2 s) and unregisters; None when no state came.
 #[cfg(windows)]
@@ -178,7 +178,7 @@ pub fn display_off() -> Option<bool> {
     Some(false)
 }
 
-/// Why Foxglove is away now (#410: it hands the left panel back, and since #683 holds display
+/// Why Foxglove is away now (#410: it hands the Info screen back, and since #683 holds display
 /// changes until the PC is back), or None when it isn't: the session locked, the display off.
 pub fn away_reason(locked: bool, display_off: Option<bool>) -> Option<String> {
     match (locked, display_off) {

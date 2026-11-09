@@ -112,7 +112,7 @@ store keeps `position` across restarts, as now.
     small "push" badge, and offers **Save to keyboard** to turn a file into a slot.
 - **Size:** keep hotlist art under 12 KiB (the library target) so pushes stay short. The
   built-ins and the four preset sets are all under that.
-- **Feedback:** when a key steps the hotlist, the left panel shows a one-second toast (`ART 3/7`
+- **Feedback:** when a key steps the hotlist, the Info screen shows a one-second toast (`ART 3/7`
   and the set's label in the 3x5 font) over the clock area. That's a panel override with a 1 s
   TTL, not a timer. Layer and preset changes need no toast; the art itself is the feedback.
   Without the app holding the keys (quit, paused), the firmware draws its own toast on each

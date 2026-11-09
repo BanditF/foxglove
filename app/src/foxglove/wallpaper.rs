@@ -43,7 +43,7 @@ pub struct Wallpaper {
     #[serde(rename = "match")]
     pub matches: Vec<String>,
     pub right: Right,
-    /// Frames for the left panel, when the wallpaper has them.
+    /// Frames for the Info screen, when the wallpaper has them.
     #[serde(default)]
     pub left: Option<Left>,
 }

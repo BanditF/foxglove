@@ -438,7 +438,7 @@ impl Devices for AppDevices {
                 end_leases(|l| l.id == p.lease && l.conn == conn);
                 Ok(json!({}))
             }
-            "screens.panel_override" => {
+            "screens.panel_override" | "screens.info_override" => {
                 use base64::Engine;
                 let p: methods::PanelOverrideParams =
                     serde_json::from_value(params).map_err(|e| Error {
@@ -475,7 +475,7 @@ impl Devices for AppDevices {
                 })?;
                 Ok(json!({}))
             }
-            "screens.panel_release" => {
+            "screens.panel_release" | "screens.info_release" => {
                 super::screens::clear_override(conn);
                 Ok(json!({}))
             }

@@ -104,7 +104,7 @@ try {
     if ($LASTEXITCODE) { $failed += 'usb' }
 
     Write-Host '== PC away? (lock, display)' -ForegroundColor Cyan
-    # Locked or with the display off, Foxglove is away (#410, #683): it hands the left panel back
+    # Locked or with the display off, Foxglove is away (#410, #683): it hands the Info screen back
     # and holds display changes, so left-clock-ticks and overlay_tray's display-change and hit-test
     # checks are BLOCKED by name then, never FAIL (#678). Recorded up front for On-call: run the gate
     # with the PC unlocked and its display on (scripts/keep-display-awake.ps1 or a sitting).

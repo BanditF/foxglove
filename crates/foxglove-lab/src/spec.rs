@@ -336,7 +336,7 @@ pub struct ArtKeep {
 fn keep_name() -> String {
     "lab-slot-read".into()
 }
-/// Shows test frame `pattern` on the left panel (ROWS + PRESENT, as the app does) and saves it as a
+/// Shows test frame `pattern` on the Info screen (ROWS + PRESENT, as the app does) and saves it as a
 /// PBM at `save` for panel_dump.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

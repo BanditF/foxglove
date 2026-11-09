@@ -13,7 +13,7 @@ its own way:
 |---|---|---|
 | `settings.ini` | upstream KeyPeek (overlay look, monitor, layers shown, timeouts) | INI, rewritten whole by upstream code |
 | `connection.ini` | last keyboard | INI |
-| `screens.ini` | left panel: drive, fps, game hints | INI, watched for changes |
+| `screens.ini` | Info screen: drive, fps, game hints | INI, watched for changes |
 | `layers.ini` | saved layer names | INI |
 | `art.json`, `art-cycle.json` | pinned right art, hotlist | JSON |
 | `lighting.ini`, `updates.ini` | accent colour, update checks | INI |

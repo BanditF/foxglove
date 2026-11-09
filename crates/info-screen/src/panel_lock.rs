@@ -1,8 +1,11 @@
-//! Only one app may drive the left panel: a named mutex shared with Foxglove, so the old and the
+//! Only one app may drive the Info screen: named mutexes shared with Foxglove, so the old and the
 //! new app never send frames at the same time. Windows mutexes belong to a thread, so take and give
 //! it back on the same one (the worker).
 
+/// The original mutex name; hostpanel and older builds only know this one.
 pub const NAME: &str = r"Local\Foxglove.Panel";
+/// The Hideout name (H1.4, #922). The lock takes both, so old and new apps still exclude each other.
+pub const INFO_SCREEN_NAME: &str = r"Local\Hideout.InfoScreen";
 
 #[cfg(windows)]
 mod imp {
@@ -11,19 +14,26 @@ mod imp {
     use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 
     pub struct PanelLock {
-        handle: Option<HANDLE>,
+        handles: Vec<HANDLE>,
         held: bool,
     }
 
     impl PanelLock {
         pub fn new() -> Self {
-            Self::named(super::NAME)
+            Self::named_all(&[super::NAME, super::INFO_SCREEN_NAME])
         }
 
         pub fn named(name: &str) -> Self {
-            let handle = unsafe { CreateMutexW(None, false, &HSTRING::from(name)) }.ok();
+            Self::named_all(&[name])
+        }
+
+        fn named_all(names: &[&str]) -> Self {
+            let handles = names
+                .iter()
+                .filter_map(|n| unsafe { CreateMutexW(None, false, &HSTRING::from(*n)) }.ok())
+                .collect();
             PanelLock {
-                handle,
+                handles,
                 held: false,
             }
         }
@@ -33,17 +43,30 @@ mod imp {
             if self.held {
                 return true;
             }
-            let Some(h) = self.handle else {
+            if self.handles.is_empty() {
                 return true; // no mutex: behave as before rather than never drawing
-            };
-            let r = unsafe { WaitForSingleObject(h, 0) };
-            self.held = r == WAIT_OBJECT_0 || r == WAIT_ABANDONED;
-            self.held
+            }
+            let mut taken = Vec::new();
+            for &h in &self.handles {
+                let r = unsafe { WaitForSingleObject(h, 0) };
+                if r == WAIT_OBJECT_0 || r == WAIT_ABANDONED {
+                    taken.push(h);
+                } else {
+                    for t in taken {
+                        let _ = unsafe { ReleaseMutex(t) };
+                    }
+                    return false;
+                }
+            }
+            self.held = true;
+            true
         }
 
         pub fn release(&mut self) {
-            if let (true, Some(h)) = (self.held, self.handle) {
-                let _ = unsafe { ReleaseMutex(h) };
+            if self.held {
+                for &h in &self.handles {
+                    let _ = unsafe { ReleaseMutex(h) };
+                }
             }
             self.held = false;
         }
@@ -52,7 +75,7 @@ mod imp {
     impl Drop for PanelLock {
         fn drop(&mut self) {
             self.release();
-            if let Some(h) = self.handle.take() {
+            for h in self.handles.drain(..) {
                 let _ = unsafe { CloseHandle(h) };
             }
         }

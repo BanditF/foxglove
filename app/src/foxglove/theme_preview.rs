@@ -1279,7 +1279,7 @@ fn screens_per_board_render() {
     assert_ne!(shots[0], shots[3], "dark and light");
 }
 
-/// The left panel as the preview shows it: a keyboard that answered HELLO, a frame of the
+/// the Info screen as the preview shows it: a keyboard that answered HELLO, a frame of the
 /// panel drawn from a pattern, and a game in front.
 pub(crate) fn sample_screens() -> crate::foxglove::screens::Snapshot {
     let (width, height) = (64, 52);

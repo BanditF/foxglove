@@ -1,7 +1,7 @@
 """Keyboard-first rows that need the app or a fresh boot (docs/resilience.md, #25); the rest are
 tests/hil/resilience.toml.
 
-  --row 2a   A test instance of Foxglove (temp config) drives the left panel; it is killed by its own
+  --row 2a   A test instance of Foxglove (temp config) drives the Info screen; it is killed by its own
              PID (the user's Foxglove is stopped first and started again after, never killed mid-test).
              The last frame it sent must stay on the screen 10 s and 5 minutes later, and keys work.
   --row 1    Right after a flash or power cycle, before any Foxglove has run: the right link is up,
@@ -58,7 +58,7 @@ if args.row == '2a':
     with App(args.app, cfg, {'FOXGLOVE_DUMP_PANEL': str(dump)}) as app:
         time.sleep(15)  # the app takes the panel and streams it
         status, detail = suite('app-drives-panel', [f'{{ panel_dump = {{ path = "{dump.as_posix()}" }} }}'], app.env)
-        check('the app drives the left panel', status == 'PASS', detail)
+        check('the app drives the Info screen', status == 'PASS', detail)
         app.proc.kill()  # its own PID only: "End task", mid-stream
         app.proc.wait(10)
         last = dump.read_bytes()

@@ -1,6 +1,6 @@
 //! The tray panel (#391, design B of epic #393): a left click on the tray icon opens a small
 //! borderless panel next to the icon for daily things (both halves, profile, lights, right art,
-//! the left panel's pause) with "Open Foxglove →" for the rest. A right click keeps the native
+//! the Info screen's pause) with "Open Foxglove →" for the rest. A right click keeps the native
 //! menu.
 //!
 //! The panel is an egui area on the overlay window, which covers the work area, placed against

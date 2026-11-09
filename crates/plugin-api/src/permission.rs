@@ -20,7 +20,7 @@ pub enum Permission {
     LightingWrite,
     /// Invoke keymap actions. Actions that need confirmation are always refused for plugins.
     BehaviorsInvoke,
-    /// Draw over the left panel for a while.
+    /// Draw over the Info screen for a while.
     ScreensWrite,
     /// Push, select, save and erase right-half art.
     ArtWrite,

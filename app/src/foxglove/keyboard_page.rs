@@ -560,7 +560,7 @@ fn short_label(a: &Action) -> &str {
 }
 
 /// What the board drawing shows (#392): the board's keys from its one layout (#796: the
-/// keyboard's own, else its profile's, else a guess), the left panel's last frame, the art
+/// keyboard's own, else its profile's, else a guess), the Info screen's last frame, the art
 /// playing on the right, and the underglow's colour.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BoardView {
@@ -568,7 +568,7 @@ pub struct BoardView {
     /// A split: the layout's first part is the left half, its second the right. Else one piece
     /// (#559).
     pub split: bool,
-    /// The left panel as the PC last drew it.
+    /// the Info screen as the PC last drew it.
     pub panel: Option<super::screens::Frame>,
     /// The right screen's art, as stored (see `art_ui::thumbnail`).
     pub art: Option<std::sync::Arc<egui::ColorImage>>,

@@ -72,7 +72,7 @@ The keyboard must never depend on the PC app. Losing the app costs features, nev
 
 | Situation | Keyboard does |
 |---|---|
-| App not running, crashed, or PC asleep | Types normally on both halves. The left panel keeps the **last frame** the PC sent (no timeout back to WPM; a Kconfig sets the timeout, default "never"). The right half keeps playing whatever set it shows |
+| App not running, crashed, or PC asleep | Types normally on both halves. the Info screen keeps the **last frame** the PC sent (no timeout back to WPM; a Kconfig sets the timeout, default "never"). The right half keeps playing whatever set it shows |
 | Cable unplugged mid-frame | Shows the last *presented* frame. A half-written back buffer is never shown |
 | App dies during an art push | The left drops the half-received blob after 10 s with no DATA. The right keeps playing its current set until a new blob passes its CRC |
 | Split link drops during a relay | The push fails cleanly (GATT timeout already exists). The right keeps its current set, and the left reports failure next time anyone asks |
@@ -145,7 +145,7 @@ follows the existing `ui.label` + control rows in `ui_settings.rs`.
 
 - Status: link (product, host-link version), right half (connected/relay), right battery,
   relay discovery result. The relay debug counters sit in a collapsed "Details".
-- Left panel: "Drive left screen" toggle, fps (1-10), Pause, and a live preview of the 64x52
+- Info screen: "Drive left screen" toggle, fps (1-10), Pause, and a live preview of the 64x52
   bitmap scaled 3x (copied from `Panel.bits`, the same pixels sent to the board).
 - Game hints: an editable exe -> text table, with an "Add foreground app" button that fills in
   the program that was in front before the window got focus.
@@ -161,7 +161,7 @@ follows the existing `ui.label` + control rows in `ui_settings.rs`.
     after a link-up, the app re-pushes the pinned set.
 
 **Tray** (same icon, left click still opens Settings):
-`status line (disabled)` / Settings... / Pause left panel (check) / Right art ▸ {Random,
+`status line (disabled)` / Settings... / Pause Info screen (check) / Right art ▸ {Random,
 Built-in 1..N, library entries, Push file...} / Quit. hostpanel's "Open config" goes away now
 that the settings live in the UI.
 
@@ -206,7 +206,7 @@ the Screens settings and tray items, the Windows providers, the art library, and
 1. **Freeze.** Tag `hostpanel v0.1` and the current KeyPeek build, and keep both exes
    (`keypeek-monitor\`, `hostpanel\target\release`).
 2. **Panel lock in hostpanel.** A named mutex `Local\Foxglove.Panel`: only the holder
-   drives the left panel, and the other shows "panel driven elsewhere". Ship this in hostpanel
+   drives the Info screen, and the other shows "panel driven elsewhere". Ship this in hostpanel
    first, so the old and new apps never fight.
 3. **Extract `foxglove-link`.** Make hostpanel a workspace (lib + bin) with the bin using the lib.
    Add golden tests for every report builder/parser against today's `device.rs` bytes. hostpanel
