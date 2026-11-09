@@ -31,7 +31,7 @@ active:
 
 | Art | Orientation | Source | License |
 |---|---|---|---|
-| Bandit_Emblem (the Bandit HUD emblem: the fox in a turning ring, "BANDIT INC.", "STEEL FOR GOOD"; 12 frames at 4 fps, 2.1 KiB) | portrait | the repo owner's own art (generator: `tools/art-src/bandit/bandit_art.py`) | © the repo owner, all rights reserved: not covered by this repo's code licences |
+| Bandit_Emblem (the Bandit HUD emblem: the fox in a turning ring, "BANDIT INC.", "STEEL FOR GOOD"; 12 frames at 4 fps, 2.1 KiB) | portrait | the repo owner's own art (generator: `tools/art-src/bandit/bandit_art.py`) | MIT, under the repo's [LICENSE](../../../LICENSE) (since 2026-11-09, #383) |
 
 Input used for the current `custom_art.c` (a local checkout path; the frames are stored with ink =
 a set bit, #610):

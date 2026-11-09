@@ -108,7 +108,7 @@ store keeps `position` across restarts, as now.
 - **Art that pairs well with triggers:**
   - `Bandit_Radar` for GAME (it reads as "scanning");
   - `Bandit_Lock` for a locked or idle PC (a later trigger);
-  - `Bandit_Signal` for the Signal preset;
+  - `Bandit_Signal_v2` for the Signal preset (the original's hard cuts fail the photosensitivity check);
   - the FURY and Hearth sets for their presets.
 
 ## UI (Settings → Right screen art → Hotlist)
