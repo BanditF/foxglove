@@ -149,7 +149,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let icon = crate::foxglove::taskbar::Slot::new(build_tray_icon);
+        let icon = crate::foxglove::taskbar::Slot::new("Foxglove", build_tray_icon);
         Tray {
             icon,
             glyph: crate::foxglove::tray::Glyph::Disconnected,

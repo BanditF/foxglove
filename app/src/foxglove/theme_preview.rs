@@ -1673,8 +1673,9 @@ fn settings_window_renders_as_a_native_window() {
 /// second one is gone.
 #[test]
 fn settings_window_placement_renders() {
-    use crate::foxglove::settings_window::{restore, tests::two_displays, Saved};
+    use crate::foxglove::settings_window::{tests::two_displays, Saved};
     use crate::foxglove::theme::DARK;
+    use hub_shell::placement::restore;
     let ctx = preview_ctx();
     let displays = two_displays();
     let saved = Saved {

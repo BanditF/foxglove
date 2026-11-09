@@ -1,0 +1,24 @@
+[package]
+name = "hub-shell"
+license = "GPL-3.0-only"
+description = "The hub shell shared by Foxglove and Hideout: tray glyph and taskbar watch, single instance, window placement, displays, theme"
+authors = ["BanditF"]
+repository = "https://github.com/BanditF/foxglove"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+egui = "0.36.1"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
