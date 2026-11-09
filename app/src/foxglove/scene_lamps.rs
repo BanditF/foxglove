@@ -22,7 +22,7 @@
 //! With package identity (#179) the keyboard's own LampArrays are written only on the transport
 //! that has its lights (the owner byte; the host link's while none does, `lamp_hold::draw_on`);
 //! `lamp_hold` holds both meanwhile, the other one unwritten. A move to the other transport
-//! reopens it (`lights_owner`, `lamp_hold::transport_moved`).
+//! reopens it, as does a move of the host link (`lamp_hold::follow_draw`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc;

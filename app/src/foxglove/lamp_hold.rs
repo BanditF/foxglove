@@ -558,15 +558,42 @@ pub fn draw_on(key: (u16, u16)) -> Option<bool> {
     draw_filter(key, keyboard(), owner, super::devices::host_link())
 }
 
-/// The keyboard's lights moved from one LampArray transport to the other (`before` to `now`):
-/// what draws through the keyboard's own LampArray must reopen it on the new one.
-pub fn transport_moved(before: Option<Owner>, now: Option<Owner>) -> bool {
-    let lamp = |o: Option<Owner>| match o {
-        Some(Owner::LampArrayUsb) => Some(false),
-        Some(Owner::LampArrayBle) => Some(true),
-        _ => None,
+/// The transport the keyboard's own LampArray was last drawn on ([`draw_on`]); `None` until
+/// first followed.
+static DRAWN: Mutex<Option<Option<bool>>> = Mutex::new(None);
+
+/// Whether what draws through the keyboard's own LampArray must reopen it: the transport to draw
+/// on is `now`, and was `last` (`None`: not followed yet, so whatever is open may be stale).
+pub fn draw_moved(last: Option<Option<bool>>, now: Option<bool>) -> bool {
+    last != Some(now)
+}
+
+/// Follows the transport to draw the keyboard's LampArray on, on the two events that change it:
+/// the owner byte (which LampArray has the lights) and a keyboard connect (the host link moved,
+/// for example to Bluetooth with the USB cable out, or back to USB). When it changed, a running
+/// scene reopens the LampArray there and draws it in full, and the Keyboard card lets go of the
+/// old one (its next pick opens the new one). Never blocks on the keyboard.
+pub fn follow_draw() {
+    let Some(kb) = keyboard() else {
+        return;
     };
-    matches!((lamp(before), lamp(now)), (Some(a), Some(b)) if a != b)
+    let now = draw_on(kb);
+    let last = DRAWN.lock().unwrap_or_else(|e| e.into_inner()).replace(now);
+    if !draw_moved(last, now) {
+        return;
+    }
+    let words = |t: Option<bool>| match t {
+        Some(true) => "Bluetooth",
+        Some(false) => "USB",
+        None => "every transport",
+    };
+    eprintln!(
+        "Foxglove: the keyboard's LampArray is drawn on {} now (was {}); the scene draws it there in full",
+        words(now),
+        last.map_or("not drawn yet", words)
+    );
+    super::scene_run::devices_changed();
+    super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
 }
 
 #[cfg(test)]
@@ -1041,14 +1068,65 @@ mod tests {
         );
     }
 
+    /// The steps of one change: the owner byte and the host link now, the transport drawn
+    /// before; the transport drawn now and whether the scene reopens.
+    fn step(last: Option<bool>, owner: Option<Owner>, link: &str) -> (Option<bool>, bool) {
+        let now = draw_filter(CORNE, Some(CORNE), owner, Some(link));
+        (now, draw_moved(Some(last), now))
+    }
+
     #[test]
-    fn only_a_move_between_lamparray_transports_reopens() {
+    fn a_move_of_the_drawing_transport_reopens_and_nothing_else_does() {
+        assert!(draw_moved(None, Some(false)), "first followed: reopen");
+        assert!(draw_moved(Some(Some(false)), Some(true)));
+        assert!(draw_moved(Some(Some(true)), Some(false)));
+        assert!(draw_moved(Some(None), Some(true)));
+        assert!(!draw_moved(Some(Some(true)), Some(true)));
+        // 11/09: the owner moved from the USB LampArray to the Bluetooth one, link on USB.
+        assert_eq!(
+            step(Some(false), Some(Owner::LampArrayBle), "USB"),
+            (Some(true), true)
+        );
+    }
+
+    /// The cable out (Bluetooth only), then back in, with the USB LampArray having the lights:
+    /// the scene follows each move and stays put when nothing moved.
+    #[test]
+    fn the_cable_out_and_back_in_follows_the_keyboard_each_way() {
         use Owner::*;
-        assert!(transport_moved(Some(LampArrayUsb), Some(LampArrayBle)));
-        assert!(transport_moved(Some(LampArrayBle), Some(LampArrayUsb)));
-        assert!(!transport_moved(Some(HostLink), Some(LampArrayUsb)));
-        assert!(!transport_moved(Some(LampArrayUsb), Some(Keyboard)));
-        assert!(!transport_moved(None, Some(LampArrayBle)));
-        assert!(!transport_moved(Some(LampArrayBle), Some(LampArrayBle)));
+        // Drawn on USB, which has the lights.
+        let (t, _) = step(Some(false), Some(LampArrayUsb), "USB");
+        assert_eq!(t, Some(false));
+        // Cable out: the keyboard connects again over Bluetooth, its owner forgotten.
+        let (t, moved) = step(t, None, "BLE");
+        assert_eq!(
+            (t, moved),
+            (Some(true), true),
+            "detached: Bluetooth, in full"
+        );
+        // Foxglove's Bluetooth hold takes the lights: same transport, nothing to reopen.
+        let (t, moved) = step(t, Some(LampArrayBle), "BLE");
+        assert_eq!((t, moved), (Some(true), false));
+        // Cable back in: the link goes to USB, the owner forgotten until the keyboard says.
+        let (t, moved) = step(t, None, "USB");
+        assert_eq!((t, moved), (Some(false), true), "attached: USB, in full");
+        // The keyboard says Bluetooth still has them: back there, in full.
+        let (t, moved) = step(t, Some(LampArrayBle), "USB");
+        assert_eq!((t, moved), (Some(true), true));
+        // Then the USB hold turns autonomous mode off: USB, in full.
+        let (t, moved) = step(t, Some(LampArrayUsb), "USB");
+        assert_eq!((t, moved), (Some(false), true));
+    }
+
+    /// The cable out while the Bluetooth LampArray already had the lights (the 11/09 state):
+    /// nothing moves, so the scene keeps drawing where it does.
+    #[test]
+    fn the_cable_out_with_bluetooth_drawing_already_keeps_it() {
+        let (t, _) = step(Some(false), Some(Owner::LampArrayBle), "USB");
+        assert_eq!(step(t, None, "BLE"), (Some(true), false));
+        assert_eq!(
+            step(Some(true), Some(Owner::HostLink), "BLE"),
+            (Some(true), false)
+        );
     }
 }

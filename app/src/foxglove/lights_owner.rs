@@ -326,16 +326,9 @@ pub fn attach(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
                 byte_words(now),
                 byte_words(before)
             );
-            // The lights moved to the keyboard's other LampArray (11/09): the scene reopens it
-            // on that transport and draws it in full, and the Keyboard card lets go of the old
-            // one (its next pick opens the new one).
-            if super::lamp_hold::transport_moved(before, now) {
-                eprintln!(
-                    "Foxglove: lights owner: the keyboard's lights moved to its other                      LampArray; drawing there"
-                );
-                super::scene_run::devices_changed();
-                super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
-            }
+            // The lights moved to the keyboard's other LampArray (11/09): what draws through it
+            // follows (`lamp_hold::follow_draw`).
+            super::lamp_hold::follow_draw();
             // Windows let go (#749 b): the Lights page lets go of the keyboard's LampArray.
             if before.is_some_and(Owner::lamp_array) && !now.is_some_and(Owner::lamp_array) {
                 super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
@@ -386,6 +379,8 @@ pub fn device_connected(device: &str) {
     // Nothing known until the keyboard says: its own report is the lighting facts' source.
     super::keyboard_facts::held(false);
     attach(&kb);
+    // The host link may have moved (the cable out or back in): draw where it goes now.
+    super::lamp_hold::follow_draw();
 }
 
 /// An event worth trying the keyboard again on, in words for the log (#749): the user acted on
