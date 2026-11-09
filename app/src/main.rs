@@ -9,7 +9,7 @@ mod key_paint;
 mod keyboard;
 mod keymap_editor;
 mod layout_key;
-use hub_shell::monitors;
+mod monitors;
 mod os_layout;
 mod overlay_window;
 mod platform;

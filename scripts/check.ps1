@@ -32,7 +32,7 @@ try {
     # without --check.
     Step 'format' {
         cargo fmt --all --check
-        if (!$LASTEXITCODE) { rustfmt --check --edition 2021 (Get-ChildItem -Recurse app/src/foxglove, app/hub-shell, app/hideout -Filter *.rs).FullName }
+        if (!$LASTEXITCODE) { rustfmt --check --edition 2021 (Get-ChildItem -Recurse app/src/foxglove -Filter *.rs).FullName }
     }
     # Licences, advisories, banned sources (deny.toml for the MIT crates, app/deny.toml for the
     # GPL app). Needs cargo-deny: cargo install --locked cargo-deny
@@ -47,9 +47,8 @@ try {
     Step 'plugin-trust signer' { cargo clippy -p foxglove-plugin-trust --features sign --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-plugin-trust --features sign } }
     Step 'foxglove-link without hidapi' { cargo build -p foxglove-link --no-default-features }
     Step 'foxglove-link Devices device' { cargo clippy -p foxglove-link --features devices --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-link --features devices } }
-    # The app's workspace: the app, the hub shell it shares with Hideout, and Hideout (#932).
-    Step 'app: clippy' { cargo clippy --manifest-path app/Cargo.toml --workspace --all-targets -- -D warnings }
-    Step 'app: tests' { cargo test --manifest-path app/Cargo.toml --workspace }
+    Step 'app: clippy' { cargo clippy --manifest-path app/Cargo.toml --all-targets -- -D warnings }
+    Step 'app: tests' { cargo test --manifest-path app/Cargo.toml }
     Write-Host ("All checks passed in {0:N0} s." -f ((Get-Date) - $start).TotalSeconds) -ForegroundColor Green
     # Disk hygiene on this event, not a timer: free other worktrees' builds that are done with.
     # Best effort; it never fails the gate. FOXGLOVE_NO_CLEAN=1 skips it.
