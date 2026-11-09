@@ -150,6 +150,56 @@ pub fn schema() -> serde_json::Value {
     })
 }
 
+/// Bracket nesting a TOML file may have (inline arrays and tables), the same cap as a wire message.
+pub const MAX_TOML_NESTING: usize = panel::MAX_MESSAGE_NESTING;
+
+/// Refuses a TOML text nested deeper than [`MAX_TOML_NESTING`] before the (recursive) TOML parser
+/// sees it. Counted without recursion; strings and comments are skipped.
+pub(crate) fn check_toml_nesting(text: &str) -> Result<(), error::Error> {
+    let b = text.as_bytes();
+    let (mut i, mut depth) = (0usize, 0usize);
+    while i < b.len() {
+        match b[i] {
+            b'#' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            q @ (b'"' | b'\'') => {
+                let multi = b[i..].starts_with(&[q, q, q]);
+                i += if multi { 3 } else { 1 };
+                while i < b.len() {
+                    if q == b'"' && b[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if multi && b[i..].starts_with(&[q, q, q]) {
+                        i += 2;
+                        break;
+                    }
+                    if !multi && (b[i] == q || b[i] == b'\n') {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > MAX_TOML_NESTING {
+                    return Err(error::Error::new(
+                        error::ErrorId::ManifestSyntax,
+                        format!("file nests deeper than {MAX_TOML_NESTING}"),
+                    ));
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

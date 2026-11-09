@@ -66,6 +66,7 @@ fn source_id_ok(id: &str) -> bool {
 
 impl Config {
     pub fn parse(text: &str) -> Result<Config, Error> {
+        crate::check_toml_nesting(text)?;
         toml::from_str(text).map_err(|e| Error::new(ErrorId::ManifestSyntax, e.to_string()))
     }
 

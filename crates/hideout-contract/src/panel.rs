@@ -230,10 +230,12 @@ pub fn json_depth(value: &serde_json::Value) -> usize {
 }
 
 /// Bracket nesting a hub accepts in one message before parsing it.
-pub const MAX_MESSAGE_NESTING: usize = 4096;
+pub const MAX_MESSAGE_NESTING: usize = 128;
 
-/// Parses one wire message. Panel trees nest deeper than serde_json's default limit, so the
-/// limit is off; instead the text's nesting is counted first and bounded.
+/// Parses one wire message. The text's nesting is counted first, without recursion, and a message
+/// over [`MAX_MESSAGE_NESTING`] is refused as `ui.limits` before any recursive parser sees it, so
+/// a hostile frame cannot overflow the stack. serde_json's own limit is off because the count
+/// above already bounds it (a panel tree at the depth cap nests about 2 * 32 + 2 plus the envelope).
 pub fn parse_message(text: &str) -> Result<serde_json::Value, String> {
     let (mut depth, mut deepest, mut in_string, mut escaped) = (0usize, 0usize, false, false);
     for b in text.bytes() {
@@ -257,7 +259,9 @@ pub fn parse_message(text: &str) -> Result<serde_json::Value, String> {
         }
     }
     if deepest > MAX_MESSAGE_NESTING {
-        return Err(format!("message nests {deepest} deep"));
+        return Err(format!(
+            "ui.limits: message nests {deepest} deep, over {MAX_MESSAGE_NESTING}"
+        ));
     }
     let mut de = serde_json::Deserializer::from_str(text);
     de.disable_recursion_limit();

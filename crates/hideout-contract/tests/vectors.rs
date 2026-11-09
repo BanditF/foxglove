@@ -116,7 +116,19 @@ fn manifest(path: &str, file: &Path, expected: &Value) -> Result<Value, String> 
 
 fn panels(file: &Path, expected: &Value) -> Result<(), String> {
     let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
-    let msg = parse_message(&text)?;
+    let msg = match parse_message(&text) {
+        Ok(msg) => msg,
+        // A message over the nesting cap is refused whole, with the expected id.
+        Err(e) if expected["result"] == "invalid" => {
+            let id = expected["id"].as_str().unwrap_or_default();
+            return if e.starts_with(&format!("{id}:")) {
+                Ok(())
+            } else {
+                Err(format!("want {id}, got {e}"))
+            };
+        }
+        Err(e) => return Err(e),
+    };
     check_message(&msg)?;
     let params: Register =
         serde_json::from_value(msg["params"].clone()).map_err(|e| e.to_string())?;
