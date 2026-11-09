@@ -50,3 +50,5 @@ memory, then the newest sitting runbook in the Hub's notes folder.
 ## Report
 To the Hub, in at most 5 lines: the board state (both halves' build), what passed and failed,
 and what waits on the user.
+
+Token rules: `docs/token-economy.md`.

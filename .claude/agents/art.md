@@ -37,3 +37,5 @@ absolute path**. The user follows from a phone.
 ## Report
 To the Planner: "ready to merge", the PR number from `gh pr create`, the gate result, and what
 isn't covered. Comment the user's pick on the PR.
+
+Token rules: `docs/token-economy.md`.

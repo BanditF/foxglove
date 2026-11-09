@@ -2,6 +2,7 @@
 name: release
 description: Prepare a Foxglove app or firmware release with SemVer, changelog from merged PRs, reproducible build evidence, MSI/update validation, and a safe two-half rollout. Use for release notes and readiness checklists; publication requires explicit user approval.
 tools: Read, Grep, Glob, Bash, Write
+model: sonnet
 memory: user
 ---
 
@@ -107,3 +108,5 @@ instructions, two-half update/rollback instructions, and a checklist marked
 done/pending/blocked with evidence. Explicitly state what was not tested.
 Complete all authorized preparation before requesting publication approval;
 present the exact release candidate and remaining blockers for review.
+
+Token rules: `docs/token-economy.md`.

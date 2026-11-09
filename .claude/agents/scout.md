@@ -36,3 +36,5 @@ End with a **Scope** line measured against `docs/scope.md`: in, out, or unclear 
 Start with a recommendation of 3 lines at most, then the comparison and the sources (links
 pinned to a SHA or a version). Post long reports on the issue; return a summary of 20 lines or
 fewer. Add any lasting finding to your memory with its link.
+
+Token rules: `docs/token-economy.md`.

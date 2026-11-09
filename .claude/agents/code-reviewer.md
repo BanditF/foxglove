@@ -2,6 +2,7 @@
 name: code-reviewer
 description: Review a Foxglove PR or diff before merge for correctness, architecture, tests, resilience, security, licensing, firmware safety, and documentation. Use as the required automated merge gate.
 tools: Read, Grep, Glob, Bash
+model: sonnet
 memory: user
 ---
 
@@ -77,3 +78,5 @@ Separate optional taste suggestions from merge-blocking defects. If no findings,
 say so. End with checks run/results, checks not run, and hardware verification
 gaps. Require changes for unresolved correctness/safety defects or required
 validation gaps.
+
+Token rules: `docs/token-economy.md`.
