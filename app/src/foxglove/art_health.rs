@@ -184,7 +184,37 @@ pub fn now() -> PlaylistHealth {
 pub fn rows() -> Vec<HealthRow> {
     let mut out = rows_of(&now(), Instant::now());
     out.extend(restore_rows(&restore_now()));
+    let status = super::art_service::handle()
+        .map(|h| h.snapshot())
+        .filter(|s| s.connected)
+        .and_then(|s| s.status);
+    out.extend(status.and_then(|st| relay_row(st.right_version)));
     out
+}
+
+/// The right's art-relay status version (#911): which ops it supports, without a failed request.
+/// None before the right has reported one (0). Warn below SLOT_READ's version: that half has not
+/// been flashed with the current firmware.
+pub fn relay_row(version: u8) -> Option<HealthRow> {
+    use foxglove_link::protocol::art::SLOT_READ_RIGHT_VERSION;
+    if version == 0 {
+        return None;
+    }
+    let (level, detail) = if version >= SLOT_READ_RIGHT_VERSION {
+        (Level::Ok, format!("{version} (reads kept places back)"))
+    } else {
+        (
+            Level::Warn,
+            format!("{version}: older than {SLOT_READ_RIGHT_VERSION}, no kept-place readback; flash the right half"),
+        )
+    };
+    Some(HealthRow {
+        subsystem: SUBSYSTEM.into(),
+        item: "Right half art relay · Status version".into(),
+        level,
+        detail,
+        notice: None,
+    })
 }
 
 fn ago(at: Instant, now: Instant) -> String {
@@ -305,6 +335,16 @@ pub fn rows_of(h: &PlaylistHealth, now: Instant) -> Vec<HealthRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #911: the right's status version shows; an old one warns; none says nothing.
+    #[test]
+    fn the_right_relay_version_is_a_row() {
+        assert!(relay_row(0).is_none());
+        let ok = relay_row(12).unwrap();
+        assert_eq!(ok.level, Level::Ok);
+        assert!(ok.detail.starts_with("12"));
+        assert_eq!(relay_row(11).unwrap().level, Level::Warn);
+    }
 
     fn levels(h: &PlaylistHealth, now: Instant) -> Vec<Level> {
         rows_of(h, now).into_iter().map(|r| r.level).collect()

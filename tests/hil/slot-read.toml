@@ -1,0 +1,20 @@
+schema = 1
+
+# SLOT_READ on hardware (#878, #908; proven by #911): a piece kept on the keyboard that this PC's
+# library does not have is read back from the keyboard, shown with frames, and kept by CRC as
+# art/kept-<crc>.bin. scripts/lab/slot_read.py runs these two cases around its checks around its own
+# window-free test app (FOXGLOVE_CONFIG_DIR, an empty art library, the live feed on): keep first,
+# the driver's checks in the middle, erase last (it empties only the place that keeps this blob).
+# Run on their own the cases only keep and erase the piece.
+
+[[cases]]
+name = "slot-read-keep"
+description = "Keeps a piece in the first empty flash place and shows it (the PC library has no file for it)"
+tags = ["art", "slot-read"]
+steps = [{ art_keep = { blob = "tests/art/ink-fixture.bin", action = "keep" } }]
+
+[[cases]]
+name = "slot-read-erase"
+description = "Empties the place that keeps the piece again"
+tags = ["art", "slot-read"]
+steps = [{ art_keep = { blob = "tests/art/ink-fixture.bin", action = "erase" } }]

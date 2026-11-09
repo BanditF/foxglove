@@ -2095,6 +2095,9 @@ pub struct ArtStatus {
     /// While slot n plays, `right_set` is `right_set_count + n`.
     pub flash_slots: u8,
     pub flash_used: u8,
+    /// The right's art-relay status version (12 since SLOT_READ, #908; 0 = unknown): tells whether
+    /// it supports an op without a failed request (#911).
+    pub right_version: u8,
 }
 
 pub const LEFT_STATES: [&str; 5] = ["idle", "receiving", "pushing", "done", "failed"];
@@ -2174,6 +2177,7 @@ impl ArtStatus {
             // After the version-2 underglow (7 bytes): flash_slots, flash_used.
             flash_slots: if s[7] >= 3 { s[22] } else { 0 },
             flash_used: if s[7] >= 3 { s[23] } else { 0 },
+            right_version: s[7],
         }
     }
 }
@@ -2925,6 +2929,7 @@ mod tests {
                 right_set_count: 34,
                 flash_slots: 0,
                 flash_used: 0,
+                right_version: 1,
             }
         );
         assert_eq!(
@@ -3172,6 +3177,7 @@ mod slot_tests {
         r[25] = 0b101;
         let s = ArtStatus::parse(&r);
         assert_eq!((s.flash_slots, s.flash_used, s.right_set), (8, 0b101, 18));
+        assert_eq!(s.right_version, 3);
         r[9] = 2; // version 2: the bytes are underglow, not slots
         assert_eq!(ArtStatus::parse(&r).flash_slots, 0);
     }

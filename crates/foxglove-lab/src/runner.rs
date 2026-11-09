@@ -504,6 +504,54 @@ impl<'a, D: Device> Runner<'a, D> {
             }
         }
     }
+    /// #911: `keep` stores the blob in the first empty flash place; `erase` empties the place
+    /// that keeps it. Never touches a place that holds something else.
+    fn art_keep(&mut self, k: &crate::spec::ArtKeep) -> Result<String> {
+        self.right_ready()?;
+        let root = self.golden_dir.join("../..");
+        let blob = std::fs::read(root.join(&k.blob))
+            .map_err(|e| anyhow::anyhow!("blob {}: {e}", k.blob))?;
+        ensure!(art::is_blob(&blob), "{} is not an art blob", k.blob);
+        let crc = protocol::blob_crc(&blob);
+        let mut empty = None;
+        let mut holding = None;
+        for n in 0..16u8 {
+            let Ok(info) = art::slot(self.device, n) else {
+                break;
+            };
+            if info.used && info.crc == Some(crc) && holding.is_none() {
+                holding = Some(n);
+            }
+            if !info.used && empty.is_none() {
+                empty = Some(n);
+            }
+        }
+        if k.action == "erase" {
+            let Some(n) = holding else {
+                return Ok(format!("no place keeps {crc:08x}"));
+            };
+            art::erase(self.device, n)?;
+            return Ok(format!("place {n} ({crc:08x}) erased"));
+        }
+        ensure!(
+            holding.is_none(),
+            "place {} already keeps {crc:08x}",
+            holding.unwrap_or(0)
+        );
+        let Some(n) = empty else {
+            return Err(Blocked("no empty flash place to keep a piece in".into()).into());
+        };
+        art::store(self.device, &blob, n, &k.name, |_| {}, || false)?;
+        // The live feed reads back the place on screen, so the piece is shown.
+        art::status(self.device)?;
+        std::thread::sleep(Duration::from_millis(300));
+        let count = art::status(self.device)?.right_set_count;
+        art::select_slot(self.device, count, n)?;
+        Ok(format!(
+            "{} ({crc:08x}) kept in place {n} and shown",
+            k.name
+        ))
+    }
     fn art_key(&mut self, k: &crate::spec::ArtKey) -> Result<String> {
         self.right_ready()?;
         let dir: i8 = if k.pos == 11 { 1 } else { -1 };
@@ -1371,6 +1419,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 Ok(text)
             }
             Step::ArtPush(a) => self.art_push(a),
+            Step::ArtKeep(k) => self.art_keep(k),
             Step::PanelShow(p) => {
                 let (w, h) = (self.hello.width, self.hello.height);
                 let frame = crate::resilience::test_frame(w, h, p.pattern);

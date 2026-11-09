@@ -51,6 +51,7 @@ pub enum Step {
     SplitGuardTest(GuardTest),
     IdleCpu(Idle),
     ArtPush(ArtPush),
+    ArtKeep(ArtKeep),
     PanelShow(PanelShow),
     PanelFlood(PanelFlood),
     PanelRelease(PanelRelease),
@@ -317,6 +318,23 @@ pub struct ArtPush {
 }
 fn push_timeout() -> u64 {
     30_000
+}
+/// Keeps a blob in the first empty flash place (`keep`), or empties the place that keeps that
+/// blob (`erase`, by CRC; no such place passes). It is what scripts/lab/slot_read.py (#911) uses to
+/// put a piece on the keyboard that the PC's library does not have.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtKeep {
+    /// A blob file, relative to the repository root.
+    pub blob: String,
+    /// `keep` or `erase`.
+    pub action: String,
+    /// The place's name for `keep`.
+    #[serde(default = "keep_name")]
+    pub name: String,
+}
+fn keep_name() -> String {
+    "lab-slot-read".into()
 }
 /// Shows test frame `pattern` on the left panel (ROWS + PRESENT, as the app does) and saves it as a
 /// PBM at `save` for panel_dump.
@@ -609,6 +627,10 @@ impl Step {
             Self::ScreensSetting(s) => ensure!(
                 ["drive_left", "fps", "layout"].contains(&s.key.as_str()),
                 "screens_setting supports drive_left, fps and layout"
+            ),
+            Self::ArtKeep(k) => ensure!(
+                ["keep", "erase"].contains(&k.action.as_str()),
+                "art_keep action is keep or erase"
             ),
             Self::ArtPush(a) => {
                 ensure!(
