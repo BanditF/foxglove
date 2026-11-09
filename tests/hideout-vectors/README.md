@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.1. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.2. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -41,7 +41,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `config/` | `hideout.toml` `[[sources]]` and `[[trust.anchors]]` tables, valid, overlapping, and the four `config.*` errors | 13.4, 13.6 |
 | `panels/` | `ui.register` trees: all node types, under the caps, over each cap, an unknown node type, one bad panel with a good one | 5.2, 5.5 |
 | `frames/panel-frames.json` | binary stream frames as hex: image, canvas, text, length mismatches | 5.4, 8.4 |
-| `transcripts/lifecycle/` | `initialize` (module, tool, bad token, hub not served, not first), `module.register`/`module.ready`, re-registration, `ui.undeclared`, 30 s ready timeout, errors -32601, 2, 4, 8 | 7.5, 8.1, 8.8 |
+| `transcripts/lifecycle/` | `initialize` (module, tool, bad token, hub not served, not first), `module.register`/`module.ready`, re-registration, `ui.undeclared`, 30 s ready timeout, errors -32601, 2, 4, 8, bad hub minor (7), late reply after timeout, malformed JSON (-32700), module crash mid-call, duplicate request id and oversized line (v1.2) | 7.5, 8.1, 8.8 |
 | `transcripts/swap/` | hot swap overlap and handover, drain `done`, `busy`, Force, Not now, `module.idle`, key action queued during a swap | 7.6 |
 | `transcripts/ui/` | `ui.patch`, `ui.event` refusal, `ui.asset.put`, `ui.window.open`, `action.invoke`, `settings.get`/`set`, `hub.notify` | 5.3, 8.8 |
 | `transcripts/stream/` | a live panel stream grant, `channel.open`/`channel.create`, denial, offer rejected | 5.4, 8.4 |
@@ -60,4 +60,4 @@ since signatures are over exact bytes (minisign, prehashed `ED`).
 
 ## Spec gaps
 
-The nine gaps found while writing these vectors were decided in [#918](https://github.com/BanditF/foxglove/issues/918) and written into the spec as contract version 1.1; the vectors above carry the decided results.
+The nine gaps found while writing these vectors were decided in [#918](https://github.com/BanditF/foxglove/issues/918) and written into the spec as contract version 1.1 (1.2 adds the duplicate-request-id and oversized-line transcripts); the vectors above carry the decided results.

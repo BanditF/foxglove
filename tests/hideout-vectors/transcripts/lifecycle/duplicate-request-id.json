@@ -1,0 +1,60 @@
+{
+  "name": "duplicate-request-id",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1"
+  ],
+  "description": "(v1.2) A request whose id is still in flight on the same connection is answered with error -32600, data.id rpc.duplicate-request-id and id null (an echoed id would be taken for the first call's answer). The second request is not routed; the first call is unaffected and gets its own result.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": null,
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request",
+          "data": {
+            "id": "rpc.duplicate-request-id",
+            "reason": "request id 7 is already in flight on this connection"
+          }
+        }
+      }
+    },
+    {
+      "event": "module foxglove.example-art answers the first call"
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {
+          "status": "ok"
+        }
+      }
+    }
+  ]
+}

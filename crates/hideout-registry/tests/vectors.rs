@@ -173,7 +173,7 @@ fn catalog_vector(home: &Home, key: &str, exp: &Value) -> Result<(), String> {
     }
     if let Some(after) = exp.get("seen_after") {
         let seen = &reg.inventory.seen[after["anchor"].as_str().unwrap()];
-        let source = ctx["source"]["id"].as_str().unwrap();
+        let source = after["source"].as_str().unwrap();
         if seen.catalogs.get(source).copied() != after["sequence"].as_u64() {
             return Err(format!("seen {seen:?}, want {after}"));
         }
@@ -293,6 +293,6 @@ fn trust_and_config_vectors_match_the_index() {
         failed.len(),
         failed.join("\n")
     );
-    assert_eq!(passed.get("trust"), Some(&38), "every trust vector runs");
+    assert_eq!(passed.get("trust"), Some(&42), "every trust vector runs");
     assert_eq!(passed.get("config"), Some(&7), "every config vector runs");
 }
