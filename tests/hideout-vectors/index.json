@@ -1902,10 +1902,18 @@
       "spec": [
         "5.5"
       ],
-      "note": "Depth 400, over the depth cap of 32 (5.5, v1.1).",
+      "note": "Depth 40, over the depth cap of 32 and under the 128 message-nesting cap (5.5, v1.1).",
       "result": "invalid",
       "id": "ui.limits",
       "scope": "that panel only"
+    },
+    "panels/invalid/over-message-nesting.json": {
+      "spec": [
+        "5.5"
+      ],
+      "note": "A message nested 5000 deep (objects in objects), over the 128 message-nesting cap (5.5, v1.1.1). Refused before parsing; a reader must not recurse or overflow.",
+      "result": "invalid",
+      "id": "ui.limits"
     },
     "panels/invalid/over-nodes.json": {
       "spec": [

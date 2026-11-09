@@ -146,6 +146,7 @@ impl Manifest {
 
     /// [`Manifest::parse`] with the §15 id of the failed check.
     pub fn check(text: &str, app: Version) -> Result<Manifest, Error> {
+        crate::check_toml_nesting(text)?;
         let m: Manifest = toml::from_str(text).map_err(|e| {
             let msg = e.to_string();
             let id = if msg.contains("unknown field") {

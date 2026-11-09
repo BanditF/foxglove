@@ -371,6 +371,7 @@ fn check_keys(table: &toml::Table, path: &str, schema: &[(&str, &[&str])]) -> Re
 }
 
 fn parse_table(text: &str) -> Result<toml::Table, Error> {
+    crate::check_toml_nesting(text)?;
     text.parse::<toml::Table>()
         .map_err(|e| Error::new(ErrorId::ManifestSyntax, e.to_string()))
 }

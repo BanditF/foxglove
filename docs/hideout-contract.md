@@ -7,6 +7,7 @@ design, `review/hideout-modular-design.md` ("the design"); this spec links to it
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.1.1** (#941): a message nests at most 128 deep (arrays and objects, counted before parsing; was 4096, which overflowed the stack). Over it is `ui.limits`, the whole message refused. Every reader MUST check the depth before it recurses, or parse without recursion. The same cap holds for brackets in a TOML file (`module.toml`, legacy manifests, `hideout.toml`): over it is `manifest.syntax`. Not a wire change for any message that was within the panel caps.
 - **1.1** (#918): closes nine gaps the test vectors found: panel caps (§5.5), `width_or_count` of
   text frames (§8.4), `[[ui.windows]]` and MCP `method` checks (§4.7, §9), the never-list ids
   for `facts.write` (§6.6), supervisor backoff steps (§7.7), developer mode (§12.6), the legacy
@@ -478,6 +479,10 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
   value at the cap passes; one over it is `ui.limits`. A stream over its count, frame size or rate
   is refused or closed with the same error (the hub still draws no more than 30 frames a second,
   §5.4).
+- **Message nesting (v1.1.1):** one wire message nests at most 128 brackets deep (arrays and
+  objects together, strings ignored). A reader counts this on the raw text without recursion and
+  refuses a deeper message whole with `ui.limits` before any recursive parser runs, so a hostile
+  frame cannot overflow the stack. A panel tree at the depth cap (32) needs about 70 of the 128.
 - Each panel draws in its own guarded scope. A panic greys that panel ("<Module>'s page couldn't
   be shown"), not the hub.
 - The hub keeps a breadcrumb of the panel being drawn. Two hub restarts within a minute with the
