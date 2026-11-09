@@ -39,7 +39,7 @@ User decisions of 11/09 (design §9).
 | C | Vulpes gets a native UI in the hub that can pop out; the browser UI is for the phone and the tailnet only | §5.8 |
 | D | LampArrays: re-register the package with the Hideout Applications on a go | §4.8 (`[identity]`) |
 | E | One sparse package, one Application per exe that needs identity | §4.8 |
-| F | 0.2 ships as Foxglove; the Hideout cut-over follows | §17 (version open) |
+| F | Foxglove ships as 0.3.0 (app-main's version is right; main's `app/Cargo.toml` is bumped from 0.2.0 to match); the Hideout cut-over follows | §1 (no rule depends on the number) |
 | G | Opt-in preview on the user's PC from phase 3, with the one-owner rule | §8.6 |
 | H | "Modules" and "panels" in the UI; the keyboard's left screen is the "Info screen" | §14 |
 
@@ -89,8 +89,8 @@ The hub MUST NOT contain:
 
 ```
 %LOCALAPPDATA%\Hideout\
-  hideout.toml            the hub's own state (§7.3); written only by the hub
-  inventory.json          install records (§7.3); written only by hideout-core
+  hideout.toml            the hub's own preferences (§7.3); written only by the hub
+  inventory.json          machine state: install records and grants (§7.3); written only by hideout-core
   modules\<id>\<version>\ an installed version; manifest at the top
   modules\<id>\data\      the module's own state; writable; not hashed
   modules\<id>\.staging\  an install or update being staged
@@ -252,11 +252,13 @@ name = "Next art"
 
 - An `id` is labels joined by `.`. Each label MUST match `[a-z0-9][a-z0-9_-]*`; the whole id is
   at most 128 characters.
-- Ids have two or more labels. **One exception:** a one-label id equal to a family name
-  (`vulpes`, `digitalis`) is allowed for that family's main module.
+- **One-label ids** (such as `vulpes`, `digitalis`, `obs`) are allowed for first-party modules
+  only: family `hideout`, `foxglove`, `vulpes` or `digitalis`, listed as an exact id in that
+  family's root scope (§12.3). Every other id has two or more labels (`manifest.id`).
 - **Reserved first labels:** `hideout`, `foxglove`, `vulpes`, `digitalis`, and `arete` (alias of
   `vulpes`). A module whose id starts with one MUST have the matching `family`.
-- A `third-party` module MUST NOT use a reserved first label. Its id SHOULD be reverse-DNS.
+- A `third-party` module MUST NOT use a reserved first label, and its id MUST be reverse-DNS
+  (two or more labels).
 - The legacy prefix `org.foxglove.` (today's plugins) is family `foxglove`.
 - Readers MUST accept `arete` as an alias of `vulpes` in ids, `family` and `api` keys, and MUST
   write `vulpes`. `C:\AI` stays Vulpes's home.
@@ -321,7 +323,7 @@ item shows:
   items still show or hide correctly.
 - A module whose devices aren't present (all its `page` panels false) shows no sidebar page, only
   a row on the Modules page (UX12).
-- `devices.present.<class>` facts are published by a first-party device-presence module from
+- `devices.present.<class>` facts are published by the first-party device module from
   catalog data, never by the hub.
 
 ### 4.7 Contributions (data, VS Code-style)
@@ -553,7 +555,8 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
   you" (§7.8). Never a modal at sign-in.
 - Outside tools ask in `initialize` and are approved once per tool.
 - The cut-over from Foxglove carries every existing grant over silently. Only new permissions ask.
-- Grants are stored in `hideout.toml`, in canonical form, sorted.
+- Grants are machine state: they are stored in `inventory.json` (`granted`), in canonical form,
+  sorted, never in `hideout.toml`.
 
 ### 6.5 Signing is provenance, not permission
 
@@ -615,6 +618,7 @@ error 5.
       "files": { "<path>": "<sha256>" },
       "footprint": [],
       "previous": "0.3.2",
+      "granted": ["<permission>"],
       "pending_permissions": []
     }
   },
@@ -630,7 +634,7 @@ error 5.
 - A reader that meets an unknown `format` MUST NOT write the file.
 
 `hideout.toml` (the hub's own state, written only by the hub):
-- `[modules.<id>] enabled`, granted permissions;
+- `[modules.<id>] enabled`;
 - `autostart`, window placement, open pop-outs, theme;
 - `[[sources]]` and `[[trust.anchors]]` (§13);
 - `[privacy]` sharing settings (§13.5);
@@ -644,8 +648,8 @@ the first failure, with its error id.
 | Step | What happens |
 |---|---|
 | **install** | (1) Fetch the archive from a configured source's accepted catalog (§12, §13), or a local folder or zip (private source or developer mode). (2) SHA-256 MUST match the catalog entry; not yanked or revoked (`trust.*`). (3) Unpack to `.staging\`; refuse `..`, absolute paths and Windows-reserved names. (4) Exactly the entry's files with their hashes (`trust.files`). (5) Parse the manifest; `id`, `version`, `kind` and `visibility` MUST match the entry (`trust.mismatch`). (6) Check `hub` (`manifest.hub`). (7) Runtime: download every pin, check `sha256` and `size`, unpack. (8) Move `.staging\` to `<version>\` atomically. (9) Record it, not enabled, with `pending_permissions` set to its permissions. |
-| **verify** | **Shallow, before every launch:** the version is in an accepted catalog of its source and not revoked (yanked still runs), and the folder holds exactly the signed files (`data\` skipped). For `adopted`: `run[0]` exists, and the `version` in `initialize` equals the registered one. **Deep, on demand** (`--deep`): every file hash, and runtimes' unpacked files. Never changes anything. A failed shallow verify MUST stop the launch. |
-| **enable** | Check `requires` and `api` (`lifecycle.*`). Show the permission dialog for `pending_permissions` (§6.4); stop if declined (`lifecycle.declined`). Record grants and `enabled` in `hideout.toml`. Arm activation events. |
+| **verify** | **Shallow, before every launch:** the version is in an accepted catalog of its source and not revoked (yanked still runs), and the folder holds exactly the signed files (`data\` skipped). For `adopted`: `run[0]` exists; at connect, the `version` in `initialize` MUST equal the registered manifest's `version`, or the instance is stopped (`trust.mismatch`, state `install-failed`). **Deep, on demand** (`--deep`): every file hash, and runtimes' unpacked files. Never changes anything. A failed shallow verify MUST stop the launch. |
+| **enable** | Check `requires` and `api` (`lifecycle.*`). Show the permission dialog for `pending_permissions` (§6.4); stop if declined (`lifecycle.declined`). Record the grants in `inventory.json` (through `hideout-core`) and `enabled` in `hideout.toml`. Arm activation events. |
 | **disable** | Drain and stop the instance (§7.6). Its leases, holds and channels end; its panels hide. Files, data, settings, secrets and grants stay. |
 | **update** | Install the new version beside the old. If it adds permissions, wait (§6.4). Then hot swap (§7.6) at the right moment (§7.6, "when"). Record `previous`. |
 | **rollback** | Only if the previous folder exists: hot swap back to it, shallow verify first. A revoked version is refused (`trust.revoked`). |
@@ -814,6 +818,14 @@ Rules:
 - The hub returns `{pipe, nonce}` to the consumer and steps out.
 - The consumer connects and sends the nonce first. Then frames flow directly:
   `u32 little-endian length` + payload. Either side closing ends the channel.
+- **Panel stream frames** (§5.4) are binary, never JSON. Each payload is a 12-byte header and a
+  body. Header, little-endian: `u8 kind`, `u8 flags` (0), `u16 width_or_count`, `u16 height`
+  (0 unless `kind` 1), `u16 reserved` (0), `u32 seq`.
+  - `kind` 1, **image:** raw RGBA, 8 bits per channel, `width × height × 4` bytes, row-major.
+  - `kind` 2, **canvas (packed LED array):** `count × 4` bytes of RGBA, one per shape in the
+    order the canvas declared them.
+  - `kind` 3, **text:** UTF-8 bytes to append.
+  - A frame whose body length doesn't match its header is dropped.
 - The hub's panel host opens streams the same way (§5.4) and is just a channel end.
 - Realtime paths (scene to keyboard LEDs, key events to the overlay, art pushes, LED wizard
   frames, live previews) are channels; the hub only grants them (design §4.6 table).
@@ -1099,8 +1111,11 @@ NOT go on.
   tests, test vectors, schemas, examples, logs checked in, or crash reports.
 - The hub and every first-party module MUST NOT hold a hard-coded module list (§2.2). Behaviour for
   a module comes from its manifest, its catalog entry and facts.
-- A private module's id MUST NOT start with a reserved first label (§4.3). Private ids SHOULD be
+- A private module's id MUST NOT start with a reserved first label (§4.3). Private ids MUST be
   reverse-DNS under a name the user owns.
+- **The gate checks it.** `scripts/check.ps1` reads a deny-list of private names held only on the
+  PC, outside the repo, and fails if any appears in the tree. The list's contents and its path's
+  contents never enter the repo; without the list, the check is skipped with one line.
 - A public module MUST NOT `require` a private module, and a public catalog MUST NOT list one.
 - Private modules MAY require and call public ones like any module.
 
@@ -1129,8 +1144,9 @@ anchor = "<trust anchor id>"      # §13.6; absent only for a developer-mode fol
 
 - **Kinds:**
   - `catalog`: a signed `catalog.json` at an https URL (the public registry is one).
-  - `git`: a private git repo holding a signed `catalog.json` and module archives; fetched with
-    the user's own git credentials, which the hub never stores.
+  - `git`: a private git repo holding a signed `catalog.json` and module archives; credentials come
+    from Windows Credential Manager or git's credential helper, never from a manifest, a catalog
+    or `hideout.toml`.
   - `folder`: a local folder holding a signed `catalog.json` and archives, or, in developer mode,
     unsigned module folders.
 - There MUST be at least one `public` source (the Hideout registry, shipped in the MSI config) and
@@ -1268,27 +1284,3 @@ tables, panel trees (under and over the caps), and JSON-RPC transcripts for ever
 (with the §15 id). The Rust crate and Vulpes's models MUST pass every vector. A spec change that
 changes a result changes the vector in the same PR. Vectors MUST use placeholder ids only and
 never name a private module (§13.2).
-
-## 17. Open questions
-
-1. **Pick F, the version number.** Main's `app/Cargo.toml` says 0.2.0, while the running app-main
-   build logs "Foxglove 0.3.0". Which release is the last Foxglove and which is the Hideout
-   cut-over follows whichever is right.
-2. **One-label ids.** The design's inventory (§2) names `vulpes`, `digitalis`, `wallpaper-engine`,
-   `obs`, `mic-mute`, `focus-timer`, `icue`, `openrgb`, `signalrgb`. This spec allows one label
-   only for a family's main module. Do the integrations become `hideout.<name>` (or another
-   family), or does the id rule loosen?
-3. **Device presence.** Is `devices.present.<class>` published by a new first-party module or by
-   `hideout.appwatch` grown (UX12 allows either)? The design writes `devices.present:<class>`;
-   this spec uses dots for fact names.
-4. **Stream frame payloads.** §8.4 fixes the framing, not the payload encoding of `canvas`,
-   `image` and `text` stream frames (JSON, CBOR or a fixed binary layout).
-5. **Adopted modules' version.** §7.4 checks the version reported in `initialize`; should the hub
-   instead read it from the install (Arete's `pyproject.toml` or `--version`) before launch?
-6. **Grants and installs in two files.** Install records live in `inventory.json` (hideout-core),
-   grants and enabled state in `hideout.toml` (hub), per design §3. Confirm the split, or move
-   grants into the inventory so the CLI can enable without the hub.
-7. **Private-source credentials.** `git` sources use the user's own git credentials. Is that
-   enough, or should a private source support a token stored in Credential Manager?
-8. **Keeping private names out of the public repo.** §13.2 is a rule; should the gate also check
-   for it, for example against a deny-list kept outside the repo?
