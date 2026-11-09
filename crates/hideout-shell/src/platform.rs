@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: MIT
+//! The Win32 calls the shell needs: AUMID, DPI awareness, single instance, showing and placing
+//! the window, and the monitor list.
+
+use crate::placement::{Monitor, Rect};
+use std::sync::atomic::{AtomicIsize, Ordering};
+use windows::core::{BOOL, HSTRING};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, RECT,
+};
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+};
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE,
+    INFINITE,
+};
+use windows::Win32::UI::HiDpi::{
+    GetDpiForMonitor, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    MDT_EFFECTIVE_DPI,
+};
+use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowRect, IsIconic, IsZoomed, SetForegroundWindow, SetWindowPos, ShowWindow,
+    MONITORINFOF_PRIMARY, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW,
+};
+
+/// Sets the AUMID and per-monitor v2 DPI awareness. Call first thing, before any window exists.
+pub fn init_process(aumid: &str) {
+    if let Err(e) = unsafe { SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(aumid)) } {
+        log::warn!("AUMID {aumid}: {e}");
+    }
+    // Fails harmlessly if a manifest already set it.
+    let _ = unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+}
+
+/// The first instance holds this for its lifetime; a second instance only signals it.
+pub struct Instance {
+    _mutex: HANDLE,
+}
+
+pub enum Claim {
+    First(Instance, ShowSignal),
+    /// Another hub on the same folder runs; it was asked to show its window.
+    Second,
+}
+
+/// A named auto-reset event a second instance sets to bring the first one's window up.
+pub struct ShowSignal(isize);
+
+impl ShowSignal {
+    /// Blocks a thread on the event and calls `on_show` each time it is set; never polls.
+    pub fn listen(self, on_show: impl Fn() + Send + 'static) {
+        let raw = self.0;
+        std::thread::Builder::new()
+            .name("hideout-show".into())
+            .spawn(move || loop {
+                let w = unsafe { WaitForSingleObject(HANDLE(raw as *mut _), INFINITE) };
+                if w.0 != 0 {
+                    log::warn!("show signal wait ended ({:#x})", w.0);
+                    return;
+                }
+                on_show();
+            })
+            .ok();
+    }
+}
+
+/// Claims the single instance for the hub folder named by `suffix` (see `HubPaths::instance_suffix`).
+pub fn claim_instance(suffix: &str) -> std::io::Result<Claim> {
+    let mutex_name = HSTRING::from(format!("Local\\BanditF.Hideout.Hub{suffix}"));
+    let event_name = HSTRING::from(format!("Local\\BanditF.Hideout.Show{suffix}"));
+    let mutex = unsafe { CreateMutexW(None, false, &mutex_name) }.map_err(io)?;
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe { CloseHandle(mutex) }.ok();
+        if let Ok(ev) = unsafe { OpenEventW(EVENT_MODIFY_STATE, false, &event_name) } {
+            unsafe {
+                let _ = SetEvent(ev);
+                let _ = CloseHandle(ev);
+            }
+        }
+        return Ok(Claim::Second);
+    }
+    let event = unsafe { CreateEventW(None, false, false, &event_name) }.map_err(io)?;
+    Ok(Claim::First(
+        Instance { _mutex: mutex },
+        ShowSignal(event.0 as isize),
+    ))
+}
+
+fn io(e: windows::core::Error) -> std::io::Error {
+    std::io::Error::other(e.to_string())
+}
+
+/// The main window's handle, once eframe has made it; 0 before.
+static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
+
+pub fn set_main_window(hwnd: isize) {
+    MAIN_HWND.store(hwnd, Ordering::Release);
+}
+
+fn main_window() -> Option<HWND> {
+    match MAIN_HWND.load(Ordering::Acquire) {
+        0 => None,
+        h => Some(HWND(h as *mut _)),
+    }
+}
+
+/// Shows, restores and focuses the main window. Works while eframe draws nothing (a hidden
+/// window gets no frames), so the tray and the second instance call it directly.
+pub fn show_main_window() {
+    if let Some(h) = main_window() {
+        unsafe {
+            let _ = ShowWindow(
+                h,
+                if IsIconic(h).as_bool() {
+                    SW_RESTORE
+                } else {
+                    SW_SHOW
+                },
+            );
+            let _ = SetForegroundWindow(h);
+        }
+    }
+}
+
+pub fn hide_main_window() {
+    if let Some(h) = main_window() {
+        unsafe {
+            let _ = ShowWindow(h, SW_HIDE);
+        }
+    }
+}
+
+/// The main window's rectangle, if it is in a normal state (not minimised or maximised).
+pub fn main_window_rect() -> Option<Rect> {
+    let h = main_window()?;
+    unsafe {
+        if IsIconic(h).as_bool() || IsZoomed(h).as_bool() {
+            return None;
+        }
+        let mut r = RECT::default();
+        GetWindowRect(h, &mut r).ok()?;
+        Some(Rect {
+            x: r.left,
+            y: r.top,
+            w: r.right - r.left,
+            h: r.bottom - r.top,
+        })
+    }
+}
+
+/// Moves the window onto the target monitor first (Windows rescales it for that monitor's DPI),
+/// then sets the exact rectangle on that monitor.
+pub fn place_main_window(r: Rect) {
+    let Some(h) = main_window() else { return };
+    unsafe {
+        let _ = SetWindowPos(
+            h,
+            None,
+            r.x,
+            r.y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = SetWindowPos(h, None, r.x, r.y, r.w, r.h, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+/// Every display, with its work area and scale.
+pub fn monitors() -> Vec<Monitor> {
+    unsafe extern "system" fn each(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> BOOL {
+        let out = &mut *(data.0 as *mut Vec<Monitor>);
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if GetMonitorInfoW(m, &mut info as *mut _ as *mut MONITORINFO).as_bool() {
+            let (mut dx, mut dy) = (96u32, 96u32);
+            let _ = GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+            let w = info.monitorInfo.rcWork;
+            let len = info
+                .szDevice
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(info.szDevice.len());
+            out.push(Monitor {
+                key: String::from_utf16_lossy(&info.szDevice[..len]),
+                work: Rect {
+                    x: w.left,
+                    y: w.top,
+                    w: w.right - w.left,
+                    h: w.bottom - w.top,
+                },
+                scale: dx as f32 / 96.0,
+                primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+            });
+        }
+        true.into()
+    }
+    let mut out: Vec<Monitor> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM(&mut out as *mut _ as isize));
+    }
+    out
+}

@@ -5,7 +5,8 @@ Where a file has an `SPDX-License-Identifier` header, that header decides.
 
 | Part | License | Notes |
 |---|---|---|
-| `boards/shields/nice_view_custom/` (code), `scripts/`, `.github/`, `build.yaml`, and later `crates/` | MIT, [LICENSE](LICENSE) | Written for Foxglove. Parts of the shield started from ZMK's nice!view shield (MIT, The ZMK Contributors) |
+| `boards/shields/nice_view_custom/` (code), `scripts/`, `.github/`, `build.yaml`, and `crates/` | MIT, [LICENSE](LICENSE) | Written for Foxglove. Parts of the shield started from ZMK's nice!view shield (MIT, The ZMK Contributors). `cargo deny` ([deny.toml](deny.toml)) checks every crate's dependency licences |
+| `crates/hideout-shell/`, `crates/hideout/` (the Hideout hub, `hideout.exe`) | MIT, [LICENSE](LICENSE) | Clean-room: written from [docs/hideout-contract.md](docs/hideout-contract.md) (§11), the Hideout design doc and public crate docs; no code from `app/` is used or adapted. `scripts/check_hub_deps.py` (in `scripts/check.ps1`) fails the gate if any package in the hub's dependency graph has a non-permissive licence or a path dependency points under `app/` |
 | `boards/arm/eyelash_corne/` files with an SPDX MIT header | MIT | From the Eyelash Peripherals repo, which in turn builds on ZMK |
 | Files from the Eyelash Peripherals repo without a header (the board's `.keymap`, `.yaml`, `.zmk.yml`; `config/eyelash_corne.json`) | not stated | Inherited from [a741725193/zmk-new_corne](https://github.com/a741725193/zmk-new_corne), which has no license file. They stay under their authors' terms |
 | `config/eyelash_corne.keymap`, `keymap-drawer/` | mixed | The vendor's keymap (several contributors, no header), with Foxglove's changes on top. Those changes are MIT |
@@ -21,4 +22,5 @@ Where a file has an `SPDX-License-Identifier` header, that header decides.
 **How the parts combine:** firmware builds use only MIT code and the art. The desktop app is
 `app/` (GPL-3.0) plus MIT crates from `crates/`. MIT code can be used in a GPL-3.0 program,
 and the app binary as a whole is then distributed under GPL-3.0. The crates keep their MIT
-license when used on their own.
+license when used on their own. The Hideout hub, `hideout.exe`, is built only from MIT crates
+and permissively licensed dependencies, with nothing from `app/`, so it is distributed under MIT.

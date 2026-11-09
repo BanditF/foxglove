@@ -16,6 +16,8 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",
+    # Boost, permissive: clipboard-win and error-code, via eframe's clipboard (Hideout hub, #932).
+    "BSL-1.0",
     "ISC",
     "MPL-2.0",
     "Unicode-3.0",
@@ -32,6 +34,12 @@ version = 2
 # (glib 0.20) needs gtk4, and tray-icon is still on gtk 0.18. RustSec has no entry for it, so
 # cargo-deny doesn't flag it; the same chain's RustSec notices are ignored below with that reason.
 ignore = [
+    # The Hideout hub's egui (#932): ttf-parser (via epaint) is unmaintained with no successor yet;
+    # the hub only feeds it Windows' own fonts. zbus comes only through accesskit_unix, Linux-only.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser, unmaintained: via epaint/ab_glyph in egui; the hub parses only the system's fonts" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant, unmaintained: only via accesskit_unix (Linux-only) in eframe" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names, unmaintained: only via accesskit_unix (Linux-only) in eframe" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, unmaintained: only via accesskit_unix (Linux-only) in eframe" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, unmaintained: only via glib-macros in Linux-only gtk 0.18 (tray-icon)" },
 ]
 

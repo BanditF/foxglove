@@ -1,0 +1,14 @@
+[package]
+name = "hideout"
+version = "0.1.0"
+edition = "2021"
+description = "The Hideout hub (hideout.exe). Starts empty, with only the Modules page. Clean-room MIT."
+license = "MIT"
+
+[[bin]]
+name = "hideout"
+path = "src/main.rs"
+
+[dependencies]
+hideout-shell = { path = "../hideout-shell" }
+log = "0.4"
