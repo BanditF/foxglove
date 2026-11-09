@@ -1,0 +1,9 @@
+id = "example.vendor.weather"
+name = "Example Weather"
+version = "1.2.0"
+api = "1.0"
+run = ["weather.exe"]
+permissions = ["facts.write:weather.*", "net"]
+provides = ["facts"]
+description = "Puts the temperature on the left screen."
+visibility = "private"

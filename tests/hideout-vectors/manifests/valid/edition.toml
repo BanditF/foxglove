@@ -1,0 +1,11 @@
+id = "vulpes.example-edition"
+name = "Example Edition"
+version = "0.4.0"
+kind = "content"
+family = "vulpes"
+hub = "1.0"
+provides = ["content:edition"]
+
+[edition]
+family = "vulpes"
+modules = ["vulpes.example-agents", "vulpes.example-runtime"]

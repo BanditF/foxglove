@@ -1,0 +1,37 @@
+{
+  "name": "state-running",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "State running: the fact module.<id>.state is 'running'.",
+  "steps": [
+    {
+      "event": "trigger: module.ready received"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "running"
+        }
+      }
+    },
+    {
+      "expect": {
+        "ui_name": null,
+        "ways_out": [],
+        "shown_in": [
+          "panel header",
+          "Modules page",
+          "tray status line"
+        ]
+      }
+    }
+  ]
+}

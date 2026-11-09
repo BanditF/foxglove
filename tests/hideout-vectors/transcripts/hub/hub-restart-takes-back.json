@@ -1,0 +1,62 @@
+{
+  "name": "hub-restart-takes-back",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.9"
+  ],
+  "description": "The hub restarts after a panic and takes back running modules: each reconnects with initialize and its original token; the hub checks pid and exe hash.",
+  "steps": [
+    {
+      "event": "hub crashed; pipe closes; module keeps running (30 s grace)"
+    },
+    {
+      "event": "hub restarts and reads run/instances.json"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "id": "foxglove.example-art",
+          "version": "0.4.0",
+          "instance": "inst-1",
+          "token": "tok-launch-1",
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          }
+        }
+      },
+      "why": "same token as at launch"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          },
+          "granted": [
+            "facts.read:keyboard.*",
+            "hub.notify",
+            "provide:example.art.*",
+            "channel.offer:previews"
+          ],
+          "settings_dir": "C:/example/settings/foxglove.example-art",
+          "data_dir": "C:/example/data/foxglove.example-art",
+          "safe_mode": false
+        }
+      }
+    },
+    {
+      "event": "hub verifies pid and exe hash against instances.json"
+    }
+  ]
+}

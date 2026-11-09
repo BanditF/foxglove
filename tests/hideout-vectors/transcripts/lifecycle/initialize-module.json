@@ -1,0 +1,62 @@
+{
+  "name": "initialize-module",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.5",
+    "8.1",
+    "8.8"
+  ],
+  "description": "A module connects with its launch token; the hub checks token, pid and exe hash and answers with granted and the served versions.",
+  "steps": [
+    {
+      "event": "hub starts the exe in a Job Object",
+      "env": [
+        "HIDEOUT_PIPE",
+        "HIDEOUT_TOKEN",
+        "HIDEOUT_INSTANCE"
+      ]
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "id": "foxglove.example-art",
+          "version": "0.4.0",
+          "instance": "inst-1",
+          "token": "tok-launch-1",
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          },
+          "granted": [
+            "facts.read:keyboard.*",
+            "hub.notify",
+            "provide:example.art.*",
+            "channel.offer:previews"
+          ],
+          "settings_dir": "C:/example/settings/foxglove.example-art",
+          "data_dir": "C:/example/data/foxglove.example-art",
+          "safe_mode": false
+        }
+      }
+    }
+  ]
+}

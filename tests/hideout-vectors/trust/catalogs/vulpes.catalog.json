@@ -1,0 +1,26 @@
+{
+  "format": "hideout-catalog-v1",
+  "family": "vulpes",
+  "epoch": 0,
+  "sequence": 3,
+  "expires": "2026-12-09T00:00:00Z",
+  "modules": [
+    {
+      "id": "vulpes.example-agents",
+      "version": "0.1.0",
+      "kind": "content",
+      "visibility": "public",
+      "channel": "stable",
+      "hub": "1.0",
+      "sha256": "efe2cdce564174277c9795e40452e2c28aea23a88ea4bbebe6559f50550bf0ae",
+      "url": "https://example.invalid/vulpes.example-agents-0.1.0.zip",
+      "size": 272,
+      "files": {
+        "module.toml": "804b5707f2ac6dead9cc8ca67581353e73b52ba6e23f90f3f3e09729d5aa21c1"
+      },
+      "provide": [],
+      "channels": {}
+    }
+  ],
+  "revocations": []
+}

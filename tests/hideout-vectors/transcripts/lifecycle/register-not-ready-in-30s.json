@@ -1,0 +1,59 @@
+{
+  "name": "register-not-ready-in-30s",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.5",
+    "7.7"
+  ],
+  "description": "A module that does not send module.ready within 30 s of start is treated as crashed.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "id": "foxglove.example-art",
+          "version": "0.4.0",
+          "instance": "inst-1",
+          "token": "tok-launch-1",
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          },
+          "granted": [
+            "facts.read:keyboard.*",
+            "hub.notify",
+            "provide:example.art.*",
+            "channel.offer:previews"
+          ],
+          "settings_dir": "C:/example/settings/foxglove.example-art",
+          "data_dir": "C:/example/data/foxglove.example-art",
+          "safe_mode": false
+        }
+      }
+    },
+    {
+      "event": "30 seconds pass; no module.ready"
+    },
+    {
+      "event": "hub counts a crash and kills the process in its Job Object"
+    }
+  ]
+}

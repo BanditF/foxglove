@@ -1,0 +1,24 @@
+{
+  "name": "safe-mode-not-triggered",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.10"
+  ],
+  "description": "Three hub restarts spread over more than five minutes do not trigger safe mode.",
+  "steps": [
+    {
+      "event": "hub restart at t=0 s"
+    },
+    {
+      "event": "hub restart at t=200 s"
+    },
+    {
+      "event": "hub restart at t=400 s"
+    },
+    {
+      "expect": {
+        "safe_mode": false
+      }
+    }
+  ]
+}

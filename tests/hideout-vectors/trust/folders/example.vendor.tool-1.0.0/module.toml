@@ -1,0 +1,8 @@
+id = "example.vendor.tool"
+name = "Tool"
+version = "1.0.0"
+kind = "service"
+family = "third-party"
+hub = "1.0"
+run = ["tool.exe"]
+provides = ["method:example.tool.*"]

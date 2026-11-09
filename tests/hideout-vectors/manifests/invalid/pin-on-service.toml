@@ -1,0 +1,11 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-art.exe"]
+
+[[pin]]
+url = "https://example.invalid/a.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

@@ -1,0 +1,35 @@
+{
+  "name": "call-timeout",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1"
+  ],
+  "description": "A call with no answer fails after 30 s on the caller's side (error 4).",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "event": "30 seconds pass with no answer"
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 4,
+          "message": "timeout"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "name": "set-subscribe-changed",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.3",
+    "8.8"
+  ],
+  "description": "facts.set from a provider, facts.subscribe by a reader, facts.changed notification ({subscription, key, value}).",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "facts.subscribe",
+        "params": {
+          "pattern": "example.art.*"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "subscription": 7
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "facts.set",
+        "params": {
+          "key": "example.art.current",
+          "value": "pack-1"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 7,
+          "key": "example.art.current",
+          "value": "pack-1"
+        }
+      }
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "facts.unsubscribe",
+        "params": {
+          "subscription": 7
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {}
+      }
+    }
+  ]
+}

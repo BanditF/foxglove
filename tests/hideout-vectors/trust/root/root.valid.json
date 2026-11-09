@@ -1,0 +1,45 @@
+{
+  "format": "hideout-root-v1",
+  "version": 1,
+  "epoch": 0,
+  "expires": "2027-11-09T00:00:00Z",
+  "families": {
+    "foxglove": {
+      "keys": [
+        "RWSdJ6+XIVNuyUZhfQ1xtx3k4OTF3LS/PzwWW8SSo6ebuj6BPGJz37qf"
+      ],
+      "scope": [
+        "foxglove.*",
+        "org.foxglove.*",
+        "example.vendor.*"
+      ]
+    },
+    "vulpes": {
+      "keys": [
+        "RWQx9IXBZtsmcpsJdlp1+ipoldqF6E5bT5mES1gRLQ8Y1A/N6irdUhl4"
+      ],
+      "scope": [
+        "vulpes",
+        "vulpes.*",
+        "arete.*"
+      ]
+    },
+    "digitalis": {
+      "keys": [
+        "RWSpw9C8tuv1LVXMUghhfx0tfn0/T8L/bmDisoE5HBpItCkQShCBdaSO"
+      ],
+      "scope": [
+        "digitalis",
+        "digitalis.*"
+      ]
+    },
+    "hideout": {
+      "keys": [
+        "RWQS6os71TGNPPxh3ibdVPiEvAOKWVsef49qSc/Fd7w+PvGAe9vcceJL"
+      ],
+      "scope": [
+        "hideout.*"
+      ]
+    }
+  }
+}

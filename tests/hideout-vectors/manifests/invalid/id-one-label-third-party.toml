@@ -1,0 +1,7 @@
+id = "tool"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "third-party"
+hub = "1.0"
+run = ["example-art.exe"]

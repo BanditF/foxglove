@@ -1,0 +1,7 @@
+id = "digitalis.example-profile"
+name = "Example Board Profile"
+version = "0.4.0"
+kind = "content"
+family = "digitalis"
+hub = "1.0"
+provides = ["content:board-profile"]

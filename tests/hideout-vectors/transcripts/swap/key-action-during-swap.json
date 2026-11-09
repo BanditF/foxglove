@@ -1,0 +1,45 @@
+{
+  "name": "key-action-during-swap",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.6"
+  ],
+  "description": "A key action during a swap is queued up to 2 s and delivered once, or dropped with a named status line.",
+  "steps": [
+    {
+      "event": "swap in progress; user presses a bound key"
+    },
+    {
+      "from": "hub",
+      "to": "new-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "method": "action.invoke",
+        "params": {
+          "action": "next-art",
+          "source": "key"
+        }
+      },
+      "why": "delivered after module.ready, within 2 s"
+    },
+    {
+      "from": "new-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "result": {}
+      }
+    },
+    {
+      "event": "variant: new instance not ready within 2 s"
+    },
+    {
+      "expect": {
+        "status_line": "Example Art didn't run: Example Art restarting",
+        "delivered": false
+      }
+    }
+  ]
+}

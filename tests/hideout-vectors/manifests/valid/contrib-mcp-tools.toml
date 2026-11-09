@@ -1,0 +1,21 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-art.exe"]
+provides = ["method:example.art.*"]
+
+[[mcp.tools]]
+name = "status"
+description = "Read the art status."
+method = "example.art.status"
+access = "read"
+
+[[mcp.tools]]
+name = "hold-screen"
+description = "Hold the screen for a short time."
+method = "example.art.hold"
+access = "write"
+ttl_max_s = 60

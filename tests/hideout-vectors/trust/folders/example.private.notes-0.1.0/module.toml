@@ -1,0 +1,9 @@
+id = "example.private.notes"
+name = "Notes"
+version = "0.1.0"
+kind = "service"
+family = "third-party"
+hub = "1.0"
+visibility = "private"
+run = ["notes.exe"]
+provides = ["method:example.notes.*"]

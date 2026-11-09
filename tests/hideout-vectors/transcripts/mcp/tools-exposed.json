@@ -1,0 +1,50 @@
+{
+  "name": "tools-exposed",
+  "module": "foxglove.example-art",
+  "spec": [
+    "9"
+  ],
+  "description": "hideout mcp exposes <module name>_<tool name>; write tools hold for at most ttl_max_s (<= 600) and the Info screen at most 60 s.",
+  "steps": [
+    {
+      "event": "mcp client example-agent connects as mcp:example-agent, approved once"
+    },
+    {
+      "event": "manifest tools: status (read), hold-screen (write, ttl_max_s 60)"
+    },
+    {
+      "expect": {
+        "mcp_tools": [
+          "Example Art_status",
+          "Example Art_hold-screen"
+        ]
+      }
+    },
+    {
+      "event": "agent calls hold-screen with no end"
+    },
+    {
+      "expect": {
+        "refused": true,
+        "why": "a hold with no end is refused"
+      }
+    },
+    {
+      "event": "agent calls hold-screen with ttl 90"
+    },
+    {
+      "expect": {
+        "applied_ttl_s": 60,
+        "why": "capped by ttl_max_s and the 60 s Info-screen limit"
+      }
+    },
+    {
+      "event": "MCP session ends"
+    },
+    {
+      "expect": {
+        "released": true
+      }
+    }
+  ]
+}

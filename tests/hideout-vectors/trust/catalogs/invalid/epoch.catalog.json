@@ -1,0 +1,34 @@
+{
+  "format": "hideout-catalog-v1",
+  "family": "foxglove",
+  "epoch": 1,
+  "sequence": 3,
+  "expires": "2026-12-09T00:00:00Z",
+  "modules": [
+    {
+      "id": "foxglove.example-art",
+      "version": "0.4.0",
+      "kind": "service",
+      "visibility": "public",
+      "channel": "stable",
+      "hub": "1.0",
+      "sha256": "da08d0c636f5ac5b93dd669b97397bf1286ed6de4af8eaa22cbba8f9a11dba58",
+      "url": "https://example.invalid/foxglove.example-art-0.4.0.zip",
+      "size": 465,
+      "files": {
+        "module.toml": "e53b5cf134bca24d8b25e721482f9f0f95f33c09d4415df4c9242ea697081c9b",
+        "example-art.exe": "1daf737a2494ea9b59f1c13597d9fdb0f5d9fbd9d3ea3c21616cab4605675e8d"
+      },
+      "provide": [
+        "example.art.*"
+      ],
+      "channels": {
+        "previews": {
+          "capability": "Live previews of what the keyboard screens show.",
+          "risk": "normal"
+        }
+      }
+    }
+  ],
+  "revocations": []
+}

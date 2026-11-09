@@ -1,0 +1,99 @@
+{
+  "name": "action-invoke",
+  "module": "foxglove.example-art",
+  "spec": [
+    "4.7",
+    "8.8"
+  ],
+  "description": "action.invoke from key, tray, palette and panel.",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "action.invoke",
+        "params": {
+          "action": "next-art",
+          "source": "key"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "action.invoke",
+        "params": {
+          "action": "next-art",
+          "source": "tray"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "action.invoke",
+        "params": {
+          "action": "next-art",
+          "source": "palette"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "action.invoke",
+        "params": {
+          "action": "next-art",
+          "source": "panel"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {}
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {}
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {}
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {}
+      }
+    }
+  ]
+}

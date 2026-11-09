@@ -1,0 +1,61 @@
+{
+  "name": "drain-busy-force",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.6",
+    "7.8"
+  ],
+  "description": "Drain busy, then the user presses Force: the hub sends module.drain again (user action, not a timer).",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "module.drain",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {
+          "state": "busy",
+          "reason": "unsaved edits"
+        }
+      }
+    },
+    {
+      "event": "user clicks Force"
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "module.drain",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "result": {
+          "state": "done"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "name": "provider-gone-error-2",
+  "module": "foxglove.example-art",
+  "spec": [
+    "4.4",
+    "8.1"
+  ],
+  "description": "At runtime a required module that is gone is only 'provider gone': calls get error 2 and the dependent shows Waiting for <module>.",
+  "steps": [
+    {
+      "event": "foxglove.example-link removed"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.link.status",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 2,
+          "message": "disconnected"
+        }
+      }
+    },
+    {
+      "expect": {
+        "dependent_state": "waiting"
+      }
+    }
+  ]
+}

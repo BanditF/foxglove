@@ -1,0 +1,34 @@
+{
+  "name": "drain-done",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.6",
+    "8.8"
+  ],
+  "description": "Drain answered done: go on.",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "module.drain",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {
+          "state": "done"
+        }
+      }
+    }
+  ]
+}

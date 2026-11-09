@@ -1,0 +1,48 @@
+{
+  "name": "initialize-hub-not-served",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.7",
+    "8.1"
+  ],
+  "description": "A client whose hub major is not served gets error 7 (version) and the connection closes.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "id": "foxglove.example-art",
+          "version": "0.4.0",
+          "instance": "inst-1",
+          "token": "tok-launch-1",
+          "hub": "2.0",
+          "api": {
+            "foxglove": "1.13"
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 7,
+          "message": "version",
+          "data": {
+            "reason": "hub 2.0 is not served; this hub serves 1.0"
+          }
+        }
+      }
+    },
+    {
+      "event": "hub closes the connection"
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+{
+  "name": "settings-get-set",
+  "module": "foxglove.example-art",
+  "spec": [
+    "4.7",
+    "8.8"
+  ],
+  "description": "The hub reads and writes settings only through settings.get and settings.set; a refusal carries data.reason.",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "settings.get",
+        "params": {}
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "values": {
+            "focus-minutes": 25,
+            "chime": true
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "settings.set",
+        "params": {
+          "name": "focus-minutes",
+          "value": 30
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "settings.set",
+        "params": {
+          "name": "focus-minutes",
+          "value": 999
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": 5,
+          "message": "refused",
+          "data": {
+            "reason": "Pick 1 to 120 minutes"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+id = "vulpes.example-agents"
+name = "Example-Agents"
+version = "0.1.0"
+kind = "content"
+family = "vulpes"
+hub = "1.0"
+provides = ["content:agent-pack"]

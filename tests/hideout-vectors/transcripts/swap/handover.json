@@ -1,0 +1,228 @@
+{
+  "name": "handover",
+  "module": "foxglove.example-art (swap=handover)",
+  "spec": [
+    "7.6"
+  ],
+  "description": "Hot swap, swap=handover: drain, state.export on the old (blob up to 256 KiB or null), module.exit, start the new, state.import, then register and ready.",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "module.drain",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {
+          "state": "done"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "state.export",
+        "params": {}
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "result": {
+          "blob": "eyJzY2VuZSI6ImEifQ=="
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "module.exit",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "event": "old exits 0 within 5 s (exclusive resource freed)"
+    },
+    {
+      "event": "hub starts the new instance"
+    },
+    {
+      "from": "new-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "id": "foxglove.example-art",
+          "version": "0.5.0",
+          "instance": "inst-2",
+          "token": "tok-launch-2",
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "new-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          },
+          "granted": [
+            "facts.read:keyboard.*",
+            "hub.notify",
+            "provide:example.art.*",
+            "channel.offer:previews"
+          ],
+          "settings_dir": "C:/example/settings/foxglove.example-art",
+          "data_dir": "C:/example/data/foxglove.example-art",
+          "safe_mode": false
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "new-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "state.import",
+        "params": {
+          "blob": "eyJzY2VuZSI6ImEifQ==",
+          "from_version": "0.4.0"
+        }
+      }
+    },
+    {
+      "from": "new-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "result": {}
+      }
+    },
+    {
+      "from": "new-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "module.register",
+        "params": {
+          "methods": [
+            "example.art.*"
+          ],
+          "facts": [],
+          "channels": [],
+          "apis": {
+            "foxglove": "1.13"
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "new-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "rejected": []
+        }
+      }
+    },
+    {
+      "from": "new-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "ui.register",
+        "params": {
+          "instance": "inst-2",
+          "panels": [
+            {
+              "id": "art",
+              "slot": "page",
+              "title": "Art",
+              "icon": "image",
+              "tree": {
+                "type": "column",
+                "id": "root",
+                "props": {},
+                "children": [
+                  {
+                    "type": "label",
+                    "id": "title",
+                    "props": {
+                      "text": "Art"
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "id": "next",
+                    "props": {
+                      "label": "Next"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "new-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "rejected": []
+        }
+      }
+    },
+    {
+      "from": "new-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "module.ready",
+        "params": {
+          "instance": "inst-2"
+        }
+      }
+    }
+  ]
+}

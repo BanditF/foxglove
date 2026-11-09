@@ -1,0 +1,26 @@
+{
+  "format": "hideout-catalog-v1",
+  "family": "digitalis",
+  "epoch": 0,
+  "sequence": 3,
+  "expires": "2026-12-09T00:00:00Z",
+  "modules": [
+    {
+      "id": "digitalis.example-images",
+      "version": "2.0.0",
+      "kind": "firmware",
+      "visibility": "public",
+      "channel": "stable",
+      "hub": "1.0",
+      "sha256": "3cc7e56e9629c295a30cdf38d582700e687055b42996885e7ee271b806cd942b",
+      "url": "https://example.invalid/digitalis.example-images-2.0.0.zip",
+      "size": 283,
+      "files": {
+        "module.toml": "09b5bbf6b63734980aafc81f60419e1a6733bcf71bf3d68d718424cb1a475ff3"
+      },
+      "provide": [],
+      "channels": {}
+    }
+  ],
+  "revocations": []
+}

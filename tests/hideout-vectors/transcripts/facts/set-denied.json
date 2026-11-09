@@ -1,0 +1,61 @@
+{
+  "name": "set-denied",
+  "module": "foxglove.example-art",
+  "spec": [
+    "6.1",
+    "8.8"
+  ],
+  "description": "facts.set without facts.write:<pattern> or a facts: provides entry answers error 5; device.* is never writable.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "facts.set",
+        "params": {
+          "key": "other.thing",
+          "value": 1
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 5,
+          "message": "denied"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "facts.set",
+        "params": {
+          "key": "device.battery",
+          "value": 1
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": 5,
+          "message": "denied"
+        }
+      }
+    }
+  ]
+}

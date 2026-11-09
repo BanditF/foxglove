@@ -1,0 +1,9 @@
+id = "example.private.notes"
+name = "Example Notes"
+version = "0.4.0"
+kind = "service"
+family = "third-party"
+hub = "1.0"
+run = ["example-art.exe"]
+visibility = "private"
+requires = ["foxglove.example-link"]

@@ -1,0 +1,59 @@
+{
+  "name": "activation-by-call",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1",
+    "4.6"
+  ],
+  "description": "activation.on contains call: the hub starts the module, then routes the call once it is ready.",
+  "steps": [
+    {
+      "event": "module is off-process; activation.on = [call]"
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "event": "hub launches example-art.exe; module runs initialize, module.register, module.ready"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 100,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 100,
+        "result": {
+          "art": "none"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "art": "none"
+        }
+      }
+    }
+  ]
+}

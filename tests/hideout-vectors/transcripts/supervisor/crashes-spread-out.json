@@ -1,0 +1,21 @@
+{
+  "name": "crashes-spread-out",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.7"
+  ],
+  "description": "Five crashes spread over more than ten minutes do not stop the module.",
+  "steps": [
+    {
+      "event": "crash at t=0, 200, 400, 600, 800 s"
+    },
+    {
+      "event": "the window holds at most 4 crashes at any time"
+    },
+    {
+      "expect": {
+        "state": "restarting"
+      }
+    }
+  ]
+}

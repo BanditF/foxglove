@@ -1,0 +1,24 @@
+{
+  "name": "start-with-defaults",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "Start with default settings renames the settings folder to settings.bad-<time> and starts the module; the hub needs no knowledge of the values.",
+  "steps": [
+    {
+      "event": "state crash-stopped; user clicks Start with default settings"
+    },
+    {
+      "event": "settings folder renamed to settings.bad-<time>"
+    },
+    {
+      "event": "module started"
+    },
+    {
+      "expect": {
+        "hub_read_setting_values": false
+      }
+    }
+  ]
+}

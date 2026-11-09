@@ -1,0 +1,82 @@
+{
+  "name": "drain-busy",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.6",
+    "7.8",
+    "8.8"
+  ],
+  "description": "Drain answered busy: the swap waits. State update-busy. The hub sends module.drain again only on module.idle, never on a timer.",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "module.drain",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "result": {
+          "state": "busy",
+          "reason": "a flash running"
+        }
+      }
+    },
+    {
+      "event": "hub publishes module.<id>.state = update-busy, reason = 'Waits until you finish a flash running'; shows Force and Not now"
+    },
+    {
+      "event": "10 minutes pass: the hub sends nothing (no timer)"
+    },
+    {
+      "expect": {
+        "no_message_sent": "module.drain"
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "module.idle",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "module.drain",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "result": {
+          "state": "done"
+        }
+      }
+    },
+    {
+      "event": "swap proceeds; state becomes updating"
+    }
+  ]
+}

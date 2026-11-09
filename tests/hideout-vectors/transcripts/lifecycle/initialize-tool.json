@@ -1,0 +1,58 @@
+{
+  "name": "initialize-tool",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.2",
+    "8.8",
+    "6.4"
+  ],
+  "description": "An outside tool connects without a token and is approved once; the grant is what the user approved.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "client": {
+            "name": "example-cli",
+            "version": "0.1.0"
+          },
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          },
+          "permissions": [
+            "facts.read:keyboard.*",
+            "modules.manage"
+          ]
+        }
+      },
+      "why": "first connection of this tool: the hub asks the user once"
+    },
+    {
+      "event": "user approves facts.read only"
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "hub": "1.0",
+          "app": "hideout",
+          "api": {
+            "foxglove": "1.13"
+          },
+          "granted": [
+            "facts.read:keyboard.*"
+          ]
+        }
+      },
+      "why": "modules.manage is never-list for a tool that is not hideout.modules or the hideout CLI (6.6)"
+    }
+  ]
+}

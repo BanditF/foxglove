@@ -1,0 +1,61 @@
+{
+  "name": "channel-open-tool",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.4",
+    "6.1"
+  ],
+  "description": "An outside tool opens a channel: the hub checks channel.open:<module>/<channel>, calls channel.create on the provider, returns {pipe, nonce}.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "channel.open",
+        "params": {
+          "module": "foxglove.example-art",
+          "channel": "previews"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 40,
+        "method": "channel.create",
+        "params": {
+          "channel": "previews",
+          "consumer": "tool:example-cli",
+          "nonce": "n-5678"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 40,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-example-previews-0002"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-example-previews-0002",
+          "nonce": "n-5678"
+        }
+      }
+    }
+  ]
+}

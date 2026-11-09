@@ -1,0 +1,48 @@
+{
+  "name": "initialize-bad-token",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.5",
+    "8.2"
+  ],
+  "description": "A module with a wrong launch token is refused (error 5) and the connection is dropped.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "id": "foxglove.example-art",
+          "version": "0.4.0",
+          "instance": "inst-1",
+          "token": "not-the-token",
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "reason": "bad launch token"
+          }
+        }
+      }
+    },
+    {
+      "event": "hub closes the connection"
+    }
+  ]
+}

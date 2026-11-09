@@ -1,0 +1,45 @@
+{
+  "name": "channel-offer-rejected",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.4",
+    "6.3"
+  ],
+  "description": "module.register offering a channel the catalog does not allow lists it under rejected with permission.provider.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "module.register",
+        "params": {
+          "methods": [],
+          "facts": [],
+          "channels": [
+            "previews",
+            "secret-feed"
+          ],
+          "apis": {}
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "rejected": [
+            {
+              "item": "secret-feed",
+              "error": "permission.provider"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
