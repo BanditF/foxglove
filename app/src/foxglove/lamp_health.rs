@@ -62,7 +62,8 @@ pub fn rows_now() -> Vec<HealthRow> {
     ));
     if identity && !keyboards.is_empty() {
         let holds = super::lamp_hold::now();
-        out.extend(hold_rows(holds));
+        let owner = super::lights_owner::lock(&super::lights_owner::shared()).owner();
+        out.extend(hold_rows(holds, owner));
         if let Some(listed) = super::lamp_hold::listed_now() {
             out.extend(unheld_rows(
                 holds,
@@ -104,33 +105,57 @@ pub fn identity_row(enabled: bool, has: bool, package_here: bool) -> Option<Heal
     }
 }
 
-/// With identity, Foxglove's hold on the keyboard's own LampArrays, per transport (#179): WARN
-/// when Windows gives one to another controller (Foxglove ranks below it for that device).
-pub fn hold_rows(holds: super::lamp_hold::Holds) -> Vec<HealthRow> {
-    [("USB", holds.usb), ("Bluetooth", holds.ble)]
-        .into_iter()
-        .filter_map(|(via, held)| {
-            let item = format!("Keyboard LampArray over {via}");
-            Some(match held? {
-                true => HealthRow::new(
-                    SUBSYSTEM,
-                    item,
-                    Level::Ok,
-                    "Foxglove holds it as the background light controller",
+/// With identity, Foxglove's hold on the keyboard's own LampArrays, per transport (#179). A held
+/// one Windows calls unavailable (`IsAvailable` false: it ranks another background controller
+/// first) is a WARN only when the keyboard's owner byte (`owner`) says a LampArray over that
+/// transport has its lights, that is another controller draws on it: Foxglove never writes to
+/// a held one. Otherwise Foxglove's hold is what keeps the others out (the lab's `dl-hold`:
+/// owner 0, no take-over), and the row says so as OK.
+pub fn hold_rows(
+    holds: super::lamp_hold::Holds,
+    owner: Option<foxglove_link::lights_owner::Owner>,
+) -> Vec<HealthRow> {
+    use foxglove_link::lights_owner::Owner;
+    [
+        ("USB", holds.usb, Owner::LampArrayUsb),
+        ("Bluetooth", holds.ble, Owner::LampArrayBle),
+    ]
+    .into_iter()
+    .filter_map(|(via, held, theirs)| {
+        let item = format!("Keyboard LampArray over {via}");
+        Some(match held? {
+            true => HealthRow::new(
+                SUBSYSTEM,
+                item,
+                Level::Ok,
+                "Foxglove holds it as the background light controller",
+            ),
+            false if owner == Some(theirs) => HealthRow::new(
+                SUBSYSTEM,
+                item,
+                Level::Warn,
+                format!(
+                    "Another controller has it: in Settings > Personalization > Dynamic \
+                     Lighting, drag Foxglove to the top of Background light control, and \
+                     check the keyboard's {via} device page. Foxglove never changes that setting"
                 ),
-                false => HealthRow::new(
-                    SUBSYSTEM,
-                    item,
-                    Level::Warn,
-                    format!(
-                        "Another controller has it: in Settings > Personalization > Dynamic \
-                         Lighting, drag Foxglove to the top of Background light control, and \
-                         check the keyboard's {via} device page. Foxglove never changes that setting"
-                    ),
+            ),
+            false => HealthRow::new(
+                SUBSYSTEM,
+                item,
+                Level::Ok,
+                format!(
+                    "Foxglove holds it, so no other controller draws on it ({}); Windows \
+                     ranks another background light controller first for it",
+                    match owner {
+                        None => "the keyboard hasn't said who has its lights yet",
+                        Some(_) => "the keyboard's lights aren't a LampArray's on it",
+                    }
                 ),
-            })
+            ),
         })
-        .collect()
+    })
+    .collect()
 }
 
 /// With identity, a FAIL per transport Windows lists the keyboard's LampArray on (`listed`,
@@ -298,6 +323,7 @@ pub fn rows(h: &LampHealth) -> Vec<HealthRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use foxglove_link::lights_owner::Owner;
 
     fn mouse() -> LampHealth {
         LampHealth {
@@ -438,10 +464,13 @@ mod tests {
     #[test]
     fn the_hold_rows_warn_per_transport_another_controller_has() {
         use crate::foxglove::lamp_hold::Holds;
-        let r = hold_rows(Holds {
-            usb: Some(true),
-            ble: Some(false),
-        });
+        let r = hold_rows(
+            Holds {
+                usb: Some(true),
+                ble: Some(false),
+            },
+            Some(Owner::LampArrayBle),
+        );
         assert_eq!(r.len(), 2);
         assert_eq!(r[0].level, Level::Ok);
         assert_eq!(r[1].level, Level::Warn);
@@ -451,8 +480,44 @@ mod tests {
             r[1].detail
         );
         assert!(
-            hold_rows(Holds::default()).is_empty(),
+            hold_rows(Holds::default(), Some(Owner::LampArrayUsb)).is_empty(),
             "nothing held: no rows"
+        );
+    }
+
+    /// The 11/09 batch (chain-dade): Foxglove held both, `IsAvailable` said false on both, and
+    /// the keyboard kept its own effect (owner 0, no take-over in dl-hold), yet both rows warned
+    /// "Another controller has it". Foxglove's own hold is OK unless the owner byte names a
+    /// LampArray over that transport.
+    #[test]
+    fn foxglove_s_own_hold_is_ok_unless_a_lamp_array_has_the_lights() {
+        use crate::foxglove::lamp_hold::Holds;
+        let both = Holds {
+            usb: Some(false),
+            ble: Some(false),
+        };
+        for owner in [
+            None,
+            Some(Owner::Keyboard),
+            Some(Owner::HostLink),
+            Some(Owner::Other(7)),
+        ] {
+            let r = hold_rows(both, owner);
+            assert_eq!(r.len(), 2, "{owner:?}");
+            assert!(r.iter().all(|r| r.level == Level::Ok), "{owner:?}: {r:?}");
+            assert!(
+                r.iter().all(|r| !r.detail.contains("Another controller")
+                    && r.detail.starts_with("Foxglove holds it")
+                    && !r.detail.contains("  ")),
+                "{r:?}"
+            );
+        }
+        // A LampArray over USB has the lights: USB warns, the Bluetooth hold stays OK.
+        let r = hold_rows(both, Some(Owner::LampArrayUsb));
+        assert_eq!((r[0].level, r[1].level), (Level::Warn, Level::Ok), "{r:?}");
+        assert!(
+            r[0].detail.starts_with("Another controller has it"),
+            "{r:?}"
         );
     }
 
