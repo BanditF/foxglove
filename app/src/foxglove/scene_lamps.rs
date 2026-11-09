@@ -20,7 +20,9 @@
 //! a held keyboard tries its host link once on it (`lights_owner::retry`).
 //!
 //! With package identity (#179) the keyboard's own LampArrays are written only on the transport
-//! its host link uses now (`lamp_hold::draw_on`); `lamp_hold` holds both meanwhile, unwritten.
+//! that has its lights (the owner byte; the host link's while none does, `lamp_hold::draw_on`);
+//! `lamp_hold` holds both meanwhile, the other one unwritten. A move to the other transport
+//! reopens it, as does a move of the host link (`lamp_hold::follow_draw`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc;
@@ -474,7 +476,7 @@ mod imp {
     /// The LampArrays behind a Lights page key: those whose vendor and product match, not
     /// claimed by another key; one only for a key with a serial. What `key` claimed before is
     /// let go first (it is opened afresh). Shared by scenes and the Lights worker (#691). The
-    /// host-link keyboard's own are only those on its link's transport (`lamp_hold::draw_on`).
+    /// host-link keyboard's own are only those on the transport that has its lights (`lamp_hold::draw_on`).
     pub(super) fn arrays_for(
         key: &str,
         claimed: &mut BTreeMap<String, String>,

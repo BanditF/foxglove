@@ -16,7 +16,9 @@
 //! - **Fallback if H1 fails** (the firmware says a LampArray took the lights although Foxglove
 //!   holds it): the keyboard is drawn through Windows, the existing #749 b path
 //!   (`lights_owner::through_windows`), and [`draw_on`] limits those writes to the transport
-//!   the host link uses now; the other one stays held without writing.
+//!   the owner byte says has the lights (the firmware takes updates only there; the host link's
+//!   while no LampArray has them); the other one stays held without writing. On 11/09 H1 failed
+//!   on the real PC: both holds turned autonomous mode off, Bluetooth last, with the link on USB.
 //! - `lights_owner` asks [`holds`] so an owner byte saying "LampArray" over a transport
 //!   Foxglove holds is Foxglove, not "Windows holds the lights".
 //!
@@ -140,6 +142,9 @@ enum Job {
     Gone(String),
     /// Foxglove paused (let every hold go) or resumed (hold them again).
     Paused(bool),
+    /// The keyboard's owner byte changed (`lights_owner`): Bluetooth having the lights while
+    /// the USB cable is in re-claims USB once.
+    Owner(Option<Owner>),
     Stop,
 }
 
@@ -164,6 +169,9 @@ struct Core {
     /// the Lights worker's scan run before discovery): said once, then quiet until the
     /// keyboard's connect opens them.
     waiting: bool,
+    /// USB was re-claimed since the last connect, reopen or LampArray change (at most once:
+    /// Windows' and the firmware's answer then stands, so nothing can loop).
+    reclaimed: bool,
 }
 
 impl Core {
@@ -172,9 +180,11 @@ impl Core {
         let mut reopen = false;
         // Open what isn't held, keeping what is.
         let mut fill = false;
+        let mut reclaim = false;
         for job in jobs {
             match job {
                 Job::Keyboard(k) => {
+                    self.reclaimed = false;
                     if k != self.keyboard {
                         self.keyboard = k;
                         reopen = true;
@@ -185,15 +195,26 @@ impl Core {
                         fill |= usb || ble;
                     }
                 }
-                Job::Devices => reopen = true,
+                Job::Devices => {
+                    self.reclaimed = false;
+                    reopen = true;
+                }
                 Job::Changed => {}
-                Job::Listed => fill = true,
+                Job::Listed => {
+                    self.reclaimed = false;
+                    fill = true;
+                }
+                Job::Owner(o) => {
+                    reclaim |= o == Some(Owner::LampArrayBle) && self.usb_ours() && !self.reclaimed;
+                }
                 Job::Gone(id) => {
+                    self.reclaimed = false;
                     let before = self.held.len();
                     self.held.retain(|h| h.id != id);
                     fill |= self.held.len() != before;
                 }
                 Job::Paused(p) => {
+                    self.reclaimed = false;
                     if p != self.paused {
                         self.paused = p;
                         reopen = true;
@@ -210,9 +231,23 @@ impl Core {
             // Let go first: one unplugged and back is a new device to Windows.
             self.held.clear();
         }
-        if reopen || fill {
+        let reclaim = reclaim && !reopen;
+        if reclaim {
+            // With the cable in, the lights run over USB (11/09): the firmware gives them to
+            // the transport whose autonomous mode went off last, which was Bluetooth. Letting
+            // USB go and holding it again turns USB's off last. Once per connect.
+            eprintln!(
+                "Foxglove: keyboard LampArrays: Bluetooth has the lights while the USB cable is \
+                 in; holding USB again so they run over USB (once per connect)"
+            );
+            self.reclaimed = true;
+            self.held.retain(|h| h.ble);
+        }
+        if reopen || fill || reclaim {
             self.open(if reopen {
                 "a reopen"
+            } else if reclaim {
+                "a USB re-claim"
             } else {
                 "a LampArray change"
             });
@@ -277,6 +312,12 @@ impl Core {
         eprintln!("Foxglove: {line}");
         *LAST_OPEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(line.clone());
         self.last = Some(line);
+    }
+
+    /// Foxglove holds the keyboard's USB LampArray and Windows lets it drive it: the cable is
+    /// in, and re-claiming it puts the lights on USB.
+    fn usb_ours(&self) -> bool {
+        !self.paused && self.held.iter().any(|h| !h.ble && h.device.available())
     }
 
     /// Holds one of this transport's arrays.
@@ -412,6 +453,7 @@ fn spawn(
         notify,
         last: None,
         waiting: false,
+        reclaimed: false,
     };
     *TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     super::services::spawn_named("lamp-hold", move || {
@@ -507,6 +549,11 @@ pub fn devices_changed() {
     send(Job::Devices);
 }
 
+/// The keyboard's owner byte changed (`lights_owner`'s watch).
+pub fn owner_changed(owner: Option<Owner>) {
+    send(Job::Owner(owner));
+}
+
 /// Foxglove paused or resumed (`pause::set`): paused lets every hold go, resumed holds them
 /// again.
 pub fn pause_changed(paused: bool) {
@@ -521,16 +568,27 @@ pub fn stop() {
 }
 
 /// The transport to draw a LampArray key on: for the host-link keyboard's own LampArrays (its
-/// VID/PID), only the one its link uses now (`Some(true)` Bluetooth, `Some(false)` USB), so the
-/// other stays held without writing; `None` (every matching device) for any other key, or while
-/// the link's transport isn't known.
+/// VID/PID), only one (`Some(true)` Bluetooth, `Some(false)` USB), so the other stays held
+/// without writing; `None` (every matching device) for any other key, or while neither is known.
+///
+/// The keyboard takes LampArray updates only on the transport that has its lights (the
+/// firmware's owner byte, `owner`): the last one whose autonomous mode went off, which need not
+/// be the host link's. Holding both, Foxglove turns both off, so the owner can be Bluetooth while
+/// the host link is USB; frames written over USB then land nowhere and the keyboard stays dark
+/// (11/09). So the owner's transport wins; the host link's only while no LampArray has them.
 pub fn draw_filter(
     key: (u16, u16),
     keyboard: Option<(u16, u16)>,
+    owner: Option<Owner>,
     host_link: Option<&str>,
 ) -> Option<bool> {
     if keyboard != Some(key) {
         return None;
+    }
+    match owner {
+        Some(Owner::LampArrayBle) => return Some(true),
+        Some(Owner::LampArrayUsb) => return Some(false),
+        _ => {}
     }
     match host_link {
         Some("BLE") => Some(true),
@@ -541,7 +599,46 @@ pub fn draw_filter(
 
 /// [`draw_filter`] for the app now.
 pub fn draw_on(key: (u16, u16)) -> Option<bool> {
-    draw_filter(key, keyboard(), super::devices::host_link())
+    let owner = super::lights_owner::lock(&super::lights_owner::shared()).owner();
+    draw_filter(key, keyboard(), owner, super::devices::host_link())
+}
+
+/// The transport the keyboard's own LampArray was last drawn on ([`draw_on`]); `None` until
+/// first followed.
+static DRAWN: Mutex<Option<Option<bool>>> = Mutex::new(None);
+
+/// Whether what draws through the keyboard's own LampArray must reopen it: the transport to draw
+/// on is `now`, and was `last` (`None`: not followed yet, so whatever is open may be stale).
+pub fn draw_moved(last: Option<Option<bool>>, now: Option<bool>) -> bool {
+    last != Some(now)
+}
+
+/// Follows the transport to draw the keyboard's LampArray on, on the two events that change it:
+/// the owner byte (which LampArray has the lights) and a keyboard connect (the host link moved,
+/// for example to Bluetooth with the USB cable out, or back to USB). When it changed, a running
+/// scene reopens the LampArray there and draws it in full, and the Keyboard card lets go of the
+/// old one (its next pick opens the new one). Never blocks on the keyboard.
+pub fn follow_draw() {
+    let Some(kb) = keyboard() else {
+        return;
+    };
+    let now = draw_on(kb);
+    let last = DRAWN.lock().unwrap_or_else(|e| e.into_inner()).replace(now);
+    if !draw_moved(last, now) {
+        return;
+    }
+    let words = |t: Option<bool>| match t {
+        Some(true) => "Bluetooth",
+        Some(false) => "USB",
+        None => "every transport",
+    };
+    eprintln!(
+        "Foxglove: the keyboard's LampArray is drawn on {} now (was {}); the scene draws it there in full",
+        words(now),
+        last.map_or("not drawn yet", words)
+    );
+    super::scene_run::devices_changed();
+    super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
 }
 
 #[cfg(test)]
@@ -666,6 +763,7 @@ mod tests {
             }),
             last: None,
             waiting: false,
+            reclaimed: false,
         };
         Rig {
             core,
@@ -962,18 +1060,177 @@ mod tests {
 
     #[test]
     fn the_keyboard_is_drawn_only_on_its_links_transport() {
-        assert_eq!(draw_filter(CORNE, Some(CORNE), Some("USB")), Some(false));
-        assert_eq!(draw_filter(CORNE, Some(CORNE), Some("BLE")), Some(true));
         assert_eq!(
-            draw_filter(CORNE, Some(CORNE), None),
+            draw_filter(CORNE, Some(CORNE), None, Some("USB")),
+            Some(false)
+        );
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), None, Some("BLE")),
+            Some(true)
+        );
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), None, None),
             None,
             "unknown: every one"
         );
         assert_eq!(
-            draw_filter((0x046d, 0xc08b), Some(CORNE), Some("USB")),
+            draw_filter((0x046d, 0xc08b), Some(CORNE), None, Some("USB")),
             None,
             "a mouse: every matching device"
         );
-        assert_eq!(draw_filter(CORNE, None, Some("USB")), None);
+        assert_eq!(draw_filter(CORNE, None, None, Some("USB")), None);
+        // The host link's owners leave it to the link's transport.
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), Some(Owner::HostLink), Some("BLE")),
+            Some(true)
+        );
+    }
+
+    /// 11/09: the link on USB, both held, Bluetooth's autonomous mode off last: the keyboard
+    /// shows Bluetooth's LampArray, so that is the one drawn.
+    #[test]
+    fn the_keyboard_is_drawn_on_the_transport_that_has_its_lights() {
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), Some(Owner::LampArrayBle), Some("USB")),
+            Some(true)
+        );
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), Some(Owner::LampArrayUsb), Some("BLE")),
+            Some(false)
+        );
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), Some(Owner::LampArrayUsb), None),
+            Some(false)
+        );
+        assert_eq!(
+            draw_filter(
+                (0x046d, 0xc08b),
+                Some(CORNE),
+                Some(Owner::LampArrayBle),
+                Some("USB")
+            ),
+            None,
+            "another device: every matching one"
+        );
+    }
+
+    /// 11/09, the Hub's design call: with the cable in, the lights run over USB. Bluetooth taking
+    /// them re-claims USB once (USB let go and held again, so its autonomous mode goes off
+    /// last); a second Bluetooth take in the same connect leaves it, and a reconnect re-arms.
+    #[test]
+    fn bluetooth_taking_the_lights_with_the_cable_in_reclaims_usb_once() {
+        let mut r = rig();
+        r.usb.available.store(true, Ordering::SeqCst);
+        r.ble.available.store(true, Ordering::SeqCst);
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        let opens = r.opened.load(Ordering::SeqCst);
+        r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
+        assert_eq!(r.usb.dropped.load(Ordering::SeqCst), 1, "USB let go");
+        assert_eq!(r.opened.load(Ordering::SeqCst), opens + 1, "and held again");
+        assert!(r.core.has(false) && r.core.has(true));
+        assert_eq!(r.usb.writes.load(Ordering::SeqCst), 0, "never written");
+        // Bluetooth again in the same connect: left as it is (nothing loops).
+        r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), opens + 1);
+        // USB has them: nothing to do.
+        r.core.handle(vec![Job::Owner(Some(Owner::LampArrayUsb))]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), opens + 1);
+        // A reconnect re-arms it.
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        let opens = r.opened.load(Ordering::SeqCst);
+        r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), opens + 1);
+    }
+
+    /// Cable out (Bluetooth only): Bluetooth having the lights is right, nothing re-claimed.
+    /// Nor while Windows ranks another controller first for USB.
+    #[test]
+    fn bluetooth_with_the_cable_out_or_usb_not_ours_is_left() {
+        let mut r = rig();
+        r.usb.available.store(true, Ordering::SeqCst);
+        r.ble.available.store(true, Ordering::SeqCst);
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        r.core.handle(vec![Job::Gone("usb".into())]);
+        r.core.held.retain(|h| h.ble);
+        let opens = r.opened.load(Ordering::SeqCst);
+        r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
+        assert_eq!(
+            r.opened.load(Ordering::SeqCst),
+            opens,
+            "detached: Bluetooth stays"
+        );
+
+        let mut r = rig();
+        r.ble.available.store(true, Ordering::SeqCst);
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        let opens = r.opened.load(Ordering::SeqCst);
+        r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
+        assert_eq!(
+            r.opened.load(Ordering::SeqCst),
+            opens,
+            "USB not Foxglove's to drive"
+        );
+    }
+
+    /// The steps of one change: the owner byte and the host link now, the transport drawn
+    /// before; the transport drawn now and whether the scene reopens.
+    fn step(last: Option<bool>, owner: Option<Owner>, link: &str) -> (Option<bool>, bool) {
+        let now = draw_filter(CORNE, Some(CORNE), owner, Some(link));
+        (now, draw_moved(Some(last), now))
+    }
+
+    #[test]
+    fn a_move_of_the_drawing_transport_reopens_and_nothing_else_does() {
+        assert!(draw_moved(None, Some(false)), "first followed: reopen");
+        assert!(draw_moved(Some(Some(false)), Some(true)));
+        assert!(draw_moved(Some(Some(true)), Some(false)));
+        assert!(draw_moved(Some(None), Some(true)));
+        assert!(!draw_moved(Some(Some(true)), Some(true)));
+        // 11/09: the owner moved from the USB LampArray to the Bluetooth one, link on USB.
+        assert_eq!(
+            step(Some(false), Some(Owner::LampArrayBle), "USB"),
+            (Some(true), true)
+        );
+    }
+
+    /// The cable out (Bluetooth only), then back in, with the USB LampArray having the lights:
+    /// the scene follows each move and stays put when nothing moved.
+    #[test]
+    fn the_cable_out_and_back_in_follows_the_keyboard_each_way() {
+        use Owner::*;
+        // Drawn on USB, which has the lights.
+        let (t, _) = step(Some(false), Some(LampArrayUsb), "USB");
+        assert_eq!(t, Some(false));
+        // Cable out: the keyboard connects again over Bluetooth, its owner forgotten.
+        let (t, moved) = step(t, None, "BLE");
+        assert_eq!(
+            (t, moved),
+            (Some(true), true),
+            "detached: Bluetooth, in full"
+        );
+        // Foxglove's Bluetooth hold takes the lights: same transport, nothing to reopen.
+        let (t, moved) = step(t, Some(LampArrayBle), "BLE");
+        assert_eq!((t, moved), (Some(true), false));
+        // Cable back in: the link goes to USB, the owner forgotten until the keyboard says.
+        let (t, moved) = step(t, None, "USB");
+        assert_eq!((t, moved), (Some(false), true), "attached: USB, in full");
+        // The keyboard says Bluetooth still has them: back there, in full.
+        let (t, moved) = step(t, Some(LampArrayBle), "USB");
+        assert_eq!((t, moved), (Some(true), true));
+        // Then the USB hold turns autonomous mode off: USB, in full.
+        let (t, moved) = step(t, Some(LampArrayUsb), "USB");
+        assert_eq!((t, moved), (Some(false), true));
+    }
+
+    /// The cable out while the Bluetooth LampArray already had the lights (the 11/09 state):
+    /// nothing moves, so the scene keeps drawing where it does.
+    #[test]
+    fn the_cable_out_with_bluetooth_drawing_already_keeps_it() {
+        let (t, _) = step(Some(false), Some(Owner::LampArrayBle), "USB");
+        assert_eq!(step(t, None, "BLE"), (Some(true), false));
+        assert_eq!(
+            step(Some(true), Some(Owner::HostLink), "BLE"),
+            (Some(true), false)
+        );
     }
 }
