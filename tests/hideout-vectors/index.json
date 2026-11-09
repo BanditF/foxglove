@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.1",
+  "contract": "1.2",
   "reader_hub": "1.0",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -2106,6 +2106,18 @@
         "call_delivered_after": "module.ready"
       }
     },
+    "transcripts/lifecycle/bad-hub-version.json": {
+      "spec": [
+        "8.7",
+        "8.1"
+      ],
+      "note": "A hub minor the hub does not serve (1.9 against 1.0) gets error 7 and the connection closes.",
+      "result": "valid",
+      "final": {
+        "state": "refused",
+        "error": 7
+      }
+    },
     "transcripts/lifecycle/call-timeout.json": {
       "spec": [
         "8.1"
@@ -2114,6 +2126,18 @@
       "result": "valid",
       "final": {
         "error": 4
+      }
+    },
+    "transcripts/lifecycle/duplicate-request-id.json": {
+      "spec": [
+        "8.1"
+      ],
+      "note": "(v1.2) A duplicate in-flight request id answers -32600 rpc.duplicate-request-id with id null; the first call still completes.",
+      "result": "valid",
+      "final": {
+        "error": -32600,
+        "error_id": "rpc.duplicate-request-id",
+        "first_call": "completes"
       }
     },
     "transcripts/lifecycle/initialize-bad-token.json": {
@@ -2186,6 +2210,53 @@
             "id": "permission.never"
           }
         ]
+      }
+    },
+    "transcripts/lifecycle/late-reply-after-timeout.json": {
+      "spec": [
+        "8.1"
+      ],
+      "note": "Error 4 after 30 s, then the module's late result is dropped.",
+      "result": "valid",
+      "final": {
+        "error": 4,
+        "late_result": "dropped"
+      }
+    },
+    "transcripts/lifecycle/malformed-json.json": {
+      "spec": [
+        "8.1"
+      ],
+      "note": "A line that is not JSON answers -32700 with id null.",
+      "result": "valid",
+      "final": {
+        "error": -32700
+      }
+    },
+    "transcripts/lifecycle/module-crash-during-call.json": {
+      "spec": [
+        "8.1",
+        "8.5",
+        "7.7"
+      ],
+      "note": "The provider crashes mid-call: the caller gets error 2, once.",
+      "result": "valid",
+      "final": {
+        "error": 2
+      }
+    },
+    "transcripts/lifecycle/oversized-line.json": {
+      "spec": [
+        "8.1",
+        "7.7"
+      ],
+      "note": "(v1.2) A line over 256 KiB answers -32600 rpc.frame-too-large with id null, the channel closes, the supervisor counts one crash.",
+      "result": "valid",
+      "final": {
+        "error": -32600,
+        "error_id": "rpc.frame-too-large",
+        "channel": "closed",
+        "supervisor_crashes_counted": 1
       }
     },
     "transcripts/lifecycle/ping.json": {
@@ -2870,7 +2941,7 @@
       ],
       "seen_after": {
         "anchor": "hideout-root",
-        "catalog": "digitalis",
+        "source": "test-public",
         "sequence": 3
       },
       "context": {
@@ -2954,7 +3025,7 @@
       ],
       "seen_after": {
         "anchor": "hideout-root",
-        "catalog": "foxglove",
+        "source": "test-public",
         "sequence": 3
       },
       "context": {
@@ -2985,7 +3056,7 @@
       ],
       "seen_after": {
         "anchor": "hideout-root",
-        "catalog": "foxglove",
+        "source": "test-public",
         "sequence": 3
       },
       "context": {
@@ -3016,7 +3087,7 @@
       ],
       "seen_after": {
         "anchor": "hideout-root",
-        "catalog": "hideout",
+        "source": "test-public",
         "sequence": 3
       },
       "context": {
@@ -3437,7 +3508,7 @@
       ],
       "seen_after": {
         "anchor": "hideout-root",
-        "catalog": "vulpes",
+        "source": "test-public",
         "sequence": 3
       },
       "context": {
@@ -3484,10 +3555,11 @@
     },
     "trust/install/folder-exact": {
       "spec": [
-        "12.5"
+        "12.5",
+        "6.5"
       ],
       "result": "valid",
-      "note": "The folder trust/folders/foxglove.example-art-0.4.0 holds exactly the signed files.",
+      "note": "The folder trust/folders/foxglove.example-art-0.4.0 holds exactly the signed files; installing it grants nothing (6.5).",
       "context": {
         "now": "2026-11-09T12:00:00Z",
         "root_pinned_key": "trust/keys/root.pub",
@@ -3653,6 +3725,95 @@
         },
         "root": "trust/root/root.valid.json",
         "folder": "trust/folders/example.private.notes-0.1.0"
+      }
+    },
+    "trust/install/sideload-hideout-scope-violation": {
+      "spec": [
+        "12.6"
+      ],
+      "result": "invalid",
+      "id": "trust.sideload-scope",
+      "note": "The module identifier falls within a registered first-party scope and cannot be sideloaded directly.",
+      "context": {
+        "developer_mode": true,
+        "source": {
+          "id": "sideload"
+        },
+        "root": "trust/root/root.valid.json",
+        "folder": "trust/folders/hideout.example-lights-0.2.0"
+      }
+    },
+    "trust/install/archive-extract-valid": {
+      "spec": [
+        "12.5"
+      ],
+      "result": "valid",
+      "note": "The archive contains exactly the files and hashes declared in the accepted catalog.",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "archive": "trust/archives/foxglove.example-art-0.4.0.zip",
+        "accepted_catalogs": [
+          "trust/catalogs/foxglove.catalog.json"
+        ]
+      }
+    },
+    "trust/install/install-catalog-expired-by-clock": {
+      "spec": [
+        "12.4"
+      ],
+      "result": "invalid",
+      "id": "trust.expired",
+      "note": "A valid catalog whose expiry has passed by the clock: install is refused (trust.expired).",
+      "context": {
+        "now": "2027-06-01T00:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "catalog": "trust/catalogs/foxglove.catalog.json",
+        "folder": "trust/folders/foxglove.example-art-0.4.0"
+      }
+    },
+    "trust/install/install-root-bad-signature": {
+      "spec": [
+        "12.3"
+      ],
+      "result": "invalid",
+      "id": "trust.signature",
+      "note": "The root document fails cryptographic verification against the pinned key.",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.bad-signature.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "catalog": "trust/catalogs/foxglove.catalog.json",
+        "folder": "trust/folders/foxglove.example-art-0.4.0"
       }
     },
     "trust/root/root.bad-signature.json": {

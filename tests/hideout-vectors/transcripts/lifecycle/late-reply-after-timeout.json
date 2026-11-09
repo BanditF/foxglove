@@ -1,0 +1,38 @@
+{
+  "name": "late-reply-after-timeout",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1"
+  ],
+  "description": "A call with no answer fails with error 4 after 30 s on the caller's side. A result the module sends after that is dropped: the caller already had its one response, and the request id is free again.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "event": "30 seconds pass with no answer"
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 4,
+          "message": "timeout"
+        }
+      }
+    },
+    {
+      "event": "the module sends its result for id 1 late; the hub drops it and nothing more reaches the tool"
+    }
+  ]
+}

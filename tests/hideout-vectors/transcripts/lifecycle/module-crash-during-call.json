@@ -1,0 +1,46 @@
+{
+  "name": "module-crash-during-call",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1",
+    "8.5",
+    "7.7"
+  ],
+  "description": "The module providing a method dies while a call to it is in flight: the caller gets error 2 (disconnected) with a plain-words reason, exactly one response. The supervisor restarts the module as for any crash.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "event": "module foxglove.example-art crashes; its pipe closes with the call unanswered"
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 2,
+          "message": "disconnected",
+          "data": {
+            "reason": "Example Art stopped"
+          }
+        }
+      }
+    },
+    {
+      "expect": {
+        "responses_to_call": 1,
+        "supervisor": "restarting"
+      }
+    }
+  ]
+}

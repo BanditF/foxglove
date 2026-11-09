@@ -1,0 +1,25 @@
+{
+  "name": "malformed-json",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1"
+  ],
+  "description": "A line that is not valid JSON answers -32700 with id null, to the connection that sent it.",
+  "steps": [
+    {
+      "event": "the tool sends the line {bad json"
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": null,
+        "error": {
+          "code": -32700,
+          "message": "Parse error"
+        }
+      }
+    }
+  ]
+}

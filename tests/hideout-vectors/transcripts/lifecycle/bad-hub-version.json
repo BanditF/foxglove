@@ -1,0 +1,48 @@
+{
+  "name": "bad-hub-version",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.7",
+    "8.1"
+  ],
+  "description": "A client asks for a hub minor the hub does not serve (same major, newer minor: served means the server minor is at least the client minor). It gets error 7 (version) and the connection closes. The major-mismatch case is initialize-hub-not-served.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "id": "foxglove.example-art",
+          "version": "0.4.0",
+          "instance": "inst-1",
+          "token": "tok-launch-1",
+          "hub": "1.9",
+          "api": {
+            "foxglove": "1.13"
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 7,
+          "message": "version",
+          "data": {
+            "reason": "hub 1.9 is not served; this hub serves 1.0"
+          }
+        }
+      }
+    },
+    {
+      "event": "hub closes the connection"
+    }
+  ]
+}

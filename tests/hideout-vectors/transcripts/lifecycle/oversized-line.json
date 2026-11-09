@@ -1,0 +1,38 @@
+{
+  "name": "oversized-line",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1",
+    "7.7"
+  ],
+  "description": "(v1.2) A line over 256 KiB (262,144 bytes) is not buffered: the hub sends error -32600, data.id rpc.frame-too-large, id null, then closes that channel. For a module the supervisor counts it as one crash toward the crash bar (7.7). 'peer' is the far end of the module's channel.",
+  "steps": [
+    {
+      "event": "a peer on module foxglove.example-art's channel sends one line of 300 KiB"
+    },
+    {
+      "from": "hub",
+      "to": "peer",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": null,
+        "error": {
+          "code": -32600,
+          "message": "Invalid Request",
+          "data": {
+            "id": "rpc.frame-too-large",
+            "reason": "a message line is at most 256 KiB"
+          }
+        }
+      }
+    },
+    {
+      "event": "hub closes the channel"
+    },
+    {
+      "expect": {
+        "supervisor_crashes_counted": 1
+      }
+    }
+  ]
+}

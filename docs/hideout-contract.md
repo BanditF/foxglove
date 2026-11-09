@@ -1,12 +1,13 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.1** (v1.0 plus the decisions of #918; additive, no breaking
-change; every v1.1 addition is marked "(v1.1)"), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+Status: spec, contract version **1.2** (v1.1 plus two wire decisions of #918; additive, no breaking
+change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.2** (#918): two wire rules the transcript vectors found missing (§8.1). A request id that is still in flight on the same connection answers error -32600 `rpc.duplicate-request-id` with id null, and the first call is unaffected. A line over 256 KiB answers -32600 `rpc.frame-too-large` with id null, then the hub closes that channel; the supervisor counts it as a crash (§7.7). Also written down, not new behaviour: a result arriving after the caller's error 4 is dropped. New ids in §15. The trust vectors' `seen_after` is keyed by source id, as §7.3 has it, not by family.
 - **1.1.1** (#941): a message nests at most 128 deep (arrays and objects, counted before parsing; was 4096, which overflowed the stack). Over it is `ui.limits`, the whole message refused. Every reader MUST check the depth before it recurses, or parse without recursion. The same cap holds for brackets in a TOML file (`module.toml`, legacy manifests, `hideout.toml`): over it is `manifest.syntax`. Not a wire change for any message that was within the panel caps.
 - **1.1** (#918): closes nine gaps the test vectors found: panel caps (§5.5), `width_or_count` of
   text frames (§8.4), `[[ui.windows]]` and MCP `method` checks (§4.7, §9), the never-list ids
@@ -743,7 +744,8 @@ Design §3.1.
 - **Contains** each instance in its own Job Object: memory and CPU caps, no breakaway, and an
   AppContainer when the permissions allow it.
 - **Restarts** a crashed instance with backoff from 1 s up to 60 s. Five crashes in ten minutes
-  stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash.
+  stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash. A
+  channel closed for an oversized line (§8.1, v1.2) counts as one crash.
 - **Backoff steps (v1.1):** fixed delays of 1, 2, 4, 8, 16, 32 and 60 s for the 1st, 2nd, ... 7th
   restart in a run, then 60 s for every one after. No jitter: the delay is exactly the step.
 - **Notices** a crash by events only: the process handle and the pipe closing. No heartbeats
@@ -813,7 +815,18 @@ Rules:
   the UI.
 - A method no module provides answers −32601. A provided method whose module isn't running answers
   2 (after activation by `call`, if declared).
-- A call with no answer fails after 30 s on the caller's side (error 4).
+- A call with no answer fails after 30 s on the caller's side (error 4). A result that arrives
+  after that is dropped, and the id is free again.
+- **Request ids (v1.2):** an `id` is unique among the requests in flight on one connection. A
+  request whose id is already in flight is not routed. The hub answers it with error -32600,
+  `data.id` `rpc.duplicate-request-id`, and **id null** (an echoed id would be taken for the first
+  call's answer). The first call is unaffected and gets its own response. An id may be reused once
+  its response (a timeout included) has been sent.
+- **Oversized line (v1.2):** the hub does not buffer past 256 KiB (262,144 bytes). It sends error
+  -32600, `data.id` `rpc.frame-too-large`, id null, then closes that channel. For a module's
+  channel the supervisor counts it as one crash toward the crash bar (§7.7); an outside tool is
+  just disconnected.
+- A line that isn't valid JSON answers -32700 with id null.
 
 ### 8.2 The router pipe and who connects
 
@@ -1321,7 +1334,9 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `trust.mismatch` | manifest id, version, kind or visibility differs from the entry |
 | `trust.visibility` | a module's visibility doesn't match its source's |
 | `trust.sideload-scope` | a sideloaded module uses a first-party id |
-| `rpc.*` | JSON-RPC transcripts use the numeric codes of §8.1 |
+| `rpc.duplicate-request-id` | (v1.2) a request id already in flight on the connection: error -32600, id null (§8.1) |
+| `rpc.frame-too-large` | (v1.2) a line over 256 KiB: error -32600, id null, then the channel closes (§8.1) |
+| `rpc.*` | JSON-RPC transcripts use the numeric codes of §8.1; the two ids above travel in the error's `data.id` |
 
 ## 16. Test vectors
 
