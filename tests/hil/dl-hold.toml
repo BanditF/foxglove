@@ -10,6 +10,11 @@
 # link's transport only (lights_owner::through_windows with lamp_hold::draw_on; the other
 # transport stays held, unwritten). docs/packaging.md, "Dynamic Lighting controller".
 #
+# Precondition (lab-runnable, no keyboard writes): `foxglove-lab health` while the app runs must
+# have no FAIL row "Keyboard LampArray over USB/Bluetooth: Listed by Windows, not held"; that row
+# names the last open's outcome. A FAIL there means the hold never ran, not that H1 is false
+# (chain-6211, 11/07: the hold opened nothing, so its dl-hold FAIL said nothing about H1).
+#
 # Not run by agents: it needs the user's dev identity (scripts/dev-identity.ps1, the user's go),
 # Foxglove running with it, and On-call at the keyboard. Measure only; nothing is written.
 schema = 1
