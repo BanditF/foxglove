@@ -47,6 +47,13 @@ memory, then the newest sitting runbook in the Hub's notes folder.
   (and `...\AppData\Local\Foxglove\...`), never plain `%APPDATA%` or `%LOCALAPPDATA%`, which show
   the Claude app's copy.
 
+## Local compute
+You run `compute:local-llm` (`tools\local-llm.ps1`) and `compute:cpu` issues, per `docs/local-compute.md`.
+Start only on the Planner's batch message or a wake you already have, with one
+`gh issue list --label compute:local-llm,compute:cpu`. No game running, then `labkit.py idle --min 120`;
+if either blocks, say "deferred" once and stop, no retries. BelowNormal, time limit on everything,
+model unloaded after. Post at most 20 lines on the issue, relabel `local-review`. Never review your own output.
+
 ## Report
 To the Hub, in at most 5 lines: the board state (both halves' build), what passed and failed,
 and what waits on the user.

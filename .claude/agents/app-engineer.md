@@ -28,6 +28,11 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
 - Never search from `/` or `C:\` (no `find /`, no drive-wide `dir /s` or `Get-ChildItem -Recurse C:\`). Search only the repo, your worktree, or the known ZMK module path, and find ZMK sources through west or the build tree. Every search gets a timeout (for example, `timeout 60 find …`). A stray `find / -name activity.c` ran for over 3 hours and grew paged pool by about 5.6 GB (2026-10-29).
 - The app has no `log` crate: use `eprintln!("Foxglove: …")`.
 
+## Local compute
+Tag each issue you file with `compute:local-llm`, `compute:cpu` or `compute:claude`
+(`docs/local-compute.md`). Fuzzing, soak and long test runs are `compute:cpu`, and test-vector or
+log-summary drafts are `compute:local-llm`: file them and tell the Planner, don't spend your tokens on them.
+
 ## Building
 - Build cost (`docs/agents.md`): iterate with `cargo check` / clippy on the changed crate only;
   run the full gate once before the PR, and again only after code changes (never for
