@@ -231,7 +231,10 @@ void lamparray_sim_driver(void) {
     raise_zmk_endpoint_changed((struct zmk_endpoint_changed){0});
     settle();
     owner();
+    note("BLE's autonomous mode off while USB's is off too: USB keeps them (the cable wins)");
     autonomous(LAMPARRAY_BLE, false);
+    note("USB's autonomous mode on passes them to BLE, still off: one event, owner 2");
+    autonomous(LAMPARRAY_USB, true);
     note("an endpoint change hands BLE's back");
     raise_zmk_endpoint_changed((struct zmk_endpoint_changed){0});
     settle();
