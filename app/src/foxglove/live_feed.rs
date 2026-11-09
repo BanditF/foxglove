@@ -999,7 +999,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
         // A kept piece this PC has no file for, on screen while a wallpaper watches: its bytes
         // are read back once (#878); the feed hears when they land (`art_changed`).
         let watched = clients.iter().any(|c| !c.paused) && !super::pause::paused();
-        if let Some(crc) = art.to_read(watched) {
+        if let Some(crc) = art.take_read(watched) {
             super::art_service::read_kept(crc);
         }
         let n = clients.len();
@@ -1222,7 +1222,7 @@ impl ArtWatch {
     /// The kept place on screen has no frames because this PC has no piece for it (#878): while
     /// `watched` (a paired wallpaper that isn't paused, Foxglove not paused), the CRC to ask the
     /// keyboard for, once per CRC per run.
-    fn to_read(&mut self, watched: bool) -> Option<u32> {
+    fn take_read(&mut self, watched: bool) -> Option<u32> {
         let crc = self.not_on_pc.filter(|_| watched)?;
         self.asked.insert(crc).then_some(crc)
     }
@@ -2202,11 +2202,11 @@ mod tests {
             "a rescan reads it again"
         );
         // #878: its bytes are asked of the keyboard only while a wallpaper watches, and once.
-        assert_eq!(w.to_read(false), None, "nobody watching");
-        assert_eq!(w.to_read(true), Some(0x1234_5678));
-        assert_eq!(w.to_read(true), None, "once per CRC per run");
+        assert_eq!(w.take_read(false), None, "nobody watching");
+        assert_eq!(w.take_read(true), Some(0x1234_5678));
+        assert_eq!(w.take_read(true), None, "once per CRC per run");
         assert_eq!(w.changed(key(None, "", 0)), Some(None), "the keyboard went");
-        assert_eq!(w.to_read(true), None, "nothing kept on screen");
+        assert_eq!(w.take_read(true), None, "nothing kept on screen");
         // Older firmware (no CRC): nothing to check a read against, so nothing is asked.
         let old = Some(Source::Slot {
             name: "Radar".into(),
@@ -2214,7 +2214,7 @@ mod tests {
             crc: None,
         });
         w.changed(key(old, "Radar", 4));
-        assert_eq!(w.to_read(true), None);
+        assert_eq!(w.take_read(true), None);
     }
 
     /// #40: the keyboard's lights reach the wallpaper once the keyboard reported them.
