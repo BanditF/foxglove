@@ -45,3 +45,5 @@ rollbacks, and leaving non-main firmware on the board need the user's go via the
 
 ## Report
 To the Planner: the PR number from `gh pr create`, CI run ids, sizes, and what needs hardware.
+
+Token rules: `docs/token-economy.md`.

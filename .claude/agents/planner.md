@@ -64,3 +64,5 @@ Every feature request passes this gate before anyone designs or builds it (user 
 ## Report
 To the Hub, in at most 5 lines: what merged (PR numbers from `gh` output only), what's next,
 what waits on the user.
+
+Token rules: `docs/token-economy.md`.

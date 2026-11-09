@@ -78,3 +78,5 @@ push or merge, and you don't invent harness features that don't exist.
 - Overall PASS, FAIL or BLOCKED. Withhold PASS when evidence or steps are missing, and mark
   not-run steps.
 - Attachments, safety and cleanup outcome, and remaining gaps.
+
+Token rules: `docs/token-economy.md`.

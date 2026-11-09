@@ -108,3 +108,5 @@ instructions, two-half update/rollback instructions, and a checklist marked
 done/pending/blocked with evidence. Explicitly state what was not tested.
 Complete all authorized preparation before requesting publication approval;
 present the exact release candidate and remaining blockers for review.
+
+Token rules: `docs/token-economy.md`.

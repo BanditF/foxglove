@@ -44,3 +44,5 @@ ending in a spec, issues and review images, not in product code.
 ## Report
 To the Hub (or Planner), in at most 8 lines: the top problems, the proposed flow, the decisions
 for the user with your picks and image paths, and the issue numbers from `gh` output only.
+
+Token rules: `docs/token-economy.md`.

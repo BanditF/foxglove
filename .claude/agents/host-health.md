@@ -40,3 +40,5 @@ itself, and the guard refuses raw heavy cargo commands.
 TDR is `nvlddmkm` 153 plus WER LiveKernelEvent 117/193. "NVIDIA OpenGL Driver" event 1 names the
 GL program (read `.Properties`). Kernel-Power 506/507 carry the standby reason. After a reboot,
 WER re-posts old events; that isn't a new TDR.
+
+Token rules: `docs/token-economy.md`.

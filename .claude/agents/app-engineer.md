@@ -51,3 +51,5 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
 ## Report
 To the Planner: the PR number from `gh pr create` output, the gate result, and what isn't covered
 (hardware). Fold user-visible changes into `docs/release-notes/<next>.md`.
+
+Token rules: `docs/token-economy.md`.
