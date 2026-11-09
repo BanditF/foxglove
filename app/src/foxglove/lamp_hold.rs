@@ -987,8 +987,14 @@ mod tests {
 
     #[test]
     fn the_keyboard_is_drawn_only_on_its_links_transport() {
-        assert_eq!(draw_filter(CORNE, Some(CORNE), None, Some("USB")), Some(false));
-        assert_eq!(draw_filter(CORNE, Some(CORNE), None, Some("BLE")), Some(true));
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), None, Some("USB")),
+            Some(false)
+        );
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), None, Some("BLE")),
+            Some(true)
+        );
         assert_eq!(
             draw_filter(CORNE, Some(CORNE), None, None),
             None,
@@ -1024,7 +1030,12 @@ mod tests {
             Some(false)
         );
         assert_eq!(
-            draw_filter((0x046d, 0xc08b), Some(CORNE), Some(Owner::LampArrayBle), Some("USB")),
+            draw_filter(
+                (0x046d, 0xc08b),
+                Some(CORNE),
+                Some(Owner::LampArrayBle),
+                Some("USB")
+            ),
             None,
             "another device: every matching one"
         );
