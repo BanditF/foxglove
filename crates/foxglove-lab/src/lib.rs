@@ -1,5 +1,6 @@
 //! Foxglove HIL specifications, execution, and portable report generation.
 pub mod app_api;
+pub mod appdata;
 pub mod behaviors;
 pub mod health;
 pub mod host;

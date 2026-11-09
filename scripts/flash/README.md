@@ -181,3 +181,6 @@ writes about 1 s after the drive appears were sometimes ignored.
 Every write is recorded in `%LOCALAPPDATA%\Foxglove\flash-history.log` (override with
 `FOXGLOVE_FLASH_HISTORY`), one tab-separated line each: UTC time, half, image SHA, outcome
 (`written`, `written-drive-gone`, `verified`, `unverified`, `verify-failed`), and detail.
+Run from a packaged app's shell (a Claude Code session), Windows puts that file in the app's
+private copy (`%LOCALAPPDATA%\Packages\<app>\LocalCache\Local\Foxglove`); the flasher then says
+so once, with the path it really wrote (#894, `scripts/appdata_redirect.py`).

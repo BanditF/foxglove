@@ -356,13 +356,15 @@ impl Studio {
         }
         if self.reserved_layers == 0 {
             notes.push(
-                "This board's keymap reserves no spare layers, so layers can't be added here.                  Its firmware needs layers with status = \"reserved\"."
+                "This board's keymap reserves no spare layers, so layers can't be added here. \
+                 Its firmware needs layers with status = \"reserved\"."
                     .into(),
             );
         }
         if self.save_fails(keys) {
             notes.push(format!(
-                "Saving more than {STUDIO_SAVE_KEY_LIMIT} keys needs firmware built on ZMK main                  or later; this board's is on ZMK {}.",
+                "Saving more than {STUDIO_SAVE_KEY_LIMIT} keys needs firmware built on ZMK main \
+                 or later; this board's is on ZMK {}.",
                 self.zmk.trim()
             ));
         }
@@ -1014,6 +1016,10 @@ mod tests {
         assert!(none.notes(48)[0].contains("reserves no spare layers"));
         assert!(none.save_fails(191) && !none.save_fails(190));
         assert_eq!(none.notes(200).len(), 2);
+        // The hovers read as sentences: no stray runs of spaces from a lost line continuation.
+        for note in none.notes(200) {
+            assert!(!note.contains("  "), "{note}");
+        }
         for fixed in ["main", "v0.4.0", "0.4", ""] {
             let s = Studio {
                 zmk: fixed.into(),

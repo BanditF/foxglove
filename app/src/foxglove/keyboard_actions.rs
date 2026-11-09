@@ -146,7 +146,8 @@ pub fn learn_cached(vid: u16, pid: u16, build: Option<&str>) -> bool {
     };
     if saved.as_deref() != Some(build) {
         eprintln!(
-            "Foxglove: the saved keymap is from firmware {}, the keyboard runs {build}: its              behaviors wait for the keymap to be read",
+            "Foxglove: the saved keymap is from firmware {}, the keyboard runs {build}: its \
+             behaviors wait for the keymap to be read",
             saved.as_deref().unwrap_or("of an unknown build")
         );
         return false;
