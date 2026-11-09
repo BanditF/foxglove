@@ -95,6 +95,9 @@ pub struct Cycle {
     pub follow: Follow,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<LayerArt>,
+    /// Art shown while the user types (#886, `art_triggers`); `None`: off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typing: Option<Item>,
     /// Which monitor's wallpaper to follow (a Wallpaper Engine monitor key); `None` = the
     /// first that matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +116,7 @@ impl Default for Cycle {
             minutes: default_minutes(),
             follow: Follow::Nothing,
             layers: Vec::new(),
+            typing: None,
             wallpaper_monitor: None,
         }
     }
@@ -400,6 +404,7 @@ mod tests {
                 layer: 3,
                 art: Item::BuiltIn("Bandit_Radar".into()),
             }],
+            typing: Some(Item::Slot(4)),
             wallpaper_monitor: Some("Monitor0".into()),
             playlist: true,
             places: vec![6, 7],
