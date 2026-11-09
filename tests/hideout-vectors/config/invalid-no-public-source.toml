@@ -1,0 +1,14 @@
+# Test hideout.toml: no public source (13.4, 13.6). Keys are TEST-ONLY.
+
+[[sources]]
+id = "test-private-git"
+kind = "git"
+visibility = "private"
+url = "https://example.invalid/private-repo.git"
+anchor = "test-user"
+
+[[trust.anchors]]
+id = "test-user"
+kind = "user"
+key = "RWQLPaw1yOqP1TicIPPUG4Mc6H1enjxcObQtU4L/tk14W6ZHZS3RlaDf"
+scope = ["example.private.*"]

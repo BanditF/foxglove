@@ -172,14 +172,14 @@
     {
       "permission": "facts.write:device.*",
       "result": "invalid",
-      "id": "permission.argument",
-      "note": "facts.write is never device.* (6.1)."
+      "id": "permission.never",
+      "note": "facts.write is never device.* (6.1, 6.6, v1.1)."
     },
     {
       "permission": "facts.write:*",
       "result": "invalid",
-      "id": "permission.argument",
-      "note": "facts.write is never *. Spec gap: id not stated; permission.argument assumed."
+      "id": "permission.never",
+      "note": "facts.write is never * (6.1, 6.6, v1.1)."
     },
     {
       "permission": "facts.read:",

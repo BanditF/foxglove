@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.0",
+  "contract": "1.1",
   "reader_hub": "1.0",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -24,6 +24,50 @@
       "result": "invalid",
       "id": "trust.scope-overlap",
       "note": "A user anchor's scope covers foxglove.*, a root scope.",
+      "context": {
+        "root": "trust/root/root.valid.json"
+      }
+    },
+    "config/invalid-folder-url.toml": {
+      "spec": [
+        "13.4"
+      ],
+      "result": "invalid",
+      "id": "config.folder_url",
+      "note": "A folder source with a url (v1.1).",
+      "context": {
+        "root": "trust/root/root.valid.json"
+      }
+    },
+    "config/invalid-no-public-source.toml": {
+      "spec": [
+        "13.4"
+      ],
+      "result": "invalid",
+      "id": "config.no_public_source",
+      "note": "No public source is listed (v1.1).",
+      "context": {
+        "root": "trust/root/root.valid.json"
+      }
+    },
+    "config/invalid-source-id.toml": {
+      "spec": [
+        "13.4"
+      ],
+      "result": "invalid",
+      "id": "config.source_id",
+      "note": "A source id with uppercase and underscore (v1.1).",
+      "context": {
+        "root": "trust/root/root.valid.json"
+      }
+    },
+    "config/invalid-unknown-anchor.toml": {
+      "spec": [
+        "13.4"
+      ],
+      "result": "invalid",
+      "id": "config.unknown_anchor",
+      "note": "A source names an anchor that is not listed (v1.1).",
       "context": {
         "root": "trust/root/root.valid.json"
       }
@@ -567,6 +611,14 @@
       "id": "manifest.mcp",
       "note": "ttl_max_s is at most 600."
     },
+    "manifests/invalid/mcp-method-not-provided.toml": {
+      "spec": [
+        "9"
+      ],
+      "result": "invalid",
+      "id": "manifest.mcp_method",
+      "note": "The tool's method is outside the module's provides (v1.1)."
+    },
     "manifests/invalid/missing-hub.toml": {
       "spec": [
         "4.2"
@@ -790,8 +842,8 @@
         "4.7"
       ],
       "result": "invalid",
-      "id": "manifest.ui",
-      "note": "A [[ui.windows]] entry needs the ui.window permission. Spec gap: no explicit id for this; manifest.ui assumed."
+      "id": "manifest.window_missing",
+      "note": "A [[ui.windows]] entry needs the ui.window permission. v1.1."
     },
     "manifests/invalid/unknown-key-future-minor.toml": {
       "spec": [
@@ -1842,7 +1894,7 @@
       "spec": [
         "5.5"
       ],
-      "note": "5000 canvas shapes ('a few hundred' is the cap).",
+      "note": "5000 canvas shapes ('a few hundred' is the cap; also over the 2000-node cap, 5.5).",
       "result": "invalid",
       "id": "ui.limits"
     },
@@ -1850,7 +1902,7 @@
       "spec": [
         "5.5"
       ],
-      "note": "Depth 400, far over any depth cap.",
+      "note": "Depth 400, over the depth cap of 32 (5.5, v1.1).",
       "result": "invalid",
       "id": "ui.limits",
       "scope": "that panel only"
@@ -1859,7 +1911,7 @@
       "spec": [
         "5.5"
       ],
-      "note": "3000 nodes in one panel.",
+      "note": "3000 nodes in one panel, over the 2000-node cap (5.5, v1.1).",
       "result": "invalid",
       "id": "ui.limits"
     },
@@ -1867,7 +1919,7 @@
       "spec": [
         "5.5"
       ],
-      "note": "One 120000-character string.",
+      "note": "One 120000-character string, over the 16 KiB text cap (5.5, v1.1).",
       "result": "invalid",
       "id": "ui.limits"
     },
@@ -2346,14 +2398,14 @@
       "spec": [
         "7.7"
       ],
-      "note": "A crashed instance restarts with backoff from 1 s up to 60 s; five crashes in ten minutes stops it with one notification per module per sign-in. Notices by events only (process handle, pipe close).",
+      "note": "A crashed instance restarts with fixed backoff steps of 1, 2, 4, 8, 16, 32, 60 s, then 60 s, no jitter (v1.1); five crashes in ten minutes stops it with one notification per module per sign-in. Notices by events only (process handle, pipe close).",
       "result": "valid",
       "final": {
         "crashes_to_stop": 5,
         "window_s": 600,
-        "backoff_min_s": 1,
-        "backoff_max_s": 60,
-        "delays_non_decreasing": true,
+        "backoff_steps_s": [1, 2, 4, 8, 16, 32, 60],
+        "backoff_after_last_step_s": 60,
+        "jitter": false,
         "notifications": 1
       }
     },
@@ -3338,7 +3390,7 @@
         "13.6",
         "12.4"
       ],
-      "note": "A user-anchored catalog: no root.json above it, no family key.",
+      "note": "A user-anchored catalog: no root.json above it, no family key; an absent family reads as user (12.4, v1.1).",
       "signed_by": "TEST key user-private",
       "signature_file": "trust/catalogs/user-private.catalog.json.minisig",
       "result": "valid",
@@ -3548,6 +3600,22 @@
         "install": "foxglove.example-art@0.1.0"
       }
     },
+    "trust/install/no-dev-mode-outside-catalog": {
+      "spec": [
+        "12.6"
+      ],
+      "result": "invalid",
+      "id": "install.dev_mode_required",
+      "note": "A module folder outside any catalog, developer mode off (v1.1).",
+      "context": {
+        "developer_mode": false,
+        "source": {
+          "id": "sideload"
+        },
+        "root": "trust/root/root.valid.json",
+        "folder": "trust/folders/example.private.notes-0.1.0"
+      }
+    },
     "trust/install/sideload-first-party-id": {
       "spec": [
         "12.6"
@@ -3628,7 +3696,7 @@
       "spec": [
         "12.2"
       ],
-      "note": "Foxglove's own root format stays readable. ASSUMES the family scope is foxglove.* and org.foxglove.* (spec gap).",
+      "note": "Foxglove's own root format stays readable. Family scope is exactly foxglove.* and org.foxglove.* (4.10, v1.1).",
       "signed_by": "TEST key legacy-root",
       "signature_file": "trust/root/root.legacy-foxglove-plugin-root.json.minisig",
       "result": "valid",

@@ -1,0 +1,16 @@
+# Test hideout.toml: a folder source with a url (13.4, 13.6). Keys are TEST-ONLY.
+
+[[sources]]
+id = "test-public"
+kind = "catalog"
+visibility = "public"
+url = "https://example.invalid/catalog.json"
+anchor = "hideout-root"
+
+[[sources]]
+id = "test-folder"
+kind = "folder"
+visibility = "private"
+url = "https://example.invalid/modules"
+path = "C:/example/modules"
+anchor = "hideout-root"
