@@ -187,7 +187,8 @@ pub trait Handler {
     fn settings_set(&mut self, _set: SettingsSet) -> std::result::Result<Value, RpcError> {
         Ok(json!({}))
     }
-    /// `channel.create` (§8.4): make a one-time pipe for `consumer` and answer `{pipe}`.
+    /// `channel.create` (§8.4): make a one-time pipe for `consumer` and answer `{pipe}`; see
+    /// `crate::channel::ChannelPipe` (current-user ACL, Windows).
     fn channel_create(&mut self, _create: ChannelCreate) -> std::result::Result<Value, RpcError> {
         Err(RpcError::new(code::UNSUPPORTED, "no channels"))
     }

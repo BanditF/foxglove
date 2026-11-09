@@ -27,6 +27,8 @@ pub use foxglove_plugin_api::methods::{
 };
 use foxglove_plugin_api::rpc::{Error, Id, Outcome, Request, Response};
 
+#[cfg(windows)]
+pub mod channel;
 pub mod hideout;
 mod net;
 pub use net::{NetEvent, TcpListener, TcpStream};
