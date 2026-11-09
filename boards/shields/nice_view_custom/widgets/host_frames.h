@@ -44,7 +44,9 @@ int host_frames_lamps(void);
 // The HID LampArray over `who` (HOST_FRAMES_OWNER_LAMPARRAY_*), autonomous mode off (take) or on.
 // Taking stops the host link's frames or effect, starts both halves from black and sends D7 8C
 // with owner `who`, event 1; handing back (only the owner's) sends owner 0, event 1. Both events go
-// out only after host traffic. Any thread.
+// out only after host traffic. With autonomous mode off on both transports USB has the lights,
+// whichever came last; a hand-back passes them to the other transport while it still has
+// autonomous mode off (one event with the new owner). Any thread.
 void host_frames_lamparray(uint8_t who, bool take);
 // One lamp of the LampArray's frame; false (nothing written) unless `who` owns the lights.
 bool host_frames_lamparray_set(uint8_t who, int lamp, uint8_t r, uint8_t g, uint8_t b);

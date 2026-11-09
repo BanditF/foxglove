@@ -19,9 +19,11 @@
  * Windows Dynamic Lighting turning autonomous mode off takes the lights (owner 1 USB, 2 BLE) from
  * the keyboard's effect, the host link's frames or its effect, and says so with D7 8C event 1;
  * autonomous mode on, a USB unplug or suspend (USB), a disconnect or an endpoint change (BLE) hand
- * them back with D7 8C owner 0, event 1. While a LampArray has them, the host link's SHOW and
- * SET_EFFECT are refused busy (status 1) and its chunks are dropped: Windows wins, as Settings >
- * Dynamic Lighting puts the OS ahead of apps. No timeout for a LampArray: Windows sends only
+ * them back with D7 8C owner 0, event 1. With autonomous mode off on both transports, USB draws
+ * whichever came last, and a hand-back by one passes the lights to the other while its host still
+ * has autonomous mode off (one D7 8C with the new owner). While a LampArray has them, the host
+ * link's SHOW and SET_EFFECT are refused busy (status 1) and its chunks are dropped: Windows wins,
+ * as Settings > Dynamic Lighting puts the OS ahead of apps. No timeout for a LampArray: Windows sends only
  * changes.
  *
  * Start/stop (no polling):
@@ -204,31 +206,76 @@ uint8_t host_frames_owner(void) { return (uint8_t)atomic_get(&owner_now); }
 
 int host_frames_lamps(void) { return LAMPS; }
 
+// The LampArray `who` takes the lights: the host link's frames, its effect or the other
+// transport's LampArray give way. Under lock.
+static void lamparray_take(uint8_t who) {
+    if (owner == who) {
+        return;
+    }
+    if (!release()) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+        host_effects_yield(); // a SET_EFFECT stops on both halves, as for a SHOW
+#endif
+    }
+    memset(frame, 0, sizeof(frame)); // from black, as the strips start
+    set_owner(who);
+    bump(&lamparray_takes);
+    show();
+    uint8_t r[HOST_FRAMES_REPLY_SIZE];
+    fill_reply(r, STATUS_OK, true);
+    host_link_event(r, sizeof(r));
+}
+
+// Per transport, whether its host has autonomous mode off now (it wants the lights). Under lock.
+static bool lamparray_off_usb, lamparray_off_ble;
+
+// The LampArray that draws: USB while its host has autonomous mode off, else Bluetooth's. Windows
+// turns autonomous mode off on each transport once per take-over, in its own order, and moving a
+// claim between apps doesn't send it again (11/09: Bluetooth went last with the cable in and kept
+// the lights). So with both off the cable wins, whatever came last. Under lock.
+static uint8_t lamparray_wanted(void) {
+    if (lamparray_off_usb) {
+        return HOST_FRAMES_OWNER_LAMPARRAY_USB;
+    }
+    return lamparray_off_ble ? HOST_FRAMES_OWNER_LAMPARRAY_BLE : HOST_FRAMES_OWNER_NONE;
+}
+
+// Hand-backs (autonomous mode on, a lost transport): `who` no longer wants the lights; if it had
+// them, the other transport's LampArray takes them when its host still has autonomous mode off,
+// else they go back to the keyboard's effect. Nothing happens if `who` didn't have them.
+static void lamparray_hand_back(uint8_t who) {
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    if (who == HOST_FRAMES_OWNER_LAMPARRAY_USB) {
+        lamparray_off_usb = false;
+    } else {
+        lamparray_off_ble = false;
+    }
+    uint8_t next = lamparray_wanted();
+    bool fall_back = owner == who && next != HOST_FRAMES_OWNER_NONE;
+    if (fall_back) {
+        lamparray_take(next); // one D7 8C with the new owner, no owner 0 in between
+    }
+    k_spin_unlock(&lock, key);
+    if (!fall_back) {
+        release_event(who); // only the owner's own hand-back does anything
+    }
+}
+
 void host_frames_lamparray(uint8_t who, bool take) {
     if (!HOST_FRAMES_OWNER_IS_LAMPARRAY(who)) {
         return;
     }
     if (!take) {
-        release_event(who); // only the owner's own hand-back does anything
+        lamparray_hand_back(who);
         return;
     }
     k_spinlock_key_t key = k_spin_lock(&lock);
-    if (owner != who) {
-        // The host link's frames, or the other transport's LampArray, give way: whichever host
-        // turned autonomous mode off last draws.
-        if (!release()) {
-#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
-            host_effects_yield(); // a SET_EFFECT stops on both halves, as for a SHOW
-#endif
-        }
-        memset(frame, 0, sizeof(frame)); // from black, as the strips start
-        set_owner(who);
-        bump(&lamparray_takes);
-        show();
-        uint8_t r[HOST_FRAMES_REPLY_SIZE];
-        fill_reply(r, STATUS_OK, true);
-        host_link_event(r, sizeof(r));
+    if (who == HOST_FRAMES_OWNER_LAMPARRAY_USB) {
+        lamparray_off_usb = true;
+    } else {
+        lamparray_off_ble = true;
     }
+    lamparray_take(lamparray_wanted());
     k_spin_unlock(&lock, key);
 }
 
@@ -322,11 +369,11 @@ bool host_frames_command(const uint8_t *d, int len, uint8_t r[HOST_FRAMES_REPLY_
 static int frames_link_listener(const zmk_event_t *eh) {
     if (as_zmk_endpoint_changed(eh) != NULL) {
         release_event(HOST_FRAMES_OWNER_HOST_LINK);
-        release_event(HOST_FRAMES_OWNER_LAMPARRAY_BLE);
+        lamparray_hand_back(HOST_FRAMES_OWNER_LAMPARRAY_BLE);
     }
 #if IS_ENABLED(CONFIG_FOXGLOVE_LAMPARRAY_BLE)
     else if (as_zmk_ble_active_profile_changed(eh) != NULL) {
-        release_event(HOST_FRAMES_OWNER_LAMPARRAY_BLE);
+        lamparray_hand_back(HOST_FRAMES_OWNER_LAMPARRAY_BLE);
     }
 #endif
 #if IS_ENABLED(CONFIG_ZMK_USB)
@@ -334,7 +381,7 @@ static int frames_link_listener(const zmk_event_t *eh) {
         if (zmk_endpoints_selected().transport == ZMK_TRANSPORT_USB) {
             release_event(HOST_FRAMES_OWNER_HOST_LINK);
         }
-        release_event(HOST_FRAMES_OWNER_LAMPARRAY_USB);
+        lamparray_hand_back(HOST_FRAMES_OWNER_LAMPARRAY_USB);
     }
 #endif
     return ZMK_EV_EVENT_BUBBLE;

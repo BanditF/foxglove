@@ -19,6 +19,8 @@
 //!   the owner byte says has the lights (the firmware takes updates only there; the host link's
 //!   while no LampArray has them); the other one stays held without writing. On 11/09 H1 failed
 //!   on the real PC: both holds turned autonomous mode off, Bluetooth last, with the link on USB.
+//!   Letting USB go and holding it again didn't move the lights (Windows sends autonomous mode
+//!   off once per take-over), so the firmware prefers USB while both are off (`host_frames.c`).
 //! - `lights_owner` asks [`holds`] so an owner byte saying "LampArray" over a transport
 //!   Foxglove holds is Foxglove, not "Windows holds the lights".
 //!
@@ -143,7 +145,7 @@ enum Job {
     /// Foxglove paused (let every hold go) or resumed (hold them again).
     Paused(bool),
     /// The keyboard's owner byte changed (`lights_owner`): Bluetooth having the lights while
-    /// the USB cable is in re-claims USB once.
+    /// the USB cable is in is logged once per connect ([`ble_with_cable_in`]).
     Owner(Option<Owner>),
     Stop,
 }
@@ -169,9 +171,9 @@ struct Core {
     /// the Lights worker's scan run before discovery): said once, then quiet until the
     /// keyboard's connect opens them.
     waiting: bool,
-    /// USB was re-claimed since the last connect, reopen or LampArray change (at most once:
-    /// Windows' and the firmware's answer then stands, so nothing can loop).
-    reclaimed: bool,
+    /// Bluetooth having the lights with the cable in was logged since the last connect, reopen
+    /// or LampArray change (once each).
+    told_ble: bool,
 }
 
 impl Core {
@@ -180,11 +182,10 @@ impl Core {
         let mut reopen = false;
         // Open what isn't held, keeping what is.
         let mut fill = false;
-        let mut reclaim = false;
         for job in jobs {
             match job {
                 Job::Keyboard(k) => {
-                    self.reclaimed = false;
+                    self.told_ble = false;
                     if k != self.keyboard {
                         self.keyboard = k;
                         reopen = true;
@@ -196,25 +197,37 @@ impl Core {
                     }
                 }
                 Job::Devices => {
-                    self.reclaimed = false;
+                    self.told_ble = false;
                     reopen = true;
                 }
                 Job::Changed => {}
                 Job::Listed => {
-                    self.reclaimed = false;
+                    self.told_ble = false;
                     fill = true;
                 }
                 Job::Owner(o) => {
-                    reclaim |= o == Some(Owner::LampArrayBle) && self.usb_ours() && !self.reclaimed;
+                    if ble_with_cable_in(o, self.usb_ours()) && !self.told_ble {
+                        self.told_ble = true;
+                        // #902 let USB go and held it again here; on 11/09 that never moved the
+                        // owner (twice): Windows turns autonomous mode off once per take-over, not
+                        // per hold, so no hold can move the lights. Firmware that prefers USB
+                        // (host_frames.c) never reports this; older firmware does.
+                        eprintln!(
+                            "Foxglove: keyboard LampArrays: Bluetooth has the lights while the USB \
+                             cable is in and Foxglove holds USB; the scene draws over Bluetooth. \
+                             Firmware that prefers USB moves them there by itself, so this \
+                             keyboard's firmware predates that (once per connect)"
+                        );
+                    }
                 }
                 Job::Gone(id) => {
-                    self.reclaimed = false;
+                    self.told_ble = false;
                     let before = self.held.len();
                     self.held.retain(|h| h.id != id);
                     fill |= self.held.len() != before;
                 }
                 Job::Paused(p) => {
-                    self.reclaimed = false;
+                    self.told_ble = false;
                     if p != self.paused {
                         self.paused = p;
                         reopen = true;
@@ -231,23 +244,9 @@ impl Core {
             // Let go first: one unplugged and back is a new device to Windows.
             self.held.clear();
         }
-        let reclaim = reclaim && !reopen;
-        if reclaim {
-            // With the cable in, the lights run over USB (11/09): the firmware gives them to
-            // the transport whose autonomous mode went off last, which was Bluetooth. Letting
-            // USB go and holding it again turns USB's off last. Once per connect.
-            eprintln!(
-                "Foxglove: keyboard LampArrays: Bluetooth has the lights while the USB cable is \
-                 in; holding USB again so they run over USB (once per connect)"
-            );
-            self.reclaimed = true;
-            self.held.retain(|h| h.ble);
-        }
-        if reopen || fill || reclaim {
+        if reopen || fill {
             self.open(if reopen {
                 "a reopen"
-            } else if reclaim {
-                "a USB re-claim"
             } else {
                 "a LampArray change"
             });
@@ -314,8 +313,7 @@ impl Core {
         self.last = Some(line);
     }
 
-    /// Foxglove holds the keyboard's USB LampArray and Windows lets it drive it: the cable is
-    /// in, and re-claiming it puts the lights on USB.
+    /// Foxglove holds the keyboard's USB LampArray and Windows lets it drive it: the cable is in.
     fn usb_ours(&self) -> bool {
         !self.paused && self.held.iter().any(|h| !h.ble && h.device.available())
     }
@@ -422,6 +420,15 @@ fn words(h: Option<bool>) -> &'static str {
     }
 }
 
+/// The owner byte says Bluetooth has the keyboard's lights while Foxglove holds its USB
+/// LampArray with Windows' leave (the cable is in). Firmware that prefers USB never says so:
+/// with autonomous mode off on both transports it gives USB the lights, whichever Windows turned
+/// off last. Nothing the app holds can change it (Windows sends autonomous mode off once per
+/// take-over, not when a hold is let go and taken again), so the holder only says it.
+pub fn ble_with_cable_in(owner: Option<Owner>, usb_ours: bool) -> bool {
+    owner == Some(Owner::LampArrayBle) && usb_ours
+}
+
 /// The running holder's queue.
 static TX: Mutex<Option<mpsc::Sender<Job>>> = Mutex::new(None);
 
@@ -453,7 +460,7 @@ fn spawn(
         notify,
         last: None,
         waiting: false,
-        reclaimed: false,
+        told_ble: false,
     };
     *TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     super::services::spawn_named("lamp-hold", move || {
@@ -763,7 +770,7 @@ mod tests {
             }),
             last: None,
             waiting: false,
-            reclaimed: false,
+            told_ble: false,
         };
         Rig {
             core,
@@ -1114,36 +1121,53 @@ mod tests {
         );
     }
 
-    /// 11/09, the Hub's design call: with the cable in, the lights run over USB. Bluetooth taking
-    /// them re-claims USB once (USB let go and held again, so its autonomous mode goes off
-    /// last); a second Bluetooth take in the same connect leaves it, and a reconnect re-arms.
+    /// Bluetooth having the lights counts only while Foxglove holds USB with Windows' leave.
     #[test]
-    fn bluetooth_taking_the_lights_with_the_cable_in_reclaims_usb_once() {
+    fn bluetooth_with_the_cable_in_needs_usb_ours_and_the_ble_owner() {
+        assert!(ble_with_cable_in(Some(Owner::LampArrayBle), true));
+        assert!(
+            !ble_with_cable_in(Some(Owner::LampArrayBle), false),
+            "cable out"
+        );
+        assert!(
+            !ble_with_cable_in(Some(Owner::LampArrayUsb), true),
+            "USB has them"
+        );
+        assert!(!ble_with_cable_in(Some(Owner::HostLink), true));
+        assert!(!ble_with_cable_in(None, true));
+    }
+
+    /// 11/09: #902's USB re-claim (let USB go, hold it again) never moved the owner on the real
+    /// PC, twice: Windows turns autonomous mode off once per take-over, not per hold. The firmware
+    /// now prefers USB itself; the holder only logs Bluetooth having the lights with the cable in,
+    /// once per connect, and never lets USB go or reopens for it.
+    #[test]
+    fn bluetooth_taking_the_lights_with_the_cable_in_is_logged_not_reclaimed() {
         let mut r = rig();
         r.usb.available.store(true, Ordering::SeqCst);
         r.ble.available.store(true, Ordering::SeqCst);
         r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
         let opens = r.opened.load(Ordering::SeqCst);
         r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
-        assert_eq!(r.usb.dropped.load(Ordering::SeqCst), 1, "USB let go");
-        assert_eq!(r.opened.load(Ordering::SeqCst), opens + 1, "and held again");
+        assert!(r.core.told_ble, "said once");
+        assert_eq!(r.usb.dropped.load(Ordering::SeqCst), 0, "USB kept");
+        assert_eq!(r.opened.load(Ordering::SeqCst), opens, "nothing reopened");
         assert!(r.core.has(false) && r.core.has(true));
         assert_eq!(r.usb.writes.load(Ordering::SeqCst), 0, "never written");
-        // Bluetooth again in the same connect: left as it is (nothing loops).
-        r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
-        assert_eq!(r.opened.load(Ordering::SeqCst), opens + 1);
-        // USB has them: nothing to do.
+        // USB has them, then Bluetooth again in the same connect: still nothing reopened.
         r.core.handle(vec![Job::Owner(Some(Owner::LampArrayUsb))]);
-        assert_eq!(r.opened.load(Ordering::SeqCst), opens + 1);
-        // A reconnect re-arms it.
-        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
-        let opens = r.opened.load(Ordering::SeqCst);
         r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
-        assert_eq!(r.opened.load(Ordering::SeqCst), opens + 1);
+        assert_eq!(r.opened.load(Ordering::SeqCst), opens);
+        assert_eq!(r.usb.dropped.load(Ordering::SeqCst), 0);
+        // A reconnect re-arms the line.
+        r.core.handle(vec![Job::Keyboard(Some(CORNE))]);
+        assert!(!r.core.told_ble);
+        r.core.handle(vec![Job::Owner(Some(Owner::LampArrayBle))]);
+        assert!(r.core.told_ble);
     }
 
-    /// Cable out (Bluetooth only): Bluetooth having the lights is right, nothing re-claimed.
-    /// Nor while Windows ranks another controller first for USB.
+    /// Cable out (Bluetooth only): Bluetooth having the lights is right, nothing said or
+    /// reopened. Nor while Windows ranks another controller first for USB.
     #[test]
     fn bluetooth_with_the_cable_out_or_usb_not_ours_is_left() {
         let mut r = rig();
@@ -1159,6 +1183,7 @@ mod tests {
             opens,
             "detached: Bluetooth stays"
         );
+        assert!(!r.core.told_ble);
 
         let mut r = rig();
         r.ble.available.store(true, Ordering::SeqCst);
@@ -1170,6 +1195,7 @@ mod tests {
             opens,
             "USB not Foxglove's to drive"
         );
+        assert!(!r.core.told_ble);
     }
 
     /// The steps of one change: the owner byte and the host link now, the transport drawn

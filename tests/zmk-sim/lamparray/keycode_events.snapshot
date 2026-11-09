@@ -83,7 +83,11 @@ lamparray: -- BLE's autonomous mode on and an endpoint change leave USB's lights
 lamparray: -- BLE: autonomous mode on
 lamparray: owner 1
 lamparray: owner 1
+lamparray: -- BLE's autonomous mode off while USB's is off too: USB keeps them (the cable wins)
 lamparray: -- BLE: autonomous mode off
+lamparray: owner 1
+lamparray: -- USB's autonomous mode on passes them to BLE, still off: one event, owner 2
+lamparray: -- USB: autonomous mode on
 frames: left back to its effect
 frames: right back to its effect
 frames: left taken from its effect
