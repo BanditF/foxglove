@@ -4,19 +4,19 @@
   "spec": [
     "7.7"
   ],
-  "description": "A crashed instance restarts with backoff from 1 s up to 60 s; five crashes in ten minutes stops it with one notification per module per sign-in. Notices by events only (process handle, pipe close).",
+  "description": "A crashed instance restarts with fixed backoff steps of 1, 2, 4, 8, 16, 32, 60 s then 60 s, no jitter; five crashes in ten minutes stops it with one notification per module per sign-in. Notices by events only (process handle, pipe close).",
   "steps": [
     {
       "event": "crash 1 at t=0 s (process handle signalled)"
     },
     {
-      "event": "restart after delay d1, 1 <= d1 <= 60"
+      "event": "restart after exactly 1 s (step 1)"
     },
     {
       "event": "crash 2 at t=20 s"
     },
     {
-      "event": "restart after d2 >= d1"
+      "event": "restart after exactly 2 s (step 2)"
     },
     {
       "event": "crash 3 at t=60 s"

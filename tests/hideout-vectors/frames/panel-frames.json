@@ -64,15 +64,15 @@
     },
     {
       "name": "text-append",
-      "wire_hex": "1100000003000000000000000900000068656c6c6f",
-      "payload_hex": "03000000000000000900000068656c6c6f",
+      "wire_hex": "1100000003000500000000000900000068656c6c6f",
+      "payload_hex": "03000500000000000900000068656c6c6f",
       "expect": {
         "accept": true,
         "kind": "text",
         "seq": 9,
         "append": "hello"
       },
-      "note": "UTF-8 bytes to append. Spec gap: what width_or_count holds for kind 3 is not stated; 0 used."
+      "note": "UTF-8 bytes to append. width_or_count is the UTF-8 byte length of the body, here 5 (8.4, v1.1)."
     },
     {
       "name": "image-length-mismatch",

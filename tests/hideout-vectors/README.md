@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.0. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.1. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -38,7 +38,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `trust/install/` (index only) | unknown archive, yanked, revoked, exact folder, extra or changed file, sideload scope | 12.5, 12.6 |
 | `trust/archives/`, `trust/folders/` | the signed archives and unpacked folders the catalogs pin | 12.4 |
 | `trust/keys/` | TEST-ONLY public keys | 12 |
-| `config/` | `hideout.toml` `[[sources]]` and `[[trust.anchors]]` tables, valid and overlapping | 13.4, 13.6 |
+| `config/` | `hideout.toml` `[[sources]]` and `[[trust.anchors]]` tables, valid, overlapping, and the four `config.*` errors | 13.4, 13.6 |
 | `panels/` | `ui.register` trees: all node types, under the caps, over each cap, an unknown node type, one bad panel with a good one | 5.2, 5.5 |
 | `frames/panel-frames.json` | binary stream frames as hex: image, canvas, text, length mismatches | 5.4, 8.4 |
 | `transcripts/lifecycle/` | `initialize` (module, tool, bad token, hub not served, not first), `module.register`/`module.ready`, re-registration, `ui.undeclared`, 30 s ready timeout, errors -32601, 2, 4, 8 | 7.5, 8.1, 8.8 |
@@ -58,14 +58,6 @@ message), an `{event}` outside the wire, or an `{expect}` assertion. `old`/`new`
 TEST-ONLY signatures). The files are authoritative; the tooling is a convenience. `.gitattributes` keeps every file byte-exact,
 since signatures are over exact bytes (minisign, prehashed `ED`).
 
-## Gaps found in the spec while writing these (open in the spec, not decided here)
+## Spec gaps
 
-1. Panel caps (`ui.limits`) are "published with the schema" but have no numbers; vectors use clearly-under and clearly-over values only.
-2. The meaning of `width_or_count` for text frames (kind 3) is not stated; vectors use 0.
-3. `hideout.toml` problems (no public source, folder source with a URL, bad source id, unknown anchor) have no section 15 id.
-4. Installing outside a catalog without developer mode has no error id.
-5. A `[[ui.windows]]` entry without `ui.window`, and an MCP tool whose `method` the module does not provide, have no explicit id.
-6. The legacy `foxglove-plugin-root` scope is not stated; vectors assume `foxglove.*` and `org.foxglove.*`.
-7. A user-anchored catalog has no `family` field in 12.4's shape; vectors omit it.
-8. `facts.write:*` and `facts.write:device.*` are "never" in 6.1 but not mapped to `permission.argument` or `permission.never`; vectors use `permission.argument`.
-9. Backoff steps between 1 s and 60 s are not fixed, so vectors assert bounds and non-decreasing delays only.
+The nine gaps found while writing these vectors were decided in [#918](https://github.com/BanditF/foxglove/issues/918) and written into the spec as contract version 1.1; the vectors above carry the decided results.

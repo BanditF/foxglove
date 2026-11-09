@@ -1,9 +1,18 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+Status: spec, contract version **1.1** (v1.0 plus the decisions of #918; additive, no breaking
+change; every v1.1 addition is marked "(v1.1)"), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
+
+**Changelog.**
+- **1.1** (#918): closes nine gaps the test vectors found: panel caps (§5.5), `width_or_count` of
+  text frames (§8.4), `[[ui.windows]]` and MCP `method` checks (§4.7, §9), the never-list ids
+  for `facts.write` (§6.6), supervisor backoff steps (§7.7), developer mode (§12.6), the legacy
+  root's scope (§12.2), user-anchored catalogs without `family` (§12.4), `hideout.toml` checks
+  (§13.4, §13.6); new ids in §15.
+- **1.0** (#905): first version.
 
 **What Hideout is.** One resident hub, `hideout.exe`, and many modules, each its own process. The
 hub draws the window and the tray, keeps the registry, routes control messages and restarts
@@ -336,7 +345,9 @@ Contributions are declared in the manifest so the hub can show them before the m
   declared here is rejected (`ui.undeclared`).
 
 **`[[ui.windows]]`:** `id`, `title`, `when?`. A module window (§5.7). The hub shows an Open
-button and sends `ui.window.open`. Needs the `ui.window` permission.
+button and sends `ui.window.open`. Needs the `ui.window` permission: a manifest with a
+`[[ui.windows]]` entry and no `ui.window` in its permissions is refused (`manifest.window_missing`,
+v1.1).
 
 **`[[settings]]`:** as plugin.toml, plus `when?`.
 - The hub draws the form, generated when the module gives no `settings` tree.
@@ -393,6 +404,8 @@ file:
   `visibility = "public"`, `api = { foxglove = "<its api>" }`, `[activation] on = ["enable"]`,
   `[lifecycle] data = "remove"`, and `family = "foxglove"` for `org.foxglove.*` and
   `foxglove.*` ids, otherwise `third-party`.
+- **The legacy root's scope (v1.1):** a legacy `foxglove-plugin-root` (§12.2) reads as one family,
+  `foxglove`, whose scope is exactly the ids `foxglove.*` and `org.foxglove.*`, nothing else.
 
 ## 5. Panels across the process boundary
 
@@ -460,6 +473,11 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
 - `ui.register` and `ui.patch` MUST be validated: node count, depth, string length, canvas shape
   count and table rows each have a cap, published with the schema. Over a cap: that panel is
   rejected (`ui.limits`), the others register.
+- **Caps (v1.1):** per panel, at most 2,000 nodes per tree, depth 32, 16 KiB (16,384 UTF-8 bytes)
+  of text per node, 8 live streams, 4 MiB per stream frame and 60 frames a second per stream. A
+  value at the cap passes; one over it is `ui.limits`. A stream over its count, frame size or rate
+  is refused or closed with the same error (the hub still draws no more than 30 frames a second,
+  §5.4).
 - Each panel draws in its own guarded scope. A panic greys that panel ("<Module>'s page couldn't
   be shown"), not the hub.
 - The hub keeps a breadcrumb of the panel being drawn. Two hub restarts within a minute with the
@@ -572,6 +590,10 @@ tool or MCP:
 - starting or ending a gaming reservation (only the user's own click, §8.9);
 - `key.events`, `hid.raw` and `keys`-class channels **over MCP**, always;
 - `modules.manage`, except to `hideout.modules` and the first-party `hideout` CLI.
+
+`facts.write:*` and `facts.write:device.*` (§6.1) are never-list items: asked for in a manifest or
+`initialize` they are left out of `granted` and reported as `permission.never` (v1.1), not
+`permission.argument`.
 
 A third-party or private module MAY hold `key.events`, `hid.raw` or a `keys` channel only when
 sideloaded or signed by a user key, with the red warning. A manifest or `initialize` asking for a
@@ -717,6 +739,8 @@ Design §3.1.
   AppContainer when the permissions allow it.
 - **Restarts** a crashed instance with backoff from 1 s up to 60 s. Five crashes in ten minutes
   stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash.
+- **Backoff steps (v1.1):** fixed delays of 1, 2, 4, 8, 16, 32 and 60 s for the 1st, 2nd, ... 7th
+  restart in a run, then 60 s for every one after. No jitter: the delay is exactly the step.
 - **Notices** a crash by events only: the process handle and the pipe closing. No heartbeats
   (#281).
 - **Captures** each module's stderr to its log.
@@ -824,7 +848,8 @@ Rules:
   - `kind` 1, **image:** raw RGBA, 8 bits per channel, `width × height × 4` bytes, row-major.
   - `kind` 2, **canvas (packed LED array):** `count × 4` bytes of RGBA, one per shape in the
     order the canvas declared them.
-  - `kind` 3, **text:** UTF-8 bytes to append.
+  - `kind` 3, **text:** UTF-8 bytes to append. `width_or_count` (v1.1) is the UTF-8 byte length
+    of the text body; `height` is 0. A mismatch drops the frame like any other length mismatch.
   - A frame whose body length doesn't match its header is dropped.
 - The hub's panel host opens streams the same way (§5.4) and is just a channel end.
 - Realtime paths (scene to keyboard LEDs, key events to the overlay, art pushes, LED wizard
@@ -948,7 +973,7 @@ Design §4.7.
 |---|---|---|
 | `name` | string | tool name, unique in the module; exposed as `<module name>_<name>` |
 | `description` | string | for the agent |
-| `method` | string | one method the module provides; its schema is the tool's input |
+| `method` | string | one method the module provides; its schema is the tool's input. A method the module's `provides` doesn't cover is refused (`manifest.mcp_method`, v1.1) |
 | `access` | string | `read` or `write` |
 | `ttl_max_s` | integer | write tools that hold something: the longest hold, at most 600 |
 
@@ -1035,7 +1060,9 @@ Hideout root key (offline, minisign; public key pinned in hideout.exe)
 
 ### 12.4 A catalog (`catalog.json`)
 
-Format `hideout-catalog-v1` (Foxglove's `foxglove-plugin-catalog-v2` plus):
+Format `hideout-catalog-v1` (Foxglove's `foxglove-plugin-catalog-v2` plus). `family` is optional
+(v1.1): a catalog signed by a user anchor (§13.6) has none, and a reader treats an absent `family`
+as family `user`.
 
 ```json
 {
@@ -1091,7 +1118,8 @@ NOT go on.
 ### 12.6 Developer mode (unsigned sideload)
 
 - Outside any catalog, a module installs only in developer mode (`FOXGLOVE_DEV_UNSIGNED_PLUGINS`,
-  `HIDEOUT_DEV_UNSIGNED=1`). Source id `sideload`.
+  `HIDEOUT_DEV_UNSIGNED=1`). Source id `sideload`. Without developer mode the install is refused
+  (`install.dev_mode_required`, v1.1).
 - Its shallow verify compares against the inventory's hashes.
 - It MUST NOT use an id in a first-party scope (`trust.sideload-scope`).
 
@@ -1149,6 +1177,11 @@ anchor = "<trust anchor id>"      # §13.6; absent only for a developer-mode fol
     or `hideout.toml`.
   - `folder`: a local folder holding a signed `catalog.json` and archives, or, in developer mode,
     unsigned module folders.
+- **Checks on `hideout.toml` (v1.1):** a reader refuses the file, with these ids, when
+  - no `public` source is listed (`config.no_public_source`);
+  - a `folder` source has a `url`, or a `catalog` or `git` source has a `path` (`config.folder_url`);
+  - a source `id` isn't `a-z`, `0-9`, `-`, or two sources share one (`config.source_id`);
+  - a source's `anchor` names no `[[trust.anchors]]` entry (`config.unknown_anchor`).
 - There MUST be at least one `public` source (the Hideout registry, shipped in the MSI config) and
   MAY be any number of `private` ones.
 - A `private` source's modules MUST have `visibility = "private"`; a `public` source's MUST be
@@ -1186,6 +1219,7 @@ key = "RWQ..."                    # minisign public key
 scope = ["<reverse-dns>.*"]       # user anchors only: the ids it may sign
 ```
 
+- A source's `anchor` MUST name an anchor listed here (`config.unknown_anchor`, v1.1).
 - **`root`:** the Hideout root (§12.2), pinned in `hideout.exe`. It cannot be removed or replaced
   through `hideout.toml`.
 - **`user`:** a local or user signing key the user adds (for a private repo or folder). It signs a
@@ -1242,6 +1276,8 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `manifest.activation` | a bad `activation.on` or `when` entry |
 | `manifest.ui` | a bad `[[ui.panels]]` or `[[ui.windows]]` entry |
 | `manifest.mcp` | a bad `[[mcp.tools]]` entry |
+| `manifest.mcp_method` | (v1.1) an `[[mcp.tools]]` `method` the module doesn't provide |
+| `manifest.window_missing` | (v1.1) `[[ui.windows]]` without the `ui.window` permission |
 | `manifest.pin` | `[[pin]]` misplaced, missing, or bad |
 | `manifest.edition` | `[edition]` without `content:edition`, or the reverse |
 | `manifest.identity` | `[identity]` on a module that may not have it |
@@ -1259,6 +1295,11 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `lifecycle.declined` | the user declined the permissions |
 | `lifecycle.edition` | an edition lists a module that isn't installed (reported) |
 | `lifecycle.no-hub` | a step that needs the hub, with the hub not running |
+| `install.dev_mode_required` | (v1.1) an install outside any catalog without developer mode |
+| `config.no_public_source` | (v1.1) `hideout.toml` lists no `public` source |
+| `config.folder_url` | (v1.1) a `folder` source with a `url`, or another kind with a `path` |
+| `config.source_id` | (v1.1) a source id breaks §13.4 or is used twice |
+| `config.unknown_anchor` | (v1.1) a source's `anchor` names no `[[trust.anchors]]` entry |
 | `trust.signature` | a signature doesn't verify |
 | `trust.root-expired`, `trust.root-rollback` | the root expired or is older than `seen` |
 | `trust.scope` | an entry is outside its family's or anchor's scope |

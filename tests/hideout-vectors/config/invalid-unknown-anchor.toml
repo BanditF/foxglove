@@ -1,0 +1,15 @@
+# Test hideout.toml: a source naming no anchor (13.4, 13.6). Keys are TEST-ONLY.
+
+[[sources]]
+id = "test-public"
+kind = "catalog"
+visibility = "public"
+url = "https://example.invalid/catalog.json"
+anchor = "hideout-root"
+
+[[sources]]
+id = "test-folder"
+kind = "folder"
+visibility = "private"
+path = "C:/example/modules"
+anchor = "no-such-anchor"
