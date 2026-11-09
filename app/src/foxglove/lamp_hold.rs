@@ -16,7 +16,9 @@
 //! - **Fallback if H1 fails** (the firmware says a LampArray took the lights although Foxglove
 //!   holds it): the keyboard is drawn through Windows, the existing #749 b path
 //!   (`lights_owner::through_windows`), and [`draw_on`] limits those writes to the transport
-//!   the host link uses now; the other one stays held without writing.
+//!   the owner byte says has the lights (the firmware takes updates only there; the host link's
+//!   while no LampArray has them); the other one stays held without writing. On 11/09 H1 failed
+//!   on the real PC: both holds turned autonomous mode off, Bluetooth last, with the link on USB.
 //! - `lights_owner` asks [`holds`] so an owner byte saying "LampArray" over a transport
 //!   Foxglove holds is Foxglove, not "Windows holds the lights".
 //!
@@ -521,16 +523,27 @@ pub fn stop() {
 }
 
 /// The transport to draw a LampArray key on: for the host-link keyboard's own LampArrays (its
-/// VID/PID), only the one its link uses now (`Some(true)` Bluetooth, `Some(false)` USB), so the
-/// other stays held without writing; `None` (every matching device) for any other key, or while
-/// the link's transport isn't known.
+/// VID/PID), only one (`Some(true)` Bluetooth, `Some(false)` USB), so the other stays held
+/// without writing; `None` (every matching device) for any other key, or while neither is known.
+///
+/// The keyboard takes LampArray updates only on the transport that has its lights (the
+/// firmware's owner byte, `owner`): the last one whose autonomous mode went off, which need not
+/// be the host link's. Holding both, Foxglove turns both off, so the owner can be Bluetooth while
+/// the host link is USB; frames written over USB then land nowhere and the keyboard stays dark
+/// (11/09). So the owner's transport wins; the host link's only while no LampArray has them.
 pub fn draw_filter(
     key: (u16, u16),
     keyboard: Option<(u16, u16)>,
+    owner: Option<Owner>,
     host_link: Option<&str>,
 ) -> Option<bool> {
     if keyboard != Some(key) {
         return None;
+    }
+    match owner {
+        Some(Owner::LampArrayBle) => return Some(true),
+        Some(Owner::LampArrayUsb) => return Some(false),
+        _ => {}
     }
     match host_link {
         Some("BLE") => Some(true),
@@ -541,7 +554,19 @@ pub fn draw_filter(
 
 /// [`draw_filter`] for the app now.
 pub fn draw_on(key: (u16, u16)) -> Option<bool> {
-    draw_filter(key, keyboard(), super::devices::host_link())
+    let owner = super::lights_owner::lock(&super::lights_owner::shared()).owner();
+    draw_filter(key, keyboard(), owner, super::devices::host_link())
+}
+
+/// The keyboard's lights moved from one LampArray transport to the other (`before` to `now`):
+/// what draws through the keyboard's own LampArray must reopen it on the new one.
+pub fn transport_moved(before: Option<Owner>, now: Option<Owner>) -> bool {
+    let lamp = |o: Option<Owner>| match o {
+        Some(Owner::LampArrayUsb) => Some(false),
+        Some(Owner::LampArrayBle) => Some(true),
+        _ => None,
+    };
+    matches!((lamp(before), lamp(now)), (Some(a), Some(b)) if a != b)
 }
 
 #[cfg(test)]
@@ -962,18 +987,57 @@ mod tests {
 
     #[test]
     fn the_keyboard_is_drawn_only_on_its_links_transport() {
-        assert_eq!(draw_filter(CORNE, Some(CORNE), Some("USB")), Some(false));
-        assert_eq!(draw_filter(CORNE, Some(CORNE), Some("BLE")), Some(true));
+        assert_eq!(draw_filter(CORNE, Some(CORNE), None, Some("USB")), Some(false));
+        assert_eq!(draw_filter(CORNE, Some(CORNE), None, Some("BLE")), Some(true));
         assert_eq!(
-            draw_filter(CORNE, Some(CORNE), None),
+            draw_filter(CORNE, Some(CORNE), None, None),
             None,
             "unknown: every one"
         );
         assert_eq!(
-            draw_filter((0x046d, 0xc08b), Some(CORNE), Some("USB")),
+            draw_filter((0x046d, 0xc08b), Some(CORNE), None, Some("USB")),
             None,
             "a mouse: every matching device"
         );
-        assert_eq!(draw_filter(CORNE, None, Some("USB")), None);
+        assert_eq!(draw_filter(CORNE, None, None, Some("USB")), None);
+        // The host link's owners leave it to the link's transport.
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), Some(Owner::HostLink), Some("BLE")),
+            Some(true)
+        );
+    }
+
+    /// 11/09: the link on USB, both held, Bluetooth's autonomous mode off last: the keyboard
+    /// shows Bluetooth's LampArray, so that is the one drawn.
+    #[test]
+    fn the_keyboard_is_drawn_on_the_transport_that_has_its_lights() {
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), Some(Owner::LampArrayBle), Some("USB")),
+            Some(true)
+        );
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), Some(Owner::LampArrayUsb), Some("BLE")),
+            Some(false)
+        );
+        assert_eq!(
+            draw_filter(CORNE, Some(CORNE), Some(Owner::LampArrayUsb), None),
+            Some(false)
+        );
+        assert_eq!(
+            draw_filter((0x046d, 0xc08b), Some(CORNE), Some(Owner::LampArrayBle), Some("USB")),
+            None,
+            "another device: every matching one"
+        );
+    }
+
+    #[test]
+    fn only_a_move_between_lamparray_transports_reopens() {
+        use Owner::*;
+        assert!(transport_moved(Some(LampArrayUsb), Some(LampArrayBle)));
+        assert!(transport_moved(Some(LampArrayBle), Some(LampArrayUsb)));
+        assert!(!transport_moved(Some(HostLink), Some(LampArrayUsb)));
+        assert!(!transport_moved(Some(LampArrayUsb), Some(Keyboard)));
+        assert!(!transport_moved(None, Some(LampArrayBle)));
+        assert!(!transport_moved(Some(LampArrayBle), Some(LampArrayBle)));
     }
 }

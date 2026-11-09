@@ -326,6 +326,16 @@ pub fn attach(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
                 byte_words(now),
                 byte_words(before)
             );
+            // The lights moved to the keyboard's other LampArray (11/09): the scene reopens it
+            // on that transport and draws it in full, and the Keyboard card lets go of the old
+            // one (its next pick opens the new one).
+            if super::lamp_hold::transport_moved(before, now) {
+                eprintln!(
+                    "Foxglove: lights owner: the keyboard's lights moved to its other                      LampArray; drawing there"
+                );
+                super::scene_run::devices_changed();
+                super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
+            }
             // Windows let go (#749 b): the Lights page lets go of the keyboard's LampArray.
             if before.is_some_and(Owner::lamp_array) && !now.is_some_and(Owner::lamp_array) {
                 super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
