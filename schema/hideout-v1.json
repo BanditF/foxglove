@@ -1,0 +1,1225 @@
+{
+  "hub": "1.0",
+  "types": {
+    "config.Config": {
+      "$defs": {
+        "Anchor": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "scope": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "key",
+            "scope"
+          ],
+          "type": "object"
+        },
+        "Source": {
+          "additionalProperties": false,
+          "properties": {
+            "anchor": {
+              "default": null,
+              "description": "The anchor that signs it; none for a developer-mode folder.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SourceKind"
+            },
+            "path": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "url": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "visibility": {
+              "$ref": "#/$defs/Visibility"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "visibility"
+          ],
+          "type": "object"
+        },
+        "SourceKind": {
+          "enum": [
+            "catalog",
+            "git",
+            "folder"
+          ],
+          "type": "string"
+        },
+        "Trust": {
+          "properties": {
+            "anchors": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/Anchor"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "Visibility": {
+          "enum": [
+            "public",
+            "private"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Source"
+          },
+          "type": "array"
+        },
+        "trust": {
+          "$ref": "#/$defs/Trust",
+          "default": {
+            "anchors": []
+          }
+        }
+      },
+      "title": "Config",
+      "type": "object"
+    },
+    "legacy.Manifest": {
+      "$defs": {
+        "ActionDecl": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "description": "Stable: bindings and `action.invoked` use it (`toggle-mute`).",
+              "type": "string"
+            },
+            "name": {
+              "description": "For the Plugins tab (`Toggle mic mute`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ],
+          "type": "object"
+        },
+        "Permission": {
+          "type": "string"
+        },
+        "Provides": {
+          "enum": [
+            "facts",
+            "panel-layout",
+            "lighting-effect",
+            "action",
+            "backend"
+          ],
+          "type": "string"
+        },
+        "SecretDecl": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "description": "For the Plugins tab (`OBS WebSocket password`).",
+              "type": "string"
+            },
+            "name": {
+              "description": "What `secrets.get` asks for (`obs-password`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "label"
+          ],
+          "type": "object"
+        },
+        "SettingDecl": {
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "description": "The value until the user changes it; its type must match `kind`."
+            },
+            "kind": {
+              "$ref": "#/$defs/SettingKind"
+            },
+            "label": {
+              "description": "For the Plugins tab (`Focus minutes`).",
+              "type": "string"
+            },
+            "max": {
+              "default": null,
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "min": {
+              "default": null,
+              "description": "For `int`: the range the Plugins tab allows.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "What the plugin reads (`focus-minutes`).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "label",
+            "kind",
+            "default"
+          ],
+          "type": "object"
+        },
+        "SettingKind": {
+          "enum": [
+            "bool",
+            "int",
+            "text"
+          ],
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "default": [],
+          "description": "Things a key can trigger (#212); the user binds them to keys in the Plugins tab.",
+          "items": {
+            "$ref": "#/$defs/ActionDecl"
+          },
+          "type": "array"
+        },
+        "api": {
+          "description": "The API version it was built for (`major.minor`).",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "id": {
+          "description": "Reverse-DNS, unique: also the plugin's folder name.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "permissions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "provides": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Provides"
+          },
+          "type": "array"
+        },
+        "run": {
+          "description": "The program and its arguments, relative to the plugin's folder.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "secrets": {
+          "default": [],
+          "description": "Secrets the user enters in the Plugins tab (#213); the plugin reads them with\n`secrets.get`. Needs the `secrets` permission.",
+          "items": {
+            "$ref": "#/$defs/SecretDecl"
+          },
+          "type": "array"
+        },
+        "settings": {
+          "default": [],
+          "description": "Options the user sets in the Plugins tab (#69, API 1.3); the plugin reads them with\n`settings.get` and hears of changes as `settings.changed`.",
+          "items": {
+            "$ref": "#/$defs/SettingDecl"
+          },
+          "type": "array"
+        },
+        "version": {
+          "description": "The plugin's own semver.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version",
+        "api",
+        "run"
+      ],
+      "title": "Manifest",
+      "type": "object"
+    },
+    "messages.ActionInvoke": {
+      "$defs": {
+        "ActionSource": {
+          "enum": [
+            "key",
+            "tray",
+            "palette",
+            "panel"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "`action.invoke` (H → M).",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/ActionSource"
+        }
+      },
+      "required": [
+        "action",
+        "source"
+      ],
+      "title": "ActionInvoke",
+      "type": "object"
+    },
+    "messages.ChannelCreate": {
+      "description": "`channel.create` (H → M): the provider makes the pipe for `consumer`.",
+      "properties": {
+        "channel": {
+          "type": "string"
+        },
+        "consumer": {
+          "type": "string"
+        },
+        "nonce": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "channel",
+        "consumer",
+        "nonce"
+      ],
+      "title": "ChannelCreate",
+      "type": "object"
+    },
+    "messages.ChannelOpen": {
+      "description": "`channel.open` (C → H): the channel handshake's first half.",
+      "properties": {
+        "channel": {
+          "type": "string"
+        },
+        "module": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "module",
+        "channel"
+      ],
+      "title": "ChannelOpen",
+      "type": "object"
+    },
+    "messages.ChannelOpened": {
+      "description": "The `channel.open` result: the pipe to connect to and the nonce to present.",
+      "properties": {
+        "nonce": {
+          "type": "string"
+        },
+        "pipe": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pipe",
+        "nonce"
+      ],
+      "title": "ChannelOpened",
+      "type": "object"
+    },
+    "messages.DrainResult": {
+      "description": "The `module.drain` result.",
+      "oneOf": [
+        {
+          "properties": {
+            "state": {
+              "const": "done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "const": "busy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "DrainResult"
+    },
+    "messages.HubNotify": {
+      "$defs": {
+        "NotifyLevel": {
+          "enum": [
+            "info",
+            "warn",
+            "error"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "`hub.notify` (M → H).",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/NotifyLevel"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body",
+        "level"
+      ],
+      "title": "HubNotify",
+      "type": "object"
+    },
+    "messages.InitializeModule": {
+      "description": "`initialize` from a module (M → H).",
+      "properties": {
+        "api": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "hub": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "instance": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "instance",
+        "token",
+        "hub"
+      ],
+      "title": "InitializeModule",
+      "type": "object"
+    },
+    "messages.InitializeTool": {
+      "$defs": {
+        "ClientInfo": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "version"
+          ],
+          "type": "object"
+        }
+      },
+      "description": "`initialize` from an outside tool (T → H).",
+      "properties": {
+        "api": true,
+        "client": {
+          "$ref": "#/$defs/ClientInfo"
+        },
+        "hub": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permissions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "client",
+        "api"
+      ],
+      "title": "InitializeTool",
+      "type": "object"
+    },
+    "messages.ModuleDrain": {
+      "$defs": {
+        "DrainReason": {
+          "enum": [
+            "update",
+            "rollback",
+            "reload",
+            "disable",
+            "remove"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "`module.drain` (H → M).",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/DrainReason"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "ModuleDrain",
+      "type": "object"
+    },
+    "messages.ModuleIdParams": {
+      "description": "`modules.enable`, `modules.disable`, `modules.reload`.",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ModuleIdParams",
+      "type": "object"
+    },
+    "messages.ModuleReady": {
+      "description": "`module.ready` (M → H, notification).",
+      "properties": {
+        "instance": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance"
+      ],
+      "title": "ModuleReady",
+      "type": "object"
+    },
+    "messages.ModuleRegister": {
+      "description": "`module.register` (M → H).",
+      "properties": {
+        "apis": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "channels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "facts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "methods": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "title": "ModuleRegister",
+      "type": "object"
+    },
+    "messages.RegisterResult": {
+      "$defs": {
+        "RejectedItem": {
+          "description": "One refused item in a `module.register` result.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "item": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "item",
+            "error"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "rejected": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RejectedItem"
+          },
+          "type": "array"
+        }
+      },
+      "title": "RegisterResult",
+      "type": "object"
+    },
+    "messages.SettingsSet": {
+      "description": "`settings.set` (H → M).",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": true
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "SettingsSet",
+      "type": "object"
+    },
+    "messages.UiAssetPut": {
+      "description": "`ui.asset.put` (M → H): base64 `data`, at most 256 KiB decoded.",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "mime": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "hash",
+        "mime",
+        "data"
+      ],
+      "title": "UiAssetPut",
+      "type": "object"
+    },
+    "messages.UiEvent": {
+      "description": "`ui.event` (H → M).",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "node": {
+          "type": "string"
+        },
+        "panel": {
+          "type": "string"
+        },
+        "value": {
+          "default": null
+        }
+      },
+      "required": [
+        "panel",
+        "node",
+        "kind"
+      ],
+      "title": "UiEvent",
+      "type": "object"
+    },
+    "messages.UiPatch": {
+      "$defs": {
+        "PatchOp": {
+          "properties": {
+            "index": {
+              "default": null,
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "node": {
+              "type": "string"
+            },
+            "op": {
+              "$ref": "#/$defs/PatchOpKind"
+            },
+            "props": {
+              "additionalProperties": true,
+              "default": null,
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "tree": {
+              "default": null
+            }
+          },
+          "required": [
+            "op",
+            "node"
+          ],
+          "type": "object"
+        },
+        "PatchOpKind": {
+          "enum": [
+            "set",
+            "insert",
+            "remove"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "`ui.patch` (M → H, notification).",
+      "properties": {
+        "ops": {
+          "items": {
+            "$ref": "#/$defs/PatchOp"
+          },
+          "type": "array"
+        },
+        "panel": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "panel",
+        "ops"
+      ],
+      "title": "UiPatch",
+      "type": "object"
+    },
+    "messages.UiWindowOpen": {
+      "description": "`ui.window.open` (H → M).",
+      "properties": {
+        "window": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "window"
+      ],
+      "title": "UiWindowOpen",
+      "type": "object"
+    },
+    "module.Edition": {
+      "additionalProperties": false,
+      "description": "`[edition]` (§4.9).",
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "modules": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "family",
+        "modules"
+      ],
+      "title": "Edition",
+      "type": "object"
+    },
+    "module.Identity": {
+      "additionalProperties": false,
+      "description": "`[identity]` (§4.8).",
+      "properties": {
+        "application": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "application"
+      ],
+      "title": "Identity",
+      "type": "object"
+    },
+    "module.McpTool": {
+      "$defs": {
+        "McpAccess": {
+          "enum": [
+            "read",
+            "write"
+          ],
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "`[[mcp.tools]]` (§9).",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/McpAccess"
+        },
+        "description": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ttl_max_s": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "method",
+        "access"
+      ],
+      "title": "McpTool",
+      "type": "object"
+    },
+    "module.ModuleAction": {
+      "description": "`[[actions]]`: as plugin.toml, plus `when`.",
+      "properties": {
+        "id": {
+          "description": "Stable: bindings and `action.invoked` use it (`toggle-mute`).",
+          "type": "string"
+        },
+        "name": {
+          "description": "For the Plugins tab (`Toggle mic mute`).",
+          "type": "string"
+        },
+        "when": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "ModuleAction",
+      "type": "object"
+    },
+    "module.ModuleSetting": {
+      "$defs": {
+        "SettingKind": {
+          "enum": [
+            "bool",
+            "int",
+            "text"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "`[[settings]]`: as plugin.toml, plus `when`.",
+      "properties": {
+        "default": {
+          "description": "The value until the user changes it; its type must match `kind`."
+        },
+        "kind": {
+          "$ref": "#/$defs/SettingKind"
+        },
+        "label": {
+          "description": "For the Plugins tab (`Focus minutes`).",
+          "type": "string"
+        },
+        "max": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min": {
+          "default": null,
+          "description": "For `int`: the range the Plugins tab allows.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "What the plugin reads (`focus-minutes`).",
+          "type": "string"
+        },
+        "when": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "label",
+        "kind",
+        "default"
+      ],
+      "title": "ModuleSetting",
+      "type": "object"
+    },
+    "module.PanelDecl": {
+      "$defs": {
+        "Slot": {
+          "description": "A panel slot (§5.1).",
+          "enum": [
+            "page",
+            "tile",
+            "status",
+            "settings",
+            "action"
+          ],
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "icon": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/Slot"
+        },
+        "title": {
+          "type": "string"
+        },
+        "when": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "slot",
+        "title",
+        "icon"
+      ],
+      "title": "PanelDecl",
+      "type": "object"
+    },
+    "module.Pin": {
+      "$defs": {
+        "Unpack": {
+          "enum": [
+            "zip",
+            "none"
+          ],
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "`[[pin]]` (§4.8).",
+      "properties": {
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "strip_top": {
+          "default": true,
+          "type": "boolean"
+        },
+        "unpack": {
+          "$ref": "#/$defs/Unpack",
+          "default": "zip"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "sha256"
+      ],
+      "title": "Pin",
+      "type": "object"
+    },
+    "module.WindowDecl": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "when": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "title": "WindowDecl",
+      "type": "object"
+    },
+    "panel.Node": {
+      "description": "One node `{type, id, props, bind?, stream?, children}`.",
+      "properties": {
+        "bind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "children": {
+          "items": {
+            "$ref": "#"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "props": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "stream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ],
+      "title": "Node",
+      "type": "object"
+    },
+    "panel.Panel": {
+      "$defs": {
+        "Node": {
+          "description": "One node `{type, id, props, bind?, stream?, children}`.",
+          "properties": {
+            "bind": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "children": {
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "props": {
+              "additionalProperties": true,
+              "default": {},
+              "type": "object"
+            },
+            "stream": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        "Slot": {
+          "description": "A panel slot (§5.1).",
+          "enum": [
+            "page",
+            "tile",
+            "status",
+            "settings",
+            "action"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "One panel in `ui.register`.",
+      "properties": {
+        "icon": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/Slot"
+        },
+        "title": {
+          "type": "string"
+        },
+        "tree": {
+          "$ref": "#/$defs/Node"
+        }
+      },
+      "required": [
+        "id",
+        "slot",
+        "title",
+        "icon",
+        "tree"
+      ],
+      "title": "Panel",
+      "type": "object"
+    },
+    "panel.Register": {
+      "description": "`ui.register` params (§5.1, §8.8).",
+      "properties": {
+        "instance": {
+          "type": "string"
+        },
+        "panels": {
+          "items": true,
+          "type": "array"
+        }
+      },
+      "required": [
+        "instance",
+        "panels"
+      ],
+      "title": "Register",
+      "type": "object"
+    },
+    "panel.Rejected": {
+      "description": "One rejected panel in the `ui.register` result.",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "panel": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "panel",
+        "error"
+      ],
+      "title": "Rejected",
+      "type": "object"
+    }
+  }
+}

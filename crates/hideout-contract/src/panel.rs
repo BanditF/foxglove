@@ -65,7 +65,7 @@ pub const SHAPE_TYPES: &[&str] = &["rect", "key", "circle", "text"];
 pub const STREAM_NODES: &[&str] = &["canvas", "image", "text"];
 
 /// One node `{type, id, props, bind?, stream?, children}`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Node {
     #[serde(rename = "type")]
     pub kind: String,
@@ -95,7 +95,7 @@ impl Node {
 }
 
 /// One panel in `ui.register`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Panel {
     pub id: String,
     pub slot: Slot,
@@ -161,14 +161,14 @@ pub fn validate(panel: &Panel, limits: &Limits) -> Result<(), Error> {
 }
 
 /// `ui.register` params (§5.1, §8.8).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Register {
     pub instance: String,
     pub panels: Vec<serde_json::Value>,
 }
 
 /// One rejected panel in the `ui.register` result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Rejected {
     pub panel: String,
     pub error: String,
