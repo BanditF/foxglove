@@ -133,6 +133,7 @@ pub fn focused_ids(room: &RoomMap, focus: Option<&super::keyboard_focus::Keyboar
 /// The displays, read once and again after each display change.
 pub fn monitors() -> Vec<MonitorInfo> {
     imp::watch();
+    watch_away();
     MONITORS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -146,13 +147,142 @@ fn display_changed() {
     let now = imp::read();
     let mut known = MONITORS.lock().unwrap_or_else(|e| e.into_inner());
     if known.as_ref() != Some(&now) {
-        eprintln!(
-            "Foxglove: displays changed, the room map has {} monitor(s)",
-            now.len()
+        let what = difference(known.as_deref().unwrap_or(&[]), &now);
+        let line = QUIET.lock().unwrap_or_else(|e| e.into_inner()).change(
+            super::away::away(),
+            &what,
+            now.len(),
         );
+        if let Some(line) = line {
+            eprintln!("{line}");
+        }
         changed();
     }
     *known = Some(now);
+}
+
+/// Display changes while the user is away (#903): a sleeping monitor's link can drop and come
+/// back every few seconds all night (12.6 changes a minute on the user's PC). The first one of
+/// each away stretch is logged in full; the rest are counted and summed up in one line when the
+/// user is back. The room still follows every one.
+static QUIET: Mutex<Quiet> = Mutex::new(Quiet {
+    changes: 0,
+    left: BTreeMap::new(),
+});
+
+/// The away subscription that sums the stretch up on return.
+static AWAY: std::sync::OnceLock<super::away::Subscription> = std::sync::OnceLock::new();
+
+fn watch_away() {
+    AWAY.get_or_init(|| {
+        super::away::subscribe(|away| {
+            if away {
+                return;
+            }
+            let line = QUIET.lock().unwrap_or_else(|e| e.into_inner()).back();
+            if let Some(line) = line {
+                eprintln!("{line}");
+            }
+        })
+    });
+}
+
+/// The display changes of one away stretch.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Quiet {
+    /// Changes seen while away.
+    changes: u32,
+    /// Times each monitor left while away, by its id.
+    left: BTreeMap<String, u32>,
+}
+
+/// What one display change did: monitors that left, that arrived, and whether one moved or
+/// changed size.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Difference {
+    left: Vec<String>,
+    arrived: Vec<String>,
+}
+
+impl Difference {
+    fn words(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if !self.left.is_empty() {
+            parts.push(format!("{} left", self.left.join(", ")));
+        }
+        if !self.arrived.is_empty() {
+            parts.push(format!("{} arrived", self.arrived.join(", ")));
+        }
+        if parts.is_empty() {
+            "a monitor moved or changed size".into()
+        } else {
+            parts.join("; ")
+        }
+    }
+}
+
+/// A monitor in the log's words: Windows' name and its size in pixels.
+fn monitor_words(m: &MonitorInfo) -> String {
+    let [l, t, r, b] = m.rect_px;
+    format!("{} ({}x{})", m.id, r - l, b - t)
+}
+
+fn difference(before: &[MonitorInfo], now: &[MonitorInfo]) -> Difference {
+    let gone = |a: &MonitorInfo, list: &[MonitorInfo]| !list.iter().any(|m| m.id == a.id);
+    Difference {
+        left: before
+            .iter()
+            .filter(|m| gone(m, now))
+            .map(monitor_words)
+            .collect(),
+        arrived: now
+            .iter()
+            .filter(|m| gone(m, before))
+            .map(monitor_words)
+            .collect(),
+    }
+}
+
+impl Quiet {
+    /// A display change (`away` the user is away now, `count` the monitors now): the line to log,
+    /// if any.
+    fn change(&mut self, away: bool, what: &Difference, count: usize) -> Option<String> {
+        let line = format!(
+            "Foxglove: displays changed, the room map has {count} monitor(s): {}",
+            what.words()
+        );
+        if !away {
+            return Some(line);
+        }
+        self.changes += 1;
+        for m in &what.left {
+            *self.left.entry(m.clone()).or_default() += 1;
+        }
+        (self.changes == 1)
+            .then(|| format!("{line} (while away; more are counted, one line on return)"))
+    }
+
+    /// The user is back: the stretch's summary when more than the first change came.
+    fn back(&mut self) -> Option<String> {
+        let q = std::mem::take(self);
+        if q.changes <= 1 {
+            return None;
+        }
+        let left: Vec<String> = q
+            .left
+            .iter()
+            .map(|(m, n)| format!("{m} left {n} time(s)"))
+            .collect();
+        let detail = if left.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", left.join(", "))
+        };
+        Some(format!(
+            "Foxglove: displays changed {} times while away{detail}",
+            q.changes
+        ))
+    }
 }
 
 /// Everything to place but the monitors.
@@ -586,6 +716,63 @@ mod imp {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn monitor(id: &str, w: i32) -> MonitorInfo {
+        MonitorInfo {
+            id: id.into(),
+            primary: false,
+            rect_px: [0, 0, w, w * 9 / 16],
+            raw_dpi: None,
+            dpi: 96,
+        }
+    }
+
+    /// #903: a monitor dropping out every few seconds while away logs once, then one summary.
+    #[test]
+    fn a_flap_while_away_is_one_line_then_a_summary() {
+        let both = [
+            monitor(r"\\.\DISPLAY1", 2560),
+            monitor(r"\\.\DISPLAY2", 3840),
+        ];
+        let one = [both[0].clone()];
+        let mut q = Quiet::default();
+        let first = q
+            .change(true, &difference(&both, &one), 1)
+            .expect("the first is logged");
+        assert!(first.contains("DISPLAY2 (3840x2160) left"), "{first}");
+        assert!(first.contains("while away"), "{first}");
+        assert_eq!(q.change(true, &difference(&one, &both), 2), None);
+        for _ in 0..188 {
+            assert_eq!(q.change(true, &difference(&both, &one), 1), None);
+            assert_eq!(q.change(true, &difference(&one, &both), 2), None);
+        }
+        let summary = q.back().expect("a summary on return");
+        assert!(summary.contains("378 times while away"), "{summary}");
+        assert!(
+            summary.contains("DISPLAY2 (3840x2160) left 189 time(s)"),
+            "{summary}"
+        );
+        assert_eq!(q, Quiet::default(), "the next stretch starts afresh");
+        assert_eq!(q.back(), None, "nothing to sum up");
+    }
+
+    #[test]
+    fn present_changes_are_each_logged_and_one_away_change_needs_no_summary() {
+        let a = [monitor("A", 2560)];
+        let b = [monitor("A", 2560), monitor("B", 1920)];
+        let mut q = Quiet::default();
+        let line = q.change(false, &difference(&a, &b), 2).expect("logged");
+        assert!(line.ends_with("B (1920x1080) arrived"), "{line}");
+        assert!(q.change(false, &difference(&b, &a), 1).is_some());
+        assert_eq!(q.changes, 0);
+        assert!(q.change(true, &difference(&a, &b), 2).is_some());
+        assert_eq!(q.back(), None);
+        let moved = [monitor("A", 1920)];
+        assert_eq!(
+            difference(&a, &moved).words(),
+            "a monitor moved or changed size"
+        );
+    }
     use crate::foxglove::fixtures::{second_desk, users_desk};
 
     /// The user's room for the Scenes page's previews: a 27" 1440p monitor and a 1080p one to
