@@ -629,6 +629,7 @@ class RedirectedHistoryTests(unittest.TestCase):
         copy = r'C:\Users\u\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\Foxglove\flash-history.log'
         notice = f.appdata_redirect.Notice('the flash history', final=lambda p: '\\\\?\\' + copy)
         with tempfile.TemporaryDirectory() as d, patch.object(f, 'HISTORY_NOTICE', notice), \
+                patch.object(f, 'mirror_to_real', lambda p, line: None), \
                 patch.dict(os.environ, {'FOXGLOVE_FLASH_HISTORY': str(Path(d) / 'h.log')}), \
                 patch('sys.stderr', new_callable=io.StringIO) as err:
             f.record('left', 'abc', 'written')
@@ -636,6 +637,27 @@ class RedirectedHistoryTests(unittest.TestCase):
             self.assertEqual(len((Path(d) / 'h.log').read_text().splitlines()), 2)
         self.assertEqual(err.getvalue().count("the flash history is in another app's private copy"), 1)
         self.assertIn(copy, err.getvalue())
+
+
+class MirrorToRealHistoryTests(unittest.TestCase):
+    """#911: a redirected history is also appended through the administrative share."""
+
+    def test_a_redirected_history_is_mirrored(self):
+        copy = r'C:\Users\u\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\Foxglove\flash-history.log'
+        notice = f.appdata_redirect.Notice('the flash history', final=lambda p: '\\\\?\\' + copy)
+        mirrored = []
+        with tempfile.TemporaryDirectory() as d, patch.object(f, 'HISTORY_NOTICE', notice), \
+                patch.object(f, 'mirror_to_real', lambda p, line: mirrored.append(line)), \
+                patch.dict(os.environ, {'FOXGLOVE_FLASH_HISTORY': str(Path(d) / 'h.log')}), \
+                patch('sys.stderr', new_callable=io.StringIO):
+            f.record('left', 'abc', 'written')
+            f.record('left', 'abc', 'verified')
+        self.assertEqual(len(mirrored), 2)
+
+    def test_unc_path(self):
+        self.assertEqual(f.appdata_redirect.unc_path(r'C:\Users\u\AppData\Local\Foxglove\h.log'),
+                         r'\\localhost\C$\Users\u\AppData\Local\Foxglove\h.log')
+        self.assertIsNone(f.appdata_redirect.unc_path('/tmp/h.log'))
 
 
 class NoFocusTests(unittest.TestCase):

@@ -87,11 +87,20 @@ def note(what, requested, found):
             f'(Windows Terminal, Start menu) to write the real file')
 
 
+def unc_path(path):
+    r"""`path` (C:\Users\u\...) as the administrative share \\localhost\C$\Users\u\..., which a
+    packaged app's file-system container does not redirect (#911); None for a path without a drive."""
+    p = _plain(path)
+    if len(p) < 3 or p[1] != ':' or p[2] != '\\' or not p[0].isalpha():
+        return None
+    return '\\\\localhost\\' + p[0].upper() + '$' + p[2:]
+
+
 class Notice:
     """Checks a file once after a write and prints the note at most once a run."""
 
     def __init__(self, what, final=final_path):
-        self.what, self.final, self.done = what, final, False
+        self.what, self.final, self.done, self.found = what, final, False, None
 
     def after_write(self, path, out):
         if self.done:
@@ -99,5 +108,6 @@ class Notice:
         self.done = True
         found = check(Path(path), self.final)
         if found:
+            self.found = found
             print(note(self.what, path, found), file=out, flush=True)
         return found

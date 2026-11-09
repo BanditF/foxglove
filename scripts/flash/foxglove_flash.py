@@ -242,6 +242,20 @@ def history_path():
 HISTORY_NOTICE = appdata_redirect.Notice('the flash history')
 
 
+def mirror_to_real(path, line):
+    """#911: also append the line where the app reads it. The administrative share isn't
+    redirected, so the real %LOCALAPPDATA%/Foxglove gets it; failures are said, not fatal."""
+    real = appdata_redirect.unc_path(path)
+    if not real:
+        return
+    try:
+        Path(real).parent.mkdir(parents=True, exist_ok=True)
+        with open(real, 'a', encoding='utf-8') as fh:
+            fh.write(line)
+    except OSError as exc:
+        print(f'flash history not mirrored to {real} ({exc})', file=sys.stderr)
+
+
 def record(half, image_sha, outcome, detail=''):
     """Appends 'UTC time, half, image SHA, outcome, detail' to the flash history. Never fails
     the flash: a history that can't be written is reported, not fatal."""
@@ -252,6 +266,8 @@ def record(half, image_sha, outcome, detail=''):
         with open(path, 'a', encoding='utf-8') as fh:
             fh.write(line)
         HISTORY_NOTICE.after_write(path, sys.stderr)
+        if HISTORY_NOTICE.found:
+            mirror_to_real(path, line)
     except OSError as exc:
         print(f'flash history not written ({exc}): {line.strip()}', file=sys.stderr)
 
