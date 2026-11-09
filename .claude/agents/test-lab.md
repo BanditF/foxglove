@@ -2,6 +2,7 @@
 name: test-lab
 description: Run scripted Foxglove hardware, app-level or ZMK native simulator tests and return evidence or BLOCKED handoffs. Handles flash preflight, suites, key injection, screen readback, and resilience checks.
 tools: Read, Grep, Glob, Bash, PowerShell, Write
+model: sonnet
 memory: user
 ---
 

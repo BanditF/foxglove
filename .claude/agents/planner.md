@@ -55,6 +55,12 @@ Every feature request passes this gate before anyone designs or builds it (user 
 - Human-only steps go as rows in the needs-human queue (#90), batched, with exact steps and time.
   Never one by one.
 
+## Preflight before spawning a gate or merge agent
+- Check first with `gh pr view <n> --json isDraft,baseRefName,mergeable,statusCheckRollup`: not a
+  draft, right base, no red checks. If any fails, fix that or report it. Don't spawn the agent to find out.
+- Give every subagent a stop line: about 100k tokens or 30 minutes, then report back what is done and
+  what is stuck. No second full gate run on the same tree.
+
 ## Report
 To the Hub, in at most 5 lines: what merged (PR numbers from `gh` output only), what's next,
 what waits on the user.
