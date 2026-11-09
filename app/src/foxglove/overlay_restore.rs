@@ -142,6 +142,26 @@ pub fn keep_minimized(in_winit_refresh: bool, iconic: bool, old: u32, new: u32) 
         .then_some(new | WS_MINIMIZE)
 }
 
+const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+const WS_EX_APPWINDOW: u32 = 0x0004_0000;
+const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
+
+/// Foxglove (#912): the overlay window's extended style as a tool window: no taskbar button and
+/// no Alt+Tab entry (`WS_EX_TOOLWINDOW`, never `WS_EX_APPWINDOW`), and never activated by being
+/// shown or clicked (`WS_EX_NOACTIVATE`). Unlike winit's `with_taskbar(false)` (the shell's
+/// `DeleteTab`, which an Explorer restart undoes) this is the window's own style. The hook keeps
+/// it through winit's style refreshes, which rewrite the whole extended style.
+pub fn tool_window_ex_style(ex: u32) -> u32 {
+    (ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & !WS_EX_APPWINDOW
+}
+
+/// Makes the overlay window a tool window ([`tool_window_ex_style`]) and keeps it one: called
+/// as soon as the window exists (its creation), on its own (the UI) thread.
+#[cfg(windows)]
+pub fn make_tool_window(hwnd: isize) {
+    imp::hook(hwnd);
+}
+
 /// The log line when the hook kept the window minimized.
 fn kept_minimized_line(rect: Option<[i32; 4]>) -> String {
     format!(
@@ -507,10 +527,12 @@ mod imp {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowRect, IsIconic,
-        IsWindowVisible, RegisterClassW, RegisterWindowMessageW, ShowWindow, GWL_STYLE, MSG,
-        STYLESTRUCT, SW_SHOWNOACTIVATE, WINDOW_STYLE, WM_DISPLAYCHANGE, WM_NCDESTROY,
-        WM_STYLECHANGING, WNDCLASSW, WS_EX_TOOLWINDOW,
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowLongPtrW,
+        GetWindowRect, IsIconic, IsWindowVisible, RegisterClassW, RegisterWindowMessageW,
+        SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, MSG, STYLESTRUCT,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNOACTIVATE,
+        WINDOW_STYLE, WM_DISPLAYCHANGE, WM_NCDESTROY, WM_STYLECHANGING, WNDCLASSW,
+        WS_EX_TOOLWINDOW,
     };
 
     /// Our subclass of the overlay window ("FoxO").
@@ -527,21 +549,62 @@ mod imp {
     /// Inside winit's style refresh of the overlay window (its thread only).
     static IN_REFRESH: AtomicBool = AtomicBool::new(false);
 
-    /// Hooks the overlay window's messages (see `proc`), once per window.
+    /// Hooks the overlay window's messages (see `proc`) and makes it a tool window (#912), once
+    /// per window.
     pub fn hook(h: isize) {
         static HOOKED: AtomicIsize = AtomicIsize::new(0);
         if HOOKED.swap(h, Ordering::Relaxed) == h {
             return;
         }
+        subclass(h);
+        set_tool_window(h);
+    }
+
+    /// Subclasses `h` with `proc` (on `h`'s own thread, as subclassing requires).
+    pub(super) fn subclass(h: isize) {
         let _ = winit_refresh_msg();
-        // SAFETY: the overlay window belongs to this (the UI) thread, as subclassing requires.
+        // SAFETY: the window belongs to this thread, as subclassing requires.
         if !unsafe { SetWindowSubclass(hwnd(h), Some(proc), HOOK, 0) }.as_bool() {
-            eprintln!("Foxglove: can't hook the overlay window (minimized through style changes)");
+            eprintln!(
+                "Foxglove: can't hook the overlay window (minimized and tool-window style \
+                 through style changes)"
+            );
         }
     }
 
-    /// The overlay window's messages, before winit's: notes winit's style-refresh bracket, and
-    /// keeps `WS_MINIMIZE` through it while minimized ([`super::keep_minimized`]).
+    /// Gives `h` the tool-window extended style now ([`super::tool_window_ex_style`]), without
+    /// moving, sizing, reordering or activating it; the frame change makes Windows (and the
+    /// taskbar) take the new style.
+    pub(super) fn set_tool_window(h: isize) {
+        // SAFETY: style reads and writes on a window of this thread; a stale handle just fails.
+        unsafe {
+            let ex = GetWindowLongPtrW(hwnd(h), GWL_EXSTYLE) as u32;
+            let want = super::tool_window_ex_style(ex);
+            if want != ex {
+                let _ = SetWindowLongPtrW(hwnd(h), GWL_EXSTYLE, want as isize);
+            }
+            let _ = SetWindowPos(
+                hwnd(h),
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+            );
+        }
+    }
+
+    /// The window's extended style bits (tests).
+    #[cfg(test)]
+    pub(super) fn ex_style(h: isize) -> u32 {
+        // SAFETY: a style read; a stale handle answers 0.
+        unsafe { GetWindowLongPtrW(hwnd(h), GWL_EXSTYLE) as u32 }
+    }
+
+    /// The overlay window's messages, before winit's: notes winit's style-refresh bracket, keeps
+    /// `WS_MINIMIZE` through it while minimized ([`super::keep_minimized`]), and keeps the
+    /// tool-window extended style through any extended-style change (#912).
     unsafe extern "system" fn proc(
         window: HWND,
         message: u32,
@@ -565,6 +628,12 @@ mod imp {
                     let line = super::kept_minimized_line(window_rect(window.0 as isize));
                     let _ = writeln!(std::io::stderr(), "{line}");
                 }
+                return result;
+            }
+            if message == WM_STYLECHANGING && wparam.0 as i32 == GWL_EXSTYLE.0 {
+                let result = DefSubclassProc(window, message, wparam, lparam);
+                let s = &mut *(lparam.0 as *mut STYLESTRUCT);
+                s.styleNew = super::tool_window_ex_style(s.styleNew);
                 return result;
             }
             let refresh_msg = winit_refresh_msg();
@@ -681,6 +750,71 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tool_window_style_has_no_taskbar_button_and_never_activates() {
+        let ex = tool_window_ex_style(WS_EX_APPWINDOW | 0x8 /* WS_EX_TOPMOST */);
+        assert_eq!(ex & WS_EX_TOOLWINDOW, WS_EX_TOOLWINDOW);
+        assert_eq!(ex & WS_EX_NOACTIVATE, WS_EX_NOACTIVATE);
+        assert_eq!(ex & WS_EX_APPWINDOW, 0);
+        assert_eq!(ex & 0x8, 0x8, "other bits stay");
+        assert_eq!(tool_window_ex_style(ex), ex);
+    }
+
+    /// #912: on a hidden test window (never shown, so nothing on the desktop), the helper sets
+    /// the tool-window bits, and the hook keeps them through a winit-like rewrite of the whole
+    /// extended style.
+    #[cfg(windows)]
+    #[test]
+    fn a_hidden_test_window_becomes_and_stays_a_tool_window() {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, IsWindowVisible, SetWindowLongW, GWL_EXSTYLE,
+            WINDOW_EX_STYLE, WS_POPUP,
+        };
+        // SAFETY: a hidden window of the built-in STATIC class on this thread, destroyed below.
+        let window = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(WS_EX_APPWINDOW),
+                w!("STATIC"),
+                PCWSTR::null(),
+                WS_POPUP,
+                0,
+                0,
+                16,
+                16,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a hidden test window");
+        let h = window.0 as isize;
+        imp::subclass(h);
+        imp::set_tool_window(h);
+        let ex = imp::ex_style(h);
+        assert_eq!(
+            ex & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        );
+        assert_eq!(ex & WS_EX_APPWINDOW, 0);
+        // What winit's style refresh does: the whole extended style, without ours.
+        // SAFETY: a style write on the test window of this thread.
+        unsafe { SetWindowLongW(HWND(window.0), GWL_EXSTYLE, WS_EX_APPWINDOW as i32) };
+        let ex = imp::ex_style(h);
+        assert_eq!(
+            ex & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        );
+        assert_eq!(ex & WS_EX_APPWINDOW, 0);
+        // SAFETY: state query, then destroying the test window this thread made.
+        unsafe {
+            assert!(!IsWindowVisible(HWND(window.0)).as_bool(), "never shown");
+            let _ = DestroyWindow(HWND(window.0));
+        }
+    }
 
     #[test]
     fn display_changes_wait_while_away_and_nothing_else_does() {

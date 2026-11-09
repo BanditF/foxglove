@@ -351,7 +351,10 @@ fn run_inner(
     #[allow(unused_mut)]
     let mut viewport = egui::ViewportBuilder::default()
         .with_decorations(false)
+        // Foxglove (#912): a fallback only; the window is made a tool window (no taskbar button,
+        // no Alt+Tab entry, never activated by a show or click) once it exists, see below.
         .with_taskbar(false)
+        .with_active(false)
         .with_maximized(true)
         .with_transparent(true)
         .with_has_shadow(false)
@@ -402,6 +405,10 @@ fn run_inner(
             enable_dwm_per_pixel_alpha(cc);
             #[cfg(target_os = "windows")]
             let hwnd = window_hwnd(cc);
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = hwnd {
+                crate::foxglove::overlay_restore::make_tool_window(hwnd);
+            }
 
             egui_extras::install_image_loaders(&cc.egui_ctx);
             // Foxglove (#371): the GPU for "Copy diagnostics".
