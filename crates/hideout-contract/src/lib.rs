@@ -96,9 +96,83 @@ pub fn scopes_overlap(a: &str, b: &str) -> bool {
     }
 }
 
+/// The JSON Schema of the contract's wire types, as checked in at `schema/hideout-v1.json`
+/// (the repository's `schema/` folder): module declarations, registration and channel messages,
+/// the panel tree, and `hideout.toml`. Generated from the types, so it cannot drift from them.
+pub fn schema() -> serde_json::Value {
+    let mut types = serde_json::Map::new();
+    macro_rules! add {
+        ($($module:ident :: $name:ident),* $(,)?) => {$(
+            let mut schema = serde_json::to_value(schemars::schema_for!($module::$name)).unwrap();
+            if let Some(object) = schema.as_object_mut() {
+                object.remove("$schema");
+            }
+            types.insert(format!("{}.{}", stringify!($module), stringify!($name)), schema);
+        )*};
+    }
+    add!(
+        legacy::Manifest,
+        module::PanelDecl,
+        module::WindowDecl,
+        module::ModuleSetting,
+        module::ModuleAction,
+        module::McpTool,
+        module::Pin,
+        module::Identity,
+        module::Edition,
+        panel::Node,
+        panel::Panel,
+        panel::Register,
+        panel::Rejected,
+        messages::InitializeModule,
+        messages::InitializeTool,
+        messages::ModuleRegister,
+        messages::RegisterResult,
+        messages::ModuleReady,
+        messages::ModuleDrain,
+        messages::DrainResult,
+        messages::UiPatch,
+        messages::UiEvent,
+        messages::UiAssetPut,
+        messages::UiWindowOpen,
+        messages::ActionInvoke,
+        messages::SettingsSet,
+        messages::HubNotify,
+        messages::ChannelOpen,
+        messages::ChannelOpened,
+        messages::ChannelCreate,
+        messages::ModuleIdParams,
+        config::Config,
+    );
+    serde_json::json!({
+        "hub": HUB_VERSION.to_string(),
+        "types": types,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `schema/hideout-v1.json` must match the types. After an intended change, regenerate it with
+    /// `UPDATE_SCHEMA=1 cargo test -p hideout-contract` and bump the version as the change needs.
+    #[test]
+    fn schema_is_current() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schema/hideout-v1.json");
+        let generated = serde_json::to_string_pretty(&schema()).unwrap() + "\n";
+        if std::env::var_os("UPDATE_SCHEMA").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &generated).unwrap();
+        }
+        let checked_in = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
+        assert!(
+            checked_in == generated,
+            "schema/hideout-v1.json is out of date: run UPDATE_SCHEMA=1 cargo test -p hideout-contract"
+        );
+    }
 
     #[test]
     fn scopes() {

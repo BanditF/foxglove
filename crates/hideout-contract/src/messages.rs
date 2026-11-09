@@ -12,7 +12,7 @@ pub mod code {
 }
 
 /// `initialize` from a module (M → H).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InitializeModule {
     pub id: String,
     pub version: String,
@@ -23,14 +23,14 @@ pub struct InitializeModule {
     pub api: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ClientInfo {
     pub name: String,
     pub version: String,
 }
 
 /// `initialize` from an outside tool (T → H).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InitializeTool {
     pub client: ClientInfo,
     #[serde(default)]
@@ -41,7 +41,7 @@ pub struct InitializeTool {
 }
 
 /// `module.register` (M → H).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModuleRegister {
     #[serde(default)]
     pub methods: Vec<String>,
@@ -54,25 +54,25 @@ pub struct ModuleRegister {
 }
 
 /// One refused item in a `module.register` result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RejectedItem {
     pub item: String,
     pub error: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RegisterResult {
     #[serde(default)]
     pub rejected: Vec<RejectedItem>,
 }
 
 /// `module.ready` (M → H, notification).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModuleReady {
     pub instance: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum DrainReason {
     Update,
@@ -83,13 +83,13 @@ pub enum DrainReason {
 }
 
 /// `module.drain` (H → M).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModuleDrain {
     pub reason: DrainReason,
 }
 
 /// The `module.drain` result.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum DrainResult {
     Done,
@@ -99,7 +99,7 @@ pub enum DrainResult {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PatchOpKind {
     Set,
@@ -107,7 +107,7 @@ pub enum PatchOpKind {
     Remove,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PatchOp {
     pub op: PatchOpKind,
     pub node: String,
@@ -120,14 +120,14 @@ pub struct PatchOp {
 }
 
 /// `ui.patch` (M → H, notification).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiPatch {
     pub panel: String,
     pub ops: Vec<PatchOp>,
 }
 
 /// `ui.event` (H → M).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiEvent {
     pub panel: String,
     pub node: String,
@@ -137,7 +137,7 @@ pub struct UiEvent {
 }
 
 /// `ui.asset.put` (M → H): base64 `data`, at most 256 KiB decoded.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiAssetPut {
     pub hash: String,
     pub mime: String,
@@ -145,12 +145,12 @@ pub struct UiAssetPut {
 }
 
 /// `ui.window.open` (H → M).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiWindowOpen {
     pub window: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ActionSource {
     Key,
@@ -160,20 +160,20 @@ pub enum ActionSource {
 }
 
 /// `action.invoke` (H → M).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ActionInvoke {
     pub action: String,
     pub source: ActionSource,
 }
 
 /// `settings.set` (H → M).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SettingsSet {
     pub name: String,
     pub value: serde_json::Value,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum NotifyLevel {
     Info,
@@ -182,7 +182,7 @@ pub enum NotifyLevel {
 }
 
 /// `hub.notify` (M → H).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct HubNotify {
     pub title: String,
     pub body: String,
@@ -190,21 +190,21 @@ pub struct HubNotify {
 }
 
 /// `channel.open` (C → H): the channel handshake's first half.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelOpen {
     pub module: String,
     pub channel: String,
 }
 
 /// The `channel.open` result: the pipe to connect to and the nonce to present.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelOpened {
     pub pipe: String,
     pub nonce: String,
 }
 
 /// `channel.create` (H → M): the provider makes the pipe for `consumer`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelCreate {
     pub channel: String,
     pub consumer: String,
@@ -212,7 +212,7 @@ pub struct ChannelCreate {
 }
 
 /// `modules.enable`, `modules.disable`, `modules.reload`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModuleIdParams {
     pub id: String,
 }

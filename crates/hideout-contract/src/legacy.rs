@@ -35,7 +35,7 @@ pub fn read_in(dir: &std::path::Path) -> std::io::Result<String> {
     Err(last)
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// Reverse-DNS, unique: also the plugin's folder name.
@@ -66,7 +66,7 @@ pub struct Manifest {
     pub settings: Vec<SettingDecl>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SettingKind {
     Bool,
@@ -74,7 +74,7 @@ pub enum SettingKind {
     Text,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SettingDecl {
     /// What the plugin reads (`focus-minutes`).
@@ -110,7 +110,7 @@ impl SettingDecl {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretDecl {
     /// What `secrets.get` asks for (`obs-password`).
@@ -119,7 +119,7 @@ pub struct SecretDecl {
     pub label: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ActionDecl {
     /// Stable: bindings and `action.invoked` use it (`toggle-mute`).
@@ -128,7 +128,7 @@ pub struct ActionDecl {
     pub name: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Provides {
     Facts,

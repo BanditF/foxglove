@@ -12,7 +12,7 @@ use crate::scopes_overlap;
 /// The anchor name of the Hideout root chain (§12.2).
 pub const ROOT_ANCHOR: &str = "hideout-root";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceKind {
     Catalog,
@@ -20,7 +20,7 @@ pub enum SourceKind {
     Folder,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     pub id: String,
@@ -35,7 +35,7 @@ pub struct Source {
     pub anchor: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
     pub id: String,
@@ -44,13 +44,13 @@ pub struct Anchor {
     pub scope: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Trust {
     #[serde(default)]
     pub anchors: Vec<Anchor>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Config {
     #[serde(default)]
     pub sources: Vec<Source>,
