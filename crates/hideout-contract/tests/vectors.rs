@@ -7,9 +7,6 @@
 //! - `transcripts/*`: the step order and `final` assertions are hub behaviour (routing, the
 //!   supervisor, swaps). Every wire message in them is still checked here: JSON-RPC 2.0
 //!   envelope and the §8.8 params of each message this crate types.
-//!
-//! Vectors whose expected result changes with spec v1.1 (#918) are listed in `PENDING_918`: the
-//! crate implements v1.1, so until #918 updates them they are reported, not failed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,28 +23,8 @@ use serde_json::{json, Value};
 /// The Foxglove API a legacy manifest is checked against.
 const APP: Version = Version {
     major: 1,
-    minor: 13,
+    minor: 14,
 };
-
-/// Results spec v1.1 (#918) changes. Key: vector path, or `path#row` for table rows.
-const PENDING_918: &[(&str, &str)] = &[
-    (
-        "manifests/invalid/ui-window-without-permission.toml",
-        "v1.1 id manifest.window_missing (vector: manifest.ui)",
-    ),
-    (
-        "permissions/permissions.json#facts.write:device.*",
-        "v1.1 id permission.never (vector: permission.argument)",
-    ),
-    (
-        "permissions/permissions.json#facts.write:*",
-        "v1.1 id permission.never (vector: permission.argument)",
-    ),
-    (
-        "frames/panel-frames.json#text-append",
-        "v1.1 width_or_count = UTF-8 byte length (vector: 0)",
-    ),
-];
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/hideout-vectors")
@@ -57,7 +34,6 @@ fn root() -> PathBuf {
 struct Tally {
     passed: usize,
     skipped: BTreeMap<String, usize>,
-    pending: Vec<String>,
     failed: Vec<String>,
     messages_checked: usize,
 }
@@ -66,10 +42,7 @@ impl Tally {
     fn check(&mut self, key: &str, outcome: Result<(), String>) {
         match outcome {
             Ok(()) => self.passed += 1,
-            Err(e) => match PENDING_918.iter().find(|(k, _)| *k == key) {
-                Some((_, why)) => self.pending.push(format!("{key}: {why}")),
-                None => self.failed.push(format!("{key}: {e}")),
-            },
+            Err(e) => self.failed.push(format!("{key}: {e}")),
         }
     }
 }
@@ -354,9 +327,6 @@ fn every_vector_matches_the_index() {
     );
     for (why, n) in &t.skipped {
         println!("skipped {n}: {why}");
-    }
-    for p in &t.pending {
-        println!("pending #918: {p}");
     }
     assert!(
         t.failed.is_empty(),
