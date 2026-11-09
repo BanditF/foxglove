@@ -6,6 +6,7 @@ description = "Foxglove's local API and plugin (plugin) protocol: JSON-RPC types
 license = "MIT"
 
 [dependencies]
+hideout-contract = { path = "../hideout-contract" }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

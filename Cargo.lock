@@ -655,6 +655,7 @@ dependencies = [
 name = "foxglove-plugin-api"
 version = "1.0.0"
 dependencies = [
+ "hideout-contract",
  "schemars",
  "serde",
  "serde_json",
@@ -1049,6 +1050,16 @@ dependencies = [
  "libc",
  "pkg-config",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hideout-contract"
+version = "1.0.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

@@ -1,0 +1,12 @@
+[package]
+name = "hideout-contract"
+version = "1.0.0"
+edition = "2021"
+description = "The Hideout module contract: module.toml, legacy manifests, permissions, panel schema, stream frames and registration messages. Types, parsing and validation only."
+license = "MIT"
+
+[dependencies]
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["unbounded_depth"] }
+toml = "0.9"
