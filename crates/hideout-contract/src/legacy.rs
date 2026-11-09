@@ -100,6 +100,12 @@ impl SettingDecl {
             | (SettingKind::Text, serde_json::Value::String(_)) => Some(value.clone()),
             (SettingKind::Int, v) => {
                 let n = v.as_i64()?;
+                // An inverted range would make `clamp` panic; refuse it instead (fuzz finding 2).
+                if let (Some(lo), Some(hi)) = (self.min, self.max) {
+                    if lo > hi {
+                        return None;
+                    }
+                }
                 Some(
                     n.clamp(self.min.unwrap_or(i64::MIN), self.max.unwrap_or(i64::MAX))
                         .into(),
@@ -216,6 +222,14 @@ impl Manifest {
         }
         let mut names = std::collections::HashSet::new();
         for s in &m.settings {
+            if let (Some(lo), Some(hi)) = (s.min, s.max) {
+                if lo > hi {
+                    return fail(
+                        ErrorId::ManifestSettings,
+                        format!("setting {:?} has min {lo} above max {hi}", s.name),
+                    );
+                }
+            }
             let ok = !s.name.is_empty()
                 && s.name
                     .chars()
@@ -360,5 +374,28 @@ key = \"F13\"
         let new =
             Manifest::parse(&plugin("permissions = [\"net\", \"lighting.write\"]"), APP).unwrap();
         assert_eq!(new.added_permissions(&old), vec![Permission::LightingWrite]);
+    }
+
+    #[test]
+    fn inverted_int_range_is_refused_not_a_panic() {
+        let text = plugin(
+            "[[settings]]
+name = \"n\"
+label = \"N\"
+kind = \"int\"
+default = 25
+min = 1
+max = 0",
+        );
+        assert!(Manifest::parse(&text, APP).is_err());
+        let decl = SettingDecl {
+            name: "n".into(),
+            label: "N".into(),
+            kind: SettingKind::Int,
+            default: 25.into(),
+            min: Some(1),
+            max: Some(0),
+        };
+        assert_eq!(decl.accept(&5.into()), None);
     }
 }

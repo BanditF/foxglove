@@ -171,6 +171,14 @@
       "id": "manifest.id",
       "note": "Legacy ids are reverse-DNS (two or more labels)."
     },
+    "legacy/invalid-settings-min-above-max.plugin.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "invalid",
+      "id": "manifest.settings",
+      "note": "An int setting's min above its max is refused (fuzz finding 2: clamp used to panic)."
+    },
     "legacy/kit-old-name.kit.toml": {
       "spec": [
         "4.10"
