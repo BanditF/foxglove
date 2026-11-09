@@ -51,7 +51,7 @@ pub enum Step {
     SplitGuardTest(GuardTest),
     IdleCpu(Idle),
     ArtPush(ArtPush),
-    ArtKeep(ArtKeep),
+    ArtSlot(ArtSlot),
     PanelShow(PanelShow),
     PanelFlood(PanelFlood),
     PanelRelease(PanelRelease),
@@ -319,17 +319,24 @@ pub struct ArtPush {
 fn push_timeout() -> u64 {
     30_000
 }
-/// Keeps a blob in the first empty flash place (`keep`), or empties the place that keeps that
-/// blob (`erase`, by CRC; no such place passes). It is what scripts/lab/slot_read.py (#911) uses to
-/// put a piece on the keyboard that the PC's library does not have.
+/// Data-safe flash-place steps for scripts/lab/slot_read.py (#911); no empty place is needed.
+/// `list` writes the kept places as JSON to `path`; `backup` writes `<path>.bin` and `<path>.json`
+/// from the place; `write` replaces the place with `blob` and shows it, but only while it still
+/// equals the backup; `restore` writes the backup back and verifies it; `verify` only compares.
+/// `slot` and `path` default to the FOXGLOVE_SLOT_READ_SLOT and FOXGLOVE_SLOT_READ_BACKUP
+/// variables (slot: the first kept place).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ArtKeep {
-    /// A blob file, relative to the repository root.
-    pub blob: String,
-    /// `keep` or `erase`.
+pub struct ArtSlot {
+    /// `list`, `backup`, `write`, `restore` or `verify`.
     pub action: String,
-    /// The place's name for `keep`.
+    pub slot: Option<u8>,
+    #[serde(default)]
+    pub path: String,
+    /// The fixture for `write`, relative to the repository root.
+    #[serde(default)]
+    pub blob: String,
+    /// The place's name for `write`.
     #[serde(default = "keep_name")]
     pub name: String,
 }
@@ -628,10 +635,16 @@ impl Step {
                 ["drive_left", "fps", "layout"].contains(&s.key.as_str()),
                 "screens_setting supports drive_left, fps and layout"
             ),
-            Self::ArtKeep(k) => ensure!(
-                ["keep", "erase"].contains(&k.action.as_str()),
-                "art_keep action is keep or erase"
-            ),
+            Self::ArtSlot(k) => {
+                ensure!(
+                    ["list", "backup", "write", "restore", "verify"].contains(&k.action.as_str()),
+                    "art_slot action is list, backup, write, restore or verify"
+                );
+                ensure!(
+                    k.action != "write" || !k.blob.is_empty(),
+                    "art_slot write needs a blob"
+                );
+            }
             Self::ArtPush(a) => {
                 ensure!(
                     ["", "data", "commit"].contains(&a.cut.as_str()),

@@ -2,19 +2,40 @@ schema = 1
 
 # SLOT_READ on hardware (#878, #908; proven by #911): a piece kept on the keyboard that this PC's
 # library does not have is read back from the keyboard, shown with frames, and kept by CRC as
-# art/kept-<crc>.bin. scripts/lab/slot_read.py runs these two cases around its checks around its own
-# window-free test app (FOXGLOVE_CONFIG_DIR, an empty art library, the live feed on): keep first,
-# the driver's checks in the middle, erase last (it empties only the place that keeps this blob).
-# Run on their own the cases only keep and erase the piece.
+# art/kept-<crc>.bin. The keyboard has no empty flash place, so the test borrows a kept one and
+# gives it back: scripts/lab/slot_read.py runs these cases around its checks, with
+# FOXGLOVE_SLOT_READ_SLOT (the place) and FOXGLOVE_SLOT_READ_BACKUP (the backup file base path) set.
+# Order: list (write the kept places), backup (bytes to disk first), write (the fixture, only
+# while the place still equals the backup), the driver's checks, restore (the original bytes back,
+# read back and compared), verify (compare only; the dry run). Without the variables they fail:
+# they never guess a backup.
 
 [[cases]]
-name = "slot-read-keep"
-description = "Keeps a piece in the first empty flash place and shows it (the PC library has no file for it)"
+name = "slot-read-list"
+description = "Writes the kept places to the backup path as JSON (no keyboard write)"
 tags = ["art", "slot-read"]
-steps = [{ art_keep = { blob = "tests/art/ink-fixture.bin", action = "keep" } }]
+steps = [{ art_slot = { action = "list" } }]
 
 [[cases]]
-name = "slot-read-erase"
-description = "Empties the place that keeps the piece again"
+name = "slot-read-backup"
+description = "Reads the chosen kept place and writes its exact bytes and CRC to disk (no keyboard write)"
 tags = ["art", "slot-read"]
-steps = [{ art_keep = { blob = "tests/art/ink-fixture.bin", action = "erase" } }]
+steps = [{ art_slot = { action = "backup" } }]
+
+[[cases]]
+name = "slot-read-write"
+description = "Writes the fixture into the backed-up place and shows it"
+tags = ["art", "slot-read"]
+steps = [{ art_slot = { action = "write", blob = "tests/art/ink-fixture.bin" } }]
+
+[[cases]]
+name = "slot-read-restore"
+description = "Writes the backed-up bytes back and verifies them byte for byte"
+tags = ["art", "slot-read"]
+steps = [{ art_slot = { action = "restore" } }]
+
+[[cases]]
+name = "slot-read-verify"
+description = "Compares the place with its backup (no keyboard write)"
+tags = ["art", "slot-read"]
+steps = [{ art_slot = { action = "verify" } }]
