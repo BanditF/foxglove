@@ -1,679 +1,1002 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.0** (#905). Nothing in it is built yet beyond what Foxglove's
-plugin system already does; the phases that build it are in the Hideout design
-(`review/hideout-modular-design.md`, §10). Test vectors: `tests/hideout-vectors/` (#906).
+Status: spec, contract version **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
+design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
+does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
-Hideout is the local composition layer for two peer cores, **Foxglove** (the keyboard and the
-lights and screens around it) and **Vulpes** (the GPU and local AI; today Arete). This document
-is the contract both cores and every module follow: what a module is, how it describes itself,
-what it may do, how it is installed and run, how the cores talk, how agents reach them, and how
-modules are trusted.
+**What Hideout is.** One resident hub, `hideout.exe`, and many modules, each its own process. The
+hub draws the window and the tray, keeps the registry, routes control messages and restarts
+modules. Every feature (the keyboard link, lights, scenes, screens, art, overlay, keymap editor,
+integrations, Vulpes) is a module. Design §0, §3.
 
-It grows out of Foxglove's plugin system ([local-api.md](local-api.md),
+**Sources this spec grows out of.** Foxglove's plugin system ([local-api.md](local-api.md),
 `crates/plugin-api`, `crates/plugin-trust`) and Arete's component installer
-(`src/arete/components.py`, `footprint.py`, `selfupdate.py`). Where this spec and the plugin
-system agree, the plugin system's code is the reference.
+(`src/arete/components.py`, `footprint.py`, `selfupdate.py`). Where they agree with this spec,
+their code is the reference.
 
-**Words.** MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119. A **reader** is any
-program that parses manifests, catalogs or the inventory: the `hideout` CLI, the
-`hideout-contract` crate, a core, or Vulpes's pydantic models. A **core** is Foxglove or Vulpes.
-An **outside tool** is any client of a core's pipe that is neither the other core nor a module the
-core started (scripts, Stream Deck, `foxglove-cli`, an MCP adapter).
+**Words.**
+- MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
+- **Hub:** the `hideout.exe` process.
+- **Module:** an installable unit with a `module.toml` (§4). A running one is an **instance**.
+- **Panel:** UI a module declares and the hub draws (§5).
+- **Reader:** any program that parses manifests, catalogs or the inventory: the hub, the
+  `hideout` CLI, the `hideout-core` crate, Vulpes's pydantic models.
+- **Outside tool:** a client of the hub's pipe that the hub did not start: scripts, Stream Deck,
+  `foxglove-cli`, the `hideout` CLI, an MCP adapter.
+- **Module source:** a configured place modules come from (§13).
+- **Shared output:** anything that leaves the PC or is copied for someone else: Copy diagnostics,
+  crash reports, health signals, telemetry (§13.5).
 
-## 1. The decided picks
+## 1. Decisions this spec follows
 
-Decided on 11/09 (design §9). Each pick shapes a rule below.
+User decisions of 11/09 (design §9).
 
-| # | Pick | Where this spec follows it |
+| Pick | Decision | Where |
 |---|---|---|
-| 1 | Hideout is a library, a CLI and an inventory file. **No daemon.** | §5.1: nothing in Hideout stays running; the cores supervise. §6.4: discovery is pipe names and run files. |
-| 2 | Foxglove features become **built-in modules** that can be switched off. Only integrations and new optional features run as separate processes. | §2: kind `builtin`; §5.5: the core owns a built-in module's on/off switch. |
-| 3 | **One Hideout root key** delegates a catalog key per family. | §8: `hideout-root-v1` with family-scoped catalog keys. |
-| 4 | **One tray.** Foxglove's tray gets a Vulpes section; Vulpes keeps its own tray only when it runs alone. | §6.4: a core learns that the other runs from its run file and pipe, never by polling. Hideout has no UI. |
-| 5 | Arete becomes Vulpes in phase 6, `arete` stays an alias, `C:\AI` is unchanged. | §3.3: the family and provider are named `vulpes` from v1; `arete` is accepted as an alias where names are read. |
-| 6 | Lagopus, Zerda and Velox are **module sets** (profiles) of one Vulpes build. | §3.7: an edition is a `content` module that lists modules; switching only enables and disables. |
+| A | A new thin `hideout.exe`, built from Foxglove's shell code | §2 |
+| B | Live panels in the hub with streams; only wizards and editors open their own window | §5.4, §5.7 |
+| C | Vulpes gets a native UI in the hub that can pop out; the browser UI is for the phone and the tailnet only | §5.8 |
+| D | LampArrays: re-register the package with the Hideout Applications on a go | §4.8 (`[identity]`) |
+| E | One sparse package, one Application per exe that needs identity | §4.8 |
+| F | 0.2 ships as Foxglove; the Hideout cut-over follows | §17 (version open) |
+| G | Opt-in preview on the user's PC from phase 3, with the one-owner rule | §8.6 |
+| H | "Modules" and "panels" in the UI; the keyboard's left screen is the "Info screen" | §14 |
 
-## 2. Module kinds
+Kept from the first scope:
+- **One Hideout root key** delegates a catalog key per family (§12).
+- **Arete becomes Vulpes** in phase 6. `arete` stays an alias; `C:\AI` is unchanged (§4.3).
+- **Lagopus, Zerda and Velox** are module profiles (editions) of one Vulpes build (§4.9).
 
-Every module has exactly one kind.
+User requirement of 11/09: **public and private modules** (§13).
 
-| Kind | Runs as | Started by | Has `run` | Examples |
-|---|---|---|---|---|
-| `core` | its own app | the user, autostart | no | `foxglove`, `vulpes` |
-| `builtin` | code compiled into a core, switched on and off by that core | its core | no | `foxglove.overlay`, `foxglove.wallpaper`, `vulpes.image` |
-| `service` | a separate process its core supervises; speaks JSON-RPC on stdio | its core | **yes** | `foxglove.mic-mute`, today's plugins, a future `vulpes.sionnach` |
-| `runtime` | a pinned third-party program a broker launches; has no API of its own | a broker in its core | no | `vulpes.runtime.llama-cpp`, `vulpes.runtime.comfyui` |
-| `content` | data only, read by a core | never runs | no | a board profile, an art pack, an agent pack, an edition |
-| `firmware` | images flashed to a device, under Digitalis's own flashing rules | never runs on the PC | no | `digitalis.purpurea` |
+Superseded by hub-first (do not reintroduce):
+- "Library + CLI, no daemon." The hub is the resident process and the supervisor.
+- "Foxglove features are built-in modules." Every feature is its own process.
+- "Foxglove's tray gets a Vulpes section." The hub owns the one tray.
+- Per-core pipes, run files and cross-core grants. There is one router pipe (§8).
 
-Rules:
-- A `core` module is shipped by its core's installer, not by `hideout modules install`. It is
-  listed so other modules can `require` it and so cross-core grants (§4.4) have a home.
-- A `builtin` module's manifest is embedded in its core's binary (§3.8). It is never installed,
-  updated or removed on its own; it ships and updates with its core.
-- A `firmware` module is installed and verified like `content`, but it is never enabled or
-  started. Flashing stays with Digitalis (`crates/flash`, the scripts) and its confirmations.
-- Only `service` modules are separate processes the Hideout lifecycle starts and stops.
-  `runtime` processes are owned by a broker (the GPU broker in Vulpes), never by Hideout.
+## 2. The hub
 
-## 3. The manifest: `module.toml`
+### 2.1 Six jobs
 
-### 3.1 File and syntax
+The hub MUST do these six things and nothing else (design §3):
 
-- A module's manifest is a file named `module.toml` at the top of its folder (for `builtin`
-  modules: embedded text, §3.8).
-- It MUST be TOML 1.0, UTF-8, readable by Rust's `toml` crate and Python's `tomllib`. Readers
-  MUST NOT need any other TOML extension.
-- **Unknown keys are refused**, at every level (`deny_unknown_fields`, as `Manifest::parse` does
-  today). A reader that meets a key it doesn't know MUST reject the manifest with
-  `manifest.unknown-key`. New keys come only with a new contract minor (§6.5), and a module that
-  uses them sets `contract` to that minor, so an older reader refuses it with
-  `manifest.contract` rather than `manifest.unknown-key`.
-- Strings are compared exactly (case-sensitive) unless a rule below says otherwise.
+1. **Tray icon:** the glyph and its states; a menu of the hub's items plus the modules' declared
+   actions; the tray panel, which hosts `tile` panels.
+2. **Window frame:** the sidebar, the status strip, the Modules page; placement and DPI; theme
+   tokens; the command palette (§2.6).
+3. **Module registry:** what is installed, enabled and running, at which version and instance;
+   the shallow trust check before every launch (§7.4); permission grants.
+4. **Panel host:** draws declared panels (§5) and sends the user's input back to the owner.
+5. **IPC router:** the pipe (§8.2), the routing table, the last-value facts cache, a permission
+   check on every call, channel grants (§8.4).
+6. **Light supervisor:** starts, contains and restarts modules (§7.7).
 
-### 3.2 Keys
+### 2.2 Not in the hub
 
-| Key | Type | Required | Meaning |
-|---|---|---|---|
-| `id` | string | yes | The module's identity and folder name (§3.3). |
-| `name` | string | yes | Shown to the user. 1 to 64 characters, not blank. |
-| `version` | string | yes | The module's own version, SemVer `MAJOR.MINOR.PATCH` with an optional `-prerelease`. No build metadata (`+…`). |
-| `kind` | string | yes | One of §2's kinds. |
-| `family` | string | yes | `hideout`, `foxglove`, `vulpes`, `digitalis` or `third-party` (§3.3). |
-| `contract` | string | yes | The Hideout contract version it was written for, `MAJOR.MINOR` (§6.5). v1 readers accept `1.0`. |
-| `description` | string | no | Plain words for the install card. Default empty. |
-| `api` | table, or string | no | Provider APIs it calls, each with the minimum `MAJOR.MINOR` it needs: `api = { foxglove = "1.4", vulpes = "1.0" }`. A plain string means `{ foxglove = "<string>" }` (plugin.toml's form). Keys are providers (§4.1). Default empty. |
-| `requires` | array of strings | no | Modules it needs (§3.4). Default empty. |
-| `enriches` | array of strings | no | Third-party programs it works with, as `<name>.exe` (same rule as `apps.watch`). When one is missing, the core shows one hint; it never blocks install or enable. Default empty. |
-| `run` | array of strings | `service` only | The program and its arguments, relative to the module's folder. MUST be present and non-empty for `service`; MUST be absent for every other kind (`manifest.run`). |
-| `provides` | array of strings | no | What it offers (§3.5). Default empty. |
-| `permissions` | array of strings | no | What it may touch (§4). Default empty. |
-| `[lifecycle]` | table | no | `start` and `data` (§3.6). |
-| `[[pin]]` | array of tables | `runtime` only | The upstream archives it is made of (§3.6). At least one for `runtime`; MUST be absent for other kinds. |
-| `[edition]` | table | edition content only | The module set an edition switches to (§3.7). |
-| `[[actions]]`, `[[secrets]]`, `[[settings]]` | arrays of tables | no | Exactly as in plugin.toml (local-api.md, `crates/plugin-api/src/manifest.rs`): the same keys, the same checks. |
+The hub MUST NOT contain:
+- device code, keyboard protocols, lighting, scenes or AI;
+- module installers or updaters (they live in `hideout-core`, used by the `hideout.modules`
+  module and the CLI);
+- settings values (each module keeps its own; the hub draws the form);
+- health checks, heartbeats or timers on modules;
+- vendor knowledge;
+- **a hard-coded list of module ids** (§13.3). What the hub shows comes from manifests, the
+  registry and facts.
 
-Checks every reader MUST make, each with the error id it reports (§10):
-
-- `id`, `family` and `kind` agree (§3.3): `manifest.id`, `manifest.family`.
-- `version` is SemVer as above: `manifest.version`.
-- `contract` is `MAJOR.MINOR` and served (§6.5): `manifest.contract`.
-- Every `api` value is `MAJOR.MINOR`; every key is a known provider: `manifest.api`. Whether the
-  installed provider serves it is checked at install and enable, not at parse (`lifecycle.api`).
-- `run[0]` stays inside the module's folder: every path component is a normal name or `.`; no
-  `..`, no root, no drive, no prefix (`manifest.run`). This is today's rule.
-- `[[secrets]]` needs `foxglove:secrets` (or the bare `secrets`) in `permissions`:
-  `manifest.secrets`.
-- `[[actions]]` ids and `[[settings]]` names are unique and use `a-z`, `0-9`, `-`; each setting's
-  default fits its kind: `manifest.actions`, `manifest.settings`.
-
-Example, a service module:
-
-```toml
-id = "foxglove.wallpaper"
-name = "Wallpaper Engine sync"
-version = "0.3.0"
-kind = "service"
-family = "foxglove"
-contract = "1.0"
-description = "Sends your keyboard's layer and lights to Wallpaper Engine wallpapers."
-api = { foxglove = "1.4" }
-requires = ["foxglove>=0.3"]
-enriches = ["wallpaper64.exe"]
-run = ["foxglove-wallpaper.exe"]
-provides = ["facts:wallpaper.*"]
-permissions = [
-  "foxglove:facts.read:keyboard.*",
-  "foxglove:net.listen:tcp:127.0.0.1:47911",
-  "foxglove:apps.watch:wallpaper64.exe",
-]
-
-[lifecycle]
-start = "on-fact:keyboard.connected"
-data = "ask"
-```
-
-### 3.3 Ids and families
-
-- An `id` is two or more labels joined by `.`. In `module.toml`, each label MUST match
-  `[a-z0-9][a-z0-9_-]*`, and the whole id is at most 128 characters.
-- **Reserved first labels:** `hideout`, `foxglove`, `vulpes`, `digitalis`, and `arete` (the alias
-  of `vulpes`, pick 5). A module whose id starts with a reserved label MUST have the matching
-  `family` (`arete.*` ids are read as family `vulpes`). A `third-party` module MUST NOT use a
-  reserved first label, and its id SHOULD be reverse-DNS (`com.example.weather`).
-- **First-party ids** are `<family>.<name>` (`foxglove.overlay`), with more labels allowed
-  (`vulpes.runtime.llama-cpp`).
-- **Core ids** are the single exception to "two or more labels": the `core` modules are exactly
-  `foxglove` and `vulpes`, with `family` equal to the id. No other module may have a one-label id.
-- **The legacy first-party prefix** `org.foxglove.` (today's plugins, `org.foxglove.mic-mute`) is
-  family `foxglove`. It is accepted in `module.toml` only with `family = "foxglove"`.
-- Before the rename (phase 6) the Vulpes side is Arete. The contract still says `vulpes`
-  everywhere (family, provider, pipe, catalog), so nothing changes when the rename lands.
-  Readers MUST accept `arete` as an alias of `vulpes` in `family`, in `api` keys and as a
-  permission provider, and MUST write `vulpes`.
-
-### 3.4 `requires`
-
-Each entry is `<id>` or `<id>>=<version>`:
-- `<id>` alone: that module is installed (or is a running core, or is one of a core's built-in
-  modules) and enabled.
-- `<id>>=<version>`: the same, at that version or newer. `<version>` is SemVer, and may be
-  shortened to `MAJOR` or `MAJOR.MINOR` (missing parts are 0).
-- No other operators in v1 (`<`, `=`, `~`, `^` are refused, `manifest.requires`).
-- Checked at install and at enable (`lifecycle.requires`). Disabling or removing a module that an
-  enabled module requires MUST be refused with `lifecycle.required-by`, naming the dependents,
-  unless the user disables or removes them too.
-- Cycles are refused at install (`lifecycle.requires`).
-
-### 3.5 `provides`
-
-Each entry is `<what>` or `<what>:<argument>`. Unknown `<what>` values are refused
-(`manifest.provides`).
-
-| Entry | Means | Kinds |
-|---|---|---|
-| `facts`, `facts:<pattern>` | It publishes facts (the pattern names which; pattern grammar as `facts.read`). | service, builtin |
-| `panel-layout` | It draws on the info screen. | service, builtin |
-| `lighting-effect` | It drives lights through leases. | service, builtin |
-| `action` | It has key actions (`[[actions]]`). | service, builtin |
-| `backend` | It is a device backend. | service, builtin |
-| `methods:<pattern>` | It serves these pipe methods for its core (`vulpes.image.*`). The pattern is a method name or ends in `.*`. | builtin, service |
-| `content:<type>` | It holds content of a type its core reads. v1 types: `board-profile`, `art-pack`, `lighting-preset`, `lighting-catalog`, `wallpaper-manifest`, `agent-pack`, `style-pack`, `eval-pack`, `template-pack`, `edition`. | content |
-| `firmware:<board>` | It holds firmware images for a board (`firmware:purpurea`). | firmware |
-
-A `content` module MUST provide at least one `content:` entry; a `firmware` module at least one
-`firmware:` entry (`manifest.provides`). The first five entries are plugin.toml's `Provides`
-values, unchanged.
-
-### 3.6 `[lifecycle]` and `[[pin]]`
-
-`[lifecycle]` keys:
-
-| Key | Values | Default | Meaning |
-|---|---|---|---|
-| `start` | `on-enable`, `on-demand`, `on-fact:<pattern>` | `on-enable` | When the owning core starts a `service`, or activates a `builtin`. `on-demand`: when a call first needs it. `on-fact:<pattern>`: when a fact matching the pattern is first set (an event, never a timer). Ignored for `core`, `runtime`, `content` and `firmware`. |
-| `data` | `keep`, `remove`, `ask` | `ask` | What `remove` does with the module's `data\` folder (§5.2). |
-
-`[[pin]]` (runtime modules; Arete's component pins, now signed):
-
-| Key | Type | Required | Meaning |
-|---|---|---|---|
-| `url` | string | yes | An `https://` URL of an immutable upstream file. |
-| `sha256` | string | yes | Its SHA-256: 64 lowercase hex characters. |
-| `size` | integer | no | Its size in bytes; the download limit. |
-| `unpack` | string | no | `zip` (default) or `none`. |
-| `strip_top` | bool | no | Drop the archive's top folder when unpacking. Default `true` (Arete's default). |
-
-A runtime may have several pins (llama.cpp needs the server zip and the CUDA runtime zip). The
-design sketch showed one `[pin]` table; v1 uses an array so every Arete component fits.
-
-### 3.7 Editions
-
-An edition (Lagopus, Zerda, Velox; pick 6) is a `content` module with
-`provides = ["content:edition"]` and an `[edition]` table:
-
-```toml
-id = "vulpes.edition.zerda"
-name = "Zerda (light)"
-version = "1.0.0"
-kind = "content"
-family = "vulpes"
-contract = "1.0"
-requires = ["vulpes>=1.0"]
-provides = ["content:edition"]
-
-[edition]
-core = "vulpes"
-modules = ["vulpes.chat", "vulpes.search", "vulpes.mcp"]
-```
-
-- `core` names the core the edition belongs to; `modules` lists that core's modules the edition
-  has **enabled**. Every other module of that core is disabled when the edition is chosen.
-- Choosing an edition MUST only enable and disable modules. It MUST NOT install, update or remove
-  anything; a listed module that isn't installed is reported as missing (`lifecycle.edition`),
-  and the switch still applies to the rest.
-- Edition settings (beyond the module list) are reserved for a later contract minor.
-
-### 3.8 Built-in manifests
-
-- A core embeds one manifest per built-in module (for example with `include_str!`), and its own
-  `core` manifest. They are full `module.toml` texts and pass the same parser.
-- A running core lists them in its run file (§6.4), so `hideout modules list` shows them
-  without asking the core.
-- Built-in modules have no folder, no files to verify and no catalog entry. Their trust is the
-  core's own installer and update signature.
-
-### 3.9 Legacy manifests: `plugin.toml` and `kit.toml`
-
-They keep working unchanged. A reader looks in a module's folder for `module.toml`, then
-`plugin.toml`, then `kit.toml`, and uses the first one found. A legacy file:
-
-- is parsed exactly as `Manifest::parse` does today: the same required keys (`id`, `name`,
-  `version`, `api`, `run`), the same id rule (two or more labels of ASCII letters, digits, `-`,
-  `_`; upper case allowed), unknown keys refused;
-- MUST NOT contain `kind`, `family`, `contract`, `requires`, `enriches`, `[lifecycle]`, `[[pin]]`
-  or `[edition]` (they are unknown keys there, `manifest.unknown-key`);
-- then reads as if it said:
-  - `kind = "service"`;
-  - `family = "foxglove"` when its id starts with `org.foxglove.` or `foxglove.`, otherwise
-    `family = "third-party"`;
-  - `contract = "1.0"`;
-  - `api = { foxglove = "<its api>" }`;
-  - every permission with the `foxglove:` provider (§4.1);
-  - `[lifecycle] start = "on-enable"`, `data = "remove"` (today's uninstall deletes the folder,
-    `data\` included).
-
-A legacy file's `api` must be served by the installed Foxglove, as today (`manifest.api`).
-
-## 4. Capabilities and permissions
-
-### 4.1 Grammar
-
-```
-permission = [ provider ":" ] body
-provider   = "foxglove" | "vulpes"            ; "arete" is read as "vulpes"
-```
-
-- **Parsing:** split at the first `:`. If the part before it is a provider, the rest is the body
-  for that provider. Otherwise the whole string is a Foxglove body (legacy, unprefixed). No
-  Foxglove body begins with a provider name, so this is unambiguous.
-- **Canonical form** is always prefixed: `foxglove:lighting.write`. Readers MUST store and compare
-  permissions in canonical form (the inventory, `added_permissions`). `module.toml` SHOULD use the
-  prefixed form; the unprefixed form is accepted for Foxglove bodies.
-- An unknown provider or an unknown body is refused (`permission.unknown`); a known body with a
-  bad argument is refused (`permission.argument`).
-- `hideout` and `digitalis` are not providers in v1: they serve no permissions.
-
-**Foxglove bodies** are Foxglove's v1 grammar, unchanged (`crates/plugin-api/src/permission.rs`
-is the reference): `facts.read:<pattern>`, `facts.write:<pattern>` (never `device.*` or `*`),
-`devices.read`, `lighting.write`, `behaviors.invoke`, `screens.write`, `art.write`,
-`key.events`, `hid.raw`, `profiles.write`, `focus.write`, `net`,
-`net.connect:<host>:<port|*>`, `net.listen:udp:127.0.0.1:<port>`,
-`net.listen:tcp:127.0.0.1:<port>`, `files`, `audio.inputs.read`, `audio.inputs.mute`, `secrets`,
-`app.windows`, `apps.watch:<name>.exe`. New Foxglove bodies come only with a Foxglove API minor.
-
-**Vulpes bodies** (new in v1):
-
-| Body | Lets the holder | Argument |
-|---|---|---|
-| `gpu.status` | read the GPU broker's state and hear `vulpes.gpu.changed` | — |
-| `gpu.request:<class>` | ask for the GPU as a tenant of that class, and release it | `chat`, `image` or `any` (`any` covers both) |
-| `ask:<agent>` | ask a named Vulpes agent a question | an agent name: `[a-z0-9][a-z0-9-]{0,63}`, or `*` for any agent |
-| `image.generate` | start an image job (Vulpes's safety and privacy rules still apply) | — |
-| `secrets.ref:<scheme>` | pass secret *references* of that scheme for Vulpes's vault to resolve; never the values | a scheme: `[a-z][a-z0-9+.-]{0,31}` (`op`, `env`) |
-
-**Sensitive** (the install dialog warns): Foxglove's `key.events`, `hid.raw` and `net` as today,
-plus `vulpes:ask:*` and `vulpes:secrets.ref:*` (any scheme).
-
-### 4.2 Granted at install
-
-- The user approves a module's whole `permissions` list when installing it. Nothing is granted
-  that isn't listed.
-- An update whose manifest adds permissions (canonical form, compared as sets; today's
-  `added_permissions`) MUST wait for the user's approval of the added ones. Until then the old
-  version stays installed and running.
-- Outside tools ask for permissions in `initialize`, and the user approves them once per tool, as
-  today (local-api.md).
-- A built-in module's permissions are granted with its core. It still MUST list them, so the
-  same checks and the same lists apply to it.
-
-### 4.3 Signing is provenance, not permission
-
-A signed module gets only what the user granted. A catalog signature proves where the files came
-from; it never grants, widens or skips a permission prompt.
-
-### 4.4 Cross-core grants
-
-- A core's own `core` manifest lists what it may call on the other core, in canonical form. For
-  example Vulpes's lists `foxglove:lighting.write` and `foxglove:facts.read:keyboard.*`, and
-  Foxglove's lists `vulpes:gpu.status`.
-- The user approves them once, when the second core is installed (or when an update adds some).
-  Hideout records the approval in the inventory (§5.3), so neither core shows a second dialog.
-- A core applies a cross-core grant only to a connection whose client process is the other core:
-  the pipe client's process id (Windows `GetNamedPipeClientProcessId`) equals the `pid` in that
-  core's run file and the process's image is that run file's `exe` (§6.4). Any other client is an
-  outside tool.
-
-### 4.5 The never-list
-
-These are **never grantable to an MCP adapter, to another core or through any cross-core grant**.
-A manifest of kind `core` that lists one of them for the other provider is invalid
-(`permission.never`). An outside tool or MCP adapter that asks for one in `initialize` gets it
-refused (it is left out of `granted`), and calls that need it answer error 5 (DENIED).
-
-| Never | Why |
-|---|---|
-| `foxglove:key.events` | a keylogger |
-| `foxglove:hid.raw` | raw device access |
-| Actions that need confirmation (`behaviors.invoke` of a `Confirm` behaviour: bootloader, reset, BT clear) | only a user's click in Foxglove may do them; `behaviors.invoke` already refuses them for every client |
-| Another module's secrets (`foxglove:secrets` reaches only the caller's own; outside tools get none; `vulpes:secrets.ref` passes references, never values) | secrets stay with their owner |
-| Starting or ending a gaming reservation (`vulpes.gpu.reserve`, `vulpes.gpu.unreserve`) | Arete's rule: only an explicit user action changes it (§6.7) |
-
-`service` modules may still hold `key.events` and `hid.raw` from their own core, granted by the
-user at install with the warning, as plugins can today. The never-list is about the doors between
-cores and to agents.
-
-## 5. Lifecycle
-
-### 5.1 One implementation, no daemon
-
-- The lifecycle is implemented once, in the `hideout-core` crate and the `hideout` CLI built on
-  it. Foxglove links the crate; Vulpes runs the CLI (through `proc`) with `--json`. Foxglove's
-  Plugins tab and `arete components` are front ends to the same lifecycle.
-- **Nothing in Hideout stays running** (pick 1). Every `hideout` command does its work and exits.
-  It MUST NOT leave a process, a scheduled task, a service or a timer behind.
-- **The owning core runs modules.** Foxglove starts its `service` modules under
-  `spawn_supervised` (backoff 1 s to 60 s; five crashes in ten minutes disables the module, with a
-  notice). Vulpes's broker starts runtimes. A core notices inventory changes made by the CLI by
-  a file-change notification on the inventory, not by polling.
-- **Status never starts anything**, in either core or in the CLI: `list`, `verify` and every
-  status call read only.
-
-### 5.2 Folders
+### 2.3 The hub's files
 
 ```
 %LOCALAPPDATA%\Hideout\
-  inventory.json          the record of installed modules and grants (§5.3)
-  modules\<id>\           an installed module; its manifest at the top
+  hideout.toml            the hub's own state (§7.3); written only by the hub
+  inventory.json          install records (§7.3); written only by hideout-core
+  modules\<id>\<version>\ an installed version; manifest at the top
   modules\<id>\data\      the module's own state; writable; not hashed
-  modules\<id>.new\       an install or update being staged
-  modules\<id>.prev\      the previous version, kept for rollback (one only)
-  catalogs\<family>\      the last accepted root.json, catalog.json and signatures
-  run\<core>.json         run files (§6.4)
-  bin\hideout.exe         shipped in both cores' installers; the newer copy wins
+  modules\<id>\.staging\  an install or update being staged
+  cache\panels\<id>\      last panel trees and facts (§2.4)
+  catalogs\<source>\      last accepted root, catalogs and signatures, per source (§12, §13)
+  run\instances.json      live instance tokens, for taking modules back after a hub restart (§7.9)
+  logs\                   hub and module logs (stderr captured per module)
+%APPDATA%\Hideout\modules\<id>\settings\   the module's settings folder, assigned by the hub
 ```
 
-- `HIDEOUT_HOME`, when set, replaces `%LOCALAPPDATA%\Hideout` (for tests, as
-  `FOXGLOVE_CONFIG_DIR` does for Foxglove's settings).
-- Until phase 3 moves them, Foxglove's plugins stay in `%APPDATA%\Foxglove\plugins\<id>\` and
-  Arete's components in `C:\AI\runtimes\<name>\`; readers read them in place. The move keeps the
-  old folder readable, as `kits\` became `plugins\`.
-- A module's files outside `data\` are written only by the lifecycle. The module MUST NOT write
-  them.
+- `HIDEOUT_HOME`, when set, replaces `%LOCALAPPDATA%\Hideout` and `%APPDATA%\Hideout` (tests).
+- Every file and pipe here MUST have a current-user-only ACL.
+- A module's files outside `data\` and `settings\` are written only by `hideout-core`.
 
-### 5.3 The inventory
+### 2.4 Draw first (UX2)
 
-`inventory.json`, UTF-8 JSON, written atomically (write `inventory.json.tmp`, then rename):
+- The hub MUST draw every page and tile before any module answers.
+- It persists each module's last panel trees and last facts under `cache\panels\<id>\`, keyed by
+  module id and version. A version change discards the cache.
+- A cold panel draws from the cache at once, with "Starting…" in its header and its controls
+  disabled until `module.ready`. Then the live tree replaces it in place.
+- **Optimistic input:** toggles, choices and sliders change at once in the hub and send
+  `ui.event`. If the module refuses, the hub restores the old value and shows the reason inline.
+  A node with `confirm: true` opts out (for example Flash).
+- Slider drags send at most ~20 events a second, and always the final value.
+- The hub keeps its egui context warm while hidden.
+- **Budgets** (lab cases in phase 2): tray panel open < 100 ms; page switch < 1 frame from cache;
+  input to visible change < 16 ms locally, < 100 ms confirmed.
+
+### 2.5 Windows: pop-outs and module windows (UX19)
+
+Two kinds of window, one rule set:
+- **Pop-out:** any page drawn by the hub in a second viewport of the hub process (§5.7).
+- **Module window:** a top-level window a module draws itself (editors and wizards, §5.7).
+
+Both MUST:
+- use the title form `Hideout · <page or window name>`;
+- share Hideout's AUMID, so they group under one taskbar button;
+- remember their placement per monitor;
+- ask on close only if work would be lost.
+
+Pop-outs also:
+- go back to the sidebar when closed;
+- reopen at their places after a hub restart;
+- offer "Keep on top", off by default.
+
+### 2.6 Command palette
+
+- Ctrl+K in the hub window opens a palette of every enabled module's declared `[[actions]]` and
+  `[[ui.panels]]` pages whose `when` is true (§4.6).
+- It is built from manifests and the registry only. It MUST NOT start a module to list it.
+
+## 3. Module kinds
+
+Every module has exactly one kind. All code runs out of process; there are **no in-process
+plug-ins** (no dylibs, no scripts in the hub).
+
+| Kind | What it is | Has `run` | Started by |
+|---|---|---|---|
+| `service` | A process in any language. It connects to the router and is supervised by the hub. | yes | the hub, on activation (§4.6) |
+| `runtime` | A pinned third-party program a service launches. No API of its own. | no | the service that owns it |
+| `content` | Data only: board profiles, catalogs, art, agent packs, editions. | no | never runs |
+| `firmware` | Digitalis images, under `crates/flash`'s rules. Installed and verified, never enabled or started. | no | never runs on the PC |
+| `adopted` | An install the hub registers but did not make (Arete today). Checked by path and version only. | yes (absolute `run[0]`) | the hub, on activation |
+
+- There is no `core` and no `builtin` kind.
+- Only `service` and `adopted` modules are processes the hub starts and stops.
+- A `runtime`'s processes belong to the service that launched them, inside that service's Job
+  Object (§7.7).
+
+## 4. The manifest: `module.toml`
+
+### 4.1 File and syntax
+
+- A module's manifest is `module.toml` at the top of its version folder.
+- It MUST be TOML 1.0, UTF-8, readable by Rust's `toml` crate and Python's `tomllib`.
+- It is a **superset of plugin.toml**: every plugin.toml key keeps its meaning.
+- **Unknown keys are refused** at every level (`manifest.unknown-key`), as `Manifest::parse` does
+  today. New keys come only with a new `hub` minor (§8.7); a module that uses them sets `hub` to
+  that minor, so an older reader refuses it with `manifest.hub`.
+- Strings compare exactly (case-sensitive) unless a rule says otherwise.
+
+### 4.2 Keys
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | string | yes | Identity and folder name (§4.3). |
+| `name` | string | yes | Shown in the UI. 1–64 characters, a plain function name (§14). |
+| `version` | string | yes | SemVer `MAJOR.MINOR.PATCH`, optional `-prerelease`, no `+build`. |
+| `kind` | string | yes | §3. |
+| `family` | string | yes | `hideout`, `foxglove`, `vulpes`, `digitalis` or `third-party` (§4.3). |
+| `hub` | string | yes | Contract version it was written for, `MAJOR.MINOR` (VS Code's `engines`). v1 readers accept `1.0`. |
+| `visibility` | string | no | `public` (default) or `private` (§13). |
+| `description` | string | no | Plain words for the Modules page. |
+| `api` | table, or string | no | Method-family API versions it calls, `{ foxglove = "1.13", vulpes = "1.0" }`. A plain string means `{ foxglove = "<string>" }`. |
+| `requires` | array of strings | no | Modules needed at enable (§4.4). |
+| `enriches` | array of strings | no | Third-party programs it works with, as `<name>.exe`. Missing ones give one hint; never block. |
+| `run` | array of strings | `service`, `adopted` | Program and arguments. For `service`, relative and inside the version folder. For `adopted`, `run[0]` is absolute. Absent for other kinds (`manifest.run`). |
+| `transport` | string | no | `pipe` (default) or `stdio` (legacy plugins, bridged by the hub). |
+| `swap` | string | no | `overlap` (default) or `handover` (§7.6). |
+| `provides` | array of strings | no | What it offers (§4.5). |
+| `permissions` | array of strings | no | What it may touch (§6). |
+| `[activation]` | table | no | When it starts (§4.6). |
+| `[lifecycle]` | table | no | `data = keep | remove | ask` (default `ask`): what remove does with `data\`. |
+| `[identity]` | table | no | Package identity (§4.8). |
+| `[[ui.panels]]`, `[[ui.windows]]` | arrays of tables | no | UI contributions (§4.7). |
+| `[[settings]]`, `[[actions]]`, `[[secrets]]` | arrays of tables | no | As plugin.toml, plus `when` (§4.7). |
+| `[[mcp.tools]]` | array of tables | no | Tools for the MCP bridge (§9). |
+| `[[pin]]` | array of tables | `runtime` only | Upstream archives (§4.8). |
+| `[edition]` | table | edition content only | §4.9. |
+
+Checks every reader MUST make (error ids in §15):
+- `id`, `family` and `kind` agree (§4.3): `manifest.id`, `manifest.family`, `manifest.kind`.
+- `version` is SemVer as above: `manifest.version`.
+- `hub` is `MAJOR.MINOR` and served (§8.7): `manifest.hub`.
+- Every `api` value is `MAJOR.MINOR`: `manifest.api`. Whether a provider serves it is checked at
+  enable (`lifecycle.api`).
+- `run[0]` of a `service` stays inside its folder: only normal names or `.`; no `..`, root, drive
+  or prefix (`manifest.run`). Today's rule.
+- `visibility` is `public` or `private`: `manifest.visibility`.
+- `[[secrets]]` needs `secrets` in `permissions`: `manifest.secrets`.
+- Ids of `[[actions]]`, `[[ui.panels]]`, `[[ui.windows]]`, `[[mcp.tools]]` and names of
+  `[[settings]]` are unique in their list and use `a-z`, `0-9`, `-`: `manifest.actions`,
+  `manifest.ui`, `manifest.settings`, `manifest.mcp`.
+- Every `when` and `activation.on` entry parses (§4.6): `manifest.activation`.
+
+Example, a public first-party service module (from the design's inventory, §2):
+
+```toml
+id = "foxglove.art"
+name = "Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+api = { foxglove = "1.13" }
+requires = ["foxglove.link>=0.4"]
+run = ["foxglove-art.exe"]
+swap = "overlap"
+provides = ["method:art.*", "facts:art.*", "channel:previews"]
+permissions = ["facts.read:keyboard.*", "channel.open:foxglove.link/art", "hub.notify"]
+
+[activation]
+on = ["fact:keyboard.connected", "open", "call"]
+
+[[ui.panels]]
+id = "art"
+slot = "page"
+title = "Art"
+icon = "image"
+when = "keyboard.connected"
+
+[[actions]]
+id = "next-art"
+name = "Next art"
+```
+
+### 4.3 Ids and families
+
+- An `id` is labels joined by `.`. Each label MUST match `[a-z0-9][a-z0-9_-]*`; the whole id is
+  at most 128 characters.
+- Ids have two or more labels. **One exception:** a one-label id equal to a family name
+  (`vulpes`, `digitalis`) is allowed for that family's main module.
+- **Reserved first labels:** `hideout`, `foxglove`, `vulpes`, `digitalis`, and `arete` (alias of
+  `vulpes`). A module whose id starts with one MUST have the matching `family`.
+- A `third-party` module MUST NOT use a reserved first label. Its id SHOULD be reverse-DNS.
+- The legacy prefix `org.foxglove.` (today's plugins) is family `foxglove`.
+- Readers MUST accept `arete` as an alias of `vulpes` in ids, `family` and `api` keys, and MUST
+  write `vulpes`. `C:\AI` stays Vulpes's home.
+- A `private` module's id MUST NOT start with a reserved first label (§13.2).
+
+### 4.4 `requires`
+
+- Each entry is `<id>` or `<id>>=<version>`. `<version>` may be shortened to `MAJOR` or
+  `MAJOR.MINOR`. No other operators (`manifest.requires`).
+- Checked at enable (`lifecycle.requires`). Cycles are refused.
+- At runtime a required module that is gone is only "provider gone": calls get error 2 and the
+  dependent shows "Waiting for <module>" (§7.8). The hub never restarts a module because another
+  needs it.
+- Disabling a module that an enabled module requires MUST be refused with
+  `lifecycle.required-by`, naming the dependents, unless they are disabled too.
+- The dependency graph for root-cause states (§7.8) is `requires` plus `channel.open:`
+  permissions.
+- A `public` module MUST NOT require a `private` one (§13.2).
+
+### 4.5 `provides`
+
+Each entry is `<what>:<argument>`. Unknown `<what>` is refused (`manifest.provides`).
+
+| Entry | Means | Kinds |
+|---|---|---|
+| `method:<pattern>` | Serves these methods through the router. A method name or a prefix ending in `.*`. Fixed by the catalog (§6.3). | service, adopted |
+| `facts:<pattern>` | Publishes these facts. | service, adopted |
+| `channel:<name>` | Offers a direct channel `<id>/<name>` (§8.4). Its capability line comes from the catalog (§6.2). | service, adopted |
+| `content:<type>` | Holds content: `board-profile`, `art-pack`, `lighting-preset`, `lighting-catalog`, `wallpaper-manifest`, `agent-pack`, `style-pack`, `eval-pack`, `template-pack`, `edition`. | content |
+| `firmware:<board>` | Holds firmware images for a board. | firmware |
+
+- A `content` module MUST provide at least one `content:` entry; a `firmware` module at least one
+  `firmware:` entry.
+- plugin.toml's `Provides` values (`facts`, `panel-layout`, `lighting-effect`, `action`,
+  `backend`) are still read in legacy manifests (§4.10).
+
+### 4.6 Activation events and `when` clauses
+
+`[activation] on` lists when the hub starts the module. Default `["enable"]`.
+
+| Event | Starts the module when |
+|---|---|
+| `enable` | it is enabled (and at hub start, if enabled) |
+| `open` | one of its panels is shown |
+| `call` | a method it provides is called |
+| `fact:<pattern>` | a fact matching the pattern is set |
+| `app:<name>.exe` | that app's window appears (reported by `hideout.appwatch`) |
+| `device:<class>` | short for `fact:devices.present.<class>` (UX12) |
+
+Rules:
+- A module with a key bound to one of its actions, or a pinned quick action, MUST be started at
+  enable, whatever `on` says (UX3).
+- Activation is by events only, never timers.
+- A module started by an event stops by its own decision (exit code 0); the hub does not stop
+  idle modules.
+
+`when` (on `[[ui.panels]]`, `[[ui.windows]]`, `[[actions]]`, `[[settings]]`) decides whether the
+item shows:
+- Grammar v1: one fact name, optionally prefixed by `!`. No operators.
+- True when the fact is set and its value is not `false`, `null`, `0` or `""`.
+- The hub evaluates it from its facts cache (§2.4 includes cached facts), so a cold module's
+  items still show or hide correctly.
+- A module whose devices aren't present (all its `page` panels false) shows no sidebar page, only
+  a row on the Modules page (UX12).
+- `devices.present.<class>` facts are published by a first-party device-presence module from
+  catalog data, never by the hub.
+
+### 4.7 Contributions (data, VS Code-style)
+
+Contributions are declared in the manifest so the hub can show them before the module runs.
+
+**`[[ui.panels]]`:** `id`, `slot`, `title`, `icon`, `when?`.
+- `slot` is `page`, `tile`, `status`, `settings` or `action` (§5.1).
+- The tree comes later in `ui.register` (§5.1) or from the cache. A `ui.register` panel id not
+  declared here is rejected (`ui.undeclared`).
+
+**`[[ui.windows]]`:** `id`, `title`, `when?`. A module window (§5.7). The hub shows an Open
+button and sends `ui.window.open`. Needs the `ui.window` permission.
+
+**`[[settings]]`:** as plugin.toml, plus `when?`.
+- The hub draws the form, generated when the module gives no `settings` tree.
+- Values live in the module's settings folder (§2.3). The hub reads and writes them only through
+  `settings.get` and `settings.set` (§8.8).
+
+**`[[actions]]`:** as plugin.toml, plus `when?`.
+- The user binds keys in the hub. The hub sends `action.invoke`.
+- The module's page shows each bound key next to its action (UX3).
+
+**`[[secrets]]`:** as plugin.toml.
+
+**`[[mcp.tools]]`:** §9.
+
+### 4.8 `[[pin]]` and `[identity]`
+
+`[[pin]]` (runtime modules; Arete's component pins, now signed through the catalog):
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `url` | string | yes | `https://` URL of an immutable upstream file |
+| `sha256` | string | yes | 64 lowercase hex characters |
+| `size` | integer | no | Size in bytes; the download limit |
+| `unpack` | string | no | `zip` (default) or `none` |
+| `strip_top` | bool | no | Drop the archive's top folder. Default `true` |
+
+`[identity]` (picks D, E): `application = "<name>"`. The module's exe gets that Application in
+the one Hideout sparse package. Only modules that need package identity (today the hub and
+`hideout.lights`) set it. Allowed only for `public` first-party modules.
+
+### 4.9 Editions
+
+An edition (Lagopus, Zerda, Velox) is a `content` module with `provides = ["content:edition"]` and
+an `[edition]` table:
+
+```toml
+[edition]
+family = "vulpes"
+modules = ["<id>", "<id>"]
+```
+
+- `modules` lists the family's modules the edition has **enabled**. Every other module of that
+  family is disabled when the edition is chosen.
+- Choosing an edition MUST only enable and disable. It MUST NOT install, update or remove. A
+  listed module that isn't installed is reported (`lifecycle.edition`); the rest still applies.
+
+### 4.10 Legacy manifests: `plugin.toml` and `kit.toml`
+
+They keep working. A reader looks for `module.toml`, then `plugin.toml`, then `kit.toml`. A legacy
+file:
+- is parsed exactly as `Manifest::parse` does today;
+- MUST NOT contain keys new in this spec (they are unknown keys there);
+- reads as: `kind = "service"`, `transport = "stdio"`, `swap = "overlap"`, `hub = "1.0"`,
+  `visibility = "public"`, `api = { foxglove = "<its api>" }`, `[activation] on = ["enable"]`,
+  `[lifecycle] data = "remove"`, and `family = "foxglove"` for `org.foxglove.*` and
+  `foxglove.*` ids, otherwise `third-party`.
+
+## 5. Panels across the process boundary
+
+Pick B. Design §4.3.
+
+### 5.1 Registration and slots
+
+A module registers its panels after `initialize`:
+
+```
+ui.register {instance, panels: [{id, slot, title, icon, tree}]}
+```
+
+| Slot | Where it shows |
+|---|---|
+| `page` | a sidebar page |
+| `tile` | the tray panel |
+| `status` | the status strip |
+| `settings` | the module's settings (generated from `[[settings]]` if no tree) |
+| `action` | a tray menu item |
+
+### 5.2 The tree
+
+Nodes are `{type, id, props, bind?, stream?, children}`.
+
+- **Layout:** `column`, `row`, `grid`, `section`, `tabs`.
+- **Widgets:** `label`, `value`, `button`, `toggle`, `slider`, `choice`, `color`, `text_input`
+  (multi-line, optional attachments), `list`, `table`, `meter`, `image`, `gallery`, `log`,
+  `markdown` (safe subset, code blocks, no HTML), `text`.
+- **`canvas`:** a retained set of shapes (rect, rounded key, circle, text) with ids, at most a few
+  hundred per panel (§5.5). A click returns the shape id.
+- **`bind`:** points a prop at a fact (`fact:keyboard.layer`). The hub fills it from its cache and
+  redraws only on change.
+- `id` MUST be unique in the panel and stable across registrations (view state is keyed by it).
+- The vocabulary is versioned with `hub`. An unknown node type draws as "needs a newer Hideout".
+
+### 5.3 Updates, input and assets
+
+- `ui.patch {panel, ops}` changes nodes in place. At most ~20 per second per panel; the hub
+  coalesces beyond that. Patches carry state; anything that moves uses a stream.
+- `ui.event {panel, node, kind, value}` goes to the owning module only, checked like any call.
+  An error result means "refused": the hub reverts optimistic input and shows `data.reason`.
+- `ui.asset.put {hash, mime, data}` uploads an image once, keyed by SHA-256, at most 256 KiB.
+  Nodes refer to it by hash.
+
+### 5.4 Live streams
+
+Some nodes take a `stream` prop naming one of the module's channels (§8.4):
+
+| Node | Stream carries |
+|---|---|
+| `canvas` | colours for shapes, by shape id |
+| `image` | small frames |
+| `text` | appended text (chat tokens) |
+
+- The hub opens the stream as a normal channel with the same grant. Frames never pass through the
+  router.
+- The stream runs only while the panel is visible and the window isn't minimised, at most 30
+  frames a second. The hub closes the channel otherwise.
+- The hub knows nothing of the domain: it colours shapes or appends text the module declared.
+- Rule: a page that shows what your devices (or your AI) are doing stays in the hub.
+
+### 5.5 Validation and the panel guard (UX5)
+
+- `ui.register` and `ui.patch` MUST be validated: node count, depth, string length, canvas shape
+  count and table rows each have a cap, published with the schema. Over a cap: that panel is
+  rejected (`ui.limits`), the others register.
+- Each panel draws in its own guarded scope. A panic greys that panel ("<Module>'s page couldn't
+  be shown"), not the hub.
+- The hub keeps a breadcrumb of the panel being drawn. Two hub restarts within a minute with the
+  same breadcrumb start the hub with that module's panels **quarantined**, offering Start again
+  or Go back to <previous version>.
+
+### 5.6 Live rebuild
+
+- A new registration (a new instance after a swap or restart) replaces that module's panels in one
+  step.
+- The hub keeps each panel's view state by node id: scroll position, open sections, selected tab,
+  text being typed.
+- A module that goes away greys its panels with its state (§7.8). It does not remove them.
+
+### 5.7 Pop-outs and module windows
+
+- **Pop-out:** any page can pop out into a hub viewport (same panel, same AUMID). It needs no
+  module code, so it works for every language.
+- **Module window:** only where free-form editing can't be expressed as panels: the keymap editor,
+  the LED wizard, the calibrator, and the overlay (a topmost click-through layer, not a page).
+  These are the module's own windows and follow §2.5.
+
+### 5.8 Vulpes in the hub (pick C)
+
+- The Vulpes module (`arete hub` today) is a Python process on the hub's pipe. It calls Arete's
+  core in process (broker, agents, chat, image, vault).
+- It MUST NOT start the web server unless the user turns on "Use from phone or tailnet". The
+  browser UI is for the phone and the tailnet only.
+- Its full UI is native panels, and each page can pop out: AI (tile and status), Chat, Images,
+  Agents, Models, Schedules, Settings (design §4.3.1 has the node list per page).
+- Chat tokens stream through a `text` stream, never patches.
+- Chat draws from the panel cache first (§2.4), never waiting on Python's start-up.
+- Exception until a `paint` node exists: "Change part" opens in the browser, marked as such.
+- Safety stays in Arete's core: the GPU lock, the under-18 rule and the privacy filter apply to
+  every UI path.
+
+## 6. Capabilities and permissions
+
+### 6.1 Grammar
+
+- One namespace; the hub checks every call. No provider prefix. (The pre-hub draft's
+  `foxglove:`/`vulpes:` prefixes are dropped; readers MAY strip a known prefix from a legacy
+  string.)
+- **Kept from Foxglove API v1** (`crates/plugin-api/src/permission.rs`): `facts.read:<pattern>`,
+  `facts.write:<pattern>` (never `device.*` or `*`), `devices.read`, `lighting.write`,
+  `lighting.lease`, `behaviors.invoke`, `screens.write`, `art.write`, `key.events`, `hid.raw`,
+  `profiles.write`, `focus.write`, `net`, `net.connect:<host>:<port|*>`,
+  `net.listen:udp|tcp:127.0.0.1:<port>`, `files`, `audio.inputs.read`, `audio.inputs.mute`,
+  `secrets`, `app.windows`, `apps.watch:<name>.exe`.
+- **New:**
+
+| Permission | Lets the holder |
+|---|---|
+| `provide:<method pattern>` | register as provider of those methods (only if the catalog allows it, §6.3) |
+| `channel.open:<module>/<channel>` | open that channel |
+| `channel.offer:<channel>` | offer that channel |
+| `device.hid:<usage or catalog class>` | open that class of HID devices |
+| `gpu.status` | read the GPU broker's state |
+| `gpu.request:<class>` | be a GPU tenant of `chat`, `image` or `any` |
+| `ai.ask:<agent>` | ask a Vulpes agent (`*` for any) |
+| `image.generate` | start an image job |
+| `secrets.ref:<scheme>` | pass secret references for Vulpes's vault; never values |
+| `hub.notify` | send a notification through the hub |
+| `ui.window` | open its own top-level window |
+| `modules.manage` | install, enable, disable, reload modules (§6.6) |
+
+- Unknown body: `permission.unknown`. Bad argument: `permission.argument`.
+- **Sensitive** (red in the dialog): `key.events`, `hid.raw`, `net`, `ai.ask:*`, `secrets.ref:*`,
+  and any channel of risk class `keys` (§6.2).
+
+### 6.2 Channels say what they give (UX7)
+
+- Each offered channel has a catalog entry with a **plain-language capability line** and a
+  **risk class**: `normal`, `sensitive` or `keys`.
+- The permission dialog MUST show the capability line, never the channel name alone.
+- A channel that carries key presses (the link's events feed, and any bridge that forwards it,
+  such as the Wallpaper Engine feed) is class `keys`: the same class as `key.events`.
+- A channel with no catalog entry (a sideloaded or private provider without one) is shown as
+  `sensitive` with "Unknown data from <module>".
+
+### 6.3 Providers are fixed by the catalog
+
+- The catalog entry of a module lists the method patterns it may `provide`. The hub refuses any
+  other registration: `module.register` lists it under `rejected` with `permission.provider`.
+- A third-party or private module MUST NOT provide a method area a first-party catalog assigns
+  (`lighting.*`, `screens.*`, `art.*`, `gpu.*` …), so it can't capture other modules' calls.
+
+### 6.4 Approval
+
+- First-party modules shipped in the MSI are approved at install.
+- Catalog, private and sideloaded modules show the permission dialog at enable.
+- An update that adds permissions keeps the old version running and shows "Update waiting for
+  you" (§7.8). Never a modal at sign-in.
+- Outside tools ask in `initialize` and are approved once per tool.
+- The cut-over from Foxglove carries every existing grant over silently. Only new permissions ask.
+- Grants are stored in `hideout.toml`, in canonical form, sorted.
+
+### 6.5 Signing is provenance, not permission
+
+A catalog signature (any trust anchor, §12, §13) proves where files came from. It never grants,
+widens or skips a permission prompt.
+
+### 6.6 The never-list
+
+Never grantable to a third-party module, a private module from an unsigned source, an outside
+tool or MCP:
+- behaviours marked `Confirm` (bootloader, reset, clearing Bluetooth);
+- another module's secrets;
+- starting or ending a gaming reservation (only the user's own click, §8.9);
+- `key.events`, `hid.raw` and `keys`-class channels **over MCP**, always;
+- `modules.manage`, except to `hideout.modules` and the first-party `hideout` CLI.
+
+A third-party or private module MAY hold `key.events`, `hid.raw` or a `keys` channel only when
+sideloaded or signed by a user key, with the red warning. A manifest or `initialize` asking for a
+never-list item gets it left out of `granted` (`permission.never`); calls needing it answer
+error 5.
+
+## 7. Lifecycle
+
+### 7.1 Who does what
+
+- **`hideout-core`** (Rust crate) implements install, verify, update, rollback and remove, and is
+  the only writer of `inventory.json` (under `inventory.lock`).
+- **`hideout.modules`** (a module) and the **`hideout` CLI** are its front ends.
+- **The hub** reads `inventory.json` (it notices changes by a file-change notification, never by
+  polling), owns `hideout.toml`, enables and disables, starts, swaps and stops.
+- The CLI's `enable`, `disable` and `reload` go through the hub (`modules.*`, §8.8). File steps
+  work without the hub running.
+- Status never starts anything: `list`, `verify` and every status call are read-only.
+
+### 7.2 Versioned folders
+
+- Each version installs into `modules\<id>\<version>\`. The running version is never overwritten.
+- The previous version folder is kept until the new one has run cleanly for a day (for automatic
+  rollback, §7.8); then it is removed. At most two versions per module.
+- Dev builds go to a shadow folder (Windows locks a running exe), and only in lab hubs (§7.6).
+
+### 7.3 `inventory.json` and `hideout.toml`
+
+`inventory.json` (what is installed; UTF-8 JSON, written atomically):
 
 ```json
 {
   "format": "hideout-inventory-v1",
   "modules": {
-    "foxglove.wallpaper": {
-      "version": "0.3.0",
+    "<id>": {
+      "version": "0.4.0",
       "kind": "service",
       "family": "foxglove",
-      "source": "catalog",
+      "visibility": "public",
+      "source": "<source id>",
+      "anchor": "<trust anchor id>",
       "channel": "stable",
-      "enabled": true,
       "installed": "2026-11-09T12:00:00Z",
-      "granted": ["foxglove:apps.watch:wallpaper64.exe", "foxglove:facts.read:keyboard.*",
-                  "foxglove:net.listen:tcp:127.0.0.1:47911"],
-      "files": { "foxglove-wallpaper.exe": "<sha256>", "module.toml": "<sha256>" },
+      "files": { "<path>": "<sha256>" },
       "footprint": [],
-      "previous": "0.2.1"
+      "previous": "0.3.2",
+      "pending_permissions": []
     }
   },
-  "cross_core": {
-    "vulpes": ["foxglove:facts.read:keyboard.*", "foxglove:lighting.write"]
-  },
-  "seen": { "root_version": 1, "epoch": 0, "families": { "foxglove": 12, "vulpes": 3 } }
+  "seen": { "<anchor id>": { "root_version": 1, "epoch": 0, "catalogs": { "<source id>": 12 } } }
 }
 ```
 
-- `source` is `catalog` or `sideload` (§8.6). `files` maps every file outside `data\` (path with
-  `/`) to its SHA-256, as Arete's record does. `footprint` lists OS changes the module made that
-  `remove` must undo (Arete's `footprint.py` items: `{what, kind, path}` with `kind`
-  `path | credential | shortcut | setting`). `previous` is the version in `<id>.prev`, if any.
-- `granted` and `cross_core` are in canonical form and sorted.
-- `seen` is the anti-rollback state (§8.4). It never goes down.
-- Built-in modules are not in `modules`; their on/off state belongs to their core (§5.5).
-- A reader that finds a `format` it doesn't know MUST NOT write the file.
+- `files` maps every file outside `data\` to its SHA-256. `footprint` lists OS changes to undo on
+  remove (`{what, kind, path}`, kind `path | credential | shortcut | setting`).
+- `source` and `anchor` name the module source and trust anchor it came from (§13). `sideload`
+  is a source id reserved for developer mode.
+- `seen` is anti-rollback state per anchor. It never goes down.
+- A reader that meets an unknown `format` MUST NOT write the file.
 
-### 5.4 Steps
+`hideout.toml` (the hub's own state, written only by the hub):
+- `[modules.<id>] enabled`, granted permissions;
+- `autostart`, window placement, open pop-outs, theme;
+- `[[sources]]` and `[[trust.anchors]]` (§13);
+- `[privacy]` sharing settings (§13.5);
+- `safe_mode` flag (§7.10).
 
-Every step can be run as `hideout modules <step> <id>` (and `--json` for a machine-readable
-answer). Steps check in the order written and stop at the first failure, with its error id.
+### 7.4 Steps
+
+Every step can be run as `hideout modules <step> <id>` (`--json` for machine output). Steps stop at
+the first failure, with its error id.
 
 | Step | What happens |
 |---|---|
-| **install** | (1) Fetch the archive from the signed catalog (§8), or take a local zip in developer mode (§8.6). (2) Its SHA-256 MUST equal the catalog entry's; the version MUST NOT be yanked or revoked (`trust.*`). (3) Unpack to `modules\<id>.new\`; refuse entries with `..`, absolute paths or Windows-reserved names. (4) The folder MUST hold exactly the entry's files with their hashes (`trust.files`). (5) Parse the manifest; its `id` and `version` MUST equal the entry's (`trust.mismatch`). (6) Check `contract`, `api` and `requires` (`lifecycle.*`). (7) For a runtime: download every pin, check `sha256` (and `size`), unpack (Arete's `download` and `extract`). (8) Show the permissions; stop if the user declines (`lifecycle.declined`). (9) Rename `<id>.new` to `<id>` atomically. (10) Record it in the inventory, `enabled: false`, with every file's hash. |
-| **verify** | **Shallow, before every launch** of a `service` (and before a broker starts a runtime): the installed version is still in the accepted catalog and not revoked (a yanked version still runs), and the folder holds exactly the signed files (Foxglove's `check_files`, `data\` skipped). **Deep, on demand** (`hideout modules verify --deep`): every file's hash against the inventory, and every runtime's unpacked files against their install record (Arete's `deep_verify`). Verify never changes anything. A failed shallow verify MUST stop the launch. |
-| **enable** | Check `requires` again. Grant the approved permissions. Set `enabled: true`. The owning core starts it per `start`. |
-| **disable** | Set `enabled: false`. The core stops it: its connection closes, so its leases, panel holds, watches and streams end (§6.3). Files, data, secrets and grants stay. |
-| **update** | Install the new version as in install, steps 1–8, into `<id>.new`. If it adds permissions, wait for approval (§4.2). Stop the old one, move `<id>` to `<id>.prev` (replacing an older `.prev`), rename `<id>.new` to `<id>`, start it if enabled, and record `previous`. |
-| **rollback** | Only when `<id>.prev` exists: stop the module, swap `<id>` and `<id>.prev`, verify (shallow), start it if enabled. A rollback to a revoked version is refused (`trust.revoked`). |
-| **remove** | Stop it and kill its Job Object tree. Delete its secrets (Credential Manager `Foxglove/plugin/<id>/*` and `vulpes/<id>/*`), undo its `footprint`, delete its files and `<id>.prev`. Then `data\` per `[lifecycle] data`: `keep` leaves `data\` in place (a later install of the same id finds it), `remove` deletes it, `ask` asks the user (the CLI without a terminal treats `ask` as `keep`). Remove the inventory record. |
+| **install** | (1) Fetch the archive from a configured source's accepted catalog (§12, §13), or a local folder or zip (private source or developer mode). (2) SHA-256 MUST match the catalog entry; not yanked or revoked (`trust.*`). (3) Unpack to `.staging\`; refuse `..`, absolute paths and Windows-reserved names. (4) Exactly the entry's files with their hashes (`trust.files`). (5) Parse the manifest; `id`, `version`, `kind` and `visibility` MUST match the entry (`trust.mismatch`). (6) Check `hub` (`manifest.hub`). (7) Runtime: download every pin, check `sha256` and `size`, unpack. (8) Move `.staging\` to `<version>\` atomically. (9) Record it, not enabled, with `pending_permissions` set to its permissions. |
+| **verify** | **Shallow, before every launch:** the version is in an accepted catalog of its source and not revoked (yanked still runs), and the folder holds exactly the signed files (`data\` skipped). For `adopted`: `run[0]` exists, and the `version` in `initialize` equals the registered one. **Deep, on demand** (`--deep`): every file hash, and runtimes' unpacked files. Never changes anything. A failed shallow verify MUST stop the launch. |
+| **enable** | Check `requires` and `api` (`lifecycle.*`). Show the permission dialog for `pending_permissions` (§6.4); stop if declined (`lifecycle.declined`). Record grants and `enabled` in `hideout.toml`. Arm activation events. |
+| **disable** | Drain and stop the instance (§7.6). Its leases, holds and channels end; its panels hide. Files, data, settings, secrets and grants stay. |
+| **update** | Install the new version beside the old. If it adds permissions, wait (§6.4). Then hot swap (§7.6) at the right moment (§7.6, "when"). Record `previous`. |
+| **rollback** | Only if the previous folder exists: hot swap back to it, shallow verify first. A revoked version is refused (`trust.revoked`). |
+| **remove** | Stop it and end its Job Object. Delete its secrets, undo its `footprint`, delete its version folders, then `data\` per `[lifecycle] data` (`ask` without a terminal is `keep`). Remove the records. First-party modules shipped in the MSI offer **Turn off**, not Remove (UX7). |
 
-- `hideout modules list` lists every installed module, every running core and its built-in
-  modules (from run files), with `id`, `version`, `kind`, `family`, `enabled`, `source` and any
-  problem. It changes nothing.
-- A step interrupted at any point leaves either the old state or the new one: the rename is the
-  commit point, and a leftover `<id>.new` is deleted by the next step that touches `<id>`.
+**CLI exit codes:** 0 done; 1 refused (error id printed, `error.id` in `--json`); 2 usage; 3 needs
+approval; 4 busy (lock held); 5 the hub isn't running (for steps that need it).
 
-**CLI exit codes:** 0 done; 1 refused (a check failed; the error id is printed, and is
-`error.id` in `--json`); 2 usage; 3 needs approval (permissions or `data = "ask"` without a
-terminal); 4 busy (another `hideout` holds the lock file `inventory.lock`).
+### 7.5 Launch and registration
 
-### 5.5 Built-in modules
+LSP-style: capabilities and versions are exchanged once.
 
-- A built-in module's on/off switch lives in its core's settings (Foxglove's store; Vulpes's
-  config), and the existing switches keep working (`FOXGLOVE_DISABLE=<name>` turns a built-in
-  off for one run).
-- Turning a built-in module off MUST leave typing, the core's brokers and every other module
-  working (the keyboard-first rule). With every built-in off, Foxglove is the tray, the device
-  layer and the brokers.
-- `hideout modules enable|disable` on a built-in module answers `lifecycle.builtin` and names the
-  core's setting. The CLI never edits a core's settings.
+1. **Launch.** The hub shallow-verifies, then starts the exe in a Job Object (§7.7) with:
+   - `HIDEOUT_PIPE`: the router pipe name;
+   - `HIDEOUT_TOKEN`: a one-time launch token;
+   - `HIDEOUT_INSTANCE`: the instance id.
+2. **Connect.** The module sends `initialize {id, version, instance, token, hub, api}`. The hub
+   checks the token, the pid and the exe hash. The result gives `granted`, `settings_dir`,
+   `data_dir` and the served `hub` and `api` versions.
+3. **Import** (handover only): the hub sends `state.import {blob, from_version}` if the old
+   instance exported state.
+4. **Register.** `module.register {methods, facts, channels}`, then `ui.register {…}`.
+5. **Ready.** `module.ready {instance}`. Only now does the router send it traffic, and its panels
+   go live.
 
-## 6. IPC
+A module that doesn't send `module.ready` within 30 s of start is treated as crashed.
 
-### 6.1 Wire
+### 7.6 Hot swap
 
-- **JSON-RPC 2.0**, one UTF-8 message per line (`\n`-terminated, no embedded newlines), at most
-  256 KiB per line. This is Foxglove's v1 wire, unchanged (`crates/plugin-api/src/rpc.rs`).
-- Requests carry an `id` and get exactly one response. Notifications (events) have no `id`.
-- **`initialize` comes first** on every connection; anything else before it answers error 5.
-- **Error codes:** JSON-RPC's own (−32700, −32600, −32601, −32602, −32603), then the shared codes
-  1 unsupported, 2 disconnected, 3 busy, 4 timeout, 5 denied, 6 backend, 7 version,
-  8 rate-limited. Both cores use them with these meanings. New shared codes come only with a
-  contract minor; a core MUST NOT give its own meaning to codes 1–99.
+An upgrade, a rollback, a reload or a dev rebuild. Four steps (design §4.5):
 
-### 6.2 Transports
+1. **Stage.** The new version is in its own folder and passes the launch check.
+2. **Drain.** The hub sends `module.drain {reason}` to the old instance.
+   - Answer `{state: "done"}`: go on.
+   - Answer `{state: "busy", reason}` (a flash running, unsaved edits, a wizard open): the swap
+     waits. The module's header shows "Update ready: waits until you finish <reason>", with a
+     **Force** button. The hub sends `module.drain` again only on the module's `module.idle`
+     notification or the user's Force, never on a timer (UX6).
+   - After `done`, the old instance finishes calls in flight (5-second cap) and gets no new ones.
+3. **Start or stop, by `swap` mode:**
+   - **`overlap`** (no exclusive resource): start the new instance beside the old; on
+     `module.ready`, route new calls to it; send `module.exit` to the old.
+   - **`handover`** (an exclusive OS resource: Raw HID, LampArrays, the topmost overlay): call
+     `state.export {}` on the old (result `{blob}`, at most 256 KiB, or `null`); send
+     `module.exit`; start the new one; send it `state.import`.
+   - Callers see at most one error 2 and retry. A key action is queued up to 2 s, delivered once,
+     then dropped with a named status line ("Mic mute didn't run: Mic restarting") (UX3).
+4. **Rebuild.** New panels replace old ones, keeping view state (§5.6). Facts are published
+   again. The routing table changes in one step.
 
-| Transport | Who | Permissions |
-|---|---|---|
-| **stdio** | `service` modules, which their core starts | the module's granted permissions |
-| **`\\.\pipe\foxglove-<user>`** (exists) | outside tools, `foxglove-cli`, the Foxglove MCP adapter, Vulpes | outside tools: approved per tool; Vulpes: the cross-core grant |
-| **`\\.\pipe\vulpes-<user>`** (new) | outside tools, the Vulpes MCP adapter, Foxglove | the same |
+**When a swap may run (UX6):**
+- Catalog updates apply when the module is idle (drain says `done`) and no game is running.
+- Modules with `swap = "handover"` that own lights or the keyboard link update together, only at
+  sign-in or with the hub's own update, never mid-session.
+- During a planned swap the header says "Updating…" (blue) for at most a second, and input is held
+  and replayed after `module.ready`. Only an unplanned exit shows "Restarting".
+- The dev loop runs only in isolated lab hubs. A hub in developer mode shows a warning bar with
+  **Leave developer mode**.
 
-- `<user>` is `%USERNAME%` keeping only ASCII letters, digits, `-` and `_` (Foxglove's
-  `pipe::name()` today).
-- Pipes MUST be created with a current-user-only ACL and `PIPE_REJECT_REMOTE_CLIENTS`.
-- Vulpes serves its pipe while its UI or tray process runs.
-- **No network listener.** Loopback WebSockets stay opt-in adapters with a per-install token
-  (Foxglove's live feed, Arete's web UI). Tailnet exposure stays a Vulpes-only opt-in and MUST
-  NOT forward to Foxglove's pipe.
+### 7.7 The supervisor
 
-### 6.3 Connections and leases
+Design §3.1.
 
-- Anything a connection holds ends when the connection ends: lighting leases, panel holds, GPU
-  tenancy, subscriptions, app watches, streams. A crash or a kill ends it the same way.
-- Liveness is the connection, not a heartbeat (#281): a core sees a module exit from its process
-  handle; a module sees its core go when stdin ends; a pipe client sees the pipe close.
+- **Contains** each instance in its own Job Object: memory and CPU caps, no breakaway, and an
+  AppContainer when the permissions allow it.
+- **Restarts** a crashed instance with backoff from 1 s up to 60 s. Five crashes in ten minutes
+  stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash.
+- **Notices** a crash by events only: the process handle and the pipe closing. No heartbeats
+  (#281).
+- **Captures** each module's stderr to its log.
+- **Does not** probe health, set resource policy for a domain, or restart a module because
+  another needs it.
+
+### 7.8 States (UX4)
+
+One state list, used by the panel header, the Modules page and the tray status line. The hub
+publishes it as the fact `module.<id>.state` (and `module.<id>.reason`).
+
+| State id | UI name | Reason line | Ways out |
+|---|---|---|---|
+| `starting` | Starting… | — | none needed (cached view) |
+| `running` | — | — | — |
+| `updating` | Updating… | "Your place on this page is kept" | — |
+| `update-busy` | Update ready | "Waits until you finish <reason>" | **Force**, Not now |
+| `update-waiting` | Update waiting for you | the new permission, in plain words | **Review**, Not now (keeps the old version) |
+| `restarting` | Restarting (n of 5) | when it stopped | Open log |
+| `crash-stopped` | Stopped after 5 crashes | "crashed 5 times in 10 minutes" | **Start again**, **Start with default settings**, **Go back to <previous>**, Copy diagnostics |
+| `waiting` | Waiting for <module> | the root cause, named once | **Go to <module>** |
+| `needs-hub` | Needs a newer Hideout | — | **Update Hideout**, Go back to <previous> |
+| `install-failed` | Couldn't install / update | plain cause | **Try again**, Open log |
+| `quarantined` | <Module>'s page couldn't be shown | §5.5 | **Start again**, Go back to <previous> |
+| `off` | Off | — | Turn on |
+
+Rules:
+- **Start with default settings** renames the settings folder to `settings.bad-<time>` and starts
+  the module. The hub needs no knowledge of the values.
+- **Automatic rollback:** a module that reaches `crash-stopped` within 10 minutes of an update goes
+  back to the previous version by itself and says so.
+- **Root cause once:** a state caused by another module says "Waiting for <module>" and links
+  there. The tray shows only the root.
+
+### 7.9 When the hub goes
+
+- Modules notice the pipe close and keep running for a **30-second grace period**, set once.
+- The hub restarts itself after a panic or a GPU reset. It reads `run\instances.json` and takes
+  back running modules: each reconnects with `initialize` and its original token; the hub checks
+  pid and exe hash.
+- With no hub back within the grace period, each module exits cleanly (lights handed back, the
+  Info screen handed back to the firmware).
+- Pop-outs reopen at their places (§2.5).
+
+### 7.10 Safe mode and bisect (UX5)
+
+- After three hub restarts in five minutes the hub starts in **safe mode**: only the Modules page,
+  no module started, a banner with **Start normally**. Safe mode is a flag the hub sets for itself
+  in `hideout.toml`, logged, cleared by **Start normally**.
+- **Find the module that breaks Hideout** (bisect, from safe mode): the hub turns off half the
+  enabled modules for the session, asks "Still broken?", and halves again until one module is
+  left. It then offers Turn off or Go back to <previous> for that module. The saved enabled set
+  is restored at the end; bisect never edits it.
+
+## 8. IPC
+
+### 8.1 Wire and error codes
+
+- **JSON-RPC 2.0**, one UTF-8 message per line, at most 256 KiB. Foxglove's v1 wire, unchanged.
+- Requests have an `id` and get exactly one response. Notifications have none.
+- `initialize` comes first on every connection; anything else first answers error 5.
+- **Error codes:** JSON-RPC's own (−32700, −32600, −32601, −32602, −32603), then 1 unsupported,
+  2 disconnected (provider gone or swapping), 3 busy, 4 timeout, 5 denied, 6 backend, 7 version,
+  8 rate-limited. New codes only with a `hub` minor. A refusal's `data.reason` is plain words for
+  the UI.
+- A method no module provides answers −32601. A provided method whose module isn't running answers
+  2 (after activation by `call`, if declared).
 - A call with no answer fails after 30 s on the caller's side (error 4).
 
-### 6.4 Discovery
+### 8.2 The router pipe and who connects
 
-No polling. A client finds a core in three ways, all event-driven or one-shot:
+- **`\\.\pipe\hideout-<user>`**, `<user>` = `%USERNAME%` keeping ASCII letters, digits, `-`, `_`.
+  Current-user ACL, `PIPE_REJECT_REMOTE_CLIENTS`.
+- **Modules** connect with their launch token.
+- **Outside tools** (`foxglove-cli`, the `hideout` CLI, `hideout mcp`, scripts) connect without a
+  token and are approved once each.
+- **Legacy stdio plugins** (`transport = "stdio"`) are bridged by the hub.
+- The old `\\.\pipe\foxglove-<user>` is served as an alias once `foxglove.exe` no longer owns it
+  (§8.6).
+- **No network listener** in the hub. Loopback WebSockets stay opt-in adapters inside modules,
+  with a per-install token. Tailnet exposure is Vulpes-only and MUST NOT forward to the hub's
+  pipe.
 
-1. **Fixed pipe names.** Try to open the core's pipe. If it isn't there, the core isn't running.
-2. **Run files.** A running core writes `%LOCALAPPDATA%\Hideout\run\<core>.json` after its pipe is
-   listening and deletes it on a clean exit:
-   ```json
-   {
-     "format": "hideout-run-v1",
-     "core": "vulpes",
-     "version": "0.9.0",
-     "pid": 4242,
-     "exe": "C:\\Users\\me\\AppData\\Local\\Programs\\Arete\\.venv\\Scripts\\pythonw.exe",
-     "pipe": "\\\\.\\pipe\\vulpes-me",
-     "started": "2026-11-09T12:00:00Z",
-     "contract": "1.0",
-     "apis": { "vulpes": "1.0" },
-     "builtins": [ { "id": "vulpes.chat", "version": "0.9.0", "enabled": true } ]
-   }
-   ```
-   A reader MUST treat a run file as stale (and ignore it) unless a process with `pid` is alive,
-   its image path is `exe` (case-insensitive) and it started no later than `started` plus 60 s.
-   A stale file is never an error; the next run of that core overwrites it.
-3. **Retries are event-gated:** on a user action, or when the other core's window appears (the
-   `apps.watch` hook), or when a run file is created (a directory change notification on `run\`).
-   Never on a timer.
+### 8.3 Routing (control plane)
 
-A core with the other core's run file and pipe present shows that core's section in its own
-tray (pick 4: Foxglove's tray shows Vulpes; Vulpes shows its own tray only when Foxglove isn't
-running). Hideout itself has no UI.
+- **Methods** go to the module that provides them (§6.3). Foxglove v1 names keep their meaning
+  (`lighting.*` → `hideout.lights`, `screens.*` → `foxglove.screens`, `art.*` → `foxglove.art`),
+  so existing plugins and `foxglove-cli` work unchanged.
+- **Facts** go through the hub's cache: modules publish with `facts.set`, subscribers and panels
+  get `facts.changed`.
+- The hub carries control and status only. Fast data uses channels.
 
-### 6.5 Versioning
+### 8.4 Direct channels (data plane)
 
-Two version numbers, each `MAJOR.MINOR`:
-- **The contract version** (this document): `1.0`. It covers manifests, the inventory, run files,
-  catalogs and the `initialize` fields below.
-- **Each provider's API version:** Foxglove's local API (1.13 today, `API_VERSION`), and Vulpes's
-  pipe API (1.0 when H4.1 ships).
+- A provider declares channels (`provides = ["channel:<name>"]`, `channel.offer:<name>`).
+- A consumer calls `channel.open {module, channel}`. The hub checks `channel.open:<module>/<channel>`,
+  then calls `channel.create {channel, consumer, nonce}` on the provider. The provider creates a
+  one-time named pipe with a current-user ACL and answers `{pipe}`.
+- The hub returns `{pipe, nonce}` to the consumer and steps out.
+- The consumer connects and sends the nonce first. Then frames flow directly:
+  `u32 little-endian length` + payload. Either side closing ends the channel.
+- The hub's panel host opens streams the same way (§5.4) and is just a channel end.
+- Realtime paths (scene to keyboard LEDs, key events to the overlay, art pushes, LED wizard
+  frames, live previews) are channels; the hub only grants them (design §4.6 table).
 
-Rules for both:
-- **A minor only adds:** new methods, new optional fields, new events, new manifest keys, new
-  permission bodies. Both sides ignore unknown fields in messages (not in manifests, §3.1).
-- **A major breaks.** A core serves the current major and the one before it for at least one
-  release cycle.
-- **"Served"** means: same major, and the server's minor is at least the client's (`Version::
-  served_by`). A reader at contract 1.x accepts manifests whose `contract` is `1.0` to `1.x`.
-- **Schemas are generated from the types** and checked in: Foxglove's `schema/v1.json` today,
-  `schema/hideout-v1.json` from H1.2, and pydantic models for Vulpes generated from it. A golden
-  test fails when the types and the schema drift.
+### 8.5 Connections, leases and liveness
 
-**`initialize`** keeps Foxglove's v1 shape and adds two optional fields:
+- Anything a connection holds ends when it ends: lighting leases, Info screen holds, GPU tenancy,
+  subscriptions, app watches, channels.
+- Liveness is the connection, not a heartbeat.
 
-```json
-→ {"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-     "api":"1.0","contract":"1.0",
-     "client":{"name":"vulpes","version":"0.9.0"},
-     "permissions":["foxglove:facts.read:keyboard.*"]}}
-← {"jsonrpc":"2.0","id":1,"result":{
-     "api":"1.13","app":"0.3.0","contract":"1.0",
-     "granted":["facts.read:keyboard.*"]}}
-```
+### 8.6 Discovery
 
-- `api` is the version of **the serving core's** API the client was built for (Foxglove's on
-  Foxglove's pipe, Vulpes's on Vulpes's). Unchanged meaning on Foxglove's pipe.
-- `contract` (new, optional; absent means `1.0`): the contract the client speaks. The result's
-  `contract` is the one the core speaks. A client whose contract major isn't served gets error 7
-  and the connection closes, as for `api`.
-- `permissions` MAY be written prefixed or unprefixed. In the result, `granted` uses the form
-  each core used before this contract (Foxglove: unprefixed) on API 1.x, so existing clients keep
-  working; a client compares in canonical form.
-- A cross-core connection (§4.4) gets its cross-core grant; anything it asks for beyond that is
-  left out of `granted`.
+- **There is one endpoint.** A client finds the hub by opening its fixed pipe; if it isn't there,
+  the hub isn't running.
+- A module learns that a provider is there from the `module.<id>.state` facts, never by polling.
+- Modules come only from manifests in configured module sources (§13.4). The hub has no built-in
+  list.
+- **One-owner rule (pick G):** at start, `foxglove.exe` and `hideout.exe` each try the other's
+  pipe. If the other answers, the starting app asks it to show its window, then exits. "Go back to
+  Foxglove" in the tray restores Foxglove's Run value and Start entry.
 
-### 6.6 Method names
+### 8.7 Versioning
 
-- Foxglove's v1 method and event names stay unprefixed on Foxglove's pipe for good (`facts.get`,
-  `lighting.lease`).
-- Every new cross-core method and event is named `<family>.<area>.<verb>`
-  (`vulpes.gpu.request`, `foxglove.wallpaper.pause`). Every method on Vulpes's pipe starts with
-  `vulpes.`, except `initialize` and `ping`.
-- A method name says which provider's permission it needs; the core's method table is the
-  reference (local-api.md for Foxglove).
+- **`hub`** (this contract, `MAJOR.MINOR`): manifests, the inventory, catalogs, the panel
+  vocabulary and the hub messages below.
+- **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
+  A provider declares its API version in `module.register`.
+- A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
+  Unknown fields in messages are ignored (not in manifests, §4.1).
+- A major breaks. The hub serves N and N−1 for one release cycle.
+- "Served" = same major, server minor ≥ client minor.
+- Schemas are generated from the Rust types (`schema/hideout-v1.json`) with pydantic models for
+  Python, and a golden drift test.
 
-### 6.7 Vulpes pipe methods (reserved by this contract; built in H4.1)
+### 8.8 Message reference
 
-| Method | Kind | Needs |
+Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "C" = any client.
+
+**Lifecycle**
+
+| Message | From → to | Kind | Params | Result | Needs |
+|---|---|---|---|---|---|
+| `initialize` | M → H | call | `{id, version, instance, token, hub, api}` | `{hub, api, granted, settings_dir, data_dir, safe_mode}` | a valid launch token |
+| `initialize` | T → H | call | `{client: {name, version}, hub?, api, permissions}` | `{hub, app, api, granted}` | approval once per tool |
+| `ping` | C → H | call | `{}` | `{}` | — |
+| `module.register` | M → H | call | `{methods: [pattern], facts: [pattern], channels: [name], apis: {family: "MAJOR.MINOR"}}` | `{rejected: [{item, error}]}` | `provide:` and `channel.offer:` for each; catalog (§6.3) |
+| `module.ready` | M → H | notification | `{instance}` | — | — |
+| `module.drain` | H → M | call | `{reason: "update" \| "rollback" \| "reload" \| "disable" \| "remove"}` | `{state: "done"}` or `{state: "busy", reason}` | — |
+| `module.idle` | M → H | notification | `{}` | — | — (after a `busy` drain) |
+| `state.export` | H → M | call | `{}` | `{blob}` (≤ 256 KiB, base64) or `null` | — |
+| `state.import` | H → M | call | `{blob, from_version}` | `{}` | — |
+| `module.exit` | H → M | notification | `{reason}` | — (exit 0 within 5 s, or the Job ends it) | — |
+
+**Panels and UI**
+
+| Message | From → to | Kind | Params | Result | Needs |
+|---|---|---|---|---|---|
+| `ui.register` | M → H | call | `{instance, panels: [{id, slot, title, icon, tree}]}` | `{rejected: [{panel, error}]}` | panels declared in `[[ui.panels]]` |
+| `ui.patch` | M → H | notification | `{panel, ops: [{op: "set" \| "insert" \| "remove", node, props?, index?, tree?}]}` | — | — |
+| `ui.event` | H → M | call | `{panel, node, kind, value}` | `{}`, or an error with `data.reason` (refused) | — |
+| `ui.asset.put` | M → H | call | `{hash, mime, data}` (base64, ≤ 256 KiB) | `{}` | — |
+| `ui.window.open` | H → M | call | `{window}` | `{}` | `ui.window` |
+| `action.invoke` | H → M | call | `{action, source: "key" \| "tray" \| "palette" \| "panel"}` | `{}` | — |
+| `settings.get` | H → M | call | `{}` | `{values: {name: value}}` | — |
+| `settings.set` | H → M | call | `{name, value}` | `{}`, or an error with `data.reason` | — |
+| `hub.notify` | M → H | call | `{title, body, level: "info" \| "warn" \| "error"}` | `{}` | `hub.notify` |
+
+**Facts and channels**
+
+| Message | From → to | Kind | Params | Result | Needs |
+|---|---|---|---|---|---|
+| `facts.get`, `facts.list`, `facts.subscribe`, `facts.unsubscribe` | C → H | call | as Foxglove API v1 | as v1 | `facts.read:<pattern>` |
+| `facts.set` | M → H | call | as v1 | as v1 | `facts.write:<pattern>`, or `facts:` in `provides` |
+| `facts.changed` | H → C | notification | as v1 | — | the subscription |
+| `channel.open` | C → H | call | `{module, channel}` | `{pipe, nonce}` | `channel.open:<module>/<channel>` |
+| `channel.create` | H → M | call | `{channel, consumer, nonce}` | `{pipe}` | the provider offers it |
+
+**Module management**
+
+| Message | From → to | Kind | Params | Result | Needs |
+|---|---|---|---|---|---|
+| `modules.list` | C → H | call | `{}` | `{modules: [{id, name, version, kind, visibility, source, enabled, state}]}` | `modules.manage` |
+| `modules.enable` | C → H | call | `{id}` | `{}` | `modules.manage` |
+| `modules.disable` | C → H | call | `{id}` | `{}` | `modules.manage` |
+| `modules.reload` | C → H | call | `{id}` | `{}` | `modules.manage` |
+
+**Facts the hub publishes:** `module.<id>.state`, `module.<id>.reason`, `module.<id>.version`,
+`hub.safe_mode`. Facts about private modules never reach MCP or the tailnet by default (§13.5).
+
+**Provider methods** (lighting, screens, art, GPU and the rest) are the providers' own API and
+are listed in their API docs (local-api.md for Foxglove; §8.9 for the GPU).
+
+### 8.9 Vulpes GPU methods
+
+Provided by the Vulpes module.
+
+| Method | Kind | Params | Needs |
+|---|---|---|---|
+| `gpu.status` | call | `{}` | `gpu.status` |
+| `gpu.request` | call | `{class, why}` | `gpu.request:<class>`; error 3 while reserved for gaming |
+| `gpu.release` | call | `{}` | the tenancy; also ends with the connection |
+| `gpu.changed` | event | `{tenant, vram, reserved}` | `gpu.status` |
+| `ai.ask` | call | `{agent, prompt}` | `ai.ask:<agent>` |
+
+- A gaming reservation is never a method. It changes only through the user's own click on Vulpes's
+  Free GPU action or panel button (`action.invoke` or `ui.event` with a user source).
+- Gaming is a shared signal: Vulpes publishes `gpu.reserved`, the link publishes
+  `keyboard.game_mode`; neither acts on the other's alone.
+
+## 9. The MCP bridge
+
+Design §4.7.
+
+- **`hideout mcp`** is a stdio adapter and an outside tool of the router, connecting as
+  `mcp:<client>` (`<client>` = the MCP client's `clientInfo.name`, ASCII letters, digits, `-`,
+  `_`, `.`, at most 64). The user approves each agent client once.
+- It exposes the hub's status and every enabled module's `[[mcp.tools]]`:
+
+| Key | Type | Meaning |
 |---|---|---|
-| `vulpes.gpu.status` | call | `vulpes:gpu.status` |
-| `vulpes.gpu.request {class, why}` | call | `vulpes:gpu.request:<class>` (or `:any`); refused with error 3 while the GPU is reserved for gaming |
-| `vulpes.gpu.release` | call | the tenancy it releases; also released when the connection ends |
-| `vulpes.gpu.changed` | event | `vulpes:gpu.status` |
-| `vulpes.gpu.reserve` | call | never grantable (§4.5). Accepted only from Foxglove's core connection (§4.4), which MUST send it only in direct answer to the user pressing a key bound to Foxglove's "Free GPU" action. |
-| `vulpes.gpu.unreserve` | — | not served on the pipe in v1. Only Vulpes's own UI or CLI, on an explicit user request, ends a reservation. |
+| `name` | string | tool name, unique in the module; exposed as `<module name>_<name>` |
+| `description` | string | for the agent |
+| `method` | string | one method the module provides; its schema is the tool's input |
+| `access` | string | `read` or `write` |
+| `ttl_max_s` | integer | write tools that hold something: the longest hold, at most 600 |
 
-Gaming is a shared signal and neither side acts on the other's alone: Vulpes publishes
-`vulpes.gpu.reserved`, Foxglove publishes `keyboard.game_mode`, and Foxglove's game mode never
-reserves the GPU by itself.
+- **Write tools are time-limited:** leases have a TTL (≤ 600 s); holding the Info screen lasts at
+  most 60 s, and a hold with no end is refused. The adapter releases at the TTL, at session end or
+  when it exits.
+- **Never over MCP:** the never-list (§6.6), every `keys`-class channel, and module lifecycle and
+  grants (no tool installs, enables, disables or approves anything).
+- **Private modules** (§13.5): their tools and status are left out unless the user turns on
+  "Show private modules to AI agents" in `[privacy]`.
+- **Vulpes keeps its own MCP server** (`arete mcp`, later `vulpes mcp`), so Claude Code and LM
+  Studio work without the hub. Vulpes agents drive the desk through `hideout mcp` with their
+  `mcp_client`.
+- **No loop:** `hideout mcp` MUST NOT re-export Vulpes's own MCP tools.
 
-## 7. The MCP bridge
+## 10. Lab and dev loop
 
-- **MCP is the door for agents, not for modules.** Modules use the pipes. Agents use MCP.
-- **Each core ships one stdio MCP adapter, which is a client of its own core's pipe** and nothing
-  else. Permissions, rate limits and leases apply to it as to any outside tool.
-  - **Vulpes:** `arete mcp` today, `vulpes mcp` after the rename (with `arete mcp` kept). Its tools
-    don't change.
-  - **Foxglove:** `foxglove-cli mcp` (new, H4.2). It connects as the outside tool
-    `mcp:<client>`, where `<client>` is the MCP client's `clientInfo.name` keeping only ASCII
-    letters, digits, `-`, `_` and `.` (at most 64), so the user approves each agent client once.
-- **There is no aggregate Hideout MCP server.** Each adapter keeps its core's rules in its core's
-  code.
-- **Vulpes agents reach Foxglove through Arete's `mcp_client`** pointed at `foxglove-cli mcp`, so
-  Vulpes needs no Foxglove-specific code. Foxglove modules reach Vulpes through its pipe with
-  `vulpes:` permissions.
+- The dev loop (rebuild one module, hot swap, no hub restart) runs only in isolated lab hubs with
+  their own `HIDEOUT_HOME` and pipe name suffix.
+- Latency of direct channels and the Dynamic Lighting gap during a lights handover are lab cases
+  before any "no flicker" claim (UX6).
 
-**Foxglove adapter tools (v1):**
+## 11. Scope
 
-| Tool | Calls | Needs |
-|---|---|---|
-| `status` | `initialize` result, `devices.list` | `devices.read` |
-| `devices` | `devices.list` | `devices.read` |
-| `keyboard_facts` | `facts.get` for `keyboard.layer`, `keyboard.layers`, `keyboard.right.battery`, `keyboard.link`, `keyboard.connected` | `facts.read:keyboard.*` |
-| `screens` | `screens.list` | `devices.read` |
-| `lights` | `lighting.state` | `devices.read` |
-| `lighting_lease {device, color, effect?, priority?, ttl_s}` | `lighting.lease`, then `lighting.release` | `lighting.write` |
-| `panel_show {device, bitmap, ttl_ms, screen?}` | `screens.panel_override` | `screens.write` |
-| `art_select {device, art}` | `art.select` | `art.write` |
-| `profile_activate {profile}` | `profiles.activate` | `profiles.write` |
+- The hub adds **composition only**: the registry, panels, routing, grants and supervision.
+  Domain logic stays in modules.
+- **Systems, not products:** modules are written against a class (any HID LampArray, any Raw HID
+  keyboard speaking the link, any GPU tenant, any MCP client). Models and vendor quirks are content
+  and catalog data, never code.
+- **Licences:** the contract, the SDKs and every module talk over IPC and MAY use any licence the
+  author picks; first-party SDKs are MIT. The hub is built from Foxglove's shell code and is GPL.
 
-- **Write tools are time-limited.** `lighting_lease` takes a required `ttl_s` from 1 to 600; the
-  adapter releases the lease at the TTL, when the MCP session ends, or when it exits, whichever
-  is first. `panel_show` is at most 60 s and `ttl_ms` 0 (hold) is refused.
-- **The adapter MUST NOT expose** anything on the never-list (§4.5): no tool for `key.events`,
-  `hid.raw`, `behaviors.invoke`, secrets or a GPU reservation. It MUST NOT ask for those
-  permissions in `initialize`, and the core refuses them if it does.
-- **Module lifecycle and grants are not reachable through MCP** in v1: no tool installs, enables,
-  disables, updates or removes a module, or approves a permission. Those stay with the user.
+## 12. Trust
 
-## 8. Trust
+### 12.1 Three kinds of trust, kept apart
 
-### 8.1 Three kinds of trust, kept apart
+1. **Module provenance** (this section and §13.6): minisign chains from configured trust anchors.
+   Works without Authenticode.
+2. **The hub's own update:** its own Ed25519 `latest.json` (Foxglove's). Not covered here.
+3. **Code signing** (Authenticode, #383): SmartScreen and package identity. No part of the module
+   system waits on it.
 
-1. **Module provenance** (this section): a minisign chain from one Hideout root. Works without
-   Authenticode.
-2. **App updates:** each core keeps its own update key and channel (Foxglove's Ed25519
-   `latest.json`; Vulpes's gated source update until it ships a package). Not covered here.
-3. **Code signing** (Authenticode, #383): stops SmartScreen warnings and unblocks Foxglove's sparse
-   identity. **No part of the module system waits on it.**
-
-### 8.2 The chain
+### 12.2 The Hideout root chain
 
 ```
-Hideout root key (offline, minisign; public key pinned in both cores and hideout.exe)
-  └─ signs root.json  (format hideout-root-v1)
+Hideout root key (offline, minisign; public key pinned in hideout.exe)
+  └─ signs root.json (format hideout-root-v1)
        └─ names catalog keys, each bound to ONE family and a list of id scopes
             └─ each family's key signs that family's catalog.json
                  └─ pins each module version: archive SHA-256 and every file's SHA-256
-                      └─ a runtime's pins (url + sha256), inside its signed module.toml
+                      └─ a runtime's pins, inside its signed module.toml
 ```
 
-- **One root** (pick 3). The plugin root keys were never made (#90), so the Hideout root is the
-  first root and no rotation is needed. Foxglove's `foxglove-plugin-root` format stays readable
-  (as a root with one family, `foxglove`, scoped to every id) so existing test catalogs still
-  verify; it MUST NOT be pinned in a release once the Hideout root exists.
-- **Signatures** are minisign (Ed25519) over the exact bytes of the file, in a `.minisig` file
-  next to it (`root.json.minisig`, `catalog.json.minisig`), checked with `minisign-verify` in
-  Rust and an equivalent Ed25519 minisign check in Python (or by running `hideout`).
-- **Times** are RFC 3339 UTC in exactly the form `YYYY-MM-DDTHH:MM:SSZ`, compared as text.
+- **One root** (kept pick). Foxglove's `foxglove-plugin-root` format stays readable as a root with
+  one family, `foxglove`, so existing test catalogs verify. It MUST NOT be pinned in a release once
+  the Hideout root exists.
+- Signatures are minisign (Ed25519) over the exact file bytes, in a `.minisig` beside it.
+- Times are RFC 3339 UTC, `YYYY-MM-DDTHH:MM:SSZ`, compared as text.
 
-### 8.3 `root.json`
+### 12.3 `root.json`
 
 ```json
 {
@@ -682,160 +1005,290 @@ Hideout root key (offline, minisign; public key pinned in both cores and hideout
   "epoch": 0,
   "expires": "2027-11-09T00:00:00Z",
   "families": {
-    "foxglove":  { "keys": ["RWQ...base64..."], "scope": ["foxglove.*", "org.foxglove.*", "com.example.*"] },
-    "vulpes":    { "keys": ["RWQ...base64..."], "scope": ["vulpes.*", "arete.*"] },
-    "digitalis": { "keys": ["RWQ...base64..."], "scope": ["digitalis.*"] }
+    "foxglove":  { "keys": ["RWQ..."], "scope": ["foxglove.*", "org.foxglove.*"] },
+    "vulpes":    { "keys": ["RWQ..."], "scope": ["vulpes", "vulpes.*", "arete.*"] },
+    "digitalis": { "keys": ["RWQ..."], "scope": ["digitalis", "digitalis.*"] },
+    "hideout":   { "keys": ["RWQ..."], "scope": ["hideout.*"] }
   }
 }
 ```
 
-- `families` keys are the families of §3.3 (not `third-party`). Each has one or more minisign
-  public keys (base64) and a `scope`: a list of id patterns, each an exact id or a prefix ending
-  in `.*` (`com.example.*` covers `com.example.weather`, not `com.example`). `*` alone is refused.
-- **Third-party modules** are listed in a first-party family's catalog, under a scope the root
-  grants that family (`com.example.*` above).
-- **Scopes MUST NOT overlap** between families: no id may match scopes of two families. A root
-  where they do is invalid (`trust.scope-overlap`).
-- A key MAY appear in only one family (`trust.key-reuse`).
-- The root is checked as Foxglove's is today: signature by the pinned root key, not expired,
-  `version` not below `seen.root_version`, `epoch` not below `seen.epoch` (`trust.root-*`).
+- A scope entry is an exact id or a prefix ending in `.*`. `*` alone is refused.
+- Third-party public modules are listed in a first-party family's catalog under a scope the root
+  grants that family.
+- Scopes MUST NOT overlap between families (`trust.scope-overlap`). A key appears in one family
+  only (`trust.key-reuse`).
+- Checked against the pinned key, `expires`, and `seen` (`trust.root-expired`,
+  `trust.root-rollback`).
 
-### 8.4 A family's `catalog.json`
+### 12.4 A catalog (`catalog.json`)
 
-Foxglove's v2 catalog format (`foxglove-plugin-catalog-v2`, `crates/plugin-trust`) with these
-additions, under the new format name `hideout-catalog-v1`:
+Format `hideout-catalog-v1` (Foxglove's `foxglove-plugin-catalog-v2` plus):
 
 ```json
 {
   "format": "hideout-catalog-v1",
-  "family": "vulpes",
+  "family": "foxglove",
   "epoch": 0,
   "sequence": 3,
   "expires": "2026-12-09T00:00:00Z",
   "modules": [
     {
-      "id": "vulpes.runtime.llama-cpp",
-      "version": "11476.0.0",
-      "kind": "runtime",
+      "id": "<id>",
+      "version": "0.4.0",
+      "kind": "service",
+      "visibility": "public",
       "channel": "stable",
+      "hub": "1.0",
       "sha256": "<archive sha256>",
-      "url": "https://github.com/BanditF/vulpes/releases/download/.../vulpes.runtime.llama-cpp-11476.0.0.zip",
+      "url": "https://…/<id>-0.4.0.zip",
       "size": 2048,
-      "files": { "module.toml": "<sha256>" }
+      "files": { "module.toml": "<sha256>" },
+      "provide": ["art.*"],
+      "channels": { "<name>": { "capability": "<plain words>", "risk": "normal" } }
     }
   ],
-  "revocations": [
-    { "id": "vulpes.search", "versions": ["0.1.0"], "action": "yank", "reason": "broken search" }
-  ]
+  "revocations": [ { "id": "<id>", "versions": ["0.1.0"], "action": "yank", "reason": "<why>" } ]
 }
 ```
 
-A catalog is accepted only if all of these hold:
-- its signature verifies with a key the root lists **for the catalog's `family`**
-  (`trust.signature`);
-- every entry's `id` (and every revocation's `id`) matches that family's scope
-  (`trust.scope`); one entry out of scope rejects the whole catalog;
-- `epoch` equals the root's (`trust.epoch`); it isn't expired (`trust.expired`);
-- `sequence` isn't below `seen.families[<family>]` in the same epoch (`trust.rollback`); a new
-  epoch restarts every family's sequence.
+Accepted only if:
+- the signature verifies with a key the anchor lists for `family` (`trust.signature`);
+- every entry and revocation id is in that family's scope (`trust.scope`); one out of scope rejects
+  the catalog;
+- `epoch` equals the root's (`trust.epoch`); not expired (`trust.expired`);
+- `sequence` is not below `seen` (`trust.rollback`).
 
 Entries:
-- `kind` is required in `hideout-catalog-v1`; it MUST equal the manifest's (`trust.mismatch`).
-- `modules` is the entry list (`plugins` and `kits` are read as aliases, as today).
-- `channel`, `url`, `size`, `revocations` (yank: no new installs; revoke: also stops running)
-  keep their v2 meaning.
-- A runtime's pins are in its `module.toml`, which is one of the signed `files`; so the pins are
-  signed through the catalog, and Arete's source no longer holds them.
+- `kind` and `visibility` MUST equal the manifest's (`trust.mismatch`).
+- `provide` is the method patterns the module may register (§6.3).
+- `channels` gives each offered channel its capability line and risk class (§6.2).
+- `plugins` and `kits` are read as aliases of `modules`.
+- yank: no new installs; revoke: also stops running.
 
-After accepting a root and a catalog, the reader stores the new `seen` (§5.3) before using the
-catalog; if it can't store it, it MUST NOT go on.
+After accepting, the reader stores the new `seen` before using the catalog; if it can't, it MUST
+NOT go on.
 
-### 8.5 What verification proves
+### 12.5 What verification proves
 
-- An archive installs only if its SHA-256 is in an accepted catalog of the family whose scope
-  covers its id, and that version isn't yanked or revoked.
-- A module runs only if its folder holds exactly the signed files and its version isn't revoked
-  (checked before every launch, §5.4).
-- None of this grants a permission (§4.3).
+- An archive installs only if its SHA-256 is in an accepted catalog whose anchor and scope cover
+  its id, and that version isn't withdrawn.
+- A module runs only if its folder holds exactly the signed files and it isn't revoked.
+- None of this grants a permission (§6.5).
 
-### 8.6 Sideloading (developer mode)
+### 12.6 Developer mode (unsigned sideload)
 
-- Outside the catalog, a module installs only in developer mode (Foxglove's existing
-  `FOXGLOVE_DEV_UNSIGNED_PLUGINS`, and a `HIDEOUT_DEV_UNSIGNED=1` equivalent for the CLI).
-- A sideloaded module is recorded with `source: "sideload"`; its shallow verify compares the
-  folder against the inventory's hashes instead of a catalog. It still gets only what the user
-  granted.
-- A sideloaded module MUST NOT use an id inside a first-party scope of the pinned root
-  (`trust.sideload-scope`), so it can't pose as a signed one.
+- Outside any catalog, a module installs only in developer mode (`FOXGLOVE_DEV_UNSIGNED_PLUGINS`,
+  `HIDEOUT_DEV_UNSIGNED=1`). Source id `sideload`.
+- Its shallow verify compares against the inventory's hashes.
+- It MUST NOT use an id in a first-party scope (`trust.sideload-scope`).
 
-## 9. Scope
+## 13. Public and private modules (user requirement, 11/09)
 
-- Hideout adds **local composition only:** the manifest, trust, the inventory, the lifecycle and
-  discovery. Settings, domain logic and UI stay in the cores.
-- Hideout has no daemon, no settings and no UI of its own (pick 1). A change that adds one is a
-  `needs-decision`.
-- **Systems, not products:** brokers and modules are written against a class of hardware or
-  software (any HID LampArray, any Raw HID keyboard speaking the link, any GPU tenant, any MCP
-  client). Keyboard models and vendor quirks are content modules and catalog data, never code.
-- **Licences:** the contract, the SDKs and every service module talk over IPC and stay MIT.
-  Built-in modules are part of their core (Foxglove is GPL).
+### 13.1 The rule
 
-## 10. Error ids
+- A module is **public** or **private** (`visibility` in `module.toml`, default `public`).
+- **Public** modules live in the public repo or registry.
+- **Private** modules live in a separate private repo or a local folder.
+- Both are installed, verified, enabled, hot-swapped, rolled back and removed the same way (§7).
+  No step may branch on visibility except where this section says so.
 
-Readers report a failed check with one of these ids (in `--json` output as `error.id`, in Rust as
-the error's `id()`, in Python as the exception's `id`). The message text is free; the id is the
-contract, and the test vectors check it.
+### 13.2 Nothing private in public
+
+- Nothing about a private module may appear in the public repo: not its id or name in code, docs,
+  tests, test vectors, schemas, examples, logs checked in, or crash reports.
+- The hub and every first-party module MUST NOT hold a hard-coded module list (§2.2). Behaviour for
+  a module comes from its manifest, its catalog entry and facts.
+- A private module's id MUST NOT start with a reserved first label (§4.3). Private ids SHOULD be
+  reverse-DNS under a name the user owns.
+- A public module MUST NOT `require` a private module, and a public catalog MUST NOT list one.
+- Private modules MAY require and call public ones like any module.
+
+### 13.3 What visibility changes
+
+Only these:
+- the module comes from a private source (§13.4) and verifies against that source's anchor
+  (§13.6);
+- shared output redacts it (§13.5);
+- MCP leaves it out by default (§9).
+
+### 13.4 Module sources and discovery
+
+Modules are discovered **only** from configured module sources and the manifests in them.
+`hideout.toml` lists them:
+
+```toml
+[[sources]]
+id = "<source id>"                # a-z, 0-9, -; unique
+kind = "catalog"                  # catalog | git | folder
+visibility = "public"             # public | private
+url = "https://…/catalog.json"    # catalog: an https URL; git: a repo URL; folder: absent
+path = ""                         # folder: an absolute local path; otherwise absent
+anchor = "<trust anchor id>"      # §13.6; absent only for a developer-mode folder
+```
+
+- **Kinds:**
+  - `catalog`: a signed `catalog.json` at an https URL (the public registry is one).
+  - `git`: a private git repo holding a signed `catalog.json` and module archives; fetched with
+    the user's own git credentials, which the hub never stores.
+  - `folder`: a local folder holding a signed `catalog.json` and archives, or, in developer mode,
+    unsigned module folders.
+- There MUST be at least one `public` source (the Hideout registry, shipped in the MSI config) and
+  MAY be any number of `private` ones.
+- A `private` source's modules MUST have `visibility = "private"`; a `public` source's MUST be
+  `public` (`trust.visibility`).
+- Sources are fetched on the user's action or at the hub's update, never on a timer. A `folder`
+  source is noticed by a directory-change notification.
+- Adding or removing a source is a user action in the Modules page or the CLI. A source is never
+  added by a module or an outside tool.
+- Removing a source leaves its installed modules installed; their updates stop.
+
+### 13.5 Redaction in shared output
+
+The hub MUST be able to redact or omit a private module's identity in anything shared:
+- **Copy diagnostics, crash reports, health signals and telemetry:** by default a private module
+  appears as `private-<n>`, a stable per-install alias (an HMAC of the id with a secret kept in
+  `hideout.toml`, truncated). Its name, version, paths, method names, fact names, panel titles and
+  source URL are left out.
+- `[privacy] share_private = "alias" | "omit" | "full"` (default `alias`). `full` is a deliberate
+  user choice per copy, never a saved default.
+- **Logs** on disk MAY name private modules, since they stay local. Any log excerpt that becomes
+  shared output is redacted by the same rule before it leaves the hub.
+- The crash breadcrumb (§5.5) and module stderr captures follow the same rule when shared.
+- Facts about private modules (`module.<id>.*`) are not sent over MCP or to the tailnet unless
+  `[privacy] agents_see_private = true`.
+
+### 13.6 Trust anchors
+
+A trust anchor is a key a source's catalog must verify against. `hideout.toml` lists them:
+
+```toml
+[[trust.anchors]]
+id = "<anchor id>"
+kind = "root"                     # root | user
+key = "RWQ..."                    # minisign public key
+scope = ["<reverse-dns>.*"]       # user anchors only: the ids it may sign
+```
+
+- **`root`:** the Hideout root (§12.2), pinned in `hideout.exe`. It cannot be removed or replaced
+  through `hideout.toml`.
+- **`user`:** a local or user signing key the user adds (for a private repo or folder). It signs a
+  `catalog.json` directly; there is no `root.json` above it.
+  - Its `scope` MUST NOT overlap any scope of the Hideout root (`trust.scope-overlap`), so it can
+    never sign a first-party id.
+  - Adding one is a user action, shown with the key's fingerprint.
+- Every rule of §12.4 and §12.5 applies to user-signed catalogs (signature, scope, expiry,
+  sequence, `seen` per anchor).
+- Providers: a user-signed catalog may fix `provide` only for method areas no root-signed catalog
+  assigns (§6.3).
+- A module signed by a user anchor counts as "signed by a user key" for §6.6: it may be granted
+  `key.events`, `hid.raw` or a `keys` channel with the red warning, never over MCP.
+
+## 14. Naming (pick H, UX20)
+
+- **UI words:** "Modules" (the page and each item) and "panels" (what a module declares). "Cards"
+  and "Plugins" are not used in the UI. In code: `module`, `ui.register {panels}`.
+- Each module shows a plain function name in the UI (Keyboard, Lights, Scenes, Screens, Art,
+  Overlay, Keymap, Firmware, Find my LEDs, Wallpaper Engine, Mic, Batteries, AI).
+- **Info screen:** the keyboard screen the PC draws on (it was the "left panel"). In code:
+  `info_screen`, `crates/info-screen`. Screens are named by role, never by side.
+  - The UI MUST NOT use "Info" alone as a label.
+  - The first time it appears (first run and the Screens page), a small board drawing marks the
+    Info screen and the Art screen.
+- **Wire names stay:** `screens.panel_override`, `screens.panel_release` and the SDK's `panel_*`
+  keep working for good. `screens.info_*` aliases arrive in a minor; the SDK gains
+  `info_screen_*`, and the old names are deprecated, not removed.
+- **Hideout** is the product. **Foxglove** names the keyboard family (`foxglove.*`, Digitalis, the
+  models). **Vulpes** is the AI module (Arete today).
+- "Style" is for image generation only; it never stands for palette, wallpaper, effect or look.
+
+## 15. Error ids
+
+Readers report a failed check with one of these ids (`error.id` in `--json`, the error's `id()` in
+Rust, the exception's `id` in Python). Message text is free; the id is the contract.
 
 | Id | When |
 |---|---|
 | `manifest.syntax` | not valid TOML, or a key has the wrong type |
-| `manifest.unknown-key` | a key the reader doesn't know, at any level |
+| `manifest.unknown-key` | a key the reader doesn't know |
 | `manifest.missing-key` | a required key is missing |
-| `manifest.id` | the id breaks §3.3's grammar |
-| `manifest.family` | `family` is unknown or doesn't match the id's reserved first label |
-| `manifest.kind` | `kind` is unknown |
-| `manifest.version` | `version` isn't SemVer as §3.2 says |
-| `manifest.contract` | `contract` isn't `MAJOR.MINOR`, or isn't served |
-| `manifest.api` | an `api` value isn't `MAJOR.MINOR`, its key isn't a provider, or (legacy files) it isn't served |
-| `manifest.run` | `run` is missing for a service, present for another kind, empty, or leaves the folder |
-| `manifest.requires` | a `requires` entry breaks §3.4's grammar |
-| `manifest.enriches` | an `enriches` entry isn't `<name>.exe` |
-| `manifest.provides` | an unknown `provides` entry, or a content or firmware module without its entry |
-| `manifest.lifecycle` | an unknown `start` or `data` value, or a bad `on-fact` pattern |
-| `manifest.pin` | `[[pin]]` on a non-runtime, missing on a runtime, or a bad `url`, `sha256` or `unpack` |
-| `manifest.edition` | `[edition]` without `content:edition`, or the reverse, or a bad `modules` list |
-| `manifest.actions` | as plugin.toml |
-| `manifest.settings` | as plugin.toml |
-| `manifest.secrets` | `[[secrets]]` without the `secrets` permission |
-| `permission.unknown` | an unknown provider or body |
-| `permission.argument` | a known body with a bad argument |
-| `permission.never` | a core manifest grants itself a never-list permission on the other core |
-| `lifecycle.api` | a provider API it needs isn't served by what is installed |
-| `lifecycle.requires` | a required module is missing, too old or disabled, or there is a cycle |
-| `lifecycle.required-by` | disabling or removing it would break an enabled module |
+| `manifest.id` | the id breaks §4.3 |
+| `manifest.family` | unknown family, or it doesn't match a reserved first label |
+| `manifest.kind` | unknown kind |
+| `manifest.version` | not SemVer as §4.2 |
+| `manifest.hub` | `hub` isn't `MAJOR.MINOR`, or isn't served |
+| `manifest.api` | an `api` value isn't `MAJOR.MINOR` |
+| `manifest.run` | `run` missing, present where it mustn't be, empty, or leaving the folder |
+| `manifest.visibility` | unknown visibility, or a private module with a reserved first label |
+| `manifest.requires` | bad `requires` grammar, or a public module requiring a private one |
+| `manifest.enriches` | an entry isn't `<name>.exe` |
+| `manifest.provides` | unknown entry, or content/firmware without its entry |
+| `manifest.activation` | a bad `activation.on` or `when` entry |
+| `manifest.ui` | a bad `[[ui.panels]]` or `[[ui.windows]]` entry |
+| `manifest.mcp` | a bad `[[mcp.tools]]` entry |
+| `manifest.pin` | `[[pin]]` misplaced, missing, or bad |
+| `manifest.edition` | `[edition]` without `content:edition`, or the reverse |
+| `manifest.identity` | `[identity]` on a module that may not have it |
+| `manifest.actions`, `manifest.settings` | as plugin.toml |
+| `manifest.secrets` | `[[secrets]]` without `secrets` |
+| `permission.unknown` | unknown permission |
+| `permission.argument` | bad argument |
+| `permission.never` | a never-list item asked for where it can't be granted |
+| `permission.provider` | registering a method the catalog doesn't allow |
+| `ui.undeclared` | `ui.register` with a panel id not in `[[ui.panels]]` |
+| `ui.limits` | a panel tree over a cap |
+| `lifecycle.api` | a needed API isn't served |
+| `lifecycle.requires` | a required module is missing, too old or off, or a cycle |
+| `lifecycle.required-by` | disabling would break an enabled module |
 | `lifecycle.declined` | the user declined the permissions |
-| `lifecycle.builtin` | a lifecycle step the CLI doesn't do for built-in modules |
-| `lifecycle.edition` | an edition lists a module that isn't installed (reported, not fatal) |
-| `trust.signature` | a signature doesn't verify with the key it must |
-| `trust.root-expired`, `trust.root-rollback` | the root expired, or is older than `seen` |
-| `trust.scope` | a catalog entry or revocation is outside its family's scope |
-| `trust.scope-overlap` | two families' scopes cover the same id |
-| `trust.key-reuse` | one key is listed for two families |
+| `lifecycle.edition` | an edition lists a module that isn't installed (reported) |
+| `lifecycle.no-hub` | a step that needs the hub, with the hub not running |
+| `trust.signature` | a signature doesn't verify |
+| `trust.root-expired`, `trust.root-rollback` | the root expired or is older than `seen` |
+| `trust.scope` | an entry is outside its family's or anchor's scope |
+| `trust.scope-overlap` | two scopes cover the same id (families, or a user anchor and the root) |
+| `trust.key-reuse` | one key in two families |
 | `trust.epoch` | a catalog's epoch isn't its root's |
 | `trust.expired` | a catalog expired |
 | `trust.rollback` | a catalog's sequence is below `seen` |
-| `trust.unknown-archive` | the archive's hash isn't in any accepted catalog |
+| `trust.unknown-archive` | the archive isn't in any accepted catalog |
 | `trust.yanked`, `trust.revoked` | the version was withdrawn |
 | `trust.files` | the folder doesn't hold exactly the signed files |
-| `trust.mismatch` | the manifest's id, version or kind differs from the catalog entry |
-| `trust.sideload-scope` | a sideloaded module uses an id in a first-party scope |
-| `rpc.*` | JSON-RPC transcripts use the numeric codes of §6.1 instead |
+| `trust.mismatch` | manifest id, version, kind or visibility differs from the entry |
+| `trust.visibility` | a module's visibility doesn't match its source's |
+| `trust.sideload-scope` | a sideloaded module uses a first-party id |
+| `rpc.*` | JSON-RPC transcripts use the numeric codes of §8.1 |
 
-## 11. Test vectors
+## 16. Test vectors
 
-`tests/hideout-vectors/` holds the shared vectors (#906): valid and invalid `module.toml` files,
-legacy `plugin.toml` and `kit.toml` files, permission strings, roots and catalogs, and JSON-RPC
-transcripts. Its `index.json` gives each file's expected result: `valid` (with the normalized
-fields a reader must produce) or `invalid` (with the error id of §10). Both the Rust crate (H1.1)
-and Vulpes's models (H1.3) MUST pass every vector; a change to this spec that changes an
-expected result changes the vector in the same PR.
+`tests/hideout-vectors/` (#906) holds valid and invalid `module.toml` files, legacy `plugin.toml`
+and `kit.toml` files, permission strings, roots, catalogs, `hideout.toml` source and anchor
+tables, panel trees (under and over the caps), and JSON-RPC transcripts for every message in §8.8.
+`index.json` gives each file's expected result: `valid` (with the normalized fields) or `invalid`
+(with the §15 id). The Rust crate and Vulpes's models MUST pass every vector. A spec change that
+changes a result changes the vector in the same PR. Vectors MUST use placeholder ids only and
+never name a private module (§13.2).
+
+## 17. Open questions
+
+1. **Pick F, the version number.** Main's `app/Cargo.toml` says 0.2.0, while the running app-main
+   build logs "Foxglove 0.3.0". Which release is the last Foxglove and which is the Hideout
+   cut-over follows whichever is right.
+2. **One-label ids.** The design's inventory (§2) names `vulpes`, `digitalis`, `wallpaper-engine`,
+   `obs`, `mic-mute`, `focus-timer`, `icue`, `openrgb`, `signalrgb`. This spec allows one label
+   only for a family's main module. Do the integrations become `hideout.<name>` (or another
+   family), or does the id rule loosen?
+3. **Device presence.** Is `devices.present.<class>` published by a new first-party module or by
+   `hideout.appwatch` grown (UX12 allows either)? The design writes `devices.present:<class>`;
+   this spec uses dots for fact names.
+4. **Stream frame payloads.** §8.4 fixes the framing, not the payload encoding of `canvas`,
+   `image` and `text` stream frames (JSON, CBOR or a fixed binary layout).
+5. **Adopted modules' version.** §7.4 checks the version reported in `initialize`; should the hub
+   instead read it from the install (Arete's `pyproject.toml` or `--version`) before launch?
+6. **Grants and installs in two files.** Install records live in `inventory.json` (hideout-core),
+   grants and enabled state in `hideout.toml` (hub), per design §3. Confirm the split, or move
+   grants into the inventory so the CLI can enable without the hub.
+7. **Private-source credentials.** `git` sources use the user's own git credentials. Is that
+   enough, or should a private source support a token stored in Credential Manager?
+8. **Keeping private names out of the public repo.** §13.2 is a rule; should the gate also check
+   for it, for example against a deny-list kept outside the repo?
