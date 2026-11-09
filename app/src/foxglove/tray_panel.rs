@@ -495,6 +495,11 @@ pub fn show(ctx: &egui::Context) -> bool {
     let focused = ctx.input(|i| i.viewport().focused);
     if focused == Some(true) {
         open.focused = true;
+    } else if ctx.input(|i| i.pointer.any_pressed()) {
+        // #912: the overlay is never activated by a click (WS_EX_NOACTIVATE), so when opening
+        // didn't get the foreground, a press on the panel (the only part of the window that
+        // takes clicks while it's open) asks for it, for Esc and closing on a click elsewhere.
+        super::focus::bring_to_front(ctx, egui::ViewportId::ROOT, super::overlay_restore::hwnd());
     }
     let lost_focus = open.focused && focused == Some(false);
     if lost_focus {
