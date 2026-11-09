@@ -341,6 +341,21 @@ pub fn keyboard_key() -> Option<String> {
         .then(|| d.calibration_key())
 }
 
+/// The connected keyboard's VID/PID without discovery, waiting for a discovery in progress (it
+/// holds the device across the keyboard's first replies, when [`keyboard_key`] says none). Off
+/// the UI thread only.
+pub fn keyboard_ids() -> Option<(u16, u16)> {
+    use foxglove_devices::Device as _;
+    let cached = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
+    let d = cached.as_ref()?;
+    let id = &d.info().id;
+    d.link()
+        .state()
+        .connected
+        .is_some()
+        .then_some((id.vid, id.pid))
+}
+
 /// The connected keyboard's device id (as the lighting arbiter keys it), without blocking or
 /// discovery (for the UI).
 pub fn keyboard_id() -> Option<String> {

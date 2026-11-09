@@ -390,43 +390,85 @@ mod imp {
         skip: &dyn Fn(&str) -> bool,
         one_only: bool,
     ) -> windows::core::Result<Vec<(String, LampArray)>> {
-        matching_counted(vid, pid, skip, one_only).map(|(out, _, _)| out)
+        matching_counted(vid, pid, skip, one_only).map(|c| c.found)
     }
 
-    /// The matching arrays (device id, array), how many Windows lists, how many were skipped.
-    type Counted = (Vec<(String, LampArray)>, usize, usize);
+    /// What [`matching_counted`] found.
+    struct Counted {
+        /// The matching arrays (device id, array).
+        found: Vec<(String, LampArray)>,
+        /// How many LampArrays Windows lists.
+        listed: usize,
+        /// How many of them report another vendor and product.
+        skipped: usize,
+        /// Every listed one not taken, with why.
+        not_held: Vec<super::super::lamp_hold::NotHeld>,
+    }
 
-    /// [`matching`], with how many LampArrays Windows lists and how many of them another
-    /// vendor and product skipped (the hold's log line, #179).
+    /// [`matching`], with how many LampArrays Windows lists, how many of them another vendor
+    /// and product skipped, and why each one not taken wasn't (the hold's log lines, #179). One
+    /// array Windows won't open or describe is a reason on that array, never the end of the
+    /// list.
     fn matching_counted(
         vid: u16,
         pid: u16,
         skip: &dyn Fn(&str) -> bool,
         one_only: bool,
     ) -> windows::core::Result<Counted> {
+        use super::super::lamp_hold::NotHeld;
         let selector = LampArray::GetDeviceSelector()?;
         let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
-        let mut out = Vec::new();
-        let mut skipped = 0;
-        for info in &list {
-            if one_only && !out.is_empty() {
-                break;
+        let mut c = Counted {
+            found: Vec::new(),
+            listed: list.Size()? as usize,
+            skipped: 0,
+            not_held: Vec::new(),
+        };
+        for (n, info) in (&list).into_iter().enumerate() {
+            let Ok(id) = info.Id().map(|i| i.to_string()) else {
+                c.not_held.push(NotHeld {
+                    id: format!("#{n}"),
+                    reason: "Windows gave no device id".into(),
+                });
+                continue;
+            };
+            let mut not = |reason: String| {
+                c.not_held.push(NotHeld {
+                    id: id.clone(),
+                    reason,
+                })
+            };
+            if one_only && !c.found.is_empty() {
+                not("one device per key, and one is taken".into());
+                continue;
             }
-            let id = info.Id()?.to_string();
             if skip(&id) {
+                not("another light or transport has it".into());
                 continue;
             }
             let hid = windows::core::HSTRING::from(id.as_str());
-            let Ok(array) = LampArray::FromIdAsync(&hid).and_then(|op| op.join()) else {
-                continue;
+            let array = match LampArray::FromIdAsync(&hid).and_then(|op| op.join()) {
+                Ok(a) => a,
+                Err(e) => {
+                    not(format!(
+                        "Windows didn't open it (LampArray.FromIdAsync: {e})"
+                    ));
+                    continue;
+                }
             };
-            if array.HardwareVendorId()? != vid || array.HardwareProductId()? != pid {
-                skipped += 1;
-                continue;
+            let ids = array
+                .HardwareVendorId()
+                .and_then(|v| array.HardwareProductId().map(|p| (v, p)));
+            match ids {
+                Ok(ids) if ids == (vid, pid) => c.found.push((id, array)),
+                Ok((v, p)) => {
+                    c.skipped += 1;
+                    not(format!("another device ({v:04x}:{p:04x})"));
+                }
+                Err(e) => not(format!("its vendor and product can't be read: {e}")),
             }
-            out.push((id, array));
         }
-        Ok((out, list.Size()? as usize, skipped))
+        Ok(c)
     }
 
     /// The LampArrays behind a Lights page key: those whose vendor and product match, not
@@ -465,11 +507,20 @@ mod imp {
             pid: u16,
             changed: Changed,
         ) -> super::super::lamp_hold::Opened {
-            let (found, listed, skipped) = matching_counted(vid, pid, &|_| false, false)
-                .unwrap_or_else(|e| {
-                    eprintln!("Foxglove: holding the keyboard's Dynamic Lighting devices: {e}");
-                    (Vec::new(), 0, 0)
-                });
+            let Counted {
+                found,
+                listed,
+                skipped,
+                not_held,
+            } = matching_counted(vid, pid, &|_| false, false).unwrap_or_else(|e| {
+                eprintln!("Foxglove: holding the keyboard's Dynamic Lighting devices: {e}");
+                Counted {
+                    found: Vec::new(),
+                    listed: 0,
+                    skipped: 0,
+                    not_held: Vec::new(),
+                }
+            });
             let held = found
                 .into_iter()
                 .map(|(id, array)| {
@@ -497,6 +548,7 @@ mod imp {
                 held,
                 listed,
                 skipped,
+                not_held,
             }
         }
     }

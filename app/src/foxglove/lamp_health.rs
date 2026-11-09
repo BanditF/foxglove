@@ -64,7 +64,12 @@ pub fn rows_now() -> Vec<HealthRow> {
         let holds = super::lamp_hold::now();
         out.extend(hold_rows(holds));
         if let Some(listed) = super::lamp_hold::listed_now() {
-            out.extend(unheld_rows(holds, listed));
+            out.extend(unheld_rows(
+                holds,
+                listed,
+                super::lamp_hold::paused(),
+                super::lamp_hold::last_open().as_deref(),
+            ));
         }
     }
     out
@@ -128,10 +133,21 @@ pub fn hold_rows(holds: super::lamp_hold::Holds) -> Vec<HealthRow> {
         .collect()
 }
 
-/// With identity, a WARN per transport Windows lists the keyboard's LampArray on (`listed`,
+/// With identity, a FAIL per transport Windows lists the keyboard's LampArray on (`listed`,
 /// `(usb, ble)`) while Foxglove holds none there: Windows' own controller may take that one and
-/// turn the keyboard's host link off (#179). [`hold_rows`] covers the ones held.
-pub fn unheld_rows(holds: super::lamp_hold::Holds, listed: (bool, bool)) -> Vec<HealthRow> {
+/// turn the keyboard's host link off (#179), and `foxglove-lab health` says so by its exit code.
+/// `last` is what the last open found (`lamp_hold::last_open`), so the row says why. None
+/// while `paused` (pause lets the holds go on purpose). [`hold_rows`] covers the ones held.
+pub fn unheld_rows(
+    holds: super::lamp_hold::Holds,
+    listed: (bool, bool),
+    paused: bool,
+    last: Option<&str>,
+) -> Vec<HealthRow> {
+    if paused {
+        return Vec::new();
+    }
+    let last = last.unwrap_or("no open has run since Foxglove started");
     [
         ("USB", listed.0, holds.usb),
         ("Bluetooth", listed.1, holds.ble),
@@ -142,9 +158,10 @@ pub fn unheld_rows(holds: super::lamp_hold::Holds, listed: (bool, bool)) -> Vec<
         HealthRow::new(
             SUBSYSTEM,
             format!("Keyboard LampArray over {via}"),
-            Level::Warn,
+            Level::Fail,
             format!(
-                "Listed by Windows, not held: Foxglove didn't open the keyboard's {via}                  LampArray, so Windows' own background controller may take it. Reconnecting the                  keyboard opens it again; the log's \"keyboard LampArrays after\" line says what                  the last open found"
+                "Listed by Windows, not held: Foxglove didn't open the keyboard's {via} \
+                 LampArray, so Windows' own background controller may take it. Last open: {last}"
             ),
         )
     })
@@ -439,29 +456,48 @@ mod tests {
         );
     }
 
-    /// The 11/07 runs held nothing over Bluetooth and nothing said so: a listed transport not
-    /// held is a WARN; a held one or one not listed adds no row.
+    /// The 11/07 runs held nothing and nothing said why: a listed transport not held is a FAIL
+    /// (the lab's health exit code) naming the last open's outcome; a held one, one not listed,
+    /// or any while paused adds no row.
     #[test]
-    fn a_listed_lamp_array_not_held_warns() {
+    fn a_listed_lamp_array_not_held_fails_with_the_last_open() {
         use crate::foxglove::lamp_hold::Holds;
         let usb_only = Holds {
             usb: Some(true),
             ble: None,
         };
-        let r = unheld_rows(usb_only, (true, true));
+        let last =
+            "keyboard LampArrays after a reopen: none opened: no host-link keyboard found yet";
+        let r = unheld_rows(usb_only, (true, true), false, Some(last));
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].level, Level::Warn);
+        assert_eq!(r[0].level, Level::Fail);
         assert_eq!(r[0].item, "Keyboard LampArray over Bluetooth");
         assert!(r[0].detail.contains("not held"), "{}", r[0].detail);
-        assert!(unheld_rows(usb_only, (true, false)).is_empty());
+        assert!(r[0].detail.contains(last), "{}", r[0].detail);
+        assert!(
+            !r[0].detail.contains("  "),
+            "no stray spaces: {}",
+            r[0].detail
+        );
+        assert!(unheld_rows(usb_only, (true, false), false, None).is_empty());
         let both = Holds {
             usb: Some(true),
             ble: Some(false),
         };
         assert!(
-            unheld_rows(both, (true, true)).is_empty(),
+            unheld_rows(both, (true, true), false, None).is_empty(),
             "held by another controller is hold_rows' WARN"
         );
-        assert_eq!(unheld_rows(Holds::default(), (true, true)).len(), 2);
+        let none = unheld_rows(Holds::default(), (true, true), false, None);
+        assert_eq!(none.len(), 2);
+        assert!(
+            none[0].detail.contains("no open has run"),
+            "{}",
+            none[0].detail
+        );
+        assert!(
+            unheld_rows(Holds::default(), (true, true), true, None).is_empty(),
+            "paused lets go on purpose"
+        );
     }
 }

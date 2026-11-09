@@ -90,7 +90,22 @@ pub struct Opened {
     pub listed: usize,
     /// Those skipped because they report another vendor and product.
     pub skipped: usize,
+    /// Every listed LampArray not held, with why (another device, or Windows refused to open
+    /// it): each gets its own log line, so an open is never silent.
+    pub not_held: Vec<NotHeld>,
 }
+
+/// One LampArray Windows lists that an open didn't hold, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotHeld {
+    /// Windows' device id.
+    pub id: String,
+    pub reason: String,
+}
+
+/// Finds the host-link keyboard's VID/PID when the holder has none yet (waiting for a
+/// discovery in progress; on the holder's own thread only).
+pub type Find = Box<dyn Fn() -> Option<(u16, u16)> + Send>;
 
 /// Opens the LampArrays of one keyboard (Windows', or a fake in tests).
 pub trait HoldOpener: Send {
@@ -135,12 +150,16 @@ struct Core {
     held: Vec<HeldArray>,
     /// The transports Windows lists the keyboard's LampArrays on.
     listed: Listed,
+    /// The host-link keyboard, asked when an open comes before any keyboard event did.
+    find: Find,
     tx: mpsc::Sender<Job>,
     holds: Holds,
     /// Foxglove is paused: nothing is held, and nothing is opened until it resumes.
     paused: bool,
     /// Told when what Foxglove holds changes (a held keyboard retries its host link once).
     notify: Arc<dyn Fn() + Send + Sync>,
+    /// What the last open found, as logged.
+    last: Option<String>,
 }
 
 impl Core {
@@ -201,7 +220,21 @@ impl Core {
     /// Opens the keyboard's LampArrays, adding those not held yet (the held ones stay as they
     /// are), and logs what each transport got.
     fn open(&mut self, why: &str) {
-        let Some((vid, pid)) = self.keyboard.filter(|_| !self.paused) else {
+        if self.paused {
+            self.record(format!(
+                "keyboard LampArrays after {why}: none opened: Foxglove is paused"
+            ));
+            return;
+        }
+        if self.keyboard.is_none() {
+            // An open (the watch's first listing, a device scan) before any keyboard event
+            // reached the holder: ask for the keyboard rather than skip the open.
+            self.keyboard = (self.find)();
+        }
+        let Some((vid, pid)) = self.keyboard else {
+            self.record(format!(
+                "keyboard LampArrays after {why}: none opened: no host-link keyboard found yet"
+            ));
             return;
         };
         let tx = self.tx.clone();
@@ -209,6 +242,9 @@ impl Core {
             let _ = tx.send(Job::Changed);
         });
         let opened = self.opener.open(vid, pid, changed);
+        for n in &opened.not_held {
+            eprintln!("Foxglove: LampArray {}: not held: {}", n.id, n.reason);
+        }
         for a in opened.held {
             // A second handle on one held is dropped (closed) here.
             if !self.held.iter().any(|h| h.id == a.id) {
@@ -216,13 +252,21 @@ impl Core {
             }
         }
         let (usb, ble) = (self.listed)(vid, pid);
-        eprintln!(
-            "Foxglove: keyboard LampArrays after {why}: USB {}, BLE {} ({} LampArrays listed, {}              skipped by VID/PID)",
+        self.record(format!(
+            "keyboard LampArrays after {why}: USB {}, BLE {} ({} LampArrays listed, {} skipped \
+             by VID/PID, {vid:04x}:{pid:04x} wanted)",
             claim_words(self.has(false), usb),
             claim_words(self.has(true), ble),
             opened.listed,
             opened.skipped
-        );
+        ));
+    }
+
+    /// Logs an open's outcome and keeps it for [`last_open`].
+    fn record(&mut self, line: String) {
+        eprintln!("Foxglove: {line}");
+        *LAST_OPEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(line.clone());
+        self.last = Some(line);
     }
 
     /// Holds one of this transport's arrays.
@@ -241,6 +285,7 @@ impl Core {
     }
 
     fn publish(&mut self) {
+        PAUSED.store(self.paused, std::sync::atomic::Ordering::Relaxed);
         let side = |ble: bool| {
             let mine: Vec<bool> = self
                 .held
@@ -266,6 +311,21 @@ impl Core {
         }
     }
 }
+
+/// What the last open found (its log line without the prefix), for the health rows.
+static LAST_OPEN: Mutex<Option<String>> = Mutex::new(None);
+
+/// What the last open found, as logged; `None` before the first.
+pub fn last_open() -> Option<String> {
+    LAST_OPEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Whether the holder lets go on purpose now (Foxglove paused): no hold is expected then.
+pub fn paused() -> bool {
+    PAUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// One transport in the open's log line: held, missed (Windows lists it, nothing held), or not
 /// listed.
@@ -321,17 +381,26 @@ fn send(job: Job) {
 }
 
 /// The holder thread with `opener`, its queue kept for [`send`].
-fn spawn(opener: Box<dyn HoldOpener>, listed: Listed, notify: Arc<dyn Fn() + Send + Sync>) {
+fn spawn(
+    opener: Box<dyn HoldOpener>,
+    listed: Listed,
+    find: Find,
+    notify: Arc<dyn Fn() + Send + Sync>,
+) {
     let (tx, rx) = mpsc::channel();
+    let paused = super::pause::paused();
+    PAUSED.store(paused, std::sync::atomic::Ordering::Relaxed);
     let mut core = Core {
         opener,
         keyboard: None,
         held: Vec::new(),
         listed,
+        find,
         tx: tx.clone(),
         holds: Holds::default(),
-        paused: super::pause::paused(),
+        paused,
         notify,
+        last: None,
     };
     *TX.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     super::services::spawn_named("lamp-hold", move || {
@@ -346,7 +415,8 @@ fn spawn(opener: Box<dyn HoldOpener>, listed: Listed, notify: Arc<dyn Fn() + Sen
     });
 }
 
-/// The host-link keyboard's VID/PID, without blocking.
+/// The host-link keyboard's VID/PID, without blocking (`None` while discovery holds the device:
+/// the holder itself uses the events' ids and `devices::keyboard_ids`).
 fn keyboard() -> Option<(u16, u16)> {
     let key = super::devices::keyboard_key()?;
     let mut parts = key.split(':');
@@ -365,6 +435,7 @@ pub fn start() {
         Box::new(|vid, pid| {
             listed_in(&super::pc_lights::snapshot().keyboard_lamp_arrays, vid, pid)
         }),
+        Box::new(super::devices::keyboard_ids),
         Arc::new(|| {
             // Windows may have taken or given back the keyboard: a held scene tries its host
             // link once, and the pages repaint with the owner line.
@@ -372,16 +443,34 @@ pub fn start() {
             super::lights_owner::repaint();
         }),
     );
-    watch();
+    // Subscribed before the first ask, so a keyboard found in between still arrives as an event.
     let events = super::devices::bus().subscribe(false);
+    watch();
     super::services::spawn_named("lamp-hold-events", move || {
-        send(Job::Keyboard(keyboard()));
+        // Waits for a discovery in progress (this thread only): a keyboard found before the
+        // subscription is held too.
+        if let Some(k) = super::devices::keyboard_ids() {
+            send(Job::Keyboard(Some(k)));
+        }
         for e in events {
-            if e.event == foxglove_devices::DeviceEvent::Connected {
-                send(Job::Keyboard(keyboard()));
+            if let Some(job) = job_for_event(&e) {
+                send(job);
             }
         }
     });
+}
+
+/// The backend of the keyboard with Foxglove's host link (`devices::device`).
+const HOST_KEYBOARD: &str = "zmk";
+
+/// The holder's job for a device-bus event: the host-link keyboard connected, by the VID/PID
+/// the event carries. Not `keyboard()`: the bus gets the first Connected while discovery still
+/// holds the device's lock (`devices::device` builds the device under it, and the device's
+/// link subscription replays "connected" at once), so a non-blocking look then finds no
+/// keyboard, and the hold never opened (11/07, chain-6211).
+fn job_for_event(e: &foxglove_devices::Event) -> Option<Job> {
+    (e.event == foxglove_devices::DeviceEvent::Connected && e.device.backend.0 == HOST_KEYBOARD)
+        .then_some(Job::Keyboard(Some((e.device.vid, e.device.pid))))
 }
 
 /// The watch on the LampArrays Windows lists, kept for the app's life (the process's end stops
@@ -503,11 +592,15 @@ mod tests {
                     device: Box::new(FakeDevice(self.ble.clone())),
                 });
             }
-            let listed = held.len();
+            let listed = held.len() + 1;
             Opened {
                 held,
                 listed,
-                skipped: 0,
+                skipped: 1,
+                not_held: vec![NotHeld {
+                    id: "mouse".into(),
+                    reason: "another device (046d:c08b)".into(),
+                }],
             }
         }
     }
@@ -522,6 +615,8 @@ mod tests {
         told: Arc<AtomicU32>,
         /// Windows lists the Bluetooth LampArray (the opener finds it, the scan names it).
         ble_listed: Arc<AtomicBool>,
+        /// The keyboard `find` reports (the device layer's, once discovery is done).
+        found: Arc<Mutex<Option<(u16, u16)>>>,
     }
 
     fn rig() -> Rig {
@@ -530,6 +625,7 @@ mod tests {
         let changed = Arc::new(Mutex::new(None));
         let told = Arc::new(AtomicU32::new(0));
         let ble_listed = Arc::new(AtomicBool::new(true));
+        let found = Arc::new(Mutex::new(None));
         let (tx, rx) = mpsc::channel();
         let t = told.clone();
         let l = ble_listed.clone();
@@ -547,12 +643,17 @@ mod tests {
                 let ours = (vid, pid) == CORNE;
                 (ours, ours && l.load(Ordering::SeqCst))
             }),
+            find: {
+                let f = found.clone();
+                Box::new(move || *f.lock().unwrap())
+            },
             tx,
             holds: Holds::default(),
             paused: false,
             notify: Arc::new(move || {
                 t.fetch_add(1, Ordering::SeqCst);
             }),
+            last: None,
         };
         Rig {
             core,
@@ -563,6 +664,7 @@ mod tests {
             changed,
             told,
             ble_listed,
+            found,
         }
     }
 
@@ -742,6 +844,60 @@ mod tests {
         // Paused: nothing is missing, nothing opens.
         r.core.handle(vec![Job::Paused(true)]);
         assert_eq!(r.core.missing(), (false, false));
+    }
+
+    /// The 11/07 bug (chain-6211): the keyboard's Connected reached the holder while discovery
+    /// still held the device, so the non-blocking look found none, and every later open (the
+    /// watch's listing, a device scan) skipped without a word. Now the bus event's own ids name
+    /// the keyboard.
+    #[test]
+    fn the_connect_event_names_the_keyboard_by_its_own_ids() {
+        use foxglove_devices::{BackendId, DeviceEvent, DeviceId, Event};
+        let event = |backend: &str, event| Event {
+            device: DeviceId::new(BackendId(backend.into()), 0x1d50, 0x615e, None, "1d50:615e"),
+            event,
+        };
+        let job = job_for_event(&event("zmk", DeviceEvent::Connected));
+        assert!(matches!(job, Some(Job::Keyboard(Some(CORNE)))));
+        assert!(job_for_event(&event("openrgb", DeviceEvent::Connected)).is_none());
+        let gone = DeviceEvent::Disconnected {
+            reason: "unplugged".into(),
+        };
+        assert!(job_for_event(&event("zmk", gone)).is_none());
+        // Driven through the holder: both transports held at once.
+        let mut r = rig();
+        r.usb.available.store(true, Ordering::SeqCst);
+        r.ble.available.store(true, Ordering::SeqCst);
+        r.core.handle(vec![
+            job_for_event(&event("zmk", DeviceEvent::Connected)).unwrap()
+        ]);
+        assert!(r.core.holds.ours(Owner::LampArrayUsb) && r.core.holds.ours(Owner::LampArrayBle));
+    }
+
+    /// An open that comes before any keyboard event (the watch's first listing) asks for the
+    /// keyboard instead of skipping; with none yet it says so, and the keyboard's connect then
+    /// opens both.
+    #[test]
+    fn an_open_before_the_keyboard_event_finds_it_or_says_why() {
+        let mut r = rig();
+        r.core.handle(vec![job_for(Watched::Enumerated)]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 0);
+        let last = r.core.last.clone().unwrap();
+        assert!(last.contains("no host-link keyboard found yet"), "{last}");
+        // Discovery done: the next listing finds it without a keyboard event.
+        *r.found.lock().unwrap() = Some(CORNE);
+        r.core.handle(vec![job_for(Watched::Added("ble".into()))]);
+        assert_eq!(r.opened.load(Ordering::SeqCst), 1);
+        assert!(r.core.holds.usb.is_some() && r.core.holds.ble.is_some());
+        let last = r.core.last.clone().unwrap();
+        assert!(
+            last.contains("USB held, BLE held") && last.contains("1d50:615e wanted"),
+            "{last}"
+        );
+        assert!(last.contains("3 LampArrays listed, 1 skipped"), "{last}");
+        // Paused: the open says why nothing was opened.
+        r.core.handle(vec![Job::Paused(true)]);
+        assert!(r.core.last.clone().unwrap().contains("Foxglove is paused"));
     }
 
     #[test]
