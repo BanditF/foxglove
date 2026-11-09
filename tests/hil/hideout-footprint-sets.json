@@ -1,0 +1,6 @@
+{
+  "_comment": "Module sets the idle-footprint case (scripts/lab/hideout_footprint.py, #935) measures the hub with. 'none' is built in. 'default' lists module folders (each copied to <HIDEOUT_CONFIG_DIR>/modules/<folder name>) and is empty until the first-party default set exists; add folders here and nothing else changes.",
+  "sets": {
+    "default": []
+  }
+}
