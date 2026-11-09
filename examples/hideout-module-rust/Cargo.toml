@@ -1,0 +1,16 @@
+[package]
+name = "hideout-example-module"
+version = "0.1.0"
+edition = "2021"
+description = "A sample Hideout module in Rust (example.counter), and the replay of the shared JSON-RPC transcripts"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "hideout-example-module"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-plugin = { path = "../../crates/plugin-sdk" }
+serde = "1"
+serde_json = "1"

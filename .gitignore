@@ -6,6 +6,8 @@ modules/
 !/tools/local.example.toml
 # The Bandit art generators (#885) are versioned.
 !/tools/art-src/
+# The Hideout Python model generator (#921) is versioned.
+!/tools/gen_hideout_models.py
 .west/
 __pycache__/
 
