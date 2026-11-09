@@ -115,6 +115,9 @@ fn note_foreground() {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
     if own.as_deref() != Some(exe.as_str()) {
+        // A game or lighting app coming to the front may take a held LampArray without an
+        // AvailabilityChanged (#925): the holder reads its arrays again (it drops repeats).
+        super::lamp_hold::foreground_changed(Some(exe.clone()));
         update_snapshot(|s| s.foreground = Some(exe));
     }
 }
