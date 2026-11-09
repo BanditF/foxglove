@@ -1,0 +1,29 @@
+{
+  "name": "quarantine-breadcrumb",
+  "module": "foxglove.example-art",
+  "spec": [
+    "5.5",
+    "7.8"
+  ],
+  "description": "Two hub restarts within a minute with the same panel breadcrumb start the hub with that module's panels quarantined.",
+  "steps": [
+    {
+      "event": "hub is drawing a panel of foxglove.example-art (breadcrumb) and dies"
+    },
+    {
+      "event": "hub restarts, dies on the same breadcrumb within 60 s"
+    },
+    {
+      "event": "hub restarts: panels of foxglove.example-art quarantined"
+    },
+    {
+      "expect": {
+        "state": "quarantined",
+        "ways_out": [
+          "Start again",
+          "Go back to <previous>"
+        ]
+      }
+    }
+  ]
+}

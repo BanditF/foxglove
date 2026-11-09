@@ -1,0 +1,53 @@
+{
+  "name": "state-restarting",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "State restarting: the fact module.<id>.state is 'restarting'.",
+  "steps": [
+    {
+      "event": "trigger: unplanned exit, exit code not 0"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "restarting"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.reason",
+          "value": "It stopped 12 seconds ago"
+        }
+      },
+      "why": "reason text is plain words and free; only the state id is the contract"
+    },
+    {
+      "expect": {
+        "ui_name": "Restarting (2 of 5)",
+        "ways_out": [
+          "Open log"
+        ],
+        "shown_in": [
+          "panel header",
+          "Modules page",
+          "tray status line"
+        ]
+      }
+    }
+  ]
+}

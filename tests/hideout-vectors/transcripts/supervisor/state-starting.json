@@ -1,0 +1,37 @@
+{
+  "name": "state-starting",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "State starting: the fact module.<id>.state is 'starting'.",
+  "steps": [
+    {
+      "event": "trigger: hub launches the exe; before module.ready"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "starting"
+        }
+      }
+    },
+    {
+      "expect": {
+        "ui_name": "Starting...",
+        "ways_out": [],
+        "shown_in": [
+          "panel header",
+          "Modules page",
+          "tray status line"
+        ]
+      }
+    }
+  ]
+}

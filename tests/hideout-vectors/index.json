@@ -1,0 +1,3707 @@
+{
+  "format": "hideout-vectors-index-v1",
+  "spec": "docs/hideout-contract.md",
+  "contract": "1.0",
+  "reader_hub": "1.0",
+  "now": "2026-11-09T12:00:00Z",
+  "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
+  "vectors": {
+    "config/hideout.anchor-overlaps-root-exact.toml": {
+      "spec": [
+        "13.6"
+      ],
+      "result": "invalid",
+      "id": "trust.scope-overlap",
+      "note": "A user anchor names an id inside the hideout.* root scope.",
+      "context": {
+        "root": "trust/root/root.valid.json"
+      }
+    },
+    "config/hideout.anchor-overlaps-root.toml": {
+      "spec": [
+        "13.6"
+      ],
+      "result": "invalid",
+      "id": "trust.scope-overlap",
+      "note": "A user anchor's scope covers foxglove.*, a root scope.",
+      "context": {
+        "root": "trust/root/root.valid.json"
+      }
+    },
+    "config/hideout.valid.toml": {
+      "spec": [
+        "13.4",
+        "13.5",
+        "13.6"
+      ],
+      "result": "valid",
+      "note": "Public catalog source, private git and folder sources, a developer-mode folder without anchor, a user anchor with a non-overlapping scope.",
+      "context": {
+        "root_scopes": {
+          "foxglove": {
+            "keys": [
+              "RWSdJ6+XIVNuyUZhfQ1xtx3k4OTF3LS/PzwWW8SSo6ebuj6BPGJz37qf"
+            ],
+            "scope": [
+              "foxglove.*",
+              "org.foxglove.*",
+              "example.vendor.*"
+            ]
+          },
+          "vulpes": {
+            "keys": [
+              "RWQx9IXBZtsmcpsJdlp1+ipoldqF6E5bT5mES1gRLQ8Y1A/N6irdUhl4"
+            ],
+            "scope": [
+              "vulpes",
+              "vulpes.*",
+              "arete.*"
+            ]
+          },
+          "digitalis": {
+            "keys": [
+              "RWSpw9C8tuv1LVXMUghhfx0tfn0/T8L/bmDisoE5HBpItCkQShCBdaSO"
+            ],
+            "scope": [
+              "digitalis",
+              "digitalis.*"
+            ]
+          },
+          "hideout": {
+            "keys": [
+              "RWQS6os71TGNPPxh3ibdVPiEvAOKWVsef49qSc/Fd7w+PvGAe9vcceJL"
+            ],
+            "scope": [
+              "hideout.*"
+            ]
+          }
+        }
+      }
+    },
+    "frames/panel-frames.json": {
+      "spec": [
+        "5.4",
+        "8.4"
+      ],
+      "result": "table",
+      "note": "Each frame carries its own expect; length mismatches are dropped."
+    },
+    "legacy/invalid-api-three-parts.plugin.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "invalid",
+      "id": "manifest.api",
+      "note": "api must be MAJOR.MINOR."
+    },
+    "legacy/invalid-new-key-hub.plugin.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "invalid",
+      "id": "manifest.unknown-key",
+      "note": "hub is new; a legacy file cannot use it."
+    },
+    "legacy/invalid-new-key-visibility.plugin.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "invalid",
+      "id": "manifest.unknown-key",
+      "note": "A legacy file must not contain keys new in this spec."
+    },
+    "legacy/invalid-new-table-ui.plugin.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "invalid",
+      "id": "manifest.unknown-key",
+      "note": "[[ui.panels]] is new."
+    },
+    "legacy/invalid-one-label-id.plugin.toml": {
+      "spec": [
+        "4.10",
+        "4.3"
+      ],
+      "result": "invalid",
+      "id": "manifest.id",
+      "note": "Legacy ids are reverse-DNS (two or more labels)."
+    },
+    "legacy/kit-old-name.kit.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "valid",
+      "note": "kit.toml (the name before the rename) reads the same as plugin.toml.",
+      "reads_as": {
+        "id": "example.vendor.weather",
+        "name": "Example Weather",
+        "version": "1.2.0",
+        "run": [
+          "weather.exe"
+        ],
+        "permissions": [
+          "facts.write:weather.*",
+          "net"
+        ],
+        "counts": {
+          "actions": 0,
+          "secrets": 0,
+          "settings": 0
+        },
+        "kind": "service",
+        "transport": "stdio",
+        "swap": "overlap",
+        "hub": "1.0",
+        "visibility": "public",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "remove",
+        "family": "third-party",
+        "api": {
+          "foxglove": "1.0"
+        }
+      }
+    },
+    "legacy/plugin-foxglove-prefix.plugin.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "valid",
+      "note": "foxglove.* ids are family foxglove too.",
+      "reads_as": {
+        "id": "foxglove.example-weather",
+        "name": "Example Weather",
+        "version": "1.2.0",
+        "run": [
+          "weather.exe"
+        ],
+        "permissions": [
+          "facts.write:weather.*",
+          "net"
+        ],
+        "counts": {
+          "actions": 0,
+          "secrets": 0,
+          "settings": 0
+        },
+        "kind": "service",
+        "transport": "stdio",
+        "swap": "overlap",
+        "hub": "1.0",
+        "visibility": "public",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "remove",
+        "family": "foxglove",
+        "api": {
+          "foxglove": "1.0"
+        }
+      }
+    },
+    "legacy/plugin-org-foxglove.plugin.toml": {
+      "spec": [
+        "4.10",
+        "4.3"
+      ],
+      "result": "valid",
+      "note": "org.foxglove.* maps to family foxglove; api 1.13 stays a foxglove api.",
+      "reads_as": {
+        "id": "org.foxglove.example-weather",
+        "name": "Example Weather",
+        "version": "1.2.0",
+        "run": [
+          "weather.exe"
+        ],
+        "permissions": [
+          "facts.write:weather.*",
+          "net"
+        ],
+        "counts": {
+          "actions": 0,
+          "secrets": 0,
+          "settings": 0
+        },
+        "kind": "service",
+        "transport": "stdio",
+        "swap": "overlap",
+        "hub": "1.0",
+        "visibility": "public",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "remove",
+        "family": "foxglove",
+        "api": {
+          "foxglove": "1.13"
+        }
+      }
+    },
+    "legacy/plugin-third-party.plugin.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "valid",
+      "note": "A third-party reverse-DNS plugin.toml. Legacy Provides value facts is still read.",
+      "reads_as": {
+        "id": "example.vendor.weather",
+        "name": "Example Weather",
+        "version": "1.2.0",
+        "run": [
+          "weather.exe"
+        ],
+        "permissions": [
+          "facts.write:weather.*",
+          "net"
+        ],
+        "counts": {
+          "actions": 0,
+          "secrets": 0,
+          "settings": 0
+        },
+        "kind": "service",
+        "transport": "stdio",
+        "swap": "overlap",
+        "hub": "1.0",
+        "visibility": "public",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "remove",
+        "family": "third-party",
+        "api": {
+          "foxglove": "1.0"
+        }
+      }
+    },
+    "legacy/plugin-with-contributions.plugin.toml": {
+      "spec": [
+        "4.10",
+        "4.7"
+      ],
+      "result": "valid",
+      "note": "Legacy actions, secrets and settings keep their meaning; every legacy Provides value reads.",
+      "reads_as": {
+        "id": "example.vendor.timer",
+        "name": "Example Timer",
+        "version": "0.1.0",
+        "run": [
+          "timer.exe"
+        ],
+        "permissions": [
+          "secrets",
+          "key.events"
+        ],
+        "counts": {
+          "actions": 1,
+          "secrets": 1,
+          "settings": 1
+        },
+        "kind": "service",
+        "transport": "stdio",
+        "swap": "overlap",
+        "hub": "1.0",
+        "visibility": "public",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "remove",
+        "family": "third-party",
+        "api": {
+          "foxglove": "1.3"
+        }
+      }
+    },
+    "legacy/precedence-kit-only/": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "valid",
+      "note": "Reader looks for module.toml, then plugin.toml, then kit.toml.",
+      "reads": "kit.toml",
+      "id": "example.vendor.old"
+    },
+    "legacy/precedence-module-over-plugin/": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "valid",
+      "note": "Reader looks for module.toml, then plugin.toml, then kit.toml.",
+      "reads": "module.toml",
+      "id": "foxglove.example-art"
+    },
+    "legacy/precedence-plugin-over-kit/": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "valid",
+      "note": "Reader looks for module.toml, then plugin.toml, then kit.toml.",
+      "reads": "plugin.toml",
+      "id": "example.vendor.weather"
+    },
+    "manifests/invalid/actions-bad-id.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.actions",
+      "note": "Action id uses a-z, 0-9, -."
+    },
+    "manifests/invalid/actions-duplicate.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.actions",
+      "note": "Duplicate action id."
+    },
+    "manifests/invalid/activation-app-no-exe.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "invalid",
+      "id": "manifest.activation",
+      "note": "app: needs <name>.exe."
+    },
+    "manifests/invalid/activation-unknown-event.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "invalid",
+      "id": "manifest.activation",
+      "note": "Activation is events only, never timers."
+    },
+    "manifests/invalid/api-bad-string.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.api",
+      "note": "Plain-string api must be MAJOR.MINOR."
+    },
+    "manifests/invalid/api-bad-value.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.api",
+      "note": "api values are MAJOR.MINOR."
+    },
+    "manifests/invalid/edition-provides-without-table.toml": {
+      "spec": [
+        "4.9"
+      ],
+      "result": "invalid",
+      "id": "manifest.edition",
+      "note": "content:edition without [edition]."
+    },
+    "manifests/invalid/edition-without-provides.toml": {
+      "spec": [
+        "4.9"
+      ],
+      "result": "invalid",
+      "id": "manifest.edition",
+      "note": "[edition] without content:edition."
+    },
+    "manifests/invalid/enriches-no-exe.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.enriches",
+      "note": "enriches entries are <name>.exe."
+    },
+    "manifests/invalid/family-label-vs-family.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "invalid",
+      "id": "manifest.family",
+      "note": "vulpes.* with family foxglove: label and family disagree."
+    },
+    "manifests/invalid/family-reserved-label-mismatch.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "invalid",
+      "id": "manifest.family",
+      "note": "A reserved first label needs the matching family."
+    },
+    "manifests/invalid/family-unknown.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.family",
+      "note": "Unknown family."
+    },
+    "manifests/invalid/hub-newer-major.toml": {
+      "spec": [
+        "8.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.hub",
+      "note": "Different major: not served."
+    },
+    "manifests/invalid/hub-newer-minor.toml": {
+      "spec": [
+        "4.1",
+        "8.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.hub",
+      "note": "Written for a newer minor than a v1.0 reader serves."
+    },
+    "manifests/invalid/hub-single-number.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.hub",
+      "note": "hub must be MAJOR.MINOR."
+    },
+    "manifests/invalid/hub-three-parts.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.hub",
+      "note": "hub must be MAJOR.MINOR."
+    },
+    "manifests/invalid/id-bad-label.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "invalid",
+      "id": "manifest.id",
+      "note": "Label starts with an underscore."
+    },
+    "manifests/invalid/id-empty-label.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "invalid",
+      "id": "manifest.id",
+      "note": "Empty label."
+    },
+    "manifests/invalid/id-one-label-third-party.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "invalid",
+      "id": "manifest.id",
+      "note": "One-label ids are first-party only."
+    },
+    "manifests/invalid/id-too-long.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "invalid",
+      "id": "manifest.id",
+      "note": "Id over 128 characters."
+    },
+    "manifests/invalid/id-uppercase.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "invalid",
+      "id": "manifest.id",
+      "note": "Uppercase breaks [a-z0-9][a-z0-9_-]*."
+    },
+    "manifests/invalid/identity-private.toml": {
+      "spec": [
+        "4.8"
+      ],
+      "result": "invalid",
+      "id": "manifest.identity",
+      "note": "[identity] not on private modules."
+    },
+    "manifests/invalid/identity-third-party.toml": {
+      "spec": [
+        "4.8"
+      ],
+      "result": "invalid",
+      "id": "manifest.identity",
+      "note": "[identity] only for public first-party modules."
+    },
+    "manifests/invalid/kind-builtin.toml": {
+      "spec": [
+        "3"
+      ],
+      "result": "invalid",
+      "id": "manifest.kind",
+      "note": "There is no builtin kind."
+    },
+    "manifests/invalid/kind-core.toml": {
+      "spec": [
+        "3"
+      ],
+      "result": "invalid",
+      "id": "manifest.kind",
+      "note": "There is no core kind."
+    },
+    "manifests/invalid/mcp-bad-access.toml": {
+      "spec": [
+        "9"
+      ],
+      "result": "invalid",
+      "id": "manifest.mcp",
+      "note": "access is read or write."
+    },
+    "manifests/invalid/mcp-duplicate-name.toml": {
+      "spec": [
+        "4.2",
+        "9"
+      ],
+      "result": "invalid",
+      "id": "manifest.mcp",
+      "note": "Tool names are unique in the module."
+    },
+    "manifests/invalid/mcp-ttl-too-long.toml": {
+      "spec": [
+        "9"
+      ],
+      "result": "invalid",
+      "id": "manifest.mcp",
+      "note": "ttl_max_s is at most 600."
+    },
+    "manifests/invalid/missing-hub.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.missing-key",
+      "note": "Required key hub missing."
+    },
+    "manifests/invalid/missing-name.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.missing-key",
+      "note": "Required key name missing."
+    },
+    "manifests/invalid/pin-bad-sha.toml": {
+      "spec": [
+        "4.8"
+      ],
+      "result": "invalid",
+      "id": "manifest.pin",
+      "note": "sha256 must be 64 lowercase hex."
+    },
+    "manifests/invalid/pin-http-url.toml": {
+      "spec": [
+        "4.8"
+      ],
+      "result": "invalid",
+      "id": "manifest.pin",
+      "note": "url must be https."
+    },
+    "manifests/invalid/pin-missing-on-runtime.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.pin",
+      "note": "A runtime needs [[pin]]."
+    },
+    "manifests/invalid/pin-on-service.toml": {
+      "spec": [
+        "4.8"
+      ],
+      "result": "invalid",
+      "id": "manifest.pin",
+      "note": "[[pin]] is for runtime only."
+    },
+    "manifests/invalid/provides-content-missing.toml": {
+      "spec": [
+        "4.5"
+      ],
+      "result": "invalid",
+      "id": "manifest.provides",
+      "note": "content module without a content: entry."
+    },
+    "manifests/invalid/provides-firmware-missing.toml": {
+      "spec": [
+        "4.5"
+      ],
+      "result": "invalid",
+      "id": "manifest.provides",
+      "note": "firmware module without a firmware: entry."
+    },
+    "manifests/invalid/provides-unknown.toml": {
+      "spec": [
+        "4.5"
+      ],
+      "result": "invalid",
+      "id": "manifest.provides",
+      "note": "Unknown <what>."
+    },
+    "manifests/invalid/requires-bad-operator.toml": {
+      "spec": [
+        "4.4"
+      ],
+      "result": "invalid",
+      "id": "manifest.requires",
+      "note": "Only >= is allowed."
+    },
+    "manifests/invalid/requires-bad-version.toml": {
+      "spec": [
+        "4.4"
+      ],
+      "result": "invalid",
+      "id": "manifest.requires",
+      "note": "Version must be digits."
+    },
+    "manifests/invalid/requires-public-needs-private.toml": {
+      "spec": [
+        "4.4",
+        "13.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.requires",
+      "note": "Public module requiring a private one. Index context tells the reader example.private.notes is private.",
+      "context": {
+        "private_ids": [
+          "example.private.notes"
+        ]
+      }
+    },
+    "manifests/invalid/run-absolute-service.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.run",
+      "note": "Absolute run is for adopted only."
+    },
+    "manifests/invalid/run-empty.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.run",
+      "note": "Empty run."
+    },
+    "manifests/invalid/run-missing-service.toml": {
+      "spec": [
+        "3",
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.run",
+      "note": "A service needs run."
+    },
+    "manifests/invalid/run-on-content.toml": {
+      "spec": [
+        "3",
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.run",
+      "note": "content must not have run."
+    },
+    "manifests/invalid/run-parent-dir.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.run",
+      "note": "run[0] must stay in the version folder."
+    },
+    "manifests/invalid/run-relative-adopted.toml": {
+      "spec": [
+        "3"
+      ],
+      "result": "invalid",
+      "id": "manifest.run",
+      "note": "adopted needs an absolute run[0]."
+    },
+    "manifests/invalid/secrets-without-permission.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.secrets",
+      "note": "[[secrets]] needs the secrets permission."
+    },
+    "manifests/invalid/settings-bad-name.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.settings",
+      "note": "Setting name uses a-z, 0-9, -."
+    },
+    "manifests/invalid/settings-wrong-default.toml": {
+      "spec": [
+        "4.2",
+        "4.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.settings",
+      "note": "Default must match kind."
+    },
+    "manifests/invalid/syntax-not-toml.toml": {
+      "spec": [
+        "4.1"
+      ],
+      "result": "invalid",
+      "id": "manifest.syntax",
+      "note": "Not valid TOML."
+    },
+    "manifests/invalid/syntax-wrong-type.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.syntax",
+      "note": "run must be an array of strings; a string is the wrong type."
+    },
+    "manifests/invalid/ui-bad-slot.toml": {
+      "spec": [
+        "4.7",
+        "5.1"
+      ],
+      "result": "invalid",
+      "id": "manifest.ui",
+      "note": "Unknown slot."
+    },
+    "manifests/invalid/ui-duplicate-panel.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.ui",
+      "note": "Duplicate panel id."
+    },
+    "manifests/invalid/ui-uppercase-id.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.ui",
+      "note": "Ids use a-z, 0-9, -."
+    },
+    "manifests/invalid/ui-window-without-permission.toml": {
+      "spec": [
+        "4.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.ui",
+      "note": "A [[ui.windows]] entry needs the ui.window permission. Spec gap: no explicit id for this; manifest.ui assumed."
+    },
+    "manifests/invalid/unknown-key-future-minor.toml": {
+      "spec": [
+        "4.1",
+        "8.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.unknown-key",
+      "note": "A key from a future minor with hub left at 1.0 is refused as unknown."
+    },
+    "manifests/invalid/unknown-key-nested.toml": {
+      "spec": [
+        "4.1"
+      ],
+      "result": "invalid",
+      "id": "manifest.unknown-key",
+      "note": "Unknown key inside a contribution table."
+    },
+    "manifests/invalid/unknown-key-top.toml": {
+      "spec": [
+        "4.1"
+      ],
+      "result": "invalid",
+      "id": "manifest.unknown-key",
+      "note": "Unknown top-level key."
+    },
+    "manifests/invalid/version-build-metadata.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.version",
+      "note": "No +build allowed."
+    },
+    "manifests/invalid/version-leading-v.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.version",
+      "note": "Leading v."
+    },
+    "manifests/invalid/version-two-parts.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.version",
+      "note": "Not MAJOR.MINOR.PATCH."
+    },
+    "manifests/invalid/visibility-private-reserved-label.toml": {
+      "spec": [
+        "4.3",
+        "13.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.visibility",
+      "note": "A private module's id must not start with a reserved first label."
+    },
+    "manifests/invalid/visibility-unknown.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.visibility",
+      "note": "visibility is public or private."
+    },
+    "manifests/invalid/when-double-negation.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "invalid",
+      "id": "manifest.activation",
+      "note": "Only one optional ! prefix."
+    },
+    "manifests/invalid/when-empty.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "invalid",
+      "id": "manifest.activation",
+      "note": "Empty when."
+    },
+    "manifests/invalid/when-operator.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "invalid",
+      "id": "manifest.activation",
+      "note": "No operators in when."
+    },
+    "manifests/valid/activation-all-events.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "valid",
+      "note": "Every activation event form (device:<class> is short for fact:devices.present.<class>).",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable",
+          "open",
+          "call",
+          "fact:keyboard.*",
+          "app:example-player.exe",
+          "device:keyboard"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/api-arete-alias.toml": {
+      "spec": [
+        "4.3",
+        "4.2",
+        "3"
+      ],
+      "result": "valid",
+      "note": "arete is an alias of vulpes in family and api keys; readers write vulpes. One-label id vulpes is first-party only. adopted run[0] is absolute.",
+      "normalized": {
+        "id": "vulpes",
+        "name": "Example AI",
+        "version": "0.4.0",
+        "kind": "adopted",
+        "family": "vulpes",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {
+          "vulpes": "1.0"
+        },
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "C:/AI/example-hub.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/api-string-form.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "valid",
+      "note": "A plain-string api means { foxglove = \"<string>\" }.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {
+          "foxglove": "1.13"
+        },
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/content-board-profile.toml": {
+      "spec": [
+        "3",
+        "4.5"
+      ],
+      "result": "valid",
+      "note": "content kind: no run, at least one content: entry.",
+      "normalized": {
+        "id": "digitalis.example-profile",
+        "name": "Example Board Profile",
+        "version": "0.4.0",
+        "kind": "content",
+        "family": "digitalis",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": null,
+        "provides": [
+          "content:board-profile"
+        ],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/contrib-actions.toml": {
+      "spec": [
+        "4.7"
+      ],
+      "result": "valid",
+      "note": "Actions with and without when.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 2,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/contrib-mcp-tools.toml": {
+      "spec": [
+        "9"
+      ],
+      "result": "valid",
+      "note": "A read tool and a time-limited write tool (ttl_max_s <= 600).",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [
+          "method:example.art.*"
+        ],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 2
+        }
+      }
+    },
+    "manifests/valid/contrib-secrets.toml": {
+      "spec": [
+        "4.7"
+      ],
+      "result": "valid",
+      "note": "[[secrets]] with the secrets permission.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [
+          "secrets"
+        ],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 1,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/contrib-settings.toml": {
+      "spec": [
+        "4.7"
+      ],
+      "result": "valid",
+      "note": "bool/int/text settings (plugin.toml shape) plus when.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 3,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/contrib-ui-all-slots.toml": {
+      "spec": [
+        "4.7",
+        "5.1"
+      ],
+      "result": "valid",
+      "note": "All five panel slots plus a module window (needs ui.window).",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [
+          "ui.window"
+        ],
+        "counts": {
+          "panels": 5,
+          "windows": 1,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/edition.toml": {
+      "spec": [
+        "4.9"
+      ],
+      "result": "valid",
+      "note": "An edition: content:edition plus [edition].",
+      "normalized": {
+        "id": "vulpes.example-edition",
+        "name": "Example Edition",
+        "version": "0.4.0",
+        "kind": "content",
+        "family": "vulpes",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": null,
+        "provides": [
+          "content:edition"
+        ],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/firmware.toml": {
+      "spec": [
+        "3",
+        "4.5"
+      ],
+      "result": "valid",
+      "note": "firmware kind: no run, at least one firmware: entry.",
+      "normalized": {
+        "id": "digitalis.example-images",
+        "name": "Example Firmware",
+        "version": "0.4.0",
+        "kind": "firmware",
+        "family": "digitalis",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": null,
+        "provides": [
+          "firmware:example-board"
+        ],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/hub-1-0.toml": {
+      "spec": [
+        "4.2",
+        "8.7"
+      ],
+      "result": "valid",
+      "note": "hub 1.0 is served by a v1.0 reader (same major, server minor >= client minor).",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/id-arete-prefix.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "valid",
+      "note": "Reserved first label arete (alias) matches family vulpes; the reader writes vulpes.",
+      "normalized": {
+        "id": "vulpes.example-agents",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "vulpes",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/id-legacy-prefix-org-foxglove.toml": {
+      "spec": [
+        "4.3"
+      ],
+      "result": "valid",
+      "note": "The legacy prefix org.foxglove. is family foxglove.",
+      "normalized": {
+        "id": "org.foxglove.example-tool",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/identity-first-party.toml": {
+      "spec": [
+        "4.8"
+      ],
+      "result": "valid",
+      "note": "[identity] on a public first-party module.",
+      "normalized": {
+        "id": "hideout.example-lights",
+        "name": "Example Lights",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "hideout",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/private.toml": {
+      "spec": [
+        "13.1",
+        "13.2"
+      ],
+      "result": "valid",
+      "note": "Private module: reverse-DNS under a placeholder name, no reserved first label, may require a public module.",
+      "normalized": {
+        "id": "example.private.notes",
+        "name": "Example Notes",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "third-party",
+        "hub": "1.0",
+        "visibility": "private",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [
+          "foxglove.example-link"
+        ],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/requires-forms.toml": {
+      "spec": [
+        "4.4"
+      ],
+      "result": "valid",
+      "note": "Bare id, and versions shortened to MAJOR or MAJOR.MINOR.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [
+          "foxglove.example-link",
+          "foxglove.example-link>=0.4",
+          "foxglove.example-link>=1"
+        ],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/runtime-with-pin.toml": {
+      "spec": [
+        "3",
+        "4.8"
+      ],
+      "result": "valid",
+      "note": "runtime: no run, [[pin]] allowed (placeholder hash and .invalid host).",
+      "normalized": {
+        "id": "vulpes.example-runtime",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "runtime",
+        "family": "vulpes",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": null,
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/service-full.toml": {
+      "spec": [
+        "4.2",
+        "4.6",
+        "4.7"
+      ],
+      "result": "valid",
+      "note": "The spec's example (4.2), with placeholder ids.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {
+          "foxglove": "1.13"
+        },
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "fact:keyboard.connected",
+          "open",
+          "call"
+        ],
+        "lifecycle_data": "keep",
+        "requires": [
+          "foxglove.example-link>=0.4"
+        ],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [
+          "method:example.art.*",
+          "facts:example.art.*",
+          "channel:previews"
+        ],
+        "permissions": [
+          "facts.read:keyboard.*",
+          "channel.open:foxglove.example-link/art",
+          "hub.notify",
+          "provide:example.art.*",
+          "channel.offer:previews"
+        ],
+        "counts": {
+          "panels": 1,
+          "windows": 0,
+          "settings": 0,
+          "actions": 1,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/service-minimal.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "valid",
+      "note": "Smallest service: only the required keys. Every default applies.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/third-party.toml": {
+      "spec": [
+        "4.3",
+        "6.1"
+      ],
+      "result": "valid",
+      "note": "Reverse-DNS id, family third-party.",
+      "normalized": {
+        "id": "example.vendor.tool",
+        "name": "Example Tool",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "third-party",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [
+          "facts.write:example.tool.*",
+          "net.connect:127.0.0.1:4455"
+        ],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/transport-stdio-handover.toml": {
+      "spec": [
+        "4.2",
+        "7.6"
+      ],
+      "result": "valid",
+      "note": "stdio transport (bridged) and handover swap.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "stdio",
+        "swap": "handover",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/version-prerelease.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "valid",
+      "note": "SemVer with a prerelease and no +build.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "1.0.0-rc.1",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/valid/when-clauses.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "valid",
+      "note": "when: one fact name, optionally prefixed by !.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 2,
+          "windows": 0,
+          "settings": 0,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "panels/invalid/one-bad-one-good.json": {
+      "spec": [
+        "5.5",
+        "8.8"
+      ],
+      "note": "Over a cap rejects that panel; the others register (rejected list in the ui.register result).",
+      "result": "partial",
+      "rejected": [
+        {
+          "panel": "bad",
+          "error": "ui.limits"
+        }
+      ],
+      "registered": [
+        "good"
+      ]
+    },
+    "panels/invalid/over-canvas-shapes.json": {
+      "spec": [
+        "5.5"
+      ],
+      "note": "5000 canvas shapes ('a few hundred' is the cap).",
+      "result": "invalid",
+      "id": "ui.limits"
+    },
+    "panels/invalid/over-depth.json": {
+      "spec": [
+        "5.5"
+      ],
+      "note": "Depth 400, far over any depth cap.",
+      "result": "invalid",
+      "id": "ui.limits",
+      "scope": "that panel only"
+    },
+    "panels/invalid/over-nodes.json": {
+      "spec": [
+        "5.5"
+      ],
+      "note": "3000 nodes in one panel.",
+      "result": "invalid",
+      "id": "ui.limits"
+    },
+    "panels/invalid/over-string-length.json": {
+      "spec": [
+        "5.5"
+      ],
+      "note": "One 120000-character string.",
+      "result": "invalid",
+      "id": "ui.limits"
+    },
+    "panels/invalid/over-table-rows.json": {
+      "spec": [
+        "5.5"
+      ],
+      "note": "12000 table rows.",
+      "result": "invalid",
+      "id": "ui.limits"
+    },
+    "panels/valid/all-node-types.json": {
+      "spec": [
+        "5.2"
+      ],
+      "note": "Every layout and widget type once, a bind, and streams on canvas and text.",
+      "result": "valid"
+    },
+    "panels/valid/under-caps-canvas-200.json": {
+      "spec": [
+        "5.2",
+        "5.5"
+      ],
+      "note": "A canvas with 200 shapes ('a few hundred' is the cap; 200 is comfortably under).",
+      "result": "valid"
+    },
+    "panels/valid/under-caps-small.json": {
+      "spec": [
+        "5.5"
+      ],
+      "note": "A tiny tree, far under every cap.",
+      "result": "valid"
+    },
+    "panels/valid/unknown-node-type.json": {
+      "spec": [
+        "5.2"
+      ],
+      "note": "registers; the unknown node draws as 'needs a newer Hideout' (5.2)",
+      "result": "valid"
+    },
+    "permissions/permissions.json": {
+      "spec": [
+        "6.1",
+        "6.2",
+        "6.6",
+        "15"
+      ],
+      "result": "table",
+      "note": "Each row is its own vector. result valid | invalid (with id) | never (with id permission.never, depending on context). 'sensitive' lists the red-dialog strings (6.1)."
+    },
+    "transcripts/facts/hub-state-facts.json": {
+      "spec": [
+        "7.8",
+        "8.8"
+      ],
+      "note": "Facts the hub publishes: module.<id>.state, .reason, .version, hub.safe_mode.",
+      "result": "valid",
+      "final": {}
+    },
+    "transcripts/facts/set-denied.json": {
+      "spec": [
+        "6.1",
+        "8.8"
+      ],
+      "note": "facts.set without facts.write:<pattern> or a facts: provides entry answers error 5; device.* is never writable.",
+      "result": "valid",
+      "final": {
+        "errors": [
+          5,
+          5
+        ]
+      }
+    },
+    "transcripts/facts/set-subscribe-changed.json": {
+      "spec": [
+        "8.3",
+        "8.8"
+      ],
+      "note": "facts.set from a provider, facts.subscribe by a reader, facts.changed notification ({subscription, key, value}).",
+      "result": "valid",
+      "final": {
+        "changed_delivered": 1
+      }
+    },
+    "transcripts/gpu/ending-reservation-needs-user.json": {
+      "spec": [
+        "8.9",
+        "6.6"
+      ],
+      "note": "A gaming reservation changes only through the user's own click (action.invoke or ui.event with a user source); no method can end it.",
+      "result": "valid",
+      "final": {
+        "reservation_ends_only_by": "user click"
+      }
+    },
+    "transcripts/gpu/request-release.json": {
+      "spec": [
+        "8.9"
+      ],
+      "note": "gpu.request / gpu.release / gpu.changed on the Vulpes module; error 3 while reserved for gaming; a gaming reservation is never a method.",
+      "result": "valid",
+      "final": {
+        "error": 3
+      }
+    },
+    "transcripts/hub/bisect.json": {
+      "spec": [
+        "7.10"
+      ],
+      "note": "Find the module that breaks Hideout: from safe mode the hub halves the enabled set until one module is left; the saved enabled set is never edited.",
+      "result": "valid",
+      "final": {
+        "culprit": "f"
+      }
+    },
+    "transcripts/hub/hub-gone-grace.json": {
+      "spec": [
+        "7.9"
+      ],
+      "note": "With no hub back within 30 s, each module exits cleanly (lights handed back, the Info screen handed back).",
+      "result": "valid",
+      "final": {
+        "module_exit_code": 0,
+        "grace_s": 30
+      }
+    },
+    "transcripts/hub/hub-restart-takes-back.json": {
+      "spec": [
+        "7.9"
+      ],
+      "note": "The hub restarts after a panic and takes back running modules: each reconnects with initialize and its original token; the hub checks pid and exe hash.",
+      "result": "valid",
+      "final": {
+        "module_restarted": false
+      }
+    },
+    "transcripts/hub/quarantine-breadcrumb.json": {
+      "spec": [
+        "5.5",
+        "7.8"
+      ],
+      "note": "Two hub restarts within a minute with the same panel breadcrumb start the hub with that module's panels quarantined.",
+      "result": "valid",
+      "final": {
+        "state": "quarantined"
+      }
+    },
+    "transcripts/hub/safe-mode-not-triggered.json": {
+      "spec": [
+        "7.10"
+      ],
+      "note": "Three hub restarts spread over more than five minutes do not trigger safe mode.",
+      "result": "valid",
+      "final": {
+        "safe_mode": false
+      }
+    },
+    "transcripts/hub/safe-mode.json": {
+      "spec": [
+        "7.10"
+      ],
+      "note": "After three hub restarts in five minutes the hub starts in safe mode: only the Modules page, no module started, hub.safe_mode true.",
+      "result": "valid",
+      "final": {
+        "safe_mode": "after 3 restarts in 5 minutes"
+      }
+    },
+    "transcripts/lifecycle/activation-by-call.json": {
+      "spec": [
+        "8.1",
+        "4.6"
+      ],
+      "note": "activation.on contains call: the hub starts the module, then routes the call once it is ready.",
+      "result": "valid",
+      "final": {
+        "call_delivered_after": "module.ready"
+      }
+    },
+    "transcripts/lifecycle/call-timeout.json": {
+      "spec": [
+        "8.1"
+      ],
+      "note": "A call with no answer fails after 30 s on the caller's side (error 4).",
+      "result": "valid",
+      "final": {
+        "error": 4
+      }
+    },
+    "transcripts/lifecycle/initialize-bad-token.json": {
+      "spec": [
+        "7.5",
+        "8.2"
+      ],
+      "note": "A module with a wrong launch token is refused (error 5) and the connection is dropped.",
+      "result": "valid",
+      "final": {
+        "state": "refused",
+        "error": 5
+      }
+    },
+    "transcripts/lifecycle/initialize-first.json": {
+      "spec": [
+        "8.1"
+      ],
+      "note": "initialize comes first on every connection; anything else first answers error 5 (denied).",
+      "result": "valid",
+      "final": {
+        "first_request_error": 5
+      }
+    },
+    "transcripts/lifecycle/initialize-hub-not-served.json": {
+      "spec": [
+        "8.7",
+        "8.1"
+      ],
+      "note": "A client whose hub major is not served gets error 7 (version) and the connection closes.",
+      "result": "valid",
+      "final": {
+        "state": "refused",
+        "error": 7
+      }
+    },
+    "transcripts/lifecycle/initialize-module.json": {
+      "spec": [
+        "7.5",
+        "8.1",
+        "8.8"
+      ],
+      "note": "A module connects with its launch token; the hub checks token, pid and exe hash and answers with granted and the served versions.",
+      "result": "valid",
+      "final": {
+        "state": "connected",
+        "granted_sorted": [
+          "channel.offer:previews",
+          "facts.read:keyboard.*",
+          "hub.notify",
+          "provide:example.art.*"
+        ]
+      }
+    },
+    "transcripts/lifecycle/initialize-tool.json": {
+      "spec": [
+        "8.2",
+        "8.8",
+        "6.4"
+      ],
+      "note": "An outside tool connects without a token and is approved once; the grant is what the user approved.",
+      "result": "valid",
+      "final": {
+        "granted": [
+          "facts.read:keyboard.*"
+        ],
+        "left_out": [
+          {
+            "permission": "modules.manage",
+            "id": "permission.never"
+          }
+        ]
+      }
+    },
+    "transcripts/lifecycle/ping.json": {
+      "spec": [
+        "8.8"
+      ],
+      "note": "ping is a call with empty params and result.",
+      "result": "valid",
+      "final": {}
+    },
+    "transcripts/lifecycle/provider-not-running.json": {
+      "spec": [
+        "8.1",
+        "4.6"
+      ],
+      "note": "A provided method whose module is not running answers error 2 (after activation by call, if declared).",
+      "result": "valid",
+      "final": {
+        "error": 2
+      }
+    },
+    "transcripts/lifecycle/rate-limited.json": {
+      "spec": [
+        "8.1"
+      ],
+      "note": "Error 8 is rate-limited. Example: ui.patch beyond ~20/s per panel is coalesced, not errored (5.3); a method may still answer 8.",
+      "result": "valid",
+      "final": {
+        "error": 8
+      }
+    },
+    "transcripts/lifecycle/re-registration-restart.json": {
+      "spec": [
+        "5.6",
+        "7.5"
+      ],
+      "note": "A new instance after a crash restart registers again; the hub replaces the module's panels in one step and keeps view state by node id.",
+      "result": "valid",
+      "final": {
+        "panels_replaced_in_one_step": true,
+        "view_state_kept_by_node_id": [
+          "root",
+          "title",
+          "next"
+        ]
+      }
+    },
+    "transcripts/lifecycle/register-not-ready-in-30s.json": {
+      "spec": [
+        "7.5",
+        "7.7"
+      ],
+      "note": "A module that does not send module.ready within 30 s of start is treated as crashed.",
+      "result": "valid",
+      "final": {
+        "counts_as": "crash"
+      }
+    },
+    "transcripts/lifecycle/register-ready.json": {
+      "spec": [
+        "7.5",
+        "6.3",
+        "8.8"
+      ],
+      "note": "Registration: module.register (one method rejected because the catalog does not allow it), ui.register, module.ready. Only after ready does the router send traffic.",
+      "result": "valid",
+      "final": {
+        "state": "running",
+        "routes": [
+          "example.art.*"
+        ],
+        "rejected": [
+          "lighting.*"
+        ]
+      }
+    },
+    "transcripts/lifecycle/register-undeclared-panel.json": {
+      "spec": [
+        "4.7",
+        "5.1"
+      ],
+      "note": "ui.register with a panel id not declared in [[ui.panels]] is rejected (ui.undeclared); declared ones register.",
+      "result": "valid",
+      "final": {
+        "registered": [
+          "art"
+        ],
+        "rejected": [
+          {
+            "panel": "extra",
+            "error": "ui.undeclared"
+          }
+        ]
+      }
+    },
+    "transcripts/lifecycle/unknown-method.json": {
+      "spec": [
+        "8.1"
+      ],
+      "note": "A method no module provides answers -32601.",
+      "result": "valid",
+      "final": {
+        "error": -32601
+      }
+    },
+    "transcripts/mcp/tools-exposed.json": {
+      "spec": [
+        "9"
+      ],
+      "note": "hideout mcp exposes <module name>_<tool name>; write tools hold for at most ttl_max_s (<= 600) and the Info screen at most 60 s.",
+      "result": "valid",
+      "final": {
+        "never_over_mcp": [
+          "key.events",
+          "hid.raw",
+          "keys-class channels",
+          "module lifecycle"
+        ]
+      }
+    },
+    "transcripts/modules/disable-required-by.json": {
+      "spec": [
+        "4.4",
+        "15"
+      ],
+      "note": "Disabling a module an enabled module requires is refused with lifecycle.required-by naming the dependents.",
+      "result": "valid",
+      "final": {
+        "error_id": "lifecycle.required-by"
+      }
+    },
+    "transcripts/modules/list-enable-disable-reload.json": {
+      "spec": [
+        "8.8",
+        "6.6"
+      ],
+      "note": "modules.list/enable/disable/reload need modules.manage.",
+      "result": "valid",
+      "final": {}
+    },
+    "transcripts/modules/manage-denied.json": {
+      "spec": [
+        "6.6"
+      ],
+      "note": "modules.* without modules.manage, or from a client the never-list excludes, answers error 5.",
+      "result": "valid",
+      "final": {
+        "error": 5
+      }
+    },
+    "transcripts/modules/private-hidden-from-mcp.json": {
+      "spec": [
+        "13.5",
+        "9"
+      ],
+      "note": "modules.list over MCP leaves private modules out unless [privacy] agents_see_private is true; facts about them are not sent either.",
+      "result": "valid",
+      "final": {
+        "private_visible_to_agents": false
+      }
+    },
+    "transcripts/stream/channel-offer-rejected.json": {
+      "spec": [
+        "8.4",
+        "6.3"
+      ],
+      "note": "module.register offering a channel the catalog does not allow lists it under rejected with permission.provider.",
+      "result": "valid",
+      "final": {
+        "rejected": [
+          "secret-feed"
+        ]
+      }
+    },
+    "transcripts/stream/channel-open-denied.json": {
+      "spec": [
+        "8.4",
+        "6.2",
+        "6.6"
+      ],
+      "note": "Without channel.open:<module>/<channel> the hub answers error 5; a keys-class channel over MCP is never granted.",
+      "result": "valid",
+      "final": {
+        "errors": [
+          5,
+          5
+        ]
+      }
+    },
+    "transcripts/stream/channel-open-tool.json": {
+      "spec": [
+        "8.4",
+        "6.1"
+      ],
+      "note": "An outside tool opens a channel: the hub checks channel.open:<module>/<channel>, calls channel.create on the provider, returns {pipe, nonce}.",
+      "result": "valid",
+      "final": {
+        "hub_steps_out_after_reply": true
+      }
+    },
+    "transcripts/stream/panel-stream-grant.json": {
+      "spec": [
+        "5.4",
+        "8.4"
+      ],
+      "note": "A live panel (canvas with stream): the hub's panel host opens the module's channel as a normal channel with the same grant. Frames are binary, never JSON, never through the router.",
+      "result": "valid",
+      "final": {
+        "frames_through_router": false,
+        "max_frames_per_s": 30,
+        "closes_when": [
+          "panel hidden",
+          "window minimised"
+        ]
+      }
+    },
+    "transcripts/supervisor/crash-backoff-and-stop.json": {
+      "spec": [
+        "7.7"
+      ],
+      "note": "A crashed instance restarts with backoff from 1 s up to 60 s; five crashes in ten minutes stops it with one notification per module per sign-in. Notices by events only (process handle, pipe close).",
+      "result": "valid",
+      "final": {
+        "crashes_to_stop": 5,
+        "window_s": 600,
+        "backoff_min_s": 1,
+        "backoff_max_s": 60,
+        "delays_non_decreasing": true,
+        "notifications": 1
+      }
+    },
+    "transcripts/supervisor/crashes-spread-out.json": {
+      "spec": [
+        "7.7"
+      ],
+      "note": "Five crashes spread over more than ten minutes do not stop the module.",
+      "result": "valid",
+      "final": {
+        "state": "restarting"
+      }
+    },
+    "transcripts/supervisor/exit-zero-is-stop.json": {
+      "spec": [
+        "7.7",
+        "4.6"
+      ],
+      "note": "Exit code 0 is a stop, not a crash; an event-started module that exits 0 is not restarted.",
+      "result": "valid",
+      "final": {
+        "counted_as_crash": false
+      }
+    },
+    "transcripts/supervisor/no-rollback-after-10-min.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "Crash-stopped more than ten minutes after an update does not roll back.",
+      "result": "valid",
+      "final": {
+        "final_version": "0.5.0"
+      }
+    },
+    "transcripts/supervisor/provider-gone-error-2.json": {
+      "spec": [
+        "4.4",
+        "8.1"
+      ],
+      "note": "At runtime a required module that is gone is only 'provider gone': calls get error 2 and the dependent shows Waiting for <module>.",
+      "result": "valid",
+      "final": {
+        "error": 2,
+        "dependent_state": "waiting"
+      }
+    },
+    "transcripts/supervisor/rollback-after-update.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "A module that reaches crash-stopped within 10 minutes of an update goes back to the previous version by itself and says so.",
+      "result": "valid",
+      "final": {
+        "final_version": "0.4.0"
+      }
+    },
+    "transcripts/supervisor/root-cause-once.json": {
+      "spec": [
+        "7.8",
+        "4.4"
+      ],
+      "note": "A state caused by another module says Waiting for <module> and links there; the tray shows only the root. The graph is requires plus channel.open: permissions.",
+      "result": "valid",
+      "final": {
+        "tray_shows_only_root": true
+      }
+    },
+    "transcripts/supervisor/start-with-defaults.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "Start with default settings renames the settings folder to settings.bad-<time> and starts the module; the hub needs no knowledge of the values.",
+      "result": "valid",
+      "final": {
+        "renamed_to": "settings.bad-<time>"
+      }
+    },
+    "transcripts/supervisor/state-crash-stopped.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State crash-stopped: the fact module.<id>.state is 'crash-stopped'.",
+      "result": "valid",
+      "final": {
+        "state": "crash-stopped",
+        "ui_name": "Stopped after 5 crashes",
+        "ways_out": [
+          "Start again",
+          "Start with default settings",
+          "Go back to <previous>",
+          "Copy diagnostics"
+        ]
+      }
+    },
+    "transcripts/supervisor/state-install-failed.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State install-failed: the fact module.<id>.state is 'install-failed'.",
+      "result": "valid",
+      "final": {
+        "state": "install-failed",
+        "ui_name": "Couldn't install / update",
+        "ways_out": [
+          "Try again",
+          "Open log"
+        ]
+      }
+    },
+    "transcripts/supervisor/state-needs-hub.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State needs-hub: the fact module.<id>.state is 'needs-hub'.",
+      "result": "valid",
+      "final": {
+        "state": "needs-hub",
+        "ui_name": "Needs a newer Hideout",
+        "ways_out": [
+          "Update Hideout",
+          "Go back to <previous>"
+        ]
+      }
+    },
+    "transcripts/supervisor/state-off.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State off: the fact module.<id>.state is 'off'.",
+      "result": "valid",
+      "final": {
+        "state": "off",
+        "ui_name": "Off",
+        "ways_out": [
+          "Turn on"
+        ]
+      }
+    },
+    "transcripts/supervisor/state-quarantined.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State quarantined: the fact module.<id>.state is 'quarantined'.",
+      "result": "valid",
+      "final": {
+        "state": "quarantined",
+        "ui_name": "Example Art's page couldn't be shown",
+        "ways_out": [
+          "Start again",
+          "Go back to <previous>"
+        ]
+      }
+    },
+    "transcripts/supervisor/state-restarting.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State restarting: the fact module.<id>.state is 'restarting'.",
+      "result": "valid",
+      "final": {
+        "state": "restarting",
+        "ui_name": "Restarting (2 of 5)",
+        "ways_out": [
+          "Open log"
+        ]
+      }
+    },
+    "transcripts/supervisor/state-running.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State running: the fact module.<id>.state is 'running'.",
+      "result": "valid",
+      "final": {
+        "state": "running",
+        "ui_name": null,
+        "ways_out": []
+      }
+    },
+    "transcripts/supervisor/state-starting.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State starting: the fact module.<id>.state is 'starting'.",
+      "result": "valid",
+      "final": {
+        "state": "starting",
+        "ui_name": "Starting...",
+        "ways_out": []
+      }
+    },
+    "transcripts/supervisor/state-update-busy.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State update-busy: the fact module.<id>.state is 'update-busy'.",
+      "result": "valid",
+      "final": {
+        "state": "update-busy",
+        "ui_name": "Update ready",
+        "ways_out": [
+          "Force",
+          "Not now"
+        ]
+      }
+    },
+    "transcripts/supervisor/state-update-waiting.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State update-waiting: the fact module.<id>.state is 'update-waiting'.",
+      "result": "valid",
+      "final": {
+        "state": "update-waiting",
+        "ui_name": "Update waiting for you",
+        "ways_out": [
+          "Review",
+          "Not now"
+        ]
+      }
+    },
+    "transcripts/supervisor/state-updating.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State updating: the fact module.<id>.state is 'updating'.",
+      "result": "valid",
+      "final": {
+        "state": "updating",
+        "ui_name": "Updating...",
+        "ways_out": []
+      }
+    },
+    "transcripts/supervisor/state-waiting.json": {
+      "spec": [
+        "7.8"
+      ],
+      "note": "State waiting: the fact module.<id>.state is 'waiting'.",
+      "result": "valid",
+      "final": {
+        "state": "waiting",
+        "ui_name": "Waiting for Example Link",
+        "ways_out": [
+          "Go to Example Link"
+        ]
+      }
+    },
+    "transcripts/supervisor/update-waiting-permission.json": {
+      "spec": [
+        "6.4",
+        "7.8"
+      ],
+      "note": "An update that adds permissions keeps the old version running and shows Update waiting for you; never a modal at sign-in.",
+      "result": "valid",
+      "final": {
+        "state_path": [
+          "running",
+          "update-waiting",
+          "updating"
+        ]
+      }
+    },
+    "transcripts/swap/caller-error-2-once.json": {
+      "spec": [
+        "7.6"
+      ],
+      "note": "Callers see at most one error 2 and retry.",
+      "result": "valid",
+      "final": {
+        "errors_seen": 1
+      }
+    },
+    "transcripts/swap/drain-busy-force.json": {
+      "spec": [
+        "7.6",
+        "7.8"
+      ],
+      "note": "Drain busy, then the user presses Force: the hub sends module.drain again (user action, not a timer).",
+      "result": "valid",
+      "final": {
+        "states": [
+          "running",
+          "update-busy",
+          "updating"
+        ],
+        "drain_resent_only_on": "Force"
+      }
+    },
+    "transcripts/swap/drain-busy-not-now.json": {
+      "spec": [
+        "7.6",
+        "7.8"
+      ],
+      "note": "Drain busy, then the user presses Not now: the old version keeps running, nothing more is sent.",
+      "result": "valid",
+      "final": {
+        "states": [
+          "running",
+          "update-busy",
+          "running"
+        ]
+      }
+    },
+    "transcripts/swap/drain-busy.json": {
+      "spec": [
+        "7.6",
+        "7.8",
+        "8.8"
+      ],
+      "note": "Drain answered busy: the swap waits. State update-busy. The hub sends module.drain again only on module.idle, never on a timer.",
+      "result": "valid",
+      "final": {
+        "states": [
+          "running",
+          "update-busy",
+          "updating"
+        ],
+        "drain_resent_only_on": "module.idle"
+      }
+    },
+    "transcripts/swap/drain-done.json": {
+      "spec": [
+        "7.6",
+        "8.8"
+      ],
+      "note": "Drain answered done: go on.",
+      "result": "valid",
+      "final": {
+        "swap": "proceeds"
+      }
+    },
+    "transcripts/swap/drain-reasons.json": {
+      "spec": [
+        "8.8"
+      ],
+      "note": "module.drain reasons: update, rollback, reload, disable, remove.",
+      "result": "valid",
+      "final": {}
+    },
+    "transcripts/swap/handover-export-null.json": {
+      "spec": [
+        "7.6"
+      ],
+      "note": "state.export may answer null: no state.import is sent.",
+      "result": "valid",
+      "final": {
+        "state_imported": false
+      }
+    },
+    "transcripts/swap/handover.json": {
+      "spec": [
+        "7.6"
+      ],
+      "note": "Hot swap, swap=handover: drain, state.export on the old (blob up to 256 KiB or null), module.exit, start the new, state.import, then register and ready.",
+      "result": "valid",
+      "final": {
+        "final_version": "0.5.0",
+        "state_imported_before_register": true
+      }
+    },
+    "transcripts/swap/key-action-during-swap.json": {
+      "spec": [
+        "7.6"
+      ],
+      "note": "A key action during a swap is queued up to 2 s and delivered once, or dropped with a named status line.",
+      "result": "valid",
+      "final": {
+        "queued_up_to_s": 2,
+        "delivered_once": true
+      }
+    },
+    "transcripts/swap/overlap.json": {
+      "spec": [
+        "7.6"
+      ],
+      "note": "Hot swap, swap=overlap: stage, drain (done), start the new beside the old, route new calls on its module.ready, exit the old.",
+      "result": "valid",
+      "final": {
+        "final_version": "0.5.0",
+        "callers_see_errors": "at most one error 2",
+        "header_text": "Updating... for at most a second"
+      }
+    },
+    "transcripts/ui/action-invoke.json": {
+      "spec": [
+        "4.7",
+        "8.8"
+      ],
+      "note": "action.invoke from key, tray, palette and panel.",
+      "result": "valid",
+      "final": {}
+    },
+    "transcripts/ui/notify.json": {
+      "spec": [
+        "6.1",
+        "8.8"
+      ],
+      "note": "hub.notify needs the hub.notify permission.",
+      "result": "valid",
+      "final": {}
+    },
+    "transcripts/ui/patch-event-asset.json": {
+      "spec": [
+        "5.3",
+        "8.8"
+      ],
+      "note": "ui.patch (notification) set/insert/remove; ui.event refused with data.reason (hub reverts optimistic input); ui.asset.put by SHA-256.",
+      "result": "valid",
+      "final": {
+        "event_refused_reason_shown": "No art pack is loaded"
+      }
+    },
+    "transcripts/ui/patch-rate.json": {
+      "spec": [
+        "5.3"
+      ],
+      "note": "Patches above ~20/s per panel are coalesced by the hub (no error).",
+      "result": "valid",
+      "final": {
+        "coalesced": true
+      }
+    },
+    "transcripts/ui/settings-get-set.json": {
+      "spec": [
+        "4.7",
+        "8.8"
+      ],
+      "note": "The hub reads and writes settings only through settings.get and settings.set; a refusal carries data.reason.",
+      "result": "valid",
+      "final": {
+        "refusal_reason": "Pick 1 to 120 minutes"
+      }
+    },
+    "transcripts/ui/window-open.json": {
+      "spec": [
+        "4.7",
+        "5.7",
+        "8.8"
+      ],
+      "note": "A module window: the hub shows an Open button and sends ui.window.open (needs ui.window).",
+      "result": "valid",
+      "final": {}
+    },
+    "trust/catalogs/digitalis.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Firmware module.",
+      "signed_by": "TEST key digitalis",
+      "signature_file": "trust/catalogs/digitalis.catalog.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "digitalis.example-images@2.0.0"
+      ],
+      "seen_after": {
+        "anchor": "hideout-root",
+        "catalog": "digitalis",
+        "sequence": 3
+      },
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/foxglove.alias-kits.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "'kits' is read as an alias of modules.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/foxglove.alias-kits.catalog.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "foxglove.example-art@0.4.0"
+      ],
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/foxglove.alias-plugins.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "'plugins' is read as an alias of modules.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/foxglove.alias-plugins.catalog.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "foxglove.example-art@0.4.0"
+      ],
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/foxglove.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Family catalog; also lists a third-party public module under a scope the root grants foxglove (12.3). Offers a channel with its capability line.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/foxglove.catalog.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "foxglove.example-art@0.4.0",
+        "example.vendor.tool@1.0.0"
+      ],
+      "seen_after": {
+        "anchor": "hideout-root",
+        "catalog": "foxglove",
+        "sequence": 3
+      },
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/foxglove.with-revocations.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Revocations alongside entries; yank versions 0.1.0, revoke 0.2.0.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/foxglove.with-revocations.catalog.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "foxglove.example-art@0.4.0"
+      ],
+      "seen_after": {
+        "anchor": "hideout-root",
+        "catalog": "foxglove",
+        "sequence": 3
+      },
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/hideout.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Offers a keys-class channel; the permission dialog must show its capability line (6.2).",
+      "signed_by": "TEST key hideout",
+      "signature_file": "trust/catalogs/hideout.catalog.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "hideout.example-lights@0.2.0"
+      ],
+      "seen_after": {
+        "anchor": "hideout-root",
+        "catalog": "hideout",
+        "sequence": 3
+      },
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/bad-signature.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "One byte changed after signing.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/bad-signature.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.signature",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/entry-out-of-scope.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "One out-of-scope entry rejects the whole catalog.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/entry-out-of-scope.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.scope",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/epoch.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Catalog epoch is not the root's.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/epoch.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.epoch",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/expired.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Expired before now.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/expired.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.expired",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/mismatch-kind.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Entry kind (content) differs from the manifest in trust/folders/foxglove.example-art-0.4.0 (service).",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/mismatch-kind.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.mismatch",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "manifest": "trust/folders/foxglove.example-art-0.4.0/module.toml"
+      }
+    },
+    "trust/catalogs/invalid/mismatch-visibility.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Entry visibility (private) differs from the manifest (public).",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/mismatch-visibility.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.mismatch",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "manifest": "trust/folders/foxglove.example-art-0.4.0/module.toml"
+      }
+    },
+    "trust/catalogs/invalid/private-in-public-source.catalog.json": {
+      "spec": [
+        "13.2",
+        "13.4"
+      ],
+      "note": "A public source's modules must be public; a public catalog MUST NOT list a private one.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/private-in-public-source.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.visibility",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "manifest": null
+      }
+    },
+    "trust/catalogs/invalid/revocation-out-of-scope.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Revocation ids must be in the family scope too.",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/revocation-out-of-scope.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.scope",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/rollback.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "sequence below seen (3).",
+      "signed_by": "TEST key foxglove",
+      "signature_file": "trust/catalogs/invalid/rollback.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.rollback",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {
+          "hideout-root": {
+            "root_version": 1,
+            "epoch": 0,
+            "catalogs": {
+              "test-public": 3
+            }
+          }
+        },
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/unlisted-key.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Valid minisign signature, but by a key the root does not list for foxglove.",
+      "signed_by": "TEST key rogue",
+      "signature_file": "trust/catalogs/invalid/unlisted-key.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.signature",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/user-catalog-first-party-id.catalog.json": {
+      "spec": [
+        "13.6"
+      ],
+      "note": "A user anchor's scope is example.private.*; a first-party id is out of scope.",
+      "signed_by": "TEST key user-private",
+      "signature_file": "trust/catalogs/invalid/user-catalog-first-party-id.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.scope",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "anchor": {
+          "id": "test-user",
+          "kind": "user",
+          "key": "trust/keys/user-private.pub",
+          "scope": [
+            "example.private.*"
+          ]
+        },
+        "source": {
+          "id": "test-private",
+          "visibility": "private"
+        }
+      }
+    },
+    "trust/catalogs/invalid/user-catalog-in-public-source.catalog.json": {
+      "spec": [
+        "13.4"
+      ],
+      "note": "A private module's entry offered by a source declared public.",
+      "signed_by": "TEST key user-private",
+      "signature_file": "trust/catalogs/invalid/user-catalog-in-public-source.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.visibility",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "anchor": {
+          "id": "test-user",
+          "kind": "user",
+          "key": "trust/keys/user-private.pub",
+          "scope": [
+            "example.private.*"
+          ]
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/invalid/wrong-family-key.catalog.json": {
+      "spec": [
+        "12.2",
+        "12.4"
+      ],
+      "note": "Signed by the vulpes key; each key is bound to one family.",
+      "signed_by": "TEST key vulpes",
+      "signature_file": "trust/catalogs/invalid/wrong-family-key.catalog.json.minisig",
+      "result": "invalid",
+      "id": "trust.signature",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/legacy.foxglove-plugin-catalog-v2.json": {
+      "spec": [
+        "12.2",
+        "12.4"
+      ],
+      "note": "Foxglove's v2 catalog verifies under the legacy root (one family, foxglove). Placeholder hashes.",
+      "signed_by": "TEST key legacy-catalog",
+      "signature_file": "trust/catalogs/legacy.foxglove-plugin-catalog-v2.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "org.foxglove.example-weather@1.2.0"
+      ],
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/legacy-root.pub",
+        "seen": {},
+        "root": "trust/root/root.legacy-foxglove-plugin-root.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/catalogs/user-private.catalog.json": {
+      "spec": [
+        "13.4",
+        "13.6",
+        "12.4"
+      ],
+      "note": "A user-anchored catalog: no root.json above it, no family key.",
+      "signed_by": "TEST key user-private",
+      "signature_file": "trust/catalogs/user-private.catalog.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "example.private.notes@0.1.0"
+      ],
+      "grants_note": "may be granted key.events/hid.raw/keys channels with the red warning, never over MCP (13.6)",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "anchor": {
+          "id": "test-user",
+          "kind": "user",
+          "key": "trust/keys/user-private.pub",
+          "scope": [
+            "example.private.*"
+          ]
+        },
+        "source": {
+          "id": "test-private",
+          "visibility": "private"
+        }
+      }
+    },
+    "trust/catalogs/vulpes.catalog.json": {
+      "spec": [
+        "12.4"
+      ],
+      "note": "Content module.",
+      "signed_by": "TEST key vulpes",
+      "signature_file": "trust/catalogs/vulpes.catalog.json.minisig",
+      "result": "valid",
+      "accepts": [
+        "vulpes.example-agents@0.1.0"
+      ],
+      "seen_after": {
+        "anchor": "hideout-root",
+        "catalog": "vulpes",
+        "sequence": 3
+      },
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        }
+      }
+    },
+    "trust/install/folder-changed-file": {
+      "spec": [
+        "12.5"
+      ],
+      "result": "invalid",
+      "id": "trust.files",
+      "note": "example-art.exe content differs from the signed hash.",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "catalog": "trust/catalogs/foxglove.catalog.json",
+        "folder": "trust/folders/foxglove.example-art-0.4.0",
+        "replace_files": {
+          "example-art.exe": "tampered"
+        }
+      }
+    },
+    "trust/install/folder-exact": {
+      "spec": [
+        "12.5"
+      ],
+      "result": "valid",
+      "note": "The folder trust/folders/foxglove.example-art-0.4.0 holds exactly the signed files.",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "catalog": "trust/catalogs/foxglove.catalog.json",
+        "folder": "trust/folders/foxglove.example-art-0.4.0"
+      }
+    },
+    "trust/install/folder-extra-file": {
+      "spec": [
+        "12.5"
+      ],
+      "result": "invalid",
+      "id": "trust.files",
+      "note": "Same folder plus an extra file extra.dll (listed here, not on disk, to keep the folder clean): not exactly the signed files.",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "catalog": "trust/catalogs/foxglove.catalog.json",
+        "folder": "trust/folders/foxglove.example-art-0.4.0",
+        "extra_files": {
+          "extra.dll": "00"
+        }
+      }
+    },
+    "trust/install/install-revoked": {
+      "spec": [
+        "12.4",
+        "12.5"
+      ],
+      "result": "invalid",
+      "id": "trust.revoked",
+      "note": "Version 0.2.0 is revoked: no install, and a running copy stops.",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "catalog": "trust/catalogs/foxglove.with-revocations.catalog.json",
+        "install": "foxglove.example-art@0.2.0"
+      }
+    },
+    "trust/install/install-unknown-archive": {
+      "spec": [
+        "12.5"
+      ],
+      "result": "invalid",
+      "id": "trust.unknown-archive",
+      "note": "Archive trust/archives/foxglove.example-art-0.4.0.zip offered to a reader whose accepted catalogs are only vulpes.",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "archive": "trust/archives/foxglove.example-art-0.4.0.zip",
+        "accepted_catalogs": [
+          "trust/catalogs/vulpes.catalog.json"
+        ]
+      }
+    },
+    "trust/install/install-yanked": {
+      "spec": [
+        "12.4",
+        "12.5"
+      ],
+      "result": "invalid",
+      "id": "trust.yanked",
+      "note": "Version 0.1.0 is yanked: no new installs (an installed copy keeps running).",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {},
+        "root": "trust/root/root.valid.json",
+        "anchor": {
+          "id": "hideout-root",
+          "kind": "root"
+        },
+        "source": {
+          "id": "test-public",
+          "visibility": "public"
+        },
+        "catalog": "trust/catalogs/foxglove.with-revocations.catalog.json",
+        "install": "foxglove.example-art@0.1.0"
+      }
+    },
+    "trust/install/sideload-first-party-id": {
+      "spec": [
+        "12.6"
+      ],
+      "result": "invalid",
+      "id": "trust.sideload-scope",
+      "note": "Developer mode, source sideload: foxglove.example-art is in a first-party scope.",
+      "context": {
+        "developer_mode": true,
+        "source": {
+          "id": "sideload"
+        },
+        "root": "trust/root/root.valid.json",
+        "folder": "trust/folders/foxglove.example-art-0.4.0"
+      }
+    },
+    "trust/install/sideload-own-id": {
+      "spec": [
+        "12.6"
+      ],
+      "result": "valid",
+      "note": "Developer mode, source sideload: example.private.notes is outside every first-party scope.",
+      "context": {
+        "developer_mode": true,
+        "source": {
+          "id": "sideload"
+        },
+        "root": "trust/root/root.valid.json",
+        "folder": "trust/folders/example.private.notes-0.1.0"
+      }
+    },
+    "trust/root/root.bad-signature.json": {
+      "spec": [
+        "12.2"
+      ],
+      "note": "Signed by a key that is not the pinned root key.",
+      "signed_by": "TEST key rogue",
+      "signature_file": "trust/root/root.bad-signature.json.minisig",
+      "result": "invalid",
+      "id": "trust.signature",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {}
+      }
+    },
+    "trust/root/root.expired.json": {
+      "spec": [
+        "12.3"
+      ],
+      "note": "expires is before now.",
+      "signed_by": "TEST key root",
+      "signature_file": "trust/root/root.expired.json.minisig",
+      "result": "invalid",
+      "id": "trust.root-expired",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {}
+      }
+    },
+    "trust/root/root.key-reuse.json": {
+      "spec": [
+        "12.3"
+      ],
+      "note": "One key listed in two families.",
+      "signed_by": "TEST key root",
+      "signature_file": "trust/root/root.key-reuse.json.minisig",
+      "result": "invalid",
+      "id": "trust.key-reuse",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {}
+      }
+    },
+    "trust/root/root.legacy-foxglove-plugin-root.json": {
+      "spec": [
+        "12.2"
+      ],
+      "note": "Foxglove's own root format stays readable. ASSUMES the family scope is foxglove.* and org.foxglove.* (spec gap).",
+      "signed_by": "TEST key legacy-root",
+      "signature_file": "trust/root/root.legacy-foxglove-plugin-root.json.minisig",
+      "result": "valid",
+      "families": [
+        "foxglove"
+      ],
+      "note2": "read as a root with one family, foxglove",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/legacy-root.pub",
+        "seen": {}
+      }
+    },
+    "trust/root/root.rollback.json": {
+      "spec": [
+        "12.3"
+      ],
+      "note": "Root version below seen.",
+      "signed_by": "TEST key root",
+      "signature_file": "trust/root/root.rollback.json.minisig",
+      "result": "invalid",
+      "id": "trust.root-rollback",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {
+          "hideout-root": {
+            "root_version": 2,
+            "epoch": 0,
+            "catalogs": {}
+          }
+        }
+      }
+    },
+    "trust/root/root.scope-overlap.json": {
+      "spec": [
+        "12.3"
+      ],
+      "note": "Two families cover foxglove.*.",
+      "signed_by": "TEST key root",
+      "signature_file": "trust/root/root.scope-overlap.json.minisig",
+      "result": "invalid",
+      "id": "trust.scope-overlap",
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {}
+      }
+    },
+    "trust/root/root.valid.json": {
+      "spec": [
+        "12.2",
+        "12.3"
+      ],
+      "note": "The good test root.",
+      "signed_by": "TEST key root",
+      "signature_file": "trust/root/root.valid.json.minisig",
+      "result": "valid",
+      "families": [
+        "foxglove",
+        "vulpes",
+        "digitalis",
+        "hideout"
+      ],
+      "seen_after": {
+        "root_version": 1,
+        "epoch": 0
+      },
+      "context": {
+        "now": "2026-11-09T12:00:00Z",
+        "root_pinned_key": "trust/keys/root.pub",
+        "seen": {}
+      }
+    }
+  }
+}

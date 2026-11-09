@@ -1,0 +1,125 @@
+{
+  "name": "drain-reasons",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.8"
+  ],
+  "description": "module.drain reasons: update, rollback, reload, disable, remove.",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "module.drain",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "module.drain",
+        "params": {
+          "reason": "rollback"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "module.drain",
+        "params": {
+          "reason": "reload"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "module.drain",
+        "params": {
+          "reason": "disable"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "module.drain",
+        "params": {
+          "reason": "remove"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "state": "done"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "state": "done"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "state": "done"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "state": "done"
+        }
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "state": "done"
+        }
+      }
+    }
+  ]
+}

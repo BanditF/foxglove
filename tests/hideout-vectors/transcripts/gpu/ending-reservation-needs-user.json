@@ -1,0 +1,60 @@
+{
+  "name": "ending-reservation-needs-user",
+  "module": "vulpes",
+  "spec": [
+    "8.9",
+    "6.6"
+  ],
+  "description": "A gaming reservation changes only through the user's own click (action.invoke or ui.event with a user source); no method can end it.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "gpu.release_reservation",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": -32601,
+          "message": "method not found"
+        }
+      }
+    },
+    {
+      "event": "user clicks Free GPU in Vulpes's panel"
+    },
+    {
+      "from": "hub",
+      "to": "vulpes",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "ui.event",
+        "params": {
+          "panel": "ai",
+          "node": "free-gpu",
+          "kind": "click",
+          "value": null
+        }
+      }
+    },
+    {
+      "from": "vulpes",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {}
+      }
+    }
+  ]
+}

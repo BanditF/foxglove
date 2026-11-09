@@ -1,0 +1,28 @@
+{
+  "format": "hideout-catalog-v1",
+  "epoch": 0,
+  "sequence": 3,
+  "expires": "2026-12-09T00:00:00Z",
+  "modules": [
+    {
+      "id": "example.private.notes",
+      "version": "0.1.0",
+      "kind": "service",
+      "visibility": "private",
+      "channel": "stable",
+      "hub": "1.0",
+      "sha256": "4e1d553d17860914c6cb1fed0213d16218549ab8f29a0e039ac0ee214bf6fb6d",
+      "url": "https://example.invalid/example.private.notes-0.1.0.zip",
+      "size": 450,
+      "files": {
+        "module.toml": "171757137c91f409647a14223d04e2452afa72b983bbd3931fe01272fbb3c342",
+        "notes.exe": "1daf737a2494ea9b59f1c13597d9fdb0f5d9fbd9d3ea3c21616cab4605675e8d"
+      },
+      "provide": [
+        "example.notes.*"
+      ],
+      "channels": {}
+    }
+  ],
+  "revocations": []
+}

@@ -1,0 +1,38 @@
+{
+  "name": "safe-mode",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.10"
+  ],
+  "description": "After three hub restarts in five minutes the hub starts in safe mode: only the Modules page, no module started, hub.safe_mode true.",
+  "steps": [
+    {
+      "event": "hub restart 1 at t=0 s"
+    },
+    {
+      "event": "hub restart 2 at t=100 s"
+    },
+    {
+      "event": "hub restart 3 at t=250 s"
+    },
+    {
+      "event": "hub starts in safe mode and sets safe_mode in hideout.toml"
+    },
+    {
+      "expect": {
+        "modules_started": 0,
+        "hub_fact": {
+          "hub.safe_mode": true
+        }
+      }
+    },
+    {
+      "event": "user clicks Start normally"
+    },
+    {
+      "expect": {
+        "safe_mode_cleared": true
+      }
+    }
+  ]
+}

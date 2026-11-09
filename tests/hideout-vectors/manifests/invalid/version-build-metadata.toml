@@ -1,0 +1,7 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "1.0.0+abc"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-art.exe"]

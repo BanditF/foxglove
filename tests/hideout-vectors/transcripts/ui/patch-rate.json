@@ -1,0 +1,20 @@
+{
+  "name": "patch-rate",
+  "module": "foxglove.example-art",
+  "spec": [
+    "5.3"
+  ],
+  "description": "Patches above ~20/s per panel are coalesced by the hub (no error).",
+  "steps": [
+    {
+      "event": "module sends 100 ui.patch notifications on one panel within one second"
+    },
+    {
+      "expect": {
+        "hub": "coalesces",
+        "max_applied_per_s": 20,
+        "errors": null
+      }
+    }
+  ]
+}

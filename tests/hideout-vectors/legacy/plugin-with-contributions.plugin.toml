@@ -1,0 +1,23 @@
+id = "example.vendor.timer"
+name = "Example Timer"
+version = "0.1.0"
+api = "1.3"
+run = ["timer.exe"]
+permissions = ["secrets", "key.events"]
+provides = ["action", "backend", "panel-layout", "lighting-effect"]
+
+[[actions]]
+id = "toggle-timer"
+name = "Toggle timer"
+
+[[secrets]]
+name = "token"
+label = "Token"
+
+[[settings]]
+name = "focus-minutes"
+label = "Focus minutes"
+kind = "int"
+default = 25
+min = 1
+max = 120

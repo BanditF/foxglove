@@ -1,0 +1,8 @@
+id = "vulpes"
+name = "Example AI"
+version = "0.4.0"
+kind = "adopted"
+family = "arete"
+hub = "1.0"
+run = ["C:/AI/example-hub.exe"]
+api = { arete = "1.0" }

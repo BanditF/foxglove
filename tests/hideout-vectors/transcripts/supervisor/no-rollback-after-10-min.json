@@ -1,0 +1,22 @@
+{
+  "name": "no-rollback-after-10-min",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "Crash-stopped more than ten minutes after an update does not roll back.",
+  "steps": [
+    {
+      "event": "update completes at t=0"
+    },
+    {
+      "event": "five crashes between t=900 s and t=1300 s"
+    },
+    {
+      "expect": {
+        "final_version": "0.5.0",
+        "state": "crash-stopped"
+      }
+    }
+  ]
+}

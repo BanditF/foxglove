@@ -1,0 +1,98 @@
+{
+  "name": "register-undeclared-panel",
+  "module": "foxglove.example-art",
+  "spec": [
+    "4.7",
+    "5.1"
+  ],
+  "description": "ui.register with a panel id not declared in [[ui.panels]] is rejected (ui.undeclared); declared ones register.",
+  "steps": [
+    {
+      "event": "manifest declares ui.panels: art"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "ui.register",
+        "params": {
+          "instance": "inst-1",
+          "panels": [
+            {
+              "id": "art",
+              "slot": "page",
+              "title": "Art",
+              "icon": "image",
+              "tree": {
+                "type": "column",
+                "id": "root",
+                "props": {},
+                "children": [
+                  {
+                    "type": "label",
+                    "id": "title",
+                    "props": {
+                      "text": "Art"
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "id": "next",
+                    "props": {
+                      "label": "Next"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "extra",
+              "slot": "page",
+              "title": "Art",
+              "icon": "image",
+              "tree": {
+                "type": "column",
+                "id": "root",
+                "props": {},
+                "children": [
+                  {
+                    "type": "label",
+                    "id": "title",
+                    "props": {
+                      "text": "Art"
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "id": "next",
+                    "props": {
+                      "label": "Next"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "rejected": [
+            {
+              "panel": "extra",
+              "error": "ui.undeclared"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

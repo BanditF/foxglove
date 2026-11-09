@@ -1,0 +1,33 @@
+{
+  "name": "window-open",
+  "module": "foxglove.example-art",
+  "spec": [
+    "4.7",
+    "5.7",
+    "8.8"
+  ],
+  "description": "A module window: the hub shows an Open button and sends ui.window.open (needs ui.window).",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ui.window.open",
+        "params": {
+          "window": "wizard"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {}
+      }
+    }
+  ]
+}

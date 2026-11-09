@@ -1,0 +1,44 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-art.exe"]
+permissions = ["ui.window"]
+
+[[ui.panels]]
+id = "page-one"
+slot = "page"
+title = "Page"
+icon = "image"
+
+[[ui.panels]]
+id = "tile-one"
+slot = "tile"
+title = "Tile"
+icon = "image"
+when = "!keyboard.game_mode"
+
+[[ui.panels]]
+id = "status-one"
+slot = "status"
+title = "Status"
+icon = "info"
+
+[[ui.panels]]
+id = "settings-one"
+slot = "settings"
+title = "Settings"
+icon = "gear"
+
+[[ui.panels]]
+id = "action-one"
+slot = "action"
+title = "Do it"
+icon = "play"
+
+[[ui.windows]]
+id = "wizard"
+title = "Setup wizard"
+when = "keyboard.connected"

@@ -1,0 +1,39 @@
+{
+  "name": "state-off",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "State off: the fact module.<id>.state is 'off'.",
+  "steps": [
+    {
+      "event": "trigger: disabled"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "off"
+        }
+      }
+    },
+    {
+      "expect": {
+        "ui_name": "Off",
+        "ways_out": [
+          "Turn on"
+        ],
+        "shown_in": [
+          "panel header",
+          "Modules page",
+          "tray status line"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+[[trust.anchors]]
+id = "test-user"
+kind = "user"
+key = "RWQLPaw1yOqP1TicIPPUG4Mc6H1enjxcObQtU4L/tk14W6ZHZS3RlaDf"
+scope = ["foxglove.*"]

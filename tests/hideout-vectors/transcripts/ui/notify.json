@@ -1,0 +1,63 @@
+{
+  "name": "notify",
+  "module": "foxglove.example-art",
+  "spec": [
+    "6.1",
+    "8.8"
+  ],
+  "description": "hub.notify needs the hub.notify permission.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "hub.notify",
+        "params": {
+          "title": "Art",
+          "body": "New pack ready",
+          "level": "info"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {}
+      }
+    },
+    {
+      "event": "variant: module without hub.notify"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "hub.notify",
+        "params": {
+          "title": "Art",
+          "body": "x",
+          "level": "info"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": 5,
+          "message": "denied"
+        }
+      }
+    }
+  ]
+}

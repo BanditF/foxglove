@@ -1,0 +1,80 @@
+{
+  "name": "hub-state-facts",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8",
+    "8.8"
+  ],
+  "description": "Facts the hub publishes: module.<id>.state, .reason, .version, hub.safe_mode.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "facts.get",
+        "params": {
+          "key": "module.foxglove.example-art.state"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "value": "running"
+        }
+      }
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "facts.get",
+        "params": {
+          "key": "module.foxglove.example-art.version"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "value": "0.4.0"
+        }
+      }
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "facts.get",
+        "params": {
+          "key": "hub.safe_mode"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "value": false
+        }
+      }
+    }
+  ]
+}

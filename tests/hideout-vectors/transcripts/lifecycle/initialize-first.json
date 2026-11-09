@@ -1,0 +1,77 @@
+{
+  "name": "initialize-first",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1"
+  ],
+  "description": "initialize comes first on every connection; anything else first answers error 5 (denied).",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ping",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "reason": "initialize first"
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "initialize",
+        "params": {
+          "id": "foxglove.example-art",
+          "version": "0.4.0",
+          "instance": "inst-1",
+          "token": "tok-launch-1",
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          }
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "hub": "1.0",
+          "api": {
+            "foxglove": "1.13"
+          },
+          "granted": [
+            "facts.read:keyboard.*",
+            "hub.notify",
+            "provide:example.art.*",
+            "channel.offer:previews"
+          ],
+          "settings_dir": "C:/example/settings/foxglove.example-art",
+          "data_dir": "C:/example/data/foxglove.example-art",
+          "safe_mode": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "name": "state-quarantined",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "State quarantined: the fact module.<id>.state is 'quarantined'.",
+  "steps": [
+    {
+      "event": "trigger: 5.5 breadcrumb rule"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "quarantined"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.reason",
+          "value": "Hideout stopped twice while drawing it"
+        }
+      },
+      "why": "reason text is plain words and free; only the state id is the contract"
+    },
+    {
+      "expect": {
+        "ui_name": "Example Art's page couldn't be shown",
+        "ways_out": [
+          "Start again",
+          "Go back to <previous>"
+        ],
+        "shown_in": [
+          "panel header",
+          "Modules page",
+          "tray status line"
+        ]
+      }
+    }
+  ]
+}

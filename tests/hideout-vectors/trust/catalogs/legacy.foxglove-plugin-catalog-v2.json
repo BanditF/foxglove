@@ -1,0 +1,20 @@
+{
+  "format": "foxglove-plugin-catalog-v2",
+  "epoch": 0,
+  "sequence": 5,
+  "expires": "2026-12-09T00:00:00Z",
+  "plugins": [
+    {
+      "id": "org.foxglove.example-weather",
+      "version": "1.2.0",
+      "channel": "stable",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "url": "https://example.invalid/w.zip",
+      "size": 10,
+      "files": {
+        "plugin.toml": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  ],
+  "revocations": []
+}

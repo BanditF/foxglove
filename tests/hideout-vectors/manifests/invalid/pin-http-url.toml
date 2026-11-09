@@ -1,0 +1,10 @@
+id = "vulpes.example-runtime"
+name = "Example Art"
+version = "0.4.0"
+kind = "runtime"
+family = "vulpes"
+hub = "1.0"
+
+[[pin]]
+url = "http://example.invalid/a.zip"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

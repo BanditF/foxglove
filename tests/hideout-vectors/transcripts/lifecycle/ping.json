@@ -1,0 +1,29 @@
+{
+  "name": "ping",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.8"
+  ],
+  "description": "ping is a call with empty params and result.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ping",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {}
+      }
+    }
+  ]
+}

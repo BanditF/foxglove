@@ -1,0 +1,8 @@
+id = "hideout.example-lights"
+name = "Example-Lights"
+version = "0.2.0"
+kind = "service"
+family = "hideout"
+hub = "1.0"
+run = ["lights.exe"]
+provides = ["method:example.lights.*", "channel:keys-feed"]

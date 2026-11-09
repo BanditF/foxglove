@@ -1,0 +1,31 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-art.exe"]
+api = { foxglove = "1.13" }
+requires = ["foxglove.example-link>=0.4"]
+enriches = ["example-player.exe"]
+swap = "overlap"
+provides = ["method:example.art.*", "facts:example.art.*", "channel:previews"]
+permissions = ["facts.read:keyboard.*", "channel.open:foxglove.example-link/art", "hub.notify", "provide:example.art.*", "channel.offer:previews"]
+description = "Placeholder service used by the test vectors."
+
+[activation]
+on = ["fact:keyboard.connected", "open", "call"]
+
+[lifecycle]
+data = "keep"
+
+[[ui.panels]]
+id = "art"
+slot = "page"
+title = "Art"
+icon = "image"
+when = "keyboard.connected"
+
+[[actions]]
+id = "next-art"
+name = "Next art"

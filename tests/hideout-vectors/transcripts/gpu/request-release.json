@@ -1,0 +1,118 @@
+{
+  "name": "request-release",
+  "module": "vulpes",
+  "spec": [
+    "8.9"
+  ],
+  "description": "gpu.request / gpu.release / gpu.changed on the Vulpes module; error 3 while reserved for gaming; a gaming reservation is never a method.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "gpu.status",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "tenant": null,
+          "vram": 0,
+          "reserved": false
+        }
+      }
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "gpu.request",
+        "params": {
+          "class": "chat",
+          "why": "answer a question"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "gpu.changed",
+        "params": {
+          "tenant": "chat",
+          "vram": 8000,
+          "reserved": false
+        }
+      }
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "gpu.release",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {}
+      }
+    },
+    {
+      "event": "user starts a game and clicks Reserve for gaming in Vulpes panel"
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "gpu.request",
+        "params": {
+          "class": "image",
+          "why": "make a picture"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "error": {
+          "code": 3,
+          "message": "busy",
+          "data": {
+            "reason": "GPU reserved for gaming"
+          }
+        }
+      }
+    }
+  ]
+}

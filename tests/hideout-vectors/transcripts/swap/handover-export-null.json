@@ -1,0 +1,48 @@
+{
+  "name": "handover-export-null",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.6"
+  ],
+  "description": "state.export may answer null: no state.import is sent.",
+  "steps": [
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "state.export",
+        "params": {}
+      }
+    },
+    {
+      "from": "old-instance",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "result": null
+      }
+    },
+    {
+      "from": "hub",
+      "to": "old-instance",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "module.exit",
+        "params": {
+          "reason": "update"
+        }
+      }
+    },
+    {
+      "event": "new instance starts"
+    },
+    {
+      "expect": {
+        "no_message_sent": "state.import"
+      }
+    }
+  ]
+}

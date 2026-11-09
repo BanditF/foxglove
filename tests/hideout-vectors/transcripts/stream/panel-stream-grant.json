@@ -1,0 +1,53 @@
+{
+  "name": "panel-stream-grant",
+  "module": "foxglove.example-art",
+  "spec": [
+    "5.4",
+    "8.4"
+  ],
+  "description": "A live panel (canvas with stream): the hub's panel host opens the module's channel as a normal channel with the same grant. Frames are binary, never JSON, never through the router.",
+  "steps": [
+    {
+      "event": "panel visible, window not minimised; canvas node has props.stream = 'previews'"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 30,
+        "method": "channel.create",
+        "params": {
+          "channel": "previews",
+          "consumer": "hub.panel-host",
+          "nonce": "n-1234"
+        }
+      },
+      "why": "the hub checked channel.open:foxglove.example-art/previews for its panel host (same grant as the module's channel.offer)"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 30,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-example-previews-0001"
+        }
+      }
+    },
+    {
+      "event": "hub returns {pipe, nonce} to its panel host and steps out"
+    },
+    {
+      "event": "panel host connects to the pipe and sends the nonce first"
+    },
+    {
+      "event": "frames flow: u32 LE length + 12-byte header + body (see frames/panel-frames.json)",
+      "rate_max_per_s": 30
+    },
+    {
+      "event": "panel hidden or window minimised: hub closes the channel"
+    }
+  ]
+}

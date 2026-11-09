@@ -1,0 +1,21 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-art.exe"]
+
+[[ui.panels]]
+id = "a"
+slot = "page"
+title = "A"
+icon = "x"
+when = "keyboard.connected"
+
+[[ui.panels]]
+id = "b"
+slot = "page"
+title = "B"
+icon = "x"
+when = "!keyboard.connected"

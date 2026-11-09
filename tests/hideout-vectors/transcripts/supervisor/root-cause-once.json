@@ -1,0 +1,52 @@
+{
+  "name": "root-cause-once",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8",
+    "4.4"
+  ],
+  "description": "A state caused by another module says Waiting for <module> and links there; the tray shows only the root. The graph is requires plus channel.open: permissions.",
+  "steps": [
+    {
+      "event": "foxglove.example-link crashed (root). foxglove.example-art requires it; hideout.example-lights has channel.open on example-art"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "waiting"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.reason",
+          "value": "Waiting for Example Link"
+        }
+      }
+    },
+    {
+      "expect": {
+        "tray_lines": [
+          "Example Link: Restarting"
+        ],
+        "tray_shows_only_root": true,
+        "hub_restarted": [
+          "foxglove.example-link"
+        ],
+        "hub_restarted_dependents": false
+      }
+    }
+  ]
+}

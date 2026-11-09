@@ -1,0 +1,28 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-art.exe"]
+
+[[settings]]
+name = "focus-minutes"
+label = "Focus minutes"
+kind = "int"
+default = 25
+min = 1
+max = 120
+
+[[settings]]
+name = "chime"
+label = "Play a chime"
+kind = "bool"
+default = true
+when = "audio.output"
+
+[[settings]]
+name = "title-text"
+label = "Title"
+kind = "text"
+default = "Hello"

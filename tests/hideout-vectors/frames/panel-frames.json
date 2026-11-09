@@ -1,0 +1,111 @@
+{
+  "format": "hideout-frame-vectors-v1",
+  "spec": "8.4",
+  "layout": "u32 LE length + payload; payload = 12-byte header (u8 kind, u8 flags=0, u16 width_or_count, u16 height, u16 reserved=0, u32 seq; little-endian) + body",
+  "frames": [
+    {
+      "name": "image-2x1",
+      "wire_hex": "14000000010002000100000007000000ff0000ff00ff00ff",
+      "payload_hex": "010002000100000007000000ff0000ff00ff00ff",
+      "expect": {
+        "accept": true,
+        "kind": "image",
+        "width": 2,
+        "height": 1,
+        "seq": 7,
+        "pixels_rgba": [
+          [
+            255,
+            0,
+            0,
+            255
+          ],
+          [
+            0,
+            255,
+            0,
+            255
+          ]
+        ]
+      },
+      "note": "Header 12 bytes then width*height*4 body."
+    },
+    {
+      "name": "canvas-3-shapes",
+      "wire_hex": "180000000200030000000000080000000102030405060708090a0b0c",
+      "payload_hex": "0200030000000000080000000102030405060708090a0b0c",
+      "expect": {
+        "accept": true,
+        "kind": "canvas",
+        "count": 3,
+        "seq": 8,
+        "colours_rgba_by_shape_order": [
+          [
+            1,
+            2,
+            3,
+            4
+          ],
+          [
+            5,
+            6,
+            7,
+            8
+          ],
+          [
+            9,
+            10,
+            11,
+            12
+          ]
+        ]
+      },
+      "note": "count*4 bytes of RGBA, one per shape in declared order."
+    },
+    {
+      "name": "text-append",
+      "wire_hex": "1100000003000000000000000900000068656c6c6f",
+      "payload_hex": "03000000000000000900000068656c6c6f",
+      "expect": {
+        "accept": true,
+        "kind": "text",
+        "seq": 9,
+        "append": "hello"
+      },
+      "note": "UTF-8 bytes to append. Spec gap: what width_or_count holds for kind 3 is not stated; 0 used."
+    },
+    {
+      "name": "image-length-mismatch",
+      "wire_hex": "1300000001000200010000000a00000000000000000000",
+      "payload_hex": "01000200010000000a00000000000000000000",
+      "expect": {
+        "accept": false,
+        "reason": "body length does not match header: dropped"
+      },
+      "note": "Body is 7 bytes, header says 8."
+    },
+    {
+      "name": "canvas-length-mismatch",
+      "wire_hex": "1700000002000300000000000b0000000000000000000000000000",
+      "payload_hex": "02000300000000000b0000000000000000000000000000",
+      "expect": {
+        "accept": false,
+        "reason": "dropped"
+      },
+      "note": "3 shapes need 12 bytes."
+    },
+    {
+      "name": "empty-body-zero-count",
+      "wire_hex": "0c00000002000000000000000c000000",
+      "payload_hex": "02000000000000000c000000",
+      "expect": {
+        "accept": true,
+        "kind": "canvas",
+        "count": 0,
+        "seq": 12,
+        "colours_rgba_by_shape_order": []
+      },
+      "note": "A zero-shape canvas frame is length-consistent."
+    }
+  ]
+}

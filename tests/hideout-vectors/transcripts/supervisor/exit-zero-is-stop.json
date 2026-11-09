@@ -1,0 +1,21 @@
+{
+  "name": "exit-zero-is-stop",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.7",
+    "4.6"
+  ],
+  "description": "Exit code 0 is a stop, not a crash; an event-started module that exits 0 is not restarted.",
+  "steps": [
+    {
+      "event": "module exits with code 0"
+    },
+    {
+      "expect": {
+        "counted_as_crash": false,
+        "restarted": false,
+        "state": "off-or-idle"
+      }
+    }
+  ]
+}

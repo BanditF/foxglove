@@ -1,0 +1,56 @@
+{
+  "name": "caller-error-2-once",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.6"
+  ],
+  "description": "Callers see at most one error 2 and retry.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 2,
+          "message": "disconnected",
+          "data": {
+            "reason": "Example Art restarting"
+          }
+        }
+      }
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "art": "none"
+        }
+      }
+    }
+  ]
+}

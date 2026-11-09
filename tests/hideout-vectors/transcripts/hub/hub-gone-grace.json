@@ -1,0 +1,19 @@
+{
+  "name": "hub-gone-grace",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.9"
+  ],
+  "description": "With no hub back within 30 s, each module exits cleanly (lights handed back, the Info screen handed back).",
+  "steps": [
+    {
+      "event": "hub gone; pipe closed"
+    },
+    {
+      "event": "30 seconds pass with no hub"
+    },
+    {
+      "event": "module hands back lights and the Info screen, exits 0"
+    }
+  ]
+}

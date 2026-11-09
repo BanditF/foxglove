@@ -1,0 +1,40 @@
+{
+  "name": "state-needs-hub",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "State needs-hub: the fact module.<id>.state is 'needs-hub'.",
+  "steps": [
+    {
+      "event": "trigger: manifest hub is not served"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "needs-hub"
+        }
+      }
+    },
+    {
+      "expect": {
+        "ui_name": "Needs a newer Hideout",
+        "ways_out": [
+          "Update Hideout",
+          "Go back to <previous>"
+        ],
+        "shown_in": [
+          "panel header",
+          "Modules page",
+          "tray status line"
+        ]
+      }
+    }
+  ]
+}

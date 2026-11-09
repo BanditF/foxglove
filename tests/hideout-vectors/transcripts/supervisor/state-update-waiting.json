@@ -1,0 +1,54 @@
+{
+  "name": "state-update-waiting",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8"
+  ],
+  "description": "State update-waiting: the fact module.<id>.state is 'update-waiting'.",
+  "steps": [
+    {
+      "event": "trigger: update adds a permission; old version keeps running"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "update-waiting"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.reason",
+          "value": "The new version wants to read your keystrokes"
+        }
+      },
+      "why": "reason text is plain words and free; only the state id is the contract"
+    },
+    {
+      "expect": {
+        "ui_name": "Update waiting for you",
+        "ways_out": [
+          "Review",
+          "Not now"
+        ],
+        "shown_in": [
+          "panel header",
+          "Modules page",
+          "tray status line"
+        ]
+      }
+    }
+  ]
+}

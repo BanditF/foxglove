@@ -1,0 +1,10 @@
+id = "hideout.example-lights"
+name = "Example Lights"
+version = "0.4.0"
+kind = "service"
+family = "hideout"
+hub = "1.0"
+run = ["example-art.exe"]
+
+[identity]
+application = "ExampleLights"

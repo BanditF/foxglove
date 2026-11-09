@@ -1,0 +1,319 @@
+{
+  "format": "hideout-permission-vectors-v1",
+  "vectors": [
+    {
+      "permission": "facts.read:keyboard.*",
+      "result": "valid"
+    },
+    {
+      "permission": "facts.write:weather.*",
+      "result": "valid"
+    },
+    {
+      "permission": "devices.read",
+      "result": "valid"
+    },
+    {
+      "permission": "lighting.write",
+      "result": "valid"
+    },
+    {
+      "permission": "lighting.lease",
+      "result": "valid"
+    },
+    {
+      "permission": "behaviors.invoke",
+      "result": "valid"
+    },
+    {
+      "permission": "screens.write",
+      "result": "valid"
+    },
+    {
+      "permission": "art.write",
+      "result": "valid"
+    },
+    {
+      "permission": "key.events",
+      "result": "valid"
+    },
+    {
+      "permission": "hid.raw",
+      "result": "valid"
+    },
+    {
+      "permission": "profiles.write",
+      "result": "valid"
+    },
+    {
+      "permission": "focus.write",
+      "result": "valid"
+    },
+    {
+      "permission": "net",
+      "result": "valid"
+    },
+    {
+      "permission": "net.connect:127.0.0.1:4455",
+      "result": "valid"
+    },
+    {
+      "permission": "net.connect:example.invalid:*",
+      "result": "valid"
+    },
+    {
+      "permission": "net.listen:udp:127.0.0.1:9000",
+      "result": "valid"
+    },
+    {
+      "permission": "net.listen:tcp:127.0.0.1:9001",
+      "result": "valid"
+    },
+    {
+      "permission": "files",
+      "result": "valid"
+    },
+    {
+      "permission": "audio.inputs.read",
+      "result": "valid"
+    },
+    {
+      "permission": "audio.inputs.mute",
+      "result": "valid"
+    },
+    {
+      "permission": "secrets",
+      "result": "valid"
+    },
+    {
+      "permission": "app.windows",
+      "result": "valid"
+    },
+    {
+      "permission": "apps.watch:example-player.exe",
+      "result": "valid"
+    },
+    {
+      "permission": "provide:example.art.*",
+      "result": "valid"
+    },
+    {
+      "permission": "provide:example.art.status",
+      "result": "valid"
+    },
+    {
+      "permission": "channel.open:foxglove.example-link/art",
+      "result": "valid"
+    },
+    {
+      "permission": "channel.offer:previews",
+      "result": "valid"
+    },
+    {
+      "permission": "device.hid:keyboard",
+      "result": "valid"
+    },
+    {
+      "permission": "gpu.status",
+      "result": "valid"
+    },
+    {
+      "permission": "gpu.request:chat",
+      "result": "valid"
+    },
+    {
+      "permission": "gpu.request:image",
+      "result": "valid"
+    },
+    {
+      "permission": "gpu.request:any",
+      "result": "valid"
+    },
+    {
+      "permission": "ai.ask:researcher",
+      "result": "valid"
+    },
+    {
+      "permission": "ai.ask:*",
+      "result": "valid"
+    },
+    {
+      "permission": "image.generate",
+      "result": "valid"
+    },
+    {
+      "permission": "secrets.ref:vault",
+      "result": "valid"
+    },
+    {
+      "permission": "hub.notify",
+      "result": "valid"
+    },
+    {
+      "permission": "ui.window",
+      "result": "valid"
+    },
+    {
+      "permission": "modules.manage",
+      "result": "valid"
+    },
+    {
+      "permission": "bogus.thing",
+      "result": "invalid",
+      "id": "permission.unknown",
+      "note": "Unknown body."
+    },
+    {
+      "permission": "lighting.read",
+      "result": "invalid",
+      "id": "permission.unknown",
+      "note": "Not in the grammar."
+    },
+    {
+      "permission": "facts.write:device.*",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "facts.write is never device.* (6.1)."
+    },
+    {
+      "permission": "facts.write:*",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "facts.write is never *. Spec gap: id not stated; permission.argument assumed."
+    },
+    {
+      "permission": "facts.read:",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "Empty pattern."
+    },
+    {
+      "permission": "net.connect:example.invalid",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "Needs host:port|*."
+    },
+    {
+      "permission": "net.listen:udp:0.0.0.0:9000",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "Loopback 127.0.0.1 only."
+    },
+    {
+      "permission": "net.listen:icmp:127.0.0.1:1",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "udp|tcp only."
+    },
+    {
+      "permission": "apps.watch:example-player",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "Needs <name>.exe."
+    },
+    {
+      "permission": "gpu.request:video",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "Class is chat, image or any."
+    },
+    {
+      "permission": "channel.open:nochannel",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "Needs <module>/<channel>."
+    },
+    {
+      "permission": "provide:",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "Empty method pattern."
+    },
+    {
+      "permission": "ai.ask:",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "Empty agent."
+    },
+    {
+      "permission": "modules.manage",
+      "result": "never",
+      "id": "permission.never",
+      "context": {
+        "holder": "third-party module"
+      },
+      "note": "Left out of granted; calls answer error 5."
+    },
+    {
+      "permission": "modules.manage",
+      "result": "valid",
+      "context": {
+        "holder": "hideout.modules"
+      },
+      "note": "One of the two holders allowed."
+    },
+    {
+      "permission": "modules.manage",
+      "result": "valid",
+      "context": {
+        "holder": "first-party hideout CLI"
+      },
+      "note": "Outside tool allowed."
+    },
+    {
+      "permission": "key.events",
+      "result": "never",
+      "id": "permission.never",
+      "context": {
+        "holder": "MCP client"
+      },
+      "note": "Never over MCP, always."
+    },
+    {
+      "permission": "hid.raw",
+      "result": "never",
+      "id": "permission.never",
+      "context": {
+        "holder": "MCP client"
+      },
+      "note": "Never over MCP."
+    },
+    {
+      "permission": "key.events",
+      "result": "never",
+      "id": "permission.never",
+      "context": {
+        "holder": "private module",
+        "source": "unsigned"
+      },
+      "note": "Needs sideload or a user key."
+    },
+    {
+      "permission": "key.events",
+      "result": "valid",
+      "context": {
+        "holder": "third-party module",
+        "source": "sideload",
+        "warning": "red"
+      },
+      "note": "Allowed with the red warning."
+    },
+    {
+      "permission": "key.events",
+      "result": "valid",
+      "context": {
+        "holder": "private module",
+        "anchor": "user",
+        "warning": "red"
+      },
+      "note": "Signed by a user key: allowed with the red warning, never over MCP."
+    }
+  ],
+  "sensitive": [
+    "key.events",
+    "hid.raw",
+    "net",
+    "ai.ask:*",
+    "secrets.ref:*"
+  ]
+}

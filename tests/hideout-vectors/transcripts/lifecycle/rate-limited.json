@@ -1,0 +1,37 @@
+{
+  "name": "rate-limited",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1"
+  ],
+  "description": "Error 8 is rate-limited. Example: ui.patch beyond ~20/s per panel is coalesced, not errored (5.3); a method may still answer 8.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.art.select",
+        "params": {
+          "id": "a"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 8,
+          "message": "rate-limited",
+          "data": {
+            "reason": "Too fast, try again in a moment"
+          }
+        }
+      }
+    }
+  ]
+}

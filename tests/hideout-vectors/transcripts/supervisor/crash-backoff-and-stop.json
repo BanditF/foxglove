@@ -1,0 +1,40 @@
+{
+  "name": "crash-backoff-and-stop",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.7"
+  ],
+  "description": "A crashed instance restarts with backoff from 1 s up to 60 s; five crashes in ten minutes stops it with one notification per module per sign-in. Notices by events only (process handle, pipe close).",
+  "steps": [
+    {
+      "event": "crash 1 at t=0 s (process handle signalled)"
+    },
+    {
+      "event": "restart after delay d1, 1 <= d1 <= 60"
+    },
+    {
+      "event": "crash 2 at t=20 s"
+    },
+    {
+      "event": "restart after d2 >= d1"
+    },
+    {
+      "event": "crash 3 at t=60 s"
+    },
+    {
+      "event": "crash 4 at t=200 s"
+    },
+    {
+      "event": "crash 5 at t=500 s (all within 10 minutes)"
+    },
+    {
+      "event": "state = crash-stopped; exactly one notification via hub.notify"
+    },
+    {
+      "expect": {
+        "restart_attempts_after_5th": 0,
+        "heartbeats_sent": 0
+      }
+    }
+  ]
+}

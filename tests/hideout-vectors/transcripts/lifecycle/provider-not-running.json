@@ -1,0 +1,39 @@
+{
+  "name": "provider-not-running",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1",
+    "4.6"
+  ],
+  "description": "A provided method whose module is not running answers error 2 (after activation by call, if declared).",
+  "steps": [
+    {
+      "event": "module foxglove.example-art provides example.art.status; activation.on has no call; it is not running"
+    },
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.art.status",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 2,
+          "message": "disconnected",
+          "data": {
+            "reason": "Waiting for Example Art"
+          }
+        }
+      }
+    }
+  ]
+}

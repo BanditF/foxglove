@@ -1,0 +1,40 @@
+{
+  "name": "bisect",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.10"
+  ],
+  "description": "Find the module that breaks Hideout: from safe mode the hub halves the enabled set until one module is left; the saved enabled set is never edited.",
+  "steps": [
+    {
+      "event": "enabled set = [a,b,c,d,e,f,g,h] (placeholder ids); hub is in safe mode"
+    },
+    {
+      "event": "user chooses Find the module that breaks Hideout"
+    },
+    {
+      "event": "round 1: turn off [e,f,g,h] for the session; user answers 'Still broken?': no"
+    },
+    {
+      "event": "round 2: culprit in [e,f,g,h]; turn on [e,f], off [g,h]; user answers: yes"
+    },
+    {
+      "event": "round 3: [e] on, [f] off; user answers: no"
+    },
+    {
+      "expect": {
+        "culprit": "f",
+        "offers": [
+          "Turn off",
+          "Go back to <previous>"
+        ]
+      }
+    },
+    {
+      "expect": {
+        "saved_enabled_set_restored": true,
+        "saved_enabled_set_edited": false
+      }
+    }
+  ]
+}

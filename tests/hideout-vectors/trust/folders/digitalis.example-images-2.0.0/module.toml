@@ -1,0 +1,7 @@
+id = "digitalis.example-images"
+name = "Example-Images"
+version = "2.0.0"
+kind = "firmware"
+family = "digitalis"
+hub = "1.0"
+provides = ["firmware:example-board"]

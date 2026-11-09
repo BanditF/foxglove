@@ -1,0 +1,71 @@
+{
+  "name": "channel-open-denied",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.4",
+    "6.2",
+    "6.6"
+  ],
+  "description": "Without channel.open:<module>/<channel> the hub answers error 5; a keys-class channel over MCP is never granted.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "channel.open",
+        "params": {
+          "module": "foxglove.example-art",
+          "channel": "previews"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "reason": "Needs permission to open Example Art's previews"
+          }
+        }
+      }
+    },
+    {
+      "event": "variant: mcp client asks for hideout.example-lights/keys-feed (risk class keys)"
+    },
+    {
+      "from": "mcp:example-agent",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "channel.open",
+        "params": {
+          "module": "hideout.example-lights",
+          "channel": "keys-feed"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "mcp:example-agent",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "reason": "Key presses are never shared with AI agents"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "name": "unknown-method",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.1"
+  ],
+  "description": "A method no module provides answers -32601.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.nothing.here",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": -32601,
+          "message": "method not found"
+        }
+      }
+    }
+  ]
+}
