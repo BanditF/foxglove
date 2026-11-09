@@ -346,7 +346,7 @@ Contributions are declared in the manifest so the hub can show them before the m
 
 **`[[ui.windows]]`:** `id`, `title`, `when?`. A module window (§5.7). The hub shows an Open
 button and sends `ui.window.open`. Needs the `ui.window` permission: a manifest with a
-`[[ui.windows]]` entry and no `ui.window` in its permissions is refused (`manifest.window_missing`,
+`[[ui.windows]]` entry and no `ui.window` in its permissions is refused (`manifest.window-missing`,
 v1.1).
 
 **`[[settings]]`:** as plugin.toml, plus `when?`.
@@ -973,7 +973,7 @@ Design §4.7.
 |---|---|---|
 | `name` | string | tool name, unique in the module; exposed as `<module name>_<name>` |
 | `description` | string | for the agent |
-| `method` | string | one method the module provides; its schema is the tool's input. A method the module's `provides` doesn't cover is refused (`manifest.mcp_method`, v1.1) |
+| `method` | string | one method the module provides; its schema is the tool's input. A method the module's `provides` doesn't cover is refused (`manifest.mcp-method`, v1.1) |
 | `access` | string | `read` or `write` |
 | `ttl_max_s` | integer | write tools that hold something: the longest hold, at most 600 |
 
@@ -1119,7 +1119,7 @@ NOT go on.
 
 - Outside any catalog, a module installs only in developer mode (`FOXGLOVE_DEV_UNSIGNED_PLUGINS`,
   `HIDEOUT_DEV_UNSIGNED=1`). Source id `sideload`. Without developer mode the install is refused
-  (`install.dev_mode_required`, v1.1).
+  (`install.dev-mode-required`, v1.1).
 - Its shallow verify compares against the inventory's hashes.
 - It MUST NOT use an id in a first-party scope (`trust.sideload-scope`).
 
@@ -1178,10 +1178,10 @@ anchor = "<trust anchor id>"      # §13.6; absent only for a developer-mode fol
   - `folder`: a local folder holding a signed `catalog.json` and archives, or, in developer mode,
     unsigned module folders.
 - **Checks on `hideout.toml` (v1.1):** a reader refuses the file, with these ids, when
-  - no `public` source is listed (`config.no_public_source`);
-  - a `folder` source has a `url`, or a `catalog` or `git` source has a `path` (`config.folder_url`);
-  - a source `id` isn't `a-z`, `0-9`, `-`, or two sources share one (`config.source_id`);
-  - a source's `anchor` names no `[[trust.anchors]]` entry (`config.unknown_anchor`).
+  - no `public` source is listed (`config.no-public-source`);
+  - a `folder` source has a `url`, or a `catalog` or `git` source has a `path` (`config.folder-url`);
+  - a source `id` isn't `a-z`, `0-9`, `-`, or two sources share one (`config.source-id`);
+  - a source's `anchor` names no `[[trust.anchors]]` entry (`config.unknown-anchor`).
 - There MUST be at least one `public` source (the Hideout registry, shipped in the MSI config) and
   MAY be any number of `private` ones.
 - A `private` source's modules MUST have `visibility = "private"`; a `public` source's MUST be
@@ -1219,7 +1219,7 @@ key = "RWQ..."                    # minisign public key
 scope = ["<reverse-dns>.*"]       # user anchors only: the ids it may sign
 ```
 
-- A source's `anchor` MUST name an anchor listed here (`config.unknown_anchor`, v1.1).
+- A source's `anchor` MUST name an anchor listed here (`config.unknown-anchor`, v1.1).
 - **`root`:** the Hideout root (§12.2), pinned in `hideout.exe`. It cannot be removed or replaced
   through `hideout.toml`.
 - **`user`:** a local or user signing key the user adds (for a private repo or folder). It signs a
@@ -1276,8 +1276,8 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `manifest.activation` | a bad `activation.on` or `when` entry |
 | `manifest.ui` | a bad `[[ui.panels]]` or `[[ui.windows]]` entry |
 | `manifest.mcp` | a bad `[[mcp.tools]]` entry |
-| `manifest.mcp_method` | (v1.1) an `[[mcp.tools]]` `method` the module doesn't provide |
-| `manifest.window_missing` | (v1.1) `[[ui.windows]]` without the `ui.window` permission |
+| `manifest.mcp-method` | (v1.1) an `[[mcp.tools]]` `method` the module doesn't provide |
+| `manifest.window-missing` | (v1.1) `[[ui.windows]]` without the `ui.window` permission |
 | `manifest.pin` | `[[pin]]` misplaced, missing, or bad |
 | `manifest.edition` | `[edition]` without `content:edition`, or the reverse |
 | `manifest.identity` | `[identity]` on a module that may not have it |
@@ -1295,11 +1295,11 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `lifecycle.declined` | the user declined the permissions |
 | `lifecycle.edition` | an edition lists a module that isn't installed (reported) |
 | `lifecycle.no-hub` | a step that needs the hub, with the hub not running |
-| `install.dev_mode_required` | (v1.1) an install outside any catalog without developer mode |
-| `config.no_public_source` | (v1.1) `hideout.toml` lists no `public` source |
-| `config.folder_url` | (v1.1) a `folder` source with a `url`, or another kind with a `path` |
-| `config.source_id` | (v1.1) a source id breaks §13.4 or is used twice |
-| `config.unknown_anchor` | (v1.1) a source's `anchor` names no `[[trust.anchors]]` entry |
+| `install.dev-mode-required` | (v1.1) an install outside any catalog without developer mode |
+| `config.no-public-source` | (v1.1) `hideout.toml` lists no `public` source |
+| `config.folder-url` | (v1.1) a `folder` source with a `url`, or another kind with a `path` |
+| `config.source-id` | (v1.1) a source id breaks §13.4 or is used twice |
+| `config.unknown-anchor` | (v1.1) a source's `anchor` names no `[[trust.anchors]]` entry |
 | `trust.signature` | a signature doesn't verify |
 | `trust.root-expired`, `trust.root-rollback` | the root expired or is older than `seen` |
 | `trust.scope` | an entry is outside its family's or anchor's scope |

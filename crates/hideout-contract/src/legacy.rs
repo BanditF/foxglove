@@ -1,4 +1,5 @@
-//! A Plugin's `plugin.toml`: who it is, which API it was built for, how to start it, what it may do.
+//! A legacy plugin's `plugin.toml` (spec §4.10; moved from `foxglove-plugin-api`, which re-exports it as
+//! `manifest`): who it is, which API it was built for, how to start it, what it may do.
 //!
 //! ```toml
 //! id = "com.example.weather"
@@ -13,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{fail, Error, ErrorId};
 use crate::permission::Permission;
 use crate::Version;
 
@@ -139,7 +141,22 @@ pub enum Provides {
 impl Manifest {
     /// Parses and checks a manifest against the API this app speaks.
     pub fn parse(text: &str, app: Version) -> Result<Manifest, String> {
-        let m: Manifest = toml::from_str(text).map_err(|e| e.to_string())?;
+        Manifest::check(text, app).map_err(|e| e.message)
+    }
+
+    /// [`Manifest::parse`] with the §15 id of the failed check.
+    pub fn check(text: &str, app: Version) -> Result<Manifest, Error> {
+        let m: Manifest = toml::from_str(text).map_err(|e| {
+            let msg = e.to_string();
+            let id = if msg.contains("unknown field") {
+                ErrorId::ManifestUnknownKey
+            } else if msg.contains("missing field") {
+                ErrorId::ManifestMissingKey
+            } else {
+                ErrorId::ManifestSyntax
+            };
+            Error::new(id, msg)
+        })?;
         let id_ok = m.id.split('.').count() >= 2
             && m.id.split('.').all(|p| {
                 !p.is_empty()
@@ -147,17 +164,27 @@ impl Manifest {
                         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
             });
         if !id_ok {
-            return Err(format!(
-                "id {:?} must be reverse-DNS, like com.example.plugin",
-                m.id
-            ));
+            return fail(
+                ErrorId::ManifestId,
+                format!("id {:?} must be reverse-DNS, like com.example.plugin", m.id),
+            );
         }
-        let api =
-            Version::parse(&m.api).ok_or_else(|| format!("api {:?} must be major.minor", m.api))?;
+        let api = Version::parse(&m.api).ok_or_else(|| {
+            Error::new(
+                ErrorId::ManifestApi,
+                format!("api {:?} must be major.minor", m.api),
+            )
+        })?;
         if !api.served_by(app) {
-            return Err(format!("built for API {api}; this Foxglove speaks {app}"));
+            return fail(
+                ErrorId::LifecycleApi,
+                format!("built for API {api}; this Foxglove speaks {app}"),
+            );
         }
-        let program = m.run.first().ok_or("run must name the program")?;
+        let program = m
+            .run
+            .first()
+            .ok_or_else(|| Error::new(ErrorId::ManifestRun, "run must name the program"))?;
         let escapes = std::path::Path::new(program).components().any(|c| {
             !matches!(
                 c,
@@ -165,9 +192,10 @@ impl Manifest {
             )
         });
         if escapes {
-            return Err(format!(
-                "run {program:?} must stay inside the plugin's folder"
-            ));
+            return fail(
+                ErrorId::ManifestRun,
+                format!("run {program:?} must stay inside the plugin's folder"),
+            );
         }
         let mut ids = std::collections::HashSet::new();
         for a in &m.actions {
@@ -176,10 +204,13 @@ impl Manifest {
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
             if !ok || !ids.insert(a.id.as_str()) || a.name.trim().is_empty() {
-                return Err(format!(
-                    "action {:?} needs a unique id (a-z, 0-9, -) and a name",
-                    a.id
-                ));
+                return fail(
+                    ErrorId::ManifestActions,
+                    format!(
+                        "action {:?} needs a unique id (a-z, 0-9, -) and a name",
+                        a.id
+                    ),
+                );
             }
         }
         let mut names = std::collections::HashSet::new();
@@ -193,11 +224,14 @@ impl Manifest {
                 || s.label.trim().is_empty()
                 || s.accept(&s.default).is_none()
             {
-                return Err(format!("setting {:?} needs a unique name (a-z, 0-9, -), a label and a default of its kind", s.name));
+                return fail(ErrorId::ManifestSettings, format!("setting {:?} needs a unique name (a-z, 0-9, -), a label and a default of its kind", s.name));
             }
         }
         if !m.secrets.is_empty() && !m.permissions.contains(&Permission::Secrets) {
-            return Err("[[secrets]] needs the secrets permission".into());
+            return fail(
+                ErrorId::ManifestSecrets,
+                "[[secrets]] needs the secrets permission",
+            );
         }
         Ok(m)
     }

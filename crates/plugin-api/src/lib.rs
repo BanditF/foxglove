@@ -8,45 +8,21 @@
 //! The types here are the contract: the checked-in `schema/v1.json` is generated from them, and
 //! a test fails when they change without the schema (and, for breaking changes, the version).
 
-pub mod manifest;
 pub mod methods;
-pub mod permission;
 pub mod rpc;
+
+pub use hideout_contract as hideout;
+/// The manifest, permission and version types now live in `hideout-contract` (#919); they are
+/// re-exported here under their old paths so every plugin builds unchanged.
+pub use hideout_contract::legacy as manifest;
+pub use hideout_contract::permission;
+pub use hideout_contract::Version;
 
 /// The API version this crate describes. Minor versions only add; a major version breaks.
 pub const API_VERSION: Version = Version {
     major: 1,
     minor: 14,
 };
-
-/// An API version as `major.minor`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Version {
-    pub major: u16,
-    pub minor: u16,
-}
-
-impl Version {
-    pub fn parse(text: &str) -> Option<Version> {
-        let (major, minor) = text.split_once('.')?;
-        Some(Version {
-            major: major.parse().ok()?,
-            minor: minor.parse().ok()?,
-        })
-    }
-
-    /// Whether a client built for `self` can talk to an app speaking `app`: same major, and the
-    /// app at least as new (minor versions only add).
-    pub fn served_by(self, app: Version) -> bool {
-        self.major == app.major && self.minor <= app.minor
-    }
-}
-
-impl std::fmt::Display for Version {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}.{}", self.major, self.minor)
-    }
-}
 
 /// The JSON Schema of every message, as checked in at `schema/v1.json`.
 pub fn schema() -> serde_json::Value {
