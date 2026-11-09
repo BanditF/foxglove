@@ -1,0 +1,21 @@
+{
+  "_comment": "Committed baseline for scripts/lab/hideout_footprint.py (#935). A metric fails when it reads past value * (1 + pct/100) + slack. These are INITIAL CEILINGS, not measurements (the case has not run yet): the first lab batch replaces them with its numbers via --update-baseline, reviewed in the PR. vram_mb is left out: it is recorded, not compared, until a baseline is measured.",
+  "sets": {
+    "none": {
+      "private_mb":     { "value": 40,  "pct": 20, "slack": 4 },
+      "working_set_mb": { "value": 60,  "pct": 20, "slack": 4 },
+      "cpu_pct":        { "value": 0.3, "pct": 50, "slack": 0.2 },
+      "wakeups_per_s":  { "value": 30,  "pct": 50, "slack": 10 },
+      "gdi_handles":    { "value": 150, "pct": 20, "slack": 10 },
+      "user_handles":   { "value": 100, "pct": 20, "slack": 10 }
+    },
+    "default": {
+      "private_mb":     { "value": 40,  "pct": 20, "slack": 4 },
+      "working_set_mb": { "value": 60,  "pct": 20, "slack": 4 },
+      "cpu_pct":        { "value": 0.3, "pct": 50, "slack": 0.2 },
+      "wakeups_per_s":  { "value": 30,  "pct": 50, "slack": 10 },
+      "gdi_handles":    { "value": 150, "pct": 20, "slack": 10 },
+      "user_handles":   { "value": 100, "pct": 20, "slack": 10 }
+    }
+  }
+}
