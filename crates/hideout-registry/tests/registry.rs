@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: MIT
+//! Registry behaviour beyond the vectors: the launch check, grants and state (#933).
+
+use std::path::{Path, PathBuf};
+
+use hideout_contract::capability::Capability;
+use hideout_contract::module::Visibility;
+use hideout_registry::trust::ROOT_ANCHOR;
+use hideout_registry::{Failure, Registry, State};
+
+const NOW: &str = "2026-11-09T12:00:00Z";
+
+fn vectors() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/hideout-vectors/trust")
+}
+
+fn read(rel: &str) -> Vec<u8> {
+    std::fs::read(vectors().join(rel)).unwrap()
+}
+
+fn text(rel: &str) -> String {
+    String::from_utf8(read(rel)).unwrap()
+}
+
+fn root_key() -> String {
+    text("keys/root.pub").lines().nth(1).unwrap().trim().into()
+}
+
+fn home(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir()
+        .join("hideout-registry-tests")
+        .join(format!("{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn signed(home: &Path) -> Registry {
+    let mut reg = Registry::open(home, false).unwrap();
+    let root = "root/root.valid.json";
+    reg.accept_root(
+        &read(root),
+        &text(&format!("{root}.minisig")),
+        &root_key(),
+        NOW,
+    )
+    .unwrap();
+    let cat = "catalogs/foxglove.with-revocations.catalog.json";
+    reg.accept_catalog(
+        &read(cat),
+        &text(&format!("{cat}.minisig")),
+        ROOT_ANCHOR,
+        "test-public",
+        Visibility::Public,
+        NOW,
+    )
+    .unwrap();
+    reg
+}
+
+fn id(r: Result<impl std::fmt::Debug, Failure>) -> String {
+    match r {
+        Ok(v) => format!("ok {v:?}"),
+        Err(f) => f.id().map_or_else(|| f.to_string(), String::from),
+    }
+}
+
+#[test]
+fn an_unsigned_module_runs_only_in_developer_mode() {
+    let home = home("sideload");
+    let folder = vectors().join("folders/example.private.notes-0.1.0");
+    let mut reg = Registry::open(&home, false).unwrap();
+    assert_eq!(id(reg.install(&folder, NOW)), "install.dev-mode-required");
+
+    reg.dev_mode = true;
+    let m = reg.install(&folder, NOW).unwrap();
+    assert_eq!((m.source.as_str(), m.anchor), ("sideload", None));
+    reg.set_enabled("example.private.notes", true).unwrap();
+    assert!(reg.pre_launch("example.private.notes").is_ok());
+
+    // The same install, read again without developer mode: refused before launch.
+    let reg = Registry::open(&home, false).unwrap();
+    assert_eq!(
+        id(reg.pre_launch("example.private.notes")),
+        "install.dev-mode-required"
+    );
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn every_launch_checks_the_files_again() {
+    let home = home("files");
+    let mut reg = signed(&home);
+    let folder = vectors().join("folders/foxglove.example-art-0.4.0");
+    let m = reg.install(&folder, NOW).unwrap();
+    assert_eq!(m.anchor.as_deref(), Some(ROOT_ANCHOR));
+    assert!(matches!(
+        reg.pre_launch("foxglove.example-art"),
+        Err(Failure::Disabled(_))
+    ));
+    reg.set_enabled("foxglove.example-art", true).unwrap();
+    let launch = reg.pre_launch("foxglove.example-art").unwrap();
+    assert_eq!(launch.run, Some(vec!["example-art.exe".to_string()]));
+    assert!(launch.dir.ends_with("modules/foxglove.example-art/0.4.0"));
+
+    // Data is the module's own and never hashed; a changed exe is refused.
+    std::fs::create_dir_all(launch.dir.join("data")).unwrap();
+    std::fs::write(launch.dir.join("data/state.json"), "{}").unwrap();
+    assert!(reg.pre_launch("foxglove.example-art").is_ok());
+    std::fs::write(launch.dir.join("example-art.exe"), "tampered").unwrap();
+    assert_eq!(id(reg.pre_launch("foxglove.example-art")), "trust.files");
+
+    // Without its catalog the module doesn't launch.
+    let reg = Registry::open(&home, false).unwrap();
+    std::fs::copy(
+        folder.join("example-art.exe"),
+        launch.dir.join("example-art.exe"),
+    )
+    .unwrap();
+    assert_eq!(
+        id(reg.pre_launch("foxglove.example-art")),
+        "trust.unknown-archive"
+    );
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn state_and_running_follow_the_hub() {
+    let home = home("state");
+    let mut reg = signed(&home);
+    let id_ = "foxglove.example-art";
+    assert_eq!(reg.state(id_), State::NotInstalled);
+    reg.install(&vectors().join("folders/foxglove.example-art-0.4.0"), NOW)
+        .unwrap();
+    assert_eq!(reg.state(id_), State::Off);
+    reg.set_enabled(id_, true).unwrap();
+    assert_eq!(reg.state(id_), State::Enabled);
+    let launch = reg.pre_launch(id_).unwrap();
+    reg.mark_running(&launch);
+    assert_eq!(reg.state(id_), State::Running);
+    assert!(reg.revoked_running().is_empty());
+    assert!(matches!(
+        reg.install(&vectors().join("folders/foxglove.example-art-0.4.0"), NOW),
+        Err(Failure::Running(_))
+    ));
+    assert!(matches!(reg.remove(id_), Err(Failure::Running(_))));
+    reg.mark_stopped(id_);
+    reg.remove(id_).unwrap();
+    assert_eq!(reg.state(id_), State::NotInstalled);
+    assert!(!reg.module_dir(id_, "0.4.0").exists());
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn grants_wait_for_approval_and_skip_the_never_list() {
+    let home = home("grants");
+    let mut reg = Registry::open(&home, true).unwrap();
+    let id_ = "example.private.notes";
+    reg.install(&vectors().join("folders/example.private.notes-0.1.0"), NOW)
+        .unwrap();
+    let caps: Vec<Capability> = ["modules.manage", "hub.notify", "ui.window", "hub.notify"]
+        .iter()
+        .map(|c| Capability::parse(c).unwrap())
+        .collect();
+    assert!(reg.inventory.ask(id_, &caps));
+    assert!(reg.inventory.modules[id_].granted.is_empty());
+
+    let refused = reg.approve(id_).unwrap();
+    assert_eq!(refused.len(), 1);
+    assert_eq!(refused[0].id(), "permission.never");
+    let m = &reg.inventory.modules[id_];
+    assert_eq!(m.granted, ["hub.notify", "ui.window"]);
+    assert!(m.pending_permissions.is_empty());
+
+    // A reinstall (an update) keeps the grants and asks only for what's new.
+    reg.install(&vectors().join("folders/example.private.notes-0.1.0"), NOW)
+        .unwrap();
+    let again = Registry::open(&home, true).unwrap();
+    assert_eq!(
+        again.inventory.modules[id_].granted,
+        ["hub.notify", "ui.window"]
+    );
+    assert!(again.inventory.holds(id_, &caps[1]));
+    let _ = std::fs::remove_dir_all(home);
+}

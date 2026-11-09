@@ -1073,6 +1073,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hideout-registry"
+version = "0.1.0"
+dependencies = [
+ "foxglove-plugin-trust",
+ "hideout-contract",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
