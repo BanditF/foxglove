@@ -2,7 +2,7 @@
 name = "plugin-mic-mute"
 version = "1.0.0"
 edition = "2021"
-description = "Mic mute, a Foxglove plugin: the microphone's mute on the left panel and the underglow, and a key to toggle it"
+description = "Mic mute, a Foxglove plugin: the microphone's mute on the Info screen and the underglow, and a key to toggle it"
 license = "MIT"
 
 [[bin]]

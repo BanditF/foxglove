@@ -1,4 +1,4 @@
-//! The left panel, drawn from Art's assets (`assets/plugins/org.foxglove.focus-timer/panel.json`,
+//! the Info screen, drawn from Art's assets (`assets/plugins/org.foxglove.focus-timer/panel.json`,
 //! docs/plugin-screens.md): phase icon and label, round, MM:SS, a progress bar and a hint.
 
 use std::collections::BTreeMap;

@@ -56,6 +56,7 @@ same messages.
 | `scenes.page` | call | `devices.read` (API 1.10) |
 | `focus.get` / `focus.set` | call | `devices.read` / `focus.write` (API 1.12) |
 | `overlay.shown` / `overlay.set_shown` | call | `devices.read` / `app.windows` (API 1.13) |
+| `screens.info_override` / `screens.info_release` | call | `screens.write` (API 1.14): the Info screen names of `screens.panel_override` / `screens.panel_release`, which stay as deprecated aliases. SDK: `info_screen_*`, the `panel_*` methods are deprecated. |
 
 The params and results are in the schema. Notes:
 
@@ -225,7 +226,7 @@ description = "Puts the temperature on the left screen."
   - **Binding:** in the Plugins tab, the user binds each action to one of F13–F24. Each keyboard can send those keys, and they type nothing; the user puts one on a key in ZMK Studio or VIA. A key triggers one action, and an action has one key.
   - **Delivery:** Foxglove registers the bound keys as global hotkeys and sends `action.invoked {action}` to that plugin only. The SDK delivers them on `Plugin::actions()`. No plugin needs `key.events` for this.
   - **Storage and conflicts:** bindings live in `[plugins.bindings]`. A key another program already holds is flagged in the tab. `FOXGLOVE_DISABLE=actions` turns the hotkeys off.
-- **Left panel (#209):**
+- **Info screen (#209):**
   - **Screens (API 1.4, #560):** `screens.list {device}`, with `devices.read`, returns each screen as `{id, role, name, width, height, format, rotation}`. `role` is `info` (the panel the PC draws, where plugins draw), `art` or `display`. Screens are named by role ("Info screen", "Art screen") or by the board profile, never by side. SDK: `Plugin::screens()`, `Plugin::panel_target()` (64x52 on an app before 1.4), `PanelTarget::fit()`.
   - **Drawing:** `screens.panel_override {device, width, height, bitmap, ttl_ms, screen?}`, with `screens.write`, shows a plugin's 1 bpp frame (rows MSB first, padded to whole bytes, base64) over an info screen for up to 60 s. `screen` is an id from `screens.list` (API 1.4); without it the frame goes to the first info screen, as API 1.0-1.3 plugins expect. SDK: `Plugin::panel_show()`.
   - **Holding it (API 1.3, #281):**

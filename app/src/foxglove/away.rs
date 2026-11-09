@@ -1,5 +1,5 @@
 //! Away (#410): the session is locked or the display is off. While away, nothing in Foxglove
-//! runs on a clock: the left panel goes back to the firmware (no clock minutes, no animation),
+//! runs on a clock: the Info screen goes back to the firmware (no clock minutes, no animation),
 //! the art hotlist's timer stops, and QMK's layer-subscription renewal stops. Coming back is
 //! the event that starts them again.
 //!

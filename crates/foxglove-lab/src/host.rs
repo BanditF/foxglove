@@ -343,18 +343,18 @@ pub fn left_layout_now() -> String {
     }
 }
 
-/// Why Foxglove isn't drawing a left panel that changes by itself, or None when it is (#678):
+/// Why Foxglove isn't drawing an Info screen that changes by itself, or None when it is (#678):
 /// `running` is a process named exactly foxglove, `away` why the PC is away (locked or display
 /// off: the app hands the panel back, #410), `layout` [`left_layout`]'s text. Info redraws the
 /// clock each minute and stats samples each second; the keyboard's own screen (drive_left off)
 /// has no clock, and a wallpaper may be one still frame.
 pub fn app_panel_blocked(running: bool, away: Option<String>, layout: &str) -> Option<String> {
     if !running {
-        return Some("Foxglove isn't running: nothing draws the left panel's clock".into());
+        return Some("Foxglove isn't running: nothing draws the Info screen's clock".into());
     }
     if let Some(why) = away {
         return Some(format!(
-            "{why}: Foxglove hands the left panel back while away (#410), so no clock ticks; \
+            "{why}: Foxglove hands the Info screen back while away (#410), so no clock ticks; \
              rerun with the PC unlocked and its display on"
         ));
     }

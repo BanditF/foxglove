@@ -1,4 +1,4 @@
-//! Mic mute (#210), a Foxglove plugin: shows whether the microphone is muted, on the left panel
+//! Mic mute (#210), a Foxglove plugin: shows whether the microphone is muted, on the Info screen
 //! and the underglow, and mutes or unmutes it from a key.
 //!
 //! Foxglove does the Core Audio work (#237): this plugin reads `mic.state` (`audio.inputs.read`)
@@ -37,7 +37,7 @@ fn parse(value: Option<&Fact>) -> Mic {
     }
 }
 
-/// The keyboards: (id, has lights, has a left panel).
+/// The keyboards: (id, has lights, has an Info screen).
 fn keyboards(plugin: &Plugin) -> Vec<(String, bool, bool)> {
     plugin
         .devices()
@@ -93,18 +93,18 @@ impl Out {
         for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
             // Drawn at the info screen's own size (#560).
             let fitted = |t: &PanelTarget, frame| t.fit(art.frame(frame), screens::W, screens::H);
-            let sent = match (shown.frame, plugin.panel_target(&id)) {
+            let sent = match (shown.frame, plugin.info_screen_target(&id)) {
                 (Some(frame), Some(t)) if shown.hold => {
-                    plugin.panel_show(&id, &t, &fitted(&t, frame), None)
+                    plugin.info_screen_show(&id, &t, &fitted(&t, frame), None)
                 }
                 (Some(frame), Some(t)) => {
-                    plugin.panel_show(&id, &t, &fitted(&t, frame), Some(screens::BRIEF))
+                    plugin.info_screen_show(&id, &t, &fitted(&t, frame), Some(screens::BRIEF))
                 }
                 (Some(_), None) => {
                     eprintln!("mic-mute: {id} has no info screen to draw on");
                     Ok(())
                 }
-                (None, _) if self.held => plugin.panel_release(&id),
+                (None, _) if self.held => plugin.info_screen_release(&id),
                 (None, _) => Ok(()),
             };
             if let Err(e) = sent {

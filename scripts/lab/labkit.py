@@ -78,7 +78,7 @@ def locked():
 def away(lab):
     """Why Foxglove is away on this PC now (#410: the session locked or the display off), or None:
     `foxglove-lab away`, which reads the display state as the app does (GUID_CONSOLE_DISPLAY_STATE).
-    Away, the app hands the left panel back and, since #683, holds display changes until the PC is
+    Away, the app hands the Info screen back and, since #683, holds display changes until the PC is
     back, so the display-change cases can't run (#678). Without the lab's answer, the lock alone."""
     try:
         r = subprocess.run([str(lab), 'away'], capture_output=True, text=True, encoding='utf-8',

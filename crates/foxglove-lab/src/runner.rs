@@ -227,7 +227,7 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         // with it, so the &bt cases also only send BT_SEL to the profile already in use.
         // The PC's lock state, checked when the case starts (Runner::locked).
         "unlocked" => return None,
-        // Foxglove draws the left panel (the clock, the PC load): checked as the case starts
+        // Foxglove draws the Info screen (the clock, the PC load): checked as the case starts
         // (Runner::app_panel), since it's the app and the PC, not the firmware.
         "app_panel" => return None,
         "build_info" if has(caps::BUILD_INFO) => return None,
@@ -281,7 +281,7 @@ pub struct Runner<'a, D: Device> {
     baselines: std::collections::HashMap<String, image::GrayImage>,
     /// Whether the PC is locked, for cases that require "unlocked" (tests swap it out).
     pub locked: fn() -> bool,
-    /// Why Foxglove isn't drawing the left panel now (not running, drive_left off, a layout
+    /// Why Foxglove isn't drawing the Info screen now (not running, drive_left off, a layout
     /// without a clock, or away: locked or display off, #410), or None when it is; for cases that
     /// require "app_panel" (tests swap it out).
     pub app_panel: fn() -> Option<String>,
@@ -1785,7 +1785,7 @@ impl<'a, D: Device> Runner<'a, D> {
         // Checked as the case starts, not in unsupported(): it's the PC, not the firmware.
         if c.requires.iter().any(|r| r == "unlocked") && (self.locked)() {
             blocked.push(
-                "the PC is locked: Foxglove hands the left panel back while away (#410)".into(),
+                "the PC is locked: Foxglove hands the Info screen back while away (#410)".into(),
             );
         }
         self.needs_panel = c.requires.iter().any(|r| r == "app_panel");

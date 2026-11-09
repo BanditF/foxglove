@@ -2,7 +2,7 @@
 name = "plugin-broadcast-status"
 version = "1.0.0"
 edition = "2021"
-description = "Broadcast Status, a Foxglove plugin: OBS's recording, streaming and scene on the left panel and the underglow"
+description = "Broadcast Status, a Foxglove plugin: OBS's recording, streaming and scene on the Info screen and the underglow"
 license = "MIT"
 
 [[bin]]

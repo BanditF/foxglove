@@ -1,4 +1,4 @@
-//! Quitting within a budget (#618). Foxglove hands things back before it exits: the left panel,
+//! Quitting within a budget (#618). Foxglove hands things back before it exits: the Info screen,
 //! a running scene's or cue's lights, the right half's art, a calibrator's or "Find my LEDs"'
 //! colours, the live feed and the wallpapers. Several of those wait on another thread with no
 //! limit: the scene's control thread is joined (`scene_run::end`), and so is the last "Find my
@@ -61,7 +61,7 @@ pub fn hand_back(why: &str) {
         (
             "lights",
             Box::new(|| {
-                super::screens::stop(); // the left panel back to the firmware (<= 0.5 s)
+                super::screens::stop(); // the Info screen back to the firmware (<= 0.5 s)
                 super::notifications::quit(); // a light cue gives the lights back
                 super::scenes_ui::quitting(); // no profile starts a scene now
                 super::scene_run::quit(); // a scene gives the lights back (or keeps its effect)

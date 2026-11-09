@@ -7,7 +7,7 @@
 //! reports the loss, and egui_glow can't rebuild a painter in place. The driver library loaded
 //! in this process is also the old one after an update.
 //!
-//! So recovery is a fresh process: the left panel and the art are handed back as on Quit, the
+//! So recovery is a fresh process: the Info screen and the art are handed back as on Quit, the
 //! single-instance guard is released, the same exe starts again, and this one ends. Every GL
 //! object, texture cache and driver library is new in the copy; the keyboard types throughout.
 //!

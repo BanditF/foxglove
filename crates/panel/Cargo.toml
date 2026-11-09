@@ -2,38 +2,8 @@
 name = "foxglove-panel"
 version = "0.3.0"
 edition = "2021"
-description = "The left screen's host panel: what it shows, where that comes from on Windows, and who may draw it"
+description = "Compatibility shim: the old name of foxglove-info-screen (Hideout H1.4, #922)"
 license = "MIT"
 
 [dependencies]
-chrono = "0.4"
-foxglove-link = { path = "../foxglove-link", default-features = false }
-embedded-graphics = "0.8"
-
-[target.'cfg(windows)'.dependencies]
-# The #[implement] macro (COM callbacks) names windows_core directly.
-windows-core = "0.62"
-windows = { version = "0.62", features = [
-    "Foundation",
-    "Media_Control",
-    "Win32_Devices_FunctionDiscovery",
-    "Win32_UI_Shell_PropertiesSystem",
-    "Win32_Foundation",
-    "Win32_Media_Audio",
-    "Win32_Media_Audio_Endpoints",
-    "Win32_Security",
-    "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
-    "Win32_System_Variant",
-    "Win32_System_Threading",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_Accessibility",
-    "Win32_Storage_FileSystem",
-    # The clock in the user's region formats, and WM_SETTINGCHANGE for them (#445).
-    "Win32_Globalization",
-    "Win32_Graphics_Gdi",
-    "Win32_System_LibraryLoader",
-    # PC load on the left screen (#506): PDH counters and the memory load.
-    "Win32_System_Performance",
-    "Win32_System_SystemInformation",
-] }
+foxglove-info-screen = { path = "../info-screen" }

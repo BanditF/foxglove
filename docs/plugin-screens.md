@@ -9,7 +9,7 @@ generator (`art-src/bandit/bandit_art.py`, scenes `Bandit_focus` and `Bandit_ona
 
 ![every state](../assets/plugins/screens-sheet.png)
 
-## Left panel (`panel.json`)
+## Info screen (`panel.json`)
 
 The panel is the same as the wallpaper art's left-panel spec: 64x52, 1 bit, 416 bytes a frame.
 Plugins draw it with `screens.panel_override` ([local-api.md](local-api.md)), which lasts at most

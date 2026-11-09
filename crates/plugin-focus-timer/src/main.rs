@@ -1,5 +1,5 @@
 //! Pomodoro (#209), Foxglove's focus timer plugin: focus periods, short rests and a long rest
-//! every few rounds, shown on the left panel (Art's countdown screen) and on the underglow (red
+//! every few rounds, shown on the Info screen (Art's countdown screen) and on the underglow (red
 //! to focus, green to rest, through a lighting lease, so the lights go back afterwards).
 //!
 //! - **Survives restarts:** the clock is kept as deadlines in `data/state.json`, so a restart,
@@ -78,7 +78,7 @@ fn save(t: &Timer) {
     }
 }
 
-/// The keyboards to show it on: (id, has lights, has a left panel).
+/// The keyboards to show it on: (id, has lights, has an Info screen).
 fn keyboards(plugin: &Plugin) -> Vec<(String, bool, bool)> {
     plugin
         .devices()
@@ -191,11 +191,11 @@ fn main() {
             let frame = art.frame(&view);
             for (id, _, _) in boards.iter().filter(|b| b.2) {
                 // Drawn at the info screen's own size (#560).
-                let Some(target) = plugin.panel_target(id) else {
+                let Some(target) = plugin.info_screen_target(id) else {
                     continue;
                 };
                 let fitted = target.fit(&frame, panel::W as u16, panel::H as u16);
-                if let Err(e) = plugin.panel_show(id, &target, &fitted, None) {
+                if let Err(e) = plugin.info_screen_show(id, &target, &fitted, None) {
                     eprintln!("focus-timer: panel: {e}");
                 }
             }

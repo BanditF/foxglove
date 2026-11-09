@@ -848,6 +848,22 @@ pub const METHODS: &[Method] = &[
         params: schema!(DeviceParams),
         result: Some(schema!(Empty)),
     },
+    // The Info screen names for the two calls above (API 1.14, Hideout H1.4 #922): same params,
+    // result and permission. The `panel_*` names stay, deprecated.
+    Method {
+        name: "screens.info_override",
+        kind: Kind::Call,
+        permission: Some("screens.write"),
+        params: schema!(PanelOverrideParams),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "screens.info_release",
+        kind: Kind::Call,
+        permission: Some("screens.write"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(Empty)),
+    },
     Method {
         name: "art.status",
         kind: Kind::Call,

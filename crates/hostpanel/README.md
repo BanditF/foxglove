@@ -1,6 +1,6 @@
 # hostpanel
 
-> **Retired as a tray app (#21).** The Foxglove app (`app/`) now draws the left panel, pushes and
+> **Retired as a tray app (#21).** The Foxglove app (`app/`) now draws the Info screen, pushes and
 > cycles the right screen's art, and starts with Windows: the installer adds it to the user's
 > Run key. Don't run hostpanel's tray next to Foxglove, because both would drive the panel. The
 > crate stays for its CLI commands that `foxglove-cli` doesn't have yet (`push-art`, `select`,
@@ -13,7 +13,7 @@ the [`foxglove-link`](../foxglove-link) crate.
 
 - **Left screen:** a 64x52 panel in place of the WPM chart showing the clock, volume, the media
   title (scrolling) and a per-game hint. The PC draws every pixel, so changing the layout
-  (`crates/panel/src/render.rs`, shared with the app) never needs a reflash. If the app stops,
+  (`crates/info-screen/src/render.rs`, shared with the app) never needs a reflash. If the app stops,
   the last frame stays until RELEASE or a restart (`NICE_VIEW_HOST_PANEL_TIMEOUT_S` = 0).
 - **Right screen:** push an art set without flashing. It goes PC -> left -> BLE split link ->
   right and is kept in RAM, so a power cycle brings back the built-in art.

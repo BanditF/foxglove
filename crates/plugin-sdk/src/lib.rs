@@ -335,6 +335,7 @@ impl Plugin {
     /// `devices.read`). An app before 1.4, or a plugin without `devices.read`, gets the one
     /// 64x52 panel API 1.0-1.3 draw on ([`PanelTarget::BEFORE_1_4`]); `None` when the device has
     /// no info screen, or the call failed otherwise.
+    #[deprecated(note = "renamed info_screen_target (Hideout H1.4, #922)")]
     pub fn panel_target(&self, device: &str) -> Option<PanelTarget> {
         match self.screens(device) {
             Ok(screens) => screens
@@ -358,6 +359,7 @@ impl Plugin {
 
     /// Shows `frame` (1 bpp at the target's size) on `target`, for `ttl` (60 s at most), or with
     /// no `ttl` until it's replaced, released or this plugin stops. Needs `screens.write`.
+    #[deprecated(note = "renamed info_screen_show (Hideout H1.4, #922)")]
     pub fn panel_show(
         &self,
         device: &str,
@@ -379,6 +381,7 @@ impl Plugin {
 
     /// Shows `frame` (1 bpp, rows MSB first, padded to whole bytes) on a keyboard's first info
     /// screen for `ttl` (60 s at most; send it again to keep it). Needs `screens.write`.
+    #[deprecated(note = "renamed info_screen_override (Hideout H1.4, #922)")]
     pub fn panel_override(
         &self,
         device: &str,
@@ -396,6 +399,7 @@ impl Plugin {
 
     /// Shows a frame on the first info screen until it's replaced, released ([`Plugin::panel_release`])
     /// or this plugin stops: a steady screen without re-sending it (API 1.3, #281).
+    #[deprecated(note = "renamed info_screen_hold (Hideout H1.4, #922)")]
     pub fn panel_hold(&self, device: &str, width: u16, height: u16, frame: &[u8]) -> Result<()> {
         use base64::Engine;
         let bitmap = base64::engine::general_purpose::STANDARD.encode(frame);
@@ -404,9 +408,62 @@ impl Plugin {
     }
 
     /// Gives the info screen back to Foxglove.
+    #[deprecated(note = "renamed info_screen_release (Hideout H1.4, #922)")]
     pub fn panel_release(&self, device: &str) -> Result<()> {
         self.call("screens.panel_release", json!({ "device": device }))
             .map(|_| ())
+    }
+
+    // The Info screen names (Hideout H1.4, #922). They send the same calls the `panel_*` ones do:
+    // `screens.panel_*` is served by every app, and `screens.info_*` (API 1.14) only by new ones.
+
+    /// Where to draw on a device: its first Info screen. See the deprecated `panel_target`.
+    pub fn info_screen_target(&self, device: &str) -> Option<PanelTarget> {
+        #[allow(deprecated)]
+        self.panel_target(device)
+    }
+
+    /// Shows `frame` on an Info screen. See the deprecated `panel_show`.
+    pub fn info_screen_show(
+        &self,
+        device: &str,
+        target: &PanelTarget,
+        frame: &[u8],
+        ttl: Option<Duration>,
+    ) -> Result<()> {
+        #[allow(deprecated)]
+        self.panel_show(device, target, frame, ttl)
+    }
+
+    /// Shows `frame` on a keyboard's first Info screen for `ttl`. See the deprecated `panel_override`.
+    pub fn info_screen_override(
+        &self,
+        device: &str,
+        width: u16,
+        height: u16,
+        frame: &[u8],
+        ttl: Duration,
+    ) -> Result<()> {
+        #[allow(deprecated)]
+        self.panel_override(device, width, height, frame, ttl)
+    }
+
+    /// Holds a frame on the first Info screen until released. See the deprecated `panel_hold`.
+    pub fn info_screen_hold(
+        &self,
+        device: &str,
+        width: u16,
+        height: u16,
+        frame: &[u8],
+    ) -> Result<()> {
+        #[allow(deprecated)]
+        self.panel_hold(device, width, height, frame)
+    }
+
+    /// Gives the Info screen back to Foxglove. See the deprecated `panel_release`.
+    pub fn info_screen_release(&self, device: &str) -> Result<()> {
+        #[allow(deprecated)]
+        self.panel_release(device)
     }
 
     /// One of this plugin's secrets (#213; needs `secrets`): what the user entered in the

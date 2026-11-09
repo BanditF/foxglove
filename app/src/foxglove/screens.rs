@@ -43,7 +43,7 @@ pub fn status() -> String {
     STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The last frame sent to the left panel, for the Screens settings' preview.
+/// The last frame sent to the Info screen, for the Screens settings' preview.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
     pub width: usize,
@@ -256,7 +256,7 @@ fn load_wallpaper_frames(frame_bytes: usize) -> Option<(Vec<Vec<u8>>, u32)> {
     Some((super::wallpaper::left_frames(left, frame_bytes)?, left.fps))
 }
 
-/// A plugin's frame over the left panel (`screens.panel_override`, #209), until `until`.
+/// A plugin's frame over the Info screen (`screens.panel_override`, #209), until `until`.
 struct Override {
     bits: Vec<u8>,
     /// `None`: held until replaced, released, or the connection closes.
