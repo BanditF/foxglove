@@ -1,7 +1,7 @@
 # Bandit art generators
 
-These are the versioned sources of the owner's Bandit fox art. They are © the repo owner, all
-rights reserved, and not covered by this repo's code licences (see `LICENSING.md` and
+These are the versioned sources of the owner's Bandit fox art. They are the repo owner's
+art, MIT under the repo's `LICENSE` since 2026-11-09 (see `LICENSING.md` and
 `docs/art-licensing.md` F5). They need Python 3 and Pillow, and take no inputs.
 
 - `bandit_art.py`: the first Bandit library (emblem, idle, radar, signal, skyline and the

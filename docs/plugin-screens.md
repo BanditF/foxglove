@@ -92,5 +92,5 @@ icon sets; see [plugin-icons.md](plugin-icons.md).
 
 ## Credits
 
-The repo owner's Bandit art, © the owner, all rights reserved, like the other Bandit art (flag F5 in
-[art-licensing.md](art-licensing.md)). The MIT licence of the plugin crates doesn't cover it.
+The repo owner's Bandit art, MIT under the repo's LICENSE like the other Bandit art (flag F5 in
+[art-licensing.md](art-licensing.md)).

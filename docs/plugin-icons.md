@@ -63,5 +63,5 @@ the install.
 ## Credits
 
 Drawn for Foxglove by the project (procedurally, in `scripts/plugin_icons.py`) from the repo
-owner's Bandit fox motif. © the repo owner, all rights reserved, like the rest of the Bandit art
+owner's Bandit fox motif. MIT under the repo's LICENSE, like the rest of the Bandit art
 (flag F5 in [art-licensing.md](art-licensing.md)). No third-party marks or artwork.
