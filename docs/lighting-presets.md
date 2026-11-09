@@ -83,5 +83,5 @@ preset removed in a later version) falls back to the base lighting settings.
 ## Credits
 
 The presets and chips are drawn for Foxglove from the owner's wallpaper palettes. The art sets
-are the owner's Bandit, FURY and Hearth keyboard art from bandit-wallpapers: © the owner, all
-rights reserved (flag F5 in [art-licensing.md](art-licensing.md)).
+are the owner's Bandit, FURY and Hearth keyboard art from bandit-wallpapers: MIT under the repo's
+LICENSE (flag F5 in [art-licensing.md](art-licensing.md)).

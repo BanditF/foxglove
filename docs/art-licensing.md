@@ -26,12 +26,12 @@ Local sources live in `C:\Users\fuchs\splitkeeb\art-src` (not in any repo) unles
 | zmk-nice-oled: Pokémon art | `untrusted/mctechnology17_zmk-nice-oled` (`assets/pokemon*.c`) | [mctechnology17/zmk-nice-oled](https://github.com/mctechnology17/zmk-nice-oled) | Repo MIT, but the characters are Nintendo / Game Freak IP | n/a | **DO NOT SHIP** | A repo's MIT licence can't license someone else's trademarked characters. |
 | zmk-nice-oled: other art (spaceman, samurai, head, crystal, luna) | same | same | MIT (repo); origin of each image not stated | mctechnology17 | **UNCLEAR** (not used) | Each piece's origin would need checking. The "crystal" looks like nice-view-gem's. Luna is the QMK "Luna" pet, whose origin is also unstated. |
 | Bandit fox motif and the Bandit HUD library | `art-src/bandit` (generators versioned in `tools/art-src/bandit/`); `BanditF/bandit-wallpapers` `library/bandit` | the repo owner | MIT (repo licence, since 2026-11-09) | the owner | **OK to ship** (owner's; Bandit_Emblem is the one firmware built-in since #671, the 13 scenes were built-ins from 2026-10-23 until then) | See F5. |
-| FURY linocut prints | `BanditF/bandit-wallpapers` `input_media/FURY prints` (private repo) | the repo owner | © the owner, all rights reserved | the owner | **OK to ship** (owner's) | Traced vector and keyboard derivatives live in the private wallpaper repo. See flag F5. |
+| FURY linocut prints | `BanditF/bandit-wallpapers` `input_media/FURY prints` (private repo) | the repo owner | MIT (owner decision 2026-11-09) | the owner | **OK to ship** (owner's) | Traced vector and keyboard derivatives live in the private wallpaper repo. See flag F5. |
 | Wallpaper keyboard art (12 sets) | `BanditF/bandit-wallpapers` → `dist/keyboard/<name>/right.bin` | generated from the two sources above | owner's own work | the owner | **OK to ship** (owner's) | Mostly the owner's art, plus procedural scenes made in this project. |
 | Plugin icons and the Plugins-tab empty state | `app/resources/plugins/` (generator `scripts/plugin_icons.py`) | drawn in this project from the Bandit fox motif | MIT (repo licence) | the owner | **OK to ship** (owner's) | Generic glyphs, no vendor logos: see [plugin-icons.md](plugin-icons.md) and F5. |
 | Plugin screen assets (Pomodoro, mic-mute, Broadcast Status panels; Bandit_Focus and Bandit_OnAir right art) | `assets/plugins/` (generator `scripts/plugin_panels.py`; right art from `art-src/bandit`) | drawn in this project in the Bandit style | MIT (repo licence) | the owner | **OK to ship** (owner's) | MIT like the plugin crates: see [plugin-screens.md](plugin-screens.md) and F5. |
 | Bandit Motion set (Scanline, Glitch, Cloak, Drift, Ghost, Compass, Signal v2 right art) | `app/resources/art/bandit-motion/` (generator `tools/art-src/bandit/motion/bandit_motion.py`) | the owner's Bandit fox motif, animated in this project | MIT (repo licence) | the owner | **OK to ship** (owner's) | See [art-bandit-motion.md](art-bandit-motion.md) and F5. |
-| Lighting preset art (Fury, Constellations, Hearth, Moon Garden sets) | `app/resources/lighting/art/` (copied by `scripts/lighting_presets.py` from bandit-wallpapers' keyboard builds) | the owner's FURY and Hearth wallpaper art | © the owner, all rights reserved | the owner | **OK to ship** (owner's) | See [lighting-presets.md](lighting-presets.md) and F5. |
+| Lighting preset art (Fury, Constellations, Hearth, Moon Garden sets) | `app/resources/lighting/art/` (copied by `scripts/lighting_presets.py` from bandit-wallpapers' keyboard builds) | the owner's FURY and Hearth wallpaper art | MIT (repo licence) | the owner | **OK to ship** (owner's) | See [lighting-presets.md](lighting-presets.md) and F5. |
 
 ## Flags
 
@@ -42,12 +42,12 @@ Local sources live in `C:\Users\fuchs\splitkeeb\art-src` (not in any repo) unles
   by our own `Bandit_Gem` at the same index (#110), so it no longer ships.
 - **F4, Corro (resolved):** GPeye's animation is MIT, but Corro is a community mascot character.
   It left the firmware with ZMK's stock art in #671, so it no longer ships.
-- **F5, the owner's own art (decided):** the **Bandit** art is **MIT**, under the repo's
-  [LICENSE](../LICENSE) (owner decision 2026-11-09, #383: "all open"; it was all rights reserved
-  from 2026-10-23). That covers the Bandit emblem in `custom_art.c`, the Bandit Motion set, the
-  plugin icons and screen art, and the generators in `tools/art-src/bandit/`. The **FURY** art
-  (and the lighting preset sets built from it) stays © the owner, all rights reserved: it ships in
-  our builds, but nobody else gets a licence to reuse it.
+- **F5, the owner's own art (decided):** the owner's art (Bandit and FURY) is **MIT**, under the
+  repo's [LICENSE](../LICENSE) (owner decision 2026-11-09, #383: "all open"; it was all rights
+  reserved from 2026-10-23). That covers the Bandit emblem in `custom_art.c`, the Bandit Motion
+  set, the plugin icons and screen art, the generators in `tools/art-src/bandit/`, and the
+  lighting preset sets in `app/resources/lighting/art/` (Fury, Constellations, Hearth, Moon
+  Garden). Third-party art keeps its own terms (the rows above).
 - **F6, the Pokémon art (DO NOT SHIP):** never copy it into a repo or a build.
 
 ## Copyleft notes

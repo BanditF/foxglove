@@ -11,7 +11,7 @@ Where a file has an `SPDX-License-Identifier` header, that header decides.
 | `config/eyelash_corne.keymap`, `keymap-drawer/` | mixed | The vendor's keymap (several contributors, no header), with Foxglove's changes on top. Those changes are MIT |
 | `config/eyelash_corne.conf` | MIT | SPDX header |
 | Right-hand art in `widgets/custom_art.c` (one built-in, the owner's Bandit emblem), and pushed `.bin` sets | per artist | See [ART_CREDITS.md](boards/shields/nice_view_custom/ART_CREDITS.md) and [docs/art-licensing.md](docs/art-licensing.md). Some pushed sets rest on the artist's consent rather than a license, so check before reusing them |
-| `app/resources/lighting/art/` (lighting preset art) | © the repo owner, all rights reserved | The owner's FURY and Hearth art; see [docs/lighting-presets.md](docs/lighting-presets.md) |
+| `app/resources/lighting/art/` (lighting preset art) | MIT, [LICENSE](LICENSE) | The owner's FURY and Hearth art; see [docs/lighting-presets.md](docs/lighting-presets.md) |
 | `app/resources/art/bandit-motion/` (Bandit Motion right-screen set) and `tools/art-src/bandit/` (the Bandit art generators) | MIT, [LICENSE](LICENSE) | The owner's Bandit fox emblem in seven animated styles, and the generators that draw the Bandit art; see [docs/art-bandit-motion.md](docs/art-bandit-motion.md) |
 | `assets/plugins/` (plugin screen art) | MIT, [LICENSE](LICENSE) | The owner's Bandit art; see [docs/plugin-screens.md](docs/plugin-screens.md) |
 | `app/resources/plugins/` (plugin icons, empty-state art) | MIT, [LICENSE](LICENSE) | The owner's Bandit art, like the right-hand Bandit scenes (MIT although it sits under `app/`); see [docs/plugin-icons.md](docs/plugin-icons.md) |
