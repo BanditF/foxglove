@@ -54,6 +54,13 @@ From a terminal the same job is
 `claude --agent firmware-engineer`. A subagent role (test-lab, scout, host-health,
 code-reviewer, release) is called from any session with the Agent tool.
 
+## Local compute
+
+Rote, verifiable work (log summaries, triage drafts, test-vector drafts) and token-free CPU jobs
+(fuzzing, soak, long test runs) are labelled `compute:local-llm` / `compute:cpu` and run by On-call
+on this PC, reviewed by the Planner. Everyone tags new issues and checks eligibility before spending
+Claude tokens. Rules, gates and routing: [`local-compute.md`](local-compute.md).
+
 ## Build cost
 
 The PC is shared with the user, and every gate is minutes of full CPU (the PC impact report,

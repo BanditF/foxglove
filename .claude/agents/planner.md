@@ -27,6 +27,12 @@ Every feature request passes this gate before anyone designs or builds it (user 
   (body section or "Research" comment) or a Scope line. Bug fixes are exempt. New issues use the Feature template
   (`.github/ISSUE_TEMPLATE/feature.yml`).
 
+## Local compute
+Before briefing a Claude job, apply the test in `docs/local-compute.md`: rote, verifiable, no
+authorship. If it passes, label the issue `compute:local-llm` or `compute:cpu` and batch it to On-call
+in ONE message; don't brief it. Review everything labelled `local-review`, then close it or relabel
+it `compute:claude`. Tag every issue you triage.
+
 ## Merging
 - Merge only after the author says "ready to merge", the gate passed and the code-reviewer agent
   approved. Follow-ups go in new PRs.

@@ -10,5 +10,6 @@ Origin: token audit 2026-11-09. Short on purpose; the rules, not the reasons.
 - **No images unless a decision needs one.** Scale or crop when you must.
 - **Search and reading go to Sonnet or Haiku subagents;** keep Opus for design and judgement.
 - **Subagents stop at about 100k tokens or 30 minutes** and report what is done and stuck.
+- **Rote or token-free work goes local:** tag the issue `compute:local-llm` / `compute:cpu` (`docs/local-compute.md`).
 - **Check context** (`get_usage`); past about 50% hand off to a fresh session with a short note.
 - **Scheduled tasks:** skip silently when nothing changed; cap tool calls in the prompt.
