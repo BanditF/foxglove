@@ -1,0 +1,13 @@
+[package]
+name = "hideout-registry"
+version = "0.1.0"
+edition = "2021"
+description = "Hideout's module registry: installed, enabled and running state (inventory.json, hideout.toml), the Hideout root chain and catalogs, the file check before every launch, and grants."
+license = "MIT"
+
+[dependencies]
+foxglove-plugin-trust = { path = "../plugin-trust" }
+hideout-contract = { path = "../hideout-contract" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"

@@ -202,6 +202,18 @@ fn verify_with(data: &[u8], signature: &str, keys: &[PublicKey]) -> Result<(), S
     }
 }
 
+/// Checks a minisign signature (the `.minisig` text) over `data` and returns the index of the
+/// key in `keys` (minisign base64 public keys) that made it. For chains that bind each key to a
+/// role, like the Hideout root's one-family-per-key rule; keys that don't decode never match.
+pub fn verify_signature(data: &[u8], signature: &str, keys: &[&str]) -> Result<usize, String> {
+    let sig = Signature::decode(signature).map_err(|e| format!("bad signature: {e}"))?;
+    keys.iter()
+        .position(|k| {
+            PublicKey::from_base64(k.trim()).is_ok_and(|k| k.verify(data, &sig, false).is_ok())
+        })
+        .ok_or_else(|| "signature doesn't match a trusted key".into())
+}
+
 /// `root.json`, signed by the pinned root key, not expired at `now`, and not older than what
 /// `seen` accepted (version and epoch).
 pub fn verify_root(

@@ -37,6 +37,7 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
   run in the background, then look for "All checks passed". Pipes mask its exit code. It takes a
   build slot itself. Scratch files (PR bodies, review notes, edit scripts) go in
   `worktrees\_logs\` or your scratchpad too: the cleanup prunes them after an hour.
+- Scripts go in worktrees\_tools\, never worktrees\_logs\ (an hourly cleanup deletes files there).
 - Single cargo commands go through `powershell -File scripts\build-slot.ps1 cargo ...` (at most 2
   builds at once, #347).
 - MSI version: `cargo wix --install-version`. Plain `--version` only prints cargo-wix's version.

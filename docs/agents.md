@@ -47,6 +47,7 @@ Never put one inside the repo, including `.claude/worktrees/`: from a nested `ap
 main checkout's workspace and refuses to build. `scripts/clean-worktrees.ps1` frees merged ones.
 Logs and scratch files go in `worktrees\_logs\`, not loose in `worktrees\`; the cleanup prunes
 both after an hour.
+Scripts go in worktrees\_tools\, never worktrees\_logs\ (an hourly cleanup deletes files there).
 After a `git worktree move`, delete that worktree's target dir (or `CARGO_TARGET_DIR`) before the
 next gate. Test binaries bake `env!("CARGO_MANIFEST_DIR")` in at the old path and fail only in the
 full run (plugin-api's `schema_is_current`, #361).

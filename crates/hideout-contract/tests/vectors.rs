@@ -3,7 +3,8 @@
 //! Skipped, with the reason recorded:
 //! - `trust/*`: root, catalog and archive verification (minisign signatures, epochs, rollback,
 //!   `seen` state) is the trust layer's job, not this types-only crate's. `plugin-trust` verifies
-//!   today's plugin catalogs, not the Hideout root chain; Hideout trust lands with the hub work.
+//!   today's plugin catalogs, not the Hideout root chain; `hideout-registry` runs the trust and
+//!   config vectors (#933).
 //! - `transcripts/*`: the step order and `final` assertions are hub behaviour (routing, the
 //!   supervisor, swaps). Every wire message in them is still checked here: JSON-RPC 2.0
 //!   envelope and the §8.8 params of each message this crate types.
