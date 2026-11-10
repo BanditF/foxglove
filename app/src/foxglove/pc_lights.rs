@@ -4220,9 +4220,16 @@ zones = [{ id = 3, name = \"Logo\" }]
     #[test]
     fn openrgb_retries_only_when_asked_and_on_a_bounded_backoff() {
         use openrgb_fake::*;
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = closed.local_addr().unwrap().port();
-        drop(closed);
+        // A port nothing listens on, held for the whole test (#1006): bound, never listening, so
+        // every connect is refused. A listener dropped at once let the port be reused, by another
+        // test's server or by the client's own source port (a self-connect echoing the request
+        // back: "OpenRGB: short answer").
+        let closed =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        closed
+            .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .unwrap();
+        let port = closed.local_addr().unwrap().as_socket().unwrap().port();
         let (mut w, _news) = openrgb_fake::worker(Settings::default(), on(port, false));
         connect(&mut w);
         let status = w.snapshot().openrgb.status.unwrap();

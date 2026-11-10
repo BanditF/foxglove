@@ -282,7 +282,14 @@ if os.name == "nt":
                 if getattr(e, "winerror", None) == _ERROR_BROKEN_PIPE:
                     return b""
                 raise
-            got, err = _wait(ov, self.deadline)
+            try:
+                got, err = _wait(ov, self.deadline)
+            except OSError as e:
+                # A read still pending when the other end closes: GetOverlappedResult raises
+                # ERROR_BROKEN_PIPE rather than returning it (#1006). The end, as above.
+                if getattr(e, "winerror", None) == _ERROR_BROKEN_PIPE:
+                    return b""
+                raise
             if err == _ERROR_BROKEN_PIPE:
                 return b""
             return bytes(ov.getbuffer())[:got]

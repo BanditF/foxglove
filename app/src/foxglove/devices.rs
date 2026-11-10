@@ -44,6 +44,20 @@ pub fn bus() -> &'static EventBus {
 /// block on discovery: call it off the UI thread.
 pub fn device() -> Option<Arc<FoxgloveLinkDevice>> {
     let mut cached = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(test)]
+    if let Some(owner) = *PINNED.lock().unwrap_or_else(|e| e.into_inner()) {
+        // A test's fake keyboard (#1006): its own thread sees it while it's connected, and
+        // nobody rediscovers over it mid-reconnect; other tests see no keyboard.
+        if owner != std::thread::current().id() {
+            return None;
+        }
+        if !cached
+            .as_ref()
+            .is_some_and(|d| d.link().state().connected.is_some())
+        {
+            return None;
+        }
+    }
     if let Some(d) = cached
         .as_ref()
         .filter(|d| d.link().state().connected.is_some())
@@ -598,6 +612,12 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
 #[cfg(test)]
 pub(crate) static STATE_LOCK: Mutex<()> = Mutex::new(());
 
+/// The test thread whose fake keyboard is the cached device (#1006): process-wide state, so a
+/// test elsewhere calling [`device`] while that fake reconnects would otherwise look for a
+/// keyboard again and replace it.
+#[cfg(test)]
+static PINNED: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
+
 /// #633: the behavior ids follow the firmware build, against an in-memory keyboard on a real
 /// host link that can be "flashed" (reconnected with another build). Window-free; the saved
 /// keymap copies go to the tests' temp `FOXGLOVE_CONFIG_DIR`.
@@ -626,6 +646,8 @@ mod build_tests {
         build_reads: AtomicU32,
         /// The behavior id of every INVOKE that reached it.
         invokes: Mutex<Vec<u16>>,
+        /// While true the board is unplugged: the link's next open waits (bounded by WAIT).
+        unplugged: (Mutex<bool>, Condvar),
     }
 
     /// One connection to the board.
@@ -707,6 +729,9 @@ mod build_tests {
             *board.build.lock().unwrap() = build;
             let opened = board.clone();
             let link = Arc::new(Link::start(Box::new(move || {
+                let (unplugged, plugged) = &opened.unplugged;
+                let held = unplugged.lock().unwrap();
+                let _held = plugged.wait_timeout_while(held, WAIT, |u| *u).unwrap();
                 let conn = Conn {
                     board: opened.clone(),
                     inbox: Default::default(),
@@ -740,6 +765,7 @@ mod build_tests {
             *CHECKED.lock().unwrap() = None;
             *BUILD.lock().unwrap() = None;
             *DEVICE.lock().unwrap() = Some(device.clone());
+            *PINNED.lock().unwrap() = Some(std::thread::current().id());
             heard_lighting_known();
             Rig {
                 board,
@@ -769,6 +795,43 @@ mod build_tests {
             }
         }
 
+        /// The board unplugged: the link has dropped it and waits to open it again.
+        fn unplug(&self) {
+            *self.board.unplugged.0.lock().unwrap() = true;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _events = self.link.subscribe_events(move |e| {
+                if let Event::State(s) = e {
+                    let _ = tx.send(s);
+                }
+            });
+            self.link.reconnect();
+            while rx
+                .recv_timeout(WAIT)
+                .expect("the link drops it")
+                .connected
+                .is_some()
+            {}
+        }
+
+        /// Plugged back in, and connected again.
+        fn plug(&self) {
+            let before = self.link.state().generation;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _events = self.link.subscribe_events(move |e| {
+                if let Event::State(s) = e {
+                    let _ = tx.send(s);
+                }
+            });
+            *self.board.unplugged.0.lock().unwrap() = false;
+            self.board.unplugged.1.notify_all();
+            loop {
+                let s = rx.recv_timeout(WAIT).expect("the link reconnects");
+                if s.connected.is_some() && s.generation > before {
+                    break;
+                }
+            }
+        }
+
         /// A lighting command, as the accent or a lease sends it.
         fn light(&self) -> foxglove_devices::Result<()> {
             self.device.lighting().unwrap().set_on(true)
@@ -782,6 +845,7 @@ mod build_tests {
     impl Drop for Rig {
         fn drop(&mut self) {
             *DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *PINNED.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
 
@@ -924,6 +988,24 @@ mod build_tests {
         );
         assert!(rig.light().is_err());
         assert!(rig.invokes().is_empty());
+    }
+
+    /// #1006: another test (a background ask, an API call) asking for the device while this
+    /// test's fake keyboard reconnects finds none, and doesn't look for a keyboard again over it:
+    /// the fake is still the device once it's back.
+    #[test]
+    fn asking_from_elsewhere_mid_reconnect_leaves_the_fake_in_place() {
+        let rig = Rig::new(6, Some("aaaa1111"));
+        assert!(
+            std::thread::spawn(device).join().unwrap().is_none(),
+            "not theirs"
+        );
+        rig.unplug();
+        assert!(device().is_none(), "unplugged");
+        assert!(std::thread::spawn(device).join().unwrap().is_none());
+        rig.plug();
+        let d = device().expect("the fake, still cached");
+        assert!(Arc::ptr_eq(&d, &rig.device));
     }
 
     #[test]

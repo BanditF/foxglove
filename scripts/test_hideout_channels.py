@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -97,6 +98,22 @@ class Pipes(unittest.TestCase):
         self.assertTrue(sent.wait(10))
         with self.assertRaises(OSError):
             channel.connect(pipe, "n-py")  # spent
+
+    def test_a_pending_read_ends_cleanly_when_the_provider_closes(self):
+        # #1006: the consumer waits inside a read while the provider is still busy; the
+        # provider's close ends the stream (None), never a BrokenPipeError.
+        got = threading.Event()
+
+        def stream(conn):
+            conn.write_frame(b"last")
+            got.wait(10)
+            time.sleep(0.2)  # the consumer's next ReadFile is pending by now; then the close
+
+        pipe = channel.serve("foxglove.example-art", "previews", "n-late", stream)
+        with channel.connect(pipe, "n-late") as conn:
+            self.assertEqual(conn.read_frame(), b"last")
+            got.set()
+            self.assertIsNone(conn.read_frame())
 
     def test_wrong_nonce_spends_the_channel(self):
         p = channel.ChannelPipe.create(channel.unique_pipe_name("test.module", "nonce"))
