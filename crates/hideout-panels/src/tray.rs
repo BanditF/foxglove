@@ -42,14 +42,39 @@ pub fn tile_focus_id(key: &PanelKey) -> Id {
     Id::new(("hideout.tray.tile", &key.module, &key.panel))
 }
 
+/// Whether the keyboard is in use in the tray panel: only then does the focused tile show its
+/// ring (focus-visible, as in the Windows flyouts). Set by a key the panel answers to.
+fn keyboard_id() -> Id {
+    Id::new("hideout.tray.keyboard")
+}
+
+/// The tile drawn with the focus ring this frame (for tests and the lab).
+fn ring_id() -> Id {
+    Id::new("hideout.tray.ring")
+}
+
 /// Gives the keyboard focus to the first tile the tray panel shows (the flyout just opened,
-/// docs/hideout-plugin-modules-ux.md "Keyboard and screen reader"). False with no tile.
-pub fn focus_first_tile(ctx: &egui::Context, host: &PanelHost, layout: &TrayLayout) -> bool {
+/// docs/hideout-plugin-modules-ux.md "Keyboard and screen reader"). `from_keyboard`: the
+/// flyout was opened from the keyboard, so the ring shows at once; after a pointer open it
+/// shows only once a key is pressed in the panel. False with no tile.
+pub fn focus_first_tile(
+    ctx: &egui::Context,
+    host: &PanelHost,
+    layout: &TrayLayout,
+    from_keyboard: bool,
+) -> bool {
+    ctx.data_mut(|d| d.insert_temp(keyboard_id(), from_keyboard));
     let Some(first) = tray_tiles(host, layout).into_iter().find(|t| t.shown) else {
         return false;
     };
     ctx.memory_mut(|m| m.request_focus(tile_focus_id(&first.key)));
     true
+}
+
+/// The focus id of the tile drawn with the focus ring in the last frame; `None` when no ring
+/// showed (no tile focused, or the keyboard not used yet).
+pub fn ring_on(ctx: &egui::Context) -> Option<Id> {
+    ctx.data(|d| d.get_temp::<Option<Id>>(ring_id())).flatten()
 }
 
 /// The tile that the arrow keys go to from tile `at` of `n` in a grid of [`COLUMNS`]: Left and
@@ -76,6 +101,10 @@ struct TileKeys {
     press: bool,
     /// Shift+F10 or the Menu key: open the ··· menu.
     menu: bool,
+    /// The keyboard is in use: a focused tile shows its ring.
+    ring: bool,
+    /// The row's height (its tallest tile's content, last frame): tiles in a row are equal.
+    min_height: f32,
 }
 
 /// A pick from a tile's ··· menu.
@@ -96,6 +125,8 @@ pub struct TileReport {
     pub menu: Option<TileMenu>,
     /// **Update Hideout** on a module that needs a newer hub.
     pub update_hub: bool,
+    /// The height of the tile's own content (inside its frame), before the row's height.
+    pub content_height: f32,
 }
 
 /// What the user asked of the tray panel.
@@ -317,7 +348,9 @@ fn tile_ui_keyed(
     }
     let inner = frame.show(ui, |ui| {
         ui.set_width(TILE_WIDTH);
-        ui.vertical(|ui| {
+        // As tall as the row's tallest tile, content at the top (Quick Settings).
+        ui.set_min_height(keys.min_height);
+        let content = ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 let glyph = RichText::new(icon_glyph(&icon)).size(15.0);
                 ui.label(if red { glyph.color(danger) } else { glyph });
@@ -423,18 +456,28 @@ fn tile_ui_keyed(
                 }
             }
         });
+        content.response.rect.height()
     });
+    report.content_height = inner.inner;
     // A click on the tile outside its button opens the module's page (§5.1); so does Enter on
     // the focused tile.
     let tile = ui.interact(inner.response.rect, tile_focus_id(key), Sense::click());
     let name: Vec<String> = std::iter::once(title)
         .chain(spoken)
-        .chain(report.draw.texts.iter().cloned())
+        // Some readers say "dot" for the middle dot: a comma in the spoken name only.
+        .chain(
+            report
+                .draw
+                .texts
+                .iter()
+                .map(|t| t.replace(" \u{00B7} ", ", ")),
+        )
         .filter(|t| !t.is_empty())
         .collect();
     let name = name.join(", ");
     tile.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
-    if tile.has_focus() {
+    if tile.has_focus() && keys.ring {
+        ui.data_mut(|d| d.insert_temp(ring_id(), Some(tile_focus_id(key))));
         // The accent (the selection fill), like the hub's other focus marks.
         let ring = ui.visuals().selection.bg_fill;
         ui.painter().rect_stroke(
@@ -457,6 +500,29 @@ fn tile_ui_keyed(
 fn tile_keys(ui: &mut Ui, shown: &[TileEntry]) -> Vec<TileKeys> {
     let mut keys = vec![TileKeys::default(); shown.len()];
     let ids: Vec<Id> = shown.iter().map(|t| tile_focus_id(&t.key)).collect();
+    // A key the panel answers to (arrows, Tab, Space, Enter, Shift+F10 or the Menu key) puts
+    // it in keyboard mode: the focus ring shows from now on.
+    let keyed = ui.input(|i| {
+        i.events.iter().any(|e| {
+            matches!(e, egui::Event::Key { key, pressed: true, modifiers, .. }
+                if matches!(key, Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp
+                    | Key::ArrowDown | Key::Tab | Key::Space | Key::Enter)
+                    || (*key == Key::F10 && modifiers.shift))
+        })
+    });
+    let ring = ui.data_mut(|d| {
+        let on = d.get_temp::<bool>(keyboard_id()).unwrap_or(false) || keyed;
+        d.insert_temp(keyboard_id(), on);
+        d.insert_temp::<Option<Id>>(ring_id(), None);
+        on
+    });
+    let rows: Vec<f32> = ui
+        .data(|d| d.get_temp::<Vec<f32>>(rows_id()))
+        .unwrap_or_default();
+    for (i, k) in keys.iter_mut().enumerate() {
+        k.ring = ring;
+        k.min_height = rows.get(i / COLUMNS).copied().unwrap_or(0.0);
+    }
     let Some(at) = ui.memory(|m| ids.iter().position(|id| m.has_focus(*id))) else {
         return keys;
     };
@@ -480,8 +546,14 @@ fn tile_keys(ui: &mut Ui, shown: &[TileEntry]) -> Vec<TileKeys> {
             m.move_focus(FocusDirection::None);
         });
     }
-    keys[at] = TileKeys { press, menu };
+    keys[at].press = press;
+    keys[at].menu = menu;
     keys
+}
+
+/// Each grid row's height (its tallest tile's content), kept between frames.
+fn rows_id() -> Id {
+    Id::new("hideout.tray.rows")
 }
 
 /// The Menu key (the context-menu key) on the focused tile. egui has no key for it, so the shell
@@ -556,6 +628,20 @@ pub fn tray_panel_ui(
                 }
             }
         });
+    // Equal heights per row: the tallest tile's content this frame; a change draws once more.
+    let rows: Vec<f32> = picks
+        .chunks(COLUMNS)
+        .map(|row| {
+            row.iter()
+                .map(|(_, r)| r.content_height)
+                .fold(0.0, f32::max)
+        })
+        .collect();
+    let before = ui.data(|d| d.get_temp::<Vec<f32>>(rows_id()));
+    if before.as_ref() != Some(&rows) {
+        ui.data_mut(|d| d.insert_temp(rows_id(), rows));
+        ui.ctx().request_repaint();
+    }
     for (key, r) in picks {
         let m = key.module.clone();
         if r.open || r.menu == Some(TileMenu::Open) {

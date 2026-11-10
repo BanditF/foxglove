@@ -873,7 +873,9 @@ impl Hub {
             // Keyboard (#991): the first tile has the focus when it opens; the Menu key opens
             // the focused tile's ··· menu like Shift+F10.
             if focus_first && !*editing {
-                hideout_panels::tray::focus_first_tile(ctx, panels, layout);
+                // A tray click (pointer): the ring waits for a key. tray-icon sends no keyboard open
+                // (notify version 0); a NIN_KEYSELECT open would pass true.
+                hideout_panels::tray::focus_first_tile(ctx, panels, layout, false);
             }
             if platform::take_flyout_menu_key() {
                 hideout_panels::tray::menu_key(ctx);

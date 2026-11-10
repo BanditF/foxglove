@@ -1213,7 +1213,7 @@ fn renders_the_flyout_for_review() {
         let mut ed = editing;
         let rgba = rasterise(w, h, |c| {
             if focus {
-                hideout_panels::tray::focus_first_tile(c, host, &layout);
+                hideout_panels::tray::focus_first_tile(c, host, &layout, true);
             }
             egui::CentralPanel::default()
                 .frame(flyout_frame(&t))

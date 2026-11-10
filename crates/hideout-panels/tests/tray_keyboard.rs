@@ -9,7 +9,7 @@ use egui::accesskit::{NodeId, Role, TreeUpdate};
 use egui::{Event, Key, Modifiers};
 use hideout_contract::module::{Context, Module};
 use hideout_contract::panel::Register;
-use hideout_panels::tray::{arrow_target, focus_first_tile, menu_key, tile_focus_id};
+use hideout_panels::tray::{arrow_target, focus_first_tile, menu_key, ring_on, tile_focus_id};
 use hideout_panels::{tray_panel_ui, HubCall, PanelHost, PanelKey, TrayAction, TrayLayout};
 use serde_json::json;
 
@@ -47,15 +47,21 @@ name = "Toggle it"
     Module::parse(&text, &Context::default()).expect("manifest parses")
 }
 
-/// A tile with a value, a sub line, a meter and a button: four rows, like the Focus timer's.
-fn register(host: &mut PanelHost, id: &str) {
+/// A tile with a value, a sub line, a meter and a button: four rows, like the Focus timer's;
+/// `short`: the value alone (one row).
+fn register(host: &mut PanelHost, id: &str, short: bool) {
+    let rows = if short {
+        json!([{"type": "value", "id": "glance", "props": {"value": "On"}}])
+    } else {
+        json!([
+            {"type": "value", "id": "glance", "props": {"value": "18:42"}},
+            {"type": "label", "id": "sub", "props": {"text": "Focus · round 2 of 4"}},
+            {"type": "meter", "id": "meter", "props": {"value": 378.0, "max": 1500.0}},
+            {"type": "button", "id": "go", "props": {"label": "Pause", "action": "toggle"}}])
+    };
     let params: Register = serde_json::from_value(json!({"instance": "i1", "panels": [
         {"id": "tile", "slot": "tile", "title": "T", "icon": "mic", "tree":
-            {"type": "column", "id": "tile", "children": [
-                {"type": "value", "id": "glance", "props": {"value": "18:42"}},
-                {"type": "label", "id": "sub", "props": {"text": "Focus · round 2 of 4"}},
-                {"type": "meter", "id": "meter", "props": {"value": 378.0, "max": 1500.0}},
-                {"type": "button", "id": "go", "props": {"label": "Pause", "action": "toggle"}}]}},
+            {"type": "column", "id": "tile", "children": rows}},
         {"id": "page", "slot": "page", "title": "T", "icon": "mic", "tree":
             {"type": "label", "id": "l", "props": {"text": "page"}}}]}))
     .unwrap();
@@ -112,7 +118,8 @@ impl Panel {
         let mut host = PanelHost::default();
         let ids = ["a.one", "b.two", "c.three"];
         for id in ids {
-            register(&mut host, id);
+            // The second tile is short: the first row has two heights of content.
+            register(&mut host, id, id == "b.two");
         }
         host.set_key("a.one", "toggle", Some("F13".into()));
         let keys = ids.iter().map(|m| PanelKey::new(*m, "tile")).collect();
@@ -185,12 +192,13 @@ impl Panel {
 
     fn opens(&mut self) {
         self.pass_with(Vec::new(), |ctx, host, layout| {
-            assert!(focus_first_tile(ctx, host, layout));
+            assert!(focus_first_tile(ctx, host, layout, false));
         });
     }
 }
 
-const A: &str = "Title a.one, 18:42, Focus · round 2 of 4";
+// The spoken name says a comma where the tile shows " · " (some readers say "dot").
+const A: &str = "Title a.one, 18:42, Focus, round 2 of 4";
 
 #[test]
 fn arrows_follow_the_grid_order_and_stop_at_the_edges() {
@@ -333,4 +341,56 @@ fn a_fourth_row_is_inside_the_tile_not_clipped() {
     );
     // And the tile's clip lets it show: its bottom is above the tile's bottom edge.
     assert!(button.y1 < r.max.y as f64 * ppp);
+}
+
+/// The ring is focus-visible (#1035 review): a pointer-opened flyout keeps the focus on the first
+/// tile without a ring; the first key the panel answers to shows it, on the tile it moved to.
+#[test]
+fn the_ring_shows_only_once_the_keyboard_is_used() {
+    let Some(mut p) = Panel::new() else {
+        eprintln!("no system font; keyboard test skipped");
+        return;
+    };
+    p.pass(Vec::new());
+    p.opens();
+    p.pass(Vec::new());
+    p.pass(Vec::new());
+    assert_eq!(
+        p.focused(),
+        Some(tile_focus_id(&p.keys[0])),
+        "the focus is on the first tile"
+    );
+    assert_eq!(ring_on(&p.ctx), None, "no ring after a pointer open");
+    p.key(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(
+        ring_on(&p.ctx),
+        Some(tile_focus_id(&p.keys[1])),
+        "the ring on tile 2"
+    );
+    // Opened from the keyboard: the ring at once.
+    p.pass_with(Vec::new(), |ctx, host, layout| {
+        assert!(focus_first_tile(ctx, host, layout, true));
+    });
+    p.pass(Vec::new());
+    assert_eq!(ring_on(&p.ctx), Some(tile_focus_id(&p.keys[0])));
+}
+
+/// Tiles in a grid row are as tall as its tallest one and start at the same top.
+#[test]
+fn a_row_of_tiles_has_one_height() {
+    let Some(mut p) = Panel::new() else {
+        eprintln!("no system font; keyboard test skipped");
+        return;
+    };
+    for _ in 0..3 {
+        p.pass(Vec::new());
+    }
+    let rect = |p: &Panel, i: usize| p.ctx.read_response(tile_focus_id(&p.keys[i])).unwrap().rect;
+    let (a, b) = (rect(&p, 0), rect(&p, 1));
+    assert_eq!(a.min.y, b.min.y, "top-aligned");
+    assert!((a.height() - b.height()).abs() < 0.5, "{a:?} vs {b:?}");
+    assert!(
+        b.height() > 80.0,
+        "the short tile took the row's height: {b:?}"
+    );
 }
