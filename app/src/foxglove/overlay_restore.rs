@@ -33,6 +33,17 @@
 //! nothing logged. The overlay's window hook ([`keep_minimized`]) keeps `WS_MINIMIZE` through
 //! winit's style refresh, so only these checks bring it back. [`window_state`] waits for a
 //! restore in progress, so the probe never reads a half-placed window.
+//!
+//! A display that keeps dropping (#1046): a sleeping 4K's link left and came back every ~9.5 s
+//! for hours while the PC was in use on the other display (main c117b884, 2026-11-10,
+//! 08:47-16:59 UTC), and each drop and return moved the overlay between the two displays, one
+//! `off every display` and one `not covering its display` line per cycle. Foxglove's own moves
+//! never caused those display changes (the same cycle ran on 11/04 with every move held), and
+//! each restore already landed on its area. While the chosen display keeps dropping
+//! ([`Flaps`]), the checks and the regular placement cover the main display instead
+//! ([`target_held`]), so a drop or a return finds the overlay where it belongs and moves nothing.
+//! The departures are recorded on `WM_DISPLAYCHANGE` only; once the display stayed
+//! [`FLAP_QUIET`], the next frame places the overlay back on it (one line).
 
 // The window side runs on Windows only; elsewhere only the tests use the decision.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -234,6 +245,85 @@ fn overlaps(a: [i32; 4], b: [i32; 4]) -> bool {
     a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 }
 
+/// How long a display that keeps dropping must stay before the overlay goes back to it, and how
+/// close two drops must be to count as dropping again (#1046).
+pub const FLAP_QUIET: Duration = Duration::from_secs(60);
+
+/// The displays' comings and goings, from display changes only (#1046): each display's last two
+/// departures.
+#[derive(Debug, Default)]
+pub struct Flaps {
+    known: Vec<String>,
+    left: Vec<(String, Option<Instant>, Instant)>,
+}
+
+impl Flaps {
+    /// The live displays at a display change (`now`): any known one missing has left. Returns
+    /// the displays that just started dropping again (for their one line).
+    pub fn seen(&mut self, ids: &[String], now: Instant) -> Vec<String> {
+        let mut started = vec![];
+        let gone: Vec<String> = self
+            .known
+            .iter()
+            .filter(|id| !ids.contains(id))
+            .cloned()
+            .collect();
+        for id in gone {
+            let was = self.flapping(&id, now);
+            match self.left.iter_mut().find(|(d, ..)| *d == id) {
+                Some((_, prev, last)) => (*prev, *last) = (Some(*last), now),
+                None => self.left.push((id.clone(), None, now)),
+            }
+            if !was && self.flapping(&id, now) {
+                started.push(id);
+            }
+        }
+        self.known = ids.to_vec();
+        started
+    }
+
+    /// Whether display `id` keeps dropping: it left twice within [`FLAP_QUIET`], the last time
+    /// less than that ago.
+    pub fn flapping(&self, id: &str, now: Instant) -> bool {
+        self.left.iter().any(|(d, prev, last)| {
+            d == id
+                && prev.is_some_and(|p| last.duration_since(p) <= FLAP_QUIET)
+                && now.duration_since(*last) < FLAP_QUIET
+        })
+    }
+}
+
+/// The departures heard so far ([`Flaps`]); written on display changes, read by the frames.
+static FLAPS: Mutex<Flaps> = Mutex::new(Flaps {
+    known: Vec::new(),
+    left: Vec::new(),
+});
+
+fn ids(monitors: &[crate::monitors::Monitor]) -> Vec<String> {
+    monitors.iter().map(|m| m.id.clone()).collect()
+}
+
+/// Records the live displays at a display change, with one line for a display that started
+/// dropping again.
+fn displays_seen(monitors: &[crate::monitors::Monitor]) {
+    let started = FLAPS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .seen(&ids(monitors), Instant::now());
+    for id in started {
+        eprintln!("{}", flapping_line(&id));
+    }
+}
+
+fn flapping_line(id: &str) -> String {
+    format!(
+        "Foxglove: display {id} keeps dropping (twice within {} s); the overlay covers another \
+         display until it stays {} s",
+        FLAP_QUIET.as_secs(),
+        FLAP_QUIET.as_secs()
+    )
+}
+
 /// The overlay window's state as [`window_state`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowState {
@@ -320,6 +410,10 @@ pub fn defer_while_away(trigger: Trigger, away: bool) -> bool {
 
 /// Asks the overlay's next frame to check its window, and draws that frame.
 pub fn request(trigger: Trigger) {
+    if trigger == Trigger::DisplayChange {
+        // Heard while away too, so a display dropping all night is known on coming back.
+        displays_seen(&crate::monitors::list());
+    }
     if defer_while_away(trigger, super::away::away()) {
         DEFERRED.store(true, Ordering::Relaxed);
         return;
@@ -453,11 +547,44 @@ pub fn placed_line(from: Option<[i32; 4]>, to: [i32; 4], now: Option<[i32; 4]>) 
 
 /// The area the overlay covers on `monitor` (its chosen display, or the main one when that's
 /// gone): the work area, one pixel short of the bottom like `keep_on_monitor` places it.
+#[cfg(test)]
 pub fn target(monitors: &[crate::monitors::Monitor], monitor: &str) -> Option<[i32; 4]> {
-    crate::monitors::find(monitors, monitor).map(|m| {
-        let [left, top, right, bottom] = m.work_area;
-        [left, top, right, bottom - 1]
-    })
+    target_held(monitors, monitor, false)
+}
+
+/// [`target`], with the chosen display dropping again and again (`flapping`, #1046): then the
+/// main display's area (another display's when the chosen one is the main one), so the overlay
+/// stays put through its drops and returns.
+pub fn target_held(
+    monitors: &[crate::monitors::Monitor],
+    monitor: &str,
+    flapping: bool,
+) -> Option<[i32; 4]> {
+    let other = || {
+        let others = || monitors.iter().filter(|m| m.id != monitor);
+        others()
+            .find(|m| m.primary)
+            .or_else(|| others().next())
+            .cloned()
+    };
+    flapping
+        .then(other)
+        .flatten()
+        .or_else(|| crate::monitors::find(monitors, monitor))
+        .map(|m| {
+            let [left, top, right, bottom] = m.work_area;
+            [left, top, right, bottom - 1]
+        })
+}
+
+/// The area the overlay covers now ([`target_held`], with the departures heard so far): for the
+/// checks here and the regular placement alike.
+pub fn target_now(monitors: &[crate::monitors::Monitor], monitor: &str) -> Option<[i32; 4]> {
+    let flapping = FLAPS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .flapping(monitor, Instant::now());
+    target_held(monitors, monitor, flapping)
 }
 
 /// Runs once per overlay frame, before anything is drawn. `was_away` is the window's state at
@@ -491,7 +618,7 @@ pub fn frame(
         rect,
         since,
         &monitors,
-        target(&listed, monitor),
+        target_now(&listed, monitor),
     );
     let (trigger, action) = checked_now?;
     let Action::Restore { to, why } = action else {
@@ -695,6 +822,8 @@ mod imp {
     pub fn watch() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
+            // The displays at the start, for the departures the display changes record.
+            super::displays_seen(&crate::monitors::list());
             // The display changes held while away get their one check on coming back.
             std::mem::forget(super::super::away::subscribe(|away| {
                 if !away && super::DEFERRED.swap(false, Ordering::Relaxed) {
@@ -1506,5 +1635,272 @@ mod tests {
         drop(restoring);
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(7));
         probe.join().unwrap();
+    }
+
+    // #1046: the user's two displays as the 11/10 log names them, in physical pixels: the main
+    // 1440p at 100 % and the chosen 4K at 150 % to its right.
+    const D_MAIN: &str = r"\\.\DISPLAY6";
+    const D_4K: &str = r"\\.\DISPLAY5";
+
+    fn display(id: &str, primary: bool, work_area: [i32; 4], dpi: u32) -> crate::monitors::Monitor {
+        crate::monitors::Monitor {
+            id: id.into(),
+            label: id.into(),
+            primary,
+            work_area,
+            dpi,
+        }
+    }
+
+    fn two_displays() -> Vec<crate::monitors::Monitor> {
+        vec![
+            display(D_MAIN, true, [0, 0, 2560, 1440], 96),
+            display(D_4K, false, [2560, 0, 6400, 2160], 144),
+        ]
+    }
+
+    /// #1046: after any restore, on either display of two at mixed scaling (and with the 4K left
+    /// of the main one, at negative coordinates), the window where the restore put it reads as
+    /// in place: the next check keeps it.
+    #[test]
+    fn a_restore_is_idempotent_on_two_displays_at_mixed_dpi() {
+        let left_4k = vec![
+            display(D_MAIN, true, [0, 0, 2560, 1440], 96),
+            display(D_4K, false, [-3840, 0, 0, 2160], 144),
+        ];
+        for listed in [two_displays(), left_4k] {
+            let areas: Vec<[i32; 4]> = listed.iter().map(|m| m.work_area).collect();
+            for chosen in [D_MAIN, D_4K, r"\\.\DISPLAY9"] {
+                for flapping in [false, true] {
+                    let t = target_held(&listed, chosen, flapping);
+                    let starts = [
+                        (true, Some(ICONIC_RECT)),
+                        (false, Some(ICONIC_RECT)),
+                        (false, Some(SMALL)),
+                        (false, Some(areas[0])),
+                        (false, Some(areas[1])),
+                        (false, Some([2000, 0, 4000, 1400])),
+                        (false, Some([7000, 0, 8000, 100])),
+                        (false, None),
+                    ];
+                    for (iconic, rect) in starts {
+                        let Action::Restore { to, .. } = decide(iconic, rect, &areas, t) else {
+                            continue;
+                        };
+                        assert_eq!(to, t);
+                        assert_eq!(
+                            decide(false, to, &areas, t),
+                            Action::Keep,
+                            "{chosen} {flapping} {iconic} {rect:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_display_dropping_twice_within_a_minute_keeps_dropping_until_it_stays() {
+        let t0 = Instant::now();
+        let at = |s: f64| t0 + Duration::from_secs_f64(s);
+        let both = [D_MAIN.to_string(), D_4K.to_string()];
+        let main_only = [D_MAIN.to_string()];
+        let mut f = Flaps::default();
+        assert!(f.seen(&both, at(0.0)).is_empty(), "the start: nothing left");
+        assert!(f.seen(&main_only, at(1.0)).is_empty(), "one drop");
+        assert!(!f.flapping(D_4K, at(1.0)));
+        assert!(f.seen(&both, at(2.5)).is_empty());
+        assert_eq!(f.seen(&main_only, at(10.5)), [D_4K.to_string()], "again");
+        assert!(f.flapping(D_4K, at(10.5)));
+        assert!(!f.flapping(D_MAIN, at(10.5)), "the other display");
+        let _ = f.seen(&both, at(12.0));
+        assert!(f.seen(&main_only, at(20.0)).is_empty(), "one line per hold");
+        assert!(f.flapping(D_4K, at(20.0 + 59.0)));
+        assert!(!f.flapping(D_4K, at(20.0 + 60.0)), "stayed a minute");
+        // Two drops further apart than that (unplugged, plugged back later): not dropping.
+        let mut f = Flaps::default();
+        let _ = f.seen(&both, at(0.0));
+        let _ = f.seen(&main_only, at(1.0));
+        let _ = f.seen(&both, at(2.0));
+        let _ = f.seen(&main_only, at(100.0));
+        assert!(!f.flapping(D_4K, at(100.0)));
+        assert_eq!(
+            flapping_line(D_4K),
+            "Foxglove: display \\\\.\\DISPLAY5 keeps dropping (twice within 60 s); the overlay \
+             covers another display until it stays 60 s"
+        );
+    }
+
+    #[test]
+    fn while_the_chosen_display_keeps_dropping_the_target_is_another_one() {
+        let both = two_displays();
+        assert_eq!(target_held(&both, D_4K, false), Some([2560, 0, 6400, 2159]));
+        assert_eq!(target_held(&both, D_4K, true), Some([0, 0, 2560, 1439]));
+        assert_eq!(
+            target_held(&both[..1], D_4K, true),
+            Some([0, 0, 2560, 1439])
+        );
+        // The main display is the one dropping: the other one.
+        assert_eq!(
+            target_held(&both, D_MAIN, true),
+            Some([2560, 0, 6400, 2159])
+        );
+        // Nothing else left: the display itself.
+        assert_eq!(
+            target_held(&both[1..], D_4K, true),
+            Some([2560, 0, 6400, 2159])
+        );
+    }
+
+    /// The overlay and its two displays through the 11/10 log's cycle: the chosen 4K leaves for
+    /// 1.5 s every 9.5 s, each change a `WM_DISPLAYCHANGE` (departures recorded, then the frame's
+    /// check), and the regular placement on the same frames, as `keep_on_monitor` runs it.
+    /// Windows leaves the window where it was (the log's `off every display at [2560, ...]`).
+    struct TwoDisplays {
+        t0: Instant,
+        hold: bool,
+        present: bool,
+        flaps: Flaps,
+        rect: Option<[i32; 4]>,
+        was_away: bool,
+        monitor_rect: Option<[i32; 4]>,
+        tries: u32,
+        lines: Vec<String>,
+    }
+
+    impl TwoDisplays {
+        fn new(hold: bool) -> Self {
+            let t0 = Instant::now();
+            let mut w = TwoDisplays {
+                t0,
+                hold,
+                present: true,
+                flaps: Flaps::default(),
+                rect: Some([2560, 0, 6400, 2159]),
+                was_away: false,
+                monitor_rect: Some([2560, 0, 6400, 2159]),
+                tries: PLACEMENT_TRIES,
+                lines: vec![],
+            };
+            let _ = w.flaps.seen(&ids(&w.listed()), t0);
+            w
+        }
+
+        fn listed(&self) -> Vec<crate::monitors::Monitor> {
+            let both = two_displays();
+            if self.present {
+                both
+            } else {
+                both[..1].to_vec()
+            }
+        }
+
+        fn frame(&mut self, s: f64, pending: Option<Trigger>) {
+            let now = self.t0 + Duration::from_secs_f64(s);
+            let listed = self.listed();
+            let areas: Vec<[i32; 4]> = listed.iter().map(|m| m.work_area).collect();
+            let flapping = self.hold && self.flaps.flapping(D_4K, now);
+            let target = target_held(&listed, D_4K, flapping);
+            let rect = self.rect;
+            if let Some((trigger, Action::Restore { to, why })) = check(
+                pending,
+                &mut self.was_away,
+                false,
+                rect,
+                None,
+                &areas,
+                target,
+            ) {
+                self.rect = to;
+                (self.monitor_rect, self.tries) = (to, 1);
+                self.lines
+                    .push(restored_line(trigger, why, rect, to, self.rect));
+            }
+            let target = target.expect("a display");
+            if Some(target) != self.monitor_rect {
+                (self.monitor_rect, self.tries) = (Some(target), 0);
+            }
+            if place_due(false, self.rect, target, self.tries) {
+                self.tries += 1;
+                let from = self.rect;
+                self.rect = Some(target);
+                self.lines.push(placed_line(from, target, self.rect));
+            }
+        }
+
+        fn display_change(&mut self, s: f64, present: bool) {
+            self.present = present;
+            let now = self.t0 + Duration::from_secs_f64(s);
+            let _ = self.flaps.seen(&ids(&self.listed()), now);
+            self.frame(s, Some(Trigger::DisplayChange));
+        }
+
+        /// `cycles` drops and returns; the time of the last drop.
+        fn drop_cycles(&mut self, cycles: u32) -> f64 {
+            let mut last = 0.0;
+            for k in 0..cycles {
+                last = 8.0 + 9.5 * f64::from(k);
+                self.display_change(last, false);
+                self.display_change(last + 1.5, true);
+            }
+            last
+        }
+    }
+
+    /// #1046, before: following each drop and return moves the overlay between the displays
+    /// forever, two lines per cycle, as the 11/10 log shows them.
+    #[test]
+    fn without_the_hold_a_dropping_display_flips_the_overlay_every_cycle() {
+        let mut w = TwoDisplays::new(false);
+        w.drop_cycles(50);
+        assert_eq!(w.lines.len(), 100);
+        assert_eq!(
+            w.lines[..2],
+            [
+                "Foxglove: overlay window off every display at [2560, 0, 6400, 2159], restored \
+                 to [0, 0, 2560, 1439] (display change)",
+                "Foxglove: overlay window not covering its display at [0, 0, 2560, 1439], \
+                 restored to [2560, 0, 6400, 2159] (display change)",
+            ]
+        );
+        assert_eq!(w.lines[98..], w.lines[..2]);
+    }
+
+    /// #1046, the fix: from the second drop on, the overlay stays on the main display through
+    /// every drop and return (no move, no line); once the 4K stayed a minute, the next frame
+    /// (a key press) places it back with one line, and later frames leave it there.
+    #[test]
+    fn with_the_hold_a_dropping_display_moves_the_overlay_once_then_back_once() {
+        let mut w = TwoDisplays::new(true);
+        let last = w.drop_cycles(50);
+        assert_eq!(w.lines.len(), 3, "{:#?}", w.lines);
+        assert!(w.lines[2].starts_with("Foxglove: overlay window off every display"));
+        assert_eq!(w.rect, Some([0, 0, 2560, 1439]), "on the main display");
+        // A tray click or the API mid-hold: the main display's area is where it belongs.
+        w.frame(last + 30.0, Some(Trigger::TrayClick));
+        assert_eq!(w.lines.len(), 3);
+        w.frame(last + 59.0, None);
+        assert_eq!(w.rect, Some([0, 0, 2560, 1439]), "not yet");
+        w.frame(last + 61.0, None);
+        assert_eq!(w.rect, Some([2560, 0, 6400, 2159]), "back on the 4K");
+        assert_eq!(w.lines.len(), 4);
+        assert_eq!(
+            w.lines[3],
+            "Foxglove: overlay window at [0, 0, 2560, 1439], placed at [2560, 0, 6400, 2159] \
+             (display area)"
+        );
+        w.frame(last + 62.0, Some(Trigger::DisplayChange));
+        w.frame(last + 90.0, None);
+        assert_eq!(w.lines.len(), 4, "stays");
+    }
+
+    /// One drop (unplugged, or turned off once) still moves the overlay to the main display and
+    /// back on its return, as before.
+    #[test]
+    fn a_single_drop_and_return_still_moves_the_overlay_there_and_back() {
+        let mut w = TwoDisplays::new(true);
+        w.drop_cycles(1);
+        assert_eq!(w.lines.len(), 2);
+        assert_eq!(w.rect, Some([2560, 0, 6400, 2159]));
     }
 }
