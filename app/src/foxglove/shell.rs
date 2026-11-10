@@ -183,6 +183,10 @@ pub fn set_page(page: Page) {
         // #952: the Knob card's "back in the knob's cycle" line lasts until the page changes.
         super::knob_hide::page_left();
     }
+    if page != Page::Plugins {
+        // #991: a watched program's name is looked up again on the next visit.
+        super::program_name::page_left();
+    }
     CURRENT.set(Some(page));
     if let Err(e) = super::store::save("window", &WindowSettings { page }) {
         eprintln!("Foxglove: can't save the settings page: {e}");
