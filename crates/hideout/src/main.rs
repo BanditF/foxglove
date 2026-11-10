@@ -23,6 +23,8 @@ fn main() {
         paths,
         pages: modules_page::pages(),
         version: env!("CARGO_PKG_VERSION"),
+        // The router (H2.3) supplies the feed; until then the hub starts with no module panels.
+        panels: None,
     };
     if let Err(e) = hideout_shell::run(opts) {
         log::error!("hub stopped: {e}");

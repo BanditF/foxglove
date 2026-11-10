@@ -11,6 +11,8 @@ use crate::status::{self, Item};
 use crate::theme::{self, Rgb, Tokens};
 use crate::{placement, platform, tray, window_title, AUMID, PRODUCT};
 use eframe::egui::{self, Color32, Key, Modifiers};
+use hideout_panels::Slot;
+use hideout_panels::{PanelFeed, PanelHost, PanelKey};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +30,9 @@ pub struct ShellOptions {
     pub pages: Vec<Box<dyn Page>>,
     /// The hub's version, for the log.
     pub version: &'static str,
+    /// Where module panels come from (the router implements it, H2.3). `page` panels join the
+    /// sidebar after `pages` and draw in the page area.
+    pub panels: Option<Box<dyn PanelFeed>>,
 }
 
 /// State the tray and the window both touch.
@@ -97,6 +102,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         paused: AtomicBool::new(false),
     });
     let pages = opts.pages;
+    let feed = opts.panels;
     let first_title = pages
         .first()
         .map(|p| p.title().to_string())
@@ -142,7 +148,12 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
                 platform::show_main_window();
                 show_ctx.request_repaint();
             });
-            Ok(Box::new(Hub::new(shared, pages)))
+            let mut feed = feed;
+            if let Some(f) = feed.as_mut() {
+                let wake_ctx = ctx.clone();
+                f.set_waker(Box::new(move || wake_ctx.request_repaint()));
+            }
+            Ok(Box::new(Hub::new(shared, pages, feed)))
         }),
     );
     log::info!("window closed: {result:?}");
@@ -269,10 +280,19 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// What the page area shows: one of the hub's own pages, or any registered module panel.
+#[derive(Clone, PartialEq)]
+enum Current {
+    Page(usize),
+    Panel(PanelKey),
+}
+
 struct Hub {
     shared: Arc<Shared>,
     pages: Vec<Box<dyn Page>>,
-    current: usize,
+    current: Current,
+    panels: PanelHost,
+    feed: Option<Box<dyn PanelFeed>>,
     title: String,
     palette: Palette,
     /// From manifests and the registry (H2.2); empty until modules exist.
@@ -280,12 +300,18 @@ struct Hub {
 }
 
 impl Hub {
-    fn new(shared: Arc<Shared>, pages: Vec<Box<dyn Page>>) -> Self {
+    fn new(
+        shared: Arc<Shared>,
+        pages: Vec<Box<dyn Page>>,
+        feed: Option<Box<dyn PanelFeed>>,
+    ) -> Self {
         let title = window_title(pages.first().map(|p| p.title()).unwrap_or_default());
         Self {
             shared,
             pages,
-            current: 0,
+            current: Current::Page(0),
+            panels: PanelHost::default(),
+            feed,
             title,
             palette: Palette::default(),
             entries: Vec::new(),
@@ -317,9 +343,20 @@ impl Hub {
                         .color(c(t.text)),
                 );
                 ui.add_space(14.0);
-                for (i, page) in self.pages.iter().enumerate() {
-                    let selected = i == self.current;
-                    let text = egui::RichText::new(page.title())
+                let mut entries: Vec<(Current, String)> = self
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (Current::Page(i), p.title().to_string()))
+                    .collect();
+                entries.extend(
+                    self.panels
+                        .in_slot(Slot::Page)
+                        .map(|p| (Current::Panel(p.key.clone()), p.title.clone())),
+                );
+                for (target, title) in entries {
+                    let selected = target == self.current;
+                    let text = egui::RichText::new(title)
                         .size(15.0)
                         .color(c(theme::nav_label(t, selected)));
                     let resp = ui.add_sized(
@@ -327,7 +364,7 @@ impl Hub {
                         egui::Button::selectable(selected, text),
                     );
                     if resp.clicked() {
-                        self.current = i;
+                        self.current = target;
                     }
                 }
             });
@@ -387,7 +424,7 @@ impl Hub {
         if enter {
             if let Some(target) = self.palette.chosen(&self.entries).map(|e| e.target.clone()) {
                 if let Some(i) = self.pages.iter().position(|p| p.id() == target) {
-                    self.current = i;
+                    self.current = Current::Page(i);
                 }
                 self.palette.close();
                 return;
@@ -439,6 +476,15 @@ impl eframe::App for Hub {
             platform::hide_main_window();
             log::info!("window closed to the tray");
         }
+        if let Some(feed) = self.feed.as_mut() {
+            let now = std::time::Instant::now();
+            // Event-driven: the feed's waker brought this frame; a held-back patch asks for one
+            // more repaint when its slot comes (no timer loop).
+            let (_, next) = self.panels.pump(feed.as_mut(), now);
+            if let Some(at) = next {
+                ctx.request_repaint_after(at.saturating_duration_since(now));
+            }
+        }
         self.sidebar(ctx, &t);
         self.status_strip(ctx, &t);
         egui::CentralPanel::default()
@@ -448,17 +494,36 @@ impl eframe::App for Hub {
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(ctx, |ui| {
-                if let Some(page) = self.pages.get_mut(self.current) {
-                    page.ui(ui, &t);
+                match &self.current {
+                    Current::Page(i) => {
+                        if let Some(page) = self.pages.get_mut(*i) {
+                            page.ui(ui, &t);
+                        }
+                    }
+                    Current::Panel(key) => {
+                        hideout_panels::panel_ui(&mut self.panels, ui, key);
+                    }
+                }
+                // Input from the panel goes out on this frame, not the next one.
+                if let Some(feed) = self.feed.as_mut() {
+                    for e in self.panels.take_events() {
+                        feed.send(hideout_panels::Outbound::Event(e));
+                    }
                 }
             });
         self.palette_ui(ctx, &t);
-        let title = window_title(
-            self.pages
-                .get(self.current)
-                .map(|p| p.title())
+        let title = window_title(&match &self.current {
+            Current::Page(i) => self
+                .pages
+                .get(*i)
+                .map(|p| p.title().to_string())
                 .unwrap_or_default(),
-        );
+            Current::Panel(key) => self
+                .panels
+                .panel(key)
+                .map(|p| p.title.clone())
+                .unwrap_or_default(),
+        });
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;

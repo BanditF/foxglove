@@ -13,6 +13,7 @@ toml = "0.9"
 [target.'cfg(windows)'.dependencies]
 # No default fonts: egui's bundled fonts carry the OFL and Ubuntu font licences, and the hub
 # depends only on MIT or Apache-2.0 code (contract §11). The shell loads Windows' own fonts.
+hideout-panels = { path = "../hideout-panels" }
 eframe = { version = "0.33", default-features = false, features = ["glow", "accesskit"] }
 raw-window-handle = "0.6"
 tray-icon = "0.24"
