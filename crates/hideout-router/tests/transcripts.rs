@@ -58,6 +58,11 @@ const NOT_ROUTER: &[(&str, &str)] = &[
         "transcripts/ui/patch-event-asset.json",
         "the panel host's ui.event and assets",
     ),
+    ("transcripts/ui/badge.json", "the panel host's tab badges"),
+    (
+        "transcripts/ui/visibility.json",
+        "the panel host's tab visibility",
+    ),
 ];
 
 /// Hub-side steps the router does run although the folder is someone else's.

@@ -415,6 +415,25 @@ class UiAssetPut(Model):
     }
 
 
+Badge = Literal['none', 'attention', 'dirty', 'count']
+BADGE_SPEC = ('enum', ('none', 'attention', 'dirty', 'count'))
+
+
+@dataclass(kw_only=True)
+class UiBadge(Model):
+    """`ui.badge` (M → H, notification, v1.3). `count` is set with `badge: "count"` only."""
+
+    badge: Badge
+    count: Optional[int] = None
+    panel: str
+
+    FIELDS: ClassVar[dict] = {
+        'badge': ('badge', ('ref', 'Badge')),
+        'count': ('count', ('opt', 'int')),
+        'panel': ('panel', 'str'),
+    }
+
+
 @dataclass(kw_only=True)
 class UiEvent(Model):
     """`ui.event` (H → M)."""
@@ -463,6 +482,23 @@ class UiPatch(Model):
     FIELDS: ClassVar[dict] = {
         'ops': ('ops', ('list', ('ref', 'PatchOp'))),
         'panel': ('panel', 'str'),
+    }
+
+
+UiVisibilityVisibility = Literal['visible', 'hidden', 'closed']
+UIVISIBILITYVISIBILITY_SPEC = ('enum', ('visible', 'hidden', 'closed'))
+
+
+@dataclass(kw_only=True)
+class UiVisibility(Model):
+    """`ui.visibility` (H → M, notification, v1.3)."""
+
+    panel: str
+    state: UiVisibilityVisibility
+
+    FIELDS: ClassVar[dict] = {
+        'panel': ('panel', 'str'),
+        'state': ('state', ('ref', 'UiVisibilityVisibility')),
     }
 
 
@@ -709,8 +745,10 @@ TYPES = {
     'messages.RegisterResult': RegisterResult,
     'messages.SettingsSet': SettingsSet,
     'messages.UiAssetPut': UiAssetPut,
+    'messages.UiBadge': UiBadge,
     'messages.UiEvent': UiEvent,
     'messages.UiPatch': UiPatch,
+    'messages.UiVisibility': UiVisibility,
     'messages.UiWindowOpen': UiWindowOpen,
     'module.Edition': Edition,
     'module.Identity': Identity,

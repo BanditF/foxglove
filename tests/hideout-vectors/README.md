@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.2. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.3. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -43,7 +43,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `frames/panel-frames.json` | binary stream frames as hex: image, canvas, text, length mismatches | 5.4, 8.4 |
 | `transcripts/lifecycle/` | `initialize` (module, tool, bad token, hub not served, not first), `module.register`/`module.ready`, re-registration, `ui.undeclared`, 30 s ready timeout, errors -32601, 2, 4, 8, bad hub minor (7), late reply after timeout, malformed JSON (-32700), module crash mid-call, duplicate request id and oversized line (v1.2) | 7.5, 8.1, 8.8 |
 | `transcripts/swap/` | hot swap overlap and handover, drain `done`, `busy`, Force, Not now, `module.idle`, key action queued during a swap | 7.6 |
-| `transcripts/ui/` | `ui.patch`, `ui.event` refusal, `ui.asset.put`, `ui.window.open`, `action.invoke`, `settings.get`/`set`, `hub.notify` | 5.3, 8.8 |
+| `transcripts/ui/` | `ui.patch`, `ui.event` refusal, `ui.asset.put`, `ui.window.open`, `action.invoke`, `settings.get`/`set`, `hub.notify`, `ui.badge`, `ui.visibility` (v1.3) | 5.3, 5.9, 8.8 |
 | `transcripts/stream/` | a live panel stream grant, `channel.open`/`channel.create`, denial, offer rejected | 5.4, 8.4 |
 | `transcripts/facts/`, `modules/`, `mcp/`, `gpu/` | facts, `modules.*`, required-by, MCP and private modules, GPU methods | 8.8, 9, 8.9, 13.5 |
 | `transcripts/supervisor/` | each of the 12 states (`state-<id>.json`), crash backoff and stop, exit 0, rollback, root-cause-once, update waiting | 7.7, 7.8 |

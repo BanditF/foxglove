@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.2",
+  "contract": "1.3",
   "reader_hub": "1.0",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -2885,6 +2885,18 @@
       "result": "valid",
       "final": {}
     },
+    "transcripts/ui/badge.json": {
+      "spec": [
+        "5.9",
+        "8.8"
+      ],
+      "note": "ui.badge (v1.3): attention, count (99+), dirty asks before close, none; unknown panel ignored.",
+      "result": "valid",
+      "final": {
+        "close_with_dirty": "asks first",
+        "count_shown": "99+"
+      }
+    },
     "transcripts/ui/notify.json": {
       "spec": [
         "6.1",
@@ -2924,6 +2936,24 @@
       "result": "valid",
       "final": {
         "refusal_reason": "Pick 1 to 120 minutes"
+      }
+    },
+    "transcripts/ui/visibility.json": {
+      "spec": [
+        "5.4",
+        "5.9",
+        "8.8"
+      ],
+      "note": "ui.visibility (v1.3): visible, hidden, closed, sent on change; streams close when not visible.",
+      "result": "valid",
+      "final": {
+        "states_sent": [
+          "visible",
+          "hidden",
+          "visible",
+          "closed"
+        ],
+        "streams_open_when_hidden": 0
       }
     },
     "transcripts/ui/window-open.json": {

@@ -1,12 +1,13 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.2** (v1.1 plus two wire decisions of #918; additive, no breaking
-change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+Status: spec, contract version **1.3** (v1.2 plus the tab model of #953; additive, no breaking
+change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.3** (#953): open page panels are tabs (§5.9). Two optional notifications: `ui.badge` (M → H) sets a tab's badge (`none`, `attention`, `dirty` or `count`), and `ui.visibility` (H → M) tells a module when its panel is `visible`, `hidden` or `closed`, so it can stop work the user can't see. A tab uses the panel's existing `title` and `icon`. Pop-outs dock back to their tab (§2.5). `hub` stays 1.0: both are optional notifications, and a peer that does not know one drops it (JSON-RPC), so nothing has to be negotiated.
 - **1.2** (#918): two wire rules the transcript vectors found missing (§8.1). A request id that is still in flight on the same connection answers error -32600 `rpc.duplicate-request-id` with id null, and the first call is unaffected. A line over 256 KiB answers -32600 `rpc.frame-too-large` with id null, then the hub closes that channel; the supervisor counts it as a crash (§7.7). Also written down, not new behaviour: a result arriving after the caller's error 4 is dropped. New ids in §15. The trust vectors' `seen_after` is keyed by source id, as §7.3 has it, not by family.
 - **1.1.1** (#941): a message nests at most 128 deep (arrays and objects, counted before parsing; was 4096, which overflowed the stack). Over it is `ui.limits`, the whole message refused. Every reader MUST check the depth before it recurses, or parse without recursion. The same cap holds for brackets in a TOML file (`module.toml`, legacy manifests, `hideout.toml`): over it is `manifest.syntax`. Not a wire change for any message that was within the panel caps.
 - **1.1** (#918): closes nine gaps the test vectors found: panel caps (§5.5), `width_or_count` of
@@ -144,7 +145,7 @@ Both MUST:
 - ask on close only if work would be lost.
 
 Pop-outs also:
-- go back to the sidebar when closed;
+- go back to their tab when closed (v1.3; was: the sidebar);
 - reopen at their places after a hub restart;
 - offer "Keep on top", off by default.
 
@@ -467,6 +468,8 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
   router.
 - The stream runs only while the panel is visible and the window isn't minimised, at most 30
   frames a second. The hub closes the channel otherwise.
+- (v1.3) The hub also tells the module, with `ui.visibility` (§5.9), so work that feeds no stream
+  (polling a device, rendering previews) can stop too.
 - The hub knows nothing of the domain: it colours shapes or appends text the module declared.
 - Rule: a page that shows what your devices (or your AI) are doing stays in the hub.
 
@@ -519,6 +522,37 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
 - Exception until a `paint` node exists: "Change part" opens in the browser, marked as such.
 - Safety stays in Arete's core: the GPU lock, the under-18 rule and the privacy filter apply to
   every UI path.
+
+### 5.9 Tabs (v1.3)
+
+Open `page` panels show as tabs above the page area, like editor tabs in VS Code. The sidebar
+stays the launcher; the tabs are what is open. UX, states and wording: [hideout-tabs-ux.md](hideout-tabs-ux.md).
+
+- **Title and icon:** a tab shows the panel's `title` and `icon` from `ui.register` (§5.1). No
+  new field. Before the module answers, the hub draws them from the cache (§2.4).
+- **Badge:** `ui.badge {panel, badge, count?}` (notification, M → H) sets the tab's badge:
+  - `none`: no badge (the default);
+  - `attention`: a dot, "something new wants a look";
+  - `dirty`: unsaved work. Closing the tab, its pop-out, or the hub window asks first (§2.5);
+  - `count` with `count` ≥ 1: a number; the hub shows `99+` above 99.
+  A new `ui.register` from a new instance resets the badge to `none`. A badge for a panel the
+  module didn't register, or for a slot other than `page`, is ignored and logged. Badges follow the
+  patch rate (§5.3). The hub may also show the badge on the panel's sidebar entry.
+- **Visibility:** `ui.visibility {panel, state}` (notification, H → M), sent after `ui.register`
+  and then only on change:
+  - `visible`: on screen (the active tab, or a pop-out that isn't minimised);
+  - `hidden`: still open but not on screen (a background tab, a minimised window, the hub hidden
+    in the tray). The hub has closed the panel's streams (§5.4);
+  - `closed`: the user closed the tab or its pop-out. The module SHOULD stop work for that panel.
+    It keeps running; the panel stays registered and opens again from the sidebar.
+  A module needs no answer and MAY ignore both messages.
+- **Hub-owned, not in the contract:** tab order, the active tab, pop-out placement and which
+  tabs to restore after a restart live in the hub's own files (§2.3). A module can't open, close
+  or reorder tabs; it can ask for attention with a badge or `hub.notify`.
+- **States:** a tab shows its module's state (§7.8) from `module.<id>.state`: a spinner for
+  `starting`, `updating` and `restarting`, a warning mark for `crash-stopped`, `install-failed`,
+  `needs-hub` and `quarantined`, greyed for `off`. The panel's header has the reason and the ways
+  out. A removed module's tabs close.
 
 ## 6. Capabilities and permissions
 
@@ -931,6 +965,8 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `ui.event` | H → M | call | `{panel, node, kind, value}` | `{}`, or an error with `data.reason` (refused) | — |
 | `ui.asset.put` | M → H | call | `{hash, mime, data}` (base64, ≤ 256 KiB) | `{}` | — |
 | `ui.window.open` | H → M | call | `{window}` | `{}` | `ui.window` |
+| `ui.badge` (v1.3) | M → H | notification | `{panel, badge: "none" \| "attention" \| "dirty" \| "count", count?}` (`count` ≥ 1 with `count`) | — | the panel is the module's |
+| `ui.visibility` (v1.3) | H → M | notification | `{panel, state: "visible" \| "hidden" \| "closed"}` | — | — |
 | `action.invoke` | H → M | call | `{action, source: "key" \| "tray" \| "palette" \| "panel"}` | `{}` | — |
 | `settings.get` | H → M | call | `{}` | `{values: {name: value}}` | — |
 | `settings.set` | H → M | call | `{name, value}` | `{}`, or an error with `data.reason` | — |
@@ -1342,7 +1378,8 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 
 `tests/hideout-vectors/` (#906) holds valid and invalid `module.toml` files, legacy `plugin.toml`
 and `kit.toml` files, permission strings, roots, catalogs, `hideout.toml` source and anchor
-tables, panel trees (under and over the caps), and JSON-RPC transcripts for every message in §8.8.
+tables, panel trees (under and over the caps), and JSON-RPC transcripts for every message in §8.8
+(v1.3: `transcripts/ui/badge.json` and `transcripts/ui/visibility.json` for §5.9).
 `index.json` gives each file's expected result: `valid` (with the normalized fields) or `invalid`
 (with the §15 id). The Rust crate and Vulpes's models MUST pass every vector. A spec change that
 changes a result changes the vector in the same PR. Vectors MUST use placeholder ids only and

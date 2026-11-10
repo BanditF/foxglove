@@ -135,6 +135,8 @@ pub fn schema() -> serde_json::Value {
         messages::UiEvent,
         messages::UiAssetPut,
         messages::UiWindowOpen,
+        messages::UiBadge,
+        messages::UiVisibility,
         messages::ActionInvoke,
         messages::SettingsSet,
         messages::HubNotify,

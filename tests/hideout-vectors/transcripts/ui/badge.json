@@ -1,0 +1,107 @@
+{
+  "name": "badge",
+  "module": "foxglove.example-art",
+  "spec": [
+    "5.9",
+    "8.8"
+  ],
+  "description": "ui.badge sets a page panel's tab badge: attention, a count, dirty (closing asks), then none. A new ui.register resets it.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.badge",
+        "params": {
+          "panel": "art.page",
+          "badge": "attention"
+        }
+      }
+    },
+    {
+      "expect": {
+        "tab_badge": "dot"
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.badge",
+        "params": {
+          "panel": "art.page",
+          "badge": "count",
+          "count": 120
+        }
+      }
+    },
+    {
+      "expect": {
+        "tab_badge": "99+",
+        "accessible_name": "Art, 120 new"
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.badge",
+        "params": {
+          "panel": "art.page",
+          "badge": "dirty"
+        }
+      }
+    },
+    {
+      "event": "user middle-clicks the Art tab"
+    },
+    {
+      "expect": {
+        "hub_asks": "Close Art? Your changes in Art aren't saved.",
+        "buttons": [
+          "Keep open",
+          "Close anyway"
+        ]
+      }
+    },
+    {
+      "event": "user picks Keep open"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.badge",
+        "params": {
+          "panel": "art.page",
+          "badge": "none"
+        }
+      }
+    },
+    {
+      "event": "variant: badge for a panel the module did not register"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.badge",
+        "params": {
+          "panel": "art.other",
+          "badge": "attention"
+        }
+      }
+    },
+    {
+      "expect": {
+        "hub": "ignores and logs",
+        "errors": null
+      }
+    }
+  ]
+}

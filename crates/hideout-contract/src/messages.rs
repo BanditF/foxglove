@@ -144,6 +144,47 @@ pub struct UiAssetPut {
     pub data: String,
 }
 
+/// The badge a module sets on its page panel's tab (v1.3, §5.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Badge {
+    /// No badge.
+    None,
+    /// Something new wants a look (a dot).
+    Attention,
+    /// Unsaved work: closing the tab asks first (§2.5).
+    Dirty,
+    /// `count` new items, 1 or more (the hub shows "99+" above 99).
+    Count,
+}
+
+/// `ui.badge` (M → H, notification, v1.3). `count` is set with `badge: "count"` only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UiBadge {
+    pub panel: String,
+    pub badge: Badge,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    /// On screen.
+    Visible,
+    /// Still open but not on screen: a background tab, a minimised window, the hub in the tray.
+    Hidden,
+    /// The user closed its tab or pop-out.
+    Closed,
+}
+
+/// `ui.visibility` (H → M, notification, v1.3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct UiVisibility {
+    pub panel: String,
+    pub state: Visibility,
+}
+
 /// `ui.window.open` (H → M).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiWindowOpen {
@@ -237,6 +278,16 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         "ui.event" => typed::<UiEvent>(params),
         "ui.asset.put" => typed::<UiAssetPut>(params),
         "ui.window.open" => typed::<UiWindowOpen>(params),
+        "ui.badge" => {
+            let b = UiBadge::deserialize(params).map_err(|e| e.to_string())?;
+            match (b.badge, b.count) {
+                (Badge::Count, Some(n)) if n >= 1 => Ok(()),
+                (Badge::Count, _) => Err("badge count needs count >= 1".into()),
+                (_, None) => Ok(()),
+                (_, Some(_)) => Err("count goes with badge \"count\" only".into()),
+            }
+        }
+        "ui.visibility" => typed::<UiVisibility>(params),
         "action.invoke" => typed::<ActionInvoke>(params),
         "settings.set" => typed::<SettingsSet>(params),
         "hub.notify" => typed::<HubNotify>(params),
@@ -286,5 +337,36 @@ pub fn check_message(msg: &serde_json::Value) -> Result<Shape, String> {
         (Some(_), None) => Ok(Shape::Result),
         (None, Some(e)) if e.get("code").is_some_and(|c| c.is_i64()) => Ok(Shape::Error),
         _ => Err("a response has exactly one of result and error (with an integer code)".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn badge_and_visibility_params() {
+        for ok in [
+            json!({"panel": "p", "badge": "none"}),
+            json!({"panel": "p", "badge": "attention"}),
+            json!({"panel": "p", "badge": "dirty"}),
+            json!({"panel": "p", "badge": "count", "count": 3}),
+        ] {
+            assert!(check_params("ui.badge", &ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            json!({"panel": "p", "badge": "count"}),
+            json!({"panel": "p", "badge": "count", "count": 0}),
+            json!({"panel": "p", "badge": "red"}),
+            json!({"badge": "dirty"}),
+            json!({"panel": "p", "badge": "dirty", "count": 2}),
+        ] {
+            assert!(check_params("ui.badge", &bad).is_err(), "{bad}");
+        }
+        for state in ["visible", "hidden", "closed"] {
+            assert!(check_params("ui.visibility", &json!({"panel": "p", "state": state})).is_ok());
+        }
+        assert!(check_params("ui.visibility", &json!({"panel": "p", "state": "gone"})).is_err());
     }
 }

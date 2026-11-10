@@ -684,6 +684,58 @@
       "title": "UiAssetPut",
       "type": "object"
     },
+    "messages.UiBadge": {
+      "$defs": {
+        "Badge": {
+          "description": "The badge a module sets on its page panel's tab (v1.3, §5.9).",
+          "oneOf": [
+            {
+              "const": "none",
+              "description": "No badge.",
+              "type": "string"
+            },
+            {
+              "const": "attention",
+              "description": "Something new wants a look (a dot).",
+              "type": "string"
+            },
+            {
+              "const": "dirty",
+              "description": "Unsaved work: closing the tab asks first (§2.5).",
+              "type": "string"
+            },
+            {
+              "const": "count",
+              "description": "`count` new items, 1 or more (the hub shows \"99+\" above 99).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "`ui.badge` (M → H, notification, v1.3). `count` is set with `badge: \"count\"` only.",
+      "properties": {
+        "badge": {
+          "$ref": "#/$defs/Badge"
+        },
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "panel": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "panel",
+        "badge"
+      ],
+      "title": "UiBadge",
+      "type": "object"
+    },
     "messages.UiEvent": {
       "description": "`ui.event` (H → M).",
       "properties": {
@@ -771,6 +823,44 @@
         "ops"
       ],
       "title": "UiPatch",
+      "type": "object"
+    },
+    "messages.UiVisibility": {
+      "$defs": {
+        "Visibility": {
+          "oneOf": [
+            {
+              "const": "visible",
+              "description": "On screen.",
+              "type": "string"
+            },
+            {
+              "const": "hidden",
+              "description": "Still open but not on screen: a background tab, a minimised window, the hub in the tray.",
+              "type": "string"
+            },
+            {
+              "const": "closed",
+              "description": "The user closed its tab or pop-out.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "`ui.visibility` (H → M, notification, v1.3).",
+      "properties": {
+        "panel": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/Visibility"
+        }
+      },
+      "required": [
+        "panel",
+        "state"
+      ],
+      "title": "UiVisibility",
       "type": "object"
     },
     "messages.UiWindowOpen": {
