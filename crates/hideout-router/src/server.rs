@@ -165,12 +165,12 @@ impl Hub {
     }
 
     /// The legacy stdio bridge (§8.2): starts a `transport = "stdio"` plugin with its stdin and
-    /// stdout on the router as module `id`. The caller (the supervisor) owns the child.
+    /// stdout on the router as module `id`. The caller (the supervisor) owns the child and sets
+    /// its stderr (the module's log, §7.7); it is left as the caller set it.
     pub fn spawn_stdio(&self, id: &str, mut command: Command) -> io::Result<Child> {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
             .spawn()?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");

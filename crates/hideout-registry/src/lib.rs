@@ -6,6 +6,8 @@
 //! - [`hub_config`]: `hideout.toml`, enabled state, sources and anchors (§7.3, §13.4)
 //! - [`Registry`]: installs into versioned folders (§7.2), enables, and checks the catalog and
 //!   every file before each launch (§12.5, §12.6); tracks what runs.
+//! - [`lab`]: lab mode, the first-party modules of `<config>\lab-modules\` in a lab hub only
+//!   (#1001, docs/hideout-lab.md).
 //!
 //! A signature proves where files came from and never grants a permission (§6.5): installing
 //! puts a module's permissions in `pending_permissions`, and only [`Registry::approve`] grants.
@@ -13,6 +15,7 @@
 
 pub mod hub_config;
 pub mod inventory;
+pub mod lab;
 pub mod trust;
 
 use std::collections::BTreeMap;
@@ -27,7 +30,8 @@ use hideout_contract::module::{read_dir, Context, Module, Visibility};
 use hideout_contract::{Error, ErrorId, Version, HUB_VERSION};
 
 use hub_config::HubConfig;
-use inventory::{Installed, Inventory, SIDELOAD};
+use inventory::{Installed, Inventory, LAB, SIDELOAD};
+use lab::LabMode;
 use trust::{verify_catalog, verify_root, Accepted, Signer, TrustSet, ROOT_ANCHOR};
 
 /// The folder under a module version that holds its own data, never hashed (§7.3).
@@ -122,6 +126,10 @@ pub struct Registry {
     pub dev_mode: bool,
     /// The API a legacy `plugin.toml` is checked against (§4.10).
     pub legacy_api: Version,
+    /// Lab mode (#1001): the modules of `<home>\lab-modules\` are loaded, in memory only.
+    pub lab: bool,
+    /// One line per lab module folder: loaded, or why not. For the hub's log.
+    pub lab_report: Vec<String>,
 }
 
 fn hash_files(dir: &Path) -> io::Result<BTreeMap<String, String>> {
@@ -145,7 +153,9 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
 impl Registry {
     /// Opens the registry in `home` (it holds `inventory.json`, `hideout.toml` and `modules\`).
     pub fn open(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
-        let inventory = Inventory::load(&home.join("inventory.json"))?;
+        let mut inventory = Inventory::load(&home.join("inventory.json"))?;
+        // A lab entry is never on disk; one written there by hand is not a lab module.
+        inventory.modules.retain(|_, m| m.source != LAB);
         let hub = HubConfig::load(&home.join("hideout.toml"))??;
         Ok(Registry {
             home: home.to_path_buf(),
@@ -155,10 +165,108 @@ impl Registry {
             running: BTreeMap::new(),
             dev_mode,
             legacy_api: HUB_VERSION,
+            lab: false,
+            lab_report: Vec::new(),
         })
     }
 
+    /// [`Registry::open`] with developer mode and lab mode from this process's environment: what
+    /// the hub and the supervisor use. In lab mode the lab modules are loaded
+    /// ([`Registry::load_lab`]); a refused lab mode loads none.
+    pub fn open_from_env(home: &Path) -> Result<Registry, Failure> {
+        let mut reg = Registry::open(home, dev_mode_from_env())?;
+        if lab::lab_mode_from_env(home) == LabMode::On {
+            reg.load_lab();
+        }
+        Ok(reg)
+    }
+
+    /// Lab mode (#1001, docs/hideout-lab.md): every `<home>\lab-modules\<id>\` whose manifest's
+    /// id is its folder name joins the inventory in memory only, as source `lab`: its files
+    /// hashed now and checked again before its launch, its permissions granted as for a
+    /// sideload (never-list items left out, §6.6), enabled unless `hideout.toml` says
+    /// otherwise. An id the inventory already holds keeps its installed version. Trust (the
+    /// root, catalogs, anchors, `seen`) is not read or written.
+    pub fn load_lab(&mut self) {
+        self.lab = true;
+        let base = LabMode::modules_dir(&self.home);
+        let mut dirs: Vec<PathBuf> = match std::fs::read_dir(&base) {
+            Ok(rd) => rd
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect(),
+            Err(e) => {
+                self.lab_report.push(format!(
+                    "{}: not read ({e}); no lab modules",
+                    base.display()
+                ));
+                return;
+            }
+        };
+        dirs.sort();
+        for dir in dirs {
+            let line = match self.load_lab_one(&dir) {
+                Ok(id) => format!("{id}: loaded from {}", dir.display()),
+                Err(why) => format!("{}: not loaded: {why}", dir.display()),
+            };
+            self.lab_report.push(line);
+        }
+    }
+
+    fn load_lab_one(&mut self, dir: &Path) -> Result<String, String> {
+        let m = self.read_manifest(dir).map_err(|e| e.to_string())?;
+        let folder = dir.file_name().unwrap_or_default().to_string_lossy();
+        if folder != m.id.as_str() {
+            return Err(format!("the folder must be named {}", m.id));
+        }
+        if self
+            .inventory
+            .modules
+            .get(&m.id)
+            .is_some_and(|i| i.source != LAB)
+        {
+            return Err(format!("{} is installed; the installed one runs", m.id));
+        }
+        let files = hash_files(dir).map_err(|e| e.to_string())?;
+        self.inventory.modules.insert(
+            m.id.clone(),
+            Installed {
+                version: m.version.clone(),
+                kind: m.kind,
+                family: m.family,
+                visibility: m.visibility,
+                source: LAB.into(),
+                anchor: None,
+                channel: "lab".into(),
+                installed: String::new(),
+                files,
+                footprint: Vec::new(),
+                previous: None,
+                granted: Vec::new(),
+                pending_permissions: Vec::new(),
+            },
+        );
+        self.inventory.grant(&m.id, &m.permissions);
+        if self.hub.enabled_set(&m.id).is_none() {
+            // In memory: a lab module runs unless the lab's hideout.toml turns it off.
+            self.hub.set_enabled(&m.id, true);
+        }
+        Ok(m.id)
+    }
+
+    /// Whether `id` is a lab module (source `lab`).
+    pub fn is_lab(&self, id: &str) -> bool {
+        self.inventory
+            .modules
+            .get(id)
+            .is_some_and(|m| m.source == LAB)
+    }
+
     pub fn module_dir(&self, id: &str, version: &str) -> PathBuf {
+        if self.is_lab(id) {
+            return LabMode::modules_dir(&self.home).join(id);
+        }
         self.home.join("modules").join(id).join(version)
     }
 
@@ -340,7 +448,13 @@ impl Registry {
         }
         std::fs::rename(&partial, &dir)?;
 
-        let old = self.inventory.modules.get(&m.id).cloned();
+        // A lab entry's grants never carry over into a real install (docs/hideout-lab.md).
+        let old = self
+            .inventory
+            .modules
+            .get(&m.id)
+            .filter(|o| o.source != LAB)
+            .cloned();
         let previous = old
             .as_ref()
             .map(|o| o.version.clone())
@@ -496,7 +610,17 @@ impl Registry {
         }
         let dir = self.module_dir(id, &m.version);
         let found = hash_files(&dir)?;
-        if m.source == SIDELOAD {
+        if m.source == LAB {
+            // Only a lab hub loads one; its files must be what was loaded (docs/hideout-lab.md).
+            if !self.lab {
+                return Err(Error::new(
+                    ErrorId::InstallDevModeRequired,
+                    format!("{id} is a lab module and lab mode is off"),
+                )
+                .into());
+            }
+            trust::check_files(&found, &m.files)?;
+        } else if m.source == SIDELOAD {
             if !self.dev_mode {
                 return Err(Error::new(
                     ErrorId::InstallDevModeRequired,
@@ -562,7 +686,7 @@ impl Registry {
                 self.inventory
                     .modules
                     .get(*id)
-                    .is_some_and(|m| m.source != SIDELOAD)
+                    .is_some_and(|m| m.source != SIDELOAD && m.source != LAB)
                     && self
                         .trust
                         .runnable(id, v)

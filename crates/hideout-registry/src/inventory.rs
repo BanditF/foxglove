@@ -17,6 +17,9 @@ use crate::trust::{SeenAnchor, ROOT_ANCHOR};
 pub const FORMAT: &str = "hideout-inventory-v1";
 /// The source id reserved for developer-mode installs (§12.6).
 pub const SIDELOAD: &str = "sideload";
+/// The source of a lab module (`<config>\lab-modules\`, docs/hideout-lab.md): held in memory
+/// only, never written to `inventory.json`.
+pub const LAB: &str = "lab";
 
 /// One installed module.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -49,7 +52,8 @@ pub struct Installed {
 impl Installed {
     /// Who this module is for the never-list (§6.6).
     pub fn holder(&self) -> Holder {
-        let source = if self.source == SIDELOAD {
+        // A lab module holds permissions as a sideload does, never as a first-party module.
+        let source = if self.source == SIDELOAD || self.source == LAB {
             Source::Sideload
         } else {
             match self.anchor.as_deref() {
@@ -114,9 +118,12 @@ impl Inventory {
                 format!("unknown inventory format {}: not written", self.format),
             ));
         }
+        // Lab modules live in memory only (docs/hideout-lab.md).
+        let mut kept = self.clone();
+        kept.modules.retain(|_, m| m.source != LAB);
         let _lock = Lock::take(&path.with_file_name("inventory.lock"))?;
         let tmp = path.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
+        let text = serde_json::to_string_pretty(&kept).map_err(io::Error::other)?;
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, path)
     }

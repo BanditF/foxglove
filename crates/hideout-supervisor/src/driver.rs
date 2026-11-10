@@ -201,7 +201,7 @@ impl Supervisor {
             old.modules.len(),
             if safe { "; safe mode" } else { "" }
         );
-        let reg = match Registry::open(home, hideout_registry::dev_mode_from_env()) {
+        let reg = match Registry::open_from_env(home) {
             Ok(r) => Some(r),
             Err(e) => {
                 log::warn!("supervisor: registry not read ({e:?}); nothing to start");
@@ -410,7 +410,7 @@ impl Supervisor {
                 }
                 Cmd::ResetSettings { id } => self.reset_settings(&id),
                 Cmd::RollBack { id } => {
-                    let done = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+                    let done = Registry::open_from_env(&self.0.home)
                         .map_err(|e| format!("{e:?}"))
                         .and_then(|mut r| r.roll_back(&id).map_err(|e| format!("{e:?}")));
                     match done {
@@ -425,7 +425,7 @@ impl Supervisor {
 
     /// The settings folder becomes `settings.bad-<time>` (§7.8); the hub never reads it.
     fn reset_settings(&self, id: &str) {
-        let Ok(reg) = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env()) else {
+        let Ok(reg) = Registry::open_from_env(&self.0.home) else {
             return;
         };
         let Some(m) = reg.inventory.modules.get(id) else {
@@ -443,8 +443,7 @@ impl Supervisor {
 
     /// The file check, then the exe in a new Job Object with the launch token (§7.5).
     fn launch(&self, id: &str) -> Result<(), String> {
-        let reg = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
-            .map_err(|e| format!("{e:?}"))?;
+        let reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
         let l = reg.pre_launch(id).map_err(|e| format!("{e:?}"))?;
         let run = l.run.clone().ok_or("no run in the manifest")?;
         let exe = {
