@@ -665,15 +665,21 @@ pub struct WinPlace {
     pub minimized: bool,
 }
 
-/// What the window menu (Alt+Space) asked of a pop-out.
+/// What the window menu (Alt+Space) asked of a pop-out or of the main window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
     KeepOnTop,
     DockBack,
+    /// The main window's **Quit Hideout** (#1012.5): the same one ask as the tray's.
+    Quit,
+    /// The Menu key (or Shift+F10 that Windows turned into `WM_CONTEXTMENU`): egui has no key
+    /// for it, so the frame queues it as Shift+F10 for the focused tab (#953).
+    MenuKey,
 }
 
 const MENU_KEEP_ON_TOP: usize = 0x4810;
 const MENU_DOCK_BACK: usize = 0x4820;
+const MENU_QUIT: usize = 0x4830;
 const SUBCLASS_ID: usize = 0x4844;
 
 #[derive(Default)]
@@ -835,7 +841,7 @@ unsafe extern "system" fn popout_proc(
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::UI::Shell::DefSubclassProc;
     use windows::Win32::UI::WindowsAndMessaging::{
-        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SYSCOMMAND,
+        WM_CONTEXTMENU, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SYSCOMMAND,
     };
     let id = h.0 as isize;
     let mut wake = false;
@@ -853,6 +859,7 @@ unsafe extern "system" fn popout_proc(
                 let cmd = match wp.0 & 0xFFF0 {
                     MENU_KEEP_ON_TOP => Some(MenuCommand::KeepOnTop),
                     MENU_DOCK_BACK => Some(MenuCommand::DockBack),
+                    MENU_QUIT => Some(MenuCommand::Quit),
                     _ => None,
                 };
                 if let Some(c) = cmd {
@@ -860,6 +867,11 @@ unsafe extern "system" fn popout_proc(
                     wake = true;
                     handled = true;
                 }
+            }
+            WM_CONTEXTMENU if context_menu_from_keyboard(lp.0) => {
+                k.menu.push((id, MenuCommand::MenuKey));
+                wake = true;
+                handled = true;
             }
             WM_NCDESTROY => {
                 k.moving.retain(|&m| m != id);
@@ -909,6 +921,24 @@ pub fn install_popout_hooks(h: isize, keep_on_top: bool) {
         }
     }
     check_menu(h, keep_on_top);
+}
+
+/// Hooks the main window: the same subclass, for the Menu key and the window menu's
+/// **Quit Hideout** (#1012.5, #953).
+pub fn install_main_hooks(h: isize) {
+    use windows::core::w;
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AppendMenuW, GetSystemMenu, MF_SEPARATOR, MF_STRING,
+    };
+    unsafe {
+        let _ = SetWindowSubclass(hwnd(h), Some(popout_proc), SUBCLASS_ID, 0);
+        let menu = GetSystemMenu(hwnd(h), false);
+        if !menu.is_invalid() {
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit Hideout"));
+        }
+    }
 }
 
 fn check_menu(h: isize, on: bool) {

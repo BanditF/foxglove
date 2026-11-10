@@ -56,6 +56,7 @@ pub fn panel_look(p: &HostedPanel, popped: bool) -> Look {
     use hideout_panels::Badge;
     Look {
         title: p.title.clone(),
+        icon: hideout_panels::tray::icon_glyph(&p.icon),
         state: panel_state(&p.state),
         mark: match (p.badge, p.badge_count) {
             (Badge::Attention, _) => Mark::Attention,
@@ -147,10 +148,8 @@ fn ideal_width(ui: &Ui, l: &Look) -> f32 {
         .layout_no_wrap(l.title.clone(), font, Color32::WHITE)
         .size()
         .x;
-    let mut w = 12.0 + text + 34.0;
-    if has_mark(l) {
-        w += 22.0;
-    }
+    // The icon (or the stopped mark in its place) always has its slot.
+    let mut w = 12.0 + ICON_SLOT + text + 34.0;
     if let Shown::Count(s) = l.shown() {
         w += 14.0 + 7.0 * s.len() as f32;
     }
@@ -160,9 +159,9 @@ fn ideal_width(ui: &Ui, l: &Look) -> f32 {
     w.clamp(MIN_TAB_W, MAX_TAB_W)
 }
 
-fn has_mark(l: &Look) -> bool {
-    l.busy() || matches!(l.shown(), Shown::Stopped | Shown::Attention)
-}
+/// The icon's slot before the title: the page's icon, the stopped mark in its place, the
+/// attention dot on its corner and the busy ring round it.
+const ICON_SLOT: f32 = 22.0;
 
 /// Draws the strip in `ui` (a full-width row `STRIP_H` high) and returns what the user did.
 pub fn strip_ui(
@@ -389,39 +388,45 @@ fn tab_ui(
     let mid = r.center().y;
     let mut lx = r.left() + 12.0;
     let shown = l.shown();
-    if has_mark(l) {
-        let mc = Pos2::new(lx + 7.0, mid);
-        match shown {
-            Shown::Stopped => {
-                p.text(
-                    mc,
-                    Align2::CENTER_CENTER,
-                    "\u{26a0}",
-                    FontId::proportional(14.0),
-                    c(t.danger),
-                );
-            }
-            Shown::Attention => {
-                p.circle_filled(mc, 4.0, c(t.accent));
-            }
-            _ => {}
-        }
-        if l.busy() {
-            // A ring with a gap, round a small dot: "working on it".
-            let ring = Stroke::new(1.5_f32, c(t.accent));
-            let pts: Vec<Pos2> = (0..=20)
-                .map(|k| {
-                    let a = 0.6 + k as f32 * (5.2 / 20.0);
-                    mc + Vec2::angled(a) * 6.5
-                })
-                .collect();
-            p.add(egui::Shape::line(pts, ring));
-            if !matches!(shown, Shown::Attention) {
-                p.circle_filled(mc, 2.5, fg);
-            }
-        }
-        lx += 22.0;
+    // The icon slot: the page's icon, or the red warning mark in its place when stopped
+    // (tabs plan: "Red warning mark replaces the icon").
+    let mc = Pos2::new(lx + 7.0, mid);
+    if shown == Shown::Stopped {
+        p.text(
+            mc,
+            Align2::CENTER_CENTER,
+            "\u{26a0}",
+            FontId::proportional(14.0),
+            c(t.danger),
+        );
+    } else {
+        p.text(
+            mc,
+            Align2::CENTER_CENTER,
+            l.icon,
+            FontId::proportional(14.0),
+            fg,
+        );
     }
+    if l.busy() {
+        // A thin ring round the icon: "working on it".
+        let ring = Stroke::new(1.5_f32, c(t.accent));
+        let pts: Vec<Pos2> = (0..=24)
+            .map(|k| {
+                let a = 0.6 + k as f32 * (5.2 / 24.0);
+                mc + Vec2::angled(a) * 9.5
+            })
+            .collect();
+        p.add(egui::Shape::line(pts, ring));
+    }
+    if shown == Shown::Attention {
+        // The orange dot on the icon's top-right corner, ringed in the tab's fill so it reads
+        // on any glyph.
+        let dot = mc + Vec2::new(6.0, -6.0);
+        p.circle_filled(dot, 4.5, fill);
+        p.circle_filled(dot, 3.5, c(t.accent));
+    }
+    lx += ICON_SLOT;
     let close = Rect::from_center_size(Pos2::new(r.right() - 18.0, mid), Vec2::splat(20.0));
     let mut right = close.left() - 4.0;
     if let Shown::Count(s) = &shown {
@@ -492,8 +497,11 @@ fn tab_ui(
     if resp.drag_started() {
         state.drag = Some(i);
     }
+    let mut menu_key = false;
     if resp.has_focus() {
         let keys = ui.ctx().input_mut(|inp| {
+            // Shift+F10, or the Menu key (the window reports it as Shift+F10): the tab's menu.
+            menu_key = inp.count_and_consume_key(Modifiers::SHIFT, Key::F10) > 0;
             (
                 inp.consume_key(Modifiers::NONE, Key::ArrowLeft),
                 inp.consume_key(Modifiers::NONE, Key::ArrowRight),
@@ -518,9 +526,37 @@ fn tab_ui(
     }
     let tip = l.tooltip();
     let resp = resp.on_hover_text(tip);
-    resp.context_menu(|ui| {
+    // The same menu as a right-click, opened under the tab from the keyboard; its first item
+    // takes the focus, and Esc gives the focus back to the tab (as a Windows menu does).
+    let popup = egui::Popup::default_response_id(&resp);
+    let (focus_first, back) = (id.with("menu-focus"), id.with("menu-return"));
+    let mut menu = egui::Popup::context_menu(&resp);
+    if menu_key {
+        ui.data_mut(|d| {
+            d.insert_temp(focus_first, true);
+            d.insert_temp(back, true);
+        });
+        menu = menu.open_memory(egui::SetOpenCommand::Bool(true));
+        ui.ctx().request_repaint();
+    } else if !egui::Popup::is_id_open(ui.ctx(), popup)
+        && ui.data_mut(|d| d.remove_temp::<bool>(back)) == Some(true)
+    {
+        resp.request_focus();
+    }
+    if ui.data(|d| d.get_temp::<bool>(back)) == Some(true) {
+        // Opened from the keyboard: under the tab, not at the pointer.
+        menu = menu.at_position(r.left_bottom());
+    }
+    menu.show(|ui| {
+        let mut first = ui.data_mut(|d| d.remove_temp::<bool>(focus_first)) == Some(true);
         let mut item = |ui: &mut Ui, text: &str, a: Action| {
-            if ui.button(text).clicked() {
+            let b = ui.button(text);
+            if std::mem::take(&mut first) {
+                b.request_focus();
+            }
+            if b.clicked() {
+                // A pick moves on (the tab may close or move): the focus isn't given back.
+                ui.data_mut(|d| d.remove_temp::<bool>(back));
                 actions.push(a);
                 ui.close();
             }

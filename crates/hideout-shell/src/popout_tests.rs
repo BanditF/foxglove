@@ -786,6 +786,7 @@ fn form_hub(dir: &std::path::Path) -> Hub {
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
         start_normally: None,
+        quit: QuitAsk::default(),
     });
     let pages: Vec<Box<dyn Page>> = vec![
         Box::new(FormPage),
@@ -953,4 +954,358 @@ fn renders_the_title_row_icons_for_review() {
     blit(&mut canvas, cw, &images_win, (w, h), (30, h + 60));
     save_png("built-popout-title-row-icons.png", cw, ch, canvas);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- #953 leftovers: tab icons, the tab menu from the keyboard, Quit's one ask (#1012.5) ------
+
+/// `params` with a published icon name.
+fn params_icon(panel: &str, title: &str, icon: &str) -> hideout_contract::panel::Register {
+    let mut v = serde_json::to_value(params(panel, title)).unwrap();
+    v["panels"][0]["icon"] = serde_json::json!(icon);
+    serde_json::from_value(v).unwrap()
+}
+
+/// The many-tabs hub of the mockups, each page with its own icon.
+fn icon_hub(dir: &std::path::Path) -> Hub {
+    let mut hub = hub_in(dir, None);
+    for (m, p, title, icon) in [
+        ("mod.keyboard", "keyboard", "Keyboard", "keyboard"),
+        ("mod.lights", "lights", "Lights", "lights"),
+        ("mod.scenes", "scenes", "Scenes", "palette"),
+        ("mod.screens", "screens", "Screens", "screen"),
+        ("mod.art", "art", "Art", "brush"),
+        ("mod.chat", "chat", "Chat", "chat"),
+        ("mod.images", "images", "Images", "image"),
+    ] {
+        hub.panels
+            .register(m, title, None, &params_icon(p, title, icon));
+        hub.open(TabId::panel(m, p));
+    }
+    badge(&mut hub, "mod.chat", "chat", Badge::Count, Some(3));
+    badge(&mut hub, "mod.scenes", "scenes", Badge::Dirty, None);
+    badge(&mut hub, "mod.lights", "lights", Badge::Attention, None);
+    hub.panels.module_gone("mod.screens", "updating");
+    hub.panels.module_gone("mod.art", "crash-stopped");
+    let images = hub
+        .tabs
+        .position(&TabId::panel("mod.images", "images"))
+        .unwrap();
+    hub.tabs.pop_out(images);
+    let chat = hub
+        .tabs
+        .position(&TabId::panel("mod.chat", "chat"))
+        .unwrap();
+    hub.tabs.activate(chat);
+    hub
+}
+
+/// Every drawn text equal to `text`, with where it is (its galley's top left).
+fn text_at(out: &egui::FullOutput, text: &str) -> Vec<egui::Pos2> {
+    fn walk(s: &epaint::Shape, text: &str, v: &mut Vec<egui::Pos2>) {
+        match s {
+            epaint::Shape::Text(t) if t.galley.text() == text => {
+                v.push(t.pos + t.galley.rect.center().to_vec2())
+            }
+            epaint::Shape::Vec(all) => all.iter().for_each(|s| walk(s, text, v)),
+            _ => {}
+        }
+    }
+    let mut v = Vec::new();
+    for c in &out.shapes {
+        walk(&c.shape, text, &mut v);
+    }
+    v
+}
+
+/// The strip draws `glyph` just before `title`, on the same line (in the tab strip).
+fn icon_before(out: &egui::FullOutput, glyph: &str, title: &str) -> bool {
+    let strip = strip::STRIP_H;
+    text_at(out, glyph).iter().any(|g| {
+        g.y < strip
+            && text_at(out, title)
+                .iter()
+                .any(|t| t.y < strip && (t.y - g.y).abs() < 4.0 && t.x > g.x && t.x - g.x < 60.0)
+    })
+}
+
+#[test]
+fn each_tab_shows_its_page_icon_before_the_title() {
+    let dir = temp_dir("tab-icons");
+    let mut hub = icon_hub(&dir);
+    hub.open(TabId::page("settings"));
+    let chat = hub
+        .tabs
+        .position(&TabId::panel("mod.chat", "chat"))
+        .unwrap();
+    hub.tabs.activate(chat);
+    let glyph = hideout_panels::tray::icon_glyph;
+    // The look carries the panel's icon; a hub page its own (the generic one here).
+    assert_eq!(hub.look(chat).icon, glyph("chat"));
+    let settings = hub.tabs.position(&TabId::page("settings")).unwrap();
+    assert_eq!(hub.look(settings).icon, glyph("module"));
+    let out = frames(&ctx(), &mut hub, vec![]);
+    for (g, title) in [
+        ("chat", "Chat"),
+        ("keyboard", "Keyboard"),
+        ("lights", "Lights"),
+        ("palette", "Scenes"),
+        ("image", "Images"),
+        ("module", "Settings"),
+    ] {
+        assert!(
+            icon_before(&out, glyph(g), title),
+            "{title}: {:?}",
+            drawn(&out)
+        );
+    }
+    // A stopped page: the red mark replaces its icon.
+    assert!(icon_before(&out, "\u{26a0}", "Art"));
+    assert!(!icon_before(&out, glyph("brush"), "Art"));
+    // A busy page keeps its icon (the ring goes round it).
+    assert!(icon_before(&out, glyph("screen"), "Screens"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The focused node's role and label in a frame's AccessKit tree.
+fn focus_node(out: &egui::FullOutput) -> Option<(egui::accesskit::Role, String)> {
+    let u = out.platform_output.accesskit_update.as_ref()?;
+    u.nodes
+        .iter()
+        .find(|(id, _)| *id == u.focus)
+        .map(|(_, n)| (n.role(), n.label().unwrap_or_default().to_string()))
+}
+
+fn labels(out: &egui::FullOutput) -> Vec<String> {
+    out.platform_output
+        .accesskit_update
+        .as_ref()
+        .map(|u| {
+            u.nodes
+                .iter()
+                .filter_map(|(_, n)| n.label().or(n.value()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Tab presses until the focus is on a tab of the strip; how many it took.
+fn tab_to_strip(ctx: &egui::Context, hub: &mut Hub) -> usize {
+    for n in 1..=24 {
+        let tab = vec![key(Key::Tab, Modifiers::NONE)];
+        let _ = ctx.run(input(1100.0, 640.0, tab), |c| hub.frame(c));
+        let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+        if focus_node(&out).is_some_and(|(r, _)| r == egui::accesskit::Role::Tab) {
+            return n;
+        }
+    }
+    panic!("Tab never reached the strip");
+}
+
+#[test]
+fn shift_f10_on_a_focused_tab_opens_its_menu() {
+    let dir = temp_dir("tab-menu-key");
+    let (mut hub, _router, ctx) = chat_hub(&dir);
+    ctx.enable_accesskit();
+    let _ = tab_to_strip(&ctx, &mut hub);
+    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert_eq!(
+        focus_node(&out),
+        Some((egui::accesskit::Role::Tab, "Chat".into()))
+    );
+    assert!(!labels(&out).iter().any(|l| l == "Close others"));
+    // Shift+F10: the right-click menu, its first item focused.
+    let f10 = vec![key(Key::F10, Modifiers::SHIFT)];
+    let _ = ctx.run(input(1100.0, 640.0, f10), |c| hub.frame(c));
+    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    let words = labels(&out);
+    for item in [
+        "Close others",
+        "Close to the right",
+        "Pop out",
+        "Reopen closed tab",
+    ] {
+        assert!(words.iter().any(|l| l == item), "{item}: {words:?}");
+    }
+    assert_eq!(focus_node(&out).map(|(_, l)| l).as_deref(), Some("Close"));
+    // Esc closes it and gives the focus back to the tab.
+    let esc = vec![key(Key::Escape, Modifiers::NONE)];
+    let _ = ctx.run(input(1100.0, 640.0, esc), |c| hub.frame(c));
+    let out = frames(&ctx, &mut hub, vec![]);
+    assert!(!labels(&out).iter().any(|l| l == "Close others"));
+    assert_eq!(
+        focus_node(&out),
+        Some((egui::accesskit::Role::Tab, "Chat".into()))
+    );
+    // The Menu key reaches the strip as Shift+F10 (`MenuCommand::MenuKey`); Enter picks Close.
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| {
+        hideout_panels::tray::menu_key(c);
+        hub.frame(c)
+    });
+    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert_eq!(focus_node(&out).map(|(_, l)| l).as_deref(), Some("Close"));
+    let enter = vec![key(Key::Enter, Modifiers::NONE)];
+    let _ = ctx.run(input(1100.0, 640.0, enter), |c| hub.frame(c));
+    let _ = frames(&ctx, &mut hub, vec![]);
+    assert!(
+        !hub.tabs.is_open(&chat()),
+        "Close from the menu closed Chat"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Scenes (unsaved) in Hideout, Chat (unsaved) in its own window, Art saved.
+fn quit_hub(dir: &std::path::Path) -> (Hub, RouterEnd, egui::Context) {
+    let (mut hub, router, ctx) = chat_hub(dir);
+    hub.panels.register(
+        "mod.scenes",
+        "Scenes",
+        None,
+        &params_icon("scenes", "Scenes", "palette"),
+    );
+    hub.open(TabId::panel("mod.scenes", "scenes"));
+    badge(&mut hub, "mod.scenes", "scenes", Badge::Dirty, None);
+    badge(&mut hub, CHAT.0, CHAT.1, Badge::Dirty, None);
+    let i = hub.tabs.position(&chat()).unwrap();
+    hub.apply(Action::PopOut(i));
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    (hub, router, ctx)
+}
+
+#[test]
+fn quit_asks_once_listing_unsaved_pages_from_every_window() {
+    let dir = temp_dir("quit-ask");
+    let (mut hub, _router, ctx) = quit_hub(&dir);
+    ctx.enable_accesskit();
+    // The frame keeps the tray's snapshot: a tray Quit now asks instead of quitting.
+    assert!(hub.shared.quit_needs_ask());
+    assert_eq!(
+        hub.unsaved_pages(),
+        ["Chat (in its own window)", "Scenes"],
+        "strip order, the pop-out's page marked"
+    );
+    // A tray Quit (or the window menu's) between frames: the next frame asks.
+    hub.shared.quit.wanted.store(true, Ordering::Release);
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert!(hub.quitting && !hub.quit_now);
+    let words = labels(&out);
+    for w in [
+        "Quit Hideout?",
+        "Your changes in these pages aren't saved:",
+        "\u{2022} Chat (in its own window)",
+        "\u{2022} Scenes",
+        "Keep open",
+        "Quit anyway",
+    ] {
+        assert!(words.iter().any(|l| l == w), "{w}: {words:?}");
+    }
+    assert!(
+        !words
+            .iter()
+            .any(|l| l.starts_with('\u{2022}') && l.contains("Art")),
+        "saved pages aren't listed"
+    );
+    assert_eq!(
+        focus_node(&out).map(|(_, l)| l).as_deref(),
+        Some("Keep open")
+    );
+    // Esc (and Enter on the default) keep everything open.
+    let esc = vec![key(Key::Escape, Modifiers::NONE)];
+    let _ = ctx.run(input(1100.0, 640.0, esc), |c| hub.frame(c));
+    assert!(!hub.quitting && !hub.quit_now);
+    assert_eq!(hub.tabs.len(), 4, "nothing closed");
+    // Asked again: Tab to Quit anyway, Enter.
+    hub.request_quit();
+    let _ = frames(&ctx, &mut hub, vec![]);
+    let tab = vec![key(Key::Tab, Modifiers::NONE)];
+    let _ = ctx.run(input(1100.0, 640.0, tab), |c| hub.frame(c));
+    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert_eq!(
+        focus_node(&out).map(|(_, l)| l).as_deref(),
+        Some("Quit anyway")
+    );
+    let enter = vec![key(Key::Enter, Modifiers::NONE)];
+    let _ = ctx.run(input(1100.0, 640.0, enter), |c| hub.frame(c));
+    assert!(hub.quit_now, "update() ends the hub after this frame");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn quit_with_nothing_unsaved_closes_quietly() {
+    let dir = temp_dir("quit-quiet");
+    let (mut hub, _router, ctx) = chat_hub(&dir);
+    let i = hub.tabs.position(&chat()).unwrap();
+    hub.apply(Action::PopOut(i));
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert!(!hub.shared.quit_needs_ask(), "the tray quits at once");
+    hub.request_quit();
+    assert!(hub.quit_now && !hub.quitting, "no ask");
+    // A page saved while the ask is open: nothing would be lost, so it quits.
+    let dir2 = temp_dir("quit-saved");
+    let (mut hub, _router, ctx) = quit_hub(&dir2);
+    hub.request_quit();
+    assert!(hub.quitting);
+    badge(&mut hub, "mod.scenes", "scenes", Badge::None, None);
+    badge(&mut hub, CHAT.0, CHAT.1, Badge::None, None);
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert!(hub.quit_now && !hub.quitting);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
+fn renders_the_tab_leftovers_for_review() {
+    // 1. The strip with each page's icon (every badge and state, Chat active).
+    let dir = temp_dir("png-tab-icons");
+    let mut hub = icon_hub(&dir);
+    hub.open(TabId::page("settings"));
+    let chat = hub
+        .tabs
+        .position(&TabId::panel("mod.chat", "chat"))
+        .unwrap();
+    hub.tabs.activate(chat);
+    let Some(rgba) = render(&mut hub, 1280, 420, |_| {}) else {
+        eprintln!("no system font; tab review skipped");
+        return;
+    };
+    save_png("built-tab-icons.png", 1280, 420, rgba);
+
+    // 2. The tab menu opened with Shift+F10 on the focused Chat tab (its first item focused).
+    let probe = temp_dir("png-tab-menu-probe");
+    let (mut probe_hub, _r, pctx) = chat_hub(&probe);
+    pctx.enable_accesskit();
+    let n = tab_to_strip(&pctx, &mut probe_hub);
+    let dir = temp_dir("png-tab-menu");
+    let (mut hub, _router, _ctx) = chat_hub(&dir);
+    let mut events: Vec<Vec<Event>> = vec![vec![], vec![]];
+    for _ in 0..n {
+        events.push(vec![key(Key::Tab, Modifiers::NONE)]);
+        events.push(vec![]);
+    }
+    events.push(vec![key(Key::F10, Modifiers::SHIFT)]);
+    events.extend([vec![], vec![]]);
+    let rgba = rasterise_events(1100, 420, events, |c| hub.frame(c)).unwrap();
+    save_png("built-tab-menu-keyboard.png", 1100, 420, rgba);
+
+    // 3. Quit Hideout's one ask in the main window, listing Scenes there and Chat in its own
+    //    window (shown beside it).
+    let dir = temp_dir("png-quit");
+    let (mut hub, _router, _ctx) = quit_hub(&dir);
+    hub.request_quit();
+    let (mw, mh) = (1100u32, 560u32);
+    let main = rasterise(mw, mh, |c| {
+        caption(c, &window_title("Scenes"));
+        hub.frame(c)
+    })
+    .unwrap();
+    let (pw, ph) = (520u32, 360u32);
+    let pop = render_popout(&mut hub, &TabId::panel(CHAT.0, CHAT.1), pw, ph, vec![]).unwrap();
+    let (cw, ch) = (mw + pw + 90, mh + 60);
+    let mut canvas: Vec<u8> = [0x18u8, 0x1c, 0x22, 0xff].repeat((cw * ch) as usize);
+    blit(&mut canvas, cw, &main, (mw, mh), (30, 30));
+    blit(&mut canvas, cw, &pop, (pw, ph), (mw + 60, 30));
+    save_png("built-quit-ask-two-windows.png", cw, ch, canvas);
+    for d in [dir, probe] {
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
