@@ -673,7 +673,7 @@ fn card_contents(ui: &mut egui::Ui, c: &Card, state: &mut UiState, out: &mut Vec
             .record
             .approved
             .iter()
-            .map(|p| plugin.manifest.describe_permission(p))
+            .map(|p| super::program_name::describe(&plugin.manifest, p))
             .collect();
         ui.weak(format!(
             "May {}.",
@@ -871,10 +871,10 @@ fn approval_card(ui: &mut egui::Ui, staged: &Staged, state: &mut UiState) -> Opt
             if p.sensitive() {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    format!("• {} (sensitive)", m.describe_permission(p)),
+                    format!("• {} (sensitive)", super::program_name::describe(m, p)),
                 );
             } else {
-                ui.label(format!("• {}", m.describe_permission(p)));
+                ui.label(format!("• {}", super::program_name::describe(m, p)));
             }
         }
     }

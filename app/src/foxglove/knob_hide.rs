@@ -324,7 +324,13 @@ pub fn expand_vars(text: &str, var: impl Fn(&str) -> Option<String>) -> Option<S
 
 /// Running programs' paths by lower-case file name (`None`: not running), looked up once per
 /// visit to the page: the Knob card's first frame fills it, [`page_left`] empties it.
-type Running = std::collections::HashMap<String, Option<String>>;
+#[derive(Default)]
+struct Running {
+    paths: std::collections::HashMap<String, Option<String>>,
+    /// The last [`known_paths`] answer and the bare names it was for, so a frame with the same
+    /// rows reads no process list, setting or path hint again.
+    known: Option<(Vec<String>, Vec<String>)>,
+}
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 
 /// Full paths for the shipped list's bare file names that no app with sound gives (#981): the
@@ -340,7 +346,17 @@ fn known_paths(rows: &[Row], apps: &[(String, String)]) -> Vec<String> {
         return Vec::new();
     }
     let mut guard = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
-    let kept = guard.get_or_insert_with(Default::default);
+    let running = guard.get_or_insert_with(Default::default);
+    if let Some((for_names, out)) = &running.known {
+        if for_names
+            .iter()
+            .map(String::as_str)
+            .eq(bare.iter().copied())
+        {
+            return out.clone();
+        }
+    }
+    let kept = &mut running.paths;
     let missing: Vec<&str> = bare
         .iter()
         .copied()
@@ -364,6 +380,7 @@ fn known_paths(rows: &[Row], apps: &[(String, String)]) -> Vec<String> {
             .filter_map(|s| s.path.as_deref())
             .filter_map(|p| expand_vars(p, |v| std::env::var(v).ok())),
     );
+    running.known = Some((bare.iter().map(|n| n.to_string()).collect(), out.clone()));
     out
 }
 
