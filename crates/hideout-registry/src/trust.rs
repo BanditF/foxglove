@@ -44,6 +44,22 @@ impl SeenAnchor {
         self.epoch = self.epoch.max(root.epoch);
     }
 
+    /// Raises the state to `other` wherever it is higher (two copies of `seen` joined: it never
+    /// goes down, #1049).
+    pub fn merge(&mut self, other: &SeenAnchor) {
+        if other.epoch > self.epoch {
+            self.catalogs.clear();
+        }
+        self.root_version = self.root_version.max(other.root_version);
+        self.epoch = self.epoch.max(other.epoch);
+        if other.epoch == self.epoch {
+            for (source, seq) in &other.catalogs {
+                let s = self.catalogs.entry(source.clone()).or_default();
+                *s = (*s).max(*seq);
+            }
+        }
+    }
+
     /// Raises the state to an accepted catalog from `source`.
     pub fn record_catalog(&mut self, source: &str, catalog: &Catalog) {
         let seq = self.catalogs.entry(source.to_string()).or_default();
@@ -383,7 +399,11 @@ pub fn verify_catalog(
     }
     if let Some(seen) = seen {
         let last = seen.catalogs.get(source_id).copied().unwrap_or(0);
-        if file.epoch == seen.epoch && file.sequence < last {
+        // §12.4: the sequence is never below `seen`. Only a new root epoch (raised in `seen` by
+        // `record_root`, which restarts the sequences) may start it again; a user anchor has no
+        // root, so its catalog's `epoch` never excuses a lower sequence (#1049 review).
+        let restarted = root_epoch.is_some() && file.epoch > seen.epoch;
+        if !restarted && file.sequence < last {
             return err(
                 ErrorId::TrustRollback,
                 format!("sequence {} is below seen {last}", file.sequence),

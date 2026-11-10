@@ -441,6 +441,11 @@ impl Supervisor {
                     self.withdraw(&reg, &id, r)
                 }
                 Some(_) => {}
+                None if now.is_some() && !reg.withdrawals_known(&id) => {
+                    log::warn!(
+                        "supervisor: {id}: no catalog of its source could be read; it stays withdrawn"
+                    );
+                }
                 None if now.is_some() => {
                     log::info!("supervisor: {id}: no longer withdrawn");
                     self.0.withdrawals.lock().unwrap().remove(&id);

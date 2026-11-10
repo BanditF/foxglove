@@ -160,6 +160,9 @@ pub struct Registry {
     /// One line per source whose stored catalog was read at open: loaded, or why not. For the
     /// hub's log (#1049).
     pub catalog_report: Vec<String>,
+    /// Per source: the sequence and accepted time of the catalog this registry verified and
+    /// uses (loaded at open or accepted since). Copy diagnostics reads only this (#1049).
+    accepted_info: BTreeMap<String, catalogs::CatalogInfo>,
 }
 
 fn hash_files(dir: &Path) -> io::Result<BTreeMap<String, String>> {
@@ -209,6 +212,7 @@ impl Registry {
             root_key: trust::PINNED_ROOT_KEY.map(String::from),
             root_file: None,
             catalog_report: Vec::new(),
+            accepted_info: BTreeMap::new(),
         })
     }
 
@@ -352,6 +356,7 @@ impl Registry {
         pinned_key: &str,
         now: &str,
     ) -> Result<(), Failure> {
+        self.reload_inventory()?;
         let root = verify_root(
             json,
             signature,
@@ -360,14 +365,11 @@ impl Registry {
             self.inventory.seen.get(ROOT_ANCHOR),
         )?;
         self.hub.validate(&root.scopes())?;
-        let mut inventory = self.inventory.clone();
-        inventory
-            .seen
-            .entry(ROOT_ANCHOR.into())
-            .or_default()
-            .record_root(&root);
-        inventory.save(&self.home.join("inventory.json"))?;
-        self.inventory = inventory;
+        self.raise_seen(|seen| {
+            seen.entry(ROOT_ANCHOR.into())
+                .or_default()
+                .record_root(&root)
+        })?;
         self.trust.catalogs.retain(|a| a.anchor != ROOT_ANCHOR);
         self.trust.root = Some(root);
         self.root_file = std::str::from_utf8(json)
@@ -399,6 +401,8 @@ impl Registry {
         visibility: Visibility,
         now: &str,
     ) -> Result<(), Failure> {
+        // `seen` as saved now, not as read at open: another writer may have raised it.
+        self.reload_inventory()?;
         let seen = self.inventory.seen.get(anchor).cloned();
         let catalog = if anchor == ROOT_ANCHOR {
             let root = self.trust.root.as_ref().ok_or_else(|| {
@@ -421,14 +425,18 @@ impl Registry {
             verify_catalog(json, signature, signer, source, now, seen.as_ref())?
         };
         self.store_catalog(json, signature, anchor, source, &catalog, now)?;
-        let mut inventory = self.inventory.clone();
-        inventory
-            .seen
-            .entry(anchor.into())
-            .or_default()
-            .record_catalog(source, &catalog);
-        inventory.save(&self.home.join("inventory.json"))?;
-        self.inventory = inventory;
+        self.raise_seen(|seen| {
+            seen.entry(anchor.into())
+                .or_default()
+                .record_catalog(source, &catalog)
+        })?;
+        self.accepted_info.insert(
+            source.into(),
+            catalogs::CatalogInfo {
+                sequence: catalog.sequence,
+                accepted: now.into(),
+            },
+        );
         self.trust
             .catalogs
             .retain(|a| !(a.anchor == anchor && a.source == source));
@@ -438,6 +446,56 @@ impl Registry {
             visibility,
             catalog,
         });
+        Ok(())
+    }
+
+    /// The lab entries this registry holds in memory only (never on disk).
+    fn lab_entries(&self) -> Vec<(String, Installed)> {
+        self.inventory
+            .modules
+            .iter()
+            .filter(|(_, m)| m.source == LAB)
+            .map(|(k, m)| (k.clone(), m.clone()))
+            .collect()
+    }
+
+    /// `seen` held here joined into `into` (each anchor at the higher of the two).
+    fn join_seen(&self, into: &mut BTreeMap<String, trust::SeenAnchor>) {
+        for (anchor, s) in &self.inventory.seen {
+            into.entry(anchor.clone()).or_default().merge(s);
+        }
+    }
+
+    /// Reads `inventory.json` again (lab entries kept): what another writer saved since open,
+    /// with `seen` at the higher of the file's and this registry's.
+    fn reload_inventory(&mut self) -> io::Result<()> {
+        let lab = self.lab_entries();
+        let mut disk = Inventory::load(&self.home.join("inventory.json"))?;
+        disk.modules.retain(|_, m| m.source != LAB);
+        disk.modules.extend(lab);
+        self.join_seen(&mut disk.seen);
+        self.inventory = disk;
+        Ok(())
+    }
+
+    /// Raises `seen` in the file under `inventory.lock` (read, change, write), then holds the
+    /// file's inventory: nothing another writer saved is written over, and `seen` never drops.
+    fn raise_seen(
+        &mut self,
+        f: impl FnOnce(&mut BTreeMap<String, trust::SeenAnchor>),
+    ) -> io::Result<()> {
+        hideout_acl::create_private_dir_all(&self.home)?;
+        let lab = self.lab_entries();
+        let mut held = BTreeMap::new();
+        self.join_seen(&mut held);
+        let mut disk = Inventory::update(&self.home.join("inventory.json"), |inv| {
+            for (anchor, s) in &held {
+                inv.seen.entry(anchor.clone()).or_default().merge(s);
+            }
+            f(&mut inv.seen)
+        })?;
+        disk.modules.extend(lab);
+        self.inventory = disk;
         Ok(())
     }
 
@@ -789,6 +847,17 @@ impl Registry {
             version: version.into(),
             reason: r.reason.clone(),
         })
+    }
+
+    /// Whether what withdraws `id` can be read now: its source's verified catalog is loaded (a
+    /// lab module's `lab-withdrawn.json` and a sideload always can). When it can't (offline
+    /// with the stored catalog expired, corrupt or unread), a withdrawal shown stays (#1049).
+    pub fn withdrawals_known(&self, id: &str) -> bool {
+        match self.inventory.modules.get(id) {
+            None => true,
+            Some(m) if m.source == LAB || m.source == SIDELOAD => true,
+            Some(m) => self.catalog_loaded(&m.source),
+        }
     }
 
     /// The revocation of `id`'s installed version, running or not (#1026): the supervisor

@@ -65,6 +65,15 @@ pub struct Stored {
     pub root_signature: Option<String>,
 }
 
+/// The catalog a source's modules are trusted under now: verified at open or accepted since.
+/// What Copy diagnostics shows; never read from an unverified file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogInfo {
+    pub sequence: u64,
+    /// When this hub accepted it, `YYYY-MM-DDTHH:MM:SSZ` (UTC).
+    pub accepted: String,
+}
+
 /// Gets the bytes at an `https://` URL, at most `max` of them; `Err` says why not (offline, a
 /// status other than 200, too large). One request, no retry.
 pub trait Fetch {
@@ -77,11 +86,20 @@ impl<F: Fn(&str, usize) -> Result<Vec<u8>, String>> Fetch for F {
     }
 }
 
-/// A source id is a folder name only when it is `a-z`, `0-9` and `-` (§13.4).
+/// Names Windows keeps for devices: no folder can have them.
+const DEVICE_NAMES: &[&str] = &["con", "prn", "aux", "nul"];
+
+/// A source id is a folder name only when it is `a-z`, `0-9` and `-` (§13.4) and not a
+/// Windows device name (`con`, `nul`, `com1`, `lpt9`, …).
 fn source_id_ok(id: &str) -> bool {
     let mut c = id.chars();
-    matches!(c.next(), Some(f) if f.is_ascii_lowercase() || f.is_ascii_digit())
-        && c.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    let grammar = matches!(c.next(), Some(f) if f.is_ascii_lowercase() || f.is_ascii_digit())
+        && c.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-');
+    let port = |p: &str| {
+        id.strip_prefix(p)
+            .is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
+    };
+    grammar && !DEVICE_NAMES.contains(&id) && !port("com") && !port("lpt")
 }
 
 /// `catalogs\<source>\accepted.json` under `home`.
@@ -116,7 +134,13 @@ fn write_stored(home: &Path, s: &Stored) -> io::Result<()> {
     hideout_acl::create_private_dir_all(dir)?;
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_string_pretty(s).map_err(io::Error::other)?;
-    std::fs::write(&tmp, text)?;
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, text.as_bytes())?;
+        // On disk before the rename (FlushFileBuffers), so a power cut never keeps the new
+        // name with no data behind it.
+        f.sync_all()?;
+    }
     std::fs::rename(&tmp, &path)
 }
 
@@ -226,9 +250,15 @@ impl Registry {
         self.hub.config.sources.iter().find(|s| s.id == id)
     }
 
-    /// The stored catalog of `source` (sequence, accepted time), for Copy diagnostics.
-    pub fn stored_catalog(&self, source: &str) -> Option<Stored> {
-        read_stored(&self.home, source).ok().flatten()
+    /// The catalog `source`'s modules are trusted under now (sequence, accepted time), for Copy
+    /// diagnostics: only one this registry verified, never a file it refused.
+    pub fn stored_catalog(&self, source: &str) -> Option<CatalogInfo> {
+        self.accepted_info.get(source).cloned()
+    }
+
+    /// Whether a verified catalog of `source` is in use (loaded at open or accepted since).
+    pub fn catalog_loaded(&self, source: &str) -> bool {
+        self.trust.catalogs.iter().any(|a| a.source == source)
     }
 
     /// Saves the accepted catalog of `source` (called by [`Registry::accept_catalog`] before
@@ -349,6 +379,13 @@ impl Registry {
             visibility: s.visibility,
             catalog,
         });
+        self.accepted_info.insert(
+            s.id.clone(),
+            CatalogInfo {
+                sequence: st.sequence,
+                accepted: st.accepted.clone(),
+            },
+        );
         Ok(Some(st))
     }
 
@@ -365,16 +402,9 @@ impl Registry {
         }
     }
 
-    /// Fetches source `id`'s catalog once and accepts it (§12.4): saved, `seen` raised, then in
-    /// the trust set. The caller tells the supervisor (`Supervisor::catalog_accepted`) after an
-    /// `Ok`. A refused catalog (bad signature, a rollback, out of scope, expired) or one that
-    /// couldn't be read leaves the stored one as it was. `now` is the UTC time.
-    pub fn refresh_source(
-        &mut self,
-        id: &str,
-        fetch: &dyn Fetch,
-        now: &str,
-    ) -> Result<Stored, Failure> {
+    /// What a fetch of source `id` reads, checked before any network use: the source is
+    /// configured, has an anchor, and a root-anchored one has a pinned root key.
+    pub fn plan_download(&self, id: &str) -> Result<Plan, Failure> {
         let source = self
             .source(id)
             .cloned()
@@ -382,49 +412,65 @@ impl Registry {
         let anchor = source.anchor.clone().ok_or_else(|| {
             Failure::Source(format!("{id} has no anchor (a developer-mode folder)"))
         })?;
-        let rooted = anchor == ROOT_ANCHOR;
-        if rooted && self.root_key.is_none() {
+        if anchor == ROOT_ANCHOR && self.root_key.is_none() {
             return Err(Failure::Source(
                 "this build has no pinned Hideout root key".into(),
             ));
         }
-        let got = fetch_source(&source, rooted, fetch).map_err(Failure::Source)?;
+        Ok(Plan { source, anchor })
+    }
+
+    /// Accepts what [`download`] read (§12.4): verified against `seen` as saved now, saved, `seen`
+    /// raised under `inventory.lock`, then in the trust set. The caller tells the supervisor
+    /// (`Supervisor::catalog_accepted`) after an `Ok`. A refused catalog (bad signature, a
+    /// rollback, out of scope, expired) leaves the stored one as it was. `now` is the UTC time.
+    pub fn accept_download(&mut self, d: Download, now: &str) -> Result<CatalogInfo, Failure> {
+        let Download { plan, got } = d;
+        let id = plan.source.id.clone();
         if let Some((json, sig)) = &got.root {
-            let key = self.root_key.clone().unwrap_or_default();
-            let seen = self.inventory.seen.get(ROOT_ANCHOR);
-            let root = verify_root(json, sig, &key, now, seen)?;
+            let key = self.root_key.clone().ok_or_else(|| {
+                Failure::Source("this build has no pinned Hideout root key".into())
+            })?;
+            let root = verify_root(json, sig, &key, now, self.inventory.seen.get(ROOT_ANCHOR))?;
             let same = self
                 .trust
                 .root
                 .as_ref()
                 .is_some_and(|r| (r.version, r.epoch) == (root.version, root.epoch));
+            // The same root again: the one in use (and its stored file) stays, so the catalog
+            // is checked and stored against one root. A new one is accepted (and stored).
             if !same {
                 self.accept_root(json, sig, &key, now)?;
             }
-            let text = std::str::from_utf8(json)
-                .map_err(|_| Error::new(ErrorId::ManifestSyntax, "root.json: not UTF-8"))?;
-            self.root_file = Some((text.into(), sig.clone()));
         }
         self.accept_catalog(
             &got.catalog,
             &got.signature,
-            &anchor,
-            id,
-            source.visibility,
+            &plan.anchor,
+            &id,
+            plan.source.visibility,
             now,
         )?;
-        self.stored_catalog(id)
+        self.stored_catalog(&id)
             .ok_or_else(|| Failure::Source(format!("{id}: accepted but not read back")))
     }
 
-    /// Check for updates for module `module` (#1026): [`Registry::refresh_source`] of the source
-    /// it was installed from. A sideload or lab module has none.
-    pub fn refresh_module_source(
+    /// Fetches source `id`'s catalog once and accepts it: [`Registry::plan_download`],
+    /// [`download`], [`Registry::accept_download`]. The hub instead drops the registry while
+    /// downloading and opens a fresh one to accept.
+    pub fn refresh_source(
         &mut self,
-        module: &str,
+        id: &str,
         fetch: &dyn Fetch,
         now: &str,
-    ) -> Result<Stored, Failure> {
+    ) -> Result<CatalogInfo, Failure> {
+        let d = download(self.plan_download(id)?, fetch)?;
+        self.accept_download(d, now)
+    }
+
+    /// The configured source module `module` was installed from (Check for updates, #1026). A
+    /// sideload or lab module has none.
+    pub fn module_source(&self, module: &str) -> Result<String, Failure> {
         let source = self
             .inventory
             .modules
@@ -437,8 +483,40 @@ impl Registry {
                 "{module} comes from {source}, which is no source in hideout.toml"
             )));
         }
+        Ok(source)
+    }
+
+    /// [`Registry::refresh_source`] of the source module `module` came from.
+    pub fn refresh_module_source(
+        &mut self,
+        module: &str,
+        fetch: &dyn Fetch,
+        now: &str,
+    ) -> Result<CatalogInfo, Failure> {
+        let source = self.module_source(module)?;
         self.refresh_source(&source, fetch, now)
     }
+}
+
+/// A source to fetch and the anchor it verifies against ([`Registry::plan_download`]).
+#[derive(Clone, Debug)]
+pub struct Plan {
+    source: Source,
+    anchor: String,
+}
+
+/// A source's files as read, not yet verified ([`download`]).
+pub struct Download {
+    plan: Plan,
+    got: Fetched,
+}
+
+/// Reads a planned source's files, with no registry involved: an `https://` URL through
+/// `fetch`, a folder from disk. One read per file, no retry.
+pub fn download(plan: Plan, fetch: &dyn Fetch) -> Result<Download, Failure> {
+    let got =
+        fetch_source(&plan.source, plan.anchor == ROOT_ANCHOR, fetch).map_err(Failure::Source)?;
+    Ok(Download { plan, got })
 }
 
 #[cfg(test)]
@@ -463,8 +541,12 @@ mod tests {
 
     #[test]
     fn source_ids_are_folder_safe() {
-        assert!(source_id_ok("main-2"));
-        for bad in ["", "..", "a/b", "A", "a\\b", "-x"] {
+        for ok in ["main-2", "com10", "console", "lpt", "com0"] {
+            assert!(source_id_ok(ok), "{ok}");
+        }
+        for bad in [
+            "", "..", "a/b", "A", "a\\b", "-x", "con", "nul", "aux", "prn", "com1", "lpt9",
+        ] {
             assert!(!source_id_ok(bad), "{bad}");
         }
     }

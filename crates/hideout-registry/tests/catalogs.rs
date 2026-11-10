@@ -52,13 +52,18 @@ fn user_config(home: &Path, key: &str) {
 
 /// A user-signed catalog with `seq`, revoking `example.test.art@0.5.0` when `revoke`.
 fn catalog(secret: &str, seq: u64, revoke: bool) -> (Vec<u8>, String) {
+    catalog_at(secret, 0, seq, revoke)
+}
+
+/// [`catalog`] with an `epoch` of the publisher's choosing.
+fn catalog_at(secret: &str, epoch: u64, seq: u64, revoke: bool) -> (Vec<u8>, String) {
     let revocations = if revoke {
         json!([{ "id": ID, "versions": ["0.5.0"], "action": "revoke", "reason": "broken" }])
     } else {
         json!([])
     };
     let doc = json!({
-        "format": "hideout-catalog-v1", "epoch": 0, "sequence": seq,
+        "format": "hideout-catalog-v1", "epoch": epoch, "sequence": seq,
         "expires": "2099-01-01T00:00:00Z", "modules": [], "revocations": revocations,
     });
     let bytes = serde_json::to_vec_pretty(&doc).unwrap();
@@ -254,7 +259,8 @@ fn a_root_anchored_source_fetches_the_root_beside_it_and_needs_a_pinned_key() {
     let key = String::from_utf8(v("keys/root.pub")).unwrap();
     let key = key.lines().nth(1).unwrap().trim().to_string();
     reg.root_key = Some(key.clone());
-    let st = reg.refresh_source("public", &fetcher(&files), NOW).unwrap();
+    reg.refresh_source("public", &fetcher(&files), NOW).unwrap();
+    let st = read_stored(&home, "public").unwrap().unwrap();
     assert!(st.root.is_some() && st.root_signature.is_some());
     assert!(reg
         .trust
@@ -271,5 +277,69 @@ fn a_root_anchored_source_fetches_the_root_beside_it_and_needs_a_pinned_key() {
         .trust
         .revocation("foxglove.example-art", "0.2.0")
         .is_some());
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_user_catalog_epoch_never_excuses_a_lower_sequence() {
+    let home = home("epoch");
+    let (key, secret) = keys();
+    user_config(&home, &key);
+    let files = Files::default();
+    let mut reg = Registry::open(&home, false).unwrap();
+    serve(&files, catalog_at(&secret, 1, 1, false));
+    reg.refresh_source("mine", &fetcher(&files), NOW).unwrap();
+    let seq1 = std::fs::read(stored_path(&home, "mine")).unwrap();
+    serve(&files, catalog_at(&secret, 1, 5, true));
+    reg.refresh_source("mine", &fetcher(&files), NOW).unwrap();
+
+    // Fetch: the old sequence 1 (epoch 1, no revocation) is refused, so the withdrawal stays.
+    serve(&files, catalog_at(&secret, 1, 1, false));
+    assert_eq!(
+        id(reg.refresh_source("mine", &fetcher(&files), NOW)),
+        "trust.rollback"
+    );
+    // Another epoch doesn't excuse it either.
+    serve(&files, catalog_at(&secret, 2, 1, false));
+    assert_eq!(
+        id(reg.refresh_source("mine", &fetcher(&files), NOW)),
+        "trust.rollback"
+    );
+    assert!(reg.trust.revocation(ID, "0.5.0").is_some());
+
+    // Load: the stored sequence-1 file put back is refused at open.
+    std::fs::write(stored_path(&home, "mine"), seq1).unwrap();
+    let reg = Registry::open(&home, false).unwrap();
+    assert!(reg.trust.catalogs.is_empty(), "{:?}", reg.catalog_report);
+    assert!(reg.stored_catalog("mine").is_none());
+    assert!(!reg.catalog_loaded("mine"));
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_change_saved_while_downloading_survives_the_accept() {
+    let home = home("concurrent");
+    let (key, secret) = keys();
+    user_config(&home, &key);
+    let (bytes, sig) = catalog(&secret, 3, false);
+    let h = home.clone();
+    // During the download another writer raises another anchor's `seen` on disk.
+    let f = move |url: &str, _: usize| -> Result<Vec<u8>, String> {
+        if url == URL {
+            hideout_registry::inventory::Inventory::update(&h.join("inventory.json"), |inv| {
+                inv.seen.entry("other".into()).or_default().root_version = 7;
+            })
+            .map_err(|e| e.to_string())?;
+            Ok(bytes.clone())
+        } else {
+            Ok(sig.clone().into_bytes())
+        }
+    };
+    // Opened before the download: its copy of the inventory is older than the file.
+    let mut reg = Registry::open(&home, false).unwrap();
+    reg.refresh_source("mine", &f, NOW).unwrap();
+    let disk = Registry::open(&home, false).unwrap().inventory;
+    assert_eq!(disk.seen["other"].root_version, 7);
+    assert_eq!(disk.seen["test-user"].catalogs["mine"], 3);
     let _ = std::fs::remove_dir_all(home);
 }

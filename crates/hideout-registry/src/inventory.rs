@@ -112,6 +112,23 @@ impl Inventory {
 
     /// Writes atomically (a temp file, then a rename) under `inventory.lock` beside it.
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        let _lock = Lock::take(&path.with_file_name("inventory.lock"))?;
+        self.write(path)
+    }
+
+    /// Reads the file, changes it with `f` and writes it back, all under `inventory.lock`, so
+    /// what another writer saved meanwhile is kept (#1049: `seen` raised after a fetch never
+    /// writes back an older copy). Returns what was written.
+    pub fn update(path: &Path, f: impl FnOnce(&mut Inventory)) -> io::Result<Inventory> {
+        let _lock = Lock::take(&path.with_file_name("inventory.lock"))?;
+        let mut inv = Inventory::load(path)?;
+        f(&mut inv);
+        inv.write(path)?;
+        Ok(inv)
+    }
+
+    /// The write itself; the caller holds `inventory.lock`.
+    fn write(&self, path: &Path) -> io::Result<()> {
         if self.format != FORMAT {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -121,7 +138,6 @@ impl Inventory {
         // Lab modules live in memory only (docs/hideout-lab.md).
         let mut kept = self.clone();
         kept.modules.retain(|_, m| m.source != LAB);
-        let _lock = Lock::take(&path.with_file_name("inventory.lock"))?;
         let tmp = path.with_extension("json.tmp");
         let text = serde_json::to_string_pretty(&kept).map_err(io::Error::other)?;
         std::fs::write(&tmp, text)?;
