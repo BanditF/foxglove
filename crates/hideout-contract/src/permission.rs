@@ -69,8 +69,17 @@ impl Permission {
         )
     }
 
-    /// Plain words for the Plugins tab's install dialog.
+    /// Plain words for the Plugins tab's install dialog. No line names a file: an app watch says
+    /// the app's name without `.exe` (#991). [`Permission::describe_spelled`] keeps a manifest's
+    /// own spelling of that name.
     pub fn describe(&self) -> String {
+        self.describe_spelled(&[])
+    }
+
+    /// [`Permission::describe`], with an app watch's name spelled as one of `names` spells it
+    /// when one matches it without regard to case (`ExampleApp.exe` gives "see whether
+    /// ExampleApp is running", where the stored `exampleapp.exe` alone gives "exampleapp").
+    pub fn describe_spelled(&self, names: &[&str]) -> String {
         match self {
             Permission::FactsRead(p) => format!("read {p}"),
             Permission::FactsWrite(p) => format!("publish {p}"),
@@ -100,7 +109,23 @@ impl Permission {
             Permission::Secrets => {
                 "keep its passwords or tokens in Windows' credential store".into()
             }
-            Permission::AppsWatch(exe) => format!("notice when {exe} opens or closes its windows"),
+            Permission::AppsWatch(exe) => {
+                let bare = |n: &str| {
+                    let n = n.trim();
+                    let cut = n.len().saturating_sub(4);
+                    match n.get(cut..) {
+                        Some(tail) if tail.eq_ignore_ascii_case(".exe") => n[..cut].to_string(),
+                        _ => n.to_string(),
+                    }
+                };
+                let stored = bare(exe);
+                let name = names
+                    .iter()
+                    .map(|n| bare(n))
+                    .find(|n| n.eq_ignore_ascii_case(&stored))
+                    .unwrap_or(stored);
+                format!("see whether {name} is running")
+            }
             Permission::AppWindows => "open and close Foxglove's tray panel and overlay".into(),
         }
     }
@@ -332,6 +357,57 @@ mod tests {
 
     fn p(s: &str) -> Result<Permission, String> {
         Permission::try_from(s.to_string())
+    }
+
+    #[test]
+    fn no_permission_line_names_a_file() {
+        let all = [
+            "facts.read:clock.*",
+            "facts.write:weather.temp",
+            "devices.read",
+            "lighting.write",
+            "behaviors.invoke",
+            "screens.write",
+            "art.write",
+            "key.events",
+            "hid.raw",
+            "profiles.write",
+            "focus.write",
+            "net",
+            "net.connect:example.com:443",
+            "net.connect:*.example.com:*",
+            "net.listen:udp:127.0.0.1:9000",
+            "net.listen:tcp:127.0.0.1:9001",
+            "files",
+            "audio.inputs.read",
+            "audio.inputs.mute",
+            "secrets",
+            "app.windows",
+            "apps.watch:ExampleApp.exe",
+            "apps.watch:obs64.exe",
+            "apps.watch:My Tool.EXE",
+        ];
+        for s in all {
+            let perm = p(s).unwrap();
+            for line in [
+                perm.describe(),
+                perm.describe_spelled(&["ExampleApp.exe", "My Tool"]),
+            ] {
+                assert!(!line.to_ascii_lowercase().contains(".exe"), "{s}: {line}");
+            }
+        }
+        let app = p("apps.watch:ExampleApp.exe").unwrap();
+        assert_eq!(app.describe(), "see whether exampleapp is running");
+        assert_eq!(
+            app.describe_spelled(&["Example Suite", "ExampleApp.exe"]),
+            "see whether ExampleApp is running"
+        );
+        assert_eq!(
+            p("apps.watch:obs64.exe")
+                .unwrap()
+                .describe_spelled(&["ExampleApp.exe"]),
+            "see whether obs64 is running"
+        );
     }
 
     #[test]

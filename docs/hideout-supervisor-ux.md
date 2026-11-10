@@ -149,7 +149,7 @@ as `install-failed`: "Couldn't start Art" / "Its files don't match what was inst
 | Tray menu | "<Module> stopped" / "Open <Module> to start it again" |
 | Notification | "<Module> stopped" / "It crashed 5 times in 10 minutes." / Start again · Open <Module> |
 | Rollback | "Went back to <Module> <old>" / "<new> crashed 5 times after the update." |
-| Safe mode | "Safe mode" / "Hideout closed 3 times in 5 minutes, so no modules were started." |
+| Safe mode | "Safe mode" / "Hideout closed 3 times in 5 minutes, so no modules were started." (the closes set it) or "Safe mode is on, so no modules were started." (set by hand) |
 | Needs hub | "Needs a newer Hideout" / Update Hideout |
 
 #956's banner said "Stopped after repeated crashes"; this plan uses §7.8's "Stopped after 5

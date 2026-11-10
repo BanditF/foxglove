@@ -592,7 +592,7 @@
                   {
                     "id": "connect-steps",
                     "props": {
-                      "text": "1. Download the iCUE SDK from Corsair's download page (opens corsair.com in your browser).\n2. Unzip it.\n3. Click Choose file in Settings below and pick iCUESDK.x64_2019.dll.\n4. In iCUE, open Settings and turn on SDK."
+                      "text": "1. In iCUE, open Settings and turn on SDK.\n2. Still says no? Download the iCUE SDK again from Corsair's download page (opens corsair.com in your browser).\n3. Unzip it.\n4. Click Choose file in Settings below and pick iCUESDK.x64_2019.dll."
                     },
                     "type": "markdown"
                   },

@@ -75,6 +75,24 @@ pub fn tile(m: &Mirror) -> Tile {
     }
 }
 
+/// The "How to connect" steps. When iCUE said no, the SDK file is already loaded and only
+/// iCUE's SDK switch is left, so that step comes first (#991).
+fn connect_steps(m: &Mirror) -> &'static str {
+    if *m == Mirror::Refused {
+        "1. In iCUE, open Settings and turn on SDK.\n\
+         2. Still says no? Download the iCUE SDK again from Corsair's download page (opens \
+         corsair.com in your browser).\n\
+         3. Unzip it.\n\
+         4. Click Choose file in Settings below and pick iCUESDK.x64_2019.dll."
+    } else {
+        "1. Download the iCUE SDK from Corsair's download page (opens corsair.com in your \
+         browser).\n\
+         2. Unzip it.\n\
+         3. Click Choose file in Settings below and pick iCUESDK.x64_2019.dll.\n\
+         4. In iCUE, open Settings and turn on SDK."
+    }
+}
+
 /// The tile and the page, for `ui.register`.
 pub fn panels(m: &Mirror) -> Vec<Value> {
     let t = tile(m);
@@ -87,14 +105,7 @@ pub fn panels(m: &Mirror) -> Vec<Value> {
             "connect",
             "How to connect",
             vec![
-                ui::markdown(
-                    "connect-steps",
-                    "1. Download the iCUE SDK from Corsair's download page (opens corsair.com in \
-                     your browser).\n\
-                     2. Unzip it.\n\
-                     3. Click Choose file in Settings below and pick iCUESDK.x64_2019.dll.\n\
-                     4. In iCUE, open Settings and turn on SDK.",
-                ),
+                ui::markdown("connect-steps", connect_steps(m)),
                 ui::button(
                     "connect-file",
                     &Button::new("Choose file", Press::Opens("settings")),

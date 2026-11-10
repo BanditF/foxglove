@@ -41,7 +41,52 @@ fn load(dll: &str, tx: &mpsc::Sender<Notice>) -> Option<Icue> {
 /// while it doesn't; unset under Foxglove or a hub without the watch.
 const ICUE_RUNNING: &str = "apps.running.icue";
 
-/// What the tile and page show now. `running` is [`ICUE_RUNNING`] (`None`: unknown).
+/// How long iCUE counts as starting after [`ICUE_RUNNING`] turns true (#991). iCUE starts to
+/// the tray and its SDK session comes up a few seconds later; until then the tile says
+/// "iCUE isn't open" rather than "iCUE said no".
+const STARTING: Duration = Duration::from_secs(10);
+
+/// The one-shot "iCUE is starting" timer: armed by the event that turns [`ICUE_RUNNING`] true,
+/// disarmed when it turns false or the time is up. The main loop wakes once at [`Starting::until`].
+#[derive(Debug, Default)]
+struct Starting {
+    running: Option<bool>,
+    until: Option<Instant>,
+}
+
+impl Starting {
+    fn new(running: Option<bool>) -> Self {
+        Starting {
+            running,
+            until: None,
+        }
+    }
+
+    /// [`ICUE_RUNNING`] changed to `r` at `now`.
+    fn set(&mut self, r: Option<bool>, now: Instant) {
+        if r == Some(true) && self.running != Some(true) {
+            self.until = Some(now + STARTING);
+        } else if r != Some(true) {
+            self.until = None;
+        }
+        self.running = r;
+    }
+
+    /// Whether iCUE runs as far as the tile is concerned at `now`: unknown while it starts.
+    fn running(&mut self, now: Instant) -> Option<bool> {
+        if self.until.is_some_and(|u| now >= u) {
+            self.until = None;
+        }
+        if self.until.is_some() {
+            None
+        } else {
+            self.running
+        }
+    }
+}
+
+/// What the tile and page show now. `running` is [`ICUE_RUNNING`] (`None`: unknown, or iCUE is
+/// still [`Starting`]).
 fn mirror(icue: Option<&Icue>, dll: &str, follow: &Follow, running: Option<bool>) -> Mirror {
     let Some(sdk) = icue else {
         return Mirror::NeedsSetup {
@@ -153,7 +198,7 @@ fn main() {
     }
     // Hideout's app watch: whether iCUE runs, so "iCUE said no" and "iCUE isn't open" differ.
     // Foxglove has no such fact; the calls fail there and the state stays unknown.
-    let mut running = as_bool(plugin.fact(ICUE_RUNNING).ok().flatten());
+    let mut running = Starting::new(as_bool(plugin.fact(ICUE_RUNNING).ok().flatten()));
     if plugin.subscribe(ICUE_RUNNING).is_ok() {
         if let Some(events) = plugin.events() {
             let tx = tx.clone();
@@ -179,15 +224,20 @@ fn main() {
         icue.as_ref(),
         &dll,
         &follow,
-        running,
+        running.running(Instant::now()),
     )));
     loop {
         if plugin.is_closed() {
             return;
         }
-        // Following: wake for the next read too. Otherwise wait only for iCUE or the user.
-        let event = if follow.following() {
-            match rx.recv_timeout(next_read.saturating_duration_since(Instant::now())) {
+        // Following: wake for the next read too; iCUE starting: wake once when that time is up.
+        // Otherwise wait only for iCUE or the user.
+        let wake = [follow.following().then_some(next_read), running.until]
+            .into_iter()
+            .flatten()
+            .min();
+        let event = if let Some(wake) = wake {
+            match rx.recv_timeout(wake.saturating_duration_since(Instant::now())) {
                 Ok(e) => Some(e),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -198,11 +248,12 @@ fn main() {
                 Err(_) => return,
             }
         };
+        let starting = running.until.is_some();
         let event_seen = event.is_some();
         match (event, &icue) {
             (Some(In::Icue(n)), Some(sdk)) => follow.notice(&n, sdk as &dyn Sdk),
             (Some(In::Icue(_)), None) => {}
-            (Some(In::Running(r)), _) => running = r,
+            (Some(In::Running(r)), _) => running.set(r, Instant::now()),
             (Some(In::Settings(values)), _) => {
                 every = period(&values);
                 let wanted = text(&values, "device");
@@ -225,6 +276,7 @@ fn main() {
                     }
                 }
             }
+            (None, _) if !follow.following() || Instant::now() < next_read => {}
             (None, Some(sdk)) => {
                 next_read = Instant::now() + every;
                 if let Some(color) = follow.read(sdk) {
@@ -242,12 +294,14 @@ fn main() {
             }
             (None, None) => {}
         }
-        if event_seen {
+        let now = Instant::now();
+        let shown_running = running.running(now);
+        if event_seen || starting != running.until.is_some() {
             panels.show(module_ui::panels(&mirror(
                 icue.as_ref(),
                 &dll,
                 &follow,
-                running,
+                shown_running,
             )));
         }
         if !follow.following() && !leases.is_empty() {
@@ -258,5 +312,41 @@ fn main() {
         if follow.following() && leases.is_empty() && shown.is_none() {
             next_read = Instant::now();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icue_counts_as_starting_for_a_while_after_it_starts() {
+        let t0 = Instant::now();
+        let mut r = Starting::new(Some(false));
+        assert_eq!(r.running(t0), Some(false));
+        r.set(Some(true), t0);
+        assert_eq!(
+            r.until,
+            Some(t0 + STARTING),
+            "the event arms the one-shot timer"
+        );
+        assert_eq!(
+            r.running(t0 + Duration::from_secs(9)),
+            None,
+            "still starting"
+        );
+        assert_eq!(r.running(t0 + STARTING), Some(true), "time is up");
+        assert_eq!(r.until, None, "the timer fires once");
+        // A repeat of true doesn't re-arm it; false disarms it.
+        r.set(Some(true), t0 + STARTING);
+        assert_eq!(r.until, None);
+        r.set(Some(false), t0 + STARTING);
+        r.set(Some(true), t0 + STARTING);
+        r.set(Some(false), t0 + STARTING);
+        assert_eq!(r.until, None);
+        assert_eq!(r.running(t0 + STARTING), Some(false));
+        // Already running when the module starts: no wait (the app watch saw it first).
+        assert_eq!(Starting::new(Some(true)).running(t0), Some(true));
+        assert_eq!(Starting::new(None).running(t0), None);
     }
 }

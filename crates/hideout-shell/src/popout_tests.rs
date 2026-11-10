@@ -1039,10 +1039,15 @@ fn each_tab_shows_its_page_icon_before_the_title() {
         .unwrap();
     hub.tabs.activate(chat);
     let glyph = hideout_panels::tray::icon_glyph;
-    // The look carries the panel's icon; a hub page its own (the generic one here).
+    // The look carries the panel's icon; a hub page its own (#953 F4: no two alike).
     assert_eq!(hub.look(chat).icon, glyph("chat"));
     let settings = hub.tabs.position(&TabId::page("settings")).unwrap();
-    assert_eq!(hub.look(settings).icon, glyph("module"));
+    assert_eq!(hub.look(settings).icon, glyph("gear"));
+    hub.open(TabId::page("modules"));
+    let modules = hub.tabs.position(&TabId::page("modules")).unwrap();
+    assert_eq!(hub.look(modules).icon, glyph("module"));
+    assert_ne!(hub.look(modules).icon, hub.look(settings).icon);
+    hub.tabs.activate(chat);
     let out = frames(&ctx(), &mut hub, vec![]);
     for (g, title) in [
         ("chat", "Chat"),
@@ -1050,7 +1055,8 @@ fn each_tab_shows_its_page_icon_before_the_title() {
         ("lights", "Lights"),
         ("palette", "Scenes"),
         ("image", "Images"),
-        ("module", "Settings"),
+        ("gear", "Settings"),
+        ("module", "Modules"),
     ] {
         assert!(
             icon_before(&out, glyph(g), title),
