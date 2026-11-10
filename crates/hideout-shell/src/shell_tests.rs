@@ -2321,3 +2321,291 @@ fn renders_the_modules_page_for_review() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Finding the module that breaks Hideout (#1033): a search whose view the test sets, and
+/// whose buttons it records.
+#[derive(Default)]
+struct FakeFinder {
+    view: Mutex<Option<hideout_supervisor::bisect::View>>,
+    acts: Mutex<Vec<hideout_supervisor::bisect::Act>>,
+}
+
+impl Finder for FakeFinder {
+    fn view(&self) -> Option<hideout_supervisor::bisect::View> {
+        self.view.lock().unwrap().clone()
+    }
+    fn act(&self, act: hideout_supervisor::bisect::Act) {
+        self.acts.lock().unwrap().push(act);
+    }
+    fn diagnostics(&self) -> String {
+        "diagnostics".into()
+    }
+    fn set_waker(&self, _: Box<dyn Fn() + Send + Sync>) {}
+}
+
+/// Six modules, A–Z; `steps` moves the search on (`'f'` fine, `'c'` a close and the next
+/// round, `'x'` a close only, `'q'` a clean quit, `'u'` an end it can't read).
+fn search_after(steps: &str) -> hideout_supervisor::bisect::Search {
+    use hideout_supervisor::bisect::{entries, Candidate, Exit, Search};
+    let c: Vec<Candidate> = ["Art", "Beat", "Chat", "Dock", "Echo", "Fern"]
+        .iter()
+        .map(|n| Candidate {
+            id: format!("m.{}", n.to_lowercase()),
+            name: n.to_string(),
+            needs: vec![],
+        })
+        .collect();
+    let mut s = Search::new(entries(&c)).unwrap();
+    for step in steps.chars() {
+        match step {
+            'f' => {
+                s.fine(true);
+            }
+            'c' => {
+                s.after_exit(Exit::Unclean);
+                s.start_next();
+            }
+            'x' => s.after_exit(Exit::Unclean),
+            'q' => s.after_exit(Exit::Clean),
+            'u' => s.after_exit(Exit::Unknown),
+            _ => unreachable!(),
+        }
+    }
+    s
+}
+
+fn fake_finder(
+    s: &hideout_supervisor::bisect::Search,
+    seq: u64,
+    previous: Option<&str>,
+) -> Arc<FakeFinder> {
+    let left =
+        (s.phase == hideout_supervisor::bisect::Phase::Running).then_some(Duration::from_secs(239));
+    let mut v = hideout_supervisor::bisect::view(s, left, previous);
+    v.seq = seq;
+    Arc::new(FakeFinder {
+        view: Mutex::new(Some(v)),
+        ..Default::default()
+    })
+}
+
+/// The accessible tree's focused node's label.
+fn focused_label(out: &egui::FullOutput) -> Option<String> {
+    let u = out.platform_output.accesskit_update.as_ref()?;
+    u.nodes
+        .iter()
+        .find(|(id, _)| *id == u.focus)
+        .and_then(|(_, n)| n.label().map(String::from))
+}
+
+/// The bar is a landmark region named for the search and first in tab order (before the
+/// sidebar); its words are said once in the polite live region; Tab then Enter is It's fine;
+/// a round's bar takes no focus by itself (#1033, "Keyboard and screen reader").
+#[test]
+fn the_search_bar_is_a_landmark_first_in_tab_order_and_said_once() {
+    use hideout_supervisor::bisect::{words as w, Act};
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let dir = temp_dir("bisect-bar");
+    let mut hub = hub_in(&dir, None);
+    let f = fake_finder(&search_after("f"), 7, None);
+    hub.search = Some(f.clone());
+    let out = frames(&ctx, &mut hub, vec![]);
+    let nodes = &out.platform_output.accesskit_update.as_ref().unwrap().nodes;
+    assert!(
+        nodes.iter().any(|(_, n)| n.role() == egui::accesskit::Role::Region
+            && n.label() == Some(w::REGION)),
+        "no landmark region"
+    );
+    let live: Vec<String> = nodes
+        .iter()
+        .filter(|(_, n)| n.live() == Some(egui::accesskit::Live::Polite))
+        .filter_map(|(_, n)| n.label().map(String::from))
+        .collect();
+    assert_eq!(
+        live,
+        ["Round 1 was fine. Round 2 of 4 started. Dock and Echo are on."]
+    );
+    let t = drawn(&out);
+    for s in [
+        "Finding the module that breaks Hideout \u{b7} Round 2 of 4",
+        "2 of 6 modules are on: Dock, Echo.",
+        "This round ends in 4 min if Hideout stays open.",
+    ] {
+        assert!(t.iter().any(|x| x == s), "{s} not drawn: {t:?}");
+    }
+    assert_ne!(focused_label(&out).as_deref(), Some(w::ITS_FINE));
+    // The first Tab lands on It's fine, before the sidebar's pages.
+    let out = ctx.run(
+        input(1100.0, 640.0, vec![key(Key::Tab, Modifiers::NONE)]),
+        |c| hub.frame(c),
+    );
+    assert_eq!(focused_label(&out).as_deref(), Some(w::ITS_FINE));
+    let out = ctx.run(
+        input(1100.0, 640.0, vec![key(Key::Tab, Modifiers::NONE)]),
+        |c| hub.frame(c),
+    );
+    assert_eq!(focused_label(&out).as_deref(), Some(w::IT_CLOSED));
+    // Shift+Tab back, Enter: It's fine.
+    let _ = ctx.run(
+        input(1100.0, 640.0, vec![key(Key::Tab, Modifiers::SHIFT)]),
+        |c| hub.frame(c),
+    );
+    let _ = ctx.run(
+        input(1100.0, 640.0, vec![key(Key::Enter, Modifiers::NONE)]),
+        |c| hub.frame(c),
+    );
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert_eq!(*f.acts.lock().unwrap(), [Act::Fine]);
+    // The same view again is not said again.
+    let before = hub.announce.as_ref().map(|a| a.n);
+    let _ = frames(&ctx, &mut hub, vec![]);
+    assert_eq!(hub.announce.as_ref().map(|a| a.n), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The between-rounds card, the questions and the result take the focus on their primary
+/// button when they appear; Esc does nothing; Enter is the primary (#1033).
+#[test]
+fn a_search_card_focuses_its_primary_and_esc_does_nothing() {
+    use hideout_supervisor::bisect::Act;
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let dir = temp_dir("bisect-card");
+    for (steps, primary, act) in [
+        ("x", "Start round 2", Act::StartNext),
+        ("q", "Go on with round 1", Act::GoOn),
+        ("u", "It closed", Act::Closed),
+        ("ccx", "Turn off Art", Act::TurnOff),
+        ("ffff", "Start normally", Act::StartNormally),
+        ("xx", "Copy diagnostics", Act::CopyDiagnostics),
+    ] {
+        let mut hub = hub_in(&dir, None);
+        let s = search_after(steps);
+        let f = fake_finder(&s, 3, None);
+        hub.search = Some(f.clone());
+        let out = frames(&ctx, &mut hub, vec![]);
+        assert_eq!(
+            focused_label(&out).as_deref(),
+            Some(primary),
+            "{steps}: {s:?}"
+        );
+        let out = ctx.run(
+            input(1100.0, 640.0, vec![key(Key::Escape, Modifiers::NONE)]),
+            |c| hub.frame(c),
+        );
+        assert_eq!(
+            focused_label(&out).as_deref(),
+            Some(primary),
+            "{steps}: Esc"
+        );
+        assert!(f.acts.lock().unwrap().is_empty(), "{steps}: Esc acted");
+        let _ = ctx.run(
+            input(1100.0, 640.0, vec![key(Key::Enter, Modifiers::NONE)]),
+            |c| hub.frame(c),
+        );
+        let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+        assert_eq!(*f.acts.lock().unwrap(), [act], "{steps}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The search through the real hub frame, for review (#1033, docs/hideout-safe-mode-ux.md):
+/// the banner with the link, a round (bar, Modules rows, the lock line), between rounds, the
+/// paused and asked questions and the three results.
+#[test]
+fn renders_the_search_for_review() {
+    use crate::modules_list::{
+        order, page_ui_with, row, search_words, Banner, Find, Installed, Row, Top,
+    };
+    use hideout_supervisor::bisect::{words as w, Search};
+    struct ModulesPage(Vec<Row>, Top<'static>);
+    impl Page for ModulesPage {
+        fn id(&self) -> &str {
+            "hub.modules"
+        }
+        fn title(&self) -> &str {
+            "Modules"
+        }
+        fn ui(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+            page_ui_with(ui, t, &self.0, self.1);
+        }
+    }
+    let safe = |k: &str| (k == "hub.safe_mode").then_some(serde_json::Value::Bool(true));
+    let rows_for = |s: Option<&Search>| {
+        let mut rows: Vec<Row> = ["Art", "Beat", "Chat", "Dock", "Echo", "Fern", "Notes"]
+            .iter()
+            .map(|n| {
+                let m = Installed {
+                    id: format!("m.{}", n.to_lowercase()),
+                    name: n.to_string(),
+                    version: "1.0.0".into(),
+                    enabled: *n != "Notes",
+                };
+                let mut r = row(&m, &safe, None);
+                if let Some(s) = s.filter(|s| s.active()) {
+                    let on = s
+                        .all_ids()
+                        .contains(&m.id)
+                        .then(|| s.on_ids().contains(&m.id));
+                    search_words(&mut r, on);
+                }
+                r
+            })
+            .collect();
+        order(&mut rows);
+        rows
+    };
+    let dir = temp_dir("png-bisect");
+    let shots: Vec<(&str, Option<Search>, Option<&str>)> = vec![
+        ("built-bisect-banner.png", None, None),
+        ("built-bisect-round.png", Some(search_after("f")), None),
+        ("built-bisect-between.png", Some(search_after("x")), None),
+        ("built-bisect-paused.png", Some(search_after("q")), None),
+        ("built-bisect-asked.png", Some(search_after("u")), None),
+        (
+            "built-bisect-found.png",
+            Some(search_after("ccx")),
+            Some("0.4.2"),
+        ),
+        (
+            "built-bisect-not-found.png",
+            Some(search_after("ffff")),
+            None,
+        ),
+        (
+            "built-bisect-hideout-itself.png",
+            Some(search_after("xx")),
+            None,
+        ),
+    ];
+    for (name, s, previous) in shots {
+        let top = match &s {
+            None => Top {
+                banner: Some(Banner {
+                    line: hideout_supervisor::words::SAFE_MODE_LINE,
+                    note: Some(w::STOPPED),
+                    find: Find::Link(w::FIND),
+                }),
+                locked: false,
+            },
+            Some(s) => Top {
+                banner: None,
+                locked: s.active(),
+            },
+        };
+        let mut hub = hub_in(&dir, None);
+        hub.pages = vec![Box::new(ModulesPage(rows_for(s.as_ref()), top))];
+        hub.tabs = Tabs::default();
+        hub.tabs.open(TabId::page("hub.modules"));
+        if let Some(s) = &s {
+            hub.search = Some(fake_finder(s, 1, previous));
+        }
+        let Some(rgba) = render(&mut hub, 1000, 760, |_| {}) else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        save_png(name, 1000, 760, rgba);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

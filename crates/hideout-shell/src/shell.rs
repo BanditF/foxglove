@@ -51,10 +51,49 @@ pub struct ShellOptions {
     /// **Start normally** from the tray menu in safe mode (§7.10): the supervisor's, any
     /// thread. `None` on a hub without one; the item then does nothing.
     pub start_normally: Option<StartNormally>,
+    /// Finding the module that breaks Hideout (§7.10, #1033): the bar at the top of the pages
+    /// and the tray's items. `None` on a hub without a supervisor.
+    pub finder: Option<FinderHost>,
 }
 
 /// What **Start normally** runs (the supervisor ends safe mode and starts the modules).
 pub type StartNormally = Arc<dyn Fn() + Send + Sync>;
+
+/// Finding the module that breaks Hideout (§7.10, #1033): the supervisor's search, for the bar
+/// at the top of the pages and the tray menu. Any thread.
+pub trait Finder: Send + Sync {
+    /// The bar's words; `None` without a search.
+    fn view(&self) -> Option<hideout_supervisor::bisect::View>;
+    /// A button of the bar or the tray menu.
+    fn act(&self, act: hideout_supervisor::bisect::Act);
+    /// Copy diagnostics' text for the search.
+    fn diagnostics(&self) -> String;
+    /// Wakes the window when the search changes (a round ends by itself).
+    fn set_waker(&self, wake: Box<dyn Fn() + Send + Sync>);
+}
+
+/// The search the shell draws and the tray menu drives.
+pub type FinderHost = Arc<dyn Finder>;
+
+/// The tray menu's Start round and Stop finding reach the search through it (set by `run`).
+static FINDER: Mutex<Option<FinderHost>> = Mutex::new(None);
+
+/// Shows the hub window (a notification's Open Hideout). Any thread.
+pub fn show_hub() {
+    platform::show_main_window();
+    if let Some(w) = OPEN_WAKER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
+        w();
+    }
+}
+
+/// Whether the hub window is on screen (shown, not minimised). Any thread.
+pub fn hub_on_screen() -> bool {
+    platform::main_window_on_screen()
+}
 
 /// What the tab strip asks of the rest of the hub. Every method has a do-nothing default.
 pub trait TabHooks {
@@ -108,6 +147,9 @@ fn tray_sync() {
     }
     if let Some(on) = crate::marks::take_safe_change() {
         tray::set_safe_mode(on);
+    }
+    if let Some(b) = crate::marks::take_search_change() {
+        tray::set_search(b.as_ref());
     }
 }
 
@@ -240,6 +282,8 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
     });
     let pages = opts.pages;
     let feed = opts.panels;
+    let finder = opts.finder;
+    *FINDER.lock().unwrap_or_else(|e| e.into_inner()) = finder.clone();
     let hooks = opts.hooks;
     let start_in_tray = opts.start_in_tray;
     let first_title = pages
@@ -319,6 +363,11 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             platform::set_popout_waker(Box::new(move || pop_ctx.request_repaint()));
             let mut hub = Hub::new(shared, pages, feed, hooks);
             hub.popouts_held = start_in_tray;
+            if let Some(f) = finder.as_ref() {
+                let wake_ctx = ctx.clone();
+                f.set_waker(Box::new(move || wake_ctx.request_repaint()));
+            }
+            hub.search = finder;
             // Choose file for file settings: the Windows picker (tests leave it out).
             hub.panels.picker = Some(hideout_panels::model::Picker(Box::new(platform::pick_file)));
             hub.capture = start_capture(&hub.shared.paths, &ctx);
@@ -411,6 +460,20 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
             }
             None => log::warn!("Start normally from the tray: no supervisor in this hub"),
         },
+        tray::Command::StartRound | tray::Command::StopFinding => {
+            use hideout_supervisor::bisect::Act;
+            let act = if cmd == tray::Command::StartRound {
+                Act::StartNext
+            } else {
+                Act::Stop
+            };
+            log::info!("{act:?} from the tray");
+            let f = FINDER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            match f {
+                Some(f) => f.act(act),
+                None => log::warn!("{act:?} from the tray: no search in this hub"),
+            }
+        }
     }
     // A hidden or minimised window draws nothing: it repaints when Windows shows it again (#935).
     if platform::main_window_on_screen() {
@@ -588,6 +651,15 @@ struct Hub {
     popout_title_ids: Vec<egui::Id>,
     /// The one polite announcement of a pop out or dock back, while it is fresh.
     announce: Option<Announce>,
+    /// Finding the module that breaks Hideout (#1033): the bar's search.
+    search: Option<FinderHost>,
+    /// The search view last drawn (its `seq`): a new one is said once and takes the focus.
+    search_seq: u64,
+    /// This frame's modules in the search that are off now (id, name): their sidebar entries
+    /// are muted and their pages say "Off for this round".
+    search_off: HashMap<String, String>,
+    /// A card's primary button had the focus at the end of the last frame: Esc keeps it there.
+    search_focused: bool,
 }
 
 /// Where an announcement is said: the window the focus is in after the move.
@@ -837,6 +909,10 @@ impl Hub {
             focus_page: None,
             popout_title_ids: Vec::new(),
             announce: None,
+            search: None,
+            search_seq: 0,
+            search_off: HashMap::new(),
+            search_focused: false,
         }
     }
 
@@ -1693,14 +1769,27 @@ impl Hub {
                 let active = self.tabs.active_id().cloned();
                 for (target, title, attention, stopped) in entries {
                     let selected = active.as_ref() == Some(&target);
-                    let text = egui::RichText::new(title)
-                        .size(15.0)
-                        .color(c(theme::nav_label(t, selected)));
-                    let resp = ui.add_sized(
+                    // Off for this round of a search (#1033): muted, and its name says so.
+                    let off = match &target {
+                        TabId::Panel { module, .. } => self.search_off.get(module).cloned(),
+                        TabId::Page { .. } => None,
+                    };
+                    let col = if off.is_some() && !selected {
+                        t.text_muted
+                    } else {
+                        theme::nav_label(t, selected)
+                    };
+                    let text = egui::RichText::new(title).size(15.0).color(c(col));
+                    let mut resp = ui.add_sized(
                         [ui.available_width(), 32.0],
                         egui::Button::selectable(selected, text),
                     );
-                    if let Some(said) = stopped {
+                    if let Some(name) = off {
+                        let said = hideout_supervisor::bisect::words::off_for_round(&name);
+                        resp = resp.on_hover_text(said.clone());
+                        ui.ctx()
+                            .accesskit_node_builder(resp.id, |n| n.set_label(said));
+                    } else if let Some(said) = stopped {
                         // The red warning mark, as on its tab (docs/hideout-supervisor-ux.md, S
                         // and T); its words are in the entry's accessible name.
                         let at = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
@@ -1902,6 +1991,14 @@ impl Hub {
     ) {
         match self.target(id) {
             Some(Target::Page(p)) => self.pages[p].ui(ui, t),
+            Some(Target::Panel(key)) if self.search_off.contains_key(&key.module) => {
+                // Off for this round of a search (#1033): no Turn on, nothing of the module.
+                ui.label(
+                    egui::RichText::new(hideout_supervisor::bisect::words::OFF_FOR_ROUND)
+                        .size(17.0)
+                        .color(c(t.text_muted)),
+                );
+            }
             Some(Target::Panel(key)) => {
                 let name = self
                     .panels
@@ -2007,6 +2104,66 @@ impl Hub {
                 }
             }
             None => {}
+        }
+    }
+
+    /// The bar of finding the module that breaks Hideout (#1033) across the top of the window,
+    /// while a search runs. A new view is said once in the polite live region, and a card's
+    /// primary button takes the focus then (never while a dialog or the palette is up).
+    fn search_bar(&mut self, ctx: &egui::Context, t: &Tokens) {
+        use hideout_supervisor::bisect::Act;
+        let view = self.search.as_ref().and_then(|f| f.view());
+        self.search_off = view
+            .as_ref()
+            .map(|v| v.off_now.iter().cloned().collect())
+            .unwrap_or_default();
+        let Some(v) = view else {
+            self.search_seq = 0;
+            self.search_focused = false;
+            return;
+        };
+        let fresh = v.seq != self.search_seq;
+        if fresh {
+            self.search_seq = v.seq;
+            self.say(v.said.clone(), Said::Main);
+        }
+        let free = self.asking.is_none() && !self.palette.open && !self.quitting;
+        // Esc does nothing on a card (Stop is a deliberate click): egui's Esc drops the focus,
+        // so it goes back to the primary button.
+        let esc = free
+            && self.search_focused
+            && v.takes_focus
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        let focus = (fresh || esc) && v.takes_focus && free;
+        let mut act = None;
+        let mut primary = None;
+        egui::TopBottomPanel::top("hideout.search")
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(c(t.bg)).inner_margin(egui::Margin {
+                left: 16,
+                right: 16,
+                top: 12,
+                bottom: 4,
+            }))
+            .show(ctx, |ui| {
+                ui.push_id("hideout.search.main", |ui| {
+                    (act, primary) = crate::bisect_bar::bar_ui(ui, t, &v, focus);
+                });
+            });
+        self.search_focused = primary.is_some_and(|p| ctx.memory(|m| m.has_focus(p)));
+        if let (Some(a), Some(f)) = (act, self.search.clone()) {
+            if a == Act::CopyDiagnostics {
+                ctx.copy_text(f.diagnostics());
+            }
+            f.act(a);
+            ctx.request_repaint();
+        }
+        // The minute line, only while the window shows (no frames while hidden, #935).
+        let minimised = ctx.input(|i| i.viewport().minimized == Some(true));
+        if let Some(left) = v.ends_in {
+            if !minimised && !self.shared.hidden.load(Ordering::Acquire) {
+                ctx.request_repaint_after(crate::bisect_bar::next_minute(left));
+            }
         }
     }
 
@@ -2295,6 +2452,8 @@ impl Hub {
                 self.shortcut(s);
             }
         }
+        // The search's bar first: above the pages and first in tab order (#1033).
+        self.search_bar(ctx, &t);
         self.sidebar(ctx, &t);
         self.status_strip(ctx, &t);
         self.strip_bar(ctx, &t);
@@ -2828,6 +2987,31 @@ impl Hub {
                 title_ids = popout_title_row(ui, t, icon, &look.title, top, &mut out.cmds);
             });
         self.popout_title_ids = title_ids;
+        // The search's bar on a popped-out page too (#1033); said and focused in the main
+        // window only.
+        let view = self.search.as_ref().and_then(|f| f.view());
+        if let Some(v) = view {
+            let mut act = None;
+            egui::TopBottomPanel::top("hideout.popout.search")
+                .show_separator_line(false)
+                .frame(egui::Frame::new().fill(c(t.bg)).inner_margin(egui::Margin {
+                    left: 16,
+                    right: 16,
+                    top: 12,
+                    bottom: 4,
+                }))
+                .show(ctx, |ui| {
+                    ui.push_id(("hideout.search.popout", &id), |ui| {
+                        act = crate::bisect_bar::bar_ui(ui, t, &v, false).0;
+                    });
+                });
+            if let (Some(a), Some(f)) = (act, self.search.clone()) {
+                if a == hideout_supervisor::bisect::Act::CopyDiagnostics {
+                    ctx.copy_text(f.diagnostics());
+                }
+                f.act(a);
+            }
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()

@@ -1305,10 +1305,21 @@ Rules:
   ended without a clean exit: the running hub's mark in `run\hub-run.json` is still there.
   Quit Hideout, `WM_ENDSESSION` and a console Ctrl+C or close clear it; a second hub on the same
   folder never touches it (#1033).
-- **Find the module that breaks Hideout** (bisect, from safe mode): the hub turns off half the
-  enabled modules for the session, asks "Still broken?", and halves again until one module is
-  left. It then offers Turn off or Go back to <previous> for that module. The saved enabled set
-  is restored at the end; bisect never edits it.
+- **Find the module that breaks Hideout** (bisect, from safe mode; clarification, #1033,
+  `docs/hideout-safe-mode-ux.md`): the hub starts half of the modules **Start normally** would
+  start (a module that `requires` another goes with it, as one entry) and halves again. A round
+  ends **closed** when the hub closes without a clean exit (the mark above) or the user says It
+  closed, and **fine** after 5 minutes open with the PC awake or on It's fine. After a close the
+  hub starts with nothing on, and the next round starts only on a click. A clean exit pauses the
+  round; an end the hub can't read (no readable `run\hub-run.json`, or Windows started after
+  that run did) asks whether it closed by itself. A module on alone in a round that closed is
+  named, with Turn off <Module>, Copy diagnostics, Start normally anyway, and Go back to
+  <previous> when one is kept; every round fine names none, a close with nothing on names Hideout
+  itself. Progress lives in `run\bisect.json` and survives restarts; the result's choice or Stop
+  finding clears it, and only Turn off or Go back changes what is saved. The 3-in-5-minutes rule
+  is off while a search runs.
+- **Bar note (#1033):** a search shows as a bar at the top of Hideout's pages (a landmark region,
+  first in tab order) and in the tray's status line and menu, never as a window of its own.
 
 ## 8. IPC
 

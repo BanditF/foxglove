@@ -243,3 +243,89 @@ fn start_normally_leaves_safe_mode_and_starts_the_module() {
     drop(reaper);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
+
+/// Finding the module that breaks Hideout (Â§7.10, #1033), with a real windowless module: from
+/// safe mode the banner offers "Check whether Lab breaks Hideout"; the round starts it in this
+/// hub; Stop finding ends it with nothing saved and safe mode still on; a round that closes
+/// names it, and Turn off saves it off and leaves safe mode.
+#[test]
+fn a_search_round_starts_its_module_and_stop_changes_nothing() {
+    use hideout_supervisor::bisect::{words, Act, Exit, Kind, Search};
+    use hideout_supervisor::finder::Finder;
+    const ID: &str = "example.lab.bisect";
+    let (home, _) = home_with(ID);
+    let mut reaper = Reaper::default();
+    Registry::open(&home, true)
+        .unwrap()
+        .set_safe_mode(true)
+        .unwrap();
+    let settings = Settings {
+        safe_mode: true,
+        ..Settings::default()
+    };
+    let router = Router::new(settings, Box::new(|_, asked| asked.to_vec()));
+    let (events, _rx) = mpsc::channel();
+    let hub = Hub::new(router, events);
+    let sup = Supervisor::start(&home, hub.clone());
+    let finder = Finder::start(&home, sup.clone(), Exit::Clean, "test");
+    assert!(!finder.searching());
+    assert_eq!(finder.banner().find, Some(words::check_one("Lab")));
+
+    finder.begin();
+    let pid = sup.pid(ID).expect("the round didn't start its module");
+    reaper.hold(pid);
+    assert_eq!(state(&hub, ID).as_deref(), Some("starting"));
+    let v = finder.view().unwrap();
+    assert_eq!(
+        (v.kind, v.title.as_str()),
+        (Kind::Round, words::title(1, 1).as_str())
+    );
+    assert_eq!(v.lines[0], "Only Lab is on.");
+    assert!(
+        v.ends_in.is_some_and(|d| d.as_secs() > 290),
+        "{:?}",
+        v.ends_in
+    );
+    assert!(Search::path(&home).exists(), "progress not kept");
+    assert_eq!(
+        finder.tray().unwrap().line,
+        "Hideout \u{b7} finding the module (round 1 of 1)"
+    );
+
+    finder.act(Act::Stop);
+    assert!(!finder.searching());
+    assert!(finder.banner().stopped);
+    assert!(!Search::path(&home).exists(), "Stop left the progress file");
+    assert_eq!(state(&hub, ID), None, "the module still runs after Stop");
+    assert!(sup.safe_mode(), "Stop left safe mode");
+    let reg = Registry::open(&home, true).unwrap();
+    assert!(
+        reg.hub.enabled(ID) && reg.hub.safe_mode(),
+        "Stop changed what is saved"
+    );
+
+    // Again; this time it closes (the user says so): found, nothing on until the choice.
+    finder.begin();
+    if let Some(pid) = sup.pid(ID) {
+        reaper.hold(pid);
+    }
+    finder.act(Act::Closed);
+    let v = finder.view().unwrap();
+    assert_eq!(v.kind, Kind::Found);
+    assert_eq!(v.title, "Lab seems to make Hideout close.");
+    assert_eq!(state(&hub, ID), None, "the module still runs at the result");
+    assert!(Registry::open(&home, true).unwrap().hub.enabled(ID));
+    finder.act(Act::TurnOff);
+    assert!(!finder.searching());
+    let reg = Registry::open(&home, true).unwrap();
+    assert!(!reg.hub.enabled(ID), "Turn off wasn't saved");
+    assert!(
+        !reg.hub.safe_mode(),
+        "the result's choice didn't leave safe mode"
+    );
+    assert!(!sup.safe_mode());
+    drop(finder);
+    drop(sup);
+    drop(reaper);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}

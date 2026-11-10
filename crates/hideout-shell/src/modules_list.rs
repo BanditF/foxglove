@@ -7,7 +7,9 @@
 //! Layout (designer review of #1028, #1029): `[mark] Name  version` over the state words; the
 //! red warning mark before a row that needs the user, so the warning doesn't rest on colour;
 //! those rows first, then the others A–Z, Off last and muted. In safe mode the banner sits above
-//! the rows with **Start normally** (§7.10).
+//! the rows with **Start normally** (§7.10) and **Find the module that breaks Hideout**. While a
+//! search runs (#1033) the shell's bar takes the banner's place, the rows say whether each
+//! module is on in the round, and Turn on and Turn off are locked.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -81,6 +83,61 @@ pub enum Click {
     Primary(String, Does),
     /// The safe-mode banner's **Start normally**.
     StartNormally,
+    /// The banner's **Find the module that breaks Hideout** (or "Check whether <Module> …").
+    FindCulprit,
+    /// The banner's **Copy diagnostics** (no module would start: it's Hideout itself).
+    CopyDiagnostics,
+}
+
+/// The safe-mode banner's link to the search (#1033).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Find<'a> {
+    /// No search in this hub: the greyed link with "Comes in a later Hideout.".
+    Later,
+    /// The link's words.
+    Link(&'a str),
+    /// No module would start: no link; the line says it's Hideout itself, with Copy
+    /// diagnostics · Start normally.
+    Nothing,
+}
+
+/// The safe-mode banner: its line, a line after a search stopped, the search's link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Banner<'a> {
+    pub line: &'a str,
+    /// "Stopped finding. Nothing was changed."
+    pub note: Option<&'a str>,
+    pub find: Find<'a>,
+}
+
+/// What sits above the rows, and whether the rows' Turn on / Turn off are locked (a search).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Top<'a> {
+    pub banner: Option<Banner<'a>>,
+    pub locked: bool,
+}
+
+/// A row's words during a search (#1033): `on` is `Some(true)` for a module on in this round,
+/// `Some(false)` off for it, `None` not in the search. Rows that need the user keep theirs; an
+/// Off row is not part of the search.
+pub fn search_words(r: &mut Row, on: Option<bool>) {
+    use hideout_supervisor::bisect::words as w;
+    if r.stopped {
+        return;
+    }
+    let state = match (r.off, on) {
+        (true, _) => w::NOT_IN_SEARCH,
+        (false, Some(true)) => w::ON_IN_ROUND,
+        (false, Some(false)) => w::OFF_FOR_ROUND,
+        (false, None) => return,
+    };
+    r.state = state.into();
+    r.label = words::row_label(&r.name, state);
+}
+
+/// Turn on and Turn off: the buttons a search locks.
+fn toggles(d: Does) -> bool {
+    matches!(d, Does::TurnOn | Does::TurnOff)
 }
 
 /// Seconds left of a `restarting` module's backoff, counted from when its
@@ -221,8 +278,19 @@ fn c(x: Rgb) -> egui::Color32 {
 /// screen reader reads it without hovering). Amber, like the tray's dot. True when Start
 /// normally was clicked.
 pub fn safe_mode_banner(ui: &mut egui::Ui, t: &Tokens, line: &str) -> bool {
+    let b = Banner {
+        line,
+        note: None,
+        find: Find::Later,
+    };
+    banner_ui(ui, t, &b) == Some(Click::StartNormally)
+}
+
+/// The safe-mode banner with its search parts (#1033): **Start normally** · the link; with no
+/// module to search, **Copy diagnostics** · Start normally. Returns what was clicked.
+pub fn banner_ui(ui: &mut egui::Ui, t: &Tokens, b: &Banner) -> Option<Click> {
     use egui::RichText;
-    let mut start = false;
+    let mut click = None;
     egui::Frame::new()
         .fill(c(crate::theme::warn_fill(t)))
         .stroke(egui::Stroke::new(1.0_f32, c(t.warn)))
@@ -237,33 +305,88 @@ pub fn safe_mode_banner(ui: &mut egui::Ui, t: &Tokens, line: &str) -> bool {
                     .color(c(t.text)),
             );
             ui.add_space(2.0);
+            let line = match b.find {
+                Find::Nothing => hideout_supervisor::bisect::words::NONE_ON,
+                _ => b.line,
+            };
             ui.label(RichText::new(line).color(c(t.text)));
+            if let Some(note) = b.note {
+                ui.label(RichText::new(note).color(c(t.text)));
+            }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                let b =
-                    egui::Button::new(RichText::new(words::START_NORMALLY).color(c(t.on_accent)))
+                let primary = |ui: &mut egui::Ui, text: &str| {
+                    let b = egui::Button::new(RichText::new(text).color(c(t.on_accent)))
                         .fill(c(t.accent));
-                start = ui.add(b).clicked();
-                ui.label(RichText::new("\u{b7}").color(c(t.text_muted)));
-                let later = ui
-                    .add_enabled(
-                        false,
-                        egui::Link::new(RichText::new(words::FIND_CULPRIT).color(c(t.text_muted))),
-                    )
-                    .on_disabled_hover_text(words::COMES_LATER);
-                ui.ctx().accesskit_node_builder(later.id, |n| {
-                    n.set_description(words::COMES_LATER);
-                });
+                    ui.add(b).clicked()
+                };
+                let dot = |ui: &mut egui::Ui| {
+                    ui.label(RichText::new("\u{b7}").color(c(t.text_muted)));
+                };
+                match b.find {
+                    Find::Nothing => {
+                        if primary(ui, words::COPY_DIAGNOSTICS) {
+                            click = Some(Click::CopyDiagnostics);
+                        }
+                        dot(ui);
+                        let link = RichText::new(words::START_NORMALLY).color(c(t.text));
+                        if ui.link(link).clicked() {
+                            click = Some(Click::StartNormally);
+                        }
+                    }
+                    Find::Link(words_) => {
+                        if primary(ui, words::START_NORMALLY) {
+                            click = Some(Click::StartNormally);
+                        }
+                        dot(ui);
+                        if ui.link(RichText::new(words_).color(c(t.text))).clicked() {
+                            click = Some(Click::FindCulprit);
+                        }
+                    }
+                    Find::Later => {
+                        if primary(ui, words::START_NORMALLY) {
+                            click = Some(Click::StartNormally);
+                        }
+                        dot(ui);
+                        let later = ui
+                            .add_enabled(
+                                false,
+                                egui::Link::new(
+                                    RichText::new(words::FIND_CULPRIT).color(c(t.text_muted)),
+                                ),
+                            )
+                            .on_disabled_hover_text(words::COMES_LATER);
+                        ui.ctx().accesskit_node_builder(later.id, |n| {
+                            n.set_description(words::COMES_LATER);
+                        });
+                    }
+                }
             });
         });
     ui.add_space(16.0);
-    start
+    click
 }
 
 /// Draws the page: title, the safe-mode banner with its line when `banner` is set, then the rows
 /// (or the empty state). Returns what was clicked.
 pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], banner: Option<&str>) -> Option<Click> {
+    let top = Top {
+        banner: banner.map(|line| Banner {
+            line,
+            note: None,
+            find: Find::Later,
+        }),
+        locked: false,
+    };
+    page_ui_with(ui, t, rows, top)
+}
+
+/// [`page_ui`] with the banner's search parts and, during a search, Turn on and Turn off
+/// locked: they keep the focus, say the lock line as their description and do nothing, and
+/// the line shows under the list (#1033).
+pub fn page_ui_with(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], top: Top) -> Option<Click> {
     use egui::RichText;
+    let lock_line = hideout_supervisor::bisect::words::LOCKED;
     ui.label(
         RichText::new("Modules")
             .size(24.0)
@@ -272,8 +395,8 @@ pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], banner: Option<&str>
     );
     ui.add_space(20.0);
     let mut click = None;
-    if banner.is_some_and(|line| safe_mode_banner(ui, t, line)) {
-        click = Some(Click::StartNormally);
+    if let Some(b) = &top.banner {
+        click = banner_ui(ui, t, b);
     }
     if rows.is_empty() {
         ui.label(RichText::new(EMPTY_HEADING).size(17.0).color(c(t.text)));
@@ -322,11 +445,21 @@ pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], banner: Option<&str>
                                 click = Some(Click::Open(r.id.clone()));
                             }
                             if let Some(p) = &r.primary {
-                                let b = egui::Button::new(
-                                    RichText::new(&p.label).color(c(t.on_accent)),
-                                )
-                                .fill(c(t.accent));
-                                if ui.add(b).clicked() {
+                                let locked = top.locked && toggles(p.does);
+                                let (fg, bg) = if locked {
+                                    (t.text_muted, t.surface)
+                                } else {
+                                    (t.on_accent, t.accent)
+                                };
+                                let b = egui::Button::new(RichText::new(&p.label).color(c(fg)))
+                                    .fill(c(bg));
+                                let resp = ui.add(b);
+                                if locked {
+                                    // Focusable, so its description is read (#1033 follow-up 5).
+                                    ui.ctx().accesskit_node_builder(resp.id, |n| {
+                                        n.set_description(lock_line);
+                                    });
+                                } else if resp.clicked() {
                                     click = Some(Click::Primary(r.id.clone(), p.does));
                                 }
                             }
@@ -335,6 +468,9 @@ pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], banner: Option<&str>
                 });
         });
         ui.add_space(8.0);
+    }
+    if top.locked {
+        ui.label(RichText::new(lock_line).color(c(t.text_muted)));
     }
     click
 }
@@ -604,6 +740,146 @@ mod tests {
             Some((16, 3))
         );
         assert_eq!(r.left("m", None, t0), None);
+    }
+
+    /// During a search (#1033): rows say on or off for the round, Off rows aren't part of it,
+    /// rows that need the user keep their words; a locked Turn on keeps its focus, says the
+    /// lock line as its description and does nothing.
+    #[test]
+    fn a_search_words_the_rows_and_locks_the_toggles() {
+        use hideout_supervisor::bisect::words as w;
+        let fact = |k: &str| match k {
+            "hub.safe_mode" => Some(json!(true)),
+            "module.m.c.state" => Some(json!("crash-stopped")),
+            _ => None,
+        };
+        let m = |id: &str, name: &str, enabled| Installed {
+            id: id.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            enabled,
+        };
+        let mut a = row(&m("m.a", "Art", true), &fact, None);
+        let mut b = row(&m("m.b", "Beat", true), &fact, None);
+        let mut c_ = row(&m("m.c", "Chat", true), &fact, None);
+        let mut o = row(&m("m.o", "Oak", false), &fact, None);
+        search_words(&mut a, Some(true));
+        search_words(&mut b, Some(false));
+        search_words(&mut c_, Some(false));
+        search_words(&mut o, None);
+        assert_eq!(a.state, w::ON_IN_ROUND);
+        assert_eq!(b.state, w::OFF_FOR_ROUND);
+        assert_eq!(b.label, "Beat, off for this round");
+        assert_eq!(c_.state, words::STOPPED, "a stopped row keeps its words");
+        assert_eq!(o.state, w::NOT_IN_SEARCH);
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let t = crate::theme::tokens(false);
+        let rows = vec![a, o];
+        let mut clicked = None;
+        let mut frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 700.0),
+                )),
+                ..Default::default()
+            };
+            ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let top = Top {
+                        banner: None,
+                        locked: true,
+                    };
+                    if let Some(c) = page_ui_with(ui, &t, &rows, top) {
+                        clicked = Some(c);
+                    }
+                });
+            })
+        };
+        let out = frame(Vec::new());
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        let turn_on = nodes
+            .iter()
+            .map(|(_, n)| n)
+            .find(|n| n.label() == Some(words::TURN_ON))
+            .expect("no Turn on node");
+        assert!(!turn_on.is_disabled(), "locked, but still focusable");
+        assert_eq!(turn_on.description(), Some(w::LOCKED));
+        let labels: Vec<_> = nodes
+            .iter()
+            .filter_map(|(_, n)| n.label().or(n.value()))
+            .collect();
+        assert!(labels.contains(&w::LOCKED), "the lock line under the list");
+        // Tab to it and press Enter: nothing.
+        for _ in 0..4 {
+            let key = |pressed| egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(vec![key(true), key(false)]);
+            let enter = |pressed| egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(vec![enter(true), enter(false)]);
+        }
+        assert!(
+            !matches!(clicked, Some(Click::Primary(_, Does::TurnOn))),
+            "{clicked:?}"
+        );
+    }
+
+    /// The banner's link starts the search; with nothing to search the line says it's Hideout
+    /// itself and Copy diagnostics leads (#1033).
+    #[test]
+    fn the_banner_offers_the_search_or_says_its_hideout_itself() {
+        use hideout_supervisor::bisect::words as w;
+        let t = crate::theme::tokens(false);
+        let labels = |b: Banner| {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    banner_ui(ui, &t, &b);
+                });
+            });
+            let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+            nodes
+                .iter()
+                .filter_map(|(_, n)| n.label().or(n.value()).map(String::from))
+                .collect::<Vec<_>>()
+        };
+        let one = w::check_one("Art");
+        let l = labels(Banner {
+            line: words::SAFE_MODE_LINE,
+            note: Some(w::STOPPED),
+            find: Find::Link(&one),
+        });
+        for s in [
+            words::SAFE_MODE_LINE,
+            w::STOPPED,
+            words::START_NORMALLY,
+            one.as_str(),
+        ] {
+            assert!(l.iter().any(|x| x == s), "{s} not in {l:?}");
+        }
+        let l = labels(Banner {
+            line: words::SAFE_MODE_LINE,
+            note: None,
+            find: Find::Nothing,
+        });
+        assert!(l.iter().any(|x| x == w::NONE_ON), "{l:?}");
+        assert!(!l.iter().any(|x| x == words::SAFE_MODE_LINE), "{l:?}");
+        assert!(!l.iter().any(|x| x == words::FIND_CULPRIT), "{l:?}");
+        assert!(l.iter().any(|x| x == words::COPY_DIAGNOSTICS), "{l:?}");
     }
 
     /// The banner says the line it's given, and the greyed bisect link carries "Comes in a later

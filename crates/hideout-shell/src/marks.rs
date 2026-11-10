@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! What the tray icon says about the modules (docs/hideout-supervisor-ux.md, "Tray quiet rule"):
 //! a red dot only for a stopped module and one that needs a newer Hideout, an amber dot for safe
-//! mode, and nothing for restarts, updates or starts. Fed from the hub's facts on the router's
+//! mode, and nothing for restarts, updates or starts. While a search for the module that breaks
+//! Hideout runs (#1033) the amber dot stays and the line says where it is. Fed from the hub's facts on the router's
 //! thread; the UI thread applies a change once (`take_change`), so a restart never wakes it.
 
 use crate::icon::State;
@@ -32,6 +33,10 @@ pub struct Marks {
     shown: Option<(State, String, String)>,
     /// Whether the tray menu has **Start normally** now (the last `take_safe_change`).
     shown_safe: Option<bool>,
+    /// The search's tray words (#1033), `None` without one.
+    search: Option<hideout_supervisor::bisect::Tray>,
+    /// What the menu's search items show now (the last `take_search_change`).
+    shown_search: Option<Option<hideout_supervisor::bisect::Tray>>,
 }
 
 impl Marks {
@@ -74,6 +79,16 @@ impl Marks {
         self.paused = on;
     }
 
+    /// The search's tray words (#1033).
+    pub fn set_search(&mut self, s: Option<hideout_supervisor::bisect::Tray>) {
+        self.search = s;
+    }
+
+    /// Start normally is in the menu: safe mode, and no search running (its own items then).
+    fn safe_item(&self) -> bool {
+        self.safe_mode && !self.search.as_ref().is_some_and(|s| s.stop)
+    }
+
     /// The glyph, the menu's status line and the icon's tooltip. Root cause once: one module is
     /// named, the first that needs the user.
     pub fn look(&self) -> (State, String, String) {
@@ -96,6 +111,10 @@ impl Marks {
             };
             let tip = format!("{product} \u{b7} {line}");
             return (State::NeedsYou, line, tip);
+        }
+        if let Some(s) = &self.search {
+            // "Hideout · finding the module (round 2 of 4)": the line and the tooltip.
+            return (State::SafeMode, s.line.clone(), s.line.clone());
         }
         if self.safe_mode {
             return (
@@ -121,16 +140,28 @@ impl Marks {
     /// Kept apart from the look: a stopped module is named over safe mode, but the way out of
     /// safe mode stays in the menu.
     pub fn take_safe_change(&mut self) -> Option<bool> {
-        if self.shown_safe == Some(self.safe_mode) {
+        let on = self.safe_item();
+        if self.shown_safe == Some(on) {
             return None;
         }
-        self.shown_safe = Some(self.safe_mode);
-        Some(self.safe_mode)
+        self.shown_safe = Some(on);
+        Some(on)
+    }
+
+    /// The search's menu items, when they differ from what the menu has.
+    pub fn take_search_change(&mut self) -> Option<Option<hideout_supervisor::bisect::Tray>> {
+        if self.shown_search.clone().unwrap_or(None) == self.search {
+            return None;
+        }
+        self.shown_search = Some(self.search.clone());
+        Some(self.search.clone())
     }
 
     /// Whether the look or the menu differs from what the tray shows (a wake is worth it).
     pub fn changed(&self) -> bool {
-        self.shown.as_ref() != Some(&self.look()) || self.shown_safe != Some(self.safe_mode)
+        self.shown.as_ref() != Some(&self.look())
+            || self.shown_safe != Some(self.safe_item())
+            || self.shown_search.clone().unwrap_or(None) != self.search
     }
 }
 
@@ -169,6 +200,12 @@ pub(crate) fn note_paused(on: bool) {
     wake_if_changed();
 }
 
+/// The search's tray words (#1033); the hub calls it on every change of the search.
+pub fn note_search(s: Option<hideout_supervisor::bisect::Tray>) {
+    with(|m| m.set_search(s));
+    wake_if_changed();
+}
+
 /// How the UI thread gets woken for a change.
 pub(crate) fn set_waker(w: Box<dyn Fn() + Send>) {
     *WAKER.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
@@ -182,6 +219,11 @@ pub(crate) fn take_change() -> Option<(State, String, String)> {
 /// Safe mode for the tray menu's **Start normally**, when it changed.
 pub(crate) fn take_safe_change() -> Option<bool> {
     with(|m| m.take_safe_change())
+}
+
+/// The search's menu items, when they changed.
+pub(crate) fn take_search_change() -> Option<Option<hideout_supervisor::bisect::Tray>> {
+    with(|m| m.take_search_change())
 }
 
 #[cfg(test)]
@@ -279,6 +321,47 @@ mod tests {
         m.fact("hub.safe_mode", &json!(false));
         assert_eq!(m.take_safe_change(), Some(false));
         assert!(!m.changed());
+    }
+
+    /// During a search (#1033): the amber dot with the search's line as line and tooltip;
+    /// Start normally leaves the menu while it runs and comes back at a result.
+    #[test]
+    fn a_search_keeps_the_amber_dot_and_names_the_round() {
+        use hideout_supervisor::bisect::Tray;
+        let mut m = Marks::default();
+        m.fact("hub.safe_mode", &json!(true));
+        assert_eq!(m.take_safe_change(), Some(true));
+        let _ = m.take_search_change();
+        let round = Tray {
+            line: "Hideout \u{b7} finding the module (round 2 of 4)".into(),
+            start_next: None,
+            stop: true,
+        };
+        m.set_search(Some(round.clone()));
+        assert!(m.changed());
+        let (state, line, tip) = m.take_change().unwrap();
+        assert_eq!(state, State::SafeMode);
+        assert_eq!(
+            (line.as_str(), tip.as_str()),
+            (round.line.as_str(), round.line.as_str())
+        );
+        assert_eq!(
+            m.take_safe_change(),
+            Some(false),
+            "Start normally out of the menu"
+        );
+        assert_eq!(m.take_search_change(), Some(Some(round)));
+        assert_eq!(m.take_search_change(), None);
+        m.set_search(Some(Tray {
+            line: "Hideout \u{b7} found the module".into(),
+            start_next: None,
+            stop: false,
+        }));
+        assert_eq!(m.take_safe_change(), Some(true), "back with the result");
+        m.set_search(None);
+        assert_eq!(m.take_change().unwrap().1, "Safe mode");
+        assert_eq!(m.take_search_change(), Some(None));
+        assert_eq!(m.take_search_change(), None);
     }
 
     #[test]

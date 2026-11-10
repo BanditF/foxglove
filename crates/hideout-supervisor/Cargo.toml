@@ -6,6 +6,7 @@ description = "The Hideout hub's light supervisor (contract §7.5, §7.7 to §7.
 license = "MIT"
 
 [dependencies]
+hideout-contract = { path = "../hideout-contract" }
 hideout-registry = { path = "../hideout-registry" }
 hideout-router = { path = "../hideout-router" }
 log = "0.4"
@@ -14,4 +15,4 @@ serde_json = "1"
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
