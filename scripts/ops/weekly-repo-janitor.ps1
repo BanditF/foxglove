@@ -92,7 +92,14 @@ if ($MyInvocation.InvocationName -ne '.') {
     Start-OpsJob -Name 'weekly-repo-janitor' -TimeLimitSec $TimeLimitSec
     if (-not (Test-Path (Join-Path $Repo '.git'))) { Stop-OpsJob -Status 'warn' -Text "$Repo is not a git checkout" -Code 1 }
     $base = if (Invoke-Git @('rev-parse', '--verify', '-q', 'origin/main')) { 'origin/main' } else { 'main' }
-    if (-not $TargetsDir) { $TargetsDir = Join-Path (Split-Path -Parent (Split-Path -Parent $Repo)) 'worktrees\_targets' }
+    if (-not $TargetsDir) {
+        # The pool sits beside the checkout: <root>\foxglove or <root>\ops-main -> <root>\worktrees\_targets,
+        # or a worktree <root>\worktrees\<wt> -> <root>\worktrees\_targets.
+        $parent = Split-Path -Parent $Repo
+        $TargetsDir = @((Join-Path $parent 'worktrees\_targets'), (Join-Path $parent '_targets')) |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $TargetsDir) { Stop-OpsJob -Status 'warn' -Text "no worktrees\_targets beside $Repo; pass -TargetsDir" -Code 1 }
+    }
     $stale = @(Get-StaleBranches $base $StaleDays)
     $wts = @(Get-WorktreeRows)
     $sizes = @(Get-DirSizes $TargetsDir $SizeBudgetSec)
