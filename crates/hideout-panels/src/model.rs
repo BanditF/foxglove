@@ -59,7 +59,7 @@ pub fn state_words(state: &str) -> &'static str {
         "starting" => "Starting",
         "updating" => "Updating",
         "restarting" => "Restarting",
-        "crash-stopped" | "crash-looped" => "Stopped after repeated crashes",
+        "crash-stopped" | "crash-looped" => "Stopped after 5 crashes",
         "waiting" => "Waiting for another module",
         "needs-hub" => "Needs a newer Hideout",
         "install-failed" => "Couldn't install or update",

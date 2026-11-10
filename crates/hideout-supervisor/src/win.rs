@@ -1,0 +1,304 @@
+// SPDX-License-Identifier: MIT
+//! Windows pieces (§7.7): a named Job Object per instance with memory and CPU caps and no
+//! breakaway, starting a process inside it before it runs a single instruction, opening a
+//! process again by pid after a hub restart, and its image path.
+
+use std::ffi::OsString;
+use std::io;
+use std::os::windows::ffi::OsStringExt;
+use std::os::windows::io::AsRawHandle;
+use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectCpuRateControlInformation,
+    JobObjectExtendedLimitInformation, OpenJobObjectW, SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+    JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_JOB_MEMORY,
+};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, INFINITE, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    THREAD_SUSPEND_RESUME,
+};
+
+/// An owned kernel handle.
+pub struct Handle(HANDLE);
+
+// SAFETY: kernel handles may be used from any thread.
+unsafe impl Send for Handle {}
+unsafe impl Sync for Handle {}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // SAFETY: the handle is owned and closed once.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// JOB_OBJECT_ASSIGN_PROCESS | SET_ATTRIBUTES | QUERY | TERMINATE (winnt.h).
+const JOB_ACCESS: u32 = 0x1 | 0x2 | 0x4 | 0x8;
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn check(h: HANDLE) -> io::Result<Handle> {
+    if h.is_null() || h == INVALID_HANDLE_VALUE {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(Handle(h))
+    }
+}
+
+/// The caps each instance's Job Object gets (§7.7).
+#[derive(Clone, Copy, Debug)]
+pub struct Caps {
+    /// All the job's processes together, in bytes.
+    pub memory: usize,
+    /// Hard CPU cap in 1/100 of a percent of the whole machine (5000 = half).
+    pub cpu_rate: u32,
+}
+
+impl Default for Caps {
+    fn default() -> Self {
+        Caps {
+            memory: 4 << 30,
+            cpu_rate: 5000,
+        }
+    }
+}
+
+/// A named Job Object. Closing the handle does not end the processes (no kill-on-close): a
+/// module keeps running for its grace period when the hub goes (§7.9), and the restarted hub
+/// opens the job again by name.
+pub struct Job {
+    handle: Handle,
+    pub name: String,
+}
+
+impl Job {
+    /// `Local\hideout-job-<user>-<module>-<instance>`.
+    pub fn name_for(user: &str, module: &str, instance: u64) -> String {
+        format!(r"Local\hideout-job-{user}-{module}-{instance}")
+    }
+
+    pub fn create(name: &str, caps: Caps) -> io::Result<Job> {
+        let w = wide(name);
+        // SAFETY: a valid wide string; default security (the creator's).
+        let handle = check(unsafe { CreateJobObjectW(std::ptr::null(), w.as_ptr()) })?;
+        let mut ext = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        // No JOB_OBJECT_LIMIT_BREAKAWAY_OK / SILENT_BREAKAWAY_OK: children stay in the job.
+        ext.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+        ext.JobMemoryLimit = caps.memory;
+        // SAFETY: the struct and its size match the info class.
+        let ok = unsafe {
+            SetInformationJobObject(
+                handle.0,
+                JobObjectExtendedLimitInformation,
+                &ext as *const _ as *const _,
+                std::mem::size_of_val(&ext) as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut cpu = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION {
+            ControlFlags: JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+            ..Default::default()
+        };
+        cpu.Anonymous.CpuRate = caps.cpu_rate.clamp(1, 10000);
+        // SAFETY: as above.
+        let ok = unsafe {
+            SetInformationJobObject(
+                handle.0,
+                JobObjectCpuRateControlInformation,
+                &cpu as *const _ as *const _,
+                std::mem::size_of_val(&cpu) as u32,
+            )
+        };
+        if ok == 0 {
+            // A CPU cap can be refused in a nested job (a lab runner's own job): the memory cap
+            // and containment still hold.
+            log::warn!(
+                "supervisor: CPU cap on {name} refused: {}",
+                io::Error::last_os_error()
+            );
+        }
+        Ok(Job {
+            handle,
+            name: name.into(),
+        })
+    }
+
+    /// Opens a job the hub made before it restarted (§7.9).
+    pub fn open(name: &str) -> io::Result<Job> {
+        let w = wide(name);
+        // SAFETY: a valid wide string.
+        let handle = check(unsafe { OpenJobObjectW(JOB_ACCESS, 0, w.as_ptr()) })?;
+        Ok(Job {
+            handle,
+            name: name.into(),
+        })
+    }
+
+    /// Ends every process in the job.
+    pub fn kill(&self, code: u32) {
+        // SAFETY: an owned job handle.
+        unsafe { TerminateJobObject(self.handle.0, code) };
+    }
+
+    /// Starts `command` suspended, puts it in this job, then lets it run: the process and every
+    /// child it makes are inside before its first instruction.
+    pub fn spawn(&self, command: Command) -> io::Result<Child> {
+        self.spawn_with(command, |mut c| c.spawn())
+    }
+
+    /// [`Job::spawn`] with the spawn step given (the legacy stdio bridge spawns for itself).
+    pub fn spawn_with(
+        &self,
+        mut command: Command,
+        spawn: impl FnOnce(Command) -> io::Result<Child>,
+    ) -> io::Result<Child> {
+        command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
+        let mut child = spawn(command)?;
+        // SAFETY: the child's process handle is valid while `child` lives.
+        let ok = unsafe { AssignProcessToJobObject(self.handle.0, child.as_raw_handle() as _) };
+        if ok == 0 {
+            let e = io::Error::last_os_error();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+        resume(child.id())?;
+        Ok(child)
+    }
+}
+
+/// Resumes every thread of a process started suspended (only its first thread exists).
+fn resume(pid: u32) -> io::Result<()> {
+    // SAFETY: a snapshot handle checked and owned below.
+    let snap = check(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) })?;
+    let mut te = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    let mut resumed = 0;
+    // SAFETY: `te` is sized; the snapshot is valid.
+    let mut more = unsafe { Thread32First(snap.0, &mut te) } != 0;
+    while more {
+        if te.th32OwnerProcessID == pid {
+            // SAFETY: thread handle checked and closed by `Handle`.
+            if let Ok(t) = check(unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, te.th32ThreadID) }) {
+                unsafe { ResumeThread(t.0) };
+                resumed += 1;
+            }
+        }
+        // SAFETY: as above.
+        more = unsafe { Thread32Next(snap.0, &mut te) } != 0;
+    }
+    if resumed == 0 {
+        return Err(io::Error::other(format!("no thread of {pid} to resume")));
+    }
+    Ok(())
+}
+
+/// A process the hub didn't start in this run (taken back, §7.9), or any pid to inspect.
+pub struct Process(Handle);
+
+impl Process {
+    pub fn open(pid: u32) -> io::Result<Process> {
+        // SAFETY: plain call; the handle is checked.
+        let h = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                0,
+                pid,
+            )
+        };
+        Ok(Process(check(h)?))
+    }
+
+    /// The full path of its exe.
+    pub fn image(&self) -> io::Result<PathBuf> {
+        image_of(self.0 .0)
+    }
+
+    /// Blocks until it ends; its exit code.
+    pub fn wait(&self) -> io::Result<i64> {
+        // SAFETY: a process handle with SYNCHRONIZE.
+        if unsafe { WaitForSingleObject(self.0 .0, INFINITE) } != WAIT_OBJECT_0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut code = 0u32;
+        // SAFETY: as above, with query rights.
+        if unsafe { GetExitCodeProcess(self.0 .0, &mut code) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(code as i32 as i64)
+    }
+}
+
+fn image_of(h: HANDLE) -> io::Result<PathBuf> {
+    let mut buf = vec![0u16; 32768];
+    let mut len = buf.len() as u32;
+    // SAFETY: `buf` holds `len` u16s.
+    let ok =
+        unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(OsString::from_wide(&buf[..len as usize])))
+}
+
+/// The image path of process `pid`.
+pub fn image_of_pid(pid: u32) -> io::Result<PathBuf> {
+    Process::open(pid)?.image()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job(tag: &str) -> Job {
+        let name = Job::name_for("test", tag, std::process::id() as u64);
+        Job::create(&name, Caps::default()).unwrap()
+    }
+
+    #[test]
+    fn spawned_process_runs_in_the_job_and_reports_its_code() {
+        let j = job("code");
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "exit 3"]);
+        let mut child = j.spawn(cmd).unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(3));
+    }
+
+    #[test]
+    fn kill_ends_the_job_and_reopen_finds_it() {
+        let j = job("kill");
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null());
+        let mut child = j.spawn(cmd).unwrap();
+        let p = Process::open(child.id()).unwrap();
+        assert!(p
+            .image()
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase()
+            .ends_with("ping.exe"));
+        let again = Job::open(&j.name).unwrap();
+        again.kill(7);
+        assert_eq!(p.wait().unwrap(), 7);
+        assert_eq!(child.wait().unwrap().code(), Some(7));
+    }
+}

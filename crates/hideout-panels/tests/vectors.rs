@@ -299,7 +299,7 @@ fn banners_use_plain_words_and_keep_ids_in_details() {
     host.module_gone(ART, "crash-looped");
     let p = host.panel(&key).unwrap();
     let line = p.state.banner("Art").unwrap();
-    assert_eq!(line, "Art: Stopped after repeated crashes.");
+    assert_eq!(line, "Art: Stopped after 5 crashes.");
     assert!(!line.contains("crash-looped"));
     assert_eq!(p.state.details().unwrap(), "State: crash-looped");
     let rejected = PanelState::Rejected("ui.limits".into());

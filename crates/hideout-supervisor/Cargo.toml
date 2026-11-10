@@ -1,0 +1,17 @@
+[package]
+name = "hideout-supervisor"
+version = "0.1.0"
+edition = "2021"
+description = "The Hideout hub's light supervisor (contract §7.5, §7.7 to §7.9): Job Objects per module, activation, backoff, the crash-loop stop, the launch check at initialize and adoption after a hub restart. Clean-room MIT."
+license = "MIT"
+
+[dependencies]
+hideout-registry = { path = "../hideout-registry" }
+hideout-router = { path = "../hideout-router" }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }

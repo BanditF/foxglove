@@ -26,7 +26,7 @@ fn root() -> PathBuf {
 const NOT_ROUTER: &[(&str, &str)] = &[
     (
         "transcripts/supervisor/",
-        "supervisor (H2.4): states, backoff, rollback",
+        "supervisor (H2.5): run by crates/hideout-supervisor/tests/transcripts.rs",
     ),
     (
         "transcripts/swap/",
@@ -48,7 +48,7 @@ const NOT_ROUTER: &[(&str, &str)] = &[
     ),
     (
         "transcripts/lifecycle/register-not-ready-in-30s.json",
-        "the supervisor's ready timer",
+        "the supervisor's ready timer: run by crates/hideout-supervisor/tests/transcripts.rs",
     ),
     (
         "transcripts/ui/patch-rate.json",

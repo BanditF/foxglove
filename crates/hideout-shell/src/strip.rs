@@ -608,7 +608,7 @@ mod tests {
         );
         assert_eq!(
             panel_state(&PanelState::Greyed("crash-stopped".into())),
-            TabState::Stopped("Stopped after repeated crashes".into())
+            TabState::Stopped("Stopped after 5 crashes".into())
         );
         assert_eq!(
             panel_state(&PanelState::Greyed("off".into())),

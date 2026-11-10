@@ -2004,6 +2004,7 @@ dependencies = [
  "hideout-registry",
  "hideout-router",
  "hideout-shell",
+ "hideout-supervisor",
  "log",
  "serde_json",
 ]
@@ -2087,6 +2088,19 @@ dependencies = [
  "tray-icon",
  "windows 0.62.2",
  "winit",
+]
+
+[[package]]
+name = "hideout-supervisor"
+version = "0.1.0"
+dependencies = [
+ "hideout-registry",
+ "hideout-router",
+ "log",
+ "serde",
+ "serde_json",
+ "sha2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
