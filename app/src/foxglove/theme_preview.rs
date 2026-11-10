@@ -1829,6 +1829,88 @@ fn tray_panel_renders() {
     );
 }
 
+/// #952: the tray panel's Knob row with Hide from knob, the row after a hide, and the Keyboard
+/// page's Knob card (its list, and empty), for the designer's review.
+#[test]
+fn knob_hide_renders() {
+    use crate::foxglove::knob_hide::{card_body, Row, Why};
+    use crate::foxglove::theme::DARK;
+    use crate::foxglove::tray_panel::{self, KnobRow, View};
+    let base = tray_panel::tests::sample();
+    let size = egui::vec2(tray_panel::WIDTH * 2.0 + 60.0, 800.0);
+    let on = View {
+        knob: Some(KnobRow::On {
+            name: "Logi Options+".into(),
+            line: "1 of 3 · 40 %".into(),
+            exe: Some(r"C:\Program Files\LogiOptionsPlus\LogiOptionsMgr.exe".into()),
+        }),
+        ..base.clone()
+    };
+    let hidden = View {
+        knob: Some(KnobRow::Hidden {
+            name: "Logi Options+".into(),
+        }),
+        ..base
+    };
+    let ctx = preview_ctx();
+    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+        for (i, v) in [&on, &hidden].into_iter().enumerate() {
+            egui::Area::new(egui::Id::new(("knob-tray-preview", i)))
+                .fixed_pos(egui::pos2(
+                    20.0 + i as f32 * (tray_panel::WIDTH + 20.0),
+                    20.0,
+                ))
+                .show(ctx, |ui| {
+                    tray_panel::panel(ui, v, &mut Default::default(), &mut Vec::new());
+                });
+        }
+    });
+    keep("ui-952-tray-knob.png", &img);
+    let total = (img.width() * img.height()) as usize;
+    let ground = img
+        .pixels()
+        .filter(|p| p.0[..3] == [DARK.ground.r(), DARK.ground.g(), DARK.ground.b()])
+        .count();
+    assert!(ground > total / 4, "both panels' ground");
+
+    let rows = vec![
+        Row {
+            path: r"C:\Users\u\AppData\Local\Discord\app-1.0.9\Discord.exe".into(),
+            name: "Discord".into(),
+            why: Why::User {
+                date: "2026-11-09".into(),
+            },
+        },
+        Row {
+            path: "LogiOptionsMgr.exe".into(),
+            name: "Logi Options+".into(),
+            why: Why::Seed,
+        },
+    ];
+    let apps = vec![("Spotify".to_string(), r"C:\Apps\Spotify.exe".to_string())];
+    let ctx = preview_ctx();
+    let img = render_ui(&ctx, egui::vec2(1040.0, 540.0), DARK.ground, |ui| {
+        egui::Frame::new().inner_margin(16).show(ui, |ui| {
+            crate::foxglove::settings_ui::card(ui, "Knob", |ui| card_body(ui, &rows, None, &apps));
+            ui.add_space(10.0);
+            ui.columns(2, |cols| {
+                crate::foxglove::settings_ui::card(&mut cols[0], "Knob", |ui| {
+                    card_body(
+                        ui,
+                        &rows[1..],
+                        Some("Discord is back in the knob's cycle."),
+                        &apps,
+                    )
+                });
+                crate::foxglove::settings_ui::card(&mut cols[1], "Knob", |ui| {
+                    card_body(ui, &[], None, &apps)
+                });
+            });
+        });
+    });
+    keep("ui-952-settings-knob.png", &img);
+}
+
 /// The Lights page (#387) with a keyboard and without one.
 #[test]
 fn lights_page_renders() {

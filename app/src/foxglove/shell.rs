@@ -179,6 +179,10 @@ pub fn set_page(page: Page) {
         super::led_map_ui::cancel();
         super::pc_lights_ui::forget_remove();
     }
+    if page != Page::Keyboard {
+        // #952: the Knob card's "back in the knob's cycle" line lasts until the page changes.
+        super::knob_hide::page_left();
+    }
     CURRENT.set(Some(page));
     if let Err(e) = super::store::save("window", &WindowSettings { page }) {
         eprintln!("Foxglove: can't save the settings page: {e}");

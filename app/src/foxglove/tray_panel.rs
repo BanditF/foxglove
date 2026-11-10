@@ -220,6 +220,17 @@ struct Open {
     rect: Option<Rect>,
     /// The same in screen pixels (left, top, right, bottom), for the local API.
     screen: Option<[i32; 4]>,
+    /// The app just hidden from the knob (#952): its row says so, with Undo, until the panel
+    /// closes.
+    hidden: Option<JustHidden>,
+}
+
+/// An app hidden from the tray panel's Knob row, and what Undo puts back.
+#[derive(Clone, Debug, PartialEq)]
+struct JustHidden {
+    name: String,
+    exe: String,
+    before: Option<super::knob_hide::Choice>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -276,6 +287,58 @@ pub struct View {
     pub devices: Vec<(String, String, bool)>,
     /// The focused keyboard's name, in the title (#801); `None` before any keyboard was found.
     pub keyboard: Option<String>,
+    /// The Knob row (#952): only while the knob is on an app, or just after hiding one.
+    pub knob: Option<KnobRow>,
+}
+
+/// The tray panel's Knob row (#952, `docs/knob-exclude-ux.md`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KnobRow {
+    /// The knob is on an app: its name, "<n> of <m> · <level> %", and its program (`None`:
+    /// Windows didn't tell it, so it can't be hidden).
+    On {
+        name: String,
+        line: String,
+        exe: Option<String>,
+    },
+    /// "<app> is hidden from the knob." with Undo and Change in Settings.
+    Hidden { name: String },
+}
+
+pub const HIDE: &str = "Hide from knob";
+pub const UNDO: &str = "Undo";
+pub const CHANGE_IN_SETTINGS: &str = "Change in Settings";
+
+/// "<n> of <m> · <level> %" (or "muted").
+pub fn knob_line(t: &super::knob::TrayLine) -> String {
+    let level = if t.muted {
+        Some("muted".to_string())
+    } else {
+        t.level.map(|l| format!("{l} %"))
+    };
+    let place = t.place.map(|(i, n)| format!("{i} of {n}"));
+    [place, level]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// "<app> is hidden from the knob."
+pub fn hidden_line(name: &str) -> String {
+    format!("{name} is hidden from the knob.")
+}
+
+/// The Knob row: the app just hidden wins; else the knob's target; on master, none.
+pub fn knob_row(target: Option<&super::knob::TrayLine>, hidden: Option<&str>) -> Option<KnobRow> {
+    if let Some(name) = hidden {
+        return Some(KnobRow::Hidden { name: name.into() });
+    }
+    target.map(|t| KnobRow::On {
+        name: t.name.clone(),
+        line: knob_line(t),
+        exe: t.exe.clone(),
+    })
 }
 
 /// The title's keyboard name at most this wide, so the pause button keeps its room.
@@ -302,6 +365,15 @@ pub enum Intent {
     /// Pause (true) or resume Foxglove (#404).
     Pause(bool),
     OpenFoxglove,
+    /// "Hide from knob" (#952): the app's name and program.
+    HideFromKnob {
+        name: String,
+        exe: String,
+    },
+    /// Undo after a hide.
+    UndoHide,
+    /// "Change in Settings": the Keyboard page, with its Knob card.
+    KnobSettings,
 }
 
 /// Next to the title while Foxglove is paused.
@@ -375,7 +447,7 @@ fn art(s: &super::art_service::Snapshot, library: &super::art_library::Library) 
     }
 }
 
-fn view(ctx: &egui::Context) -> View {
+fn view(ctx: &egui::Context, hidden: Option<&str>) -> View {
     let (profiles, active_profile) = super::store::cached_profiles();
     let rgb = super::keyboard_settings::rgb_state(ctx);
     let lights = rgb.map(|s| s.left);
@@ -406,6 +478,7 @@ fn view(ctx: &egui::Context) -> View {
         update: super::update::available_version().map(|v| format!("Update available: v{v}")),
         devices: devices(&super::peripherals::list()),
         keyboard: super::keyboard_focus::current().map(|k| k.name),
+        knob: knob_row(super::knob::tray_line().as_ref(), hidden),
     })
 }
 
@@ -453,6 +526,7 @@ pub fn show(ctx: &egui::Context) -> bool {
             draft: Draft::default(),
             rect: None,
             screen: None,
+            hidden: None,
         });
         // Focus, so a click elsewhere (or Alt+Tab) closes the panel through the focus event.
         // Without faking input (#618, focus.rs): the tray click gave the app the foreground.
@@ -475,6 +549,7 @@ pub fn show(ctx: &egui::Context) -> bool {
                 draft: Draft::default(),
                 rect: None,
                 screen: None,
+                hidden: None,
             });
             super::focus::bring_to_front(
                 ctx,
@@ -516,7 +591,7 @@ pub fn show(ctx: &egui::Context) -> bool {
     let at = place(open.icon, work, size) - work.min.to_vec2();
     // #504: the controllers' levels stay fresh while the panel is open.
     super::peripherals::visible(ctx);
-    let v = view(ctx);
+    let v = view(ctx, open.hidden.as_ref().map(|h| h.name.as_str()));
     let mut intents = Vec::new();
     let response = egui::Area::new(id)
         .order(egui::Order::Foreground)
@@ -530,6 +605,28 @@ pub fn show(ctx: &egui::Context) -> bool {
         && ctx
             .input(|i| i.pointer.interact_pos())
             .is_some_and(|p| !response.rect.contains(p));
+    // #952: hide and Undo keep their state in the open panel.
+    intents.retain(|intent| match intent {
+        Intent::HideFromKnob { name, exe } => {
+            if let Some(before) = super::knob_hide::hide(exe, name) {
+                open.hidden = Some(JustHidden {
+                    name: name.clone(),
+                    exe: exe.clone(),
+                    before,
+                });
+            }
+            ctx.request_repaint();
+            false
+        }
+        Intent::UndoHide => {
+            if let Some(h) = open.hidden.take() {
+                super::knob_hide::restore(&h.exe, h.before);
+            }
+            ctx.request_repaint();
+            false
+        }
+        _ => true,
+    });
     drop(guard);
     let mut open_settings = false;
     for intent in intents {
@@ -616,6 +713,12 @@ fn act(ctx: &egui::Context, intent: Intent) -> bool {
         Intent::PauseLeftPanel(on) => super::screens::set_paused(on),
         Intent::Pause(on) => super::pause::set(on),
         Intent::OpenFoxglove => return true,
+        Intent::KnobSettings => {
+            super::shell::set_page(super::shell::Page::Keyboard);
+            return true;
+        }
+        // Carried out in `show`, which keeps the Undo.
+        Intent::HideFromKnob { .. } | Intent::UndoHide => {}
     }
     false
 }
@@ -718,6 +821,9 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     }
                 });
             });
+            if let Some(row) = &v.knob {
+                knob(ui, row, out);
+            }
             lights(ui, v, draft, out);
             // The two screens (#519): the left one's line with its pause, the right one's
             // piece with ‹ / Next › through Rotation, Art… to the page, and the strip.
@@ -783,6 +889,56 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 });
             });
         });
+}
+
+/// The Knob row (#952): the knob's app with Hide from knob, or the line after hiding it.
+fn knob(ui: &mut egui::Ui, row: &KnobRow, out: &mut Vec<Intent>) {
+    let p = theme::palette(ui);
+    part(
+        ui,
+        "Knob",
+        |_| {},
+        |ui| match row {
+            KnobRow::On { name, line, exe } => {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(name).color(p.text_strong));
+                        ui.label(RichText::new(line).small().color(p.muted));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let hide = ui
+                            .add_enabled(exe.is_some(), egui::Button::new(HIDE))
+                            .on_hover_text("The knob skips this app from now on")
+                            .on_disabled_hover_text("Windows doesn't say which program this is");
+                        if hide.clicked() {
+                            if let Some(exe) = exe {
+                                out.push(Intent::HideFromKnob {
+                                    name: name.clone(),
+                                    exe: exe.clone(),
+                                });
+                            }
+                        }
+                    });
+                });
+            }
+            KnobRow::Hidden { name } => {
+                ui.label(RichText::new(hidden_line(name)).color(p.text));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button(UNDO).clicked() {
+                        out.push(Intent::UndoHide);
+                    }
+                    let settings = ui.add(
+                        egui::Button::new(RichText::new(CHANGE_IN_SETTINGS).color(p.accent))
+                            .frame(false),
+                    );
+                    if settings.clicked() {
+                        out.push(Intent::KnobSettings);
+                    }
+                });
+            }
+        },
+    );
 }
 
 fn half_chip(ui: &mut egui::Ui, name: &str, tone: Tone, text: &str) {
@@ -1242,6 +1398,61 @@ pub mod tests {
             update: Some("Update available: v0.2.1".into()),
             devices: devices(&super::super::peripherals::tests::sample()),
             keyboard: Some("Eyelash Corne".into()),
+            knob: None,
+        }
+    }
+
+    #[test]
+    fn the_knob_row_follows_the_knob_and_the_hide() {
+        use super::super::knob::TrayLine;
+        let t = TrayLine {
+            name: "Player".into(),
+            exe: Some(r"C:\Apps\Player.exe".into()),
+            place: Some((1, 3)),
+            level: Some(40),
+            muted: false,
+        };
+        // On master: no row.
+        assert_eq!(knob_row(None, None), None);
+        assert_eq!(
+            knob_row(Some(&t), None),
+            Some(KnobRow::On {
+                name: "Player".into(),
+                line: "1 of 3 · 40 %".into(),
+                exe: t.exe.clone(),
+            })
+        );
+        assert_eq!(
+            knob_line(&TrayLine {
+                muted: true,
+                ..t.clone()
+            }),
+            "1 of 3 · muted"
+        );
+        assert_eq!(
+            knob_line(&TrayLine {
+                place: None,
+                ..t.clone()
+            }),
+            "40 %"
+        );
+        // Just hidden: the row says so (the knob already moved on), until the panel closes.
+        assert_eq!(
+            knob_row(Some(&t), Some("Vendor")),
+            Some(KnobRow::Hidden {
+                name: "Vendor".into()
+            })
+        );
+        assert_eq!(hidden_line("Vendor"), "Vendor is hidden from the knob.");
+        // No session id, pid or "session" in what the row draws.
+        for s in [
+            HIDE,
+            UNDO,
+            CHANGE_IN_SETTINGS,
+            &hidden_line("Vendor"),
+            &knob_line(&t),
+        ] {
+            assert!(!s.to_lowercase().contains("session") && !s.contains("pid"));
         }
     }
 }

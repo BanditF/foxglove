@@ -1,0 +1,10 @@
+# Apps hidden from the knob's cycle by default (#952). Data, not code: the knob matches a
+# session's program by its file name (any folder, any case). The user can show any of these
+# again in Settings > Keyboard > Knob; that choice is kept and wins over this list.
+#
+# Add an entry only for a program that holds a sound stream open in the background and that
+# people never want to turn up or down with the knob.
+
+[[app]]
+file = "LogiOptionsMgr.exe"
+name = "Logi Options+"
