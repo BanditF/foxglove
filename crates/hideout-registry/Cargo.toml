@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 foxglove-plugin-trust = { path = "../plugin-trust" }
+hideout-acl = { path = "../hideout-acl" }
 hideout-contract = { path = "../hideout-contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

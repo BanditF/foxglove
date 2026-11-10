@@ -370,7 +370,7 @@ impl Tabs {
     /// Writes atomically: a temp file next to `path`, then a rename over it.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            hideout_acl::create_private_dir_all(dir)?;
         }
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, self.to_toml())?;

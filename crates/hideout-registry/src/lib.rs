@@ -159,12 +159,12 @@ impl Registry {
     }
 
     fn save_inventory(&self) -> io::Result<()> {
-        std::fs::create_dir_all(&self.home)?;
+        hideout_acl::create_private_dir_all(&self.home)?;
         self.inventory.save(&self.home.join("inventory.json"))
     }
 
     fn save_hub(&self) -> io::Result<()> {
-        std::fs::create_dir_all(&self.home)?;
+        hideout_acl::create_private_dir_all(&self.home)?;
         self.hub.save(&self.home.join("hideout.toml"))
     }
 
