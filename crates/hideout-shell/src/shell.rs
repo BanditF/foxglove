@@ -84,6 +84,7 @@ pub fn open_module(module: &str) {
 
 /// Applies a pending tray change on the UI thread (`wake::Gate` runs it on every wake).
 fn tray_sync() {
+    crate::lab_control::note_wake();
     if let Some((state, line, tip)) = crate::marks::take_change() {
         tray::set_state(state, &line, &tip);
     }
@@ -226,7 +227,10 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             let tray_shared = shared.clone();
             let tray_ctx = ctx.clone();
             // tray::install logs "tray icon registered" or "tray icon failed: <err>".
-            let _ = tray::install(move |cmd| on_tray(cmd, &tray_shared, &tray_ctx));
+            let _ = tray::install(move |cmd| {
+                crate::lab_control::note_tray(&cmd);
+                on_tray(cmd, &tray_shared, &tray_ctx)
+            });
             // Facts that change the tray wake the loop once; `tray_sync` applies them.
             let marks_ctx = ctx.clone();
             crate::marks::set_waker(Box::new(move || marks_ctx.request_repaint()));
@@ -255,6 +259,8 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             // Choose file for file settings: the Windows picker (tests leave it out).
             hub.panels.picker = Some(hideout_panels::model::Picker(Box::new(platform::pick_file)));
             hub.capture = start_capture(&hub.shared.paths, &ctx);
+            // Lab control (#1003): a lab hub only; nothing starts on the user's hub.
+            let _ = crate::lab_control::start(&hub.shared.paths, &ctx, flyout_id());
             Ok(Box::new(hub))
         }),
         &event_loop,
@@ -515,7 +521,7 @@ struct FlyoutState {
 }
 
 /// The flyout's viewport.
-fn flyout_id() -> egui::ViewportId {
+pub(crate) fn flyout_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("hideout.tray.flyout")
 }
 

@@ -100,6 +100,11 @@ pub fn set_main_window(hwnd: isize) {
     MAIN_HWND.store(hwnd, Ordering::Release);
 }
 
+/// The main window's handle, any thread; 0 before it exists (lab control, #1003).
+pub fn main_hwnd() -> isize {
+    MAIN_HWND.load(Ordering::Acquire)
+}
+
 fn main_window() -> Option<HWND> {
     match MAIN_HWND.load(Ordering::Acquire) {
         0 => None,
@@ -332,6 +337,11 @@ fn find_own_window(title: &str, skip: &[isize]) -> Option<HWND> {
         );
     }
     (f.found != 0).then_some(HWND(f.found as *mut _))
+}
+
+/// The flyout's window handle, any thread; 0 while none (lab control, #1003).
+pub fn flyout_hwnd() -> isize {
+    FLYOUT_HWND.load(Ordering::Acquire)
 }
 
 /// The flyout window closed: forget its handle.
