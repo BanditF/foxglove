@@ -590,6 +590,8 @@ struct FlyoutState {
     misses: u8,
     /// When it was first shown (placed), for the focus hand-off check (#1000).
     shown_at: Option<std::time::Instant>,
+    /// The first tile takes the keyboard focus in the next frame (it just opened).
+    focus_first: bool,
 }
 
 /// The flyout's viewport.
@@ -833,6 +835,7 @@ impl Hub {
                         placed: None,
                         misses: 0,
                         shown_at: None,
+                        focus_first: true,
                     });
                     self.panels.set_tray_open(true);
                 }
@@ -858,11 +861,25 @@ impl Hub {
             .with_inner_size([flyout::WIDTH, flyout::FIRST_HEIGHT]);
         let (panels, layout) = (&mut self.panels, &mut self.tray_layout);
         let editing = &mut fly.editing;
+        let focus_first = std::mem::take(&mut fly.focus_first);
         let frame = ctx.show_viewport_immediate(flyout_id(), builder, |ctx, class| {
             let focused = ctx.input(|i| i.viewport().focused);
+            // Esc closes an open ··· menu first (the menu takes it), then the flyout.
+            let menu_open = egui::Popup::is_any_open(ctx);
             let close = ctx.input_mut(|i| {
-                i.consume_key(Modifiers::NONE, Key::Escape) || i.viewport().close_requested()
+                (!menu_open && i.consume_key(Modifiers::NONE, Key::Escape))
+                    || i.viewport().close_requested()
             });
+            // Keyboard (#991): the first tile has the focus when it opens; the Menu key opens
+            // the focused tile's ··· menu like Shift+F10.
+            if focus_first && !*editing {
+                // A tray click (pointer): the ring waits for a key. tray-icon sends no keyboard open
+                // (notify version 0); a NIN_KEYSELECT open would pass true.
+                hideout_panels::tray::focus_first_tile(ctx, panels, layout, false);
+            }
+            if platform::take_flyout_menu_key() {
+                hideout_panels::tray::menu_key(ctx);
+            }
             if let Some(tx) = capture.take() {
                 crate::capture::queue_readback(ctx, crate::capture::Window::Flyout, tx);
             }

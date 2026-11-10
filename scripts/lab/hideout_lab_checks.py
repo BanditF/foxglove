@@ -64,6 +64,11 @@ def field_after(state, label, window='main'):
     return next((i for i in range(start + 1, len(nodes)) if nodes[i].get('role') in ('TextInput', 'MultilineTextInput')), None)
 
 
+def tile_title(name):
+    """A tile's title from its accessible name ("Focus timer, 18:42, Focus · round 2 of 4")."""
+    return (name or '').split(', ')[0]
+
+
 def flicker_verdict(frames, main_shown):
     """The double-click check (#997 step 1): PASS when the flyout never became visible between
     the double click and the main window showing, else FAIL with when and how long."""
@@ -332,6 +337,43 @@ def flyout_steps(hub, check):
         check('997.5 arrows and Enter in the tray menu pick Open Hideout', ok and target is not None,
               f'main on screen: {s["main"]["on_screen"]}')
 
+    def s10_tile_keyboard():
+        # #991: the keyboard inside the open flyout (docs/hideout-plugin-modules-ux.md).
+        hub.to_tray()
+        hub.do('open-flyout')
+        ok, s = hub.wait(lambda s: s['flyout']['visible'] and s['flyout'].get('focus'), 5)
+        first = s['flyout'].get('focus') or ''
+        if not check('991 the flyout opens with the first tile focused',
+                     tile_title(first) in ('Focus timer', 'Mic mute'), f'focus {first!r}'):
+            return hub.do('close-flyout')
+        hub.do('key', 'right', 'flyout')
+        second = hub.state()['flyout'].get('focus') or ''
+        check('991 Right moves to the next tile', tile_title(second) not in ('', tile_title(first)),
+              f'{first!r} -> {second!r}')
+        hub.do('key', 'left', 'flyout')
+        back = hub.state()['flyout'].get('focus') or ''
+        check('991 Left comes back', tile_title(back) == tile_title(first), f'focus {back!r}')
+        if tile_title(first) == 'Focus timer':
+            hub.do('key', 'space', 'flyout')
+            ok, s = hub.wait(lambda s: 'Paused' in (s['flyout'].get('focus') or ''), 5)
+            check('991 Space presses the tile button (Pause)', ok, f'focus {s["flyout"].get("focus")!r}')
+            hub.do('key', 'space', 'flyout')  # Resume: leave the timer as it was
+        hub.do('key', 'shift+f10', 'flyout')
+        ok, s = hub.wait(lambda s: (s['flyout'].get('focus') or '').startswith('Open '), 5)
+        check('991 Shift+F10 opens the tile menu with Open <Module> focused', ok,
+              f'focus {s["flyout"].get("focus")!r}')
+        hub.do('key', 'esc', 'flyout')
+        ok, s = hub.wait(lambda s: tile_title(s['flyout'].get('focus')) == tile_title(first), 5)
+        check('991 Esc closes the menu, not the flyout; the focus is back on the tile',
+              ok and s['flyout']['open'], f'open={s["flyout"]["open"]} focus {s["flyout"].get("focus")!r}')
+        ok, why = hub.capture('991-flyout-keyboard')
+        check('991 capture', ok, why)
+        hub.do('key', 'enter', 'flyout')
+        ok, s = hub.wait(lambda s: s['main']['on_screen'] and not s['flyout']['open'], 5)
+        check('991 Enter opens the tile page in the main window', ok and
+              (s.get('active_page') or '').startswith(tile_title(first)),
+              f'main={s["main"]["on_screen"]} active {s.get("active_page")!r}')
+
     def s8_obs_cancel():
         hub.show_main()
         names = manifest_names(hub.lab)
@@ -390,7 +432,7 @@ def flyout_steps(hub, check):
         check('997.9 back to the hidden baseline after the flyout', rate <= 2, f'{rate:.1f} wakes/s over 10 s')
 
     for name, fn in [('1019', s0_hidden_root_gate), ('997.1', s1_click_opens), ('997.1 dbl', s1_double_click), ('997.2', s2_toggle_and_esc),
-                     ('997.4', s4_hide_and_order), ('997.5', s5_open_and_keyboard), ('997.8', s8_obs_cancel),
+                     ('997.4', s4_hide_and_order), ('997.5', s5_open_and_keyboard), ('991 keys', s10_tile_keyboard), ('997.8', s8_obs_cancel),
                      ('997.9', s9_hidden_wakes)]:
         step(check, name, fn)
 

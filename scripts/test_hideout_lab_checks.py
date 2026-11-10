@@ -50,6 +50,11 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(hl.tray_status(STATE), 'Hideout')
         self.assertIsNone(hl.tray_status({'tray': {'menu': None}}))
 
+    def test_a_tile_title_comes_from_its_accessible_name(self):
+        self.assertEqual(hl.tile_title('Focus timer, 18:42, Focus · round 2 of 4'), 'Focus timer')
+        self.assertEqual(hl.tile_title('Mic mute'), 'Mic mute')
+        self.assertEqual(hl.tile_title(None), '')
+
     def test_manifest_names_and_exe_come_from_the_lab_folder(self):
         with tempfile.TemporaryDirectory() as d:
             m = Path(d) / 'lab-modules' / 'org.foxglove.focus-timer'

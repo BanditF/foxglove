@@ -1177,8 +1177,10 @@ fn the_tile_layout_is_saved_in_hideout_toml() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The flyout for the review (#991): the default tiles, all five once their apps were seen,
-/// and Edit tiles, each at the size the flyout opens with.
+/// The flyout for the review (#991): the default tiles, the same with the keyboard focus on the
+/// first tile (as it opens), all five once their apps were seen, and Edit tiles, each at the
+/// size the flyout opens with. Each module's first action has a key bound, so its button shows
+/// the key chip.
 #[test]
 fn renders_the_flyout_for_review() {
     let (mut host, ids) = review_modules();
@@ -1186,9 +1188,16 @@ fn renders_the_flyout_for_review() {
         eprintln!("no module vectors; flyout review skipped");
         return;
     }
+    let bound: Vec<(String, String)> = host
+        .manifests()
+        .filter_map(|m| m.actions.first().map(|a| (m.id.clone(), a.decl.id.clone())))
+        .collect();
+    for (i, (m, a)) in bound.iter().enumerate() {
+        host.set_key(m, a, Some(format!("F{}", 13 + i)));
+    }
     let t = theme::tokens(true);
     let w = flyout::WIDTH as u32;
-    let draw = |host: &mut hideout_panels::PanelHost, name: &str, editing: bool| {
+    let draw = |host: &mut hideout_panels::PanelHost, name: &str, editing: bool, focus: bool| {
         let mut layout = TrayLayout::default();
         // Measure first, then draw at the height the flyout would take.
         let mut height = flyout::FIRST_HEIGHT;
@@ -1203,6 +1212,9 @@ fn renders_the_flyout_for_review() {
         let h = height.ceil() as u32;
         let mut ed = editing;
         let rgba = rasterise(w, h, |c| {
+            if focus {
+                hideout_panels::tray::focus_first_tile(c, host, &layout, true);
+            }
             egui::CentralPanel::default()
                 .frame(flyout_frame(&t))
                 .show(c, |ui| flyout_panel(ui, host, &mut layout, &mut ed, &t));
@@ -1210,10 +1222,11 @@ fn renders_the_flyout_for_review() {
         save_png(name, w, h, rgba);
         Some(())
     };
-    if draw(&mut host, "built-flyout-default.png", false).is_none() {
+    if draw(&mut host, "built-flyout-default.png", false, false).is_none() {
         eprintln!("no system font; flyout review skipped");
         return;
     }
+    draw(&mut host, "built-flyout-keyboard.png", false, true);
     let whens: Vec<String> = host
         .manifests()
         .flat_map(|m| m.panels.iter().filter_map(|p| p.when.clone()))
@@ -1224,8 +1237,8 @@ fn renders_the_flyout_for_review() {
     for id in &ids {
         host.set_fact(&format!("module.{id}.state"), serde_json::json!("running"));
     }
-    draw(&mut host, "built-flyout-all.png", false);
-    draw(&mut host, "built-flyout-edit.png", true);
+    draw(&mut host, "built-flyout-all.png", false, false);
+    draw(&mut host, "built-flyout-edit.png", true, false);
 }
 
 // ---- The supervisor's surfaces (#983): crash bar, stopped card, Couldn't start ----
