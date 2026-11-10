@@ -98,6 +98,12 @@ fn ui_event_action_invoke_and_visibility_reach_a_bridged_plugin() {
 
     send(initialize());
     assert!(read().get("result").is_some());
+    // The plugin speaks the v1 wire and never sends module.ready: the bridge says it for it,
+    // so the supervisor's 30 s ready timer doesn't end it (§7.5, §8.2, #1001).
+    assert_eq!(
+        recv(&rx, |o| matches!(o, Out::Ready(_))),
+        Out::Ready(ID.into())
+    );
     // The manifest's declared actions apply live: an undeclared action is refused.
     send(json!({"jsonrpc":"2.0","id":2,"method":"ui.register","params": tile("nope")}));
     assert_eq!(
@@ -182,7 +188,10 @@ fn ui_event_action_invoke_and_visibility_reach_a_bridged_plugin() {
 
     // A watched fact: the module state the supervisor publishes reaches the panel host.
     hub.act(|r| r.publish(&format!("module.{ID}.state"), json!("restarting")));
-    let f = recv(&rx, |o| matches!(o, Out::Fact { .. }));
+    let f = recv(
+        &rx,
+        |o| matches!(o, Out::Fact { value, .. } if *value == json!("restarting")),
+    );
     assert_eq!(
         f,
         Out::Fact {

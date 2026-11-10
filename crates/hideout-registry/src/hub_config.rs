@@ -40,6 +40,15 @@ impl HubConfig {
         self.config.validate(root_scopes)
     }
 
+    /// `[modules.<id>] enabled` when the file says it, else `None`.
+    pub fn enabled_set(&self, id: &str) -> Option<bool> {
+        self.table
+            .get("modules")
+            .and_then(|m| m.get(id))
+            .and_then(|m| m.get("enabled"))
+            .and_then(|e| e.as_bool())
+    }
+
     pub fn enabled(&self, id: &str) -> bool {
         self.table
             .get("modules")

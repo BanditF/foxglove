@@ -5,6 +5,9 @@
 //!
 //! Its files live under `HIDEOUT_CONFIG_DIR` when set (lab and tests), else `HIDEOUT_HOME`, else
 //! `%LOCALAPPDATA%\Hideout`.
+//!
+//! `--lab` (or `HIDEOUT_LAB=1`) asks for lab mode: with a `HIDEOUT_CONFIG_DIR` outside the
+//! user's hub folder, the modules in `<config>\lab-modules\` load (#1001, docs/hideout-lab.md).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod modules_page;
@@ -71,6 +74,10 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
 #[cfg(windows)]
 fn main() {
     use hideout_shell::paths::HubPaths;
+    if std::env::args().skip(1).any(|a| a == "--lab") {
+        // Before any thread starts; the registry checks the folder (lab::lab_mode).
+        std::env::set_var(hideout_registry::lab::LAB_ENV, "1");
+    }
     let Some(paths) = HubPaths::from_env() else {
         eprintln!("hideout: neither HIDEOUT_CONFIG_DIR nor LOCALAPPDATA is set");
         std::process::exit(2);

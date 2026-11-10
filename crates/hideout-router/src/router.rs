@@ -1081,6 +1081,13 @@ impl Router {
                 self.set_fact(&format!("module.{mid}.version"), version, out);
             }
             out.push(Out::Send(conn, ok(id, result)));
+            if bridged.is_some() {
+                // A bridged plugin MAY skip `module.ready` (§8.2): the Foxglove plugins speak the
+                // v1 wire and never send it. The bridge says it for them once `initialize` is
+                // answered, so the supervisor's 30 s ready timer (§7.5) doesn't end every
+                // bridged plugin as crashed (#1001).
+                self.mark_ready(conn, &mid, out);
+            }
             return;
         }
         // An outside tool (§8.2): approved once per tool (§6.4).
@@ -1285,38 +1292,45 @@ impl Router {
         ok(id, json!({ "rejected": rejected }))
     }
 
+    /// `module.ready` (§7.5 step 5), from the module or, for a bridged plugin, from the bridge:
+    /// the connection takes traffic, the supervisor marks it running, and the calls that waited
+    /// go in order. A second one on a ready connection changes nothing.
+    fn mark_ready(&mut self, conn: ConnId, module: &str, out: &mut Vec<Out>) {
+        let Some(c) = self.conns.get_mut(&conn) else {
+            return;
+        };
+        match &mut c.who {
+            Who::Module { ready: true, .. } => return,
+            Who::Module { ready, .. } => *ready = true,
+            _ => return,
+        }
+        self.set_fact(&format!("module.{module}.state"), json!("running"), out);
+        out.push(Out::Ready(module.to_string()));
+        let mut keep = VecDeque::new();
+        while let Some(q) = self.queue.pop_front() {
+            if q.module == module {
+                self.forward(
+                    conn,
+                    Waiter::Caller(q.caller, q.id),
+                    &q.method,
+                    q.params,
+                    q.deadline,
+                    out,
+                );
+            } else {
+                keep.push_back(q);
+            }
+        }
+        self.queue = keep;
+    }
+
     fn notification(&mut self, conn: ConnId, method: &str, params: Value, out: &mut Vec<Out>) {
         let who = self.conns[&conn].who.clone();
         let Who::Module { id: module, .. } = who else {
             return;
         };
         match method {
-            "module.ready" => {
-                if let Some(c) = self.conns.get_mut(&conn) {
-                    if let Who::Module { ready, .. } = &mut c.who {
-                        *ready = true;
-                    }
-                }
-                self.set_fact(&format!("module.{module}.state"), json!("running"), out);
-                out.push(Out::Ready(module.clone()));
-                // Calls that waited for this module go now, in order.
-                let mut keep = VecDeque::new();
-                while let Some(q) = self.queue.pop_front() {
-                    if q.module == module {
-                        self.forward(
-                            conn,
-                            Waiter::Caller(q.caller, q.id),
-                            &q.method,
-                            q.params,
-                            q.deadline,
-                            out,
-                        );
-                    } else {
-                        keep.push_back(q);
-                    }
-                }
-                self.queue = keep;
-            }
+            "module.ready" => self.mark_ready(conn, &module, out),
             "module.idle" => out.push(Out::Idle(module)),
             "ui.patch" => out.push(Out::Patch { module, params }),
             "ui.badge" => out.push(Out::Badge { module, params }),

@@ -1221,7 +1221,9 @@ Rules:
   hub reads its identity from the bridge, not a token, and treats its messages as any module's.
   `ui.register` and `ui.patch` from the plugin, and `ui.event`, `action.invoke`, `settings.set`
   and `ui.visibility` to it, pass unchanged. A bridged plugin MAY skip `module.ready`; calls to it
-  are delivered without it. Its panels are the `[[ui.panels]]` of its `module.toml` (§4.10).
+  are delivered without it, and the hub counts it ready once its `initialize` is answered, so
+  the 30 s ready timer (§7.5) never ends it (clarification, #1001). Its panels are the
+  `[[ui.panels]]` of its `module.toml` (§4.10).
 - **Client identity (v1.3).** What an outside tool is comes from the signed catalog, not from
   what it calls itself. An MCP client is a catalog entry with `kind = "mcp-client"`; the
   `mcp:<client>` name prefix (§9) is a lab-only fallback until the catalog lists clients (H2.2).
@@ -1459,6 +1461,9 @@ Design §4.7.
 
 - The dev loop (rebuild one module, hot swap, no hub restart) runs only in isolated lab hubs with
   their own `HIDEOUT_HOME` and pipe name suffix.
+- How a lab hub loads the first-party modules as they ship, without a catalog and without
+  touching trust (lab mode, `<config>\lab-modules\`): [hideout-lab.md](hideout-lab.md). Hub
+  behaviour only; no wire or manifest change.
 - Latency of direct channels and the Dynamic Lighting gap during a lights handover are lab cases
   before any "no flicker" claim (UX6).
 

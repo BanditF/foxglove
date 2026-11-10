@@ -104,8 +104,22 @@ fn notifier(sup: Supervisor, home: &Path) -> hideout_supervisor::driver::Notifie
 pub fn start(home: &Path) -> (Hub, Supervisor, HubFeed) {
     let mut router = Router::new(Settings::default(), approver());
     let mut manifests = Vec::new();
-    match hideout_registry::Registry::open(home, hideout_registry::dev_mode_from_env()) {
+    // Lab mode (#1001, docs/hideout-lab.md): said once, refused with its reason.
+    match hideout_registry::lab::lab_mode_from_env(home) {
+        hideout_registry::lab::LabMode::On => log::warn!(
+            "lab: lab mode on; loading lab modules from {}",
+            hideout_registry::lab::LabMode::modules_dir(home).display()
+        ),
+        hideout_registry::lab::LabMode::Refused(why) => {
+            log::warn!("lab: lab mode refused: {why}; no lab modules loaded")
+        }
+        hideout_registry::lab::LabMode::Off => {}
+    }
+    match hideout_registry::Registry::open_from_env(home) {
         Ok(reg) => {
+            for line in &reg.lab_report {
+                log::info!("lab: {line}");
+            }
             router.load_registry(&reg);
             manifests.extend(
                 reg.inventory
