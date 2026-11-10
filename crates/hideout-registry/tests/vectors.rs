@@ -150,9 +150,11 @@ fn catalog_vector(home: &Home, key: &str, exp: &Value) -> Result<(), String> {
     let accepted = reg.trust.catalogs.last().unwrap();
     let manifest = ctx["manifest"].as_str().map(|m| {
         let dir = vectors().join(m);
-        hideout_contract::module::read_dir(dir.parent().unwrap(), &Context::default(), {
-            hideout_contract::HUB_VERSION
-        })
+        hideout_contract::module::read_dir(
+            dir.parent().unwrap(),
+            &Context::default(),
+            reg.legacy_api,
+        )
         .unwrap()
         .1
         .unwrap()

@@ -2055,6 +2055,7 @@ dependencies = [
 name = "hideout-registry"
 version = "0.1.0"
 dependencies = [
+ "foxglove-plugin-api",
  "foxglove-plugin-trust",
  "hideout-acl",
  "hideout-contract",

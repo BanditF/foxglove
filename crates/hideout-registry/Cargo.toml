@@ -6,6 +6,7 @@ description = "Hideout's module registry: installed, enabled and running state (
 license = "MIT"
 
 [dependencies]
+foxglove-plugin-api = { path = "../plugin-api" }
 foxglove-plugin-trust = { path = "../plugin-trust" }
 hideout-acl = { path = "../hideout-acl" }
 hideout-contract = { path = "../hideout-contract" }
