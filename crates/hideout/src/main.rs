@@ -24,6 +24,8 @@ struct Started {
     _lock: Option<hideout_supervisor::win::Handle>,
     _router: Option<hideout_router::server::Hub>,
     hooks: Option<Box<dyn hideout_shell::TabHooks>>,
+    /// The Modules page's fact reader (the router's cache).
+    facts: Option<modules_page::Facts>,
     panels: Option<Box<dyn hideout_shell::hideout_panels::PanelFeed>>,
 }
 
@@ -55,6 +57,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
                 _lock: None,
                 _router: None,
                 hooks: None,
+                facts: None,
                 panels: None,
             };
         }
@@ -64,8 +67,11 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
         }
     };
     let (router, supervisor, feed) = router_start::start(&paths.root, &paths.instance_suffix());
+    let hub = router.clone();
+    let facts: modules_page::Facts = Box::new(move |k| hub.read(|r| r.fact(k).cloned()));
     Started {
         _lock: lock,
+        facts: Some(facts),
         _router: Some(router),
         hooks: Some(Box::new(router_start::Hooks(supervisor))),
         panels: Some(Box::new(feed)),
@@ -92,9 +98,10 @@ fn main() {
     // Lab control only where the registry allows lab mode (never on the user's folder).
     hideout_shell::lab_control::allow(hideout_registry::lab::lab_mode_from_env(&paths.root).on());
     let mut started = start(&paths);
+    let pages = modules_page::pages(modules_page::installed(&paths.root), started.facts.take());
     let opts = hideout_shell::ShellOptions {
         paths,
-        pages: modules_page::pages(),
+        pages,
         version: env!("CARGO_PKG_VERSION"),
         // Module panels from the router (§5, #991): pages, Keys and Settings.
         panels: started.panels.take(),

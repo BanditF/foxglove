@@ -44,6 +44,10 @@ impl hideout_shell::TabHooks for Hooks {
     fn turn_off(&mut self, module: &str) {
         self.0.turn_off(module);
     }
+
+    fn diagnostics(&mut self, module: &str) -> Option<String> {
+        Some(self.0.diagnostics(module, env!("CARGO_PKG_VERSION")))
+    }
 }
 
 /// What a notification button hands back: `start-again:<id>`, `open:<id>` (a click on the

@@ -1961,3 +1961,75 @@ fn lab_control_drives_the_tabs_through_the_hub_frame() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The Modules page's rows (#983) through the real hub frame, for review: every row state the
+/// supervisor UX plan's column M names, and no drawn id.
+#[test]
+fn renders_the_modules_page_for_review() {
+    use crate::modules_list::{page_ui, row, Installed, Row};
+    struct ModulesPage(Vec<Row>);
+    impl Page for ModulesPage {
+        fn id(&self) -> &str {
+            "hub.modules"
+        }
+        fn title(&self) -> &str {
+            "Modules"
+        }
+        fn ui(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+            page_ui(ui, t, &self.0);
+        }
+    }
+    let facts: HashMap<String, serde_json::Value> = [
+        ("module.m.beat.state", serde_json::json!("restarting")),
+        ("module.m.chat.state", serde_json::json!("crash-stopped")),
+        ("module.m.dock.state", serde_json::json!("install-failed")),
+        ("module.m.dock.failed", serde_json::json!("launch")),
+        ("module.m.lamp.state", serde_json::json!("starting")),
+        ("module.m.art.state", serde_json::json!("running")),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    let fact = |k: &str| facts.get(k).cloned();
+    let m = |id: &str, name: &str, version: &str, enabled| Installed {
+        id: id.into(),
+        name: name.into(),
+        version: version.into(),
+        enabled,
+    };
+    let rows: Vec<Row> = [
+        (m("m.art", "Art", "0.5.0", true), None),
+        (m("m.beat", "Beat", "1.2.0", true), Some((4, 2))),
+        (m("m.chat", "Chat", "0.3.1", true), None),
+        (m("m.dock", "Dock", "2.0.0", true), None),
+        (m("m.lamp", "Lamp", "0.9.4", true), None),
+        (m("m.notes", "Notes", "0.1.0", false), None),
+    ]
+    .iter()
+    .map(|(i, r)| row(i, &fact, *r))
+    .collect();
+    for r in &rows {
+        for never in hideout_supervisor::words::NEVER_SHOWN {
+            assert!(!r.state.contains(never), "{never} drawn: {}", r.state);
+        }
+        assert!(!r.state.contains(&r.id), "{} drawn", r.id);
+    }
+    let dir = temp_dir("png-modules");
+    let root = dir.as_os_str().to_owned();
+    let paths = HubPaths::resolve(|k| (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())).unwrap();
+    let shared = Arc::new(Shared {
+        paths,
+        prefs: Mutex::new(Prefs::default()),
+        paused: AtomicBool::new(false),
+        hidden: AtomicBool::new(false),
+        flyout_click: Mutex::new(None),
+    });
+    let pages: Vec<Box<dyn Page>> = vec![Box::new(ModulesPage(rows))];
+    let mut hub = Hub::new(shared, pages, None, None);
+    let Some(rgba) = render(&mut hub, 1000, 640, |_| {}) else {
+        eprintln!("no system font; render test skipped");
+        return;
+    };
+    save_png("built-modules-page.png", 1000, 640, rgba);
+    let _ = std::fs::remove_dir_all(&dir);
+}
