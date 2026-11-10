@@ -654,6 +654,78 @@ fn popping_out_and_docking_back_are_announced_once_politely() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #991: a tile's phase change is said politely in the open tray flyout, once, as the #1012
+/// announcements are (a live node with a fresh id that leaves after [`ANNOUNCE_FOR`]); a value
+/// that ticks never is, and nothing is said while the flyout is closed or about what changed
+/// while it was. The 5 s window per tile is `hideout-panels`' `tray_announce` tests.
+#[test]
+fn a_tile_phase_change_is_said_in_the_open_flyout_only() {
+    let dir = temp_dir("flyout-say");
+    let mut hub = hub_in(&dir, None);
+    let hctx = a11y_ctx();
+    let params: hideout_contract::panel::Register = serde_json::from_value(serde_json::json!({
+        "instance": "i1", "panels": [{"id": "tile", "slot": "tile", "title": "Mic", "icon": "mic",
+        "tree": {"type": "column", "id": "tile", "children": [
+            {"type": "value", "id": "glance", "props": {"value": "Mic on", "tone": "neutral"}},
+            {"type": "label", "id": "sub", "props": {"text": "Default mic"}},
+            {"type": "meter", "id": "level", "props": {"value": 1.0, "max": 10.0}}]}}]}))
+    .unwrap();
+    assert!(hub.panels.register("m", "M", None, &params).is_empty());
+    let t0 = std::time::Instant::now();
+    let mut at = 0;
+    let mut set = |hub: &mut Hub, props: serde_json::Value| {
+        let node = if props.get("max").is_some() {
+            "level"
+        } else {
+            "glance"
+        };
+        let p: hideout_contract::messages::UiPatch = serde_json::from_value(serde_json::json!({
+            "panel": "tile", "ops": [{"op": "set", "node": node, "props": props}]}))
+        .unwrap();
+        at += 1;
+        hub.panels
+            .patch("m", &p, t0 + Duration::from_secs(at))
+            .unwrap();
+    };
+    let main = |hub: &mut Hub| hctx.run(input(960.0, 640.0, vec![]), |c| hub.frame(c));
+    // Closed: a change is not said.
+    set(
+        &mut hub,
+        serde_json::json!({"value": "Muted", "tone": "live"}),
+    );
+    assert!(live_words(&main(&mut hub)).is_empty());
+    // Opened: what shows is only remembered (the focused tile says it).
+    tray_click(&hub);
+    for _ in 0..4 {
+        assert!(live_words(&main(&mut hub)).is_empty());
+    }
+    assert!(hub.flyout.is_some());
+    // A meter's value is not a phase.
+    set(&mut hub, serde_json::json!({"value": 7.0, "max": 10.0}));
+    assert!(live_words(&main(&mut hub)).is_empty());
+    // The glance's word and tone: said once, in the frame the change brought.
+    set(
+        &mut hub,
+        serde_json::json!({"value": "Mic on", "tone": "neutral"}),
+    );
+    assert_eq!(live_words(&main(&mut hub)), ["Mic, Mic on"]);
+    assert!(hub
+        .announce
+        .as_ref()
+        .is_some_and(|a| a.place == Said::Flyout));
+    hub.announce.as_mut().unwrap().at -= ANNOUNCE_FOR;
+    assert!(live_words(&main(&mut hub)).is_empty(), "stale, it leaves");
+    assert!(hub.announce.is_none());
+    // Closed again: nothing is said.
+    hub.close_flyout(&hctx, false);
+    set(
+        &mut hub,
+        serde_json::json!({"value": "Muted", "tone": "live"}),
+    );
+    assert!(live_words(&main(&mut hub)).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A hub page with two buttons, Send and Keep (focusable elements of the page).
 struct FormPage;
 

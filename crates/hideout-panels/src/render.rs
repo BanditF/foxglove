@@ -30,6 +30,17 @@ pub struct DrawReport {
     /// The text of each `value` and `label` drawn, in tree order: a tile's accessible name is
     /// its title and these (docs/hideout-plugin-modules-ux.md, Keyboard and screen reader).
     pub texts: Vec<String>,
+    /// The first `value` drawn (a tile's glance) and its `tone`: what the tray panel tells a
+    /// state change by (docs/hideout-plugin-modules-ux.md, Keyboard and screen reader).
+    pub glance: Option<Glance>,
+}
+
+/// A `value` node's text and `tone` as drawn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Glance {
+    pub text: String,
+    /// The `tone` word as given (`None` without one).
+    pub tone: Option<String>,
 }
 
 /// A button that the hub handles itself (§5.2, v1.4): no `ui.event` is sent.
@@ -106,6 +117,7 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, body: Body) -> 
             go: &mut go,
             rects: &mut report.rects,
             texts: &mut report.texts,
+            glance: &mut report.glance,
             press: body.press,
             streams,
             stream_acts: &mut acts,
@@ -177,6 +189,7 @@ struct Draw<'a> {
     go: &'a mut Vec<Go>,
     rects: &'a mut HashMap<String, Rect>,
     texts: &'a mut Vec<String>,
+    glance: &'a mut Option<Glance>,
     /// Press the first enabled button drawn (Space on a focused tile).
     press: bool,
     streams: &'a Streams,
@@ -356,6 +369,12 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 }
                 let value = text_of(p.get("value").unwrap_or(&Value::Null));
                 d.texts.push(value.clone());
+                if d.glance.is_none() {
+                    *d.glance = Some(Glance {
+                        text: value.clone(),
+                        tone: s(&p, "tone").map(String::from),
+                    });
+                }
                 let text = RichText::new(value);
                 ui.label(toned(ui, &p, text.strong().size(18.0)));
             });

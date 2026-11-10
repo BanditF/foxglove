@@ -553,6 +553,8 @@ struct Hub {
 enum Said {
     Main,
     Popout(TabId),
+    /// The tray flyout: a tile's phase change while it is open (#991).
+    Flyout,
 }
 
 /// One polite announcement (#1012): a live node with its own id, so the screen reader says it
@@ -567,6 +569,36 @@ struct Announce {
 
 /// How long an announcement stays in the tree (it is said when it appears).
 const ANNOUNCE_FOR: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Puts `text` in the announcement `slot`, said once, politely, in `place`'s window: a fresh
+/// node id, so it is said again even when the words are the same.
+fn say_in(slot: &mut Option<Announce>, text: String, place: Said) {
+    let n = slot.as_ref().map_or(0, |a| a.n + 1);
+    *slot = Some(Announce {
+        text,
+        place,
+        n,
+        at: std::time::Instant::now(),
+    });
+}
+
+/// The announcement's live node in `place`'s window, while it is fresh. No frame is asked for:
+/// a stale one goes with the next frame that comes anyway.
+fn announce_node(slot: &mut Option<Announce>, ctx: &egui::Context, place: &Said) {
+    let Some(a) = slot.as_ref().filter(|a| &a.place == place) else {
+        return;
+    };
+    if a.at.elapsed() >= ANNOUNCE_FOR {
+        *slot = None;
+        return;
+    }
+    let (id, text) = (egui::Id::new(("hideout.announce", a.n)), a.text.clone());
+    ctx.accesskit_node_builder(id, |n| {
+        n.set_role(egui::accesskit::Role::Status);
+        n.set_live(egui::accesskit::Live::Polite);
+        n.set_label(text);
+    });
+}
 
 /// "Chat opened in its own window".
 fn opened_words(title: &str) -> String {
@@ -594,6 +626,9 @@ struct FlyoutState {
     shown_at: Option<std::time::Instant>,
     /// The first tile takes the keyboard focus in the next frame (it just opened).
     focus_first: bool,
+    /// The tiles' phases said or seen since it opened (#991): a new one per open, so nothing
+    /// that changed while it was closed is said.
+    announcer: hideout_panels::TileAnnouncer,
 }
 
 /// The flyout's viewport.
@@ -745,31 +780,12 @@ impl Hub {
 
     /// Says `text` once, politely, in `place`'s window.
     fn say(&mut self, text: String, place: Said) {
-        let n = self.announce.as_ref().map_or(0, |a| a.n + 1);
-        self.announce = Some(Announce {
-            text,
-            place,
-            n,
-            at: std::time::Instant::now(),
-        });
+        say_in(&mut self.announce, text, place);
     }
 
-    /// The announcement's live node in `place`'s window, while it is fresh. No frame is asked
-    /// for: a stale one goes with the next frame that comes anyway.
+    /// The announcement's live node in `place`'s window, while it is fresh.
     fn announce_ui(&mut self, ctx: &egui::Context, place: &Said) {
-        let Some(a) = self.announce.as_ref().filter(|a| &a.place == place) else {
-            return;
-        };
-        if a.at.elapsed() >= ANNOUNCE_FOR {
-            self.announce = None;
-            return;
-        }
-        let (id, text) = (egui::Id::new(("hideout.announce", a.n)), a.text.clone());
-        ctx.accesskit_node_builder(id, |n| {
-            n.set_role(egui::accesskit::Role::Status);
-            n.set_live(egui::accesskit::Live::Polite);
-            n.set_label(text);
-        });
+        announce_node(&mut self.announce, ctx, place);
     }
 
     /// The page's icon glyph (its panel's `icon`, a hub page's own).
@@ -789,6 +805,14 @@ impl Hub {
     fn close_flyout(&mut self, ctx: &egui::Context, by_focus: bool) {
         if self.flyout.take().is_some() {
             self.panels.set_tray_open(false);
+            // A tile's announcement goes with the flyout (it would be said again on reopening).
+            if self
+                .announce
+                .as_ref()
+                .is_some_and(|a| a.place == Said::Flyout)
+            {
+                self.announce = None;
+            }
             if by_focus {
                 self.flyout_closed_by_focus = Some(std::time::Instant::now());
             }
@@ -838,6 +862,7 @@ impl Hub {
                         misses: 0,
                         shown_at: None,
                         focus_first: true,
+                        announcer: Default::default(),
                     });
                     self.panels.set_tray_open(true);
                 }
@@ -863,6 +888,7 @@ impl Hub {
             .with_inner_size([flyout::WIDTH, flyout::FIRST_HEIGHT]);
         let (panels, layout) = (&mut self.panels, &mut self.tray_layout);
         let editing = &mut fly.editing;
+        let (announcer, announce) = (&mut fly.announcer, &mut self.announce);
         let focus_first = std::mem::take(&mut fly.focus_first);
         let frame = ctx.show_viewport_immediate(flyout_id(), builder, |ctx, class| {
             let focused = ctx.input(|i| i.viewport().focused);
@@ -898,6 +924,11 @@ impl Hub {
                     .show(ctx, draw)
                     .inner
             };
+            // A tile's phase change, said politely in this frame (the change brought it).
+            if let Some(text) = announcer.see(&report.phases, std::time::Instant::now()) {
+                say_in(announce, text, Said::Flyout);
+            }
+            announce_node(announce, ctx, &Said::Flyout);
             FlyoutFrame {
                 focused,
                 close,
