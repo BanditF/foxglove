@@ -1482,3 +1482,78 @@ fn the_toast_icon_is_a_png_of_the_glyph() {
         crate::icon::rgba(64, crate::icon::State::Normal)
     );
 }
+/// Lab capture (#1002), window-free. With the switch on and nothing asked, a frame carries no
+/// read-back and asks for no repaint (the capture costs nothing while unused); an asked capture
+/// adds exactly one read-back to that one frame; a flyout read-back asked while the flyout is
+/// closed is dropped, not kept for later.
+#[test]
+fn a_capture_adds_one_readback_only_to_the_frame_that_answers_it() {
+    use crate::capture::{Job, Slot};
+    let ctx = ctx();
+    let mut hub = hub_in(&temp_dir("cap"), None);
+    let slot = Arc::new(Slot::default());
+    hub.capture = Some(slot.clone());
+    let readbacks = |out: &egui::FullOutput| {
+        out.shapes
+            .iter()
+            .filter(|s| matches!(s.shape, epaint::Shape::Callback(_)))
+            .count()
+    };
+    let run = |hub: &mut Hub| ctx.run(input(800.0, 600.0, vec![]), |c| hub.frame(c));
+    for _ in 0..4 {
+        let _ = run(&mut hub);
+    }
+    let out = run(&mut hub);
+    assert_eq!(readbacks(&out), 0);
+    let vp = &out.viewport_output[&egui::ViewportId::ROOT];
+    assert_eq!(vp.repaint_delay, std::time::Duration::MAX);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    slot.put(Job {
+        main: true,
+        flyout: true,
+        shots: tx,
+    });
+    assert_eq!(
+        readbacks(&run(&mut hub)),
+        1,
+        "the flyout is closed: main only"
+    );
+    assert_eq!(
+        readbacks(&run(&mut hub)),
+        0,
+        "a later frame reads nothing back"
+    );
+    // Headless frames paint no callbacks; the frame holds the only sender left, in its shape.
+    drop(rx);
+}
+
+/// The read-back's PNG writer on a real hub frame: rendered headless (as the review images
+/// are), passed through `capture::write_png`, read back from disk unchanged and opaque.
+#[test]
+fn a_rendered_frame_goes_through_the_capture_png_writer() {
+    let dir = temp_dir("cappng");
+    let mut hub = mock_hub(&dir);
+    let (w, h) = (960u32, 540u32);
+    let Some(rgba) = render(&mut hub, w, h, |_| {}) else {
+        eprintln!("no system font; capture png test skipped");
+        return;
+    };
+    let pixels = rgba
+        .chunks(4)
+        .map(|p| Color32::from_rgba_premultiplied(p[0], p[1], p[2], p[3]))
+        .collect();
+    let image = egui::ColorImage::new([w as usize, h as usize], pixels);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("capture.png");
+    crate::capture::write_png(&out, &image).unwrap();
+    assert!(!dir.join("capture.png.tmp").exists());
+    let back = image::open(&out).unwrap().to_rgba8();
+    assert_eq!(back.dimensions(), (w, h));
+    for (a, b) in back.pixels().zip(rgba.chunks(4)) {
+        assert_eq!(a.0, [b[0], b[1], b[2], 255]);
+    }
+    // The hub's accent survives the trip.
+    assert!(back.pixels().any(|p| p.0[..3] == [0xff, 0x8a, 0x2a]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
