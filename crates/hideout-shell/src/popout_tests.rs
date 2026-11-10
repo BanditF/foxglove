@@ -682,6 +682,7 @@ fn form_hub(dir: &std::path::Path) -> Hub {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        start_normally: None,
     });
     let pages: Vec<Box<dyn Page>> = vec![
         Box::new(FormPage),
