@@ -345,6 +345,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
         if let Some(i) = devices(ui, v) {
             intent = Some(i);
         }
+        ui.add_space(10.0);
+        super::knob_hide::card(ui);
         ui.add_space(6.0);
         return intent;
     }

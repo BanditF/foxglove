@@ -342,24 +342,27 @@ pub fn card_body(
         .iter()
         .filter(|(_, path)| !rows.iter().any(|r| same_program(&r.path, path)))
         .collect();
-    ui.add_enabled_ui(!free.is_empty(), |ui| {
-        ui.menu_button("Add an app…", |ui| {
-            for (name, path) in &free {
-                if ui
-                    .button(name.as_str())
-                    .on_hover_text(file_name(path))
-                    .clicked()
-                {
-                    out = Some(CardIntent::Add {
-                        name: name.clone(),
-                        path: path.clone(),
-                    });
-                    ui.close();
+    // A row, so the menu button keeps its own width (no full-width stretch).
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(!free.is_empty(), |ui| {
+            ui.menu_button("Add an app…", |ui| {
+                for (name, path) in &free {
+                    if ui
+                        .button(name.as_str())
+                        .on_hover_text(file_name(path))
+                        .clicked()
+                    {
+                        out = Some(CardIntent::Add {
+                            name: name.clone(),
+                            path: path.clone(),
+                        });
+                        ui.close();
+                    }
                 }
-            }
-        })
-        .response
-        .on_disabled_hover_text("No other app has sound right now.");
+            })
+            .response
+            .on_disabled_hover_text("No other app has sound right now.");
+        });
     });
     out
 }
