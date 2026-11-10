@@ -282,13 +282,15 @@ fn visibility_transcript_is_emitted_on_change_only() {
     step(&mut host, Some(&key)); // and back
     host.close_panel(&key); // the user closes the tab
     step(&mut host, None);
+    // The tile (spec v1.4) follows the tray panel, not a tab.
+    for open in [true, true, false, false] {
+        host.set_tray_open(open);
+        got.extend(host.take_visibility());
+    }
     let wire: Vec<(String, Visibility)> = got.into_iter().map(|(m, v)| (m, v.state)).collect();
     let expected: Vec<Visibility> = steps("transcripts/ui/visibility.json")
         .iter()
-        // The page's steps; the tile's (spec v1.4) follow the tray panel, not a tab.
-        .filter(|s| {
-            s["msg"]["method"] == "ui.visibility" && s["msg"]["params"]["panel"] == "art.page"
-        })
+        .filter(|s| s["msg"]["method"] == "ui.visibility")
         .map(|s| serde_json::from_value(s["msg"]["params"]["state"].clone()).unwrap())
         .collect();
     assert_eq!(

@@ -29,6 +29,8 @@ pub enum Inbound {
         name: String,
         /// The module's `[[ui.panels]]` ids, when the router knows its manifest.
         declared: Option<Vec<String>>,
+        /// The module's `[[actions]]` ids, when known (`ui.action`, spec v1.4).
+        actions: Option<Vec<String>>,
         params: Register,
     },
     /// `ui.patch` (a notification).
@@ -98,9 +100,16 @@ impl PanelHost {
                     module,
                     name,
                     declared,
+                    actions,
                     params,
                 } => {
-                    let rejected = self.register(&module, &name, declared.as_deref(), &params);
+                    let rejected = self.register_with(
+                        &module,
+                        &name,
+                        declared.as_deref(),
+                        actions.as_deref(),
+                        &params,
+                    );
                     for r in &rejected {
                         log::warn!("{module}: panel {} rejected: {}", r.panel, r.error);
                     }

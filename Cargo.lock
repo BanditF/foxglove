@@ -3247,6 +3247,7 @@ dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-api",
  "foxglove-plugin-host",
+ "hideout-contract",
  "serde",
  "serde_json",
  "sha2",
@@ -3261,6 +3262,7 @@ dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-api",
  "foxglove-plugin-host",
+ "hideout-contract",
  "serde",
  "serde_json",
 ]
@@ -3270,6 +3272,7 @@ name = "plugin-icue-mirror"
 version = "1.0.0"
 dependencies = [
  "foxglove-plugin",
+ "hideout-contract",
  "serde_json",
  "windows-sys 0.61.2",
 ]
@@ -3283,6 +3286,7 @@ dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-api",
  "foxglove-plugin-host",
+ "hideout-contract",
  "serde",
  "serde_json",
 ]
@@ -3295,6 +3299,7 @@ dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-api",
  "foxglove-plugin-host",
+ "hideout-contract",
  "serde_json",
 ]
 

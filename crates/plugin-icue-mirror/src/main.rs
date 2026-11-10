@@ -13,6 +13,7 @@
 //!   back whenever reading stops.
 
 mod follow;
+mod module_ui;
 mod sdk;
 
 use std::sync::mpsc;
@@ -20,8 +21,46 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use follow::Follow;
+use foxglove_plugin::ui::Panels;
 use foxglove_plugin::{Hsb, Lease, LeasePriority, Plugin};
+use module_ui::Mirror;
 use sdk::{Icue, Notice, Sdk};
+
+/// Loads Corsair's SDK from `dll`; `None` with a log line when it is unset or won't load.
+fn load(dll: &str, tx: &mpsc::Sender<Notice>) -> Option<Icue> {
+    if dll.is_empty() {
+        eprintln!("icue-mirror: set the path to Corsair's iCUESDK.x64_2019.dll in its settings");
+        return None;
+    }
+    Icue::load(dll, tx.clone())
+        .map_err(|e| eprintln!("icue-mirror: {e}"))
+        .ok()
+}
+
+/// What the tile and page show now.
+fn mirror(icue: Option<&Icue>, dll: &str, follow: &Follow) -> Mirror {
+    let Some(sdk) = icue else {
+        return Mirror::NeedsSetup {
+            bad: !dll.is_empty(),
+        };
+    };
+    if !follow.session() {
+        return Mirror::Closed;
+    }
+    match follow.device() {
+        Some(id) => Mirror::Following {
+            model: sdk
+                .devices()
+                .unwrap_or_default()
+                .into_iter()
+                .find(|d| d.id == id)
+                .map_or_else(|| "Corsair device".into(), |d| d.model),
+        },
+        None => Mirror::NoDevice {
+            wanted: follow.wanted.clone(),
+        },
+    }
+}
 
 enum In {
     Icue(Notice),
@@ -74,15 +113,8 @@ fn main() {
 
     // iCUE's notices, through a channel of their own (the SDK calls back on its threads).
     let (notice_tx, notices) = mpsc::channel::<Notice>();
-    let dll = text(&settings, "sdk-dll");
-    let icue = if dll.is_empty() {
-        eprintln!("icue-mirror: set the path to Corsair's iCUESDK.x64_2019.dll in the Plugins tab, then turn the plugin off and on");
-        None
-    } else {
-        Icue::load(&dll, notice_tx)
-            .map_err(|e| eprintln!("icue-mirror: {e}"))
-            .ok()
-    };
+    let mut dll = text(&settings, "sdk-dll");
+    let mut icue = load(&dll, &notice_tx);
     let forward = tx.clone();
     std::thread::spawn(move || {
         for n in notices {
@@ -108,6 +140,9 @@ fn main() {
     let mut leases: Vec<Lease> = Vec::new();
     let mut shown: Option<Hsb> = None;
     let mut next_read = Instant::now();
+    // Hideout's tile and page (Foxglove refuses them once and they stay off).
+    let mut panels = Panels::new(plugin.clone());
+    panels.show(module_ui::panels(&mirror(icue.as_ref(), &dll, &follow)));
     loop {
         if plugin.is_closed() {
             return;
@@ -125,6 +160,7 @@ fn main() {
                 Err(_) => return,
             }
         };
+        let event_seen = event.is_some();
         match (event, &icue) {
             (Some(In::Icue(n)), Some(sdk)) => follow.notice(&n, sdk as &dyn Sdk),
             (Some(In::Icue(_)), None) => {}
@@ -134,10 +170,20 @@ fn main() {
                 if let (true, Some(sdk)) = (wanted.to_ascii_lowercase() != follow.wanted, &icue) {
                     follow.want(&wanted, sdk);
                 }
-                if text(&values, "sdk-dll") != dll {
-                    eprintln!(
-                        "icue-mirror: a new SDK path is used after turning the plugin off and on"
-                    );
+                // A new SDK file takes effect at once (contract §4.7, kind = "file").
+                let path = text(&values, "sdk-dll");
+                if path != dll {
+                    dll = path;
+                    if let Some(new) = load(&dll, &notice_tx) {
+                        // The old SDK stays loaded (Icue never unloads its DLL): it may still
+                        // call back on its threads.
+                        icue = Some(new);
+                        follow = Follow::new(&wanted);
+                        leases.clear();
+                        shown = None;
+                    } else if icue.is_some() {
+                        eprintln!("icue-mirror: keeps the SDK it has");
+                    }
                 }
             }
             (None, Some(sdk)) => {
@@ -156,6 +202,9 @@ fn main() {
                 }
             }
             (None, None) => {}
+        }
+        if event_seen {
+            panels.show(module_ui::panels(&mirror(icue.as_ref(), &dll, &follow)));
         }
         if !follow.following() && !leases.is_empty() {
             // Reading stopped: the lights go back.

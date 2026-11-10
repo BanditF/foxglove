@@ -15,11 +15,13 @@
 //! to the plugin and exits, for testing without OpenRGB.
 
 mod e131;
+mod module_ui;
 
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use foxglove_plugin::ui::Panels;
 use foxglove_plugin::{Hsb, Lease, LeasePriority, NetEvent, Plugin};
 
 /// E1.31 6.7.1: a stream is lost after 2.5 s without data.
@@ -177,13 +179,37 @@ fn main() {
         }
     };
     // Localhost only: other machines can't drive the lights. Foxglove does the listening.
-    let frames = match plugin.listen_udp(opts.port) {
-        Ok(rx) => rx,
-        Err(e) => {
-            eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", opts.port);
-            std::process::exit(1);
+    // Hideout's tile and page (Foxglove refuses them once and they stay off).
+    let mut panels = Panels::new(plugin.clone());
+    let ui = plugin.ui_inbox();
+    let frames = loop {
+        match plugin.listen_udp(opts.port) {
+            Ok(rx) => break rx,
+            Err(e) => {
+                eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", opts.port);
+                panels.show(module_ui::panels(&module_ui::Feed::PortBusy {
+                    port: opts.port,
+                }));
+                // A busy port is an outside problem, not a crash (contract §7.7): Hideout shows
+                // it with Try again and the plugin waits for that press. Foxglove has no panel
+                // for it, so there the plugin stops as before.
+                let (true, Some(ui)) = (panels.on(), &ui) else {
+                    std::process::exit(1);
+                };
+                loop {
+                    let Ok(m) = ui.recv() else { return };
+                    if let Some(id) = &m.id {
+                        let _ = plugin.reply(id, Ok(()));
+                        if m.node() == "retry" {
+                            break;
+                        }
+                    }
+                }
+            }
         }
     };
+    let mut ever = false;
+    panels.show(module_ui::panels(&module_ui::Feed::Waiting { ever }));
     let period = Duration::from_millis(1000 / u64::from(opts.max_hz));
     // The last sequence number per sender (E1.31 numbers frames per source).
     let mut last_seq: Option<([u8; 16], u8)> = None;
@@ -243,6 +269,8 @@ fn main() {
                     if leases.is_none() {
                         eprintln!("openrgb-e131: first frame from {from} (universe {}): taking the lights", p.universe);
                         leases = Some(take_over(&plugin, color));
+                        ever = true;
+                        panels.show(module_ui::panels(&module_ui::Feed::Following));
                         sent = Some(color);
                         next_send = Instant::now() + period;
                     }
@@ -254,6 +282,7 @@ fn main() {
         if leases.is_some() && (stop || now.duration_since(last_data) > LOSS_TIMEOUT) {
             // The leases end; Foxglove puts the lights back (and confirms them).
             (leases, wanted, sent, last_seq) = (None, None, None, None);
+            panels.show(module_ui::panels(&module_ui::Feed::Waiting { ever }));
             continue;
         }
         if let (Some(held), Some(color)) = (&leases, wanted) {

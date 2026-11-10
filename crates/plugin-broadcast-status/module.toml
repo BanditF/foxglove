@@ -1,0 +1,32 @@
+# Hideout's manifest (contract §4.10, v1.4): plugin.toml's keys plus the tile and the page.
+# Foxglove reads plugin.toml; Hideout reads this file. Keep the shared keys the same.
+id = "org.foxglove.broadcast-status"
+name = "OBS"
+version = "1.0.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+transport = "stdio"
+api = { foxglove = "1.3" }
+run = ["broadcast-status.exe"]
+permissions = ["net.connect:127.0.0.1:4455", "apps.watch:obs64.exe", "secrets", "facts.write:broadcast.*", "devices.read", "lighting.write", "screens.write"]
+enriches = ["obs64.exe"]
+description = "Shows whether OBS is recording or streaming, REC or LIVE and the scene on the keyboard's info screen and red on the keyboard. It connects to OBS's WebSocket server on this PC (Tools → WebSocket Server Settings, port 4455) and only listens: it never starts, stops or switches anything."
+
+# The tile shows once OBS has been seen on this PC (UX plan, decision 2).
+[[ui.panels]]
+id = "tile"
+slot = "tile"
+title = "OBS"
+icon = "video"
+when = "apps.seen.obs64"
+
+[[ui.panels]]
+id = "page"
+slot = "page"
+title = "OBS"
+icon = "video"
+
+[[secrets]]
+name = "obs-password"
+label = "OBS WebSocket password"

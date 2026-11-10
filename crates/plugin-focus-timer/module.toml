@@ -1,0 +1,33 @@
+# Hideout's manifest (contract §4.10, v1.4): plugin.toml's keys plus the tile and the page.
+# Foxglove reads plugin.toml; Hideout reads this file. Keep the shared keys the same.
+id = "org.foxglove.focus-timer"
+name = "Focus timer"
+version = "1.0.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+transport = "stdio"
+api = { foxglove = "1.2" }
+run = ["focus-timer.exe"]
+permissions = ["devices.read", "lighting.write", "screens.write", "facts.write:focus.*"]
+description = "Alternates 25 minutes of focus and 5 of rest, and colours your keyboard's lights red to focus and green to rest."
+
+[[ui.panels]]
+id = "tile"
+slot = "tile"
+title = "Focus timer"
+icon = "timer"
+
+[[ui.panels]]
+id = "page"
+slot = "page"
+title = "Focus timer"
+icon = "timer"
+
+[[actions]]
+id = "pause"
+name = "Pause or resume"
+
+[[actions]]
+id = "reset"
+name = "Start a new focus period"

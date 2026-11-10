@@ -14,12 +14,14 @@
 //! `--rounds N` (4); `--focus-seconds N` and `--rest-seconds N` for testing; `--no-lights`,
 //! `--no-panel`.
 
+mod module_ui;
 mod panel;
 mod timer;
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use foxglove_plugin::ui::{Panels, UiIn};
 use foxglove_plugin::{Fact, Hsb, Lease, LeasePriority, Plugin};
 use timer::{Durations, Phase, Timer};
 
@@ -118,6 +120,30 @@ fn hint(t: &Timer, d: &Durations) -> String {
     }
 }
 
+/// What wakes the loop besides the next second: a key, or Hideout's panels.
+enum Wake {
+    Key(String),
+    Ui(UiIn),
+}
+
+/// Keys and Hideout's panel messages, in one queue; `None` when neither arrives.
+fn wakes(plugin: &Plugin) -> Option<std::sync::mpsc::Receiver<Wake>> {
+    let keys = plugin.actions();
+    let ui = plugin.ui_inbox();
+    if keys.is_none() && ui.is_none() {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Some(keys) = keys {
+        let tx = tx.clone();
+        std::thread::spawn(move || keys.into_iter().all(|k| tx.send(Wake::Key(k)).is_ok()));
+    }
+    if let Some(ui) = ui {
+        std::thread::spawn(move || ui.into_iter().all(|m| tx.send(Wake::Ui(m)).is_ok()));
+    }
+    Some(rx)
+}
+
 fn main() {
     let opts = options();
     let d = opts.durations;
@@ -135,7 +161,12 @@ fn main() {
     } else {
         None
     };
-    let actions = plugin.actions();
+    let actions = wakes(&plugin);
+    // Hideout's tile and page: patched once a second only while one of them is on screen
+    // (contract §5.9, v1.4); before the hub says, as if visible.
+    let mut panels = Panels::new(plugin.clone());
+    let mut visible: std::collections::HashMap<String, bool> = Default::default();
+    let mut drawn: Option<(Phase, bool, bool)> = None;
     let mut t = load(&d);
     t.tick(now(), &d);
     save(&t);
@@ -200,6 +231,12 @@ fn main() {
                 }
             }
         }
+        let board = !boards.is_empty();
+        let shape = (t.phase, t.paused(), board);
+        if visible.is_empty() || visible.values().any(|v| *v) || drawn != Some(shape) {
+            panels.show(module_ui::panels(&t, &d, at, board));
+            drawn = Some(shape);
+        }
         // Running: wait for the next second (the countdown), or a key. Paused: nothing changes
         // until a key, so wait only for that (#281).
         let wait = Duration::from_millis(
@@ -223,6 +260,20 @@ fn main() {
                 std::thread::sleep(wait);
                 None
             }
+        };
+        let pressed = match pressed {
+            Some(Wake::Key(k)) => Some(k),
+            Some(Wake::Ui(m)) => {
+                if let Some(v) = m.visible() {
+                    visible.insert(m.panel().to_string(), v);
+                }
+                if let Some(id) = &m.id {
+                    // Its buttons are actions; nothing sends a plain click.
+                    let _ = plugin.reply(id, Ok(()));
+                }
+                None
+            }
+            None => None,
         };
         match pressed.as_deref() {
             Some("pause") => {

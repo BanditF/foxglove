@@ -186,6 +186,12 @@ pub struct PanelHost {
     sent_visibility: HashMap<PanelKey, Visibility>,
     closed: HashSet<PanelKey>,
     visibility_out: Vec<(String, UiVisibility)>,
+    /// The page panels on screen, from the last [`PanelHost::set_visible`].
+    shown: Vec<PanelKey>,
+    /// The tray panel is open: its tiles are `visible` (5.9, v1.4).
+    tray_open: bool,
+    /// Tiles the user hid (Edit tiles): `hidden` even while the tray panel is open.
+    hidden_tiles: HashSet<PanelKey>,
 }
 
 impl Default for PanelHost {
@@ -211,6 +217,9 @@ impl PanelHost {
             sent_visibility: HashMap::new(),
             closed: HashSet::new(),
             visibility_out: Vec::new(),
+            shown: Vec::new(),
+            tray_open: false,
+            hidden_tiles: HashSet::new(),
         }
     }
 
@@ -224,7 +233,20 @@ impl PanelHost {
         declared: Option<&[String]>,
         params: &Register,
     ) -> Vec<Rejected> {
-        let (ok, mut rejected) = panel::register(params, declared, &self.limits);
+        self.register_with(module, module_name, declared, None, params)
+    }
+
+    /// [`PanelHost::register`], also refusing a button whose `action` names none of the module's
+    /// `[[actions]]` ids (`actions`, when known; `ui.action`, spec v1.4).
+    pub fn register_with(
+        &mut self,
+        module: &str,
+        module_name: &str,
+        declared: Option<&[String]>,
+        actions: Option<&[String]>,
+        params: &Register,
+    ) -> Vec<Rejected> {
+        let (ok, mut rejected) = panel::register_with(params, declared, actions, &self.limits);
         let mut seen = HashSet::new();
         let mut accepted: Vec<Panel> = Vec::new();
         for p in ok {
@@ -434,14 +456,43 @@ impl PanelHost {
     /// on screen (the active tab, pop-outs that aren't minimised); every other open page panel is
     /// `hidden`, and closed ones `closed`. An empty slice is the hub minimised or in the tray.
     pub fn set_visible(&mut self, shown: &[PanelKey]) {
+        self.shown = shown.to_vec();
+        self.sync_visibility();
+    }
+
+    /// The tray panel opened or closed: its tiles turn `visible` or `hidden` (5.9, v1.4).
+    pub fn set_tray_open(&mut self, open: bool) {
+        self.tray_open = open;
+        self.sync_visibility();
+    }
+
+    /// The user hid or showed a tile (Edit tiles). A hidden tile stays `hidden`.
+    pub fn set_tile_hidden(&mut self, key: &PanelKey, hidden: bool) {
+        if hidden {
+            self.hidden_tiles.insert(key.clone());
+        } else {
+            self.hidden_tiles.remove(key);
+        }
+        self.sync_visibility();
+    }
+
+    /// Queues a `ui.visibility` for each page or tile panel whose state changed. A tile is never
+    /// `closed`.
+    fn sync_visibility(&mut self) {
         let mut out = Vec::new();
-        for p in self.panels.iter().filter(|p| p.slot == Slot::Page) {
-            let want = if self.closed.contains(&p.key) {
-                Visibility::Closed
-            } else if shown.contains(&p.key) {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
+        let shown = &self.shown;
+        for p in &self.panels {
+            let want = match p.slot {
+                Slot::Page if self.closed.contains(&p.key) => Visibility::Closed,
+                Slot::Page if shown.contains(&p.key) => Visibility::Visible,
+                Slot::Tile if self.tray_open && !self.hidden_tiles.contains(&p.key) => {
+                    Visibility::Visible
+                }
+                // A tile's first word is `visible`, when the tray panel first opens (the
+                // ui/visibility transcript); until then the module hears nothing.
+                Slot::Tile if !self.sent_visibility.contains_key(&p.key) => continue,
+                Slot::Page | Slot::Tile => Visibility::Hidden,
+                _ => continue,
             };
             if self.sent_visibility.get(&p.key) != Some(&want) {
                 self.sent_visibility.insert(p.key.clone(), want);

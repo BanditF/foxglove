@@ -1,0 +1,52 @@
+# Hideout's manifest (contract §4.10, v1.4): plugin.toml's keys plus the tile and the page.
+# Foxglove reads plugin.toml (where sdk-dll is a text setting); Hideout reads this file, where it
+# is a file setting (hub 1.1). Keep the shared keys the same.
+id = "org.foxglove.icue"
+name = "Corsair iCUE"
+version = "1.0.0"
+kind = "service"
+family = "foxglove"
+hub = "1.1"
+transport = "stdio"
+api = { foxglove = "1.3" }
+run = ["icue-mirror.exe"]
+# `files`: it loads the iCUE SDK from where you put it and talks to iCUE, which the sandbox
+# doesn't allow; it reads colours only and never takes control of Corsair lighting.
+permissions = ["files", "devices.read", "lighting.write"]
+enriches = ["iCUE.exe"]
+description = "Your keyboard's underglow follows a Corsair device's colours in iCUE (mirroring only). Needs iCUE running with SDK access on, and Corsair's iCUE SDK, which you download from Corsair. Foxglove ships no Corsair files."
+
+# The tile shows once iCUE has been seen on this PC (UX plan, decision 2).
+[[ui.panels]]
+id = "tile"
+slot = "tile"
+title = "Corsair iCUE"
+icon = "palette"
+when = "apps.seen.icue"
+
+[[ui.panels]]
+id = "page"
+slot = "page"
+title = "Corsair iCUE"
+icon = "palette"
+
+[[settings]]
+name = "sdk-dll"
+label = "Corsair's iCUE SDK file (iCUESDK.x64_2019.dll)"
+kind = "file"
+filter = "iCUESDK*.dll"
+default = ""
+
+[[settings]]
+name = "device"
+label = "Corsair device to follow (part of its model name; empty: the first one with lights)"
+kind = "text"
+default = ""
+
+[[settings]]
+name = "max-hz"
+label = "Colour reads per second while it follows"
+kind = "int"
+default = 10
+min = 1
+max = 30

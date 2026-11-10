@@ -183,6 +183,7 @@ fn the_feed_carries_registration_patches_and_events() {
         module: M.into(),
         name: "Example".into(),
         declared: Some(vec!["main".into()]),
+        actions: None,
         params,
     });
     assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 1);

@@ -20,6 +20,7 @@
 //! The scene name goes on the panel under the symbol. Options: `--port N` (4455; the manifest's
 //! permission has to match), `--no-lights`, `--no-panel`.
 
+mod module_ui;
 mod obs;
 mod screens;
 mod ws;
@@ -28,7 +29,9 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
 
+use foxglove_plugin::ui::Panels;
 use foxglove_plugin::{AppWindowEvent, Fact, Hsb, Lease, LeasePriority, NetEvent, NetKind, Plugin};
+use module_ui::Link;
 use obs::Status;
 use screens::State;
 
@@ -71,10 +74,15 @@ struct Out {
     art: Option<screens::Art>,
     leases: Vec<Lease>,
     shown: Option<(State, Option<String>)>,
+    /// Hideout's tile and page.
+    panels: Panels,
 }
 
 impl Out {
     fn show(&mut self, plugin: &Arc<Plugin>, connected: bool, status: &Status) {
+        if connected {
+            self.link(Link::On(status.clone()));
+        }
         let state = State::of(connected, status);
         let now = (state, status.scene.clone().filter(|_| connected));
         let before = self.shown.replace(now.clone());
@@ -95,6 +103,11 @@ impl Out {
         if state != State::Disconnected || lost {
             self.send_screen(plugin);
         }
+    }
+
+    /// Shows where the link to OBS stands on Hideout's tile and page.
+    fn link(&mut self, link: Link) {
+        self.panels.show(module_ui::panels(&link));
     }
 
     /// A held screen stays until the next one replaces it or the plugin stops (#281); READY
@@ -219,8 +232,10 @@ fn main() {
         art,
         leases: Vec::new(),
         shown: None,
+        panels: Panels::new(plugin.clone()),
     };
     out.show(&plugin, false, &Status::default());
+    out.link(Link::Closed);
 
     // Tries start when OBS's window appears, at start if it's open, and when a connection
     // drops; they stop on connecting or when OBS's last window closes.
@@ -246,6 +261,7 @@ fn main() {
         loop {
             match events.recv() {
                 Ok(AppWindowEvent::Appeared { .. }) => break,
+                Ok(e) if quit(&e) => out.link(Link::Closed),
                 Ok(AppWindowEvent::Closed { .. }) => {}
                 Err(_) => return,
             }
@@ -279,7 +295,10 @@ fn burst(
                 match events
                     .recv_timeout(until.saturating_duration_since(std::time::Instant::now()))
                 {
-                    Ok(e) if quit(&e) => return false,
+                    Ok(e) if quit(&e) => {
+                        out.link(Link::Closed);
+                        return false;
+                    }
                     Err(RecvTimeoutError::Disconnected) => return false,
                     Ok(_) => {}
                     Err(RecvTimeoutError::Timeout) => break,
@@ -287,7 +306,10 @@ fn burst(
             }
         } else {
             match events.try_recv() {
-                Ok(e) if quit(&e) => return false,
+                Ok(e) if quit(&e) => {
+                    out.link(Link::Closed);
+                    return false;
+                }
                 Err(TryRecvError::Disconnected) => return false,
                 _ => {}
             }
@@ -301,6 +323,12 @@ fn burst(
             Err(e) => (format!("OBS isn't reachable on port {port}: {e}"), false),
         };
         out.show(plugin, false, &Status::default());
+        // Both of OBS's password answers say "password" (obs.rs).
+        out.link(if why.contains("password") {
+            Link::NeedsPassword
+        } else {
+            Link::Unreachable
+        });
         if why != *last_error {
             eprintln!("broadcast-status: {why}");
             *last_error = why;
