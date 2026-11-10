@@ -269,6 +269,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         app,
         platform::main_window_drawable,
         side_windows_live,
+        flyout::take_kick,
         platform::main_window_id,
         tray_sync,
     );
@@ -313,11 +314,13 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
     match cmd {
         tray::Command::Flyout(icon) => {
             // The flyout is drawn by the main window's frame: ask for one even while the window
-            // is hidden (`wake::Gate` runs it while the flyout is wanted, #935).
+            // is hidden (`wake::Gate` runs it while the flyout is wanted, #935). The kick makes
+            // the gate run it even when egui's repaint request doesn't reach eframe (#1019).
             if let Ok(mut c) = shared.flyout_click.lock() {
                 *c = Some((icon, std::time::Instant::now()));
             }
             flyout::set_live(true);
+            flyout::kick();
             ctx.request_repaint();
             return;
         }
@@ -1714,6 +1717,10 @@ impl Hub {
         let t = theme::tokens(ctx.theme() == egui::Theme::Dark);
         // A lab capture (#1002) waiting for this frame; nothing while none is asked for.
         let job = self.capture.as_ref().and_then(|s| s.take());
+        // Lab control's `set-setting` (#995.3): the Settings form's path, before the pump sends it.
+        for (module, name, value) in crate::lab_control::take_settings() {
+            self.panels.set_setting(&module, &name, value);
+        }
         if let Some(feed) = self.feed.as_mut() {
             let now = std::time::Instant::now();
             // Event-driven: the feed's waker brought this frame; a held-back patch asks for one

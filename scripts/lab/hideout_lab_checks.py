@@ -350,6 +350,25 @@ def flyout_steps(hub, check):
         hub.do('click', 'Cancel')
         check('997.8 Change, type, Cancel: back to Saved', has(hub.state(), 'Saved'), 'Saved row is back')
 
+    def s0_hidden_root_gate():
+        # Hard gate (#1019): with the main window hidden, a tray click must place, show and draw
+        # the flyout within 1 s, and the hub must go back to sleeping after it closes.
+        hub.to_tray()
+        before = hub.state()['flyout']['passes']
+        hub.do('tray-click')
+        ok, s = hub.wait(lambda s: s['flyout']['open'] and s['flyout']['visible']
+                         and s['flyout']['passes'] > before, 1)
+        f = s['flyout']
+        check('1019 hidden main window: tray click shows and draws the flyout within 1 s', ok,
+              f'open={f["open"]} visible={f["visible"]} passes {before} -> {f["passes"]}')
+        hub.do('close-flyout')
+        hub.wait(lambda s: not s['flyout']['open'], 5)
+        time.sleep(3)
+        a = hub.state()['loop']['wakes']
+        time.sleep(10)
+        rate = (hub.state()['loop']['wakes'] - a) / 10
+        check('1019 hidden idle after the flyout closes (loop wakes/s)', rate <= 2, f'{rate:.1f} wakes/s over 10 s')
+
     def s9_hidden_wakes():
         hub.to_tray()
         time.sleep(3)
@@ -370,7 +389,7 @@ def flyout_steps(hub, check):
         rate = (b - a) / 10
         check('997.9 back to the hidden baseline after the flyout', rate <= 2, f'{rate:.1f} wakes/s over 10 s')
 
-    for name, fn in [('997.1', s1_click_opens), ('997.1 dbl', s1_double_click), ('997.2', s2_toggle_and_esc),
+    for name, fn in [('1019', s0_hidden_root_gate), ('997.1', s1_click_opens), ('997.1 dbl', s1_double_click), ('997.2', s2_toggle_and_esc),
                      ('997.4', s4_hide_and_order), ('997.5', s5_open_and_keyboard), ('997.8', s8_obs_cancel),
                      ('997.9', s9_hidden_wakes)]:
         step(check, name, fn)
@@ -416,13 +435,12 @@ def page_steps(hub, check):
         hub.do('focus', name)
         s = hub.state()
         label = next((t for t in texts(s) if t.startswith("Corsair's iCUE SDK file")), None)
-        f = field_after(s, label) if label else None
-        if f is None:
-            return check('995.3 iCUE Settings shows the SDK file field', False, f'{texts(s)[:40]}')
+        if not check('995.3 iCUE Settings shows the SDK file field', label is not None, f'{texts(s)[:40]}'):
+            return
+        # A file field is a picker, not a text box a script can type into (#1019): set it through
+        # the Settings form's own path (lab control's set-setting), as a pick would.
         start = time.time()
-        hub.do('click', f'@{f}')
-        hub.do('text', str(hub.lab / 'iCUESDK.x64_2019.dll'))
-        hub.do('key', 'enter')
+        hub.do('set-setting', 'org.foxglove.icue', 'sdk-dll', str(hub.lab / 'iCUESDK.x64_2019.dll'))
         ok, _ = hub.wait(lambda _: any(p.stat().st_mtime >= start - 1 for p in hub.lab.rglob('settings.json')
                                        if 'icue' in str(p).lower()), 5, read=lambda: None)
         check('995.3 a typed SDK path lands in its settings.json', ok, 'settings.json under the lab folder')
@@ -485,12 +503,14 @@ def supervisor_steps(hub, check):
     def s2_five_crashes():
         hub.show_main()
         hub.do('focus', name)
-        for k in range(5):
+        # s1_kill_once already crashed the module once; four more make five (a fifth here would
+        # find the module correctly stopped).
+        for k in range(4):
             ok, _ = hub.wait(lambda _: bool(hub.pids(exe)), 70, read=lambda: None)
             if not ok:
                 return check('1004.2 five crashes', False, f'{exe.name} did not come back after crash {k}')
             crash_once(k + 1)
-            if k < 4:
+            if k < 3:
                 hub.wait(lambda s: contains(s, f'{name} stopped unexpectedly.'), 10)
         ok, s = hub.wait(lambda s: contains(s, 'Stopped after 5 crashes'), 15)
         check('1004.2 five crashes show the stopped card', ok, 'Stopped after 5 crashes')
