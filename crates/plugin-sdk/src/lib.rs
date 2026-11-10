@@ -129,10 +129,20 @@ impl std::error::Error for PluginError {}
 pub type Result<T> = std::result::Result<T, PluginError>;
 
 type Pending = Arc<Mutex<HashMap<i64, Sender<Outcome>>>>;
+/// The plugin's end of the connection; the reader thread shares it to answer the host's calls.
+type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// Writes one JSON line and flushes it.
+fn write_line(w: &Mutex<Box<dyn Write + Send>>, msg: &Value) -> Result<()> {
+    let mut w = w.lock().unwrap_or_else(|e| e.into_inner());
+    writeln!(w, "{msg}")
+        .and_then(|()| w.flush())
+        .map_err(|_| PluginError::Closed)
+}
 
 /// A connection to Foxglove.
 pub struct Plugin {
-    write: Mutex<Box<dyn Write + Send>>,
+    write: Writer,
     next: AtomicI64,
     pending: Pending,
     events: Mutex<Option<Receiver<FactChanged>>>,
@@ -170,6 +180,8 @@ impl Plugin {
         let reader_closed = closed.clone();
         let routes = net::Routes::default();
         let reader_routes = routes.clone();
+        let write: Writer = Arc::new(Mutex::new(Box::new(write)));
+        let reader_write = write.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(read).lines() {
                 let Ok(line) = line else { break };
@@ -188,9 +200,26 @@ impl Plugin {
                         if let Ok(ev) = serde_json::from_value(n.params) {
                             let _ = events_tx.send(ev);
                         }
-                    } else if n.method == "action.invoked" {
-                        if let Some(a) = n.params.get("action").and_then(Value::as_str) {
-                            let _ = actions_tx.send(a.to_string());
+                    } else if n.method == "action.invoked" || n.method == "action.invoke" {
+                        // Foxglove's `action.invoked` is a notification; Hideout's
+                        // `action.invoke` (contract §8.8, through the stdio bridge) is a call
+                        // and waits for an answer. It is answered here, once the action is
+                        // queued, so the answer never waits for the plugin's loop (#1013).
+                        let queued = n
+                            .params
+                            .get("action")
+                            .and_then(Value::as_str)
+                            .is_some_and(|a| actions_tx.send(a.to_string()).is_ok());
+                        if let Some(id) = n.id {
+                            let id = serde_json::to_value(id).unwrap_or(Value::Null);
+                            let answer = if queued {
+                                json!({"jsonrpc": "2.0", "id": id, "result": {}})
+                            } else {
+                                json!({"jsonrpc": "2.0", "id": id, "error": {
+                                    "code": 5, "message": "refused",
+                                    "data": {"reason": "The plugin doesn't take actions."}}})
+                            };
+                            let _ = write_line(&reader_write, &answer);
                         }
                     } else if n.method == "settings.changed" {
                         if let Ok(s) = serde_json::from_value::<
@@ -231,7 +260,7 @@ impl Plugin {
             reader_routes.close_all("Foxglove went away");
         });
         let mut plugin = Plugin {
-            write: Mutex::new(Box::new(write)),
+            write,
             next: AtomicI64::new(0),
             pending,
             events: Mutex::new(Some(events_rx)),
@@ -303,10 +332,7 @@ impl Plugin {
             Err(reason) => json!({"jsonrpc": "2.0", "id": id, "error": {
                 "code": 5, "message": "refused", "data": {"reason": reason}}}),
         };
-        let mut w = self.write.lock().unwrap_or_else(|e| e.into_inner());
-        writeln!(w, "{msg}")
-            .and_then(|()| w.flush())
-            .map_err(|_| PluginError::Closed)
+        write_line(&self.write, &msg)
     }
 
     /// Hideout's `ui.event` calls and `ui.visibility` notifications (take it once). Foxglove

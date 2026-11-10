@@ -1161,12 +1161,31 @@ impl TabHooks for Asked {
 
 const SUP: &str = "mod.art";
 
-/// One module page, Art, active, with these facts (`null` leaves one out).
+/// Art's manifest: its `name` is what every supervisor surface says.
+fn art_manifest() -> hideout_contract::module::Module {
+    let toml = format!(
+        r#"
+id = "{SUP}"
+name = "Art"
+version = "0.5.0"
+kind = "service"
+family = "third-party"
+hub = "1.0"
+run = ["art.exe"]
+description = "Art."
+"#
+    );
+    hideout_contract::module::Module::parse(&toml, &Default::default()).expect("manifest parses")
+}
+
+/// One module page, Art, active, with these facts (`null` leaves one out). Registered as the
+/// hub's feed registers it, under the module's id only; the manifest gives the name (#1013).
 fn supervised(dir: &std::path::Path, facts: &[(&str, serde_json::Value)]) -> (Hub, Asked) {
     let mut hub = hub_in(dir, None);
     let asked = Asked::default();
     hub.hooks = Some(Box::new(asked.clone()));
-    hub.panels.register(SUP, "Art", None, &params("art", "Art"));
+    hub.panels.register(SUP, SUP, None, &params("art", "Art"));
+    hub.panels.set_manifest(art_manifest());
     hub.open(TabId::panel(SUP, "art"));
     for (k, v) in facts {
         hub.panels.set_fact(&format!("module.{SUP}.{k}"), v.clone());
@@ -1316,7 +1335,8 @@ fn the_crash_bar_counts_down_from_the_restart_fact() {
         .set_fact(&format!("module.{SUP}.restart"), serde_json::Value::Null);
     hub.panels
         .set_fact(&format!("module.{SUP}.state"), serde_json::json!("running"));
-    hub.panels.register(SUP, "Art", None, &params("art", "Art"));
+    // Registered again under its id: the manifest's name still wins.
+    hub.panels.register(SUP, SUP, None, &params("art", "Art"));
     let out = frames(&ctx, &mut hub, vec![]);
     let t = drawn(&out);
     assert!(
