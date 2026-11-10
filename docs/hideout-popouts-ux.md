@@ -264,3 +264,42 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
    Hideout**, not at sign-in.
 2. Closing a pop-out with ×: the page **goes back to its tab quietly**; Hideout stays where it is.
 3. A ↗ **Pop out** button at the tab strip's right end, for the active tab: **yes**.
+
+
+## Follow-ups as built (#1012 items 4, 6, 7)
+
+- **4. Removed module (built).** The hub notices a module leaving the inventory by a Windows
+  change notification on its folder (`inventory.json` is written by a temp file and a rename) and,
+  in a lab hub, on `lab-modules\` (§7.1, never polling); the panel feed carries
+  `ModuleRemoved`. The module's panels and view state go for good, its tabs close (Ctrl+Shift+T
+  can't bring them back), its pop-outs close and their saved places in `[windows]` are dropped.
+  When a window closed, the status strip shows "<Module> was removed; its window was closed."
+  ("its windows were closed." for more than one) for 10 s of the main window on screen, and it
+  is announced once, politely, in Hideout's main window. A removal with no window out closes its
+  tabs silently (the tabs plan). Nothing asks: the module is gone already.
+- **6. Re-snap as a Windows snap (not done; no public API).** A `snapped` place comes back at
+  its snapped rectangle as a normal window. Windows has no public call that puts a window into
+  the snapped ("arranged") state: `IsWindowArranged` only reads it, `SetWindowPlacement` knows
+  normal, minimised and maximised only, and snap layouts and snap groups have no API. The ways
+  left are injecting Win+arrow keys with `SendInput` (needs the window in the foreground, so a
+  restore would steal the focus, races the user's own keys, and picks a half rather than the
+  saved zone) or undocumented shell interfaces; neither is clean. So a restored snapped window
+  keeps its size when first dragged away and isn't in a snap group. A place also keeps one
+  rectangle (§2.5), so the size before the snap isn't saved; a public setter would need it too.
+- **7. Drag a tab out, drag a window onto the strip (MAY; skipped, egui 0.33 doesn't allow it).**
+  Checked against egui 0.33.3, egui-winit 0.33.3 and winit 0.30.13:
+  - What works: a press on a tab keeps its drag outside the window (winit captures the mouse on
+    the press and goes on reporting positions outside; egui keeps a drag through `PointerGone`),
+    so a release outside Hideout could be seen.
+  - Missing for the tear-off: egui draws only inside a viewport, so the ghost card ("Let go to
+    open in its own window" / "Esc cancels") can't follow the pointer outside Hideout; it would
+    need an extra borderless, always-on-top viewport moved on every pointer move, which egui has
+    no support for. egui also can't tell whether a screen point is over another of the app's
+    viewports (no drop target across viewports; drag and drop is tested with each viewport's own
+    pointer).
+  - Missing for the dock by drag: a pop-out dragged by its title row moves in Windows' move loop,
+    during which egui gets no pointer input in either window, so the strip can't draw the orange
+    insertion bar or see the drop. It would need the pop-out's window subclass (which already
+    sees `WM_EXITSIZEMOVE` for placement) to read `WM_MOVING` and the cursor, map it onto the
+    main window's strip, and drive the main window's insertion bar from that: platform code, not
+    egui. Spec gap 6's fallback stands: Dock back, Ctrl+Shift+O, ×, Ctrl+W and the window menu.

@@ -2009,6 +2009,7 @@ dependencies = [
  "hideout-supervisor",
  "log",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

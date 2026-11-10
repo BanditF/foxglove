@@ -211,6 +211,56 @@ fn the_feed_carries_registration_patches_and_events() {
     assert!(matches!(&out[..], [Outbound::Event(e)] if e.module == M && e.event.node == "b"));
 }
 
+/// #1012.4: a removal through the feed drops the module's panels, view state and queued input
+/// for good (no "Last seen" grey page as for `ModuleGone`), leaves other modules alone, and
+/// reports the module once with the name people know it by.
+#[test]
+fn a_removed_module_goes_for_good_and_is_reported_once() {
+    let (router, mut feed) = channel();
+    let mut host = PanelHost::default();
+    register(&mut host, "i1", sample(3, false));
+    let other: Register = serde_json::from_value(json!({"instance": "o1", "panels": [
+        {"id": "main", "slot": "page", "title": "Other", "icon": "x",
+         "tree": {"type": "label", "id": "l"}}]}))
+    .unwrap();
+    host.register("other.module", "Other", None, &other);
+    host.view_mut(&key())
+        .scroll
+        .insert("root".into(), [0.0, 40.0]);
+    host.emit(Interaction {
+        key: key(),
+        node: "go".into(),
+        kind: "click".into(),
+        value: Value::Null,
+        optimistic: false,
+    });
+    router.push(Inbound::ModuleRemoved { module: M.into() });
+    router.push(Inbound::ModuleRemoved { module: M.into() });
+    let (changed, _) = host.pump(&mut feed, Instant::now());
+    assert!(changed);
+    assert!(host.panel(&key()).is_none(), "the panel is gone");
+    assert!(host.view(&key()).is_none(), "its view state is gone");
+    assert!(
+        !router
+            .take()
+            .iter()
+            .any(|o| matches!(o, Outbound::Event(e) if e.module == M)),
+        "queued input for a removed module is dropped"
+    );
+    assert!(host.panel(&PanelKey::new("other.module", "main")).is_some());
+    assert_eq!(
+        host.take_removed(),
+        [(M.to_string(), "Example".to_string())]
+    );
+    assert!(host.take_removed().is_empty());
+    // A module the host never saw is still reported, by its id.
+    host.module_removed("never.seen");
+    assert_eq!(
+        host.take_removed(),
+        [("never.seen".to_string(), "never.seen".to_string())]
+    );
+}
+
 // ---- egui, headless ----
 
 fn frame(ctx: &egui::Context, host: &mut PanelHost, events: Vec<egui::Event>) -> DrawReport {

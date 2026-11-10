@@ -660,7 +660,21 @@ struct Hub {
     search_off: HashMap<String, String>,
     /// A card's primary button had the focus at the end of the last frame: Esc keeps it there.
     search_focused: bool,
+    /// "<Module> was removed; its window was closed." in the status strip (#1012.4).
+    removed_notice: Option<Notice>,
 }
+
+/// A line the status strip shows for a while (#1012.4): [`NOTICE_FOR`] of the main window on
+/// screen, counted from the first frame it is seen there, so a hub in the tray keeps it for when
+/// it is opened.
+#[derive(Clone, Debug, PartialEq)]
+struct Notice {
+    text: String,
+    until: Option<std::time::Instant>,
+}
+
+/// How long a status-strip notice stays once seen.
+const NOTICE_FOR: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Where an announcement is said: the window the focus is in after the move.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -737,6 +751,16 @@ fn opened_words(title: &str) -> String {
 /// "Chat docked, tab 3 of 4".
 fn docked_words(title: &str, n: usize, m: usize) -> String {
     format!("{title} docked, tab {n} of {m}")
+}
+
+/// "Art was removed; its window was closed." (the pop-outs plan's wording); "its windows were
+/// closed." when it had more than one page out.
+fn removed_words(module: &str, windows: usize) -> String {
+    if windows > 1 {
+        format!("{module} was removed; its windows were closed.")
+    } else {
+        format!("{module} was removed; its window was closed.")
+    }
 }
 
 /// The open tray flyout.
@@ -913,6 +937,7 @@ impl Hub {
             search_seq: 0,
             search_off: HashMap::new(),
             search_focused: false,
+            removed_notice: None,
         }
     }
 
@@ -1727,7 +1752,78 @@ impl Hub {
         if self.shared.paused.load(Ordering::Acquire) {
             items.push(Item::new("hub.paused", "Paused"));
         }
+        if let Some(n) = &self.removed_notice {
+            items.push(Item::new("hub.removed", n.text.clone()));
+        }
         items
+    }
+
+    /// The removal notice's time (#1012.4): it starts on the first frame the main window is on
+    /// screen and asks for one repaint at its end (no timer loop); then it goes.
+    fn notice_tick(&mut self, ctx: &egui::Context) {
+        let Some(n) = self.removed_notice.as_mut() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let minimised = ctx.input(|i| i.viewport().minimized == Some(true));
+        let shown = !minimised && !self.shared.hidden.load(Ordering::Acquire);
+        match n.until {
+            None if shown => {
+                n.until = Some(now + NOTICE_FOR);
+                ctx.request_repaint_after(NOTICE_FOR);
+            }
+            None => {}
+            Some(u) if now >= u => self.removed_notice = None,
+            Some(u) => ctx.request_repaint_after(u - now),
+        }
+    }
+
+    /// A module was removed (§5.9 "A removed module's tabs close", the pop-outs plan's Removed
+    /// row, #1012.4): its pop-outs close with its tabs, its saved window places go, and when a
+    /// window closed the status strip says so, with one polite announcement in the main window.
+    /// Nothing asks: the module and its unsaved work are gone already.
+    fn module_removed(&mut self, module: &str, name: &str) {
+        let ids: Vec<TabId> = self
+            .tabs
+            .tabs()
+            .iter()
+            .filter(|t| t.id.module() == Some(module))
+            .map(|t| t.id.clone())
+            .collect();
+        let mut windows = 0;
+        for id in &ids {
+            if let Some(k) = self.popout_index(id) {
+                self.popouts.remove(k);
+                windows += 1;
+            }
+            if self.popout_asking.as_ref() == Some(id) {
+                self.popout_asking = None;
+            }
+            self.page_focus.remove(id);
+        }
+        if let Some(a) = self.asking.as_mut() {
+            a.retain(|id| id.module() != Some(module));
+            if a.is_empty() {
+                self.asking = None;
+            }
+        }
+        let prefix = format!("{module}/");
+        let before = self.windows.len();
+        self.windows.retain(|k, _| !k.starts_with(&prefix));
+        if self.windows.len() != before {
+            self.save_windows();
+        }
+        set_popouts_open(!self.popouts.is_empty());
+        let tabs = self.tabs.drop_module(module);
+        log::info!("{name} ({module}) was removed: {tabs} tab(s) and {windows} window(s) closed");
+        if windows > 0 {
+            let text = removed_words(name, windows);
+            self.removed_notice = Some(Notice {
+                text: text.clone(),
+                until: None,
+            });
+            self.say(text, Said::Main);
+        }
     }
 
     fn sidebar(&mut self, ctx: &egui::Context, t: &Tokens) {
@@ -2442,6 +2538,10 @@ impl Hub {
                 ctx.request_repaint_after(at.saturating_duration_since(now));
             }
         }
+        for (module, name) in self.panels.take_removed() {
+            self.module_removed(&module, &name);
+        }
+        self.notice_tick(ctx);
         self.take_open_requests();
         self.main_window_commands(ctx);
         if self.shared.quit.wanted.swap(false, Ordering::AcqRel) {
@@ -2877,6 +2977,9 @@ impl Hub {
                         placed,
                     );
                     let mut maximized = false;
+                    // A `snapped` place comes back at its rectangle as a normal window: Windows
+                    // has no public call to snap a window (`IsWindowArranged` only reads it;
+                    // #1012.6, docs/hideout-popouts-ux.md "Follow-ups as built").
                     if let Some(at) = at {
                         platform::place_window(h, at.rect);
                         p.placed = Some(at.rect);

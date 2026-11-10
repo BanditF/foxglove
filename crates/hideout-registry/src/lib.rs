@@ -14,6 +14,8 @@
 //! Nothing here starts a process or opens a window.
 
 pub mod hub_config;
+/// The installed ids for the hub's change watch (#1012.4).
+pub mod installed;
 pub mod inventory;
 pub mod lab;
 pub mod trust;
