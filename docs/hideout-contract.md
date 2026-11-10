@@ -1,14 +1,32 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.7** (v1.6 plus the routed `ui.asset.put` answer and the app
+Status: spec, contract version **1.8** (v1.7 plus the last spec items of #918: the canvas-shape
+and table-row caps, which stream overs are refused and which closed, when the backoff run resets,
+and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` answer and the app
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
-one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.8** (#918): the spec items #918 still held. Canvas shapes and table rows get numbers: at
+  most 1,000 shapes in one `canvas` and 10,000 rows in one `table` (§5.2, §5.5; the numbers the
+  crate already enforced, so no shipped panel changes result). The page caps are published in the
+  schema as `limits` (`schema/hideout-v1.json`), as §5.5 always said they were: `nodes`, `depth`,
+  `text_bytes`, `canvas_shapes`, `table_rows`, `streams`, `frame_bytes`, `frames_per_s` and
+  `message_nesting`. A stream over a cap (§5.5): over the stream count is refused (the panel is
+  `ui.limits` at `ui.register`, or the patch at `ui.patch`, and no channel opens); a frame over
+  4 MiB or over 60 frames a second is closed (the hub closes that channel, shows "This preview
+  couldn't be shown." and doesn't reopen it until the module's next instance). The backoff run
+  (§7.7): a crash with no other crash in the ten minutes before it starts a new run at the 1 s
+  step; Start again, Start with defaults and a rollback by itself start one too (what the
+  supervisor already did). Vectors: `panels/valid/at-cap-*.json` and
+  `panels/invalid/over-cap-*.json`, each page cap at the cap and one over (§16), and
+  `transcripts/supervisor/backoff-resets-after-quiet.json`. The vectors generator #914 used was
+  never committed and no copy survives; vectors are edited by hand (§16). One schema key, no
+  message, no manifest key: `hub` stays 1.1 (§8.7).
 - **1.7** (#991): two router leftovers. `ui.asset.put` is answered by the hub's panel host: the
   router hands the call over and sends the panel host's answer back to the module, `{}` or a
   refusal as error -32602 with the §15 id in `data.id` (`ui.limits`) and the reason; an answer
@@ -668,8 +686,8 @@ Nodes are `{type, id, props, bind?, stream?, children}`.
 - **Widgets:** `label`, `value`, `button`, `toggle`, `slider`, `choice`, `color`, `text_input`
   (multi-line, optional attachments), `list`, `table`, `meter`, `image`, `gallery`, `log`,
   `markdown` (safe subset, code blocks, no HTML), `text`.
-- **`canvas`:** a retained set of shapes (rect, rounded key, circle, text) with ids, at most a few
-  hundred per panel (§5.5). A click returns the shape id.
+- **`canvas`:** a retained set of shapes (rect, rounded key, circle, text) with ids, (v1.8) at most
+  1,000 in one canvas (§5.5; each shape is a node too). A click returns the shape id.
 - **Box sizes (v1.5).** A `canvas` declares its unit size, `width` and `height` (the units its
   shapes use; numbers above 0). The hub scales the canvas uniformly to the node's width, so the
   box's aspect is `width / height`; without them it is the shapes' bounding box. An `image`
@@ -794,6 +812,21 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
   value at the cap passes; one over it is `ui.limits`. A stream over its count, frame size or rate
   is refused or closed with the same error (the hub still draws no more than 30 frames a second,
   §5.4).
+- **Canvas and table caps (v1.8):** at most 1,000 shapes in one `canvas` (its children) and 10,000
+  rows in one `table` (its `rows`), per node. Shapes count as nodes too, so the 2,000-node cap
+  still holds for the panel. At the cap passes; one over is `ui.limits` for that panel.
+- **Published (v1.8):** the page caps are the schema's `limits` (`nodes`, `depth`, `text_bytes`,
+  `canvas_shapes`, `table_rows`, `streams`, `frame_bytes`, `frames_per_s`, `message_nesting`) and
+  the tile caps its `tile_limits`. A reader takes the numbers from there; this section and the
+  schema agree.
+- **Refused or closed (v1.8):** the stream count is a tree cap: a 9th stream node makes that panel
+  `ui.limits` at `ui.register` (the other panels register), or refuses that `ui.patch`, and no
+  channel opens for it. Frame size and rate are checked on the channel: a frame over 4 MiB, or a
+  61st frame inside one second, makes the hub close that channel. It logs `ui.limits` with the
+  reason, the node shows "This preview couldn't be shown." with Open log, and the stream is not
+  reopened (§5.4), not even when the panel turns `visible` again, until the module's next
+  instance registers (a restart or a swap). The module is not told by message; its end of the
+  channel closes. Nothing is counted as a crash.
 - **Stream text cap (v1.5):** text a stream appends to one `text` or `markdown` node is capped
   separately at 1 MiB (1,048,576 UTF-8 bytes; `streams.text_bytes` in the schema). Past it the
   hub drops the oldest whole lines (up to and including a line feed) until the rest fits, and
@@ -1123,6 +1156,12 @@ Design §3.1.
   channel closed for an oversized line (§8.1, v1.2) counts as one crash.
 - **Backoff steps (v1.1):** fixed delays of 1, 2, 4, 8, 16, 32 and 60 s for the 1st, 2nd, ... 7th
   restart in a run, then 60 s for every one after. No jitter: the delay is exactly the step.
+- **A run (v1.8)** is the restarts since the ten-minute crash window was last empty. A crash with
+  no other crash in the ten minutes before it starts a new run: its restart waits 1 s and it is
+  crash 1 of the window. Start again, Start with defaults (§7.8) and a rollback by itself also
+  start a new run and an empty window. There is no separate quiet timer: crashes closer than ten
+  minutes apart keep one run going (its steps keep growing) even when the window never holds
+  five, so it never stops.
 - **Notices** a crash by events only: the process handle and the pipe closing. No heartbeats
   (#281).
 - **Captures** each module's stderr to its log.
@@ -1872,7 +1911,12 @@ streams with the end each reaches and the pipe names a consumer may connect to, 
 and invalid one each, a stream in a tile, a whole and a split multibyte text frame in
 `frames/panel-frames.json`, `transcripts/stream/text-restore-on-visible.json` and
 `transcripts/stream/reopen-then-stopped.json`; v1.7: `facts/app-facts.json`,
-`manifests/invalid/when-apps-running-with-exe.toml` and `transcripts/ui/asset-put-refused.json`).
+`manifests/invalid/when-apps-running-with-exe.toml` and `transcripts/ui/asset-put-refused.json`;
+v1.8: `panels/valid/at-cap-*.json` and `panels/invalid/over-cap-*.json`, each page cap at the cap
+and one over, and `transcripts/supervisor/backoff-resets-after-quiet.json`). The vectors are
+edited by hand, each in the PR that changes its result: the generator #914 used was never
+committed (`**/tools/*` is git-ignored) and no copy survives. A future generator lives at a tracked
+path (`scripts/`).
 A panel vector's index entry may carry `context.actions`, the module's `[[actions]]` ids. The
 spec version is kept in step by a drift test: this file's status line, `index.json`'s `contract`,
 the vectors README and the schema's `spec` (`SPEC_VERSION` in the Rust crate) must agree.

@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.7",
+  "contract": "1.8",
   "reader_hub": "1.1",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -1972,7 +1972,7 @@
       "spec": [
         "5.5"
       ],
-      "note": "5000 canvas shapes ('a few hundred' is the cap; also over the 2000-node cap, 5.5).",
+      "note": "5000 canvas shapes, over the 1,000-shape cap (v1.8; also over the 2000-node cap, 5.5).",
       "result": "invalid",
       "id": "ui.limits"
     },
@@ -2029,7 +2029,7 @@
         "5.2",
         "5.5"
       ],
-      "note": "A canvas with 200 shapes ('a few hundred' is the cap; 200 is comfortably under).",
+      "note": "A canvas with 200 shapes, well under the 1,000-shape cap (v1.8).",
       "result": "valid"
     },
     "panels/valid/under-caps-small.json": {
@@ -4595,6 +4595,118 @@
       "result": "valid",
       "final": {
         "asset_stored": false
+      }
+    },
+    "panels/valid/at-cap-nodes.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "valid",
+      "note": "(v1.8) 2000 nodes in one panel (a column and 1999 labels) (5.5). A value at the cap passes, one over it is ui.limits."
+    },
+    "panels/invalid/over-cap-nodes.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "note": "(v1.8) 2001 nodes in one panel, one over the 2000-node cap (5.5). A value at the cap passes, one over it is ui.limits.",
+      "id": "ui.limits",
+      "scope": "that panel only"
+    },
+    "panels/valid/at-cap-depth.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "valid",
+      "note": "(v1.8) Depth 32 (the root is depth 1) (5.5). A value at the cap passes, one over it is ui.limits."
+    },
+    "panels/invalid/over-cap-depth.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "note": "(v1.8) Depth 33, one over the depth cap of 32 (5.5). A value at the cap passes, one over it is ui.limits.",
+      "id": "ui.limits",
+      "scope": "that panel only"
+    },
+    "panels/valid/at-cap-text.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "valid",
+      "note": "(v1.8) One string of exactly 16,384 UTF-8 bytes (8,192 two-byte characters: the cap counts bytes, not characters) (5.5). A value at the cap passes, one over it is ui.limits."
+    },
+    "panels/invalid/over-cap-text.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "note": "(v1.8) One string of 16,385 UTF-8 bytes, one over the 16 KiB text cap (5.5). A value at the cap passes, one over it is ui.limits.",
+      "id": "ui.limits",
+      "scope": "that panel only"
+    },
+    "panels/valid/at-cap-canvas-shapes.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "valid",
+      "note": "(v1.8) A canvas with 1,000 shapes (1,001 nodes, under the node cap) (5.5). A value at the cap passes, one over it is ui.limits."
+    },
+    "panels/invalid/over-cap-canvas-shapes.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "note": "(v1.8) A canvas with 1,001 shapes, one over the 1,000-shape cap and under the node cap (5.5). A value at the cap passes, one over it is ui.limits.",
+      "id": "ui.limits",
+      "scope": "that panel only"
+    },
+    "panels/valid/at-cap-table-rows.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "valid",
+      "note": "(v1.8) A table with 10,000 rows (5.5). A value at the cap passes, one over it is ui.limits."
+    },
+    "panels/invalid/over-cap-table-rows.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "note": "(v1.8) A table with 10,001 rows, one over the 10,000-row cap (5.5). A value at the cap passes, one over it is ui.limits.",
+      "id": "ui.limits",
+      "scope": "that panel only"
+    },
+    "panels/valid/at-cap-streams.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "valid",
+      "note": "(v1.8) 8 text nodes with a stream each (5.5). A value at the cap passes, one over it is ui.limits."
+    },
+    "panels/invalid/over-cap-streams.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "note": "(v1.8) 9 streamed text nodes, one over the 8-stream cap; the panel is refused at ui.register and no channel opens (5.5). A value at the cap passes, one over it is ui.limits.",
+      "id": "ui.limits",
+      "scope": "that panel only"
+    },
+    "transcripts/supervisor/backoff-resets-after-quiet.json": {
+      "spec": [
+        "7.7"
+      ],
+      "result": "valid",
+      "note": "(v1.8) The backoff run resets once the ten-minute crash window is empty: the first crash after a quiet ten minutes restarts after 1 s.",
+      "final": {
+        "restart_delays_s": [
+          1,
+          2,
+          4,
+          1
+        ],
+        "reset_after_quiet_s": 600
       }
     }
   }

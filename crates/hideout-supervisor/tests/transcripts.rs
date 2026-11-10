@@ -327,6 +327,29 @@ fn play(file: &str, doc: &Value) -> Result<(), String> {
                 "state fact",
             )
         }
+        "supervisor/backoff-resets-after-quiet.json" => {
+            // v1.8 §7.7: a run ends when the ten-minute window is empty; the next crash is step 1.
+            s.running();
+            let crashes = [0u64, 30, 90, 720];
+            for t in crashes {
+                s.crash(t);
+            }
+            // Each restart's delay: its launch less the crash before it.
+            let launches = s.launches();
+            let delays: Vec<u64> = crashes
+                .iter()
+                .zip(&launches[1..])
+                .map(|(c, l)| (l - c * 1000) / 1000)
+                .collect();
+            check(
+                Value::from(delays.clone()) == ex["restart_delays_s"],
+                &format!("delays {delays:?}"),
+            )?;
+            check(
+                s.p.crashes(ART, s.now) as u64 == ex["crash_in_window"].as_u64().unwrap(),
+                "crashes in the window",
+            )
+        }
         "supervisor/outside-app-missing.json" => {
             // v1.4 §7.7: a busy port or a closed outside app is a module state. The module keeps
             // running and only patches its tile; the supervisor sees no exit and counts nothing.

@@ -17,7 +17,8 @@ pub struct Limits {
     pub streams: usize,
 }
 
-/// The published caps (spec v1.1, #918). Canvas shapes and table rows are this crate's numbers.
+/// The published caps (spec v1.1, #918; canvas shapes and table rows written into §5.5 and the
+/// schema's `limits` in spec v1.8).
 pub const LIMITS: Limits = Limits {
     nodes: 2000,
     depth: 32,

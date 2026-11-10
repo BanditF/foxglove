@@ -34,7 +34,7 @@ pub const HUB_VERSION: Version = Version { major: 1, minor: 1 };
 
 /// The spec version this crate implements (docs/hideout-contract.md's status line, the test
 /// vectors' `index.json` and README). A drift test keeps them equal.
-pub const SPEC_VERSION: &str = "1.7";
+pub const SPEC_VERSION: &str = "1.8";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];
@@ -164,6 +164,18 @@ pub fn schema() -> serde_json::Value {
         "icons": panel::ICONS,
         "tones": panel::TONES,
         "scalings": panel::SCALINGS,
+        // The page caps of §5.5 (spec v1.8): published here as §5.5 says they are.
+        "limits": {
+            "nodes": panel::LIMITS.nodes,
+            "depth": panel::LIMITS.depth,
+            "text_bytes": panel::LIMITS.text_bytes,
+            "canvas_shapes": panel::LIMITS.canvas_shapes,
+            "table_rows": panel::LIMITS.table_rows,
+            "streams": panel::LIMITS.streams,
+            "frame_bytes": panel::MAX_FRAME_BYTES,
+            "frames_per_s": panel::MAX_STREAM_FPS,
+            "message_nesting": panel::MAX_MESSAGE_NESTING,
+        },
         "tile_limits": {
             "nodes": panel::TILE_LIMITS.nodes,
             "depth": panel::TILE_LIMITS.depth,

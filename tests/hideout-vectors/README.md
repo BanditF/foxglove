@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.7. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.8. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -39,7 +39,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `trust/archives/`, `trust/folders/` | the signed archives and unpacked folders the catalogs pin | 12.4 |
 | `trust/keys/` | TEST-ONLY public keys | 12 |
 | `config/` | `hideout.toml` `[[sources]]` and `[[trust.anchors]]` tables, valid, overlapping, and the four `config.*` errors; (v1.6) the `[windows]` pop-out placement table (`windows.*`, read on its own), valid and `config.windows`, and a broken `[windows]` the sources reader passes over | 2.5, 13.4, 13.6 |
-| `panels/` | `ui.register` trees: all node types, under the caps, over each cap, an unknown node type, one bad panel with a good one; (v1.4) `tone`, button `opens` and `action` (an index `context.actions` lists the module's `[[actions]]`), the tile caps; (v1.5) canvas and image sizes, `scaling`, `stale_after_ms`, `mono`, a `markdown` stream, a streamed image's `label`, no streams in a tile | 5.2, 5.4, 5.5 |
+| `panels/` | `ui.register` trees: all node types, under the caps, over each cap, an unknown node type, one bad panel with a good one; (v1.4) `tone`, button `opens` and `action` (an index `context.actions` lists the module's `[[actions]]`), the tile caps; (v1.5) canvas and image sizes, `scaling`, `stale_after_ms`, `mono`, a `markdown` stream, a streamed image's `label`, no streams in a tile; (v1.8) `at-cap-*` and `over-cap-*`: each page cap (nodes, depth, text bytes, canvas shapes, table rows, streams) at the cap and one over | 5.2, 5.4, 5.5 |
 | `facts/supervisor-facts.json` | (v1.4) the supervisor's `module.<id>.restart`, `.recovery`, `.previous` and `.failed` values, valid and invalid rows | 7.8 |
 | `frames/panel-frames.json` | binary stream frames as hex: image, canvas, text, length mismatches; (v1.5) a multibyte character, and a text frame split inside one (dropped) | 5.4, 8.4 |
 | `channels/channel-wire.json` | (v1.4) the channel wire as hex streams (the nonce first, `u32` LE framing, the 256-byte and 64 MiB caps, truncation) with the end each reaches, and which pipe names a consumer may connect to | 8.4 |
@@ -48,7 +48,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `transcripts/ui/` | `ui.patch`, `ui.event` refusal, `ui.asset.put`, `ui.window.open`, `action.invoke`, `settings.get`/`set`, `hub.notify`, `ui.badge`, `ui.visibility` (v1.3; tiles too, v1.4) | 5.3, 5.9, 8.8 |
 | `transcripts/stream/` | a live panel stream grant, `channel.open`/`channel.create`, denial, offer rejected, a provider's bad pipe (v1.4); (v1.5) text restored on visible, reopens then "Stopped updating" | 5.4, 8.4 |
 | `transcripts/facts/`, `modules/`, `mcp/`, `gpu/` | facts, `modules.*`, required-by, MCP and private modules, GPU methods | 8.8, 9, 8.9, 13.5 |
-| `transcripts/supervisor/` | each of the 12 states (`state-<id>.json`), crash backoff and stop, exit 0, rollback, root-cause-once, update waiting, an outside problem that is not a crash (v1.4) | 7.7, 7.8 |
+| `transcripts/supervisor/` | each of the 12 states (`state-<id>.json`), crash backoff and stop, exit 0, rollback, root-cause-once, update waiting, an outside problem that is not a crash (v1.4), the backoff run resetting after a quiet ten minutes (v1.8) | 7.7, 7.8 |
 | `transcripts/hub/` | hub restart takes modules back, 30 s grace, safe mode, quarantine, bisect | 7.9, 7.10, 5.5 |
 
 A transcript is `{name, spec, description, steps}`. A step is a wire message `{from, to, msg}` (one JSON-RPC 2.0
@@ -56,10 +56,12 @@ message), an `{event}` outside the wire, or an `{expect}` assertion. `old`/`new`
 
 ## Regenerating
 
-`python tests/hideout-vectors/tools/generate.py` rewrites everything (needs the `cryptography` package, only to make the
-TEST-ONLY signatures). The files are authoritative; the tooling is a convenience. `.gitattributes` keeps every file byte-exact,
+There is no generator in the repository. The one #914 used (`tools/generate.py` here) was never committed (`**/tools/*`
+is git-ignored) and no copy survives, so the vectors are edited by hand, each in the PR that changes its result (#918).
+The files are authoritative. Re-signing a changed catalog or archive needs a new TEST-ONLY key generator, committed at a
+tracked path (`scripts/`), not under a `tools/` folder. `.gitattributes` keeps every file byte-exact,
 since signatures are over exact bytes (minisign, prehashed `ED`).
 
 ## Spec gaps
 
-The nine gaps found while writing these vectors were decided in [#918](https://github.com/BanditF/foxglove/issues/918) and written into the spec as contract version 1.1 (1.2 adds the duplicate-request-id and oversized-line transcripts); the vectors above carry the decided results.
+The nine gaps found while writing these vectors were decided in [#918](https://github.com/BanditF/foxglove/issues/918) and written into the spec as contract version 1.1 (1.2 adds the duplicate-request-id and oversized-line transcripts; 1.8 closes the rest: the canvas-shape and table-row caps with boundary vectors at and one over every page cap, and the backoff reset after a quiet ten minutes); the vectors above carry the decided results.
