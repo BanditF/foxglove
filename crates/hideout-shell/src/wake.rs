@@ -16,6 +16,9 @@
 //! frame, and asks the main window for a frame whenever the flyout needs one. While the main
 //! window is hidden that frame would never come, so while the flyout is up a due frame is run
 //! here directly (`hidden_pass`). With the flyout closed nothing changes: the hidden hub waits.
+//! Those hidden frames are bounded (#1000): a frame the flyout asks for right away counts towards
+//! [`HIDDEN_STREAK`], and a run of that many with no event between them stops them until the next
+//! event (input, a timer it asked for, a wake). An idle flyout asks for nothing, so it waits.
 //!
 //! It also counts loop wakes and logs one line per 10 minutes, so a live check can prove the
 //! hidden hub sleeps. The report timer is the only wake of a fully idle hub.
@@ -26,6 +29,11 @@ use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowId;
+
+/// The most hidden frames run back to back (each asking for the next one at once) before the
+/// gate waits for an event: about half a second of frames at 60 Hz. Settling (an animation, a
+/// placing) takes a few; anything longer is a loop, and a loop must not spin the hidden hub.
+pub const HIDDEN_STREAK: u32 = 30;
 
 /// How often the wake count is logged.
 pub const REPORT_EVERY: Duration = Duration::from_secs(600);
@@ -46,6 +54,21 @@ pub fn settle(flow: ControlFlow, drawable: bool, report_at: Instant) -> ControlF
 /// tray flyout). Never true with the flyout closed: the hidden, idle hub keeps waiting (#935).
 pub fn hidden_pass(flow: ControlFlow, drawable: bool, side_live: bool) -> bool {
     flow == ControlFlow::Poll && !drawable && side_live
+}
+
+/// Whether the side window still gets hidden frames: it is up, and fewer than [`HIDDEN_STREAK`]
+/// hidden frames ran back to back since the last event (`streak`).
+pub fn side_frames(side_live: bool, streak: u32) -> bool {
+    side_live && streak < HIDDEN_STREAK
+}
+
+/// The streak after a wake for `cause`: only a wake that a `Poll` brought (no event, no timer)
+/// continues it; anything else is an event and starts it again.
+pub fn next_streak(streak: u32, cause: StartCause) -> u32 {
+    match cause {
+        StartCause::Poll => streak,
+        _ => 0,
+    }
 }
 
 /// Counts event-loop wakes and says, once per [`REPORT_EVERY`], how many there were.
@@ -97,6 +120,8 @@ pub struct Gate<A> {
     /// Applies a pending tray change (the icon is the UI thread's). Runs on every wake, so a
     /// fact that changes the tray shows while the window is hidden, without a frame.
     tray_sync: fn(),
+    /// Hidden frames run back to back since the last event ([`HIDDEN_STREAK`]).
+    streak: u32,
 }
 
 impl<A> Gate<A> {
@@ -114,6 +139,7 @@ impl<A> Gate<A> {
             side_live,
             root,
             tray_sync,
+            streak: 0,
         }
     }
 }
@@ -123,6 +149,7 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
         if let Some(line) = self.wakes.wake(Instant::now()) {
             log::info!("{line}");
         }
+        self.streak = next_streak(self.streak, cause);
         self.app.new_events(event_loop, cause);
     }
 
@@ -146,18 +173,22 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
         (self.tray_sync)();
         self.app.about_to_wait(event_loop);
         let drawable = (self.drawable)();
-        if hidden_pass(event_loop.control_flow(), drawable, (self.side_live)()) {
+        let side = side_frames((self.side_live)(), self.streak);
+        if hidden_pass(event_loop.control_flow(), drawable, side) {
             if let Some(root) = (self.root)() {
                 // eframe's own frame path, as Windows would run it for a shown window.
+                self.streak += 1;
                 self.app
                     .window_event(event_loop, root, WindowEvent::RedrawRequested);
             }
         }
         // While the flyout is up, a frame it still wants keeps the loop turning (as a shown
-        // window's would); it stops asking once it settles, and closing it drops the flag.
+        // window's would); it stops asking once it settles, closing it drops the flag, and a
+        // run of HIDDEN_STREAK frames with no event waits for the next event (#1000).
+        let side = side_frames((self.side_live)(), self.streak);
         let flow = settle(
             event_loop.control_flow(),
-            drawable || (self.side_live)(),
+            drawable || side,
             self.wakes.report_at(),
         );
         event_loop.set_control_flow(flow);
@@ -179,6 +210,7 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ControlFlow::*;
 
     #[test]
     fn a_hidden_window_never_polls() {
@@ -210,7 +242,6 @@ mod tests {
 
     #[test]
     fn a_hidden_window_runs_frames_only_while_the_flyout_is_up() {
-        use ControlFlow::*;
         let soon = Instant::now() + Duration::from_millis(16);
         // Flyout closed: never, whatever eframe wants (the #935 wait stands).
         for flow in [Poll, Wait, WaitUntil(soon)] {
@@ -222,6 +253,44 @@ mod tests {
         assert!(!hidden_pass(Poll, true, true));
         assert!(!hidden_pass(Wait, false, true));
         assert!(!hidden_pass(WaitUntil(soon), false, true));
+    }
+
+    #[test]
+    fn hidden_frames_stop_after_a_streak_and_start_again_on_an_event() {
+        let soon = Instant::now() + Duration::from_millis(16);
+        // Flyout closed: no hidden frames, whatever the streak.
+        assert!(!side_frames(false, 0));
+        // Flyout up: frames until HIDDEN_STREAK back to back, then the loop waits.
+        assert!(side_frames(true, 0));
+        assert!(side_frames(true, HIDDEN_STREAK - 1));
+        assert!(!side_frames(true, HIDDEN_STREAK));
+        assert!(!hidden_pass(Poll, false, side_frames(true, HIDDEN_STREAK)));
+        assert_eq!(
+            settle(Poll, side_frames(true, HIDDEN_STREAK), soon),
+            WaitUntil(soon)
+        );
+        // Only a Poll wake continues the streak; an event, a timer or a wake starts it again.
+        assert_eq!(next_streak(7, StartCause::Poll), 7);
+        assert_eq!(
+            next_streak(
+                HIDDEN_STREAK,
+                StartCause::ResumeTimeReached {
+                    start: soon,
+                    requested_resume: soon,
+                }
+            ),
+            0
+        );
+        assert_eq!(
+            next_streak(
+                HIDDEN_STREAK,
+                StartCause::WaitCancelled {
+                    start: soon,
+                    requested_resume: None,
+                }
+            ),
+            0
+        );
     }
 
     #[test]

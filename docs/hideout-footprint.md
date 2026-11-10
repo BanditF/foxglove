@@ -124,6 +124,46 @@ leaves a hidden frame that asks for nothing. Hover and clicks in the flyout cost
 hidden main window each, as a shown window's would; a restart countdown on a tile asks for one
 frame a second only while it is on screen.
 
+### The hidden hub at ~97 wakeups/s (#1000, main d333bd52)
+
+On-call measured the hidden hub at 91 to 97 wakeups/s (main thread 63 to 68/s, CPU 0.10 to
+0.12 %) after #995 to #997. A hand check on d333bd52 with the flyout never opened read the main
+thread at 100 switches/s while the hub logged `event loop: 1182 wakes in 10 min` (about 2/s): the
+main thread is woken about 100 times a second **without** winit's wait returning, so the flyout
+is not the cause and the source is still open (#1000). The hub crates install no
+`SetWindowsHookEx`, `SetWinEventHook`, `RegisterRawInputDevices`, `SetTimer`, device or session
+notification, or message-only window of their own, and with the flyout closed no path runs
+frames (read through eframe 0.33.3, egui 0.33.3, winit 0.30.13, tray-icon 0.24.2):
+
+- A background `request_repaint` (the panel feed's waker, stream readers) wakes the hidden hub
+  at most once: egui only calls the repaint callback when the new delay is shorter than the
+  stored one, and no frame runs to reset it.
+- `wake::hidden_pass` needs `flyout::live()`, which only a tray click sets.
+- The tray-icon leave timer is still killed as it is armed.
+
+Three ways an open flyout could keep the hidden hub drawing are now closed:
+
+1. **The focus hand-off failed.** A hub that may not take the foreground (started by a script,
+   no recent input of its own) shows the flyout without the focus, so it could never close on
+   focus loss. Now a flyout that was shown but never had the focus closes after
+   `flyout::FOCUS_GRACE` (750 ms), with one wake to look (`flyout::focus_check`).
+2. **A frame loop.** Hidden frames the flyout asks for right away are bounded: after
+   `wake::HIDDEN_STREAK` (30) back to back with no event between them, the gate waits for the
+   next event (input, a timer the frame asked for, a wake). Only a `Poll` wake continues the
+   streak (`wake::next_streak`, `wake::side_frames`).
+3. **Placing again for a rounding.** The flyout is placed (resized) again only for a change of
+   at least one whole physical pixel (`flyout::needs_place`); each placing resizes, and a resize
+   brings a frame, so a sub-pixel difference at a fractional scale could loop.
+
+Tests: `flyout::tests::a_flyout_that_never_got_the_focus_closes_after_the_grace`,
+`flyout::tests::it_is_placed_again_only_for_a_whole_pixel`,
+`wake::tests::hidden_frames_stop_after_a_streak_and_start_again_on_an_event`,
+`shell::tests::a_flyout_that_never_got_the_focus_closes`,
+`shell::tests::an_idle_open_flyout_settles_to_no_repaint`, and
+`shell::tests::a_hidden_hub_with_a_restarting_module_requests_no_repaint` (a module restarting
+while hidden: one wake per router event, and the frames it brings ask for nothing; a crash bar
+countdown must only count down while its page or the flyout is on screen).
+
 ## What On-call re-measures
 
 `scripts/lab/hideout_footprint.py` on the PR build, sets "none" and "default":
@@ -139,6 +179,14 @@ threads that switch most, with id, description and switches/s.
 
 4. Window closed to the tray, then the flyout opened and closed (click the icon, then Esc):
    wakeups and CPU must come back to case 2 within a few seconds of closing it.
+
+5. (#1000) Window closed to the tray by its X, **the flyout never opened**, and the harness
+   closing only the main window (one window): main thread under 1 switch/s, total wakeups as in
+   case 2 of the #967 re-measure (about 11/s). This tells whether the no-flyout hub is clean.
+6. (#1000) Window closed to the tray, then the flyout opened by a tray click and dismissed (Esc,
+   or a click elsewhere), and also once opened by a click from a script with no click after it
+   (no focus): within about a second of each it closes by itself or is gone, and wakeups come
+   back to case 5. The hub log says `tray flyout closed: it never got the focus` for the second.
 
 After the hidden-hub fix: window closed to the tray, main thread under 1 switch/s (was 1100 to
 1600), and the log shows `event loop: N wakes in 10 min` with N in the tens at most.

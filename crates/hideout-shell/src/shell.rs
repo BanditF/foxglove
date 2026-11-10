@@ -481,6 +481,8 @@ struct FlyoutState {
     placed: Option<f32>,
     /// Frames that couldn't find its window yet.
     misses: u8,
+    /// When it was first shown (placed), for the focus hand-off check (#1000).
+    shown_at: Option<std::time::Instant>,
 }
 
 /// The flyout's viewport.
@@ -658,6 +660,7 @@ impl Hub {
                         had_focus: false,
                         placed: None,
                         misses: 0,
+                        shown_at: None,
                     });
                     self.panels.set_tray_open(true);
                 }
@@ -714,8 +717,9 @@ impl Hub {
         if frame.focused == Some(true) {
             fly.had_focus = true;
         }
-        let placed_ok = fly.placed.is_some_and(|h| (h - frame.height).abs() < 0.5);
-        if !placed_ok {
+        // A whole physical pixel of change, not a rounding: placing resizes, and a resize brings
+        // a frame, so a sub-pixel difference would place it again every frame (#1000).
+        if flyout::needs_place(fly.placed, frame.height, ctx.pixels_per_point()) {
             let first = fly.placed.is_none();
             if platform::place_flyout(&title, fly.icon, (flyout::WIDTH, frame.height), first) {
                 fly.placed = Some(frame.height);
@@ -727,12 +731,33 @@ impl Hub {
                 ctx.send_viewport_cmd_to(flyout_id(), egui::ViewportCommand::Visible(true));
                 fly.placed = Some(frame.height);
             }
+            if first && fly.placed.is_some() {
+                fly.shown_at = Some(std::time::Instant::now());
+            }
         }
         if let Some(d) = frame.report.repaint_in {
             ctx.request_repaint_after(d);
         }
         let lost = fly.had_focus && frame.focused == Some(false);
-        let mut leave = frame.close || lost;
+        // Shown but never focused (Windows refused the hand-off): it could never close on focus
+        // loss, so it closes after the grace; one wake to look, only while it is up (#1000).
+        let unfocused = match flyout::focus_check(
+            fly.had_focus,
+            frame.focused,
+            fly.shown_at,
+            std::time::Instant::now(),
+        ) {
+            flyout::FocusCheck::Fine => false,
+            flyout::FocusCheck::LookIn(d) => {
+                ctx.request_repaint_after(d);
+                false
+            }
+            flyout::FocusCheck::Close => {
+                log::info!("tray flyout closed: it never got the focus");
+                true
+            }
+        };
+        let mut leave = frame.close || lost || unfocused;
         for a in frame.report.actions {
             match a {
                 TrayAction::Open { module, target } => {
