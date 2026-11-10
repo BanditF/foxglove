@@ -213,7 +213,11 @@ resumes the same round; a close between rounds → "closed with no modules on"; 
 returns to the banner with nothing saved; a string test over the bar and result formatters finds
 no exit code, path or "bisect".
 
-## Open questions for the user (via the Hub)
+## Decisions
+
+**Decided 11/10 (Hub): the designer's picks, all three as bolded below** (bar at the top +
+tray; 5-minute rounds; the next round starts on one click). Contract §7.10 gets the one-line
+bar note in the #1033 build.
 
 1. Where a round shows: **a bar at the top of Hideout's pages + the tray** / a small always-on-top
    window (the earlier sketch). Image: `ux-bisect-proposed-rounds.png`.
