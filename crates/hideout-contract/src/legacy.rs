@@ -145,6 +145,15 @@ pub enum Provides {
 }
 
 impl Manifest {
+    /// A permission's line for Foxglove's install dialog and Plugins tab: an app watch says
+    /// "see when <App> opens or closes" (Foxglove's host reports the app's windows), with the
+    /// app spelled as this plugin's `name` spells it ("ExampleApp Status" spells
+    /// `apps.watch:exampleapp.exe` as ExampleApp), and no line names a file (#991).
+    pub fn describe_permission(&self, p: &Permission) -> String {
+        let names: Vec<&str> = self.name.split_whitespace().collect();
+        p.describe_windows_spelled(&names)
+    }
+
     /// Parses and checks a manifest against the API this app speaks.
     pub fn parse(text: &str, app: Version) -> Result<Manifest, String> {
         Manifest::check(text, app).map_err(|e| e.message)
@@ -339,6 +348,28 @@ key = \"F13\"
         std::fs::write(dir.join("plugin.toml"), "new").unwrap();
         assert_eq!(read_in(&dir).unwrap(), "new");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn permission_lines_spell_the_app_and_name_no_file() {
+        let m = Manifest::parse(
+            &plugin("permissions = [\"apps.watch:ExampleApp.exe\", \"apps.watch:other.exe\"]")
+                .replace("name = \"Weather\"", "name = \"ExampleApp Status\""),
+            APP,
+        )
+        .unwrap();
+        let lines: Vec<String> = m
+            .permissions
+            .iter()
+            .map(|p| m.describe_permission(p))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "see when ExampleApp opens or closes",
+                "see when other opens or closes"
+            ]
+        );
     }
 
     fn plugin(extra: &str) -> String {

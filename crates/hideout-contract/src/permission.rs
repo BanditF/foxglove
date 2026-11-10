@@ -110,25 +110,45 @@ impl Permission {
                 "keep its passwords or tokens in Windows' credential store".into()
             }
             Permission::AppsWatch(exe) => {
-                let bare = |n: &str| {
-                    let n = n.trim();
-                    let cut = n.len().saturating_sub(4);
-                    match n.get(cut..) {
-                        Some(tail) if tail.eq_ignore_ascii_case(".exe") => n[..cut].to_string(),
-                        _ => n.to_string(),
-                    }
-                };
-                let stored = bare(exe);
-                let name = names
-                    .iter()
-                    .map(|n| bare(n))
-                    .find(|n| n.eq_ignore_ascii_case(&stored))
-                    .unwrap_or(stored);
-                format!("see whether {name} is running")
+                format!("see whether {} is running", watched_name(exe, names))
             }
             Permission::AppWindows => "open and close Foxglove's tray panel and overlay".into(),
         }
     }
+}
+
+impl Permission {
+    /// [`Permission::describe_spelled`] for a host that tells a plugin when an app's windows
+    /// open and close rather than whether it runs (Foxglove's plugin host, `app.window.appeared`
+    /// and `app.window.closed`, #277): an app watch reads "see when ExampleApp opens or closes".
+    /// Every other line is the same, and none names a file (#991).
+    pub fn describe_windows_spelled(&self, names: &[&str]) -> String {
+        match self {
+            Permission::AppsWatch(exe) => {
+                format!("see when {} opens or closes", watched_name(exe, names))
+            }
+            other => other.describe_spelled(names),
+        }
+    }
+}
+
+/// An app watch's app for a permission line: `exe` without `.exe`, spelled as one of `names`
+/// spells it when one matches it without regard to case.
+fn watched_name(exe: &str, names: &[&str]) -> String {
+    let bare = |n: &str| {
+        let n = n.trim();
+        let cut = n.len().saturating_sub(4);
+        match n.get(cut..) {
+            Some(tail) if tail.eq_ignore_ascii_case(".exe") => n[..cut].to_string(),
+            _ => n.to_string(),
+        }
+    };
+    let stored = bare(exe);
+    names
+        .iter()
+        .map(|n| bare(n))
+        .find(|n| n.eq_ignore_ascii_case(&stored))
+        .unwrap_or(stored)
 }
 
 impl TryFrom<String> for Permission {
@@ -392,6 +412,8 @@ mod tests {
             for line in [
                 perm.describe(),
                 perm.describe_spelled(&["ExampleApp.exe", "My Tool"]),
+                perm.describe_windows_spelled(&[]),
+                perm.describe_windows_spelled(&["ExampleApp.exe", "My Tool"]),
             ] {
                 assert!(!line.to_ascii_lowercase().contains(".exe"), "{s}: {line}");
             }
@@ -407,6 +429,14 @@ mod tests {
                 .unwrap()
                 .describe_spelled(&["ExampleApp.exe"]),
             "see whether obs64 is running"
+        );
+        assert_eq!(
+            app.describe_windows_spelled(&["ExampleApp"]),
+            "see when ExampleApp opens or closes"
+        );
+        assert_eq!(
+            p("files").unwrap().describe_windows_spelled(&[]),
+            p("files").unwrap().describe()
         );
     }
 
