@@ -7,6 +7,7 @@ design, `review/hideout-modular-design.md` ("the design"); this spec links to it
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.3, added** (#959): router gaps the first router build found (#958). Lease end (§8.5, §8.8): `lease.closed {lease, reason}` (H → M) tells a provider that a lease it handed out ended, and a provider event with `to: <lease>` goes only to that lease's holder. Who is an MCP client, who is the first-party `hideout` CLI, and who runs the `initialize` pid and exe-hash check are now written down (§8.2). `hub` stays 1.0: one optional notification and one optional event field, which a peer that does not know them ignores.
 - **1.3** (#953): open page panels are tabs (§5.9). Two optional notifications: `ui.badge` (M → H) sets a tab's badge (`none`, `attention`, `dirty` or `count`), and `ui.visibility` (H → M) tells a module when its panel is `visible`, `hidden` or `closed`, so it can stop work the user can't see. A tab uses the panel's existing `title` and `icon`. Pop-outs dock back to their tab (§2.5). `hub` stays 1.0: both are optional notifications, and a peer that does not know one drops it (JSON-RPC), so nothing has to be negotiated.
 - **1.2** (#918): two wire rules the transcript vectors found missing (§8.1). A request id that is still in flight on the same connection answers error -32600 `rpc.duplicate-request-id` with id null, and the first call is unaffected. A line over 256 KiB answers -32600 `rpc.frame-too-large` with id null, then the hub closes that channel; the supervisor counts it as a crash (§7.7). Also written down, not new behaviour: a result arriving after the caller's error 4 is dropped. New ids in §15. The trust vectors' `seen_after` is keyed by source id, as §7.3 has it, not by family.
 - **1.1.1** (#941): a message nests at most 128 deep (arrays and objects, counted before parsing; was 4096, which overflowed the stack). Over it is `ui.limits`, the whole message refused. Every reader MUST check the depth before it recurses, or parse without recursion. The same cap holds for brackets in a TOML file (`module.toml`, legacy manifests, `hideout.toml`): over it is `manifest.syntax`. Not a wire change for any message that was within the panel caps.
@@ -870,6 +871,14 @@ Rules:
 - **Outside tools** (`foxglove-cli`, the `hideout` CLI, `hideout mcp`, scripts) connect without a
   token and are approved once each.
 - **Legacy stdio plugins** (`transport = "stdio"`) are bridged by the hub.
+- **Client identity (v1.3).** What an outside tool is comes from the signed catalog, not from
+  what it calls itself. An MCP client is a catalog entry with `kind = "mcp-client"`; the
+  `mcp:<client>` name prefix (§9) is a lab-only fallback until the catalog lists clients (H2.2).
+  The first-party `hideout` CLI, the only client that may hold `modules.manage` without asking,
+  is identified by its exe hash in the signed root catalog, checked at `initialize`.
+- **Who checks `initialize` (v1.3).** The pid and exe-hash check at `initialize` (§7.5) is the
+  supervisor's (H2.5), which started or recognises the process, not the panel host's. Until the
+  permission dialog exists, routers keep the lab-only behaviour: approval by name.
 - The old `\\.\pipe\foxglove-<user>` is served as an alias once `foxglove.exe` no longer owns it
   (§8.6).
 - **No network listener** in the hub. Loopback WebSockets stay opt-in adapters inside modules,
@@ -912,6 +921,20 @@ Rules:
 - Anything a connection holds ends when it ends: lighting leases, Info screen holds, GPU tenancy,
   subscriptions, app watches, channels.
 - Liveness is the connection, not a heartbeat.
+- **Leases (v1.3).** A lease is an id (`lease`) a provider hands out in a call's result, for
+  example `lighting.lease {...}` answering `{lease}`. The hub records the connection that made
+  the call as the lease's **holder**, keyed by provider and lease id.
+- **`lease.closed` (v1.3).** When a lease ends, the hub sends its provider the notification
+  `lease.closed {lease, reason}` so it can drop the state behind it. `reason` is
+  `"disconnect"` (the holder's connection ended), `"released"` (the holder gave it back with the
+  provider's release call, a method named `<family>.release` with `lease` in its params; the hub
+  forwards that call first, then sends `lease.closed`) or `"revoked"` (the hub ended it, for
+  example when the holder's permission was withdrawn). Each lease sends it once. A provider
+  whose own connection ended gets nothing and its leases are forgotten with it.
+- **Addressed events (v1.3).** A provider event whose params carry `to: <lease>` is delivered
+  only to that lease's holder, whatever permissions other connections hold. An event to a lease
+  the hub does not know (ended, never handed out, or another provider's) is dropped. Events
+  without `to` are broadcast to the holders of the event's permission, as before.
 
 ### 8.6 Discovery
 
@@ -955,6 +978,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `state.export` | H → M | call | `{}` | `{blob}` (≤ 256 KiB, base64) or `null` | — |
 | `state.import` | H → M | call | `{blob, from_version}` | `{}` | — |
 | `module.exit` | H → M | notification | `{reason}` | — (exit 0 within 5 s, or the Job ends it) | — |
+| `lease.closed` (v1.3) | H → M | notification | `{lease, reason: "disconnect" \| "released" \| "revoked"}` | — | — |
 
 **Panels and UI**
 
@@ -990,6 +1014,9 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `modules.enable` | C → H | call | `{id}` | `{}` | `modules.manage` |
 | `modules.disable` | C → H | call | `{id}` | `{}` | `modules.manage` |
 | `modules.reload` | C → H | call | `{id}` | `{}` | `modules.manage` |
+
+**Addressed provider events (v1.3).** Any provider event may carry `to: <lease>` in its params
+(§8.5); the hub delivers it only to that lease's holder.
 
 **Facts the hub publishes:** `module.<id>.state`, `module.<id>.reason`, `module.<id>.version`,
 `hub.safe_mode`. Facts about private modules never reach MCP or the tailnet by default (§13.5).

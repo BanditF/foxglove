@@ -230,6 +230,11 @@ struct Route {
     module: String,
 }
 
+/// A lease a provider handed out (§8.5): who holds it.
+struct Lease {
+    holder: ConnId,
+}
+
 pub struct Router {
     settings: Settings,
     approve: Approver,
@@ -251,6 +256,8 @@ pub struct Router {
     next_call: i64,
     queue: VecDeque<Queued>,
     faults: HashMap<String, u32>,
+    /// Leases by (provider module, lease id) (§8.5).
+    leases: HashMap<(String, String), Lease>,
 }
 
 fn error(id: &Value, code: i64, message: &str, reason: Option<&str>) -> Value {
@@ -287,6 +294,7 @@ impl Router {
             subs: BTreeMap::new(),
             next_sub: 1,
             faults: HashMap::new(),
+            leases: HashMap::new(),
             pending: HashMap::new(),
             next_call: 1,
             queue: VecDeque::new(),
@@ -427,6 +435,17 @@ impl Router {
             return out;
         };
         self.subs.retain(|_, (owner, _)| *owner != conn);
+        // Leases it held end: tell each provider (§8.5).
+        let held: Vec<(String, String)> = self
+            .leases
+            .iter()
+            .filter(|(_, l)| l.holder == conn)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in held {
+            self.leases.remove(&k);
+            self.lease_closed(&k.0, &k.1, "disconnect", &mut out);
+        }
         self.queue.retain(|q| q.caller != conn);
         // Calls this connection was answering fail with error 2; its own calls are dropped.
         let keys: Vec<(ConnId, i64)> = self.pending.keys().copied().collect();
@@ -446,10 +465,22 @@ impl Router {
                 self.routes.retain(|r| r.module != id);
                 self.fact_owners.retain(|r| r.module != id);
                 self.channels.remove(&id);
+                self.leases.retain(|k, _| k.0 != id);
                 out.push(Out::ModuleGone(id));
             }
         }
         out
+    }
+
+    /// Tells `provider` a lease it handed out has ended (§8.5, v1.3).
+    fn lease_closed(&self, provider: &str, lease: &str, reason: &str, out: &mut Vec<Out>) {
+        if let Some(p) = self.ready_conn(provider) {
+            out.push(Out::Send(
+                p,
+                json!({"jsonrpc": "2.0", "method": "lease.closed",
+                       "params": {"lease": lease, "reason": reason}}),
+            ));
+        }
     }
 
     fn module_conn(&self, id: &str) -> Option<ConnId> {
@@ -607,12 +638,48 @@ impl Router {
             ))),
             m => {
                 if !may_call(&caps, m, &params) {
-                    out.push(answer(denied(&id, Some("Needs permission for this call"))));
+                    let reason = self.needs_permission(&who, m);
+                    out.push(answer(denied(&id, Some(&reason))));
                     return;
                 }
                 self.route(conn, id, m, params, now, out);
             }
         }
+    }
+
+    /// The refusal text for a call the caller has no permission for: names the module the call
+    /// goes to and says where to allow it.
+    fn needs_permission(&self, who: &Who, method: &str) -> String {
+        let target = self
+            .routes
+            .iter()
+            .filter(|r| covers(&r.pattern, method))
+            .max_by_key(|r| r.pattern.len())
+            .map(|r| r.module.clone())
+            .or_else(|| {
+                self.modules
+                    .values()
+                    .find(|m| {
+                        m.catalog_provide
+                            .as_ref()
+                            .is_some_and(|c| c.iter().any(|c| covers(c, method)))
+                    })
+                    .map(|m| m.id.clone())
+            });
+        let target = target
+            .and_then(|t| self.modules.get(&t).map(|m| m.name.clone()))
+            .unwrap_or_else(|| "this module".into());
+        let caller = match who {
+            Who::Tool { name, .. } => name.clone(),
+            Who::Module { id, .. } => self
+                .modules
+                .get(id)
+                .map_or_else(|| id.clone(), |m| m.name.clone()),
+            Who::New => String::new(),
+        };
+        format!(
+            "{caller} needs permission to call {method} on {target}. Allow it in Hideout's permissions for {caller}."
+        )
     }
 
     fn initialize(&mut self, conn: ConnId, id: &Value, params: &Value, out: &mut Vec<Out>) {
@@ -917,6 +984,17 @@ impl Router {
             "module.idle" => out.push(Out::Idle(module)),
             "ui.patch" => out.push(Out::Patch { module, params }),
             m => {
+                // An event for one lease's holder only (§8.8, v1.3).
+                if let Some(lease) = params.get("to").and_then(Value::as_str) {
+                    let msg = json!({"jsonrpc": "2.0", "method": m, "params": params});
+                    match self.leases.get(&(module.clone(), lease.to_string())) {
+                        Some(l) => out.push(Out::Send(l.holder, msg)),
+                        None => log::debug!(
+                            "router: {module} sent {m} to unknown lease {lease}; dropped"
+                        ),
+                    }
+                    return;
+                }
                 let Some(need) = event_permission(m) else {
                     log::debug!("router: {module} sent {m}, which has no audience; dropped");
                     return;
@@ -947,7 +1025,21 @@ impl Router {
             Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": e}),
         };
         match p.waiter {
-            Waiter::Caller(c, id) => out.push(Out::Send(c, envelope(&id, result))),
+            Waiter::Caller(c, id) => {
+                // A result carrying `lease` makes the caller its holder (§8.5, v1.3).
+                if let (Ok(r), Some(Who::Module { id: provider, .. })) =
+                    (&result, self.conns.get(&conn).map(|x| &x.who))
+                {
+                    if let (Some(lease), true) = (
+                        r.get("lease").and_then(Value::as_str),
+                        self.conns.contains_key(&c),
+                    ) {
+                        self.leases
+                            .insert((provider.clone(), lease.to_string()), Lease { holder: c });
+                    }
+                }
+                out.push(Out::Send(c, envelope(&id, result)))
+            }
             Waiter::Channel { caller, id, nonce } => {
                 let r = result.map(|v| json!({"pipe": v["pipe"], "nonce": nonce}));
                 out.push(Out::Send(caller, envelope(&id, r)));
@@ -1004,7 +1096,19 @@ impl Router {
             .map(|r| r.module.clone());
         if let Some(m) = &live {
             if let Some(p) = self.ready_conn(m) {
-                return self.forward(p, Waiter::Caller(conn, id), method, params, deadline, out);
+                // The holder gives a lease back: the provider is told it ended (§8.5).
+                let released = method
+                    .ends_with(".release")
+                    .then(|| params.get("lease").and_then(Value::as_str))
+                    .flatten()
+                    .map(|l| (m.clone(), l.to_string()))
+                    .filter(|k| self.leases.get(k).is_some_and(|l| l.holder == conn));
+                self.forward(p, Waiter::Caller(conn, id), method, params, deadline, out);
+                if let Some(k) = released {
+                    self.leases.remove(&k);
+                    self.lease_closed(&k.0, &k.1, "released", out);
+                }
+                return;
             }
         }
         // Not live: a module whose catalog entry provides it, or the last registration.
@@ -1221,13 +1325,19 @@ impl Router {
                 let deadline = now + self.settings.call_timeout;
                 self.forward(p, waiter, "channel.create", params, deadline, out);
             }
-            Some(_) => self.fail(
-                waiter,
-                code::METHOD_NOT_FOUND,
-                "method not found",
-                Some("No such channel"),
-                out,
-            ),
+            Some(_) => {
+                let name = self.modules.get(module).map_or(module, |m| m.name.as_str());
+                let reason = format!(
+                    "{name} has no channel called {channel}. Check the channel name, or update {name}."
+                );
+                self.fail(
+                    waiter,
+                    code::METHOD_NOT_FOUND,
+                    "method not found",
+                    Some(&reason),
+                    out,
+                )
+            }
             None => {
                 let name = self.modules.get(module).map_or(module, |m| m.name.as_str());
                 let reason = format!("Waiting for {name}");
