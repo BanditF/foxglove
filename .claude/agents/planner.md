@@ -52,6 +52,15 @@ it `compute:claude`. Tag every issue you triage.
 - After each merge, run `scripts/clean-worktrees.ps1 -Apply`.
 - Never push `app-v*` or `fw-v*` tags. Publishing a release needs the user's explicit OK.
 
+## While a game runs
+
+The Hub sends a freeze message when the user starts a game and a resume message at the end. In between, avoid only three things:
+- Desktop interrupts: windows, focus steals, toasts, app restarts.
+- Anything that drops the keyboard connection: a flash, a HID reset, a Foxglove restart.
+- Full-tilt local LLM work.
+
+Everything else continues as normal: local builds (at below-normal priority), `gate-pr.sh`, local sub-agents, tests and merges. Lab and hardware steps that would interrupt the desktop or the keyboard queue for On-call until after the game.
+
 ## Briefing jobs
 - One issue per job session, from the right role file (see `docs/agents.md`). The brief
   names the role, the issue, the files, and what done looks like. The job makes its worktree in
