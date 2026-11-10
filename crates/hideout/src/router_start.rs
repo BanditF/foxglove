@@ -46,42 +46,54 @@ impl hideout_shell::TabHooks for Hooks {
     }
 }
 
-/// What a notification button hands back: `start-again:<id>` or `open:<id>` (a click on the
-/// toast itself opens the module too). The rollback note's buttons (OK, Open log) only close it.
-pub fn on_toast(sup: &Supervisor, arg: &str) {
+/// What a notification button hands back: `start-again:<id>`, `open:<id>` (a click on the
+/// toast itself opens the module too) or `open-log:<id>` (`logs\<id>.log`, as the crash bar's
+/// Open log). OK only closes the toast.
+pub fn on_toast(sup: &Supervisor, home: &Path, arg: &str) {
     match arg.split_once(':') {
         Some(("start-again", id)) => sup.start_again(id),
         Some(("open", id)) => hideout_shell::open_module(id),
+        Some(("open-log", id)) => hideout_shell::open_module_log(home, id),
         _ => {}
     }
 }
 
+/// The buttons of a supervisor notification with what each hands back: Start again, Open
+/// <Module> (the stopped one), Open log (the rollback one); anything else (OK) closes it.
+pub fn toast_buttons(id: &str, actions: &[String]) -> Vec<(String, String)> {
+    use hideout_supervisor::words;
+    let open = actions.first().map(|a| a == words::START_AGAIN) == Some(true);
+    actions
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let arg = if label == words::START_AGAIN {
+                format!("start-again:{id}")
+            } else if label == words::OPEN_LOG {
+                format!("open-log:{id}")
+            } else if i == 1 && open {
+                format!("open:{id}")
+            } else {
+                String::from("dismiss")
+            };
+            (label.clone(), arg)
+        })
+        .collect()
+}
+
 /// The supervisor's notifications as Windows toasts (§7.7: once per module per sign-in, never
-/// for a restart; the policy decides). The stopped one gets Start again · Open <Module>.
-fn notifier(sup: Supervisor) -> hideout_supervisor::driver::Notifier {
+/// for a restart; the policy decides).
+fn notifier(sup: Supervisor, home: &Path) -> hideout_supervisor::driver::Notifier {
+    hideout_shell::notify::set_home(home);
+    let home = home.to_path_buf();
     Box::new(move |id, title, body, actions| {
-        let start = hideout_supervisor::words::START_AGAIN;
-        let buttons: Vec<(String, String)> = actions
-            .iter()
-            .enumerate()
-            .map(|(i, label)| {
-                let arg = if label == start {
-                    format!("start-again:{id}")
-                } else if i == 1 && actions[0] == start {
-                    format!("open:{id}")
-                } else {
-                    String::from("dismiss")
-                };
-                (label.clone(), arg)
-            })
-            .collect();
-        let sup = sup.clone();
+        let (sup, home) = (sup.clone(), home.clone());
         hideout_shell::notify::toast(
             title.into(),
             body.into(),
-            buttons,
+            toast_buttons(id, actions),
             format!("open:{id}"),
-            std::sync::Arc::new(move |arg| on_toast(&sup, arg)),
+            std::sync::Arc::new(move |arg| on_toast(&sup, &home, arg)),
         );
     })
 }
@@ -134,7 +146,7 @@ pub fn start(home: &Path) -> (Hub, Supervisor, HubFeed) {
     // After the pipe is served, so modules it starts or takes back can connect. Router events
     // wait in the channel until then.
     let sup = Supervisor::start(home, hub.clone());
-    sup.set_notifier(notifier(sup.clone()));
+    sup.set_notifier(notifier(sup.clone(), home));
     let s = sup.clone();
     std::thread::Builder::new()
         .name("hideout-router-events".into())
@@ -147,4 +159,30 @@ pub fn start(home: &Path) -> (Hub, Supervisor, HubFeed) {
         })
         .expect("router events thread");
     (hub, sup, feed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hideout_supervisor::words;
+
+    #[test]
+    fn every_toast_button_does_what_it_says() {
+        let (_, _, stopped) = words::stopped_notification("Art");
+        assert_eq!(
+            toast_buttons("m.art", &stopped),
+            vec![
+                ("Start again".to_string(), "start-again:m.art".to_string()),
+                ("Open Art".into(), "open:m.art".into()),
+            ]
+        );
+        let rollback = vec![words::OK.to_string(), words::OPEN_LOG.to_string()];
+        assert_eq!(
+            toast_buttons("m.art", &rollback),
+            vec![
+                ("OK".to_string(), "dismiss".to_string()),
+                ("Open log".into(), "open-log:m.art".into()),
+            ]
+        );
+    }
 }

@@ -433,7 +433,10 @@ struct Hub {
     tray_layout: TrayLayout,
     /// The stopped card whose main button has had the focus (module page, ladder step): the
     /// button takes it once when the card appears.
-    card_focus: Option<(PanelKey, Recovery)>,
+    card_focus: Option<(PanelKey, &'static str)>,
+    /// The page the focus rule last saw: opening another page (and coming back) focuses the
+    /// card's main button again.
+    card_target: Option<TabId>,
 }
 
 /// The open tray flyout.
@@ -570,6 +573,7 @@ impl Hub {
             flyout: None,
             flyout_closed_by_focus: None,
             card_focus: None,
+            card_target: None,
         }
     }
 
@@ -743,6 +747,18 @@ impl Hub {
                     if self.launch_failed(&key.module) {
                         look.state = TabState::Stopped(words::couldnt_start_title(&p.module_name));
                     }
+                    // Restarting: "Restarting… (2 of 5)", which changes once per crash and so
+                    // needs no repaint (the live countdown is the crash bar's).
+                    if self.panels.module_state(&key.module) == Some("restarting") {
+                        let crash = self
+                            .panels
+                            .fact(&format!("module.{}.restart", key.module))
+                            .and_then(|f| f.get("crash"))
+                            .and_then(|v| v.as_u64());
+                        if let Some(k) = crash {
+                            look.state = TabState::Busy(words::restarting_row(0, k as usize));
+                        }
+                    }
                     look
                 }
                 // Restored before its module registered again (§2.4): "Starting".
@@ -774,13 +790,7 @@ impl Hub {
 
     /// The module's log (`logs\<id>.log`), in the app Windows opens `.log` files with.
     fn open_log(&self, module: &str) {
-        let file = self.shared.paths.logs_dir().join(format!("{module}.log"));
-        if let Err(e) = std::process::Command::new("explorer.exe")
-            .arg(&file)
-            .spawn()
-        {
-            log::warn!("open {}: {e}", file.display());
-        }
+        open_module_log(&self.shared.paths.root, module);
     }
 
     /// "Open <Module>" from a notification: the module's page as the active tab.
@@ -845,6 +855,21 @@ impl Hub {
         ui.add_space(12.0);
     }
 
+    /// Whether a card's main button takes the focus this frame: when the card appears (or its
+    /// page is opened again), and on Esc, which it consumes so Esc does nothing. Never while the
+    /// close dialog, the palette or the flyout is up: their own Esc and focus come first.
+    fn card_takes_focus(&mut self, ui: &egui::Ui, key: &PanelKey, card: &'static str) -> bool {
+        if self.asking.is_some() || self.palette.open || self.flyout.is_some() {
+            return false;
+        }
+        let fresh = self.card_focus.as_ref() != Some(&(key.clone(), card));
+        self.card_focus = Some((key.clone(), card));
+        let esc = ui
+            .ctx()
+            .input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        fresh || esc
+    }
+
     /// The stopped card (crash-stopped): one main button for the ladder's step from
     /// `module.<id>.recovery`, then Copy diagnostics, always last. The main button takes the
     /// focus when the card appears; Esc does nothing.
@@ -866,11 +891,7 @@ impl Hub {
             self.panels.module_state(module).unwrap_or("unknown"),
             step.id()
         );
-        let refocus = self.card_focus.as_ref() != Some(&(key.clone(), step));
-        // Esc leaves the card as it is (egui would drop the focus).
-        let esc = ui
-            .ctx()
-            .input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        let focus = self.card_takes_focus(ui, key, step.id());
         let mut pressed = false;
         card(ui, t, |ui| {
             ui.label(
@@ -886,20 +907,12 @@ impl Hub {
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                let b = ui.add(
-                    egui::Button::new(egui::RichText::new(&main).color(c(t.on_accent)))
-                        .fill(c(t.accent)),
-                );
-                if refocus || esc {
-                    b.request_focus();
-                }
-                pressed = b.clicked();
+                pressed = main_button(ui, t, &main, focus).clicked();
                 if ui.button(words::COPY_DIAGNOSTICS).clicked() {
                     ui.ctx().copy_text(diagnostics.clone());
                 }
             });
         });
-        self.card_focus = Some((key.clone(), step));
         if pressed {
             if let Some(h) = self.hooks.as_mut() {
                 match (step, previous.is_some()) {
@@ -913,8 +926,8 @@ impl Hub {
         ui.add_space(12.0);
     }
 
-    /// `install-failed` from launching: "Couldn't start <Module>", its reason, Try again · Open
-    /// log.
+    /// `install-failed` from launching: "Couldn't start <Module>", its reason, **Try again** (the
+    /// main button, with the stopped card's focus and Esc rule) · Open log.
     fn couldnt_start_ui(&mut self, ui: &mut egui::Ui, t: &Tokens, key: &PanelKey, name: &str) {
         let (title, files, buttons) = words::couldnt_start(name);
         // The supervisor's reason is one of its own plain lines (words.rs).
@@ -924,6 +937,7 @@ impl Hub {
             .and_then(|v| v.as_str())
             .map(String::from)
             .unwrap_or(files);
+        let focus = self.card_takes_focus(ui, key, "couldnt-start");
         let (mut again, mut log) = (false, false);
         card(ui, t, |ui| {
             ui.label(
@@ -936,7 +950,7 @@ impl Hub {
             ui.label(egui::RichText::new(body).color(c(t.text)));
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                again = ui.button(&buttons[0]).clicked();
+                again = main_button(ui, t, &buttons[0], focus).clicked();
                 log = ui.button(&buttons[1]).clicked();
             });
         });
@@ -1105,20 +1119,27 @@ impl Hub {
                         .color(c(t.text)),
                 );
                 ui.add_space(14.0);
-                let mut entries: Vec<(TabId, String, bool)> = self
+                // (target, title, attention dot, the red mark's accessible name when stopped)
+                let mut entries: Vec<(TabId, String, bool, Option<String>)> = self
                     .pages
                     .iter()
-                    .map(|p| (TabId::page(p.id()), p.title().to_string(), false))
+                    .map(|p| (TabId::page(p.id()), p.title().to_string(), false, None))
                     .collect();
                 entries.extend(self.panels.in_slot(Slot::Page).map(|p| {
+                    let mut look = strip::panel_look(p, false);
+                    if self.launch_failed(&p.key.module) {
+                        look.state = TabState::Stopped(words::couldnt_start_title(&p.module_name));
+                    }
+                    let stopped = matches!(look.state, TabState::Stopped(_));
                     (
                         TabId::panel(&p.key.module, &p.key.panel),
                         p.title.clone(),
                         p.badge == hideout_panels::Badge::Attention,
+                        stopped.then(|| look.accessible_name()),
                     )
                 }));
                 let active = self.tabs.active_id().cloned();
-                for (target, title, attention) in entries {
+                for (target, title, attention, stopped) in entries {
                     let selected = active.as_ref() == Some(&target);
                     let text = egui::RichText::new(title)
                         .size(15.0)
@@ -1127,7 +1148,20 @@ impl Hub {
                         [ui.available_width(), 32.0],
                         egui::Button::selectable(selected, text),
                     );
-                    if attention {
+                    if let Some(said) = stopped {
+                        // The red warning mark, as on its tab (docs/hideout-supervisor-ux.md, S
+                        // and T); its words are in the entry's accessible name.
+                        let at = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
+                        ui.painter().text(
+                            at,
+                            egui::Align2::CENTER_CENTER,
+                            "\u{26A0}",
+                            egui::FontId::proportional(14.0),
+                            c(theme::nav_mark(t, selected)),
+                        );
+                        ui.ctx()
+                            .accesskit_node_builder(resp.id, |n| n.set_label(said));
+                    } else if attention {
                         // The attention dot on the sidebar entry too; the tab's accessible name
                         // says "something new", so colour is not the only signal.
                         let at = egui::pos2(resp.rect.right() - 12.0, resp.rect.center().y);
@@ -1212,6 +1246,10 @@ impl Hub {
         };
         let look = self.look(i);
         let id = self.tabs.tabs()[i].id.clone();
+        if self.card_target.as_ref() != Some(&id) {
+            self.card_target = Some(id.clone());
+            self.card_focus = None;
+        }
         // The page area is the tab panel, named by its tab.
         let name = look.accessible_name();
         ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
@@ -1264,7 +1302,8 @@ impl Hub {
                     }
                     _ => false,
                 };
-                if !stopped {
+                // A card that comes back focuses its main button again.
+                if !own || fact_state.as_deref() == Some("restarting") {
                     self.card_focus = None;
                 }
                 match &look.state {
@@ -1533,6 +1572,28 @@ impl Hub {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
         }
+    }
+}
+
+/// A card's main button: the accent fill; takes the focus when `focus`.
+fn main_button(ui: &mut egui::Ui, t: &Tokens, text: &str, focus: bool) -> egui::Response {
+    let b = ui
+        .add(egui::Button::new(egui::RichText::new(text).color(c(t.on_accent))).fill(c(t.accent)));
+    if focus {
+        b.request_focus();
+    }
+    b
+}
+
+/// Opens a module's log, `logs\<id>.log` under the hub folder, in the app Windows opens `.log`
+/// files with (the crash bar, Couldn't start and the rollback notification's Open log).
+pub fn open_module_log(home: &std::path::Path, module: &str) {
+    let file = home.join("logs").join(format!("{module}.log"));
+    if let Err(e) = std::process::Command::new("explorer.exe")
+        .arg(&file)
+        .spawn()
+    {
+        log::warn!("open {}: {e}", file.display());
     }
 }
 

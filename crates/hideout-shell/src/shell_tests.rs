@@ -1376,3 +1376,109 @@ fn renders_the_supervisor_states_for_review() {
     save_png("built-sup-tray-icons.png", w, h, img);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Esc belongs to the palette (and the close dialog) when one is open over a stopped card: it
+/// closes the palette, the card's button doesn't take the focus, and Enter presses nothing.
+#[test]
+fn esc_over_a_stopped_card_closes_the_palette_first() {
+    let ctx = ctx();
+    let dir = temp_dir("card-palette");
+    let (mut hub, rec) = stopped(&dir, "last", None);
+    let _ = frames(&ctx, &mut hub, vec![]);
+    hub.palette.toggle();
+    assert!(hub.palette.open);
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
+    assert!(!hub.palette.open, "Esc didn't close the palette");
+    assert!(rec.0.lock().unwrap().is_empty());
+    // The close dialog too: Esc keeps the tab open and presses no card button.
+    hub.asking = Some(vec![TabId::panel(SUP, "art")]);
+    hub.panels.set_badge(
+        SUP,
+        &UiBadge {
+            panel: "art".into(),
+            badge: Badge::Dirty,
+            count: None,
+        },
+    );
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
+    assert!(hub.asking.is_none(), "Esc didn't answer the dialog");
+    assert_eq!(hub.tabs.len(), 2);
+    assert!(
+        rec.0.lock().unwrap().is_empty(),
+        "{:?}",
+        rec.0.lock().unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Couldn't start has one main button, Try again, with the stopped card's focus and Esc rule.
+#[test]
+fn couldnt_start_focuses_try_again() {
+    let ctx = ctx();
+    let dir = temp_dir("couldnt-focus");
+    let (mut hub, rec) = launch_failed(&dir, words::FILES_DONT_MATCH);
+    let out = frames(&ctx, &mut hub, vec![]);
+    assert!(text_x(&out, "Try again").unwrap() < text_x(&out, "Open log").unwrap());
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
+    assert!(rec.0.lock().unwrap().is_empty());
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Enter, Modifiers::NONE)]);
+    assert_eq!(*rec.0.lock().unwrap(), vec![format!("start-again {SUP}")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Going to another page and back focuses the card's main button again.
+#[test]
+fn coming_back_to_a_stopped_page_focuses_its_button_again() {
+    let ctx = ctx();
+    let dir = temp_dir("card-return");
+    let (mut hub, rec) = stopped(&dir, "start-again", None);
+    let _ = frames(&ctx, &mut hub, vec![]);
+    // The focus moves off the button (Tab), then the user goes to Modules and back.
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Tab, Modifiers::NONE)]);
+    hub.open(TabId::page("modules"));
+    let _ = frames(&ctx, &mut hub, vec![]);
+    hub.open(TabId::panel(SUP, "art"));
+    let _ = frames(&ctx, &mut hub, vec![]);
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Enter, Modifiers::NONE)]);
+    assert_eq!(*rec.0.lock().unwrap(), vec![format!("start-again {SUP}")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_restarting_tab_says_which_crash_and_the_sidebar_marks_a_stopped_one() {
+    let ctx = ctx();
+    let dir = temp_dir("tab-words");
+    let (hub, _) = restarting(&dir, 8, 2, Duration::ZERO);
+    let i = hub.tabs.position(&TabId::panel(SUP, "art")).unwrap();
+    assert_eq!(hub.look(i).tooltip(), "Art\nRestarting\u{2026} (2 of 5)");
+    // The sidebar entry of a stopped module carries the red mark and its words.
+    ctx.enable_accesskit();
+    let (mut hub, _) = stopped(&dir, "start-again", None);
+    hub.open(TabId::page("modules"));
+    let out = frames(&ctx, &mut hub, vec![]);
+    assert!(drawn(&out).iter().filter(|s| *s == "\u{26A0}").count() >= 2);
+    let names: Vec<String> = out
+        .platform_output
+        .accesskit_update
+        .unwrap()
+        .nodes
+        .iter()
+        .filter_map(|(_, n)| n.label().map(String::from))
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "Art, stopped after 5 crashes"),
+        "{names:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_toast_icon_is_a_png_of_the_glyph() {
+    let bytes = crate::icon::png(64, crate::icon::State::Normal);
+    let img = image::load_from_memory(&bytes).unwrap().to_rgba8();
+    assert_eq!(img.dimensions(), (64, 64));
+    assert_eq!(
+        img.into_raw(),
+        crate::icon::rgba(64, crate::icon::State::Normal)
+    );
+}

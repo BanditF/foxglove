@@ -40,7 +40,7 @@ pub use eframe::egui;
 #[cfg(windows)]
 pub use hideout_panels;
 #[cfg(windows)]
-pub use shell::{open_module, run, Page, ShellOptions, TabHooks};
+pub use shell::{open_module, open_module_log, run, Page, ShellOptions, TabHooks};
 
 /// The hub's AppUserModelID: the hub window, its pop-outs and module windows group under it
 /// (contract §2.5).

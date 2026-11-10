@@ -49,6 +49,64 @@ pub fn rgba(size: u32, state: State) -> Vec<u8> {
     out
 }
 
+/// The glyph as a PNG file (stored, uncompressed deflate): the notification's `IconUri`.
+pub fn png(size: u32, state: State) -> Vec<u8> {
+    fn crc(bytes: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for &b in bytes {
+            c ^= b as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let start = out.len();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let c = crc(&out[start..]);
+        out.extend_from_slice(&c.to_be_bytes());
+    }
+    let px = rgba(size, state);
+    // Each row: filter byte 0, then RGBA.
+    let mut raw = Vec::with_capacity(px.len() + size as usize);
+    for row in px.chunks((size * 4) as usize) {
+        raw.push(0);
+        raw.extend_from_slice(row);
+    }
+    // zlib: header, stored blocks of at most 65535 bytes, Adler-32.
+    let mut z = vec![0x78, 0x01];
+    let blocks: Vec<&[u8]> = raw.chunks(65_535).collect();
+    for (i, b) in blocks.iter().enumerate() {
+        z.push(u8::from(i + 1 == blocks.len()));
+        let n = b.len() as u16;
+        z.extend_from_slice(&n.to_le_bytes());
+        z.extend_from_slice(&(!n).to_le_bytes());
+        z.extend_from_slice(b);
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + x as u32) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    let mut out = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&size.to_be_bytes());
+    ihdr.extend_from_slice(&size.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
 /// Alpha of a square inset by `inset` with corner radius `r` (units), antialiased over a pixel.
 fn coverage_rounded_square(u: f32, v: f32, inset: f32, r: f32, n: f32) -> f32 {
     let (lo, hi) = (inset + r, 1.0 - inset - r);

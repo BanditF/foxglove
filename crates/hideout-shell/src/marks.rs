@@ -22,7 +22,8 @@ enum Need {
 #[derive(Debug, Default)]
 pub struct Marks {
     names: BTreeMap<String, String>,
-    needs: BTreeMap<String, Need>,
+    /// In the order the modules came to need the user: the first is the root cause named.
+    needs: Vec<(String, Need)>,
     safe_mode: bool,
     paused: bool,
     /// What the tray shows now (the last `take_change`).
@@ -47,16 +48,20 @@ impl Marks {
         else {
             return;
         };
-        match value.as_str() {
-            Some("crash-stopped" | "crash-looped") => {
-                self.needs.insert(id.into(), Need::Stopped);
+        let need = match value.as_str() {
+            Some("crash-stopped" | "crash-looped") => Some(Need::Stopped),
+            Some("needs-hub") => Some(Need::NeedsHub),
+            _ => None,
+        };
+        let at = self.needs.iter().position(|(i, _)| i == id);
+        match (need, at) {
+            // Still needing the user keeps its place in the order.
+            (Some(n), Some(i)) => self.needs[i].1 = n,
+            (Some(n), None) => self.needs.push((id.into(), n)),
+            (None, Some(i)) => {
+                self.needs.remove(i);
             }
-            Some("needs-hub") => {
-                self.needs.insert(id.into(), Need::NeedsHub);
-            }
-            _ => {
-                self.needs.remove(id);
-            }
+            (None, None) => {}
         }
     }
 
@@ -71,7 +76,7 @@ impl Marks {
         if self.paused {
             return (State::Paused, "Paused".into(), product.into());
         }
-        if let Some((id, need)) = self.needs.iter().next() {
+        if let Some((id, need)) = self.needs.first() {
             let name = self.names.get(id).cloned().unwrap_or_else(|| id.clone());
             let line = match need {
                 Need::Stopped => {
@@ -193,6 +198,21 @@ mod tests {
         assert_eq!(m.look().0, State::NeedsYou);
         m.set_paused(true);
         assert_eq!(m.look().0, State::Paused);
+    }
+
+    #[test]
+    fn the_tray_names_the_first_module_that_stopped() {
+        let mut m = Marks::default();
+        m.name("z.last", "Zed");
+        m.name("a.first", "Art");
+        m.fact("module.z.last.state", &json!("crash-stopped"));
+        m.fact("module.a.first.state", &json!("crash-stopped"));
+        assert!(m.look().1.starts_with("Zed stopped"), "{:?}", m.look());
+        // Still stopped (the fact again): it keeps its place.
+        m.fact("module.z.last.state", &json!("crash-looped"));
+        assert!(m.look().1.starts_with("Zed stopped"));
+        m.fact("module.z.last.state", &json!("starting"));
+        assert!(m.look().1.starts_with("Art stopped"));
     }
 
     #[test]

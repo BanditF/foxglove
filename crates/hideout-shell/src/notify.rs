@@ -5,8 +5,9 @@
 //! No COM activator: the buttons are answered through the toast's `Activated` event, which comes
 //! while the hub runs (it always does: it lives in the tray). A click after the hub has quit opens
 //! nothing. An unpackaged app's toasts show only when Windows knows its AUMID, so the first toast
-//! writes the per-user registration (`HKCU\Software\Classes\AppUserModelId\<AUMID>`, a display
-//! name only), as an installer would.
+//! writes the per-user registration (`HKCU\Software\Classes\AppUserModelId\<AUMID>`: the
+//! display name, and `IconUri`, the hub's glyph written as `hideout.png` in the hub folder), as
+//! an installer would. The uninstaller removes the key (installer work).
 //!
 //! Tests build the XML only; nothing in a test shows a notification.
 
@@ -45,6 +46,14 @@ pub fn toast_xml(title: &str, body: &str, buttons: &[(String, String)], body_arg
     }
     x.push_str("</toast>");
     x
+}
+
+/// The hub folder, where the toast's icon is written.
+static HOME: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+
+/// Where the hub's files live (for the toast's icon).
+pub fn set_home(home: &std::path::Path) {
+    *HOME.lock().unwrap_or_else(|e| e.into_inner()) = Some(home.to_path_buf());
 }
 
 /// Toasts shown this run, kept so their `Activated` handlers stay alive.
@@ -121,19 +130,30 @@ fn register_aumid() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let key = HSTRING::from(format!(r"Software\Classes\AppUserModelId\{}", crate::AUMID));
-        let name: Vec<u16> = crate::PRODUCT.encode_utf16().chain([0]).collect();
-        let r = unsafe {
-            RegSetKeyValueW(
-                HKEY_CURRENT_USER,
-                &key,
-                &HSTRING::from("DisplayName"),
-                REG_SZ.0,
-                Some(name.as_ptr().cast()),
-                (name.len() * 2) as u32,
-            )
+        let set = |value: &str, data: &str| {
+            let data: Vec<u16> = data.encode_utf16().chain([0]).collect();
+            let r = unsafe {
+                RegSetKeyValueW(
+                    HKEY_CURRENT_USER,
+                    &key,
+                    &HSTRING::from(value),
+                    REG_SZ.0,
+                    Some(data.as_ptr().cast()),
+                    (data.len() * 2) as u32,
+                )
+            };
+            if r.is_err() {
+                log::warn!("notification {value} not registered: {r:?}");
+            }
         };
-        if r.is_err() {
-            log::warn!("notification name not registered: {r:?}");
+        set("DisplayName", crate::PRODUCT);
+        let home = HOME.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(home) = home {
+            let icon = home.join("hideout.png");
+            match std::fs::write(&icon, crate::icon::png(64, crate::icon::State::Normal)) {
+                Ok(()) => set("IconUri", &icon.to_string_lossy()),
+                Err(e) => log::warn!("notification icon {}: {e}", icon.display()),
+            }
         }
     });
 }

@@ -100,6 +100,16 @@ pub fn nav_label(t: &Tokens, selected: bool) -> Rgb {
     }
 }
 
+/// The sidebar's red warning mark: danger on the sidebar, `on_accent` on the selected entry's
+/// accent fill (where red would not read).
+pub fn nav_mark(t: &Tokens, selected: bool) -> Rgb {
+    if selected {
+        t.on_accent
+    } else {
+        t.danger
+    }
+}
+
 /// The label colour of a palette row. A selected row sits on the accent fill, so its label is
 /// `on_accent` whether or not the entry can run; an unavailable row that is not selected is muted.
 pub fn palette_label(t: &Tokens, selected: bool, unavailable: bool) -> Rgb {
@@ -161,6 +171,9 @@ pub fn tab_pairs(t: &Tokens) -> Vec<(&'static str, Rgb, Rgb)> {
     v.push(("stopped card title", t.danger, t.surface));
     v.push(("stopped card button", t.on_accent, t.accent));
     v.push(("crash bar", t.text, warn_fill(t)));
+    for selected in [false, true] {
+        v.push(("sidebar mark", nav_mark(t, selected), nav_fill(t, selected)));
+    }
     v
 }
 
