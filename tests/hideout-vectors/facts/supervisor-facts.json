@@ -1,0 +1,97 @@
+{
+  "description": "The facts the supervisor publishes besides module.<id>.state and .reason (7.8, v1.4). Each row: a fact key, a value, and whether a reader accepts it.",
+  "vectors": [
+    {
+      "fact": "module.foxglove.example-art.restart",
+      "value": {
+        "delay_s": 4,
+        "crash": 3,
+        "of": 5
+      },
+      "result": "valid",
+      "note": "Waiting 4 s before the restart after the 3rd crash of 5."
+    },
+    {
+      "fact": "module.foxglove.example-art.restart",
+      "value": null,
+      "result": "valid",
+      "note": "Cleared when the restart starts."
+    },
+    {
+      "fact": "module.foxglove.example-art.restart",
+      "value": {
+        "delay_s": 4,
+        "crash": 5,
+        "of": 5
+      },
+      "result": "invalid",
+      "note": "The 5th crash stops the module: crash-stopped, no restart."
+    },
+    {
+      "fact": "module.foxglove.example-art.restart",
+      "value": {
+        "delay_s": 3,
+        "crash": 1,
+        "of": 5
+      },
+      "result": "invalid",
+      "note": "3 s is not a backoff step (7.7)."
+    },
+    {
+      "fact": "module.foxglove.example-art.restart",
+      "value": {
+        "delay_s": 1,
+        "crash": 1
+      },
+      "result": "invalid",
+      "note": "of is required."
+    },
+    {
+      "fact": "module.foxglove.example-art.restart",
+      "value": {
+        "delay_s": 1,
+        "crash": 1,
+        "of": 5,
+        "at": 0
+      },
+      "result": "invalid",
+      "note": "No other fields."
+    },
+    {
+      "fact": "module.foxglove.example-art.recovery",
+      "value": "start-again",
+      "result": "valid",
+      "note": "First stop this sign-in."
+    },
+    {
+      "fact": "module.foxglove.example-art.recovery",
+      "value": "defaults",
+      "result": "valid",
+      "note": "Second stop."
+    },
+    {
+      "fact": "module.foxglove.example-art.recovery",
+      "value": "go-back",
+      "result": "valid",
+      "note": "Third stop, a previous version kept."
+    },
+    {
+      "fact": "module.foxglove.example-art.recovery",
+      "value": null,
+      "result": "valid",
+      "note": "Not set (not crash-stopped)."
+    },
+    {
+      "fact": "module.foxglove.example-art.recovery",
+      "value": "restart",
+      "result": "invalid",
+      "note": "Not a ladder step."
+    },
+    {
+      "fact": "module.foxglove.example-art.recovery",
+      "value": 2,
+      "result": "invalid",
+      "note": "A step is a word, not a number."
+    }
+  ]
+}

@@ -8,8 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::capability::{pattern_ok, Capability};
 use crate::error::{fail, Error, ErrorId};
-use crate::legacy::{ActionDecl, SecretDecl, SettingDecl};
+use crate::legacy::{ActionDecl, SecretDecl, SettingDecl, SettingKind};
 use crate::{legacy, Version, HUB_VERSION};
+
+/// The `hub` a legacy manifest reads as (§4.10).
+pub const LEGACY_HUB: &str = "1.0";
+
+/// The `hub` minor that brought `kind = "file"` settings (spec v1.4).
+const HUB_1_1: Version = Version { major: 1, minor: 1 };
 
 /// The manifest file of a module.
 pub const FILE: &str = "module.toml";
@@ -139,13 +145,93 @@ pub struct WindowDecl {
     pub when: Option<String>,
 }
 
-/// `[[settings]]`: as plugin.toml, plus `when`.
+/// A `[[settings]]` kind: plugin.toml's three, plus `file` (spec v1.4, `hub = "1.1"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ModuleSettingKind {
+    Bool,
+    Int,
+    Text,
+    /// A path the user picks with the hub's Choose file button (a native picker); the value is
+    /// the path as a string, `""` for none.
+    File,
+}
+
+/// `[[settings]]`: as plugin.toml, plus `when`, and (spec v1.4) `kind = "file"` with `filter`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ModuleSetting {
-    #[serde(flatten)]
-    pub decl: SettingDecl,
+    /// What the module reads (`focus-minutes`).
+    pub name: String,
+    /// For the settings form (`Focus minutes`).
+    pub label: String,
+    pub kind: ModuleSettingKind,
+    /// The value until the user changes it; its type must match `kind` (a string for `file`).
+    pub default: serde_json::Value,
+    /// For `int`: the range the form allows.
+    #[serde(default)]
+    pub min: Option<i64>,
+    #[serde(default)]
+    pub max: Option<i64>,
+    /// For `file` only: the file names the picker offers, as `*`/`?` patterns joined by `;`
+    /// (`ExampleSDK*.dll`). No path separators (spec v1.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
     #[serde(default)]
     pub when: Option<String>,
+}
+
+impl ModuleSetting {
+    /// A legacy setting, as a module setting with no `when`.
+    pub fn from_decl(decl: SettingDecl) -> ModuleSetting {
+        ModuleSetting {
+            kind: match decl.kind {
+                SettingKind::Bool => ModuleSettingKind::Bool,
+                SettingKind::Int => ModuleSettingKind::Int,
+                SettingKind::Text => ModuleSettingKind::Text,
+            },
+            name: decl.name,
+            label: decl.label,
+            default: decl.default,
+            min: decl.min,
+            max: decl.max,
+            filter: None,
+            when: None,
+        }
+    }
+
+    /// The plugin.toml shape of this setting: a `file` setting is a `text` one there (its value
+    /// is the path).
+    pub fn decl(&self) -> SettingDecl {
+        SettingDecl {
+            name: self.name.clone(),
+            label: self.label.clone(),
+            kind: match self.kind {
+                ModuleSettingKind::Bool => SettingKind::Bool,
+                ModuleSettingKind::Int => SettingKind::Int,
+                ModuleSettingKind::Text | ModuleSettingKind::File => SettingKind::Text,
+            },
+            default: self.default.clone(),
+            min: self.min,
+            max: self.max,
+        }
+    }
+
+    /// `value` as this setting takes it (an int clamped to its range), or `None` if it's the
+    /// wrong type.
+    pub fn accept(&self, value: &serde_json::Value) -> Option<serde_json::Value> {
+        self.decl().accept(value)
+    }
+}
+
+/// A `file` setting's `filter` (spec v1.4): 1 to 128 characters, patterns joined by `;`, each a
+/// file name with `*` and `?` wildcards and no path separators, drive colons, quotes or `<>|`.
+pub fn filter_ok(filter: &str) -> bool {
+    !filter.is_empty()
+        && filter.len() <= 128
+        && filter.split(';').all(|p| {
+            !p.trim().is_empty() && !p.chars().any(|c| c.is_control() || "/\\:<>|\"".contains(c))
+        })
 }
 
 /// `[[actions]]`: as plugin.toml, plus `when`.
@@ -304,7 +390,9 @@ const SCHEMA: &[(&str, &[&str])] = &[
     ("ui.windows", &["id", "title", "when"]),
     (
         "settings",
-        &["name", "label", "kind", "default", "min", "max", "when"],
+        &[
+            "name", "label", "kind", "default", "min", "max", "filter", "when",
+        ],
     ),
     ("actions", &["id", "name", "when"]),
     ("secrets", &["name", "label"]),
@@ -480,7 +568,7 @@ pub fn write_vulpes(id: &str) -> String {
 }
 
 /// `a-z`, `0-9`, `-`: ids of contributions and names of settings.
-fn item_id_ok(s: &str) -> bool {
+pub(crate) fn item_id_ok(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -509,14 +597,22 @@ pub fn semver_ok(v: &str) -> bool {
         })
 }
 
-/// One `when` clause: a fact name, optionally prefixed by `!` (§4.6).
+/// One `when` clause: a fact name, optionally prefixed by `!` (§4.6). An `apps.seen.<name>`
+/// fact (spec v1.4) names one app: a single lowercase label, the exe name without `.exe`.
 pub fn when_ok(w: &str) -> bool {
     let name = w.strip_prefix('!').unwrap_or(w);
-    !name.is_empty()
+    let grammar = !name.is_empty()
         && name.split('.').all(|l| {
             !l.is_empty()
                 && l.chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        });
+    grammar
+        && name.strip_prefix("apps.seen.").is_none_or(|app| {
+            !app.contains('.')
+                && app
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
         })
 }
 
@@ -799,18 +895,35 @@ impl Module {
             return fail(ManifestActions, "an action needs a name");
         }
         unique_ids(
-            settings.iter().map(|s| s.decl.name.as_str()),
+            settings.iter().map(|s| s.name.as_str()),
             ManifestSettings,
             "setting",
         )?;
         if settings
             .iter()
-            .any(|s| s.decl.label.trim().is_empty() || s.decl.accept(&s.decl.default).is_none())
+            .any(|s| s.label.trim().is_empty() || s.accept(&s.default).is_none())
         {
             return fail(
                 ManifestSettings,
                 "a setting needs a label and a default of its kind",
             );
+        }
+        for s in &settings {
+            match (&s.filter, s.kind) {
+                (Some(f), ModuleSettingKind::File) if !filter_ok(f) => {
+                    return fail(ManifestSettings, format!("bad filter {f:?}"))
+                }
+                (Some(_), kind) if kind != ModuleSettingKind::File => {
+                    return fail(ManifestSettings, "filter is for kind = \"file\" only")
+                }
+                _ => {}
+            }
+        }
+        // A key or value new in hub 1.1 (spec v1.4) needs the manifest to say so (§4.1), so a
+        // 1.0 reader refuses it with manifest.hub instead of misreading it.
+        let hub_1_1 = Version::parse(&raw.hub).is_some_and(|v| v >= HUB_1_1);
+        if !hub_1_1 && settings.iter().any(|s| s.kind == ModuleSettingKind::File) {
+            return fail(ManifestHub, "kind = \"file\" needs hub = \"1.1\"");
         }
         whens(
             panels
@@ -956,7 +1069,7 @@ impl Module {
         Module {
             family,
             kind: Kind::Service,
-            hub: HUB_VERSION.to_string(),
+            hub: LEGACY_HUB.to_string(),
             visibility: Visibility::Public,
             description: m.description,
             api: BTreeMap::from([("foxglove".to_string(), m.api)]),
@@ -975,7 +1088,7 @@ impl Module {
             settings: m
                 .settings
                 .into_iter()
-                .map(|decl| ModuleSetting { decl, when: None })
+                .map(ModuleSetting::from_decl)
                 .collect(),
             actions: m
                 .actions

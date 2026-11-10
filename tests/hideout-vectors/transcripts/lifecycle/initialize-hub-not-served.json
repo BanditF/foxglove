@@ -36,7 +36,7 @@
           "code": 7,
           "message": "version",
           "data": {
-            "reason": "hub 2.0 is not served; this hub serves 1.0"
+            "reason": "hub 2.0 is not served; this hub serves 1.1"
           }
         }
       }

@@ -230,6 +230,70 @@ pub struct HubNotify {
     pub level: NotifyLevel,
 }
 
+/// Crashes in ten minutes that stop a module (§7.7).
+pub const CRASH_LIMIT: u32 = 5;
+
+/// The fact `module.<id>.restart` (§7.8, spec v1.4): set by the supervisor while the module waits
+/// to be restarted, `null` once the restart starts. `crash` is this crash's number in the
+/// ten-minute window, 1 to `of` - 1 (the `of`-th stops it instead).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestartFact {
+    /// Seconds until the restart: one of the §7.7 backoff steps.
+    pub delay_s: u64,
+    pub crash: u32,
+    pub of: u32,
+}
+
+/// The fact `module.<id>.recovery` (§7.8, spec v1.4): the step of the recovery ladder a
+/// `crash-stopped` module's card offers first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Recovery {
+    /// **Start again** (the first stop this sign-in).
+    StartAgain,
+    /// **Start with default settings** (the second stop, or later with no previous version).
+    Defaults,
+    /// **Go back to <previous>** (the third stop and later, when a previous version is kept).
+    GoBack,
+}
+
+/// Checks a value of a fact the hub's supervisor publishes (`module.<id>.restart`,
+/// `module.<id>.recovery`; spec v1.4). Other keys are not this check's: `Ok`.
+pub fn check_hub_fact(key: &str, value: &serde_json::Value) -> Result<(), String> {
+    let Some(rest) = key.strip_prefix("module.") else {
+        return Ok(());
+    };
+    if let Some(id) = rest.strip_suffix(".restart") {
+        if id.is_empty() {
+            return Err("module.<id>.restart needs an id".into());
+        }
+        if value.is_null() {
+            return Ok(());
+        }
+        let r: RestartFact = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        if r.of != CRASH_LIMIT || r.crash == 0 || r.crash >= r.of {
+            return Err(format!("crash {} of {} is not a restart", r.crash, r.of));
+        }
+        if !crate::BACKOFF_STEPS_S.contains(&r.delay_s) {
+            return Err(format!("delay_s {} is not a backoff step", r.delay_s));
+        }
+        return Ok(());
+    }
+    if let Some(id) = rest.strip_suffix(".recovery") {
+        if id.is_empty() {
+            return Err("module.<id>.recovery needs an id".into());
+        }
+        if value.is_null() {
+            return Ok(());
+        }
+        return serde_json::from_value::<Recovery>(value.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+    Ok(())
+}
+
 /// `channel.open` (C → H): the channel handshake's first half.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelOpen {

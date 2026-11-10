@@ -1,12 +1,28 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.3** (v1.2 plus the tab model of #953; additive, no breaking
-change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+Status: spec, contract version **1.4** (v1.3 plus the module tiles and pages of #975; additive, no
+breaking change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one
+"(v1.3)", every v1.4 one "(v1.4)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.4** (#975): the spec gaps S1–S11 of the module tiles and pages plan
+  ([hideout-plugin-modules-ux.md](hideout-plugin-modules-ux.md)). Panels (§5.2): a `tone` on
+  `value` and `label` (`neutral`, `active`, `live`, `ok`, `attention`, `off`; unknown draws
+  `neutral`); a `button` may say where it `opens` (`page`, `page#<node id>`, `settings`) or which
+  declared `action` it is, never both; a published icon list (§5.1), shipped with the schema. Tiles
+  get small fixed caps (§5.5: 12 nodes, depth 3, one button, 64 bytes of text) and `ui.visibility`
+  (§5.9). The hub draws a Keys section on every page of a module with `[[actions]]` (§4.7). A
+  `file` setting kind with an optional `filter` (§4.7) is the one manifest addition, so **`hub`
+  becomes 1.1** (§8.7): a manifest using it says `hub = "1.1"`; every `hub = "1.0"` manifest is
+  still served. The optional fact `apps.seen.<name>` (§4.6). Written down, not new wire: an
+  outside app that is missing or a busy port is a module state, not a crash (§7.7); legacy plugins
+  declare panels in a `module.toml` that keeps `transport = "stdio"`, and the stdio bridge carries
+  `ui.*` both ways (§4.10, §8.2). New ids `ui.prop` and `ui.action` (§15). The one tightening:
+  tile trees over the tile caps are now `ui.limits`; no module shipped a tile before this.
+  Also (#982): the supervisor's facts `module.<id>.restart` and `module.<id>.recovery` (§7.8).
 - **1.3, added** (#959): router gaps the first router build found (#958). Lease end (§8.5, §8.8): `lease.closed {lease, reason}` (H → M) tells a provider that a lease it handed out ended, and a provider event with `to: <lease>` goes only to that lease's holder. Who is an MCP client, who is the first-party `hideout` CLI, and who runs the `initialize` pid and exe-hash check are now written down (§8.2). `hub` stays 1.0: one optional notification and one optional event field, which a peer that does not know them ignores.
 - **1.3** (#953): open page panels are tabs (§5.9). Two optional notifications: `ui.badge` (M → H) sets a tab's badge (`none`, `attention`, `dirty` or `count`), and `ui.visibility` (H → M) tells a module when its panel is `visible`, `hidden` or `closed`, so it can stop work the user can't see. A tab uses the panel's existing `title` and `icon`. Pop-outs dock back to their tab (§2.5). `hub` stays 1.0: both are optional notifications, and a peer that does not know one drops it (JSON-RPC), so nothing has to be negotiated.
 - **1.2** (#918): two wire rules the transcript vectors found missing (§8.1). A request id that is still in flight on the same connection answers error -32600 `rpc.duplicate-request-id` with id null, and the first call is unaffected. A line over 256 KiB answers -32600 `rpc.frame-too-large` with id null, then the hub closes that channel; the supervisor counts it as a crash (§7.7). Also written down, not new behaviour: a result arriving after the caller's error 4 is dropped. New ids in §15. The trust vectors' `seen_after` is keyed by source id, as §7.3 has it, not by family.
@@ -195,7 +211,7 @@ plug-ins** (no dylibs, no scripts in the hub).
 | `version` | string | yes | SemVer `MAJOR.MINOR.PATCH`, optional `-prerelease`, no `+build`. |
 | `kind` | string | yes | §3. |
 | `family` | string | yes | `hideout`, `foxglove`, `vulpes`, `digitalis` or `third-party` (§4.3). |
-| `hub` | string | yes | Contract version it was written for, `MAJOR.MINOR` (VS Code's `engines`). v1 readers accept `1.0`. |
+| `hub` | string | yes | Contract version it was written for, `MAJOR.MINOR` (VS Code's `engines`). v1 readers accept `1.0`; (v1.4) readers of hub 1.1 accept `1.0` and `1.1`. |
 | `visibility` | string | no | `public` (default) or `private` (§13). |
 | `description` | string | no | Plain words for the Modules page. |
 | `api` | table, or string | no | Method-family API versions it calls, `{ foxglove = "1.13", vulpes = "1.0" }`. A plain string means `{ foxglove = "<string>" }`. |
@@ -210,7 +226,7 @@ plug-ins** (no dylibs, no scripts in the hub).
 | `[lifecycle]` | table | no | `data = keep | remove | ask` (default `ask`): what remove does with `data\`. |
 | `[identity]` | table | no | Package identity (§4.8). |
 | `[[ui.panels]]`, `[[ui.windows]]` | arrays of tables | no | UI contributions (§4.7). |
-| `[[settings]]`, `[[actions]]`, `[[secrets]]` | arrays of tables | no | As plugin.toml, plus `when` (§4.7). |
+| `[[settings]]`, `[[actions]]`, `[[secrets]]` | arrays of tables | no | As plugin.toml, plus `when` (§4.7); (v1.4, hub 1.1) settings also take `kind = "file"` and `filter`. |
 | `[[mcp.tools]]` | array of tables | no | Tools for the MCP bridge (§9). |
 | `[[pin]]` | array of tables | `runtime` only | Upstream archives (§4.8). |
 | `[edition]` | table | edition content only | §4.9. |
@@ -229,6 +245,8 @@ Checks every reader MUST make (error ids in §15):
   `[[settings]]` are unique in their list and use `a-z`, `0-9`, `-`: `manifest.actions`,
   `manifest.ui`, `manifest.settings`, `manifest.mcp`.
 - Every `when` and `activation.on` entry parses (§4.6): `manifest.activation`.
+- (v1.4) A `kind = "file"` setting needs `hub = "1.1"` or later (`manifest.hub`); `filter` is for
+  `file` settings only and follows §4.7 (`manifest.settings`).
 
 Example, a public first-party service module (from the design's inventory, §2):
 
@@ -338,6 +356,14 @@ item shows:
   a row on the Modules page (UX12).
 - `devices.present.<class>` facts are published by the first-party device module from
   catalog data, never by the hub.
+- **`apps.seen.<name>` (v1.4, optional fact).** `true` once the app `<name>.exe` has had a window
+  on this PC, kept across restarts; published by `hideout.appwatch`, never by the hub. `<name>` is
+  the exe name without `.exe`, lowercased, as one label (`[a-z0-9_-]`; other characters become
+  `-`): `apps.seen.obs64`. A `when` naming `apps.seen.` with more than one label after it is
+  `manifest.activation`. The fact is **optional**: a hub without `hideout.appwatch` never sets it,
+  so `when = "apps.seen.<name>"` is false there and the item stays hidden until the user shows it
+  (an `enriches` app's tile is a typical use). A module MUST NOT depend on it for anything but
+  showing or hiding.
 
 ### 4.7 Contributions (data, VS Code-style)
 
@@ -357,10 +383,22 @@ v1.1).
 - The hub draws the form, generated when the module gives no `settings` tree.
 - Values live in the module's settings folder (§2.3). The hub reads and writes them only through
   `settings.get` and `settings.set` (§8.8).
+- **`kind = "file"` (v1.4, hub 1.1):** a path the user picks. The form shows the current file name
+  and a **Choose file** button that opens the native file picker; the value is the full path as a
+  string, `""` for none (the `default` is a string). An optional `filter` lists the file names the
+  picker offers: patterns with `*` and `?`, joined by `;`, 1 to 128 characters, no `/`, `\`, `:`,
+  quotes, `<`, `>` or `|` (`filter = "ExampleSDK*.dll"`). The hub sends the chosen path with
+  `settings.set`, so it takes effect at once; the module checks the file and refuses with
+  `data.reason` as for any setting. A legacy `plugin.toml` keeps its three kinds (`bool`, `int`,
+  `text`); to a plugin.toml reader a `file` setting is `text`.
 
 **`[[actions]]`:** as plugin.toml, plus `when?`.
 - The user binds keys in the hub. The hub sends `action.invoke`.
 - The module's page shows each bound key next to its action (UX3).
+- **Keys section (v1.4):** the hub draws it, not the module. Every `page` panel of a module with
+  `[[actions]]` (those whose `when` is true) gets a generated **Keys** section after the module's
+  tree, like the settings form: one row per action with its `name` and the bound key, or
+  **Set key**. A module MUST NOT draw its own key list.
 
 **`[[secrets]]`:** as plugin.toml.
 
@@ -410,6 +448,14 @@ file:
   `foxglove.*` ids, otherwise `third-party`.
 - **The legacy root's scope (v1.1):** a legacy `foxglove-plugin-root` (§12.2) reads as one family,
   `foxglove`, whose scope is exactly the ids `foxglove.*` and `org.foxglove.*`, nothing else.
+- **Panels for a legacy plugin (v1.4).** A plugin.toml can't declare `[[ui.panels]]` (no new keys).
+  A plugin that wants a tile or a page ships a `module.toml` next to its plugin.toml, the
+  superset: the same `id`, `name`, `version`, `run`, `permissions`, `[[settings]]`, `[[actions]]`
+  and `[[secrets]]`, plus `kind = "service"`, `family`, `hub`, `transport = "stdio"`, `api`
+  (its plugin.toml `api`) and its `[[ui.panels]]`. A reader takes the `module.toml` (precedence
+  above); Foxglove, which reads only plugin.toml, keeps working. The plugin's program does not
+  change transport: it still speaks the v1 wire on stdin and stdout, and the hub's stdio bridge
+  carries its `ui.*` messages (§8.2).
 
 ## 5. Panels across the process boundary
 
@@ -431,6 +477,19 @@ ui.register {instance, panels: [{id, slot, title, icon, tree}]}
 | `settings` | the module's settings (generated from `[[settings]]` if no tree) |
 | `action` | a tray menu item |
 
+- **Tiles (v1.4).** A `tile` is a small fixed card in the tray panel. The hub draws its frame
+  (icon, title, the ··· menu, the module's state, the stale view) from the manifest and
+  `module.<id>.state`; the module's tree is only the body, under the tile caps (§5.5). A click
+  outside the body's button opens the module's first `page` panel.
+- **Icons (v1.4).** `icon` names one of the published icons, listed with the schema
+  (`schema/hideout-v1.json`, key `icons`; `ICONS` in the Rust crate and the Python models):
+  `module`, `battery`, `bell`, `bluetooth`, `book`, `brush`, `calendar`, `camera`, `chart`,
+  `chat`, `cloud`, `folder`, `gamepad`, `gear`, `headphones`, `image`, `info`, `key`,
+  `keyboard`, `lights`, `link`, `lock`, `mic`, `music`, `palette`, `play`, `screen`, `sparkle`,
+  `speaker`, `terminal`, `timer`, `video`, `wifi`. Any other name is not an error: it draws the
+  generic `module` icon, so a newer name degrades on an older hub. The list grows only with a
+  spec minor; the hub draws each icon from its theme, never from module files.
+
 ### 5.2 The tree
 
 Nodes are `{type, id, props, bind?, stream?, children}`.
@@ -445,6 +504,26 @@ Nodes are `{type, id, props, bind?, stream?, children}`.
   redraws only on change.
 - `id` MUST be unique in the panel and stable across registrations (view state is keyed by it).
 - The vocabulary is versioned with `hub`. An unknown node type draws as "needs a newer Hideout".
+- **`tone` (v1.4)** on `value` and `label`: what the text means, so the hub can colour it without
+  knowing the domain. One of `neutral` (text colour, the default), `active` (following,
+  counting), `live` (muted, recording, on air), `ok` (resting, done), `attention` (needs something
+  from the user) and `off` (idle, outside app closed). The hub maps each word to a theme token at
+  4.5:1 or better on its surface. An unknown word draws as `neutral`; a `tone` that isn't a string
+  is `ui.prop`. Colour never stands alone: the text says the state.
+- **`opens` (v1.4)** on `button`: the hub navigates without a round trip to the module.
+  `"page"` opens the module's first `page` panel (as a tab, §5.9), `"page#<node id>"` opens it
+  scrolled to that node (a `section` is expanded; a node that isn't there opens the page at the
+  top), `"settings"` opens the module's settings. Only the module's own panels; any other value is
+  `ui.prop`. No `ui.event` is sent.
+- **`action` (v1.4)** on `button`: the button is that `[[actions]]` entry. A click sends
+  `action.invoke {action, source: "panel"}` (§8.8), the same call a bound key sends, and is
+  queued like a key press while the module restarts (UX3). The hub shows the bound key as a chip
+  next to the button. An id that isn't action-shaped (`a-z`, `0-9`, `-`) is `ui.prop`; one that
+  names no `[[actions]]` entry of the module is `ui.action`. No `ui.event` is sent.
+- A button has at most one of `opens` and `action` (both: `ui.prop`); with neither it sends
+  `ui.event` as before. `tone`, `opens` and `action` are optional props: a hub of contract 1.3 or
+  older ignores them (the button then sends `ui.event`), so a module that must run there also
+  answers that `ui.event`.
 
 ### 5.3 Updates, input and assets
 
@@ -477,13 +556,19 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
 ### 5.5 Validation and the panel guard (UX5)
 
 - `ui.register` and `ui.patch` MUST be validated: node count, depth, string length, canvas shape
-  count and table rows each have a cap, published with the schema. Over a cap: that panel is
+  count and table rows each have a cap, published with the schema. (v1.4) The `tone`, `opens` and
+  `action` props (§5.2) are checked the same way, on the tree after a patch too. Over a cap: that panel is
   rejected (`ui.limits`), the others register.
 - **Caps (v1.1):** per panel, at most 2,000 nodes per tree, depth 32, 16 KiB (16,384 UTF-8 bytes)
   of text per node, 8 live streams, 4 MiB per stream frame and 60 frames a second per stream. A
   value at the cap passes; one over it is `ui.limits`. A stream over its count, frame size or rate
   is refused or closed with the same error (the hub still draws no more than 30 frames a second,
   §5.4).
+- **Tile caps (v1.4):** a `tile` panel's tree is the tile body only, at most 12 nodes, depth 3,
+  64 UTF-8 bytes of text per string and one `button`; its other caps are the page caps. Over any of
+  them that tile is `ui.limits` and the module's other panels register. The frame is hub-drawn and
+  not counted. A tile body is meant to be one `value` (the glance, with a `tone`), at most one
+  `label`, at most one `meter` and at most one `button`.
 - **Message nesting (v1.1.1):** one wire message nests at most 128 brackets deep (arrays and
   objects together, strings ignored). A reader counts this on the raw text without recursion and
   refuses a deeper message whole with `ui.limits` before any recursive parser runs, so a hostile
@@ -547,6 +632,10 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   - `closed`: the user closed the tab or its pop-out. The module SHOULD stop work for that panel.
     It keeps running; the panel stays registered and opens again from the sidebar.
   A module needs no answer and MAY ignore both messages.
+- **Tiles (v1.4).** `ui.visibility` is sent for `tile` panels too: `visible` while the tray panel
+  is open (and the tile isn't hidden by the user), `hidden` otherwise. A tile is never `closed`.
+  A module that patches a tile on a timer (a countdown) SHOULD stop while its tile is `hidden`.
+  `ui.badge` stays page-only.
 - **Hub-owned, not in the contract:** tab order, the active tab, pop-out placement and which
   tabs to restore after a restart live in the hub's own files (§2.3). A module can't open, close
   or reorder tabs; it can ask for attention with a badge or `hub.notify`.
@@ -788,11 +877,33 @@ Design §3.1.
 - **Captures** each module's stderr to its log.
 - **Does not** probe health, set resource policy for a domain, or restart a module because
   another needs it.
+- **Outside problems are module states, not crashes (v1.4).** An outside app that is closed or
+  missing, a file the user hasn't picked yet, a port another program holds, a device that is
+  away: a module SHOULD keep running and say so in its own panels (a tile `value` with `tone`
+  `attention` or `off`, and the page's How to connect steps), and try again on an event
+  (`app:<name>.exe`, `apps.watch`, a `settings.set`, a fact) or on the user's **Try again**
+  (`ui.event`). It MUST NOT exit non-zero for these: five such exits would read as "Stopped after 5
+  crashes" for something the user can fix. It exits non-zero only on a real fault. Polling to find
+  out when the problem clears follows the no-timers rule (§4.6): events first.
 
 ### 7.8 States (UX4)
 
 One state list, used by the panel header, the Modules page and the tray status line. The hub
 publishes it as the fact `module.<id>.state` (and `module.<id>.reason`).
+
+Two more facts carry what the crash bar and the stopped card need (v1.4), published by the
+supervisor beside the state:
+- **`module.<id>.restart`:** `{delay_s, crash, of}` while the module is `restarting`: the seconds
+  until the restart (a §7.7 backoff step), this crash's number in the ten-minute window (1 to 4)
+  and the limit (`of`, 5). Drawn as "Restarting in <delay_s> s (<crash> of <of>)". Set to `null`
+  when the restart starts. No other fields.
+- **`module.<id>.recovery`:** while the module is `crash-stopped`, the step of the recovery ladder
+  its card offers first: `start-again` (the first stop this sign-in), `defaults` (the second, or
+  later with no previous version kept) or `go-back` (the third and later, with a previous
+  version). The card still lists every way out; this picks the primary button. Absent or `null`
+  otherwise.
+Both are read like any fact (`facts.read:module.*`); a reader that doesn't know them ignores them.
+Values outside these shapes are a hub bug, not a module's.
 
 | State id | UI name | Reason line | Ways out |
 |---|---|---|---|
@@ -871,6 +982,11 @@ Rules:
 - **Outside tools** (`foxglove-cli`, the `hideout` CLI, `hideout mcp`, scripts) connect without a
   token and are approved once each.
 - **Legacy stdio plugins** (`transport = "stdio"`) are bridged by the hub.
+- **The bridge carries panels (v1.4).** A bridged connection is the module's connection: the
+  hub reads its identity from the bridge, not a token, and treats its messages as any module's.
+  `ui.register` and `ui.patch` from the plugin, and `ui.event`, `action.invoke`, `settings.set`
+  and `ui.visibility` to it, pass unchanged. A bridged plugin MAY skip `module.ready`; calls to it
+  are delivered without it. Its panels are the `[[ui.panels]]` of its `module.toml` (§4.10).
 - **Client identity (v1.3).** What an outside tool is comes from the signed catalog, not from
   what it calls itself. An MCP client is a catalog entry with `kind = "mcp-client"`; the
   `mcp:<client>` name prefix (§9) is a lab-only fallback until the catalog lists clients (H2.2).
@@ -950,7 +1066,9 @@ Rules:
 ### 8.7 Versioning
 
 - **`hub`** (this contract, `MAJOR.MINOR`): manifests, the inventory, catalogs, the panel
-  vocabulary and the hub messages below.
+  vocabulary and the hub messages below. Spec versions and `hub` move separately: spec 1.0 to 1.3
+  are `hub` 1.0; spec 1.4 is `hub` 1.1 (a new setting kind and key). The hub answers `initialize`
+  with its own `hub`.
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
 - A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
@@ -990,8 +1108,8 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `ui.asset.put` | M → H | call | `{hash, mime, data}` (base64, ≤ 256 KiB) | `{}` | — |
 | `ui.window.open` | H → M | call | `{window}` | `{}` | `ui.window` |
 | `ui.badge` (v1.3) | M → H | notification | `{panel, badge: "none" \| "attention" \| "dirty" \| "count", count?}` (`count` ≥ 1 with `count`) | — | the panel is the module's |
-| `ui.visibility` (v1.3) | H → M | notification | `{panel, state: "visible" \| "hidden" \| "closed"}` | — | — |
-| `action.invoke` | H → M | call | `{action, source: "key" \| "tray" \| "palette" \| "panel"}` | `{}` | — |
+| `ui.visibility` (v1.3) | H → M | notification | `{panel, state: "visible" \| "hidden" \| "closed"}` (v1.4: `page` and `tile` panels) | — | — |
+| `action.invoke` | H → M | call | `{action, source: "key" \| "tray" \| "palette" \| "panel"}` (v1.4: `panel` for a button with `action`) | `{}` | — |
 | `settings.get` | H → M | call | `{}` | `{values: {name: value}}` | — |
 | `settings.set` | H → M | call | `{name, value}` | `{}`, or an error with `data.reason` | — |
 | `hub.notify` | M → H | call | `{title, body, level: "info" \| "warn" \| "error"}` | `{}` | `hub.notify` |
@@ -1019,7 +1137,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 (§8.5); the hub delivers it only to that lease's holder.
 
 **Facts the hub publishes:** `module.<id>.state`, `module.<id>.reason`, `module.<id>.version`,
-`hub.safe_mode`. Facts about private modules never reach MCP or the tailnet by default (§13.5).
+(v1.4) `module.<id>.restart` and `module.<id>.recovery` (§7.8), `hub.safe_mode`. Facts about private modules never reach MCP or the tailnet by default (§13.5).
 
 **Provider methods** (lighting, screens, art, GPU and the rest) are the providers' own API and
 are listed in their API docs (local-api.md for Foxglove; §8.9 for the GPU).
@@ -1371,7 +1489,9 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `permission.never` | a never-list item asked for where it can't be granted |
 | `permission.provider` | registering a method the catalog doesn't allow |
 | `ui.undeclared` | `ui.register` with a panel id not in `[[ui.panels]]` |
-| `ui.limits` | a panel tree over a cap |
+| `ui.limits` | a panel tree over a cap (v1.4: and a tile over the tile caps) |
+| `ui.prop` | (v1.4) a `tone` that isn't a string, a button `opens` that isn't `page`, `page#<node id>` or `settings`, an `action` that isn't an action id, or a button with both |
+| `ui.action` | (v1.4) a button `action` that names no `[[actions]]` entry of the module |
 | `lifecycle.api` | a needed API isn't served |
 | `lifecycle.requires` | a required module is missing, too old or off, or a cycle |
 | `lifecycle.required-by` | disabling would break an enabled module |
@@ -1406,7 +1526,13 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 `tests/hideout-vectors/` (#906) holds valid and invalid `module.toml` files, legacy `plugin.toml`
 and `kit.toml` files, permission strings, roots, catalogs, `hideout.toml` source and anchor
 tables, panel trees (under and over the caps), and JSON-RPC transcripts for every message in §8.8
-(v1.3: `transcripts/ui/badge.json` and `transcripts/ui/visibility.json` for §5.9).
+(v1.3: `transcripts/ui/badge.json` and `transcripts/ui/visibility.json` for §5.9; v1.4: `tone`,
+`opens`, `action` and tile-cap panel vectors, `kind = "file"` and `apps.seen` manifests, a stdio
+module with panels, tile steps in `visibility.json`, `transcripts/supervisor/outside-app-missing.json`,
+and `facts/supervisor-facts.json`).
+A panel vector's index entry may carry `context.actions`, the module's `[[actions]]` ids. The
+spec version is kept in step by a drift test: this file's status line, `index.json`'s `contract`,
+the vectors README and the schema's `spec` (`SPEC_VERSION` in the Rust crate) must agree.
 `index.json` gives each file's expected result: `valid` (with the normalized fields) or `invalid`
 (with the §15 id). The Rust crate and Vulpes's models MUST pass every vector. A spec change that
 changes a result changes the vector in the same PR. Vectors MUST use placeholder ids only and

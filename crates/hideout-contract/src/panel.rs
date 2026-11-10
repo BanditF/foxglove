@@ -27,6 +27,61 @@ pub const LIMITS: Limits = Limits {
     streams: 8,
 };
 
+/// Caps on a `tile` panel's body (§5.5, spec v1.4): the tray panel's tiles are small and fixed.
+/// The frame (icon, title, menu, state) is drawn by the hub and not counted. The other caps are
+/// the page caps (the node cap bounds them anyway).
+pub const TILE_LIMITS: Limits = Limits {
+    nodes: 12,
+    depth: 3,
+    text_bytes: 64,
+    ..LIMITS
+};
+
+/// Most `button` nodes a tile may hold (spec v1.4).
+pub const TILE_BUTTONS: usize = 1;
+
+/// The `tone` words of a `value` or `label` (§5.2, spec v1.4). The hub maps each to a theme
+/// colour; any other string draws as `neutral`.
+pub const TONES: &[&str] = &["neutral", "active", "live", "ok", "attention", "off"];
+
+/// The published icon names (§5.2, spec v1.4) for a panel's `icon`. Any other name draws the
+/// generic `module` icon.
+pub const ICONS: &[&str] = &[
+    "module",
+    "battery",
+    "bell",
+    "bluetooth",
+    "book",
+    "brush",
+    "calendar",
+    "camera",
+    "chart",
+    "chat",
+    "cloud",
+    "folder",
+    "gamepad",
+    "gear",
+    "headphones",
+    "image",
+    "info",
+    "key",
+    "keyboard",
+    "lights",
+    "link",
+    "lock",
+    "mic",
+    "music",
+    "palette",
+    "play",
+    "screen",
+    "sparkle",
+    "speaker",
+    "terminal",
+    "timer",
+    "video",
+    "wifi",
+];
+
 /// Largest stream frame payload (§5.4, spec v1.1).
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 /// Most frames a second a panel stream runs at (spec v1.1).
@@ -113,10 +168,81 @@ fn longest_string(v: &serde_json::Value) -> usize {
     }
 }
 
-/// Checks one panel's tree against `limits` (§5.5).
+/// Whether `opens` is a button target (spec v1.4): `page`, `page#<node id>` or `settings`.
+pub fn opens_ok(opens: &str) -> bool {
+    match opens.split_once('#') {
+        None => matches!(opens, "page" | "settings"),
+        Some(("page", node)) => !node.is_empty() && node.len() <= 128 && !node.contains('#'),
+        Some(_) => false,
+    }
+}
+
+/// Checks the v1.4 props of one node (§5.2): `tone` is a string; a button's `opens` is a target
+/// of its own module and its `action` an action id, never both. `actions` is the module's
+/// `[[actions]]` ids, when known; an unknown one is `ui.action`.
+fn check_props(panel: &str, node: &Node, actions: Option<&[String]>) -> Result<(), Error> {
+    let bad = |what: String| fail(ErrorId::UiProp, format!("{panel}/{}: {what}", node.id));
+    if let Some(tone) = node.props.get("tone") {
+        if !tone.is_string() {
+            return bad("tone is a string".into());
+        }
+    }
+    if node.kind != "button" {
+        return Ok(());
+    }
+    let opens = node.props.get("opens");
+    let action = node.props.get("action");
+    if opens.is_some() && action.is_some() {
+        return bad("a button has opens or action, not both".into());
+    }
+    if let Some(o) = opens {
+        if !o.as_str().is_some_and(opens_ok) {
+            return bad(format!("opens {o} is not page, page#<node> or settings"));
+        }
+    }
+    if let Some(a) = action {
+        let Some(a) = a.as_str().filter(|a| crate::module::item_id_ok(a)) else {
+            return bad(format!("action {a} is not an action id"));
+        };
+        if actions.is_some_and(|known| !known.iter().any(|k| k == a)) {
+            return fail(
+                ErrorId::UiAction,
+                format!("{panel}/{}: no [[actions]] entry {a:?}", node.id),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Checks one panel's tree against `limits` (§5.5). A `tile` is held to the smaller of `limits`
+/// and [`TILE_LIMITS`], with at most [`TILE_BUTTONS`] buttons (spec v1.4).
 pub fn validate(panel: &Panel, limits: &Limits) -> Result<(), Error> {
+    validate_with(panel, limits, None)
+}
+
+/// [`validate`], also checking each button's `action` against the module's `[[actions]]` ids
+/// when they are known (spec v1.4).
+pub fn validate_with(
+    panel: &Panel,
+    limits: &Limits,
+    actions: Option<&[String]>,
+) -> Result<(), Error> {
+    let tile = panel.slot == Slot::Tile;
+    let limits = &if tile {
+        Limits {
+            nodes: limits.nodes.min(TILE_LIMITS.nodes),
+            depth: limits.depth.min(TILE_LIMITS.depth),
+            text_bytes: limits.text_bytes.min(TILE_LIMITS.text_bytes),
+            canvas_shapes: limits.canvas_shapes.min(TILE_LIMITS.canvas_shapes),
+            table_rows: limits.table_rows.min(TILE_LIMITS.table_rows),
+            streams: limits.streams.min(TILE_LIMITS.streams),
+        }
+    } else {
+        *limits
+    };
     let mut nodes = 0;
     let mut streams = 0;
+    let mut buttons = 0;
     let mut stack = vec![(&panel.tree, 1usize)];
     while let Some((node, depth)) = stack.pop() {
         nodes += 1;
@@ -155,6 +281,13 @@ pub fn validate(panel: &Panel, limits: &Limits) -> Result<(), Error> {
                 return over("streams");
             }
         }
+        if node.kind == "button" {
+            buttons += 1;
+            if tile && buttons > TILE_BUTTONS {
+                return over("tile buttons");
+            }
+        }
+        check_props(&panel.id, node, actions)?;
         stack.extend(node.children.iter().map(|c| (c, depth + 1)));
     }
     Ok(())
@@ -181,6 +314,17 @@ pub fn register(
     declared: Option<&[String]>,
     limits: &Limits,
 ) -> (Vec<Panel>, Vec<Rejected>) {
+    register_with(params, declared, None, limits)
+}
+
+/// [`register`], also checking each button's `action` against the module's `[[actions]]` ids
+/// (`actions`), when known (spec v1.4, `ui.action`).
+pub fn register_with(
+    params: &Register,
+    declared: Option<&[String]>,
+    actions: Option<&[String]>,
+    limits: &Limits,
+) -> (Vec<Panel>, Vec<Rejected>) {
     let mut ok = Vec::new();
     let mut rejected = Vec::new();
     for value in &params.panels {
@@ -204,7 +348,7 @@ pub fn register(
             continue;
         }
         match serde_json::from_value::<Panel>(value.clone()) {
-            Ok(panel) => match validate(&panel, limits) {
+            Ok(panel) => match validate_with(&panel, limits, actions) {
                 Ok(()) => ok.push(panel),
                 Err(e) => rejected.push(reject(e.id)),
             },

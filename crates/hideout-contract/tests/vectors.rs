@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 use hideout_contract::capability::{check_grantable, Capability, Holder, Source};
 use hideout_contract::config::Config;
 use hideout_contract::frame::{decode_wire, Frame};
-use hideout_contract::messages::check_message;
+use hideout_contract::messages::{check_hub_fact, check_message};
 use hideout_contract::module::{read_dir, Context, Module};
-use hideout_contract::panel::{parse_message, register, Register, LIMITS};
+use hideout_contract::panel::{parse_message, register_with, Register, LIMITS};
 use hideout_contract::Version;
 use serde_json::{json, Value};
 
@@ -132,7 +132,13 @@ fn panels(file: &Path, expected: &Value) -> Result<(), String> {
     check_message(&msg)?;
     let params: Register =
         serde_json::from_value(msg["params"].clone()).map_err(|e| e.to_string())?;
-    let (ok, rejected) = register(&params, None, &LIMITS);
+    // The module's [[actions]] ids, when the vector gives them (spec v1.4, `ui.action`).
+    let actions: Option<Vec<String>> = expected["context"]["actions"].as_array().map(|a| {
+        a.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    });
+    let (ok, rejected) = register_with(&params, None, actions.as_deref(), &LIMITS);
     let ok: Vec<&str> = ok.iter().map(|p| p.id.as_str()).collect();
     let rejected = serde_json::to_value(&rejected).unwrap();
     match expected["result"].as_str() {
@@ -323,6 +329,20 @@ fn every_vector_matches_the_index() {
                             },
                         );
                     }
+                }
+            }
+            // The supervisor's facts (spec v1.4): rows of {fact, value, result}.
+            "facts" => {
+                let doc: Value =
+                    serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+                for row in doc["vectors"].as_array().unwrap() {
+                    let fact = row["fact"].as_str().unwrap();
+                    let got = check_hub_fact(fact, &row["value"]);
+                    let result = match (row["result"].as_str(), got) {
+                        (Some("valid"), Ok(())) | (Some("invalid"), Err(_)) => Ok(()),
+                        (want, got) => Err(format!("want {want:?}, got {got:?}")),
+                    };
+                    t.check(&format!("{key}#{fact}={}", row["value"]), result);
                 }
             }
             "transcripts" => transcript(&mut t, key, &file),

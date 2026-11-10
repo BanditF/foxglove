@@ -1,0 +1,20 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.1"
+run = ["example-art.exe"]
+
+[[settings]]
+name = "sdk-file"
+label = "SDK file"
+kind = "file"
+default = ""
+filter = "ExampleSDK*.dll;ExampleSDK*.so"
+
+[[settings]]
+name = "any-file"
+label = "Any file"
+kind = "file"
+default = ""

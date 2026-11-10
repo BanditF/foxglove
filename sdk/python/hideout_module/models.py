@@ -10,7 +10,12 @@ from typing import Any, ClassVar, Literal, Optional, Union
 
 from ._model import Model
 
-HUB = '1.0'
+HUB = '1.1'
+SPEC = '1.4'
+# The published icon names (unknown draws the generic 'module' icon) and tone words.
+ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
+TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
+TILE_LIMITS = {'buttons': 1, 'depth': 3, 'nodes': 12, 'text_bytes': 64}
 @dataclass(kw_only=True)
 class Anchor(Model):
     id: str
@@ -365,6 +370,10 @@ class ModuleRegister(Model):
     }
 
 
+Recovery = Literal['start-again', 'defaults', 'go-back']
+RECOVERY_SPEC = ('enum', ('start-again', 'defaults', 'go-back'))
+
+
 @dataclass(kw_only=True)
 class RejectedItem(Model):
     """One refused item in a `module.register` result."""
@@ -385,6 +394,24 @@ class RegisterResult(Model):
     FIELDS: ClassVar[dict] = {
         'rejected': ('rejected', ('list', ('ref', 'RejectedItem'))),
     }
+
+
+@dataclass(kw_only=True)
+class RestartFact(Model):
+    """The fact `module.<id>.restart` (§7.8, spec v1.4): set by the supervisor while the module waits
+to be restarted, `null` once the restart starts. `crash` is this crash's number in the
+ten-minute window, 1 to `of` - 1 (the `of`-th stops it instead)."""
+
+    crash: int
+    delay_s: int
+    of: int
+
+    FIELDS: ClassVar[dict] = {
+        'crash': ('crash', 'int'),
+        'delay_s': ('delay_s', 'int'),
+        'of': ('of', 'int'),
+    }
+    CLOSED: ClassVar[bool] = True
 
 
 @dataclass(kw_only=True)
@@ -578,12 +605,17 @@ class ModuleAction(Model):
     }
 
 
+ModuleSettingKind = Any
+MODULESETTINGKIND_SPEC = 'any'
+
+
 @dataclass(kw_only=True)
 class ModuleSetting(Model):
-    """`[[settings]]`: as plugin.toml, plus `when`."""
+    """`[[settings]]`: as plugin.toml, plus `when`, and (spec v1.4) `kind = "file"` with `filter`."""
 
     default: Any
-    kind: SettingKind
+    filter: Optional[str] = None
+    kind: ModuleSettingKind
     label: str
     max: Optional[int] = None
     min: Optional[int] = None
@@ -592,13 +624,15 @@ class ModuleSetting(Model):
 
     FIELDS: ClassVar[dict] = {
         'default': ('default', 'any'),
-        'kind': ('kind', ('ref', 'SettingKind')),
+        'filter': ('filter', ('opt', 'str')),
+        'kind': ('kind', ('ref', 'ModuleSettingKind')),
         'label': ('label', 'str'),
         'max': ('max', ('opt', 'int')),
         'min': ('min', ('opt', 'int')),
         'name': ('name', 'str'),
         'when': ('when', ('opt', 'str')),
     }
+    CLOSED: ClassVar[bool] = True
 
 
 Slot = Literal['page', 'tile', 'status', 'settings', 'action']
@@ -742,7 +776,9 @@ TYPES = {
     'messages.ModuleIdParams': ModuleIdParams,
     'messages.ModuleReady': ModuleReady,
     'messages.ModuleRegister': ModuleRegister,
+    'messages.Recovery': Recovery,
     'messages.RegisterResult': RegisterResult,
+    'messages.RestartFact': RestartFact,
     'messages.SettingsSet': SettingsSet,
     'messages.UiAssetPut': UiAssetPut,
     'messages.UiBadge': UiBadge,
@@ -755,6 +791,7 @@ TYPES = {
     'module.McpTool': McpTool,
     'module.ModuleAction': ModuleAction,
     'module.ModuleSetting': ModuleSetting,
+    'module.ModuleSettingKind': ModuleSettingKind,
     'module.PanelDecl': PanelDecl,
     'module.Pin': Pin,
     'module.WindowDecl': WindowDecl,
