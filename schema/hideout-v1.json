@@ -35,11 +35,30 @@
     "video",
     "wifi"
   ],
-  "spec": "1.4",
+  "scalings": [
+    "smooth",
+    "pixel"
+  ],
+  "spec": "1.5",
+  "streams": {
+    "nodes": [
+      "canvas",
+      "image",
+      "text",
+      "markdown"
+    ],
+    "reopen_s": [
+      1,
+      2,
+      4
+    ],
+    "text_bytes": 1048576
+  },
   "tile_limits": {
     "buttons": 1,
     "depth": 3,
     "nodes": 12,
+    "streams": 0,
     "text_bytes": 64
   },
   "tones": [

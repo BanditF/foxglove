@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"method":"ui.register","params":{"instance":"inst-1","panels":[{"id":"page","slot":"page","title":"Example","icon":"image","tree":{"type":"column","id":"root","props":{},"children":[{"type":"markdown","id":"reply","props":{"text":"","stream":"reply"}}]}}]}}

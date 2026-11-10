@@ -29,11 +29,12 @@ pub const LIMITS: Limits = Limits {
 
 /// Caps on a `tile` panel's body (§5.5, spec v1.4): the tray panel's tiles are small and fixed.
 /// The frame (icon, title, menu, state) is drawn by the hub and not counted. The other caps are
-/// the page caps (the node cap bounds them anyway).
+/// the page caps (the node cap bounds them anyway), except streams: a tile has none (spec v1.5).
 pub const TILE_LIMITS: Limits = Limits {
     nodes: 12,
     depth: 3,
     text_bytes: 64,
+    streams: 0,
     ..LIMITS
 };
 
@@ -82,6 +83,18 @@ pub const ICONS: &[&str] = &[
     "wifi",
 ];
 
+/// The `scaling` words of an `image` (§5.2, spec v1.5). Any other string draws as `smooth`.
+pub const SCALINGS: &[&str] = &["smooth", "pixel"];
+
+/// Text a stream may append to one node, in UTF-8 bytes (§5.5, spec v1.5). Past it the hub drops
+/// the oldest whole lines; it is not an error. Text set in the tree or by a patch keeps the
+/// per-node `text_bytes` cap.
+pub const STREAM_TEXT_BYTES: usize = 1024 * 1024;
+
+/// Seconds the hub waits before each reopen of a stream its provider closed while the panel stays
+/// visible (§5.4, spec v1.5). After the last one fails the node shows "Stopped updating".
+pub const STREAM_REOPEN_S: &[u64] = &[1, 2, 4];
+
 /// Largest stream frame payload (§5.4, spec v1.1).
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 /// Most frames a second a panel stream runs at (spec v1.1).
@@ -116,8 +129,8 @@ pub const NODE_TYPES: &[&str] = &[
 ];
 /// Shapes inside a `canvas` (§5.2).
 pub const SHAPE_TYPES: &[&str] = &["rect", "key", "circle", "text"];
-/// Nodes that take a `stream` prop (§5.4).
-pub const STREAM_NODES: &[&str] = &["canvas", "image", "text"];
+/// Nodes that take a `stream` prop (§5.4; `markdown` since spec v1.5).
+pub const STREAM_NODES: &[&str] = &["canvas", "image", "text", "markdown"];
 
 /// One node `{type, id, props, bind?, stream?, children}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -177,9 +190,52 @@ pub fn opens_ok(opens: &str) -> bool {
     }
 }
 
-/// Checks the v1.4 props of one node (§5.2): `tone` is a string; a button's `opens` is a target
-/// of its own module and its `action` an action id, never both. `actions` is the module's
-/// `[[actions]]` ids, when known; an unknown one is `ui.action`.
+/// Whether `v` is a size or aspect (spec v1.5): a number above 0.
+fn positive(v: &serde_json::Value) -> bool {
+    v.as_f64().is_some_and(|n| n.is_finite() && n > 0.0)
+}
+
+/// Checks the v1.5 props of one node (§5.2, §5.4): a `canvas` declares its `width` and `height`
+/// and an `image` its `aspect` and `width` as numbers above 0; an image's `scaling` is a string;
+/// a text's `mono` is a boolean; a stream node's `stale_after_ms` is a whole number above 0; a
+/// streamed `image` has a non-empty `label`.
+fn check_stream_props(node: &Node) -> Result<(), String> {
+    let sizes: &[&str] = match node.kind.as_str() {
+        "canvas" => &["width", "height"],
+        "image" => &["aspect", "width"],
+        _ => &[],
+    };
+    for key in sizes {
+        if node.props.get(*key).is_some_and(|v| !positive(v)) {
+            return Err(format!("{key} is a number above 0"));
+        }
+    }
+    if node.kind == "image" && node.props.get("scaling").is_some_and(|v| !v.is_string()) {
+        return Err("scaling is a string".into());
+    }
+    if node.kind == "text" && node.props.get("mono").is_some_and(|v| !v.is_boolean()) {
+        return Err("mono is true or false".into());
+    }
+    if STREAM_NODES.contains(&node.kind.as_str()) {
+        if let Some(ms) = node.props.get("stale_after_ms") {
+            if !ms.as_u64().is_some_and(|ms| ms > 0) {
+                return Err("stale_after_ms is a whole number of milliseconds above 0".into());
+            }
+        }
+    }
+    if node.kind == "image" && node.stream_name().is_some() {
+        let label = node.props.get("label").and_then(|l| l.as_str());
+        if !label.is_some_and(|l| !l.trim().is_empty()) {
+            return Err("a streamed image needs a label".into());
+        }
+    }
+    Ok(())
+}
+
+/// Checks the v1.4 and v1.5 props of one node (§5.2): `tone` is a string; a button's `opens` is
+/// a target of its own module and its `action` an action id, never both; the stream and size
+/// props of [`check_stream_props`]. `actions` is the module's `[[actions]]` ids, when known; an
+/// unknown one is `ui.action`.
 fn check_props(panel: &str, node: &Node, actions: Option<&[String]>) -> Result<(), Error> {
     let bad = |what: String| fail(ErrorId::UiProp, format!("{panel}/{}: {what}", node.id));
     if let Some(tone) = node.props.get("tone") {
@@ -187,6 +243,7 @@ fn check_props(panel: &str, node: &Node, actions: Option<&[String]>) -> Result<(
             return bad("tone is a string".into());
         }
     }
+    check_stream_props(node).or_else(bad)?;
     if node.kind != "button" {
         return Ok(());
     }
@@ -235,7 +292,8 @@ pub fn validate_with(
             text_bytes: limits.text_bytes.min(TILE_LIMITS.text_bytes),
             canvas_shapes: limits.canvas_shapes.min(TILE_LIMITS.canvas_shapes),
             table_rows: limits.table_rows.min(TILE_LIMITS.table_rows),
-            streams: limits.streams.min(TILE_LIMITS.streams),
+            // No stream in a tile (spec v1.5): the tile cap is 0, the smallest there is.
+            streams: TILE_LIMITS.streams,
         }
     } else {
         *limits

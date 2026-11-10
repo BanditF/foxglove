@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.4",
+  "contract": "1.5",
   "reader_hub": "1.1",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -2532,6 +2532,39 @@
         ]
       }
     },
+    "transcripts/stream/text-restore-on-visible.json": {
+      "spec": [
+        "5.4",
+        "5.9",
+        "8.4"
+      ],
+      "result": "valid",
+      "note": "(v1.5) Text appended while hidden: the module patches the node's full text on visible, before answering the stream's channel.create; the stream appends after it.",
+      "final": {
+        "text": "line 1\nline 2\nline 3\nline 4\n",
+        "patch_applied_before_frames": true,
+        "visibility_before_channel_create": true
+      }
+    },
+    "transcripts/stream/reopen-then-stopped.json": {
+      "spec": [
+        "5.4",
+        "8.4"
+      ],
+      "result": "valid",
+      "note": "(v1.5) Three reopens (1, 2, 4 s) of a stream the provider closed, then 'Stopped updating' + Try again (one reopen); removing the stream prop closes the channel cleanly.",
+      "final": {
+        "reopen_after_s": [
+          1,
+          2,
+          4
+        ],
+        "then": "Stopped updating",
+        "try_again_reopens": 1,
+        "stream_removed_shows": "nothing",
+        "reopen_after_removed": false
+      }
+    },
     "transcripts/supervisor/crash-backoff-and-stop.json": {
       "spec": [
         "7.7"
@@ -4185,6 +4218,124 @@
         "page"
       ],
       "note": "The same 65-byte string: over the tile cap, far under the page cap (v1.4). Only the tile is rejected."
+    },
+    "panels/valid/canvas-size.json": {
+      "spec": [
+        "5.2",
+        "5.4"
+      ],
+      "result": "valid",
+      "note": "canvas (v1.5) declares its unit size, width and height, so the hub lays the box out before the first frame."
+    },
+    "panels/valid/image-aspect-scaling.json": {
+      "spec": [
+        "5.2",
+        "5.4"
+      ],
+      "result": "valid",
+      "note": "image (v1.5) declares aspect and optionally width; scaling pixel or smooth. An unknown scaling word registers and draws as smooth; no aspect: the first frame sets it once."
+    },
+    "panels/valid/stream-stale-after.json": {
+      "spec": [
+        "5.4"
+      ],
+      "result": "valid",
+      "note": "stale_after_ms (v1.5) on a stream node: the expected gap; past it the hub shows 'No new frames'. Without it the hub never does."
+    },
+    "panels/valid/text-mono.json": {
+      "spec": [
+        "5.2"
+      ],
+      "result": "valid",
+      "note": "text (v1.5) takes mono: true for logs and code, false (the default) for prose."
+    },
+    "panels/valid/markdown-stream.json": {
+      "spec": [
+        "5.2",
+        "5.4"
+      ],
+      "result": "valid",
+      "note": "markdown (v1.5) takes a stream: frames append markdown source (kind 3 text frames), the hub redraws."
+    },
+    "panels/valid/image-stream-label.json": {
+      "spec": [
+        "5.2",
+        "5.4"
+      ],
+      "result": "valid",
+      "note": "A streamed image (v1.5) has a label, its screen reader name."
+    },
+    "panels/invalid/canvas-size-zero.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "canvas width and height (v1.5) are numbers above 0."
+    },
+    "panels/invalid/image-aspect-not-number.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "image aspect (v1.5) is a number (width / height) above 0, not a string."
+    },
+    "panels/invalid/image-scaling-not-string.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "image scaling (v1.5) is a string (smooth or pixel); a boolean rejects that panel."
+    },
+    "panels/invalid/stream-stale-after-zero.json": {
+      "spec": [
+        "5.4",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "stale_after_ms (v1.5) is a whole number of milliseconds above 0."
+    },
+    "panels/invalid/stream-stale-after-fraction.json": {
+      "spec": [
+        "5.4",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "stale_after_ms (v1.5) is a whole number; 250.5 rejects that panel."
+    },
+    "panels/invalid/text-mono-not-bool.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "text mono (v1.5) is true or false."
+    },
+    "panels/invalid/image-stream-no-label.json": {
+      "spec": [
+        "5.2",
+        "5.4",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "A streamed image (v1.5) needs a non-empty label for the screen reader."
+    },
+    "panels/invalid/tile-stream.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "id": "ui.limits",
+      "note": "No streams in a tile (v1.5): the tile stream cap is 0, so a stream node in a tile body is over it."
     },
     "manifests/valid/setting-file.toml": {
       "spec": [

@@ -11,11 +11,14 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.1'
-SPEC = '1.4'
+SPEC = '1.5'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
-TILE_LIMITS = {'buttons': 1, 'depth': 3, 'nodes': 12, 'text_bytes': 64}
+TILE_LIMITS = {'buttons': 1, 'depth': 3, 'nodes': 12, 'streams': 0, 'text_bytes': 64}
+# Image scaling words (unknown draws 'smooth') and the panel stream rules (v1.5).
+SCALINGS = ('smooth', 'pixel')
+STREAMS = {'nodes': ['canvas', 'image', 'text', 'markdown'], 'reopen_s': [1, 2, 4], 'text_bytes': 1048576}
 @dataclass(kw_only=True)
 class Anchor(Model):
     id: str

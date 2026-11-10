@@ -106,6 +106,28 @@
         "colours_rgba_by_shape_order": []
       },
       "note": "A zero-shape canvas frame is length-consistent."
+    },
+    {
+      "name": "text-multibyte",
+      "wire_hex": "0f00000003000300000000000d00000068c3a4",
+      "payload_hex": "03000300000000000d00000068c3a4",
+      "expect": {
+        "accept": true,
+        "kind": "text",
+        "seq": 13,
+        "append": "hä"
+      },
+      "note": "A text frame ends on a character boundary (v1.5): 'h' and the two bytes of 'ä', width_or_count 3."
+    },
+    {
+      "name": "text-split-character",
+      "wire_hex": "0e00000003000200000000000e00000068c3",
+      "payload_hex": "03000200000000000e00000068c3",
+      "expect": {
+        "accept": false,
+        "reason": "text isn't UTF-8: dropped"
+      },
+      "note": "The frame stops inside 'ä' (0xc3 without its second byte). A text frame MUST end on a character boundary (v1.5); one that isn't whole UTF-8 is dropped like any bad frame, never drawn."
     }
   ]
 }

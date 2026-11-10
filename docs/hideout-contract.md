@@ -1,13 +1,34 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.4** (v1.3 plus the module tiles and pages of #975; additive, no
+Status: spec, contract version **1.5** (v1.4 plus the live stream rules of #976; additive, no
 breaking change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one
-"(v1.3)", every v1.4 one "(v1.4)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+"(v1.3)", every v1.4 one "(v1.4)", every v1.5 one "(v1.5)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.5** (#976): the nine stream spec gaps of the live streams plan
+  ([hideout-streams-ux.md](hideout-streams-ux.md)), for panel streams (§5.4). Panels (§5.2): a
+  `canvas` declares its unit size (`width`, `height`) and an `image` its `aspect` (and optionally
+  `width`), so the hub lays the box out before the first frame; an `image` takes
+  `scaling: "smooth" | "pixel"` (default `smooth`, an unknown word draws `smooth`); a `text` takes
+  `mono`. Streams (§5.4): `markdown` takes a `stream` too; an optional `stale_after_ms` on a
+  canvas or image stream is the gap after which the hub says "No new frames" (without it, never);
+  a streamed `image` needs a `label`. Written down, not new wire: a `ui.patch` of a streamed
+  node's `text` replaces everything shown and the stream keeps appending after it (§5.3, §5.4);
+  stream-appended text has its own cap, 1 MiB per node, oldest whole lines dropped first (§5.5);
+  the hub keeps a text node's text while hidden, sends `ui.visibility visible` before it reopens
+  the panel's streams, and a module restores text appended while hidden by patching before it
+  answers the stream's `channel.create` (§5.4, §5.9); a text frame MUST end on a character
+  boundary, and one that isn't whole UTF-8 is dropped (§8.4, as v1.1 readers already did); the
+  hub reopens a stream its provider closed up to three times (1, 2, 4 s), then shows "Stopped
+  updating"; removing `stream` closes the channel cleanly; visibility stays per panel (§5.4).
+  Informative, hub-only: with reduced motion the hub draws streams at 2 frames a second and shows
+  a Live dot. Tightenings, none of which a shipped module hits (no module streamed before H2.9): a
+  tile's stream cap is 0 (`ui.limits`, §5.5), and a size, `scaling`, `mono` or `stale_after_ms` of
+  the wrong type, or a streamed image without a `label`, is `ui.prop` (§15). `hub` stays 1.1: no
+  manifest key, only optional panel props, which an older hub ignores (§8.7).
 - **1.4** (#975): the spec gaps S1–S11 of the module tiles and pages plan
   ([hideout-plugin-modules-ux.md](hideout-plugin-modules-ux.md)). Panels (§5.2): a `tone` on
   `value` and `label` (`neutral`, `active`, `live`, `ok`, `attention`, `off`; unknown draws
@@ -509,6 +530,18 @@ Nodes are `{type, id, props, bind?, stream?, children}`.
   `markdown` (safe subset, code blocks, no HTML), `text`.
 - **`canvas`:** a retained set of shapes (rect, rounded key, circle, text) with ids, at most a few
   hundred per panel (§5.5). A click returns the shape id.
+- **Box sizes (v1.5).** A `canvas` declares its unit size, `width` and `height` (the units its
+  shapes use; numbers above 0). The hub scales the canvas uniformly to the node's width, so the
+  box's aspect is `width / height`; without them it is the shapes' bounding box. An `image`
+  declares `aspect` (width / height, a number above 0) and optionally `width` (its natural width
+  in layout pixels, above 0). Without `aspect`, an image with an asset takes the asset's aspect
+  and a streamed image takes the first frame's, once; later frames of another size are fitted
+  inside the same box (letterboxed), never stretched or cropped, so the page never moves.
+- **`scaling` (v1.5)** on `image`: `"smooth"` (filtered, the default, for photos and art) or
+  `"pixel"` (whole-number steps, no blur, for pixel art and 1-bit screens). An unknown word draws
+  as `smooth`; a `scaling` that isn't a string is `ui.prop`.
+- **`mono` (v1.5)** on `text`: `true` draws it in the theme's monospace face (logs, code); `false`,
+  the default, in the body face. Not a boolean: `ui.prop`.
 - **`bind`:** points a prop at a fact (`fact:keyboard.layer`). The hub fills it from its cache and
   redraws only on change.
 - `id` MUST be unique in the panel and stable across registrations (view state is keyed by it).
@@ -538,6 +571,10 @@ Nodes are `{type, id, props, bind?, stream?, children}`.
 
 - `ui.patch {panel, ops}` changes nodes in place. At most ~20 per second per panel; the hub
   coalesces beyond that. Patches carry state; anything that moves uses a stream.
+- (v1.5, written down) A `set` op merges its `props` into the node: each named prop is replaced,
+  and a prop set to `null` is removed; props it doesn't name stay. On a streamed `text` or
+  `markdown` node, setting `text` replaces everything shown, the appended text included; the
+  stream keeps appending after it (§5.4).
 - `ui.event {panel, node, kind, value}` goes to the owning module only, checked like any call.
   An error result means "refused": the hub reverts optimistic input and shows `data.reason`.
 - `ui.asset.put {hash, mime, data}` uploads an image once, keyed by SHA-256, at most 256 KiB.
@@ -552,6 +589,7 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
 | `canvas` | colours for shapes, by shape id |
 | `image` | small frames |
 | `text` | appended text (chat tokens) |
+| `markdown` (v1.5) | appended markdown source (a reply as it is written); the hub redraws it |
 
 - The hub opens the stream as a normal channel with the same grant. Frames never pass through the
   router.
@@ -561,20 +599,66 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
   (polling a device, rendering previews) can stop too.
 - The hub knows nothing of the domain: it colours shapes or appends text the module declared.
 - Rule: a page that shows what your devices (or your AI) are doing stays in the hub.
+- **Where (v1.5).** Streams are for `page` panels (and their pop-outs). A `tile` has none: its
+  stream cap is 0 (§5.5); a tile that changes uses patches (a countdown at 1 a second is well
+  under the patch rate).
+- **"No new frames" (v1.5).** A channel has no keep-alive, so a still scene and a stalled stream
+  look the same. A `canvas` or `image` stream node may say how long a gap is normal with
+  `stale_after_ms` (a whole number of milliseconds above 0): when no frame arrives for longer,
+  the hub dims the last frame and says when it was seen. Without it the hub never does. On `text`
+  and `markdown` it is accepted and ignored (silence is normal for text). Not a whole number above
+  0: `ui.prop`.
+- **Text streams (v1.5).** Frames append (§8.4 kind 3); replacing or clearing is a patch of the
+  node's `text` (§5.3), and the stream keeps appending after it. Appended text has its own cap
+  (§5.5), past which the hub drops the oldest whole lines.
+- **Hidden and back (v1.5).** The hub keeps a text node's text while the panel is hidden; what the
+  module appended meanwhile never arrived. The hub sends `ui.visibility visible` (§5.9) before it
+  opens the panel's streams again, and applies a patch the module sent before its answer to a
+  stream's `channel.create` before that stream's first frame. So a module that appends while
+  hidden SHOULD, on `visible`, patch the node's full text before it answers `channel.create`, then
+  stream appends again. Text over the 16 KiB node cap: patch `text` to `""` and send it all as
+  the first frames of the new stream (up to the stream text cap).
+- **When the provider closes (v1.5).** A stream the provider closes while the panel stays visible
+  and the module is `running` is reopened (a new `channel.create`) after 1, 2 and 4 s
+  (`STREAM_REOPEN_S`). When the third reopen ends too, the node shows "Stopped updating" with
+  Try again, which reopens once. A module restart, or the panel turning `visible` again, starts
+  the count afresh. A stream refused or closed for `ui.limits`, or one whose grant fails, is not
+  reopened. A patch that removes a node's stream (`stream` set to `null`, or the node removed or
+  replaced) closes its channel cleanly: no state is shown and nothing is reopened; a patch that
+  names another channel closes the old one and opens the new one.
+- **Visibility is per panel (v1.5).** `visible` (§5.9) is the panel's. A stream node scrolled out
+  of view, or a window covered by another, still streams; the hub may skip drawing it. A
+  node-level rule may come in a later minor.
+- **Screen reader (v1.5).** A streamed `image` MUST have a `label` (a non-empty string): its
+  accessible name, which frames never change. Without one it is `ui.prop`. A canvas is named by
+  its `label` too when it has one; its shapes by their text.
+- **Reduced motion (informative, hub-only).** With the system's animation effects off the hub
+  draws canvas and image streams at most 2 frames a second and shows a small "Live" dot on a live
+  one (at that rate motion no longer says live); without reduced motion there is no mark. The
+  module isn't told and sends frames as usual; the hub may read the channel less often. UX:
+  [hideout-streams-ux.md](hideout-streams-ux.md).
 
 ### 5.5 Validation and the panel guard (UX5)
 
 - `ui.register` and `ui.patch` MUST be validated: node count, depth, string length, canvas shape
   count and table rows each have a cap, published with the schema. (v1.4) The `tone`, `opens` and
-  `action` props (§5.2) are checked the same way, on the tree after a patch too. Over a cap: that panel is
+  `action` props (§5.2) are checked the same way, on the tree after a patch too; so are (v1.5) the
+  box sizes, `scaling`, `mono`, `stale_after_ms` and a streamed image's `label` (§5.2, §5.4). Over a cap: that panel is
   rejected (`ui.limits`), the others register.
 - **Caps (v1.1):** per panel, at most 2,000 nodes per tree, depth 32, 16 KiB (16,384 UTF-8 bytes)
   of text per node, 8 live streams, 4 MiB per stream frame and 60 frames a second per stream. A
   value at the cap passes; one over it is `ui.limits`. A stream over its count, frame size or rate
   is refused or closed with the same error (the hub still draws no more than 30 frames a second,
   §5.4).
+- **Stream text cap (v1.5):** text a stream appends to one `text` or `markdown` node is capped
+  separately at 1 MiB (1,048,576 UTF-8 bytes; `streams.text_bytes` in the schema). Past it the
+  hub drops the oldest whole lines (up to and including a line feed) until the rest fits, and
+  shows that earlier text was trimmed; a single line over the cap keeps its newest bytes, cut at a
+  character boundary. Trimming is not an error. Text in the tree or set by a patch keeps the
+  16 KiB per-node cap.
 - **Tile caps (v1.4):** a `tile` panel's tree is the tile body only, at most 12 nodes, depth 3,
-  64 UTF-8 bytes of text per string and one `button`; its other caps are the page caps. Over any of
+  64 UTF-8 bytes of text per string, one `button` and (v1.5) no stream; its other caps are the
+  page caps. Over any of
   them that tile is `ui.limits` and the module's other panels register. The frame is hub-drawn and
   not counted. A tile body is meant to be one `value` (the glance, with a `tone`), at most one
   `label`, at most one `meter` and at most one `button`.
@@ -637,7 +721,9 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   and then only on change:
   - `visible`: on screen (the active tab, or a pop-out that isn't minimised);
   - `hidden`: still open but not on screen (a background tab, a minimised window, the hub hidden
-    in the tray). The hub has closed the panel's streams (§5.4);
+    in the tray). The hub has closed the panel's streams (§5.4) and keeps what they drew (v1.5:
+    the last frame, a text node's text). On the way back the hub sends `visible` before it opens
+    the streams again;
   - `closed`: the user closed the tab or its pop-out. The module SHOULD stop work for that panel.
     It keeps running; the panel stays registered and opens again from the sidebar.
   A module needs no answer and MAY ignore both messages.
@@ -1081,6 +1167,10 @@ Rules:
     order the canvas declared them.
   - `kind` 3, **text:** UTF-8 bytes to append. `width_or_count` (v1.1) is the UTF-8 byte length
     of the text body; `height` is 0. A mismatch drops the frame like any other length mismatch.
+    (v1.5) A text frame MUST end on a character boundary: a sender splits long text between
+    characters, never inside one. A body that isn't whole UTF-8 is dropped like any bad frame
+    (as v1.1 readers already did) and counted in the log, never drawn. The same frames feed a
+    `markdown` stream.
   - A frame whose body length doesn't match its header is dropped.
 - The hub's panel host opens streams the same way (§5.4) and is just a channel end.
 - Realtime paths (scene to keyboard LEDs, key events to the overlay, art pushes, LED wizard
@@ -1121,7 +1211,8 @@ Rules:
 
 - **`hub`** (this contract, `MAJOR.MINOR`): manifests, the inventory, catalogs, the panel
   vocabulary and the hub messages below. Spec versions and `hub` move separately: spec 1.0 to 1.3
-  are `hub` 1.0; spec 1.4 is `hub` 1.1 (a new setting kind and key). The hub answers `initialize`
+  are `hub` 1.0; spec 1.4 is `hub` 1.1 (a new setting kind and key), and so is spec 1.5 (only
+  optional panel props and stream rules, no manifest key). The hub answers `initialize`
   with its own `hub`.
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
@@ -1543,8 +1634,8 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `permission.never` | a never-list item asked for where it can't be granted |
 | `permission.provider` | registering a method the catalog doesn't allow |
 | `ui.undeclared` | `ui.register` with a panel id not in `[[ui.panels]]` |
-| `ui.limits` | a panel tree over a cap (v1.4: and a tile over the tile caps) |
-| `ui.prop` | (v1.4) a `tone` that isn't a string, a button `opens` that isn't `page`, `page#<node id>` or `settings`, an `action` that isn't an action id, or a button with both |
+| `ui.limits` | a panel tree over a cap (v1.4: and a tile over the tile caps; v1.5: a stream in a tile) |
+| `ui.prop` | (v1.4) a `tone` that isn't a string, a button `opens` that isn't `page`, `page#<node id>` or `settings`, an `action` that isn't an action id, or a button with both; (v1.5) a canvas `width`/`height` or image `aspect`/`width` that isn't a number above 0, an image `scaling` that isn't a string, a text `mono` that isn't a boolean, a `stale_after_ms` that isn't a whole number above 0, or a streamed image without a `label` |
 | `ui.action` | (v1.4) a button `action` that names no `[[actions]]` entry of the module |
 | `lifecycle.api` | a needed API isn't served |
 | `lifecycle.requires` | a required module is missing, too old or off, or a cycle |
@@ -1586,7 +1677,10 @@ tables, panel trees (under and over the caps), and JSON-RPC transcripts for ever
 module with panels, tile steps in `visibility.json`, `transcripts/supervisor/outside-app-missing.json`,
 and `facts/supervisor-facts.json`; #977: `channels/channel-wire.json`, the channel wire as hex
 streams with the end each reaches and the pipe names a consumer may connect to, and
-`transcripts/stream/channel-create-bad-pipe.json`).
+`transcripts/stream/channel-create-bad-pipe.json`; v1.5: the stream props as panel vectors, valid
+and invalid one each, a stream in a tile, a whole and a split multibyte text frame in
+`frames/panel-frames.json`, `transcripts/stream/text-restore-on-visible.json` and
+`transcripts/stream/reopen-then-stopped.json`).
 A panel vector's index entry may carry `context.actions`, the module's `[[actions]]` ids. The
 spec version is kept in step by a drift test: this file's status line, `index.json`'s `contract`,
 the vectors README and the schema's `spec` (`SPEC_VERSION` in the Rust crate) must agree.

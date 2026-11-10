@@ -63,6 +63,14 @@ const NOT_ROUTER: &[(&str, &str)] = &[
         "transcripts/ui/visibility.json",
         "the panel host's tab visibility",
     ),
+    (
+        "transcripts/stream/text-restore-on-visible.json",
+        "the panel host's streams (H2.9)",
+    ),
+    (
+        "transcripts/stream/reopen-then-stopped.json",
+        "the panel host's streams (H2.9)",
+    ),
 ];
 
 /// Hub-side steps the router does run although the folder is someone else's.
