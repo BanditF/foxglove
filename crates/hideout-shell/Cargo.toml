@@ -7,7 +7,11 @@ license = "MIT"
 
 [dependencies]
 hideout-acl = { path = "../hideout-acl" }
+# Only its `words` (every string the supervisor's states show) for the crash bar, the stopped
+# card and the tray lines.
+hideout-supervisor = { path = "../hideout-supervisor" }
 log = "0.4"
+serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 
@@ -21,6 +25,9 @@ tray-icon = "0.24"
 # eframe's own winit (no new crate): the hub runs eframe's app on its own loop (`wake`, #935).
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 windows = { version = "0.62", features = [
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
@@ -28,7 +35,9 @@ windows = { version = "0.62", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Memory",
+    "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_System_WinRT",
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
@@ -37,6 +46,5 @@ windows = { version = "0.62", features = [
 
 [target.'cfg(windows)'.dev-dependencies]
 hideout-contract = { path = "../hideout-contract" }
-serde_json = "1"
 # Headless review PNGs of the tab strip (the test rasterises egui's meshes itself).
 image = { version = "0.25", default-features = false, features = ["png"] }

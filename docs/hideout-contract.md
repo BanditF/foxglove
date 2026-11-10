@@ -1109,10 +1109,15 @@ supervisor beside the state:
   and the limit (`of`, 5). Drawn as "Restarting in <delay_s> s (<crash> of <of>)". Set to `null`
   when the restart starts. No other fields.
 - **`module.<id>.recovery`:** while the module is `crash-stopped`, the step of the recovery ladder
-  its card offers first: `start-again` (the first stop this sign-in), `defaults` (the second, or
-  later with no previous version kept) or `go-back` (the third and later, with a previous
-  version). The card still lists every way out; this picks the primary button. Absent or `null`
-  otherwise.
+  its card offers: `start-again` (the first stop this sign-in), `defaults` (the second),
+  `go-back` (the third and later, with a previous version) or `last` (the third and later with
+  no previous version: Copy diagnostics and Turn off <Module>). The card shows that step's one
+  main button, then Copy diagnostics. `null` once the module starts again.
+- **`module.<id>.previous`:** beside `recovery`, the version "Go back to <version>" names, or
+  `null` when none is kept (#983).
+- **`module.<id>.failed`:** `launch` while the module is `install-failed` because launching it
+  failed (the file check, or the pid or exe-hash check at `initialize`): it then reads "Couldn't
+  start <Module>". `null` once it starts again (#983).
 Both are read like any fact (`facts.read:module.*`); a reader that doesn't know them ignores them.
 Values outside these shapes are a hub bug, not a module's.
 

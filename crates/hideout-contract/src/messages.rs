@@ -248,20 +248,24 @@ pub struct RestartFact {
 }
 
 /// The fact `module.<id>.recovery` (§7.8, spec v1.4): the step of the recovery ladder a
-/// `crash-stopped` module's card offers first.
+/// `crash-stopped` module's card offers (its one main button).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Recovery {
     /// **Start again** (the first stop this sign-in).
     StartAgain,
-    /// **Start with default settings** (the second stop, or later with no previous version).
+    /// **Start with default settings** (the second stop).
     Defaults,
     /// **Go back to <previous>** (the third stop and later, when a previous version is kept).
     GoBack,
+    /// **Copy diagnostics** and **Turn off <Module>** (the third stop and later, with no
+    /// previous version; #983).
+    Last,
 }
 
 /// Checks a value of a fact the hub's supervisor publishes (`module.<id>.restart`,
-/// `module.<id>.recovery`; spec v1.4). Other keys are not this check's: `Ok`.
+/// `module.<id>.recovery`, `module.<id>.previous`, `module.<id>.failed`; spec v1.4). Other keys
+/// are not this check's: `Ok`.
 pub fn check_hub_fact(key: &str, value: &serde_json::Value) -> Result<(), String> {
     let Some(rest) = key.strip_prefix("module.") else {
         return Ok(());
@@ -292,6 +296,26 @@ pub fn check_hub_fact(key: &str, value: &serde_json::Value) -> Result<(), String
         return serde_json::from_value::<Recovery>(value.clone())
             .map(|_| ())
             .map_err(|e| e.to_string());
+    }
+    if let Some(id) = rest.strip_suffix(".previous") {
+        if id.is_empty() {
+            return Err("module.<id>.previous needs an id".into());
+        }
+        return match value {
+            serde_json::Value::Null => Ok(()),
+            serde_json::Value::String(v) if !v.is_empty() => Ok(()),
+            _ => Err("module.<id>.previous is a version or null".into()),
+        };
+    }
+    if let Some(id) = rest.strip_suffix(".failed") {
+        if id.is_empty() {
+            return Err("module.<id>.failed needs an id".into());
+        }
+        return match value.as_str() {
+            _ if value.is_null() => Ok(()),
+            Some("launch") => Ok(()),
+            _ => Err("module.<id>.failed is \"launch\" or null".into()),
+        };
     }
     Ok(())
 }

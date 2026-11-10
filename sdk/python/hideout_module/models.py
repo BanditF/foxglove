@@ -430,8 +430,8 @@ class ModuleRegister(Model):
     }
 
 
-Recovery = Literal['start-again', 'defaults', 'go-back']
-RECOVERY_SPEC = ('enum', ('start-again', 'defaults', 'go-back'))
+Recovery = Literal['start-again', 'defaults', 'go-back', 'last']
+RECOVERY_SPEC = ('enum', ('start-again', 'defaults', 'go-back', 'last'))
 
 
 @dataclass(kw_only=True)

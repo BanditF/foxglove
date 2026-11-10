@@ -21,13 +21,23 @@ pub const DIDNT_HELP: &str = "Starting again didn't help last time.";
 /// `install-failed` after a failed pid or exe-hash check at `initialize` (#959).
 pub const FILES_DONT_MATCH: &str = "Its files don't match what was installed.";
 
+/// "Restarting in <n> s", or "Restarting…" once the countdown is at 0 (never "0 s", never past
+/// 60 s).
+fn restarting_in(secs: u64) -> String {
+    match secs.min(60) {
+        0 => "Restarting\u{2026}".into(),
+        n => format!("Restarting in {n} s"),
+    }
+}
+
 /// The crash bar while `restarting`: (first line, second line). `secs` is the backoff step's
-/// remaining seconds (never past 60), `k` the crashes in the current ten-minute window.
+/// remaining seconds (never past 60; 0 reads "Restarting…"), `k` the crashes in the current
+/// ten-minute window.
 pub fn crash_bar(module: &str, secs: u64, k: usize) -> (String, String) {
     (
         format!(
-            "{module} stopped unexpectedly. Restarting in {} s ({k} of 5).",
-            secs.min(60)
+            "{module} stopped unexpectedly. {} ({k} of 5).",
+            restarting_in(secs)
         ),
         PLACE_KEPT.into(),
     )
@@ -35,7 +45,34 @@ pub fn crash_bar(module: &str, secs: u64, k: usize) -> (String, String) {
 
 /// The Modules page row and the tab tooltip while `restarting`.
 pub fn restarting_row(secs: u64, k: usize) -> String {
-    format!("Restarting in {} s ({k} of 5)", secs.min(60))
+    format!("{} ({k} of 5)", restarting_in(secs))
+}
+
+/// What a screen reader says once per crash (the crash bar's polite live region). The countdown
+/// is never announced.
+pub fn crash_announcement(module: &str) -> String {
+    format!("{module} stopped unexpectedly, restarting")
+}
+
+/// The red mark's accessible name for a stopped module.
+pub fn stopped_mark(module: &str) -> String {
+    format!("{module}, stopped after 5 crashes")
+}
+
+/// "Turn off <Module>": the ladder's last step.
+pub fn turn_off(module: &str) -> String {
+    format!("Turn off {module}")
+}
+
+/// "Open <Module>": the notification's second button.
+pub fn open_module(module: &str) -> String {
+    format!("Open {module}")
+}
+
+/// `install-failed` when the failure came from launching (the fact `module.<id>.failed` is
+/// `launch`): the tab, the Modules row and the header.
+pub fn couldnt_start_title(module: &str) -> String {
+    format!("Couldn't start {module}")
 }
 
 /// The stopped card's body line.
@@ -66,7 +103,7 @@ pub fn stopped_notification(module: &str) -> (String, String, Vec<String>) {
     (
         format!("{module} stopped"),
         "It crashed 5 times in 10 minutes.".into(),
-        vec![START_AGAIN.into(), format!("Open {module}")],
+        vec![START_AGAIN.into(), open_module(module)],
     )
 }
 
@@ -82,29 +119,32 @@ pub fn rollback(module: &str, old: &str, new: &str) -> (String, String) {
 /// `install-failed` from the launch check: (title, body, buttons).
 pub fn couldnt_start(module: &str) -> (String, String, Vec<String>) {
     (
-        format!("Couldn't start {module}"),
+        couldnt_start_title(module),
         FILES_DONT_MATCH.into(),
         vec![TRY_AGAIN.into(), OPEN_LOG.into()],
     )
 }
 
-/// Which step of the recovery ladder the stopped card offers first (UX plan, one action per
-/// step). Published as the fact `module.<id>.recovery`.
+/// Which step of the recovery ladder the stopped card offers (UX plan, one action per step).
+/// Published as the fact `module.<id>.recovery`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Recovery {
     StartAgain,
     Defaults,
     GoBack,
+    /// No previous version to go back to: Copy diagnostics and Turn off <Module>.
+    Last,
 }
 
 impl Recovery {
-    /// The step for the `stops`-th crash stop this sign-in (1-based).
+    /// The step for the `stops`-th crash stop this sign-in (1-based). Without a previous version
+    /// the third stop goes to the last step (step 3 is hidden).
     pub fn for_stops(stops: u32, has_previous: bool) -> Recovery {
         match stops {
             0 | 1 => Recovery::StartAgain,
             2 => Recovery::Defaults,
             _ if has_previous => Recovery::GoBack,
-            _ => Recovery::Defaults,
+            _ => Recovery::Last,
         }
     }
 
@@ -113,74 +153,124 @@ impl Recovery {
             Recovery::StartAgain => "start-again",
             Recovery::Defaults => "defaults",
             Recovery::GoBack => "go-back",
+            Recovery::Last => "last",
         }
     }
+
+    /// The step a `module.<id>.recovery` value names; anything else is the first step.
+    pub fn from_id(id: Option<&str>) -> Recovery {
+        match id {
+            Some("defaults") => Recovery::Defaults,
+            Some("go-back") => Recovery::GoBack,
+            Some("last") => Recovery::Last,
+            _ => Recovery::StartAgain,
+        }
+    }
+
+    /// The card's main button for this step. `previous` is the version to go back to; a
+    /// `go-back` without one reads like the last step.
+    pub fn button(self, module: &str, previous: Option<&str>) -> String {
+        match (self, previous) {
+            (Recovery::StartAgain, _) => START_AGAIN.into(),
+            (Recovery::Defaults, _) => START_DEFAULTS.into(),
+            (Recovery::GoBack, Some(v)) => go_back(v),
+            (Recovery::GoBack, None) | (Recovery::Last, _) => turn_off(module),
+        }
+    }
+
+    /// The line under the card's body for this step, if any.
+    pub fn line(self, module: &str, previous: Option<&str>) -> Option<String> {
+        match (self, previous) {
+            (Recovery::Defaults, _) => Some(DIDNT_HELP.into()),
+            (Recovery::GoBack, Some(v)) => Some(worked_before(module, v)),
+            _ => None,
+        }
+    }
+}
+
+/// "Never shown" (UX plan): none of these may reach a drawn string.
+pub const NEVER_SHOWN: &[&str] = &[
+    "crash-stopped",
+    "install-failed",
+    "rpc.",
+    "frame-too-large",
+    "exit code",
+    "pid",
+    "hash",
+    "Job Object",
+    "AppContainer",
+    "initialize",
+    "backoff",
+];
+
+/// Every string this file makes, for the "Never shown" tests (here and in the shell).
+pub fn every_string() -> Vec<String> {
+    let (a, b) = crash_bar("Art", 4, 2);
+    let (t, m) = tray_lines("Art");
+    let (nt, nb, na) = stopped_notification("Art");
+    let (rt, rb) = rollback("Art", "0.4.2", "0.5.0");
+    let (ct, cb, ca) = couldnt_start("Art");
+    let mut v = vec![
+        a,
+        b,
+        restarting_row(4, 2),
+        stopped_body("Art"),
+        worked_before("Art", "0.4.2"),
+        go_back("0.4.2"),
+        crash_bar("Art", 0, 4).0,
+        restarting_row(0, 4),
+        crash_announcement("Art"),
+        stopped_mark("Art"),
+        turn_off("Art"),
+        open_module("Art"),
+        couldnt_start_title("Art"),
+        t,
+        m,
+        nt,
+        nb,
+        rt,
+        rb,
+        ct,
+        cb,
+    ];
+    v.extend(na);
+    v.extend(ca);
+    for r in [
+        Recovery::StartAgain,
+        Recovery::Defaults,
+        Recovery::GoBack,
+        Recovery::Last,
+    ] {
+        for prev in [Some("0.4.2"), None] {
+            v.push(r.button("Art", prev));
+            v.extend(r.line("Art", prev));
+        }
+    }
+    for s in [
+        STOPPED,
+        PLACE_KEPT,
+        OPEN_LOG,
+        START_AGAIN,
+        START_DEFAULTS,
+        COPY_DIAGNOSTICS,
+        TRY_AGAIN,
+        DIDNT_HELP,
+        OK,
+        DIDNT_START,
+    ] {
+        v.push(s.into());
+    }
+    v
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// "Never shown" (UX plan): none of these may reach a drawn string.
-    const NEVER: &[&str] = &[
-        "crash-stopped",
-        "install-failed",
-        "rpc.",
-        "frame-too-large",
-        "exit code",
-        "pid",
-        "hash",
-        "Job Object",
-        "AppContainer",
-        "initialize",
-        "backoff",
-    ];
-
-    fn all() -> Vec<String> {
-        let (a, b) = crash_bar("Art", 4, 2);
-        let (t, m) = tray_lines("Art");
-        let (nt, nb, na) = stopped_notification("Art");
-        let (rt, rb) = rollback("Art", "0.4.2", "0.5.0");
-        let (ct, cb, ca) = couldnt_start("Art");
-        let mut v = vec![
-            a,
-            b,
-            restarting_row(4, 2),
-            stopped_body("Art"),
-            worked_before("Art", "0.4.2"),
-            go_back("0.4.2"),
-            t,
-            m,
-            nt,
-            nb,
-            rt,
-            rb,
-            ct,
-            cb,
-        ];
-        v.extend(na);
-        v.extend(ca);
-        for s in [
-            STOPPED,
-            PLACE_KEPT,
-            OPEN_LOG,
-            START_AGAIN,
-            START_DEFAULTS,
-            COPY_DIAGNOSTICS,
-            TRY_AGAIN,
-            DIDNT_HELP,
-            OK,
-            DIDNT_START,
-        ] {
-            v.push(s.into());
-        }
-        v
-    }
-
     #[test]
     fn no_ids_in_drawn_strings() {
-        for s in all() {
-            for n in NEVER {
+        for s in every_string() {
+            for n in NEVER_SHOWN {
                 assert!(
                     !s.to_lowercase().contains(&n.to_lowercase()),
                     "{s:?} shows {n:?}"
@@ -217,6 +307,39 @@ mod tests {
         assert_eq!(Recovery::for_stops(1, true), Recovery::StartAgain);
         assert_eq!(Recovery::for_stops(2, true), Recovery::Defaults);
         assert_eq!(Recovery::for_stops(3, true), Recovery::GoBack);
-        assert_eq!(Recovery::for_stops(3, false), Recovery::Defaults);
+        assert_eq!(Recovery::for_stops(3, false), Recovery::Last);
+        assert_eq!(Recovery::for_stops(7, false), Recovery::Last);
+        for r in [
+            Recovery::StartAgain,
+            Recovery::Defaults,
+            Recovery::GoBack,
+            Recovery::Last,
+        ] {
+            assert_eq!(Recovery::from_id(Some(r.id())), r);
+        }
+        assert_eq!(Recovery::from_id(None), Recovery::StartAgain);
+        assert_eq!(
+            Recovery::GoBack.button("Art", Some("0.4.2")),
+            "Go back to 0.4.2"
+        );
+        assert_eq!(
+            Recovery::GoBack.line("Art", Some("0.4.2")).as_deref(),
+            Some("Art 0.4.2 worked before.")
+        );
+        assert_eq!(Recovery::Last.button("Art", None), "Turn off Art");
+        assert_eq!(Recovery::Last.line("Art", None), None);
+    }
+
+    #[test]
+    fn the_countdown_never_reads_0_s() {
+        assert_eq!(
+            crash_bar("Art", 0, 2).0,
+            "Art stopped unexpectedly. Restarting\u{2026} (2 of 5)."
+        );
+        assert_eq!(restarting_row(0, 2), "Restarting\u{2026} (2 of 5)");
+        assert_eq!(restarting_row(90, 2), "Restarting in 60 s (2 of 5)");
+        for secs in 0..200 {
+            assert!(!crash_bar("Art", secs, 1).0.contains(" 0 s"));
+        }
     }
 }

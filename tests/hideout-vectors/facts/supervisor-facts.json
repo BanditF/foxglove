@@ -1,5 +1,5 @@
 {
-  "description": "The facts the supervisor publishes besides module.<id>.state and .reason (7.8, v1.4). Each row: a fact key, a value, and whether a reader accepts it.",
+  "description": "The facts the supervisor publishes besides module.<id>.state and .reason (.restart, .recovery, .previous, .failed) (7.8, v1.4). Each row: a fact key, a value, and whether a reader accepts it.",
   "vectors": [
     {
       "fact": "module.foxglove.example-art.restart",
@@ -77,6 +77,12 @@
     },
     {
       "fact": "module.foxglove.example-art.recovery",
+      "value": "last",
+      "result": "valid",
+      "note": "Third stop, no previous version: Copy diagnostics and Turn off <Module> (#983)."
+    },
+    {
+      "fact": "module.foxglove.example-art.recovery",
       "value": null,
       "result": "valid",
       "note": "Not set (not crash-stopped)."
@@ -92,6 +98,42 @@
       "value": 2,
       "result": "invalid",
       "note": "A step is a word, not a number."
+    },
+    {
+      "fact": "module.foxglove.example-art.previous",
+      "value": "0.4.2",
+      "result": "valid",
+      "note": "The version Go back names."
+    },
+    {
+      "fact": "module.foxglove.example-art.previous",
+      "value": null,
+      "result": "valid",
+      "note": "No previous version kept."
+    },
+    {
+      "fact": "module.foxglove.example-art.previous",
+      "value": 4,
+      "result": "invalid",
+      "note": "A version is a string."
+    },
+    {
+      "fact": "module.foxglove.example-art.failed",
+      "value": "launch",
+      "result": "valid",
+      "note": "install-failed came from launching: Couldn't start <Module>."
+    },
+    {
+      "fact": "module.foxglove.example-art.failed",
+      "value": null,
+      "result": "valid",
+      "note": "Cleared once it starts again."
+    },
+    {
+      "fact": "module.foxglove.example-art.failed",
+      "value": "install",
+      "result": "invalid",
+      "note": "Only launch is published."
     }
   ]
 }

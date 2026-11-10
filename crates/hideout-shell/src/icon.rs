@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: MIT
 //! The tray and window glyph, drawn in code: a rounded orange square with a white roof-and-door
-//! mark (a hideout), in three states only (design UX8): normal, paused (grey) and needs you (a
-//! red badge at the top right). RGBA, straight alpha, row-major.
+//! mark (a hideout), in four states (design UX8): normal, paused (grey), needs you (a red badge
+//! at the top right: a stopped module, one that needs a newer Hideout) and safe mode (the same
+//! badge in amber, docs/hideout-supervisor-ux.md). RGBA, straight alpha, row-major.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     Normal,
     Paused,
     NeedsYou,
+    SafeMode,
 }
 
 const ORANGE: [u8; 3] = [0xf0, 0x78, 0x1e];
 const GREY: [u8; 3] = [0x8a, 0x84, 0x80];
 const BADGE: [u8; 3] = [0xd9, 0x2b, 0x2b];
+const AMBER: [u8; 3] = [0xf5, 0xb0, 0x1e];
 const MARK: [u8; 3] = [0xff, 0xff, 0xff];
 
 /// A `size` x `size` RGBA image of the glyph.
@@ -29,10 +32,15 @@ pub fn rgba(size: u32, state: State) -> Vec<u8> {
             if a > 0.0 && in_mark(u, v) {
                 px[..3].copy_from_slice(&MARK);
             }
-            if state == State::NeedsYou {
+            let badge = match state {
+                State::NeedsYou => Some(BADGE),
+                State::SafeMode => Some(AMBER),
+                _ => None,
+            };
+            if let Some(b) = badge {
                 let d = ((u - 0.80).powi(2) + (v - 0.20).powi(2)).sqrt();
                 if d < 0.20 {
-                    px = [BADGE[0], BADGE[1], BADGE[2], 255];
+                    px = [b[0], b[1], b[2], 255];
                 }
             }
             out.extend_from_slice(&px);

@@ -43,6 +43,12 @@ pub fn panel_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport
     panel_body(host, ui, key, true)
 }
 
+/// [`panel_ui`] without the state line: the hub drew the crash bar or the stopped card above it
+/// (docs/hideout-supervisor-ux.md), which already say the state.
+pub fn panel_ui_quiet(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport {
+    panel_body(host, ui, key, false)
+}
+
 /// [`panel_ui`]; `banner` draws the state line above a panel that isn't live (a tile's frame
 /// says the state itself, without the module's name).
 fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, banner: bool) -> DrawReport {

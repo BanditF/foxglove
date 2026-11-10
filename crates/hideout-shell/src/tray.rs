@@ -67,7 +67,7 @@ pub fn install(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result<(
 
 /// `on_command` runs for each menu pick and click.
 fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result<(), String> {
-    let status = MenuItem::new("No modules yet", false, None);
+    let status = MenuItem::new(crate::marks::QUIET_LINE, false, None);
     let open = MenuItem::with_id(OPEN, "Open Hideout", true, None);
     let pause = CheckMenuItem::with_id(PAUSE, "Pause Hideout", true, false, None);
     let logs = MenuItem::with_id(LOGS, "Open log folder", true, None);
@@ -161,11 +161,13 @@ fn stop_leave_timer() {
     });
 }
 
-/// Sets the glyph and the menu's status line. A no-op off the UI thread or before `install`.
-pub fn set_state(state: State, status_line: &str) {
+/// Sets the glyph, the menu's status line and the icon's tooltip. A no-op off the UI thread or
+/// before `install`.
+pub fn set_state(state: State, status_line: &str, tooltip: &str) {
     TRAY.with(|t| {
         if let Some(t) = t.borrow().as_ref() {
             let _ = t.icon.set_icon(glyph(state));
+            let _ = t.icon.set_tooltip(Some(tooltip));
             t.status.set_text(status_line);
             t.pause.set_checked(state == State::Paused);
         }
@@ -204,7 +206,12 @@ mod tests {
 
     #[test]
     fn glyphs_build_for_every_state() {
-        for s in [State::Normal, State::Paused, State::NeedsYou] {
+        for s in [
+            State::Normal,
+            State::Paused,
+            State::NeedsYou,
+            State::SafeMode,
+        ] {
             assert!(glyph(s).is_some());
         }
         assert!(!is_installed());

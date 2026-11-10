@@ -4551,7 +4551,7 @@
         "8.8"
       ],
       "result": "table",
-      "note": "module.<id>.restart {delay_s, crash, of} or null, and module.<id>.recovery start-again | defaults | go-back (v1.4)."
+      "note": "module.<id>.restart {delay_s, crash, of} or null, and module.<id>.recovery start-again | defaults | go-back | last, module.<id>.previous and module.<id>.failed (v1.4, #983)."
     }
   }
 }

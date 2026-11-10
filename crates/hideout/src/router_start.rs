@@ -32,6 +32,58 @@ impl hideout_shell::TabHooks for Hooks {
     fn start_again(&mut self, module: &str) {
         self.0.start_again(module);
     }
+
+    fn start_with_defaults(&mut self, module: &str) {
+        self.0.start_with_defaults(module);
+    }
+
+    fn go_back(&mut self, module: &str) {
+        self.0.go_back(module);
+    }
+
+    fn turn_off(&mut self, module: &str) {
+        self.0.turn_off(module);
+    }
+}
+
+/// What a notification button hands back: `start-again:<id>` or `open:<id>` (a click on the
+/// toast itself opens the module too). The rollback note's buttons (OK, Open log) only close it.
+pub fn on_toast(sup: &Supervisor, arg: &str) {
+    match arg.split_once(':') {
+        Some(("start-again", id)) => sup.start_again(id),
+        Some(("open", id)) => hideout_shell::open_module(id),
+        _ => {}
+    }
+}
+
+/// The supervisor's notifications as Windows toasts (§7.7: once per module per sign-in, never
+/// for a restart; the policy decides). The stopped one gets Start again · Open <Module>.
+fn notifier(sup: Supervisor) -> hideout_supervisor::driver::Notifier {
+    Box::new(move |id, title, body, actions| {
+        let start = hideout_supervisor::words::START_AGAIN;
+        let buttons: Vec<(String, String)> = actions
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                let arg = if label == start {
+                    format!("start-again:{id}")
+                } else if i == 1 && actions[0] == start {
+                    format!("open:{id}")
+                } else {
+                    String::from("dismiss")
+                };
+                (label.clone(), arg)
+            })
+            .collect();
+        let sup = sup.clone();
+        hideout_shell::notify::toast(
+            title.into(),
+            body.into(),
+            buttons,
+            format!("open:{id}"),
+            std::sync::Arc::new(move |arg| on_toast(&sup, arg)),
+        );
+    })
 }
 
 /// Starts the router and the supervisor; the panel feed is for the shell (§5): every module's
@@ -82,6 +134,7 @@ pub fn start(home: &Path) -> (Hub, Supervisor, HubFeed) {
     // After the pipe is served, so modules it starts or takes back can connect. Router events
     // wait in the channel until then.
     let sup = Supervisor::start(home, hub.clone());
+    sup.set_notifier(notifier(sup.clone()));
     let s = sup.clone();
     std::thread::Builder::new()
         .name("hideout-router-events".into())

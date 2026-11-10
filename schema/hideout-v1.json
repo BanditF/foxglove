@@ -794,7 +794,7 @@
       "type": "object"
     },
     "messages.Recovery": {
-      "description": "The fact `module.<id>.recovery` (§7.8, spec v1.4): the step of the recovery ladder a\n`crash-stopped` module's card offers first.",
+      "description": "The fact `module.<id>.recovery` (§7.8, spec v1.4): the step of the recovery ladder a\n`crash-stopped` module's card offers (its one main button).",
       "oneOf": [
         {
           "const": "start-again",
@@ -803,12 +803,17 @@
         },
         {
           "const": "defaults",
-          "description": "**Start with default settings** (the second stop, or later with no previous version).",
+          "description": "**Start with default settings** (the second stop).",
           "type": "string"
         },
         {
           "const": "go-back",
           "description": "**Go back to <previous>** (the third stop and later, when a previous version is kept).",
+          "type": "string"
+        },
+        {
+          "const": "last",
+          "description": "**Copy diagnostics** and **Turn off <Module>** (the third stop and later, with no\nprevious version; #983).",
           "type": "string"
         }
       ],

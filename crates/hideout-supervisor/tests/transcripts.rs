@@ -589,3 +589,73 @@ fn safe_mode_starts_nothing() {
     s.ev(Ev::Activate { id: ART.into() });
     assert!(s.launches().is_empty());
 }
+
+/// The ladder (#983): start again, defaults, then go back with a previous version, or the last
+/// step without one. Go back rolls back before the launch and clears the card's facts.
+#[test]
+fn the_ladder_ends_at_go_back_or_the_last_step() {
+    let fact = |s: &Sim, k: &str| s.facts.get(&format!("module.{ART}.{k}")).cloned();
+    for previous in [Some("0.4.2"), None] {
+        let mut s = Sim::new();
+        s.ev(Ev::Known {
+            id: ART.into(),
+            name: NAME.into(),
+            enabled: true,
+            at_enable: true,
+            previous: previous.map(String::from),
+        });
+        s.ev(Ev::Ready { id: ART.into() });
+        let mut steps = Vec::new();
+        for round in 0..3u64 {
+            let t = round * 10_000;
+            five_crashes(&mut s, [t, t + 10, t + 20, t + 30, t + 40]);
+            steps.push(fact(&s, "recovery").unwrap());
+            if round < 2 {
+                s.ev(Ev::StartAgain { id: ART.into() });
+                s.ev(Ev::Ready { id: ART.into() });
+            }
+        }
+        let want = if previous.is_some() {
+            "go-back"
+        } else {
+            "last"
+        };
+        assert_eq!(steps, vec!["start-again", "defaults", want]);
+        let shown = fact(&s, "previous").unwrap();
+        assert_eq!(shown.as_str(), previous);
+        let before = s.cmds.len();
+        s.ev(Ev::GoBack { id: ART.into() });
+        let after: Vec<&Cmd> = s.cmds[before..].iter().map(|(_, c)| c).collect();
+        let rolled = after.iter().position(|c| matches!(c, Cmd::RollBack { .. }));
+        let launched = after.iter().position(|c| matches!(c, Cmd::Launch { .. }));
+        if previous.is_some() {
+            assert!(rolled.unwrap() < launched.unwrap(), "{after:?}");
+            assert_eq!(fact(&s, "recovery"), Some(Value::Null));
+            assert_eq!(fact(&s, "previous"), Some(Value::Null));
+        } else {
+            // Nothing to go back to: the card stays on its last step.
+            assert!(rolled.is_none() && launched.is_none(), "{after:?}");
+        }
+    }
+}
+
+/// A failed launch says it came from launching, so the tab reads "Couldn't start <Module>".
+#[test]
+fn a_launch_failure_is_marked_as_one() {
+    let mut s = Sim::new();
+    s.running();
+    s.ev(Ev::LaunchFailed {
+        id: ART.into(),
+        reason: "x".into(),
+    });
+    assert_eq!(s.state(), Some("install-failed"));
+    assert_eq!(s.facts[&format!("module.{ART}.failed")], "launch");
+    s.ev(Ev::StartAgain { id: ART.into() });
+    let instance = s.instance;
+    s.ev(Ev::Exited {
+        id: ART.into(),
+        instance,
+        code: 1,
+    });
+    assert_eq!(s.facts[&format!("module.{ART}.failed")], Value::Null);
+}

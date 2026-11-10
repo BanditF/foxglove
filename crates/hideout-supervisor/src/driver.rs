@@ -356,6 +356,23 @@ impl Supervisor {
         self.feed(Ev::StartDefaults { id: id.into() });
     }
 
+    /// "Go back to <previous>" (the ladder's third step).
+    pub fn go_back(&self, id: &str) {
+        self.feed(Ev::GoBack { id: id.into() });
+    }
+
+    /// "Turn off <Module>" (the ladder's last step): saved as off, like the Modules page's
+    /// switch, then stopped.
+    pub fn turn_off(&self, id: &str) {
+        let saved = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|mut r| r.set_enabled(id, false).map_err(|e| format!("{e:?}")));
+        if let Err(e) = saved {
+            log::warn!("supervisor: {id}: off not saved: {e}");
+        }
+        self.feed(Ev::Disable { id: id.into() });
+    }
+
     /// One event into the policy; carries out what it returns.
     pub fn feed(&self, ev: Ev) {
         let cmds = self.0.policy.lock().unwrap().handle(ev, Instant::now());
