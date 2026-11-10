@@ -292,6 +292,9 @@ pub struct Router {
     settings_decl: HashMap<String, Vec<hideout_contract::module::ModuleSetting>>,
     /// Each module's `[[secrets]]` names: the only ones it may read or set.
     secrets_decl: HashMap<String, Vec<String>>,
+    /// Each module's `provides = ["channel:<name>"]` names from its manifest (§4.5, §8.4): the
+    /// declaration is the module's `channel.offer:<name>` for its own `<id>/<name>` (#1013).
+    channels_decl: HashMap<String, Vec<String>>,
     secret_store: Box<dyn crate::secrets::SecretStore>,
 }
 
@@ -341,6 +344,7 @@ impl Router {
             hub_watch: Vec::new(),
             settings_decl: HashMap::new(),
             secrets_decl: HashMap::new(),
+            channels_decl: HashMap::new(),
             secret_store: crate::secrets::default_store(),
         };
         let safe = r.settings.safe_mode;
@@ -389,6 +393,13 @@ impl Router {
         self.settings_decl.insert(m.id.clone(), m.settings.clone());
         let secrets = m.secrets.iter().map(|s| s.name.clone()).collect();
         self.secrets_decl.insert(m.id.clone(), secrets);
+        let channels = m
+            .provides
+            .iter()
+            .filter_map(|p| p.strip_prefix("channel:"))
+            .map(String::from)
+            .collect();
+        self.channels_decl.insert(m.id.clone(), channels);
     }
 
     /// Where module secrets live (Windows Credential Manager by default; tests use memory).
@@ -1238,7 +1249,14 @@ impl Router {
         for ch in list("channels") {
             let catalog_ok =
                 entry.catalog_provide.is_none() || entry.channel_risk.contains_key(&ch);
-            if caps.offers(&ch) && catalog_ok {
+            // The manifest's `provides = ["channel:<name>"]` offers it as the grant
+            // `channel.offer:<name>` does (§8.4): a channel is always under the module's own id,
+            // and the catalog still decides for a module that has an entry (§6.2).
+            let declared = self
+                .channels_decl
+                .get(module)
+                .is_some_and(|d| d.contains(&ch));
+            if (caps.offers(&ch) || declared) && catalog_ok {
                 channels.push(ch);
             } else {
                 reject(&ch, "permission.provider");

@@ -378,7 +378,16 @@ impl PanelHost {
 
     /// What `module`'s manifest declares (§4.7). The tray panel and the generated page sections
     /// read it; a module the hub has no manifest for still draws what it registers.
+    /// The manifest's `name` is the module's name on every surface drawn from its panels (the
+    /// crash bar, the stopped card, banners), also for panels it registered first (#1013).
     pub fn set_manifest(&mut self, manifest: Module) {
+        for p in self
+            .panels
+            .iter_mut()
+            .filter(|p| p.key.module == manifest.id)
+        {
+            p.module_name = manifest.name.clone();
+        }
         self.manifests.insert(manifest.id.clone(), manifest);
     }
 
@@ -549,6 +558,10 @@ impl PanelHost {
         params: &Register,
     ) -> Vec<Rejected> {
         let (ok, mut rejected) = panel::register_with(params, declared, actions, &self.limits);
+        // The manifest's name wins over what the registration came with: the hub's feed knows
+        // only the module's id (#1013).
+        let named = self.manifests.get(module).map(|m| m.name.clone());
+        let module_name = named.as_deref().unwrap_or(module_name);
         let mut seen = HashSet::new();
         let mut accepted: Vec<Panel> = Vec::new();
         for p in ok {

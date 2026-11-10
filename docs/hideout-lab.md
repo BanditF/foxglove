@@ -47,6 +47,19 @@ a bridged plugin once its `initialize` is answered. The bridge also used to thro
 bridged plugin's stderr, so `logs\<id>.log` stayed empty. It now goes to that log, as for any
 module (§7.7).
 
+## Also fixed in #1013: three bugs from the first lab run
+
+- **A page button on a bridged plugin timed out** ("action pause: timeout"). The hub sends
+  `action.invoke`, a call; the plugin SDK knew only Foxglove's `action.invoked` notification, so
+  the call was never answered and the action never reached the plugin. The SDK now queues the
+  action and answers the call itself, at once.
+- **A module's own channel was refused** ("Room map has no channel called map"). Only the grant
+  `channel.offer:<name>` let a module offer a channel, and nothing turned the manifest's
+  `provides = ["channel:<name>"]` into one, so `module.register` refused `map`. The manifest's
+  declaration now offers it (§8.4); a module with a catalog entry is still held to the catalog.
+- **The crash bar and stopped card said the module id.** The hub's panel feed knows only the id;
+  the panel host now names a module's panels by its manifest's `name`, as the toast does.
+
 ## On-call steps
 
 Use a hub build from its own target dir and a lab folder outside `%LOCALAPPDATA%`. Never point

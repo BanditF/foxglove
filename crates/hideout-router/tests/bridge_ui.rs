@@ -341,3 +341,71 @@ fn secrets_are_kept_by_the_hub_and_read_by_their_module_only() {
         [Out::HubResult { result: Err(_), .. }]
     ));
 }
+
+/// #1013: a real SDK plugin over the bridge, whose loop is busy ticking a timer (as the focus
+/// timer's is), answers the hub's `action.invoke` at once, and the action reaches its loop.
+/// Before, the SDK knew only Foxglove's `action.invoked` notification, so the call was never
+/// answered and the hub's panel said "action pause: timeout".
+#[test]
+fn a_bridged_sdk_plugin_answers_action_invoke_while_its_loop_runs() {
+    let mut router = Router::new(Settings::default(), Box::new(|_, asked| asked.to_vec()));
+    router.add_module(entry());
+    let manifest = Module::parse(MANIFEST, &Context::default()).expect("manifest parses");
+    router.apply_manifest(&manifest);
+    let (events, rx) = mpsc::channel();
+    let hub = Hub::new(router, events);
+    let (from_hub, to_party) = std::io::pipe().unwrap();
+    let (from_party, to_hub) = std::io::pipe().unwrap();
+    hub.attach(Origin::Bridged(ID.into()), from_party, to_party);
+    let plugin = foxglove_plugin::Plugin::connect_over(from_hub, to_hub, "example", "1.0.0")
+        .expect("the bridge answers initialize");
+    assert_eq!(
+        recv(&rx, |o| matches!(o, Out::Ready(_))),
+        Out::Ready(ID.into())
+    );
+    // The plugin's loop: a tick every 200 ms, or an action; it reports what it got.
+    let actions = plugin.actions().expect("actions taken once");
+    let (got_tx, got) = mpsc::channel();
+    let looping = plugin.clone();
+    std::thread::spawn(move || loop {
+        if looping.is_closed() {
+            return;
+        }
+        match actions.recv_timeout(Duration::from_millis(200)) {
+            Ok(a) => {
+                if got_tx.send(a).is_err() {
+                    return;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    });
+    let asked = Instant::now();
+    hub.act(|r| {
+        r.call_module(
+            ID,
+            "action.invoke",
+            json!({"action": "toggle", "source": "panel"}),
+            51,
+            asked,
+        )
+    });
+    let r = recv(&rx, |o| matches!(o, Out::HubResult { tag: 51, .. }));
+    assert_eq!(
+        r,
+        Out::HubResult {
+            tag: 51,
+            result: Ok(json!({}))
+        }
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(2),
+        "answered within the panel's timeout, not after it: {:?}",
+        asked.elapsed()
+    );
+    assert_eq!(
+        got.recv_timeout(Duration::from_secs(2)).as_deref(),
+        Ok("toggle")
+    );
+}
