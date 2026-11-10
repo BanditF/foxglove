@@ -202,6 +202,10 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
 - #997 5: Open Hideout opens the main window and closes the flyout; a tile's "Open <Module>"
   opens its page; keyboard select on the icon opens the tray menu, and arrows and Enter pick
   Open Hideout.
+- #991 keyboard: the flyout opens with the first tile focused; Right and Left move between
+  tiles; Space presses the Focus timer's Pause (and again for Resume); Shift+F10 opens the
+  tile's ··· menu with "Open <Module>" focused; Esc closes the menu, not the flyout, and the
+  focus is back on the tile (capture `991-flyout-keyboard`); Enter opens the tile's page.
 - #997 8: OBS Change, type, Cancel: back to "Saved" (BLOCKED unless a password is saved).
 - #1019 (hard gate, runs first): main window hidden, a tray click shows and draws the flyout
   within 1 s, and after it closes the hidden hub wakes 2 times a second or fewer.
@@ -229,3 +233,5 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
 8. #996's visual steps: the room map moves smoothly, pauses when minimised or on another tab,
    and follows "animation effects" off.
 9. A look at the `lab-shots` PNGs (the designer's taste check) when a step's drawing changed.
+10. With the flyout open, the Menu key (the key with a menu on it) opens the focused tile's ···
+    menu, as Shift+F10 does (the lab's `key` can't send it: egui has no Menu key).

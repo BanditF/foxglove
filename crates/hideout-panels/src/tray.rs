@@ -9,7 +9,7 @@
 
 use crate::model::{PanelHost, PanelKey, PanelState};
 use crate::render::{tile_body, tone_rgb, DrawReport, Go};
-use egui::{Color32, RichText, Sense, Stroke, Ui};
+use egui::{Color32, FocusDirection, Id, Key, Modifiers, Popup, RichText, Sense, Stroke, Ui};
 use hideout_contract::module::Slot;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -34,6 +34,48 @@ pub struct TrayLayout {
 /// The name a tile has in [`TrayLayout`].
 pub fn tile_name(key: &PanelKey) -> String {
     format!("{}/{}", key.module, key.panel)
+}
+
+/// The keyboard focus id of the tile `key`. The shell gives it the focus when the flyout opens
+/// ([`focus_first_tile`]); arrows move it between tiles in grid order.
+pub fn tile_focus_id(key: &PanelKey) -> Id {
+    Id::new(("hideout.tray.tile", &key.module, &key.panel))
+}
+
+/// Gives the keyboard focus to the first tile the tray panel shows (the flyout just opened,
+/// docs/hideout-plugin-modules-ux.md "Keyboard and screen reader"). False with no tile.
+pub fn focus_first_tile(ctx: &egui::Context, host: &PanelHost, layout: &TrayLayout) -> bool {
+    let Some(first) = tray_tiles(host, layout).into_iter().find(|t| t.shown) else {
+        return false;
+    };
+    ctx.memory_mut(|m| m.request_focus(tile_focus_id(&first.key)));
+    true
+}
+
+/// The tile that the arrow keys go to from tile `at` of `n` in a grid of [`COLUMNS`]: Left and
+/// Right step through the grid order (into the row before or after), Up and Down a row, Down
+/// from above a short last row to its last tile. It stays put at an edge.
+pub fn arrow_target(at: usize, n: usize, key: Key) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let last = n - 1;
+    match key {
+        Key::ArrowLeft => at.saturating_sub(1),
+        Key::ArrowRight => (at + 1).min(last),
+        Key::ArrowUp => at.checked_sub(COLUMNS).unwrap_or(at),
+        Key::ArrowDown if at / COLUMNS < last / COLUMNS => (at + COLUMNS).min(last),
+        _ => at,
+    }
+}
+
+/// What the keyboard asked of one tile this draw.
+#[derive(Clone, Copy, Debug, Default)]
+struct TileKeys {
+    /// Space: press the tile's button.
+    press: bool,
+    /// Shift+F10 or the Menu key: open the ··· menu.
+    menu: bool,
 }
 
 /// A pick from a tile's ··· menu.
@@ -221,7 +263,23 @@ pub fn tile_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> TileReport 
 ///
 /// Each tile draws in its own guarded scope, like a page (§5.5).
 pub fn tile_ui_at(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, now: Instant) -> TileReport {
+    tile_ui_keyed(host, ui, key, now, TileKeys::default())
+}
+
+/// [`tile_ui_at`] with the keyboard's asks. The tile is one focusable node whose accessible name
+/// is its title, value and sub line ("Mic mute, Muted, Default communications mic").
+fn tile_ui_keyed(
+    host: &mut PanelHost,
+    ui: &mut Ui,
+    key: &PanelKey,
+    now: Instant,
+    keys: TileKeys,
+) -> TileReport {
     let mut report = TileReport::default();
+    // What a screen reader hears besides the body's texts: the frame's state words.
+    let mut spoken: Vec<String> = Vec::new();
+    let menu_focus = Id::new(("hideout.tray.menu-focus", &key.module, &key.panel));
+    let menu_return = Id::new(("hideout.tray.menu-return", &key.module, &key.panel));
     let decl = host
         .manifest(&key.module)
         .and_then(|m| m.panels.iter().find(|p| p.id == key.panel))
@@ -268,20 +326,41 @@ pub fn tile_ui_at(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, now: Instan
                 }
                 ui.label(RichText::new(&title).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.menu_button("\u{00B7}\u{00B7}\u{00B7}", |ui| {
+                    let menu = ui.menu_button("\u{00B7}\u{00B7}\u{00B7}", |ui| {
+                        // Opened from the keyboard: its first item takes the focus.
+                        let focus = ui.data_mut(|d| d.remove_temp::<bool>(menu_focus));
                         let pick = [
                             (TileMenu::Open, format!("Open {module_name}")),
                             (TileMenu::Hide, "Hide tile".into()),
                             (TileMenu::MoveLeft, "Move left".into()),
                             (TileMenu::MoveRight, "Move right".into()),
                         ];
-                        for (m, words) in pick {
-                            if ui.button(words).clicked() {
+                        for (i, (m, words)) in pick.into_iter().enumerate() {
+                            let b = ui.button(words);
+                            if i == 0 && focus == Some(true) {
+                                b.request_focus();
+                            }
+                            if b.clicked() {
                                 report.menu = Some(m);
                                 ui.close();
                             }
                         }
                     });
+                    let id = Popup::default_response_id(&menu.response);
+                    if keys.menu {
+                        Popup::open_id(ui.ctx(), id);
+                        ui.data_mut(|d| {
+                            d.insert_temp(menu_focus, true);
+                            d.insert_temp(menu_return, true);
+                        });
+                        ui.ctx().request_repaint();
+                    } else if !Popup::is_id_open(ui.ctx(), id)
+                        && ui.data_mut(|d| d.remove_temp::<bool>(menu_return)) == Some(true)
+                    {
+                        // A menu opened from the keyboard closed (Esc): the focus goes back to
+                        // its tile, as in a Windows menu.
+                        ui.memory_mut(|m| m.request_focus(tile_focus_id(key)));
+                    }
                 });
             });
             if stopped || unshowable {
@@ -290,11 +369,13 @@ pub fn tile_ui_at(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, now: Instan
                 } else {
                     "Its tile couldn't be shown"
                 };
+                spoken.push(words.to_string());
                 ui.label(RichText::new(words).color(danger));
                 report.open |= ui.button("Open").clicked();
                 return;
             }
             if needs_hub {
+                spoken.push(crate::model::state_words("needs-hub").to_string());
                 ui.label(RichText::new(crate::model::state_words("needs-hub")).color(danger));
                 report.update_hub |= ui
                     .button("Update Hideout")
@@ -314,6 +395,7 @@ pub fn tile_ui_at(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, now: Instan
                                 RichText::new(restart_words(r.in_s, r.crash, r.of)).color(amber),
                             );
                         });
+                    spoken.push("Restarting".into());
                 }
             }
             if panel.is_none() {
@@ -321,13 +403,14 @@ pub fn tile_ui_at(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, now: Instan
                     Some(s) if s != "running" => crate::model::state_words(s),
                     _ => "Starting\u{2026}",
                 };
+                spoken.push(words.to_string());
                 ui.label(RichText::new(words).weak());
                 return;
             }
             if let Some(s) = greyed.as_deref().filter(|s| *s != "restarting") {
                 ui.label(RichText::new(crate::model::state_words(s)).weak());
             }
-            let body = ui.scope(|ui| tile_body(host, ui, key));
+            let body = ui.scope(|ui| tile_body(host, ui, key, keys.press));
             report.draw = body.inner;
             if restarting {
                 body.response.on_hover_text(format!(
@@ -341,11 +424,80 @@ pub fn tile_ui_at(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, now: Instan
             }
         });
     });
-    // A click on the tile outside its button opens the module's page (§5.1).
-    if inner.response.interact(Sense::click()).clicked() {
+    // A click on the tile outside its button opens the module's page (§5.1); so does Enter on
+    // the focused tile.
+    let tile = ui.interact(inner.response.rect, tile_focus_id(key), Sense::click());
+    let name: Vec<String> = std::iter::once(title)
+        .chain(spoken)
+        .chain(report.draw.texts.iter().cloned())
+        .filter(|t| !t.is_empty())
+        .collect();
+    let name = name.join(", ");
+    tile.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+    if tile.has_focus() {
+        // The accent (the selection fill), like the hub's other focus marks.
+        let ring = ui.visuals().selection.bg_fill;
+        ui.painter().rect_stroke(
+            inner.response.rect,
+            8.0,
+            Stroke::new(2.0_f32, ring),
+            egui::StrokeKind::Outside,
+        );
+    }
+    if tile.clicked() {
         report.open = true;
     }
     report
+}
+
+/// The keyboard inside the tray panel while one of its tiles has the focus: arrows move it in
+/// grid order, Space presses that tile's button and Shift+F10 opens its ··· menu (Enter is
+/// the tile's own click). Taken here, before the grid draws, so egui's own arrow navigation
+/// (to the nearest widget, a tile's button) and Space's click on the tile don't run.
+fn tile_keys(ui: &mut Ui, shown: &[TileEntry]) -> Vec<TileKeys> {
+    let mut keys = vec![TileKeys::default(); shown.len()];
+    let ids: Vec<Id> = shown.iter().map(|t| tile_focus_id(&t.key)).collect();
+    let Some(at) = ui.memory(|m| ids.iter().position(|id| m.has_focus(*id))) else {
+        return keys;
+    };
+    let (arrow, press, menu) = ui.input_mut(|i| {
+        let arrow = [
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::ArrowUp,
+            Key::ArrowDown,
+        ]
+        .into_iter()
+        .find(|k| i.consume_key(Modifiers::NONE, *k));
+        let press = i.consume_key(Modifiers::NONE, Key::Space);
+        let menu = i.consume_key(Modifiers::SHIFT, Key::F10);
+        (arrow, press, menu)
+    });
+    if let Some(k) = arrow {
+        let to = arrow_target(at, ids.len(), k);
+        ui.memory_mut(|m| {
+            m.request_focus(ids[to]);
+            m.move_focus(FocusDirection::None);
+        });
+    }
+    keys[at] = TileKeys { press, menu };
+    keys
+}
+
+/// The Menu key (the context-menu key) on the focused tile. egui has no key for it, so the shell
+/// reports it from the window's `WM_CONTEXTMENU` and this queues it as Shift+F10.
+pub fn menu_key(ctx: &egui::Context) {
+    ctx.input_mut(|i| {
+        for pressed in [true, false] {
+            i.events.push(egui::Event::Key {
+                key: Key::F10,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            });
+        }
+    });
 }
 
 /// Draws the tray panel: the tile grid (or Edit tiles), then Open Hideout and Edit tiles.
@@ -390,13 +542,14 @@ pub fn tray_panel_ui(
         ui.label(RichText::new("No tiles to show").strong());
         ui.label(RichText::new("Edit tiles to choose which modules show here.").weak());
     }
+    let keys = tile_keys(ui, &shown);
     let mut picks = Vec::new();
     egui::Grid::new("hideout.tray.tiles")
         .num_columns(COLUMNS)
         .spacing([8.0, 8.0])
         .show(ui, |ui| {
             for (i, t) in shown.iter().enumerate() {
-                let r = tile_ui_at(host, ui, &t.key, now);
+                let r = tile_ui_keyed(host, ui, &t.key, now, keys[i]);
                 picks.push((t.key.clone(), r));
                 if (i + 1) % COLUMNS == 0 {
                     ui.end_row();

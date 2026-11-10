@@ -3,7 +3,7 @@
 //! the window, and the monitor list.
 
 use crate::placement::{Monitor, Rect};
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use windows::core::{BOOL, HSTRING};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, RECT,
@@ -407,6 +407,41 @@ fn find_own_window(title: &str, skip: &[isize]) -> Option<HWND> {
     (f.found != 0).then_some(HWND(f.found as *mut _))
 }
 
+/// The Menu key (or Shift+F10) in the flyout (#991): Windows sends its window `WM_CONTEXTMENU`
+/// with no point. egui has no key for the Menu key, so the flyout's subclass notes it here and
+/// the next flyout frame opens the focused tile's ··· menu.
+static FLYOUT_MENU_KEY: AtomicBool = AtomicBool::new(false);
+const MENU_KEY_SUBCLASS_ID: usize = 0x464D;
+
+/// A keyboard `WM_CONTEXTMENU` has no point: `lParam` is (-1, -1).
+pub fn context_menu_from_keyboard(lp: isize) -> bool {
+    (lp as u64 & 0xFFFF_FFFF) == 0xFFFF_FFFF
+}
+
+unsafe extern "system" fn menu_key_proc(
+    h: HWND,
+    msg: u32,
+    wp: windows::Win32::Foundation::WPARAM,
+    lp: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::WM_CONTEXTMENU;
+    if msg == WM_CONTEXTMENU && context_menu_from_keyboard(lp.0) {
+        FLYOUT_MENU_KEY.store(true, Ordering::Release);
+        // The frame that takes it, also while the main window is hidden (#1019).
+        crate::flyout::kick();
+        return windows::Win32::Foundation::LRESULT(0);
+    }
+    DefSubclassProc(h, msg, wp, lp)
+}
+
+/// Takes the flyout's Menu key press (one per press).
+pub fn take_flyout_menu_key() -> bool {
+    FLYOUT_MENU_KEY.swap(false, Ordering::AcqRel)
+}
+
 /// The flyout's window handle, any thread; 0 while none (lab control, #1003).
 pub fn flyout_hwnd() -> isize {
     FLYOUT_HWND.load(Ordering::Acquire)
@@ -435,6 +470,13 @@ pub fn place_flyout(title: &str, icon: Rect, size: (f32, f32), first: bool) -> b
     let Some(h) = cached.or_else(|| find_own_window(title, &[])) else {
         return false;
     };
+    if cached.is_none() {
+        // A new flyout window: listen for its Menu key.
+        use windows::Win32::UI::Shell::SetWindowSubclass;
+        unsafe {
+            let _ = SetWindowSubclass(h, Some(menu_key_proc), MENU_KEY_SUBCLASS_ID, 0);
+        }
+    }
     FLYOUT_HWND.store(h.0 as isize, Ordering::Release);
     let (cx, cy) = icon.center();
     let mon = unsafe { MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST) };

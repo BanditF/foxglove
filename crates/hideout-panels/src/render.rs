@@ -27,6 +27,9 @@ pub struct DrawReport {
     /// as `action.invoke` ([`PanelHost::invoke`]); an `opens` is for the hub to navigate
     /// ([`PanelHost::navigate`]).
     pub go: Vec<Go>,
+    /// The text of each `value` and `label` drawn, in tree order: a tile's accessible name is
+    /// its title and these (docs/hideout-plugin-modules-ux.md, Keyboard and screen reader).
+    pub texts: Vec<String>,
 }
 
 /// A button that the hub handles itself (§5.2, v1.4): no `ui.event` is sent.
@@ -40,18 +43,47 @@ pub enum Go {
 
 /// Draws the panel `key` into `ui`. Unknown keys draw nothing.
 pub fn panel_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport {
-    panel_body(host, ui, key, true)
+    panel_body(host, ui, key, Body::PAGE)
 }
 
 /// [`panel_ui`] without the state line: the hub drew the crash bar or the stopped card above it
 /// (docs/hideout-supervisor-ux.md), which already say the state.
 pub fn panel_ui_quiet(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport {
-    panel_body(host, ui, key, false)
+    panel_body(
+        host,
+        ui,
+        key,
+        Body {
+            banner: false,
+            ..Body::PAGE
+        },
+    )
+}
+
+/// How a panel body draws.
+#[derive(Clone, Copy)]
+struct Body {
+    /// The state line above a panel that isn't live.
+    banner: bool,
+    /// In a scroll area (pages). A tile has a small fixed body (the tile caps, §5.5) and never
+    /// scrolls: in the tray grid a scroll area clipped it at its minimum height, which cut off
+    /// a fourth row (the Focus timer's Pause under its meter, #991).
+    scroll: bool,
+    /// Press the body's button this draw (Space on a focused tile).
+    press: bool,
+}
+
+impl Body {
+    const PAGE: Body = Body {
+        banner: true,
+        scroll: true,
+        press: false,
+    };
 }
 
 /// [`panel_ui`]; `banner` draws the state line above a panel that isn't live (a tile's frame
 /// says the state itself, without the module's name).
-fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, banner: bool) -> DrawReport {
+fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, body: Body) -> DrawReport {
     let mut report = DrawReport::default();
     let mut out = Vec::new();
     let mut go = Vec::new();
@@ -73,12 +105,14 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, banner: bool) -
             out: &mut out,
             go: &mut go,
             rects: &mut report.rects,
+            texts: &mut report.texts,
+            press: body.press,
             streams,
             stream_acts: &mut acts,
             running,
             now: std::time::Instant::now(),
         };
-        let result = catch_unwind(AssertUnwindSafe(|| draw_panel(ui, panel, &mut d, banner)));
+        let result = catch_unwind(AssertUnwindSafe(|| draw_panel(ui, panel, &mut d, body)));
         if result.is_err() {
             log::error!("{}/{}: drawing the panel panicked", key.module, key.panel);
             panel.state = PanelState::Broken;
@@ -142,6 +176,9 @@ struct Draw<'a> {
     out: &'a mut Vec<Interaction>,
     go: &'a mut Vec<Go>,
     rects: &'a mut HashMap<String, Rect>,
+    texts: &'a mut Vec<String>,
+    /// Press the first enabled button drawn (Space on a focused tile).
+    press: bool,
     streams: &'a Streams,
     stream_acts: &'a mut Vec<StreamAct>,
     running: bool,
@@ -224,8 +261,12 @@ fn text_of(v: &Value) -> String {
     }
 }
 
-fn draw_panel(ui: &mut Ui, panel: &mut HostedPanel, d: &mut Draw, banner: bool) {
-    if let Some(b) = panel.state.banner(&panel.module_name).filter(|_| banner) {
+fn draw_panel(ui: &mut Ui, panel: &mut HostedPanel, d: &mut Draw, body: Body) {
+    if let Some(b) = panel
+        .state
+        .banner(&panel.module_name)
+        .filter(|_| body.banner)
+    {
         let label = ui.label(RichText::new(b).color(ui.visuals().warn_fg_color));
         // The state or error id lives in the tooltip, not in the line a person reads.
         if let Some(d) = panel.state.details() {
@@ -242,7 +283,11 @@ fn draw_panel(ui: &mut Ui, panel: &mut HostedPanel, d: &mut Draw, banner: bool) 
     let tree = &panel.tree;
     let live = panel.state == PanelState::Live;
     ui.add_enabled_ui(live, |ui| {
-        d.scrolled(ui, tree, f32::INFINITY, |ui, d| node(ui, tree, d));
+        if body.scroll {
+            d.scrolled(ui, tree, f32::INFINITY, |ui, d| node(ui, tree, d));
+        } else {
+            node(ui, tree, d);
+        }
     });
     d.view.restore = false;
 }
@@ -301,6 +346,7 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
         "tabs" => tabs(ui, n, d),
         "label" => {
             let text = text_of(p.get("value").or(p.get("text")).unwrap_or(&Value::Null));
+            d.texts.push(text.clone());
             ui.label(toned(ui, &p, RichText::new(text)));
         }
         "value" => {
@@ -308,7 +354,9 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 if !label.is_empty() {
                     ui.label(RichText::new(&label).weak());
                 }
-                let text = RichText::new(text_of(p.get("value").unwrap_or(&Value::Null)));
+                let value = text_of(p.get("value").unwrap_or(&Value::Null));
+                d.texts.push(value.clone());
+                let text = RichText::new(value);
                 ui.label(toned(ui, &p, text.strong().size(18.0)));
             });
         }
@@ -316,12 +364,23 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
             let action = s(&p, "action").map(String::from);
             let opens = s(&p, "opens").map(String::from);
             ui.horizontal(|ui| {
-                let clicked = ui.button(&label).clicked();
-                // The bound key as a chip beside the button (v1.4).
-                if let Some(k) = action
+                let keys = d.keys;
+                let bound = action
                     .as_ref()
-                    .and_then(|a| d.keys.get(&(d.key.module.clone(), a.clone())))
-                {
+                    .and_then(|a| keys.get(&(d.key.module.clone(), a.clone())));
+                let button = ui.button(&label);
+                // A screen reader hears the key with the name: "Unmute, F13".
+                if let Some(k) = bound {
+                    let (enabled, name) = (ui.is_enabled(), format!("{label}, {k}"));
+                    button.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name)
+                    });
+                }
+                let pressed = d.press && ui.is_enabled();
+                d.press = false;
+                let clicked = button.clicked() || pressed;
+                // The bound key as a chip beside the button (v1.4).
+                if let Some(k) = bound {
                     key_chip(ui, k);
                 }
                 if !clicked {
@@ -688,9 +747,24 @@ pub fn key_chip(ui: &mut Ui, key: &str) {
         });
 }
 
-/// The tile body without the state line (the tile frame says it), for [`crate::tray`].
-pub(crate) fn tile_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport {
-    panel_body(host, ui, key, false)
+/// The tile body without the state line (the tile frame says it) and without a scroll area,
+/// for [`crate::tray`]; `press` presses its button (Space on the focused tile).
+pub(crate) fn tile_body(
+    host: &mut PanelHost,
+    ui: &mut Ui,
+    key: &PanelKey,
+    press: bool,
+) -> DrawReport {
+    panel_body(
+        host,
+        ui,
+        key,
+        Body {
+            banner: false,
+            scroll: false,
+            press,
+        },
+    )
 }
 
 #[cfg(test)]
