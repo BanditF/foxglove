@@ -299,6 +299,39 @@ enum Command {
     },
     /// Read the kept place with this CRC back (#878, [`read_kept`]).
     ReadKept(u32),
+    /// The connect's status read again, after it failed (#1044: the relay's first request
+    /// after a connect often times out). Sent by the loop itself on [`CONNECT_RETRY`]'s
+    /// deadline, never queued.
+    ConnectRead,
+}
+
+/// How long after a failed connect status read (a relay timeout, #1044) the service reads again,
+/// once per entry: three tries, about 20 s in all. Start: the failed read. Stop: a status in (the
+/// retry, or the relay's own STATUS), a disconnect, a new connect, or the last entry.
+#[cfg(not(test))]
+const CONNECT_RETRY: [Duration; 3] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(13),
+];
+#[cfg(test)]
+const CONNECT_RETRY: [Duration; 3] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+];
+
+/// After a connect status read (`ok`: it gave a status), when to read again: the next of
+/// [`CONNECT_RETRY`] for a failure (`tried` failures so far, counted up), none once the status
+/// is in or the tries are used up.
+fn connect_retry(ok: bool, tried: &mut usize, now: Instant) -> Option<Instant> {
+    if ok {
+        *tried = 0;
+        return None;
+    }
+    let wait = CONNECT_RETRY.get(*tried)?;
+    *tried += 1;
+    Some(now + *wait)
 }
 
 /// Whether the UI may send `command` (#404): while Foxglove is paused only reads go out.
@@ -1355,11 +1388,14 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     // found a right before it), and when the playlist last wrote each place (#522, flash wear).
     let mut can_store: Option<bool> = None;
     let mut place_writes: std::collections::HashMap<u8, Instant> = Default::default();
+    // The connect's status read failed (#1044): when it's read again, and how many tries so far.
+    let mut read_again: Option<Instant> = None;
+    let mut read_tries = 0usize;
     while !h.stop.load(Ordering::Relaxed) {
-        let next_deadline = match (due, triggers.deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let next_deadline = [due, triggers.deadline(), read_again]
+            .into_iter()
+            .flatten()
+            .min();
         let received = match next_deadline {
             Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => receiver
@@ -1369,7 +1405,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         let command = match received {
             Ok(command) => command,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                if triggers.deadline().is_some_and(|at| at <= Instant::now()) {
+                if read_again.is_some_and(|at| at <= Instant::now()) {
+                    Command::ConnectRead
+                } else if triggers.deadline().is_some_and(|at| at <= Instant::now()) {
                     Command::LayerDue
                 } else {
                     Command::Next
@@ -1841,6 +1879,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     can_store = None;
                     art_health::note(|p| p.connected(None));
                     triggers.disconnected();
+                    (read_again, read_tries) = (None, 0);
                     h.update(|s| {
                         s.connected = false;
                         s.direct = false;
@@ -1862,6 +1901,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 current = Some((id, state.generation));
+                (read_again, read_tries) = (None, 0);
                 let hello = super::link::ask_hello(link);
                 let caps = hello.map_or(0, |hello| hello.capabilities);
                 // D5 08's word 2, asked only of a keyboard with art push and HELLO v2.
@@ -1926,6 +1966,16 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 reassert = Some(*trigger);
+                true
+            }
+            // The connect's read again (#1044): as on the connect itself (slots, the art put
+            // back), unless a status came in meanwhile (the relay's own STATUS).
+            Command::ConnectRead => {
+                read_again = None;
+                if current.is_none() || h.snapshot().status.is_some() {
+                    continue;
+                }
+                connected_now = true;
                 true
             }
             _ => false,
@@ -2133,6 +2183,29 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         } else {
             Err("Waiting for a keyboard with the host link".into())
         };
+        if connected_now && current.is_some() {
+            // A connect read that gave no status leaves the art unknown for the whole session
+            // (#1044): read again, a bounded few times. A status put in before a failed re-apply
+            // counts as read.
+            let ok = result.is_ok() || h.snapshot().status.is_some();
+            read_again = connect_retry(ok, &mut read_tries, Instant::now());
+            if let Err(e) = &result {
+                match read_again {
+                    Some(at) => eprintln!(
+                        "Foxglove: art: the connect read failed ({e}); reading again in {} ms \
+                         ({read_tries}/{})",
+                        at.saturating_duration_since(Instant::now()).as_millis(),
+                        CONNECT_RETRY.len()
+                    ),
+                    None if !ok => eprintln!(
+                        "Foxglove: art: the connect read failed ({e}) {} times; the relay's own \
+                         STATUS or the next connect reads it",
+                        CONNECT_RETRY.len() + 1
+                    ),
+                    None => {}
+                }
+            }
+        }
         if queued_command {
             continue;
         }
@@ -3057,6 +3130,9 @@ mod contention_tests {
         link: Mutex<u8>,
         /// How long a STATUS takes to answer (a slow relay): keeps a re-apply running.
         status_delay: Mutex<Duration>,
+        /// How many STATUS requests go unanswered (#1044: the relay's first request after a
+        /// connect timing out).
+        unanswered: AtomicU32,
         statuses: AtomicU32,
         selects: AtomicU32,
         others: AtomicU32,
@@ -3135,8 +3211,14 @@ mod contention_tests {
             match (out[0], out[1]) {
                 (protocol::ART, protocol::art::STATUS) => {
                     b.statuses.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(*b.status_delay.lock().unwrap());
-                    b.push(b.status(protocol::art::STATUS, 0));
+                    // Only the link thread writes: a plain read and store is enough.
+                    let left = b.unanswered.load(Ordering::SeqCst);
+                    if left > 0 {
+                        b.unanswered.store(left - 1, Ordering::SeqCst);
+                    } else {
+                        std::thread::sleep(*b.status_delay.lock().unwrap());
+                        b.push(b.status(protocol::art::STATUS, 0));
+                    }
                 }
                 (protocol::ART, protocol::art::SELECT) => {
                     b.selects.fetch_add(1, Ordering::SeqCst);
@@ -3179,10 +3261,23 @@ mod contention_tests {
 
         /// As [`Rig::new`], on a keyboard whose HELLO has `capabilities`.
         fn with_caps(showing: i8, pinned: i8, capabilities: u32) -> Rig {
+            let rig = Rig::start(showing, pinned, capabilities, 0);
+            rig.until("the connect job ended", |s| {
+                s.connected && !s.busy && s.status.is_some_and(|st| st.right_set == pinned)
+            });
+            rig
+        }
+
+        /// The service started on the board, its first `unanswered` STATUS requests left
+        /// unanswered; returns at once.
+        fn start(showing: i8, pinned: i8, capabilities: u32, unanswered: u32) -> Rig {
             crate::foxglove::store::test_config_dir();
             let board = Board::new(showing);
+            board.unanswered.store(unanswered, Ordering::SeqCst);
             let opened = board.clone();
             let link = Arc::new(Link::start(Box::new(move || {
+                // A reconnect opens it again (`Rig::replug`).
+                opened.interrupted.store(false, Ordering::Relaxed);
                 let connected = Connected {
                     product: "Fake".into(),
                     hello: Some(Hello {
@@ -3211,16 +3306,21 @@ mod contention_tests {
             let w = h.clone();
             let worker = std::thread::spawn(move || run_events(&w, &receiver));
             h.commands.send(Command::Available(link.clone())).unwrap();
-            let rig = Rig {
+            Rig {
                 board,
                 h,
                 worker: Some(worker),
                 _link: link,
-            };
-            rig.until("the connect job ended", |s| {
-                s.connected && !s.busy && s.status.is_some_and(|st| st.right_set == pinned)
-            });
-            rig
+            }
+        }
+
+        fn statuses(&self) -> u32 {
+            self.board.statuses.load(Ordering::SeqCst)
+        }
+
+        /// The right screen's piece as the live feed reads it (#1044: NO FRAMES without it).
+        fn art(&self) -> Option<crate::foxglove::live_art::Source> {
+            crate::foxglove::live_art::source(&self.h.snapshot())
         }
 
         /// Sleeps on the service's snapshot changes until `done`, at most `WAIT`.
@@ -3308,6 +3408,65 @@ mod contention_tests {
         std::thread::sleep(Duration::from_millis(1500));
         assert_eq!(rig.board.requests(), before, "idle asks nothing");
         assert!(!rig.h.snapshot().busy);
+    }
+
+    /// #1044: the connect's first status read times out (the relay's first request after a
+    /// connect often does): the service reads again by itself, and the right screen's art is
+    /// known, as the live feed reads it.
+    #[test]
+    fn a_timed_out_connect_read_is_read_again() {
+        let rig = Rig::start(2, 2, 0, 1);
+        let s = rig.until("the art read again", |s| {
+            s.connected && !s.busy && s.status.is_some()
+        });
+        assert_eq!(s.status.map(|st| st.right_set), Some(2));
+        assert_eq!(s.error, None, "the retry's success clears the failure");
+        assert!(
+            matches!(
+                rig.art(),
+                Some(crate::foxglove::live_art::Source::BuiltIn(2, _))
+            ),
+            "{:?}",
+            rig.art()
+        );
+        assert_eq!(
+            rig.statuses(),
+            3,
+            "the one timed out, then a fresh read (two)"
+        );
+    }
+
+    /// #1044: a relay that never answers is asked a bounded few times after the connect
+    /// (once, then once per `CONNECT_RETRY` entry), then left alone.
+    #[test]
+    fn a_connect_read_is_tried_a_bounded_few_times() {
+        let rig = Rig::start(2, 2, 0, u32::MAX);
+        let tries = 1 + CONNECT_RETRY.len() as u32;
+        rig.until("the last try failed", |s| {
+            !s.busy && s.outcome.is_some() && rig.statuses() >= tries
+        });
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(rig.statuses(), tries, "no more reads after the last try");
+        assert!(rig.h.snapshot().status.is_none());
+    }
+
+    /// #1044: unplugged and back, with the first read after the reconnect timing out: the
+    /// disconnect wipes the status, and the read again brings the right screen's art back.
+    #[test]
+    fn a_reconnect_with_a_timed_out_read_gets_the_art_back() {
+        let rig = Rig::new(2, 2);
+        let before = rig.statuses();
+        rig.board.unanswered.store(1, Ordering::SeqCst);
+        rig._link.reconnect();
+        let s = rig.until("the art read again after the reconnect", |s| {
+            rig.statuses() >= before + 3 && s.connected && !s.busy && s.status.is_some()
+        });
+        assert_eq!(s.status.map(|st| st.right_set), Some(2));
+        assert!(matches!(
+            rig.art(),
+            Some(crate::foxglove::live_art::Source::BuiltIn(2, _))
+        ));
+        assert_eq!(rig.statuses(), before + 3, "timed out, then a fresh read");
     }
 
     /// Unasked STATUS (another host reading the relay, the lab's own selects) doesn't fight

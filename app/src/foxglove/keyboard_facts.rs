@@ -22,7 +22,8 @@
 //!
 //! The same values stay under `device.<id>.*` for anything that needs a particular device. On a
 //! disconnect everything but `keyboard.connected` goes, as it's unknown until the keyboard is
-//! back; the link is read once when it reconnects, then follows the firmware's events.
+//! back; the link is read once when it reconnects, and the layer is set from what the device
+//! last knew (the default layer when nothing, #1044), then both follow the firmware's events.
 
 use foxglove_devices::facts::{Facts, Value};
 use foxglove_devices::{DeviceEvent, LightingState};
@@ -43,6 +44,14 @@ pub fn start() {
             let connected = e.event == DeviceEvent::Connected;
             publish(facts, &e.event);
             if connected {
+                // #1044: the layer as it is on connect. The firmware only reports a layer change,
+                // and the link drops a report that repeats the last one, so a keyboard back on
+                // the layer it left (the base layer, mostly) never sends one: the device's last
+                // known layers, else the default layer.
+                let known = super::devices::device().and_then(|d| {
+                    foxglove_devices::Device::layers(&*d).and_then(|l| l.active().ok())
+                });
+                publish(facts, &connect_layers(known));
                 // One read when it connects; the firmware reports changes after that.
                 if let Some(info) = super::devices::device()
                     .and_then(|d| foxglove_devices::Device::power(&*d).and_then(|p| p.info().ok()))
@@ -63,6 +72,14 @@ pub fn start() {
             }
         }
     });
+}
+
+/// The layers to publish when the keyboard connects (#1044): what the device knows, or the
+/// default layer while it knows none.
+fn connect_layers(known: Option<Vec<u8>>) -> DeviceEvent {
+    DeviceEvent::LayerChanged {
+        active: known.filter(|l| !l.is_empty()).unwrap_or_else(|| vec![0]),
+    }
 }
 
 fn publish(facts: &Facts, event: &DeviceEvent) {
@@ -379,6 +396,39 @@ mod tests {
         assert_eq!(facts.get("keyboard.layer"), None);
         assert_eq!(facts.get("keyboard.right.battery"), None);
         assert_eq!(facts.get("keyboard.link"), None);
+    }
+
+    /// #1044: a connect, and a reconnect after a disconnect wiped the facts, publish the layer
+    /// at once, with no layer report from the keyboard: the device's last known layers, else
+    /// the default layer.
+    #[test]
+    fn a_connect_and_a_reconnect_publish_the_layer() {
+        let facts = Facts::default();
+        let mut s = Sources::default();
+        fn connect(f: &Facts, s: &mut Sources, known: Option<Vec<u8>>) {
+            publish_with(f, s, &DeviceEvent::Connected);
+            publish_with(f, s, &connect_layers(known));
+        }
+        // First connect, nothing known: the default layer.
+        connect(&facts, &mut s, None);
+        assert_eq!(facts.get("keyboard.layer"), Some(Value::Int(0)));
+        assert_eq!(facts.get("keyboard.layers"), Some(Value::Bytes(vec![0])));
+        connect(&facts, &mut s, Some(Vec::new()));
+        assert_eq!(facts.get("keyboard.layer"), Some(Value::Int(0)));
+        // Unplugged: the layer goes with the rest.
+        publish_with(
+            &facts,
+            &mut s,
+            &DeviceEvent::Disconnected {
+                reason: "unplugged".into(),
+            },
+        );
+        assert_eq!(facts.get("keyboard.layer"), None);
+        // Back on the layer it left: no report comes, the known layers do.
+        connect(&facts, &mut s, Some(vec![0, 3]));
+        assert_eq!(facts.get("keyboard.connected"), Some(Value::Bool(true)));
+        assert_eq!(facts.get("keyboard.layer"), Some(Value::Int(3)));
+        assert_eq!(facts.get("keyboard.layers"), Some(Value::Bytes(vec![0, 3])));
     }
 
     fn lights(hue: u16, sat: u8, effect: &str) -> LightingState {
