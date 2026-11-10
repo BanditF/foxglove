@@ -17,12 +17,43 @@ use foxglove_plugin_api::permission::Permission;
 /// Names by lower-case file name (`None`: no name found), kept for one visit to the page.
 static NAMES: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
-/// A version resource's value fit for a permission line: trimmed, not empty, short, and naming
-/// no file (a FileDescription like "obs64.exe" doesn't count).
+/// Descriptions that say what kind of program a file is, not which one: no name.
+const GENERIC: &[&str] = &[
+    "bootstrappackagedgame",
+    "launcher",
+    "game launcher",
+    "setup",
+    "installer",
+    "application",
+    "app",
+    "game",
+    "client",
+    "updater",
+    "update",
+    "helper",
+    "service",
+    "program",
+    "executable",
+];
+
+/// A version resource's value fit for a permission line: without trademark marks, trimmed, not
+/// empty, short, not generic ("Launcher"), naming no file (a FileDescription like "obs64.exe"
+/// doesn't count) and with no comma (the Plugins card lists permissions with commas).
 fn fit(text: &str) -> Option<String> {
-    let text = text.trim();
-    (!text.is_empty() && text.chars().count() <= 40 && !text.to_lowercase().contains(".exe"))
-        .then(|| text.to_string())
+    let mut text = text.replace(['\u{2122}', '\u{00AE}', '\u{00A9}'], "");
+    for mark in ["(tm)", "(r)"] {
+        while let Some(at) = text.to_ascii_lowercase().find(mark) {
+            text.replace_range(at..at + mark.len(), "");
+        }
+    }
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = text.to_lowercase();
+    (!text.is_empty()
+        && text.chars().count() <= 40
+        && !lower.contains(".exe")
+        && !text.contains(',')
+        && !GENERIC.contains(&lower.as_str()))
+    .then_some(text)
 }
 
 /// The program's name from its version strings: FileDescription first, then ProductName.
@@ -203,6 +234,62 @@ mod tests {
         let long = "x".repeat(41);
         assert_eq!(pick(Some(&long), None), None);
         assert_eq!(pick(None, None), None);
+    }
+
+    #[test]
+    fn trademark_marks_are_dropped() {
+        assert_eq!(pick(Some("Steam\u{2122} "), None).as_deref(), Some("Steam"));
+        assert_eq!(
+            pick(Some("Corsair\u{00AE} iCUE\u{00A9}"), None).as_deref(),
+            Some("Corsair iCUE")
+        );
+        assert_eq!(
+            pick(Some("Intel(R) Graphics (TM)"), None).as_deref(),
+            Some("Intel Graphics")
+        );
+        assert_eq!(pick(Some("Foo(tm)"), None).as_deref(), Some("Foo"));
+        // Nothing but marks: no name, so the product name applies.
+        assert_eq!(
+            pick(Some(" \u{2122} "), Some("OBS")).as_deref(),
+            Some("OBS")
+        );
+    }
+
+    #[test]
+    fn generic_descriptions_fall_through() {
+        for generic in [
+            "BootstrapPackagedGame",
+            "Launcher",
+            "Setup",
+            "Installer",
+            "Application",
+            "Game",
+            "Client",
+            "Updater",
+            "Helper",
+            " launcher\u{2122} ",
+        ] {
+            assert_eq!(
+                pick(Some(generic), Some("Real Game")).as_deref(),
+                Some("Real Game"),
+                "{generic}"
+            );
+            assert_eq!(pick(Some(generic), Some(generic)), None, "{generic}");
+        }
+        // A name that only contains a generic word stays.
+        assert_eq!(
+            pick(Some("Epic Games Launcher"), None).as_deref(),
+            Some("Epic Games Launcher")
+        );
+    }
+
+    #[test]
+    fn names_with_commas_fall_through() {
+        assert_eq!(
+            pick(Some("Foo, Bar and Baz"), Some("Foo")).as_deref(),
+            Some("Foo")
+        );
+        assert_eq!(pick(Some("Foo, Inc."), Some("A, B")), None);
     }
 
     #[test]
