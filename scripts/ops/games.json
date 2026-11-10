@@ -1,0 +1,9 @@
+{
+  "_comment": "Game list for game-check.ps1 (data, not code). Same detection as tools/local-llm.ps1: a process whose path matches a library regex, or the GPU busy. Backslashes are doubled once for JSON, twice for a literal backslash in the regex.",
+  "libraryPatterns": [
+    "steamapps\\\\common", "Epic Games", "XboxGames", "EA Games", "Riot Games",
+    "Battle\\.net", "GOG Galaxy\\\\Games", "Ubisoft Game Launcher\\\\games"
+  ],
+  "notGamesPattern": "launcher|helper|crash|overlay|webhelper|wallpaper_engine|Steamworks Shared|SteamVR",
+  "gpuBusyPercent": 40
+}
