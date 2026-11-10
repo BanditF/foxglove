@@ -219,6 +219,11 @@ no exit code, path or "bisect".
 tray; 5-minute rounds; the next round starts on one click). Contract §7.10 gets the one-line
 bar note in the #1033 build.
 
+Decided in the #1050 review (designer): **Go on** after a pause restarts the round's full 5
+minutes (its modules start from scratch); a module that crash-stops by itself during a round
+keeps its stopped card and isn't restarted by later rounds (Copy diagnostics should say
+"crash-stopped in round k", follow-up).
+
 1. Where a round shows: **a bar at the top of Hideout's pages + the tray** / a small always-on-top
    window (the earlier sketch). Image: `ux-bisect-proposed-rounds.png`.
 2. Round length when nothing happens: **5 minutes** (the trigger's window) / 10 minutes.
