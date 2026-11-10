@@ -32,6 +32,10 @@
 //! wakers asked for, a timer a frame asked for) or the OS's (a message to a window of the thread
 //! that winit handled itself) (#1000). `HIDEOUT_WAKE_REPORT_S` shortens the period for the lab's
 //! footprint case (`scripts/lab/hideout_footprint.py`), which reads the lines from the log.
+//! For `other` wakes the line also names the window messages they handled (#1018): winit's
+//! message hook counts each message taken from the queue and a thread-local `WH_CALLWNDPROC`
+//! hook each message another thread sent (`platform::install_message_hooks`), into a fixed
+//! table per wake ([`MsgTally`]), so the count costs no allocation and no wake of its own.
 //!
 //! Each turn starts from `Wait` (#1000, the P0 spin): winit keeps the control flow from one turn
 //! to the next, and eframe sets it only while it has a repaint due (`check_redraw_requests`).
@@ -222,13 +226,183 @@ pub fn next_streak(streak: u32, cause: StartCause) -> u32 {
     }
 }
 
+/// A cross-thread `SendMessage` (bit 31 of [`MsgKey::msg`]): a send runs inside the wait without
+/// coming out of the queue, so only the send hook sees it (#1018).
+pub const SENT: u32 = 1 << 31;
+
+/// How many message kinds the report names for the `other` wakes.
+pub const MSG_TOP: usize = 5;
+
+/// Message kinds one wake keeps apart (more fold into [`MsgTally::rest`]).
+pub const WAKE_SLOTS: usize = 8;
+
+/// Message kinds one report period keeps apart for the `other` wakes.
+pub const REPORT_SLOTS: usize = 24;
+
+/// One kind of window message: its id (with [`SENT`] for a cross-thread send), the window it
+/// went to (0: a thread message), and for a timer its id (`wParam`), else 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MsgKey {
+    pub msg: u32,
+    pub hwnd: isize,
+    pub arg: usize,
+}
+
+const WM_TIMER: u32 = 0x0113;
+const WM_SYSTIMER: u32 = 0x0118;
+
+impl MsgKey {
+    /// The key of a message: timers keep their id, every other message only its window.
+    pub fn of(msg: u32, hwnd: isize, wparam: usize, sent: bool) -> Self {
+        let arg = if msg == WM_TIMER || msg == WM_SYSTIMER {
+            wparam
+        } else {
+            0
+        };
+        Self {
+            msg: if sent { msg | SENT } else { msg },
+            hwnd,
+            arg,
+        }
+    }
+}
+
+/// Counts of window messages by [`MsgKey`] in a fixed table: no allocation, so the hooks can
+/// count every message of a wake (#1018). A kind past the table's `N` slots counts in `rest`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MsgTally<const N: usize> {
+    keys: [MsgKey; N],
+    counts: [u32; N],
+    len: usize,
+    rest: u64,
+}
+
+impl<const N: usize> Default for MsgTally<N> {
+    fn default() -> Self {
+        Self {
+            keys: [MsgKey::default(); N],
+            counts: [0; N],
+            len: 0,
+            rest: 0,
+        }
+    }
+}
+
+impl<const N: usize> MsgTally<N> {
+    pub fn add(&mut self, key: MsgKey, n: u32) {
+        if let Some(i) = self.keys[..self.len].iter().position(|k| *k == key) {
+            self.counts[i] = self.counts[i].saturating_add(n);
+        } else if self.len < N {
+            self.keys[self.len] = key;
+            self.counts[self.len] = n;
+            self.len += 1;
+        } else {
+            self.rest += u64::from(n);
+        }
+    }
+
+    /// Adds every kind of `other`, and its rest.
+    pub fn merge<const M: usize>(&mut self, other: &MsgTally<M>) {
+        for i in 0..other.len {
+            self.add(other.keys[i], other.counts[i]);
+        }
+        self.rest += other.rest;
+    }
+
+    /// The count of one kind (0 when it isn't in the table).
+    #[cfg(test)]
+    pub fn count(&self, key: MsgKey) -> u32 {
+        self.keys[..self.len]
+            .iter()
+            .position(|k| *k == key)
+            .map_or(0, |i| self.counts[i])
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0 && self.rest == 0
+    }
+
+    /// All messages counted.
+    pub fn total(&self) -> u64 {
+        self.counts[..self.len]
+            .iter()
+            .map(|&c| u64::from(c))
+            .sum::<u64>()
+            + self.rest
+    }
+
+    /// The [`MSG_TOP`] most frequent kinds, most first (ties in first-seen order).
+    pub fn top(&self) -> ([(MsgKey, u32); MSG_TOP], usize) {
+        let mut out = [(MsgKey::default(), 0u32); MSG_TOP];
+        let mut taken = [false; N];
+        let mut n = 0;
+        while n < MSG_TOP {
+            let best = (0..self.len)
+                .filter(|&i| !taken[i])
+                .max_by(|&a, &b| self.counts[a].cmp(&self.counts[b]).then(b.cmp(&a)));
+            let Some(i) = best else { break };
+            taken[i] = true;
+            out[n] = (self.keys[i], self.counts[i]);
+            n += 1;
+        }
+        (out, n)
+    }
+}
+
+thread_local! {
+    /// The messages of the wake running now on the UI thread, from the hooks ([`note_message`]).
+    static WAKE_MSGS: std::cell::RefCell<MsgTally<WAKE_SLOTS>> =
+        std::cell::RefCell::new(MsgTally::default());
+}
+
+/// One message for the wake running now (the UI thread's hooks, #1018): a fixed-table count.
+pub fn note_message(key: MsgKey) {
+    WAKE_MSGS.with(|m| {
+        if let Ok(mut m) = m.try_borrow_mut() {
+            m.add(key, 1);
+        }
+    });
+}
+
+/// The messages of the wake that ends now, and a fresh table for the next.
+pub fn take_wake_messages() -> MsgTally<WAKE_SLOTS> {
+    WAKE_MSGS.with(|m| {
+        m.try_borrow_mut()
+            .map(|mut m| std::mem::take(&mut *m))
+            .unwrap_or_default()
+    })
+}
+
+/// A key's text when no window names are at hand (tests): the id and the window handle.
+pub fn plain_label(key: MsgKey) -> String {
+    let id = key.msg & !SENT;
+    let mut s = format!("0x{id:04X}");
+    if key.arg != 0 {
+        s.push_str(&format!("#{}", key.arg));
+    }
+    s.push_str(&format!(" 0x{:X}", key.hwnd));
+    if key.msg & SENT != 0 {
+        s.push_str(" sent");
+    }
+    s
+}
+
 /// Counts event-loop wakes by [`Cause`] and says, once per period, how many there were:
 /// `event loop: 1182 wakes in 600 s (repaint 3, timer 1, window 0, accesskit 0, device 0,
-/// poll 0, other 1178)`.
+/// poll 0, other 1178)`. With `other` wakes it adds the messages they handled, most first
+/// (#1018): `; other (0x0113 WM_TIMER#6007 tray 900, 0x031F WM_DWMNCRENDERINGCHANGED main 12,
+/// more 3, unseen 2)`, where `more` is the messages past the top five and `unseen` the wakes
+/// with no message either hook saw.
 pub struct WakeCount {
     since: Instant,
     every: Duration,
     wakes: [u64; 7],
+    /// The messages the `other` wakes of this period handled.
+    other: MsgTally<REPORT_SLOTS>,
+    /// `other` wakes with no message seen.
+    unseen: u64,
+    /// A message kind's text in the report (window and message names on the UI thread).
+    pub label: fn(MsgKey) -> String,
 }
 
 impl WakeCount {
@@ -237,7 +411,43 @@ impl WakeCount {
             since: now,
             every,
             wakes: [0; 7],
+            other: MsgTally::default(),
+            unseen: 0,
+            label: plain_label,
         }
+    }
+
+    /// The messages an `other` wake handled (call before its [`WakeCount::wake`]).
+    pub fn note_other<const N: usize>(&mut self, msgs: &MsgTally<N>) {
+        if msgs.is_empty() {
+            self.unseen += 1;
+        } else {
+            self.other.merge(msgs);
+        }
+    }
+
+    /// The report's `; other (...)` part, empty with no `other` wake or none noted.
+    fn other_part(&self) -> String {
+        if self.wakes[6] == 0 {
+            return String::new();
+        }
+        let (top, n) = self.other.top();
+        let mut parts: Vec<String> = top[..n]
+            .iter()
+            .map(|(k, c)| format!("{} {c}", (self.label)(*k)))
+            .collect();
+        let shown: u64 = top[..n].iter().map(|(_, c)| u64::from(*c)).sum();
+        let more = self.other.total() - shown;
+        if more > 0 {
+            parts.push(format!("more {more}"));
+        }
+        if self.unseen > 0 {
+            parts.push(format!("unseen {}", self.unseen));
+        }
+        if parts.is_empty() {
+            return String::new();
+        }
+        format!("; other ({})", parts.join(", "))
     }
 
     /// When the next report is due.
@@ -259,13 +469,16 @@ impl WakeCount {
             .map(|(c, n)| format!("{} {n}", c.name()))
             .collect();
         let line = format!(
-            "event loop: {} wakes in {} s ({})",
+            "event loop: {} wakes in {} s ({}){}",
             self.wakes.iter().sum::<u64>(),
             span.as_secs(),
-            parts.join(", ")
+            parts.join(", "),
+            self.other_part()
         );
         self.since = now;
         self.wakes = [0; 7];
+        self.other = MsgTally::default();
+        self.unseen = 0;
         Some(line)
     }
 }
@@ -304,12 +517,14 @@ impl<A> Gate<A> {
         root: fn() -> Option<WindowId>,
         tray_sync: fn(),
     ) -> Self {
+        let mut wakes = WakeCount::new(
+            Instant::now(),
+            report_every(std::env::var("HIDEOUT_WAKE_REPORT_S").ok().as_deref()),
+        );
+        wakes.label = crate::platform::message_label;
         Self {
             app,
-            wakes: WakeCount::new(
-                Instant::now(),
-                report_every(std::env::var("HIDEOUT_WAKE_REPORT_S").ok().as_deref()),
-            ),
+            wakes,
             drawable,
             side_live,
             side_kick,
@@ -365,6 +580,11 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
         (self.tray_sync)();
         // The wake ends here: count it by what it dispatched (the report may be due).
         let cause = cause_of(self.start, self.seen);
+        // The hooks' count for this wake (#1018); kept only for an `other` wake.
+        let msgs = take_wake_messages();
+        if cause == Cause::Other {
+            self.wakes.note_other(&msgs);
+        }
         if let Some(line) = self.wakes.wake(Instant::now(), cause) {
             log::info!("{line}");
         }
@@ -803,8 +1023,10 @@ mod tests {
         use winit::event_loop::EventLoop;
         use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
         use winit::platform::windows::EventLoopBuilderExtWindows;
+        // One winit loop per process: the message hooks' pass below shares it (#1018).
         let mut event_loop = EventLoop::<UserEvent>::with_user_event()
             .with_any_thread(true)
+            .with_msg_hook(crate::platform::note_queued)
             .build()
             .expect("event loop");
         for (drawable, drawn) in [(false, hidden as fn() -> bool), (true, shown)] {
@@ -826,5 +1048,156 @@ mod tests {
                 gate.app.turns
             );
         }
+        other_wakes_name_their_messages(&mut event_loop);
+    }
+
+    /// The wake report's `other` split on the real loop (#1018): a thread timer (a queued
+    /// WM_TIMER no window handles) and a message another thread sends to a window of the loop's
+    /// thread wake it with no event for the gate; the hooks name both, keyed by window.
+    fn other_wakes_name_their_messages(event_loop: &mut winit::event_loop::EventLoop<UserEvent>) {
+        use windows::core::w;
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, KillTimer, SendMessageW, SetTimer, HWND_MESSAGE,
+            WINDOW_EX_STYLE, WINDOW_STYLE,
+        };
+        use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+        crate::platform::install_message_hooks();
+        let target = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("hideout wake test"),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("message window");
+        let target_id = target.0 as isize;
+        let timer = unsafe { SetTimer(None, 0, 40, None) };
+        assert_ne!(timer, 0);
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            let h = HWND(target_id as *mut _);
+            unsafe { SendMessageW(h, 0x0400 + 7, Some(WPARAM(0)), Some(LPARAM(0))) };
+        });
+        let t0 = Instant::now();
+        let app = Eframe {
+            next: None,
+            drawable: false,
+            t0,
+            turns: 0,
+        };
+        let mut gate = Gate::new(app, hidden, no_side, no_side, no_root, no_tray);
+        // No report in the pass: the period's table is read below.
+        gate.wakes = WakeCount::new(t0, REPORT_EVERY);
+        event_loop.run_app_on_demand(&mut gate).expect("run");
+        sender.join().expect("sender");
+        unsafe {
+            let _ = KillTimer(None, timer);
+        }
+        // Other windows of the test thread may add their own messages (the OS's).
+        let seen = &gate.wakes.other;
+        let timer_key = MsgKey::of(0x0113, 0, timer, false);
+        assert!(seen.count(timer_key) >= 10, "{seen:?}");
+        assert_eq!(seen.top().0[0].0, timer_key, "{seen:?}");
+        let sent_key = MsgKey::of(0x0400 + 7, target_id, 0, true);
+        assert_eq!(seen.count(sent_key), 1, "{seen:?}");
+        // Windows' own sends while the thread made its window are not counted as sent.
+        assert_eq!(
+            seen.count(MsgKey::of(0x0081, target_id, 0, true)),
+            0,
+            "{seen:?}"
+        );
+        unsafe {
+            let _ = DestroyWindow(target);
+        }
+        // The report names them.
+        assert_eq!(
+            crate::platform::message_label(timer_key),
+            format!("0x0113 WM_TIMER#{timer} thread")
+        );
+        assert_eq!(
+            crate::platform::message_label(sent_key),
+            "0x0407 WM_USER+7 gone sent"
+        );
+    }
+
+    fn key(msg: u32) -> MsgKey {
+        MsgKey::of(msg, 0x10, 0, false)
+    }
+
+    #[test]
+    fn a_tally_counts_in_its_table_and_overflows_into_the_rest() {
+        let mut t = MsgTally::<3>::default();
+        assert!(t.is_empty());
+        for (m, n) in [(1, 2), (2, 5), (1, 1), (3, 4), (4, 9)] {
+            t.add(key(m), n);
+        }
+        assert_eq!(t.total(), 21);
+        let (top, n) = t.top();
+        // Kind 4 came after the table filled: it is in the rest, not named.
+        assert_eq!(&top[..n], &[(key(2), 5), (key(3), 4), (key(1), 3)]);
+        let mut big = MsgTally::<REPORT_SLOTS>::default();
+        big.merge(&t);
+        big.merge(&t);
+        assert_eq!(big.total(), 42);
+        assert_eq!(big.top().0[0], (key(2), 10));
+        // Timers keep their id, other messages don't; a send is its own kind.
+        assert_ne!(
+            MsgKey::of(0x0113, 1, 6007, false),
+            MsgKey::of(0x0113, 1, 1, false)
+        );
+        assert_eq!(
+            MsgKey::of(0x000F, 1, 6007, false),
+            MsgKey::of(0x000F, 1, 1, false)
+        );
+        assert_ne!(
+            MsgKey::of(0x003D, 1, 0, true),
+            MsgKey::of(0x003D, 1, 0, false)
+        );
+    }
+
+    #[test]
+    fn the_report_names_the_top_messages_of_the_other_wakes() {
+        let t0 = Instant::now();
+        let mut w = WakeCount::new(t0, REPORT_EVERY);
+        for i in 0..7u32 {
+            let mut wake = MsgTally::<WAKE_SLOTS>::default();
+            wake.add(key(0x0113), 3);
+            wake.add(key(0x0400 + i), 1);
+            w.note_other(&wake);
+            w.wake(t0 + Duration::from_secs(1), Cause::Other);
+        }
+        // A wake neither hook saw a message for (a send outside any hook, say).
+        w.note_other(&MsgTally::<WAKE_SLOTS>::default());
+        w.wake(t0 + Duration::from_secs(2), Cause::Other);
+        let line = w.wake(t0 + REPORT_EVERY, Cause::Timer).expect("report");
+        assert_eq!(
+            line,
+            "event loop: 9 wakes in 600 s (repaint 0, timer 1, window 0, accesskit 0, device 0, \
+             poll 0, other 8); other (0x0113 0x10 21, 0x0400 0x10 1, 0x0401 0x10 1, \
+             0x0402 0x10 1, 0x0403 0x10 1, more 3, unseen 1)"
+        );
+        // The next period starts empty; a period with no `other` wake adds nothing.
+        let line = w.wake(t0 + 2 * REPORT_EVERY, Cause::Timer).expect("report");
+        assert!(line.ends_with("other 0)"), "{line}");
+    }
+
+    #[test]
+    fn a_wake_takes_its_messages_and_leaves_a_fresh_table() {
+        let _ = take_wake_messages();
+        note_message(key(0x0113));
+        note_message(key(0x0113));
+        let m = take_wake_messages();
+        assert_eq!(m.top().0[0], (key(0x0113), 2));
+        assert!(take_wake_messages().is_empty());
     }
 }

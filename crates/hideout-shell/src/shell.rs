@@ -216,9 +216,13 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
     };
     let (_instance, show) = instance;
     // eframe's app on the hub's own loop: `wake::Gate` keeps a hidden window from polling.
+    // The message hooks name what an `other` wake handled in the wake report (#1018).
+    use winit::platform::windows::EventLoopBuilderExtWindows;
     let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event()
+        .with_msg_hook(platform::note_queued)
         .build()
         .map_err(|e| e.to_string())?;
+    platform::install_message_hooks();
     let app = eframe::create_native(
         PRODUCT,
         options,

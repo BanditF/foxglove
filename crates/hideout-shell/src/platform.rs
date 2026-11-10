@@ -902,6 +902,192 @@ pub fn take_menu_commands() -> Vec<(isize, MenuCommand)> {
     HOOKS.with(|k| std::mem::take(&mut k.borrow_mut().menu))
 }
 
+// ---- Wake messages (#1018) -------------------------------------------------------------------
+//
+// The wake report splits its `other` wakes by window message. Two hooks feed
+// `wake::note_message`, both on the UI thread and both a fixed-table count (no allocation, no
+// wake): winit's message hook sees each message the loop takes from the queue (posted ones,
+// WM_TIMER, WM_PAINT), and a thread-local WH_CALLWNDPROC hook sees each message another thread
+// sends (UI Automation's WM_GETOBJECT, DWM, the shell), which `PeekMessageW` delivers without
+// returning it. Messages the thread sends itself are a frame's or a handler's own, not a wake.
+
+/// For winit's `with_msg_hook`: counts the message and lets winit dispatch it as before.
+pub fn note_queued(msg: *const std::ffi::c_void) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::MSG;
+    // Safety: winit hands its own `MSG` from `PeekMessageW`, valid for the call.
+    if let Some(m) = unsafe { (msg as *const MSG).as_ref() } {
+        crate::wake::note_message(crate::wake::MsgKey::of(
+            m.message,
+            m.hwnd.0 as isize,
+            m.wParam.0,
+            false,
+        ));
+    }
+    false
+}
+
+unsafe extern "system" fn sent_proc(
+    code: i32,
+    wp: windows::Win32::Foundation::WPARAM,
+    lp: LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, InSendMessageEx, CWPSTRUCT, HC_ACTION, ISMEX_CALLBACK, ISMEX_NOTIFY,
+        ISMEX_SEND,
+    };
+    // Another thread sent it. The hook's wParam can't say (Windows' own sends while this
+    // thread creates a window come with 0, a cross-thread send with 1, measured); the receive
+    // state can.
+    let cross = ISMEX_SEND | ISMEX_NOTIFY | ISMEX_CALLBACK;
+    if code == HC_ACTION as i32 && InSendMessageEx(None) & cross != 0 {
+        if let Some(m) = (lp.0 as *const CWPSTRUCT).as_ref() {
+            crate::wake::note_message(crate::wake::MsgKey::of(
+                m.message,
+                m.hwnd.0 as isize,
+                m.wParam.0,
+                true,
+            ));
+        }
+    }
+    CallNextHookEx(None, code, wp, lp)
+}
+
+/// Installs the send hook on this (the UI) thread, for the process's life. A thread hook of the
+/// process's own: no DLL, no admin, no other process touched.
+pub fn install_message_hooks() {
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_CALLWNDPROC};
+    let hook =
+        unsafe { SetWindowsHookExW(WH_CALLWNDPROC, Some(sent_proc), None, GetCurrentThreadId()) };
+    if let Err(e) = hook {
+        log::warn!("wake message hook failed: {e}");
+    }
+}
+
+/// The name of a window message id, for the ones a hub's idle wakes plausibly carry.
+pub fn message_name(id: u32) -> Option<&'static str> {
+    Some(match id {
+        0x0000 => "WM_NULL",
+        0x0002 => "WM_DESTROY",
+        0x0006 => "WM_ACTIVATE",
+        0x0007 => "WM_SETFOCUS",
+        0x0008 => "WM_KILLFOCUS",
+        0x000F => "WM_PAINT",
+        0x0010 => "WM_CLOSE",
+        0x0011 => "WM_QUERYENDSESSION",
+        0x0014 => "WM_ERASEBKGND",
+        0x0015 => "WM_SYSCOLORCHANGE",
+        0x0016 => "WM_ENDSESSION",
+        0x0018 => "WM_SHOWWINDOW",
+        0x001A => "WM_SETTINGCHANGE",
+        0x001C => "WM_ACTIVATEAPP",
+        0x001D => "WM_FONTCHANGE",
+        0x001E => "WM_TIMECHANGE",
+        0x0020 => "WM_SETCURSOR",
+        0x0021 => "WM_MOUSEACTIVATE",
+        0x0024 => "WM_GETMINMAXINFO",
+        0x003D => "WM_GETOBJECT",
+        0x0046 => "WM_WINDOWPOSCHANGING",
+        0x0047 => "WM_WINDOWPOSCHANGED",
+        0x004A => "WM_COPYDATA",
+        0x007E => "WM_DISPLAYCHANGE",
+        0x007F => "WM_GETICON",
+        0x0083 => "WM_NCCALCSIZE",
+        0x0084 => "WM_NCHITTEST",
+        0x0085 => "WM_NCPAINT",
+        0x0086 => "WM_NCACTIVATE",
+        0x0088 => "WM_SYNCPAINT",
+        0x00A0 => "WM_NCMOUSEMOVE",
+        0x00FE => "WM_INPUT_DEVICE_CHANGE",
+        0x00FF => "WM_INPUT",
+        0x0100 => "WM_KEYDOWN",
+        0x0101 => "WM_KEYUP",
+        0x0102 => "WM_CHAR",
+        0x0104 => "WM_SYSKEYDOWN",
+        0x0105 => "WM_SYSKEYUP",
+        0x0111 => "WM_COMMAND",
+        0x0112 => "WM_SYSCOMMAND",
+        0x0113 => "WM_TIMER",
+        0x0118 => "WM_SYSTIMER",
+        0x0200 => "WM_MOUSEMOVE",
+        0x0201 => "WM_LBUTTONDOWN",
+        0x0202 => "WM_LBUTTONUP",
+        0x020A => "WM_MOUSEWHEEL",
+        0x0218 => "WM_POWERBROADCAST",
+        0x0219 => "WM_DEVICECHANGE",
+        0x0281 => "WM_IME_SETCONTEXT",
+        0x0282 => "WM_IME_NOTIFY",
+        0x0283 => "WM_IME_CONTROL",
+        0x02A1 => "WM_MOUSEHOVER",
+        0x02A2 => "WM_NCMOUSELEAVE",
+        0x02A3 => "WM_MOUSELEAVE",
+        0x02B1 => "WM_WTSSESSION_CHANGE",
+        0x02E0 => "WM_DPICHANGED",
+        0x031A => "WM_THEMECHANGED",
+        0x031E => "WM_DWMCOMPOSITIONCHANGED",
+        0x031F => "WM_DWMNCRENDERINGCHANGED",
+        0x0320 => "WM_DWMCOLORIZATIONCOLORCHANGED",
+        0x0321 => "WM_DWMWINDOWMAXIMIZEDCHANGE",
+        0x0323 => "WM_DWMSENDICONICTHUMBNAIL",
+        0x0326 => "WM_DWMSENDICONICLIVEPREVIEWBITMAP",
+        _ => return None,
+    })
+}
+
+/// A message kind's text for the wake report: `0x0113 WM_TIMER#6007 tray`. Registered messages
+/// (0xC000 and up) by their registered name, the WM_USER and WM_APP ranges as an offset; the
+/// window as `main`, `tray`, `flyout`, `thread` (a thread message) or its class name. Runs once
+/// per reported kind, never per message.
+pub fn message_label(key: crate::wake::MsgKey) -> String {
+    use windows::Win32::System::DataExchange::GetClipboardFormatNameW;
+    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, IsWindow};
+    let id = key.msg & !crate::wake::SENT;
+    let name = match message_name(id) {
+        Some(n) => n.to_string(),
+        None if id >= 0xC000 => {
+            let mut buf = [0u16; 128];
+            let n = unsafe { GetClipboardFormatNameW(id, &mut buf) }.max(0) as usize;
+            if n > 0 {
+                String::from_utf16_lossy(&buf[..n])
+            } else {
+                "registered".to_string()
+            }
+        }
+        None if id >= 0x8000 => format!("WM_APP+{}", id - 0x8000),
+        None if id >= 0x0400 => format!("WM_USER+{}", id - 0x0400),
+        None => "?".to_string(),
+    };
+    let window = match key.hwnd {
+        0 => "thread".to_string(),
+        h if h == main_hwnd() => "main".to_string(),
+        h if h == crate::tray::message_window() => "tray".to_string(),
+        h if h == flyout_hwnd() => "flyout".to_string(),
+        h => {
+            let mut buf = [0u16; 64];
+            let n = if unsafe { IsWindow(Some(hwnd(h))) }.as_bool() {
+                unsafe { GetClassNameW(hwnd(h), &mut buf) }.max(0) as usize
+            } else {
+                0
+            };
+            if n > 0 {
+                format!("'{}'", String::from_utf16_lossy(&buf[..n]))
+            } else {
+                "gone".to_string()
+            }
+        }
+    };
+    let mut s = format!("0x{id:04X} {name}");
+    if key.arg != 0 {
+        s.push_str(&format!("#{}", key.arg));
+    }
+    s.push(' ');
+    s.push_str(&window);
+    if key.msg & crate::wake::SENT != 0 {
+        s.push_str(" sent");
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

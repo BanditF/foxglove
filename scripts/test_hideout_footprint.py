@@ -91,6 +91,17 @@ class LoopWakes(unittest.TestCase):
         self.assertEqual(causes, {'repaint': 0, 'timer': 2, 'window': 0, 'accesskit': 0, 'device': 0,
                                   'poll': 0, 'other': 1})
 
+    def test_the_other_split_after_the_causes_changes_nothing(self):
+        # #1018: the report names the messages of the `other` wakes after the causes.
+        line = ('event loop: 30 wakes in 15 s (repaint 0, timer 1, window 0, accesskit 0, device 0, poll 0, '
+                "other 29); other (0x0113 WM_TIMER#6007 tray 20, 0x003D WM_GETOBJECT main sent 5, "
+                "0xC2FA TaskbarButtonCreated 'Winit Thread Event Target' 2, more 1, unseen 3)\n")
+        rate, causes = fc.loop_wakes(line + line)
+        self.assertEqual(rate, 2.0)
+        self.assertEqual(causes['other'], 29)
+        self.assertEqual(causes['timer'], 1)
+        self.assertEqual(len(causes), 7)
+
     def test_no_whole_period_gives_no_reading(self):
         self.assertEqual(fc.loop_wakes(''), (None, {}))
         self.assertEqual(fc.loop_wakes(self.LINES.splitlines()[0]), (None, {}))

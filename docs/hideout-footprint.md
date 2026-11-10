@@ -121,13 +121,84 @@ standby list, not lower private bytes, so it isn't done.
 On-call's runs on 2bc31b90 (after the #1015 spin fix): CPU 0.03–0.17 %, loop wakes about 1.6/s
 hidden and 4.4/s shown, nearly all with cause `other` (window messages winit handles itself or
 that go to another window on the UI thread). At that cost the gate's limits are at most 2 loop
-wakes/s hidden (no flyout) and 5/s shown (`tests/hil/hideout-footprint-baseline.json`). Splitting
-`other` by window message id is a low-priority follow-up: fix any share that is ours (tray-icon,
-redraw messages we can avoid), leave OS/DWM traffic.
+wakes/s hidden (no flyout) and 5/s shown (`tests/hil/hideout-footprint-baseline.json`). The
+report now splits `other` by window message (#1018, below).
 
 One pop-out window with six modules idles at 92.8 MB private (On-call, 2bc31b90), against about
-75 MB for the hub alone: each pop-out is its own viewport with its own swap chain and GL surface.
-Whether the pop-outs can share one GL context with the main window is a follow-up.
+75 MB for the hub alone. The pop-outs already share the main window's GL context (#1018, below).
+
+### `other` wakes by message (#1018)
+
+The wake report names the messages its `other` wakes handled, after the causes:
+
+```
+event loop: 24 wakes in 15 s (repaint 0, timer 1, window 0, accesskit 0, device 0, poll 0,
+other 23); other (0x0113 WM_TIMER#6007 tray 18, 0x003D WM_GETOBJECT main sent 4,
+0xC2FA <registered name> 'Winit Thread Event Target' 2, more 1, unseen 2)
+```
+
+Each entry is the message id and name (registered messages, 0xC000 and up, by their registered
+name; `WM_USER+n` and `WM_APP+n` as offsets), the timer id for `WM_TIMER`, the window
+(`main`, `tray` (tray-icon's hidden window), `flyout`, `thread` for a thread message, else the
+window's class in quotes, `gone` once it was destroyed), `sent` for a message another thread
+sent, and the message count over the period, most first, top five. `more` is the messages past
+the top five, `unseen` the `other` wakes neither hook saw a message for. The lab parser
+(`footprint_compare.WAKE_LINE`) reads the causes before the `;` as before.
+
+How it counts (no admin, no DLL, nothing in another process): winit's message hook
+(`with_msg_hook`, `platform::note_queued`) sees each message the loop takes from the queue
+(posted messages, `WM_TIMER`, `WM_PAINT`); a thread-local `WH_CALLWNDPROC` hook
+(`platform::install_message_hooks`) sees each message another thread sends (`InSendMessageEx`;
+the hook's wParam can't tell, Windows' own sends while the thread creates a window come with
+the same value), which `PeekMessageW` delivers inside the wait without returning it. Both count
+into a fixed 8-kind table for the wake (`wake::MsgTally`); at `about_to_wait` an `other` wake's
+table folds into the period's 24-kind table, and anything else is dropped. No allocation per
+message or wake, no timer, no wake of its own; names are looked up once per report.
+Tests: `wake::tests::the_report_names_the_top_messages_of_the_other_wakes` pins the line, and
+the real-loop test runs a thread timer and a send from another thread to a window of the loop's
+thread through winit and both hooks.
+
+**Which are ours, from code** (On-call's 2bc31b90 runs: hidden ~1.6 wakes/s, shown ~4.4/s,
+nearly all `other`):
+
+| Message | Ours? | Why |
+|---|---|---|
+| `WM_TIMER#6007 tray` | tray-icon's, killed on arm | The leave timer (#935): `tray::stop_leave_timer` kills it in the Move handler. Only while the cursor moves over the icon. A count of more than a few per report means the kill no longer works (a tray-icon bump; `Cargo.lock` is pinned to 0.24.x by a test). |
+| `WM_USER+…` / registered id to `tray` | the shell's | Explorer's tray callbacks (mouse over or clicks on the icon, `TaskbarCreated` after an Explorer restart). Only with the cursor on the icon. |
+| any `WM_TIMER` to `main`, `thread` or a pop-out | ours if any | The hub crates call no `SetTimer` (searched: only the tray kill and the lab driver's `PostMessageW`, lab only). eframe and winit set none on Windows; egui's waits are the loop's own `WaitUntil` (`timer` cause, not `other`). |
+| `WM_PAINT` to `main` | not in `other` | A paint of our window runs eframe's frame (`RedrawRequested`), so it counts as `window`. Avoidable redraws would show there, not here. |
+| `WM_PAINT` to `'Winit Thread Event Target'` | winit's, same wake | winit calls `RedrawWindow(RDW_INTERNALPAINT)` on its thread window for every message it gets there, and handles the paint in the same dispatch: no extra wake. |
+| `WM_GETOBJECT … sent` | the OS's (UI Automation) | A UIA client (Logi Options+, PowerToys, Narrator, the On-call probe) walking the window; accessibility stays. |
+| `WM_DWM…`, `WM_SETTINGCHANGE`, `WM_DEVICECHANGE`, `WM_DISPLAYCHANGE`, `WM_POWERBROADCAST`, `WM_THEMECHANGED` | the OS's | DWM and system broadcasts; every top-level window gets them, hidden ones too (winit's thread window is one). |
+| `'MSCTFIME UI'`, `'IME'`, registered `MSUIM.*` | the OS's (TSF/IME) | Text services' own windows on the UI thread. |
+| `'OleMainThreadWndClass'` | the OS's (COM) | COM's apartment window: OLE drag and drop (winit's), toasts (`notify`). |
+| `unseen` | the OS's, or a driver | No message reached either hook: a send handled before the hook could see it, an APC, or the GL driver's own wait on the thread. |
+
+So by code review nothing of the hub's own posts or timers is left at idle: the one source that
+was ours (the 64 Hz tray-icon timer) was fixed in #935, and a regression would now show by name.
+No fix in this change; On-call's next run of case 7 names the rest (re-measure step 7 below),
+and if a row of the table turns out to be ours and large, it gets its own issue.
+
+### Pop-outs and the GL context (#1018)
+
+Finding, from the eframe 0.33.3 source (`native/glow_integration.rs`): eframe's glow backend
+already makes **one** GL context (`GlutinWindowContext::current_gl_context` /
+`not_current_gl_context`) and **one** `egui_glow::Painter` (so one font atlas and one set of
+textures) for all viewports. Each viewport, the hub's pop-outs included (they are immediate
+viewports, `show_viewport_immediate`), gets only its own winit window and its own
+`glutin::surface::Surface<WindowSurface>` (`initialize_window` → `create_window_surface`); a
+frame makes the shared context current on that viewport's surface (`change_gl_context`) and
+swaps it. So there is nothing to share that isn't shared already, and nothing to build.
+
+What a pop-out costs, then: the window itself, its WGL drawable (the driver's front and back
+buffers at the window's size, plus the driver's per-drawable bookkeeping in the process), its
+`egui_winit::State` (clipboard, IME, an AccessKit adapter with its own tree), and DWM's
+redirection surface (in DWM, not in the hub). Estimate: about 4 to 8 MB private per pop-out
+window on the lab's NVIDIA driver, the rest of the 17.8 MB difference being the six modules
+themselves (their panels, text and layout), if the 75 MB reading (hub alone) had none of
+them docked. Ways below that all leave eframe's model: one window for all pop-outs, or a
+renderer without a per-window GL drawable; neither is a small or safe change, so none is made.
+On-call can settle the split with one run (re-measure step 8 below).
 
 ### The tray flyout (#991)
 
@@ -290,6 +361,12 @@ threads that switch most, with id, description and switches/s.
 
 After the hidden-hub fix: window closed to the tray, main thread under 1 switch/s (was 1100 to
 1600), and the log shows `event loop: N wakes in 10 min` with N in the tens at most.
+
+7. (#1018) Case 7 hidden and shown, as on 2bc31b90: the same limits (≤ 2 loop wakes/s hidden,
+   ≤ 5/s shown), and copy the `; other (…)` part of two report lines per state into #1018. A
+   `WM_TIMER` to `tray`, `main`, `thread` or a pop-out above a few per report is ours.
+8. (#1018) Private MB for the hub with the same six modules docked (no pop-out), then with one
+   of them popped out: the difference is the pop-out window's own cost.
 
 ## Lab capture (#1002)
 
