@@ -394,6 +394,41 @@ fn read_errors_become_rows() {
 }
 
 #[test]
+fn a_right_half_not_answering_is_waiting_until_the_relay_is_ready() {
+    use super::{rows_waiting_for_relay, RIGHT_WAITING};
+    for e in [
+        ReadError::NoRelay,
+        ReadError::RightTimeout,
+        ReadError::Other("no reply from the keyboard".into()),
+    ] {
+        let r = Report {
+            left: Ok(left()),
+            right: Err(e),
+        };
+        let rows = rows_waiting_for_relay(&r, &Thresholds::default());
+        let row = rows.iter().find(|x| x.item == "Right half").unwrap();
+        assert_eq!(
+            (row.level, row.detail.as_str()),
+            (Level::Warn, RIGHT_WAITING)
+        );
+        assert!(failed_lines(&rows).is_empty(), "{:?}", failed_lines(&rows));
+        // Once the relay is ready (or the grace is over) the same read is a failure.
+        assert!(!failed_lines(&super::rows(&r, &Thresholds::default())).is_empty());
+    }
+    // Other errors are not about the relay coming up.
+    let r = Report {
+        left: Ok(left()),
+        right: Err(ReadError::Other("status 7".into())),
+    };
+    assert!(!failed_lines(&rows_waiting_for_relay(&r, &Thresholds::default())).is_empty());
+    let r = Report {
+        left: Ok(left()),
+        right: Err(ReadError::Busy),
+    };
+    assert!(!failed_lines(&rows_waiting_for_relay(&r, &Thresholds::default())).is_empty());
+}
+
+#[test]
 fn reset_and_uptime_words() {
     assert_eq!(reset_words(0), "not known");
     assert_eq!(reset_words(1 << 3), "power on");

@@ -537,6 +537,22 @@ impl std::fmt::Display for ReadError {
 
 impl std::error::Error for ReadError {}
 
+impl ReadError {
+    /// The right half's read failed the way it does while the relay to it is still coming up
+    /// (#944): no relay link, no answer from the right, or no reply at all. Not a firmware or
+    /// status error, which stays a failure.
+    pub fn is_relay_not_ready(&self) -> bool {
+        match self {
+            ReadError::NoRelay | ReadError::RightTimeout => true,
+            ReadError::Other(e) => e.starts_with("no reply"),
+            _ => false,
+        }
+    }
+}
+
+/// What the right half's row says while the relay is still coming up (#944).
+pub const RIGHT_WAITING: &str = "waiting for the right half";
+
 fn status_error(status: u8) -> ReadError {
     match status {
         1 => ReadError::Busy,
@@ -1155,6 +1171,27 @@ pub fn knob_words(k: &Knob) -> String {
         plural(u32::from(k.keys), "key", "keys"),
         plural(u32::from(k.drops), "hold dropped", "holds dropped")
     )
+}
+
+/// [`rows`] for a read made before the relay to the right half reported ready (#944): a right
+/// half that didn't answer is "waiting for the right half" (a warning) rather than a failure.
+/// Call it only while the relay is not yet ready and inside the grace; after that use [`rows`],
+/// and a real no-reply is a failure again.
+pub fn rows_waiting_for_relay(report: &Report, t: &Thresholds) -> Vec<HealthRow> {
+    let mut out = rows(report, t);
+    if report
+        .right
+        .as_ref()
+        .is_err_and(ReadError::is_relay_not_ready)
+    {
+        for r in out.iter_mut() {
+            if r.subsystem == "relay" && r.item == "Right half" && r.level == Level::Fail {
+                r.level = Level::Warn;
+                r.detail = RIGHT_WAITING.into();
+            }
+        }
+    }
+    out
 }
 
 /// The Keyboard health view's rows for one read of both halves, the worst first within each

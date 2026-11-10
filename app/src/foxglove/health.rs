@@ -106,7 +106,27 @@ pub fn read_now(why: Why) -> Option<Vec<HealthRow>> {
     let capabilities = hello.map_or(0, |h| h.capabilities);
     let _one = ONE_READ.lock().unwrap_or_else(|e| e.into_inner());
     set_reading(true);
-    let report = kh::read_both(link.as_ref(), capabilities);
+    let mut report = kh::read_both(link.as_ref(), capabilities);
+    // #944: a right half that didn't answer while the relay to it is still coming up is pending,
+    // not failed. Show "waiting for the right half", sleep on the relay-ready event (no polling)
+    // for at most RELAY_GRACE, then read again; a no-reply after that is a real failure.
+    let relay = capabilities & foxglove_link::protocol::capabilities::ART_RELAY != 0;
+    if relay
+        && report
+            .right
+            .as_ref()
+            .is_err_and(kh::ReadError::is_relay_not_ready)
+    {
+        {
+            let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+            last.rows = kh::rows_waiting_for_relay(&report, &thresholds());
+        }
+        if let Ok(foxglove_link::art::RelayWait::Ready(_)) =
+            foxglove_link::art::wait_relay_ready(&link, RELAY_GRACE)
+        {
+            report = kh::read_both(link.as_ref(), capabilities);
+        }
+    }
     let mut rows = kh::rows(&report, &thresholds());
     // HELLO v2: the capability words past HELLO's, asked only of firmware that offers them.
     let v2 = hello.map(|h| foxglove_link::hello_v2::read(link.as_ref(), &h));
@@ -229,6 +249,10 @@ pub fn start() {
 /// How long a connect's read waits for the relay to the right half: it comes up ~20 s after the
 /// split link (discovery), and a read before then would only say "no relay link".
 const RELAY_SETTLE: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// How long a read that found the right half silent waits for the relay-ready event before it
+/// calls the silence a failure (#944).
+const RELAY_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Waits (on the link's events, `art::wait_relay_ready`) until the relay is up or
 /// [`RELAY_SETTLE`] passed, on a keyboard with the relay; at once otherwise.
