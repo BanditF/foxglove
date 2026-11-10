@@ -524,6 +524,146 @@
                 "id": "glance",
                 "props": {
                   "tone": "attention",
+                  "value": "iCUE said no"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Turn on SDK in iCUE settings"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "How to",
+                  "opens": "page#connect"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "palette",
+          "id": "page",
+          "slot": "page",
+          "title": "Corsair iCUE",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "iCUE said no"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Turn on SDK in iCUE settings"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "label": "How to",
+                      "opens": "page#connect"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "connect-steps",
+                    "props": {
+                      "text": "1. Download the iCUE SDK from Corsair's download page (opens corsair.com in your browser).\n2. Unzip it.\n3. Click Choose file in Settings below and pick iCUESDK.x64_2019.dll.\n4. In iCUE, open Settings and turn on SDK."
+                    },
+                    "type": "markdown"
+                  },
+                  {
+                    "id": "connect-file",
+                    "props": {
+                      "label": "Choose file",
+                      "opens": "settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "connect",
+                "props": {
+                  "title": "How to connect"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: your underglow follows the Corsair device's colours"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Mirroring only: Hideout reads colours and never takes control of Corsair lighting. Foxglove ships no Corsair files."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "iCUE said no"
+    },
+    {
+      "panels": [
+        {
+          "icon": "palette",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Corsair iCUE",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
                   "value": "No device found"
                 },
                 "type": "value"

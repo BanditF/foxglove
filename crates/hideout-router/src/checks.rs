@@ -167,3 +167,20 @@ pub fn event_permission(method: &str) -> Option<Capability> {
     }
     Capability::parse(row.permission?).ok()
 }
+
+/// Whether `key` is an app fact (`apps.seen.<name>` or `apps.running.<name>`, §4.6 v1.7) of an
+/// app the grant's `apps.watch:<name>.exe` names: watching an app lets a module read its facts.
+pub fn watches_app(grant: &hideout_contract::permission::Grant, key: &str) -> bool {
+    use hideout_contract::module::{app_fact_label, app_label};
+    use hideout_contract::permission::Permission;
+    let Some(label) = (!key.starts_with('!'))
+        .then(|| app_fact_label(key))
+        .flatten()
+    else {
+        return false;
+    };
+    grant.0.iter().any(|p| match p {
+        Permission::AppsWatch(exe) => app_label(exe).as_deref() == Some(label),
+        _ => false,
+    })
+}

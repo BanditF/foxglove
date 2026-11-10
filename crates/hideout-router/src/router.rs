@@ -12,7 +12,9 @@ use hideout_registry::Registry;
 use serde_json::{json, Map, Value};
 
 use crate::checks::HUB_OWNED;
-use crate::checks::{covers, event_permission, may_call, overlap, Caps, FIRST_PARTY_AREAS};
+use crate::checks::{
+    covers, event_permission, may_call, overlap, watches_app, Caps, FIRST_PARTY_AREAS,
+};
 
 /// A call with no answer fails after this long on the caller's side (§8.1, error 4).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -87,6 +89,13 @@ pub enum Out {
         module: String,
         channel: String,
         result: Result<Value, Value>,
+    },
+    /// `ui.asset.put` from a module (§5.3), for the panel host, which answers it with
+    /// [`Router::host_answer`] and the same `call`; the answer goes back to the module.
+    AssetPut {
+        module: String,
+        call: u64,
+        params: Value,
     },
     /// The answer to [`Router::call_module`].
     HubResult {
@@ -252,6 +261,13 @@ struct Route {
     module: String,
 }
 
+/// A module's call the hub's panel host answers (`ui.asset.put`, §5.3).
+struct HostCall {
+    caller: ConnId,
+    id: Value,
+    deadline: Instant,
+}
+
 /// A lease a provider handed out (§8.5): who holds it.
 struct Lease {
     holder: ConnId,
@@ -296,6 +312,9 @@ pub struct Router {
     /// declaration is the module's `channel.offer:<name>` for its own `<id>/<name>` (#1013).
     channels_decl: HashMap<String, Vec<String>>,
     secret_store: Box<dyn crate::secrets::SecretStore>,
+    /// Module calls waiting for the panel host's answer, by call number.
+    host_calls: HashMap<u64, HostCall>,
+    next_host_call: u64,
 }
 
 /// The file in a v1 plugin's settings folder where the hub keeps the values the user changed.
@@ -346,6 +365,8 @@ impl Router {
             secrets_decl: HashMap::new(),
             channels_decl: HashMap::new(),
             secret_store: crate::secrets::default_store(),
+            host_calls: HashMap::new(),
+            next_host_call: 1,
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -676,13 +697,18 @@ impl Router {
             matches!(&p.waiter, Waiter::Caller(c, i) | Waiter::Channel { caller: c, id: i, .. }
                 if *c == conn && i == id)
         }) || self.queue.iter().any(|q| q.caller == conn && q.id == *id)
+            || self
+                .host_calls
+                .values()
+                .any(|h| h.caller == conn && h.id == *id)
     }
 
     /// The earliest deadline of a pending call, for the driver's timer.
     pub fn next_deadline(&self) -> Option<Instant> {
         let p = self.pending.values().map(|p| p.deadline);
         let q = self.queue.iter().map(|q| q.deadline);
-        p.chain(q).min()
+        let h = self.host_calls.values().map(|h| h.deadline);
+        p.chain(q).chain(h).min()
     }
 
     /// Fails every call past its deadline with error 4 (§8.1).
@@ -706,7 +732,46 @@ impl Router {
                 error(&q.id, code::TIMEOUT, "timeout", None),
             ));
         }
+        // The panel host draws only on the hub's frames; a hub that never takes its answer
+        // (closed for good) fails the call like any provider.
+        let mut late: Vec<u64> = self
+            .host_calls
+            .iter()
+            .filter(|(_, h)| h.deadline <= now)
+            .map(|(k, _)| *k)
+            .collect();
+        late.sort_unstable();
+        for k in late {
+            let h = self.host_calls.remove(&k).unwrap();
+            out.push(Out::Send(
+                h.caller,
+                error(&h.id, code::TIMEOUT, "timeout", None),
+            ));
+        }
         out
+    }
+
+    /// The panel host's answer to an [`Out::AssetPut`] (§5.3): `{}`, or the refusal as error
+    /// −32602 with the §15 id in `data.id` and the message in `data.reason`. It goes to the
+    /// module that called. An answer nobody waits for (late, or the module is gone) is dropped.
+    pub fn host_answer(
+        &mut self,
+        call: u64,
+        result: Result<Value, hideout_contract::error::Error>,
+    ) -> Vec<Out> {
+        let Some(h) = self.host_calls.remove(&call) else {
+            log::debug!("router: a panel host answer nobody waits for (call {call})");
+            return Vec::new();
+        };
+        let reply = match result {
+            Ok(v) => ok(&h.id, v),
+            Err(e) => json!({"jsonrpc": "2.0", "id": h.id, "error": {
+                "code": code::INVALID_PARAMS,
+                "message": "invalid params",
+                "data": {"id": e.id(), "reason": e.message},
+            }}),
+        };
+        vec![Out::Send(h.caller, reply)]
     }
 
     fn fail(
@@ -755,6 +820,7 @@ impl Router {
             self.lease_closed(&k.0, &k.1, "disconnect", &mut out);
         }
         self.queue.retain(|q| q.caller != conn);
+        self.host_calls.retain(|_, h| h.caller != conn);
         // Calls this connection was answering fail with error 2; its own calls are dropped.
         let keys: Vec<(ConnId, i64)> = self.pending.keys().copied().collect();
         for k in keys {
@@ -993,6 +1059,41 @@ impl Router {
                 };
                 out.push(answer(reply));
             }
+            // Answered by the hub's panel host (§5.3): the call goes there, its answer comes
+            // back through `host_answer`.
+            "ui.asset.put" => match &module {
+                Some(m) => {
+                    if serde_json::from_value::<hideout_contract::messages::UiAssetPut>(
+                        params.clone(),
+                    )
+                    .is_err()
+                    {
+                        out.push(answer(error(
+                            &id,
+                            code::INVALID_PARAMS,
+                            "invalid params",
+                            None,
+                        )));
+                        return;
+                    }
+                    let call = self.next_host_call;
+                    self.next_host_call += 1;
+                    self.host_calls.insert(
+                        call,
+                        HostCall {
+                            caller: conn,
+                            id,
+                            deadline: now + self.settings.call_timeout,
+                        },
+                    );
+                    out.push(Out::AssetPut {
+                        module: m.clone(),
+                        call,
+                        params,
+                    });
+                }
+                None => out.push(answer(denied(&id, Some("only modules put assets")))),
+            },
             "hub.notify" => match &module {
                 Some(m) if caps.has(&Capability::HubNotify) => {
                     out.push(Out::Notify {
@@ -1282,7 +1383,9 @@ impl Router {
         for p in list("facts") {
             // Device facts come from a first-party module (the link); nobody else writes them.
             let bad = p == "*"
-                || ["module.*", "hub.*"].iter().any(|a| overlap(a, &p))
+                || ["module.*", "hub.*", "apps.*"]
+                    .iter()
+                    .any(|a| overlap(a, &p))
                 || (!first_party && overlap("device.*", &p))
                 || self
                     .fact_owners
@@ -1590,7 +1693,7 @@ impl Router {
         match method {
             "facts.get" => {
                 let key = s("key");
-                if !grant.can_read_fact(&key) {
+                if !grant.can_read_fact(&key) && !watches_app(&grant, &key) {
                     return denied(id, None);
                 }
                 ok(
@@ -1600,7 +1703,7 @@ impl Router {
             }
             "facts.list" => {
                 let pattern = s("pattern");
-                if !grant.can_subscribe(&pattern) {
+                if !grant.can_subscribe(&pattern) && !watches_app(&grant, &pattern) {
                     return denied(id, None);
                 }
                 let facts: Vec<Value> = self
@@ -1613,7 +1716,7 @@ impl Router {
             }
             "facts.subscribe" => {
                 let pattern = s("pattern");
-                if !grant.can_subscribe(&pattern) {
+                if !grant.can_subscribe(&pattern) && !watches_app(&grant, &pattern) {
                     return denied(id, None);
                 }
                 let n = self.next_sub;
@@ -1638,7 +1741,10 @@ impl Router {
                         .iter()
                         .any(|r| r.module == m && key_matches(&r.pattern, &key))
                 });
-                let hub_fact = key.starts_with("module.") || key.starts_with("hub.");
+                // The app watch's facts are the hub's too (§4.6, v1.7).
+                let hub_fact = ["module.", "hub.", "apps."]
+                    .iter()
+                    .any(|p| key.starts_with(p));
                 // `facts.write` never covers device.* (§6.6); a registered owner may.
                 let ok_write = !hub_fact && (owned || grant.can_write_fact(&key));
                 if !ok_write {

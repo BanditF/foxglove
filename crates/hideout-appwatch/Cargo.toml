@@ -1,0 +1,14 @@
+[package]
+name = "hideout-appwatch"
+version = "0.1.0"
+edition = "2021"
+description = "hideout.appwatch, the Hideout hub's app watch (contract §4.6): the facts apps.running.<name> and apps.seen.<name> for the apps manifests ask about, from process and window events, never polling. Clean-room MIT."
+license = "MIT"
+
+[dependencies]
+hideout-contract = { path = "../hideout-contract" }
+log = "0.4"
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }

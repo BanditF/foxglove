@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.6",
+  "contract": "1.7",
   "reader_hub": "1.1",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -4570,6 +4570,32 @@
       ],
       "result": "table",
       "note": "module.<id>.restart {delay_s, crash, of} or null, and module.<id>.recovery start-again | defaults | go-back | last, module.<id>.previous and module.<id>.failed (v1.4, #983)."
+    },
+    "manifests/invalid/when-apps-running-with-exe.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "invalid",
+      "id": "manifest.activation",
+      "note": "apps.running.<name> (v1.7) names the app by one lowercase label, the exe name without .exe, as apps.seen does."
+    },
+    "facts/app-facts.json": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "table",
+      "note": "apps.seen.<name> true or null, apps.running.<name> true, false or null (v1.7); one lowercase label."
+    },
+    "transcripts/ui/asset-put-refused.json": {
+      "spec": [
+        "5.3",
+        "8.8"
+      ],
+      "note": "ui.asset.put goes to the hub's panel host, whose answer goes back to the module (v1.7): a non-image is refused with -32602 and data.id ui.limits; nothing is stored.",
+      "result": "valid",
+      "final": {
+        "asset_stored": false
+      }
     }
   }
 }

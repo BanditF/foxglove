@@ -208,6 +208,19 @@ impl Replay {
                     host.sync_streams(self.now);
                     self.host_opens();
                 }
+                Out::AssetPut {
+                    module,
+                    call,
+                    params,
+                } if self.host.is_some() => {
+                    let put = serde_json::from_value(params).unwrap();
+                    let host = self.host.as_mut().unwrap();
+                    let result = host.assets.put(&put).map(|()| json!({}));
+                    assert!(module == ART);
+                    assert_eq!(result.is_ok(), host.assets.get(&put.hash).is_some());
+                    let more = self.router.host_answer(call, result);
+                    self.take(more);
+                }
                 other => self.events.push(other),
             }
         }
@@ -609,6 +622,17 @@ fn setup(name: &str) -> Replay {
                 None,
             ));
             r.module("module", ART, None);
+            r
+        }
+        // The panel host answers `ui.asset.put` (v1.7): its answer goes back to the module.
+        "asset-put-refused" => {
+            let mut r = Replay::new(vec![]);
+            r.module("module", ART, None);
+            r.host_page(
+                "art",
+                json!({"type": "column", "id": "root", "children": [
+                    {"type": "image", "id": "shot", "props": {"hash": "a".repeat(64), "label": "Art"}}]}),
+            );
             r
         }
         "re-registration-restart" => {

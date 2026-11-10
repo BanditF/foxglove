@@ -10,8 +10,11 @@ use serde_json::Value;
 pub enum Mirror {
     /// No SDK file set (`bad = false`) or the file set isn't Corsair's SDK (`bad = true`).
     NeedsSetup { bad: bool },
-    /// No session with iCUE: it isn't running (or refused the SDK).
+    /// No session with iCUE, and iCUE isn't running (or the hub can't tell: no app watch).
     Closed,
+    /// No session with iCUE although it runs: its SDK access is off (Hideout's app watch,
+    /// `apps.running.icue`, contract §4.6).
+    Refused,
     /// A session but no device to follow; `wanted` is the device filter.
     NoDevice { wanted: String },
     /// Following this device.
@@ -35,6 +38,13 @@ pub fn tile(m: &Mirror) -> Tile {
             value: "iCUE isn't open".into(),
             tone: "off",
             sub: Some("Follows again when it opens".into()),
+            ..Tile::default()
+        },
+        Mirror::Refused => Tile {
+            value: "iCUE said no".into(),
+            tone: "attention",
+            sub: Some("Turn on SDK in iCUE settings".into()),
+            button: Some(Button::new("How to", Press::Opens("page#connect"))),
             ..Tile::default()
         },
         Mirror::NoDevice { wanted } => Tile {
@@ -69,7 +79,10 @@ pub fn tile(m: &Mirror) -> Tile {
 pub fn panels(m: &Mirror) -> Vec<Value> {
     let t = tile(m);
     let mut page = vec![ui::now_section(&t, vec![])];
-    if matches!(m, Mirror::NeedsSetup { .. } | Mirror::Closed) {
+    if matches!(
+        m,
+        Mirror::NeedsSetup { .. } | Mirror::Closed | Mirror::Refused
+    ) {
         page.push(ui::section(
             "connect",
             "How to connect",
@@ -141,6 +154,7 @@ mod tests {
                 ("Needs setup", panels(&Mirror::NeedsSetup { bad: false })),
                 ("Wrong file", panels(&Mirror::NeedsSetup { bad: true })),
                 ("iCUE closed", panels(&Mirror::Closed)),
+                ("iCUE said no", panels(&Mirror::Refused)),
                 (
                     "No device",
                     panels(&Mirror::NoDevice {

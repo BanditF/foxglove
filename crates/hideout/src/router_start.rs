@@ -148,6 +148,26 @@ pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(suffix);
     let (side, feed) = panel_feed::feed(hub.clone());
+    // `hideout.appwatch` (§4.6, v1.7): only the apps the manifests ask about, by name from the
+    // manifests; with none it doesn't run. Its facts go through the router like any hub fact.
+    let apps: std::collections::BTreeSet<String> =
+        manifests.iter().flat_map(|m| m.watched_apps()).collect();
+    if !apps.is_empty() {
+        log::info!("appwatch: watching {} app(s)", apps.len());
+    }
+    let h = hub.clone();
+    hideout_appwatch::start(
+        apps,
+        home,
+        Box::new(move |changes| {
+            h.act(|r| {
+                changes
+                    .into_iter()
+                    .flat_map(|(k, v)| r.publish(&k, v))
+                    .collect()
+            })
+        }),
+    );
     for m in manifests {
         side.manifest(m);
     }

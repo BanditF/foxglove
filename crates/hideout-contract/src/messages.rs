@@ -265,8 +265,27 @@ pub enum Recovery {
 
 /// Checks a value of a fact the hub's supervisor publishes (`module.<id>.restart`,
 /// `module.<id>.recovery`, `module.<id>.previous`, `module.<id>.failed`; spec v1.4). Other keys
-/// are not this check's: `Ok`.
+/// are not this check's: `Ok`. Also the app watch's facts (§4.6): `apps.seen.<name>` is `true`
+/// or `null`, `apps.running.<name>` (v1.7) is `true`, `false` or `null`, and `<name>` is one
+/// app label.
 pub fn check_hub_fact(key: &str, value: &serde_json::Value) -> Result<(), String> {
+    if key.starts_with("apps.") {
+        let Some(label) = crate::module::app_fact_label(key) else {
+            return Err(format!(
+                "{key} is not apps.seen.<name> or apps.running.<name>"
+            ));
+        };
+        if crate::module::app_label(label).as_deref() != Some(label) {
+            return Err(format!("{label:?} is not an app label"));
+        }
+        let running = key.starts_with("apps.running.");
+        return match value {
+            serde_json::Value::Null | serde_json::Value::Bool(true) => Ok(()),
+            serde_json::Value::Bool(false) if running => Ok(()),
+            _ if running => Err("apps.running.<name> is true, false or null".into()),
+            _ => Err("apps.seen.<name> is true or null".into()),
+        };
+    }
     let Some(rest) = key.strip_prefix("module.") else {
         return Ok(());
     };
