@@ -39,10 +39,37 @@ pub fn keyboard_shows(connected: bool, status: Option<ArtStatus>) -> Option<Stri
     Some(format!("{state}, set {}", st.right_set))
 }
 
-/// The keyboard's side now, from the art service.
+/// The same in the health page's words (no relay state names, `art_words`): "a piece sent from
+/// this PC", "the piece kept in place 2", "a piece that comes with the keyboard"; `None` when
+/// [`keyboard_shows`] is.
+pub fn what_shows(connected: bool, status: Option<ArtStatus>) -> Option<String> {
+    keyboard_shows(connected, status)?;
+    Some(match showing(&status?) {
+        Showing::Sent => "a piece sent from this PC".into(),
+        Showing::Kept(n) => format!("the piece kept in place {}", u16::from(n) + 1),
+        Showing::BuiltIn(_) => "a piece that comes with the keyboard".into(),
+        Showing::Other(_) => return None,
+    })
+}
+
+/// The keyboard's side now, from the art service, in the page's words.
 pub fn keyboard_now() -> Option<String> {
     let s = super::art_service::handle()?.snapshot();
-    keyboard_shows(s.connected, s.status)
+    what_shows(s.connected, s.status)
+}
+
+/// Why a piece goes without its frames (`art.missing`), in the page's words.
+pub fn why(missing: Option<&str>) -> &'static str {
+    match missing {
+        Some(wire::MISSING_NOT_ON_PC) => "this PC has no copy of it",
+        Some(wire::MISSING_PUSHED_UNKNOWN) => "sent earlier, and Foxglove has no record of it",
+        Some(wire::MISSING_OTHER_FIRMWARE) => {
+            "the keyboard's firmware is one Foxglove doesn't know"
+        }
+        Some(wire::MISSING_UNREADABLE) => "its file can't be read",
+        Some(wire::MISSING_TOO_BIG) => "too big for the wallpaper",
+        _ => "reason unknown",
+    }
 }
 
 /// The `art` the feed published last, as far as the row needs it.
@@ -141,14 +168,16 @@ fn ago(at: Instant, now: Instant) -> String {
     }
 }
 
-/// The `feed_art` row: the keyboard's side now against the feed's.
-pub fn row(feed: Option<&Feed>, keyboard: Option<&str>, now: Instant) -> Option<HealthRow> {
+/// The `feed_art` row: the keyboard's side now (`what`, [`what_shows`]) against the feed's.
+/// "Without its frames" stays Ok: the wallpaper labels that placeholder with the reason, and
+/// some reasons last (firmware without SLOT_READ, a firmware Foxglove doesn't know).
+pub fn row(feed: Option<&Feed>, what: Option<&str>, now: Instant) -> Option<HealthRow> {
     let feed = feed?;
-    let keyboard = keyboard?;
+    let what = what?;
     let (level, detail) = match &feed.art {
         None => {
             let mut d = format!(
-                "the keyboard shows art ({keyboard}) but the live feed has none: the wallpaper shows its placeholder"
+                "the right screen shows {what}, but the wallpaper has no art for it and shows its placeholder"
             );
             if let Some(t) = feed.gap_since {
                 d.push_str(&format!(", for {}", ago(t, now)));
@@ -158,11 +187,7 @@ pub fn row(feed: Option<&Feed>, keyboard: Option<&str>, now: Instant) -> Option<
         Some(a) if a.frames => (Level::Ok, format!("{}, with its frames", a.name)),
         Some(a) => (
             Level::Ok,
-            format!(
-                "{}, without its frames ({})",
-                a.name,
-                a.missing.unwrap_or("unknown")
-            ),
+            format!("{}, without its frames ({})", a.name, why(a.missing)),
         ),
     };
     Some(HealthRow::new(SUBSYSTEM, ITEM, level, detail))
@@ -234,13 +259,76 @@ mod tests {
         assert_eq!(keyboard_shows(true, None), None);
     }
 
+    /// The page's words for what shows (no relay state names or set numbers): by
+    /// `art_words::showing`, a kept place counted from 1.
+    #[test]
+    fn the_page_says_what_shows_in_plain_words() {
+        let kept = |state| ArtStatus {
+            flash_slots: 4,
+            ..status(state, 7)
+        };
+        let cases = [
+            (
+                status(right_state::PLAYING, -1),
+                Some("a piece sent from this PC"),
+            ),
+            (
+                status(right_state::SAVED, -1),
+                Some("a piece sent from this PC"),
+            ),
+            (kept(right_state::SAVED), Some("the piece kept in place 2")),
+            (
+                kept(right_state::BUILT_IN),
+                Some("the piece kept in place 2"),
+            ),
+            (
+                status(right_state::BUILT_IN, 2),
+                Some("a piece that comes with the keyboard"),
+            ),
+            (status(right_state::RECEIVING, -1), None),
+        ];
+        for (st, want) in cases {
+            assert_eq!(what_shows(true, Some(st)).as_deref(), want, "{st:?}");
+        }
+        assert_eq!(
+            what_shows(false, Some(status(right_state::PLAYING, -1))),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_frames_say_why_in_plain_words() {
+        assert_eq!(
+            why(Some(wire::MISSING_NOT_ON_PC)),
+            "this PC has no copy of it"
+        );
+        assert_eq!(
+            why(Some(wire::MISSING_PUSHED_UNKNOWN)),
+            "sent earlier, and Foxglove has no record of it"
+        );
+        assert_eq!(
+            why(Some(wire::MISSING_OTHER_FIRMWARE)),
+            "the keyboard's firmware is one Foxglove doesn't know"
+        );
+        assert_eq!(
+            why(Some(wire::MISSING_UNREADABLE)),
+            "its file can't be read"
+        );
+        assert_eq!(
+            why(Some(wire::MISSING_TOO_BIG)),
+            "too big for the wallpaper"
+        );
+        assert_eq!(why(Some("something_new")), "reason unknown");
+        assert_eq!(why(None), "reason unknown");
+    }
+
     /// #1053: the keyboard plays a piece, the feed says `art: null` (the NO FRAMES restart):
     /// Warn with the reason. With art, frames or not, Ok; with the feed off or nothing on the
     /// keyboard, no row.
     #[test]
     fn the_row_warns_when_the_keyboard_shows_art_and_the_feed_has_none() {
         let now = Instant::now();
-        let kb = Some("playing pushed set, set -1");
+        let kb = Some("a piece sent from this PC");
         let gap = Feed {
             art: None,
             gap_since: Some(now - Duration::from_secs(90)),
@@ -252,8 +340,8 @@ mod tests {
         );
         assert_eq!(
             r.detail,
-            "the keyboard shows art (playing pushed set, set -1) but the live feed has none: the \
-             wallpaper shows its placeholder, for 1 min"
+            "the right screen shows a piece sent from this PC, but the wallpaper has no art for it \
+             and shows its placeholder, for 1 min"
         );
         // The hub hasn't seen the gap yet (a read between the keyboard's change and the hub's):
         // still Warn, without a "for".
@@ -277,7 +365,7 @@ mod tests {
         };
         assert_eq!(
             row(Some(&without), kb, now).unwrap().detail,
-            "fury, without its frames (pushed_unknown)"
+            "fury, without its frames (sent earlier, and Foxglove has no record of it)"
         );
         assert_eq!(row(None, kb, now), None, "the feed is off");
         assert_eq!(row(Some(&gap), None, now), None, "nothing on the keyboard");

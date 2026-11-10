@@ -132,7 +132,9 @@ guess from its key count), and no `keys` are sent. A change of keyboard sends a 
 - **Checked against the keyboard (#1053):** while the feed runs, the health view's `feed_art`
   row ("Live wallpaper art", subsystem `live_feed.feed_art`) compares, when read, what the
   keyboard's right half reports showing with the `art` the feed last published: Warn when the
-  keyboard shows a piece and the feed has `art: null`. The feed logs one line
+  keyboard shows a piece and the feed has `art: null`, in plain words ("the right screen shows a
+  piece sent from this PC, but the wallpaper has no art for it…"; a piece without frames says why,
+  e.g. "this PC has no copy of it"). The feed logs one line with the raw state
   (`live feed: no art for <right state>, set <n>`) each time it steps into that, not per message.
 - **One name:** `art.name` is always the name `state.art` gives the piece at the same moment, so
   a wallpaper can draw the frames only while the two agree.
