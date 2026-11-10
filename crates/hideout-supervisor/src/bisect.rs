@@ -610,7 +610,8 @@ pub fn tray(s: &Search) -> Option<Tray> {
     use words as w;
     let stop = s.active();
     let (line, start_next) = match s.phase {
-        Phase::Running | Phase::Paused | Phase::Asked => (w::tray_round(s.round, s.bound), None),
+        Phase::Running => (w::tray_round(s.round, s.bound), None),
+        Phase::Paused | Phase::Asked => (w::tray_paused(s.round), None),
         Phase::Closed => (w::tray_closed(s.round), Some(w::start_round(s.round + 1))),
         Phase::Found { .. } => (w::TRAY_FOUND.into(), None),
         Phase::NotFound | Phase::HubItself => return None,
@@ -840,6 +841,11 @@ pub mod words {
         format!("Hideout \u{b7} finding the module (round {k} of {n})")
     }
 
+    /// Nothing is on while paused or asked, so the tray doesn't say "finding" (designer, #1050).
+    pub fn tray_paused(k: u32) -> String {
+        format!("Hideout \u{b7} round {k} paused")
+    }
+
     pub fn tray_closed(k: u32) -> String {
         format!("Hideout \u{b7} round {k} closed, start round {}", k + 1)
     }
@@ -902,6 +908,7 @@ pub mod words {
             go_back("Art", "0.4.2"),
             check_one("Art"),
             tray_round(2, 4),
+            tray_paused(2),
             tray_closed(2),
             off_for_round("Art"),
         ]);
@@ -1025,6 +1032,7 @@ mod tests {
         s.after_exit(Exit::Clean);
         assert_eq!(s.phase, Phase::Paused);
         assert!(s.on_ids().is_empty(), "nothing on while paused");
+        assert_eq!(tray(&s).unwrap().line, "Hideout \u{b7} round 1 paused");
         assert!(s.go_on());
         assert_eq!(
             (s.phase, s.round, s.on.clone()),
