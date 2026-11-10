@@ -38,6 +38,7 @@ fn hub_in(dir: &std::path::Path, feed: Option<Box<dyn PanelFeed>>) -> Hub {
         prefs: Mutex::new(Prefs::default()),
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
+        flyout_click: Mutex::new(None),
     });
     let pages: Vec<Box<dyn Page>> = vec![
         Box::new(FakePage("modules", "Modules")),
@@ -786,4 +787,151 @@ fn renders_the_tray_panel_for_review() {
     })
     .unwrap();
     save_png("built-page-keys-settings.png", w, h, rgba);
+}
+
+/// A frame with no input on the hub's own context, returning whether it asked for a repaint.
+fn quiet_frame(ctx: &egui::Context, hub: &mut Hub, events: Vec<Event>) -> bool {
+    let out = ctx.run(input(960.0, 640.0, events), |ctx| hub.frame(ctx));
+    out.viewport_output[&egui::ViewportId::ROOT].repaint_delay != std::time::Duration::MAX
+}
+
+fn tray_click(hub: &Hub) {
+    let icon = placement::Rect {
+        x: 1800,
+        y: 1044,
+        w: 24,
+        h: 24,
+    };
+    *hub.shared.flyout_click.lock().unwrap() = Some((icon, std::time::Instant::now()));
+}
+
+/// The tray flyout with the main window hidden (#991, #935): a tray click opens it in the next
+/// frame, it then settles (no repaint asked, so `wake::Gate` stops running frames), Esc closes
+/// it and the frame after that drops it; a click while it is open closes it.
+#[test]
+fn the_flyout_opens_settles_and_closes_while_the_hub_is_hidden() {
+    let ctx = ctx();
+    let mut hub = hub_in(&temp_dir("flyout"), None);
+    hub.shared.hidden.store(true, Ordering::Release);
+    for _ in 0..3 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    assert!(hub.flyout.is_none());
+    tray_click(&hub);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    assert!(hub.flyout.is_some(), "a tray click opens the flyout");
+    // Its first frames look for its window (none here) and then show it where it is.
+    for _ in 0..6 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    for pass in 0..3 {
+        assert!(
+            !quiet_frame(&ctx, &mut hub, vec![]),
+            "open flyout pass {pass} asked for a repaint"
+        );
+    }
+    assert!(hub.flyout.is_some(), "it stays open without input");
+    quiet_frame(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
+    assert!(hub.flyout.is_none(), "Esc closes it");
+    for _ in 0..2 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    assert!(
+        !quiet_frame(&ctx, &mut hub, vec![]),
+        "the closed flyout leaves a hidden hub that asks for nothing"
+    );
+    // A click opens it, the next click closes it.
+    tray_click(&hub);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    assert!(hub.flyout.is_some());
+    tray_click(&hub);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    assert!(hub.flyout.is_none());
+    // Closed by focus loss a moment ago: that click was the same click, so it stays closed.
+    hub.flyout_closed_by_focus = Some(std::time::Instant::now());
+    tray_click(&hub);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    assert!(hub.flyout.is_none());
+}
+
+/// The tile layout (order, hidden, shown) lives in `hideout.toml` `[tray]` and comes back with
+/// the next hub; other keys stay.
+#[test]
+fn the_tile_layout_is_saved_in_hideout_toml() {
+    let dir = temp_dir("tray-layout");
+    let hub = {
+        let mut hub = hub_in(&dir, None);
+        hub.tray_layout.order = vec!["b.m/tile".into(), "a.m/tile".into()];
+        hub.tray_layout.hidden.insert("c.m/tile".into());
+        hub.tray_layout.shown.insert("d.m/tile".into());
+        hub.save_tray_layout();
+        hub
+    };
+    let file = hub.shared.paths.prefs_file();
+    let (prefs, err) = Prefs::load(&file);
+    assert_eq!(err, None);
+    assert_eq!(prefs.tray.order, ["b.m/tile", "a.m/tile"]);
+    assert_eq!(prefs.tray.hidden, ["c.m/tile"]);
+    assert_eq!(prefs.tray.shown, ["d.m/tile"]);
+    let shared = Arc::new(Shared {
+        paths: hub.shared.paths.clone(),
+        prefs: Mutex::new(prefs),
+        paused: AtomicBool::new(false),
+        hidden: AtomicBool::new(false),
+        flyout_click: Mutex::new(None),
+    });
+    let again = Hub::new(shared, Vec::new(), None, None);
+    assert_eq!(again.tray_layout, hub.tray_layout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The flyout for the review (#991): the default tiles, all five once their apps were seen,
+/// and Edit tiles, each at the size the flyout opens with.
+#[test]
+fn renders_the_flyout_for_review() {
+    let (mut host, ids) = review_modules();
+    if ids.is_empty() {
+        eprintln!("no module vectors; flyout review skipped");
+        return;
+    }
+    let t = theme::tokens(true);
+    let w = flyout::WIDTH as u32;
+    let draw = |host: &mut hideout_panels::PanelHost, name: &str, editing: bool| {
+        let mut layout = TrayLayout::default();
+        // Measure first, then draw at the height the flyout would take.
+        let mut height = flyout::FIRST_HEIGHT;
+        let mut ed = editing;
+        rasterise(w, 900, |c| {
+            egui::CentralPanel::default()
+                .frame(flyout_frame(&t))
+                .show(c, |ui| {
+                    height = flyout_panel(ui, host, &mut layout, &mut ed).1
+                });
+        })?;
+        let h = height.ceil() as u32;
+        let mut ed = editing;
+        let rgba = rasterise(w, h, |c| {
+            egui::CentralPanel::default()
+                .frame(flyout_frame(&t))
+                .show(c, |ui| flyout_panel(ui, host, &mut layout, &mut ed));
+        })?;
+        save_png(name, w, h, rgba);
+        Some(())
+    };
+    if draw(&mut host, "built-flyout-default.png", false).is_none() {
+        eprintln!("no system font; flyout review skipped");
+        return;
+    }
+    let whens: Vec<String> = host
+        .manifests()
+        .flat_map(|m| m.panels.iter().filter_map(|p| p.when.clone()))
+        .collect();
+    for w in whens {
+        host.set_fact(w.trim_start_matches('!'), serde_json::json!(true));
+    }
+    for id in &ids {
+        host.set_fact(&format!("module.{id}.state"), serde_json::json!("running"));
+    }
+    draw(&mut host, "built-flyout-all.png", false);
+    draw(&mut host, "built-flyout-edit.png", true);
 }

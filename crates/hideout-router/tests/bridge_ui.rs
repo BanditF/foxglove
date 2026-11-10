@@ -190,6 +190,18 @@ fn ui_event_action_invoke_and_visibility_reach_a_bridged_plugin() {
             value: json!("restarting")
         }
     );
+
+    // ui.badge: a module notification for the panel host (v1.3), passed unchanged (#991).
+    send(json!({"jsonrpc":"2.0","method":"ui.badge",
+        "params":{"panel": "tile", "badge": "count", "count": 3}}));
+    let b = recv(&rx, |o| matches!(o, Out::Badge { .. }));
+    assert_eq!(
+        b,
+        Out::Badge {
+            module: ID.into(),
+            params: json!({"panel": "tile", "badge": "count", "count": 3})
+        }
+    );
 }
 
 #[test]

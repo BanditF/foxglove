@@ -138,6 +138,10 @@ pub fn sync_hidden(host: &mut PanelHost, layout: &TrayLayout) {
     }
 }
 
+/// The microphone from Windows' icon font (Segoe Fluent Icons, or Segoe MDL2 Assets on
+/// Windows 10; the hub loads it after its text fonts).
+pub const MIC_GLYPH: &str = "\u{E720}";
+
 /// The glyph for a published icon name (§5.1 v1.4, `ICONS`), from the system symbol font. An
 /// unknown name draws the generic module glyph, so a newer name degrades on an older hub.
 pub fn icon_glyph(name: &str) -> &'static str {
@@ -162,7 +166,8 @@ pub fn icon_glyph(name: &str) -> &'static str {
         "lights" => "\u{1F4A1}",
         "link" => "\u{1F517}",
         "lock" => "\u{1F512}",
-        "mic" => "\u{1F3A4}",
+        // Segoe's icon font (Microphone): Segoe UI Symbol's U+1F3A4 reads as a pen at tile size.
+        "mic" => MIC_GLYPH,
         "music" => "\u{266B}",
         "palette" => "\u{1F3A8}",
         "play" => "\u{25B6}",

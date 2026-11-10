@@ -14,6 +14,9 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Open,
+    /// A left click on the icon: open or close the tray flyout above the icon (its rectangle,
+    /// physical pixels).
+    Flyout(crate::placement::Rect),
     Pause(bool),
     OpenLogs,
     Quit,
@@ -109,12 +112,14 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
         menu_cmd(cmd);
     }));
     TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| match ev {
+        // A click opens the tray flyout (#991); a double click opens Hideout itself.
         TrayIconEvent::Click {
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
+            rect,
             ..
-        }
-        | TrayIconEvent::DoubleClick {
+        } => on_command(Command::Flyout(icon_rect(&rect))),
+        TrayIconEvent::DoubleClick {
             button: MouseButton::Left,
             ..
         } => on_command(Command::Open),
@@ -126,6 +131,16 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
         _ => {}
     }));
     Ok(())
+}
+
+/// The icon's rectangle in physical pixels.
+fn icon_rect(r: &tray_icon::Rect) -> crate::placement::Rect {
+    crate::placement::Rect {
+        x: r.position.x.round() as i32,
+        y: r.position.y.round() as i32,
+        w: r.size.width as i32,
+        h: r.size.height as i32,
+    }
 }
 
 /// tray-icon 0.24's private timer id for its leave check (`WM_USER_LEAVE_TIMER_ID`).

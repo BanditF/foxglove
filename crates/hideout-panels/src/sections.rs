@@ -195,7 +195,8 @@ fn setting_row(
 }
 
 /// One `[[secrets]]` row: a masked field, never filled with the stored value. Once saved it
-/// reads "Saved" with **Change**. The typed text is sent on Enter or **Save**.
+/// reads "Saved" with **Change**; then **Cancel** goes back to "Saved". The typed text is sent
+/// on Enter or **Save**.
 fn secret_row(
     ui: &mut Ui,
     host: &mut PanelHost,
@@ -222,7 +223,7 @@ fn secret_row(
     let mut text = ui
         .data_mut(|d| d.get_temp::<String>(id))
         .unwrap_or_default();
-    let (r, save) = ui
+    let (r, save, cancel) = ui
         .horizontal(|ui| {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut text)
@@ -233,9 +234,18 @@ fn secret_row(
             let save = ui
                 .add_enabled(!text.is_empty(), egui::Button::new("Save"))
                 .clicked();
-            (r, save)
+            // After Change, Cancel keeps the saved value and drops what was typed (#991).
+            let cancel = saved && ui.button("Cancel").clicked();
+            (r, save, cancel)
         })
         .inner;
+    if cancel {
+        ui.data_mut(|d| {
+            d.remove::<String>(id);
+            d.remove::<bool>(changing_id);
+        });
+        return None;
+    }
     if r.changed() {
         ui.data_mut(|d| d.insert_temp(id, text.clone()));
     }

@@ -1,0 +1,203 @@
+// SPDX-License-Identifier: MIT
+//! The tray flyout (#991): a small hub-owned window above the tray icon that holds the tray
+//! panel's tile grid while the main window stays hidden. This module is its pure part: where the
+//! flyout goes for a taskbar on any edge, when a tray click opens or closes it, and the flag the
+//! event loop reads (`wake::Gate`). The window itself is drawn by `shell`, placed by `platform`.
+//!
+//! All rectangles are physical pixels in virtual screen coordinates.
+
+use crate::placement::Rect;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+/// The flyout's width in points: two tiles and the panel's margins.
+pub const WIDTH: f32 = 2.0 * 250.0 + 8.0 + 2.0 * 14.0;
+/// The height it opens with, in points, before its first frame measures the grid.
+pub const FIRST_HEIGHT: f32 = 320.0;
+/// The gap between the flyout and the taskbar or the screen edge, in points.
+pub const GAP: f32 = 12.0;
+/// A tray click this soon after the flyout closed because the click took its focus is the same
+/// click: it leaves the flyout closed (a toggle), instead of opening it again.
+pub const TOGGLE_WINDOW: Duration = Duration::from_millis(400);
+
+/// The screen edge the taskbar is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Bottom,
+    Top,
+    Left,
+    Right,
+}
+
+/// The taskbar's edge: the side where the work area is short of the monitor. With the taskbar
+/// set to hide itself the work area is the whole monitor, so the edge the icon is nearest wins.
+pub fn taskbar_edge(icon: Rect, monitor: Rect, work: Rect) -> Edge {
+    let (mb, wb) = (monitor.y + monitor.h, work.y + work.h);
+    let (mr, wr) = (monitor.x + monitor.w, work.x + work.w);
+    if wb < mb {
+        return Edge::Bottom;
+    }
+    if work.y > monitor.y {
+        return Edge::Top;
+    }
+    if work.x > monitor.x {
+        return Edge::Left;
+    }
+    if wr < mr {
+        return Edge::Right;
+    }
+    let (cx, cy) = icon.center();
+    [
+        (mb - cy, Edge::Bottom),
+        (cy - monitor.y, Edge::Top),
+        (cx - monitor.x, Edge::Left),
+        (mr - cx, Edge::Right),
+    ]
+    .into_iter()
+    .min_by_key(|(d, _)| *d)
+    .map(|(_, e)| e)
+    .unwrap_or(Edge::Bottom)
+}
+
+/// Where a flyout of `size` (physical pixels) goes for the tray icon at `icon`: against the
+/// taskbar's edge, `gap` from it, centred on the icon along that edge and kept `gap` inside the
+/// work area (and inside the icon's side of an auto-hidden taskbar).
+pub fn place(icon: Rect, monitor: Rect, work: Rect, size: (i32, i32), gap: i32) -> Rect {
+    let (w, h) = size;
+    let edge = taskbar_edge(icon, monitor, work);
+    let (cx, cy) = icon.center();
+    let clamp = |v: i32, lo: i32, hi: i32| if hi < lo { lo } else { v.clamp(lo, hi) };
+    let x_along = clamp(cx - w / 2, work.x + gap, work.x + work.w - w - gap);
+    let y_along = clamp(cy - h / 2, work.y + gap, work.y + work.h - h - gap);
+    let (x, y) = match edge {
+        Edge::Bottom => (x_along, (work.y + work.h).min(icon.y) - h - gap),
+        Edge::Top => (x_along, work.y.max(icon.y + icon.h) + gap),
+        Edge::Left => (work.x.max(icon.x + icon.w) + gap, y_along),
+        Edge::Right => ((work.x + work.w).min(icon.x) - w - gap, y_along),
+    };
+    Rect { x, y, w, h }
+}
+
+/// What a tray click does to the flyout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Click {
+    Open,
+    Close,
+    /// The click already closed it (it took the flyout's focus): stay closed.
+    Nothing,
+}
+
+/// A left click on the tray icon: opens a closed flyout, closes an open one. A flyout that just
+/// closed on focus loss was closed by this very click, so it stays closed.
+pub fn on_click(open: bool, closed_by_focus_at: Option<Instant>, now: Instant) -> Click {
+    if open {
+        return Click::Close;
+    }
+    match closed_by_focus_at {
+        Some(t) if now.saturating_duration_since(t) < TOGGLE_WINDOW => Click::Nothing,
+        _ => Click::Open,
+    }
+}
+
+/// True while the flyout's window exists (from the frame that shows it to the frame after it
+/// closes, which drops the window). `wake::Gate` reads it: the flyout is drawn by the main
+/// window's frame, so a hidden main window must still get frames while it is up (#935).
+static LIVE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_live(live: bool) {
+    LIVE.store(live, Ordering::Release);
+}
+
+pub fn live() -> bool {
+    LIVE.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MON: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    };
+    const SIZE: (i32, i32) = (536, 400);
+
+    fn icon(x: i32, y: i32) -> Rect {
+        Rect { x, y, w: 24, h: 24 }
+    }
+
+    #[test]
+    fn bottom_taskbar_puts_it_above_the_icon_inside_the_work_area() {
+        let work = Rect { h: 1032, ..MON };
+        assert_eq!(taskbar_edge(icon(1800, 1044), MON, work), Edge::Bottom);
+        let r = place(icon(1800, 1044), MON, work, SIZE, 12);
+        // Centred on the icon would run off the right: kept 12 px inside.
+        assert_eq!(
+            r,
+            Rect {
+                x: 1920 - 536 - 12,
+                y: 1032 - 400 - 12,
+                w: 536,
+                h: 400
+            }
+        );
+        let r = place(icon(900, 1044), MON, work, SIZE, 12);
+        assert_eq!(r.x, 912 - 268);
+    }
+
+    #[test]
+    fn top_left_and_right_taskbars() {
+        let top = Rect {
+            y: 48,
+            h: 1032,
+            ..MON
+        };
+        let r = place(icon(1800, 12), MON, top, SIZE, 12);
+        assert_eq!((r.y, r.x + r.w), (60, 1908));
+        let left = Rect {
+            x: 60,
+            w: 1860,
+            ..MON
+        };
+        let r = place(icon(18, 1000), MON, left, SIZE, 12);
+        assert_eq!((r.x, r.y + r.h), (72, 1068));
+        let right = Rect { w: 1860, ..MON };
+        let r = place(icon(1878, 500), MON, right, SIZE, 12);
+        assert_eq!((r.x + r.w, r.y), (1848, 312));
+    }
+
+    #[test]
+    fn an_auto_hidden_taskbar_goes_by_the_nearest_edge_and_clears_the_icon() {
+        assert_eq!(taskbar_edge(icon(1800, 1050), MON, MON), Edge::Bottom);
+        assert_eq!(taskbar_edge(icon(1800, 4), MON, MON), Edge::Top);
+        assert_eq!(taskbar_edge(icon(2, 500), MON, MON), Edge::Left);
+        let r = place(icon(1800, 1050), MON, MON, SIZE, 12);
+        assert_eq!(r.y + r.h, 1050 - 12);
+    }
+
+    #[test]
+    fn a_second_monitor_left_of_the_primary() {
+        let mon = Rect {
+            x: -2560,
+            y: 0,
+            w: 2560,
+            h: 1440,
+        };
+        let work = Rect { h: 1392, ..mon };
+        let r = place(icon(-100, 1404), mon, work, (804, 600), 18);
+        assert_eq!((r.x + r.w, r.y + r.h), (-18, 1392 - 18));
+    }
+
+    #[test]
+    fn a_click_toggles_and_the_closing_click_does_not_reopen() {
+        let now = Instant::now();
+        assert_eq!(on_click(false, None, now), Click::Open);
+        assert_eq!(on_click(true, None, now), Click::Close);
+        let just = now - Duration::from_millis(80);
+        assert_eq!(on_click(false, Some(just), now), Click::Nothing);
+        let long_ago = now - Duration::from_secs(3);
+        assert_eq!(on_click(false, Some(long_ago), now), Click::Open);
+    }
+}

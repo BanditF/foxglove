@@ -12,6 +12,11 @@
 //! The fix: while the window is hidden, a `Poll` left over at `about_to_wait` becomes a wait.
 //! Showing the window paints it (Windows sends `WM_PAINT` on show), so no frame is lost.
 //!
+//! The tray flyout (#991) is an immediate viewport: eframe draws it inside the main window's
+//! frame, and asks the main window for a frame whenever the flyout needs one. While the main
+//! window is hidden that frame would never come, so while the flyout is up a due frame is run
+//! here directly (`hidden_pass`). With the flyout closed nothing changes: the hidden hub waits.
+//!
 //! It also counts loop wakes and logs one line per 10 minutes, so a live check can prove the
 //! hidden hub sleeps. The report timer is the only wake of a fully idle hub.
 
@@ -34,6 +39,13 @@ pub fn settle(flow: ControlFlow, drawable: bool, report_at: Instant) -> ControlF
         ControlFlow::Poll | ControlFlow::Wait => ControlFlow::WaitUntil(report_at),
         ControlFlow::WaitUntil(t) => ControlFlow::WaitUntil(t.min(report_at)),
     }
+}
+
+/// Whether the hidden main window must run a frame now: eframe has one due (`Poll`), the window
+/// is hidden (so `RedrawRequested` won't come), and a window drawn from its frame is up (the
+/// tray flyout). Never true with the flyout closed: the hidden, idle hub keeps waiting (#935).
+pub fn hidden_pass(flow: ControlFlow, drawable: bool, side_live: bool) -> bool {
+    flow == ControlFlow::Poll && !drawable && side_live
 }
 
 /// Counts event-loop wakes and says, once per [`REPORT_EVERY`], how many there were.
@@ -78,14 +90,25 @@ pub struct Gate<A> {
     app: A,
     wakes: WakeCount,
     drawable: fn() -> bool,
+    /// A window drawn from the main window's frame is up (the tray flyout).
+    side_live: fn() -> bool,
+    /// The main window, to run its frame while it is hidden.
+    root: fn() -> Option<WindowId>,
 }
 
 impl<A> Gate<A> {
-    pub fn new(app: A, drawable: fn() -> bool) -> Self {
+    pub fn new(
+        app: A,
+        drawable: fn() -> bool,
+        side_live: fn() -> bool,
+        root: fn() -> Option<WindowId>,
+    ) -> Self {
         Self {
             app,
             wakes: WakeCount::new(Instant::now()),
             drawable,
+            side_live,
+            root,
         }
     }
 }
@@ -116,9 +139,19 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.app.about_to_wait(event_loop);
+        let drawable = (self.drawable)();
+        if hidden_pass(event_loop.control_flow(), drawable, (self.side_live)()) {
+            if let Some(root) = (self.root)() {
+                // eframe's own frame path, as Windows would run it for a shown window.
+                self.app
+                    .window_event(event_loop, root, WindowEvent::RedrawRequested);
+            }
+        }
+        // While the flyout is up, a frame it still wants keeps the loop turning (as a shown
+        // window's would); it stops asking once it settles, and closing it drops the flag.
         let flow = settle(
             event_loop.control_flow(),
-            (self.drawable)(),
+            drawable || (self.side_live)(),
             self.wakes.report_at(),
         );
         event_loop.set_control_flow(flow);
@@ -167,6 +200,22 @@ mod tests {
                 ControlFlow::WaitUntil(report)
             );
         }
+    }
+
+    #[test]
+    fn a_hidden_window_runs_frames_only_while_the_flyout_is_up() {
+        use ControlFlow::*;
+        let soon = Instant::now() + Duration::from_millis(16);
+        // Flyout closed: never, whatever eframe wants (the #935 wait stands).
+        for flow in [Poll, Wait, WaitUntil(soon)] {
+            assert!(!hidden_pass(flow, false, false));
+            assert!(!hidden_pass(flow, true, false));
+        }
+        // Flyout up: only a due frame (Poll) of a hidden window.
+        assert!(hidden_pass(Poll, false, true));
+        assert!(!hidden_pass(Poll, true, true));
+        assert!(!hidden_pass(Wait, false, true));
+        assert!(!hidden_pass(WaitUntil(soon), false, true));
     }
 
     #[test]

@@ -11,10 +11,10 @@ use crate::status::{self, Item};
 use crate::strip::{self, Action, Shortcut, StripState};
 use crate::tabs::{Look, Mark, TabId, TabState, Tabs};
 use crate::theme::{self, Rgb, Tokens};
-use crate::{placement, platform, tray, window_title, AUMID, PRODUCT};
+use crate::{flyout, placement, platform, tray, window_title, AUMID, PRODUCT};
 use eframe::egui::{self, Color32, Key, Modifiers};
 use hideout_panels::Slot;
-use hideout_panels::{PanelFeed, PanelHost, PanelKey, PanelState};
+use hideout_panels::{PanelFeed, PanelHost, PanelKey, PanelState, TrayAction, TrayLayout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -57,6 +57,8 @@ struct Shared {
     paused: AtomicBool,
     /// The window is closed to the tray: every tab reads `hidden` (§5.9).
     hidden: AtomicBool,
+    /// A left click on the tray icon (the icon's rectangle and when), for the next frame.
+    flyout_click: Mutex<Option<(placement::Rect, std::time::Instant)>>,
 }
 
 impl Shared {
@@ -130,6 +132,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         prefs: Mutex::new(prefs),
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
+        flyout_click: Mutex::new(None),
     });
     let pages = opts.pages;
     let feed = opts.panels;
@@ -197,7 +200,12 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         }),
         &event_loop,
     );
-    let mut gate = crate::wake::Gate::new(app, platform::main_window_drawable);
+    let mut gate = crate::wake::Gate::new(
+        app,
+        platform::main_window_drawable,
+        flyout::live,
+        platform::main_window_id,
+    );
     let result = event_loop.run_app(&mut gate);
     log::info!("window closed: {result:?}");
     log::logger().flush();
@@ -206,6 +214,16 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
 
 fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
     match cmd {
+        tray::Command::Flyout(icon) => {
+            // The flyout is drawn by the main window's frame: ask for one even while the window
+            // is hidden (`wake::Gate` runs it while the flyout is wanted, #935).
+            if let Ok(mut c) = shared.flyout_click.lock() {
+                *c = Some((icon, std::time::Instant::now()));
+            }
+            flyout::set_live(true);
+            ctx.request_repaint();
+            return;
+        }
         tray::Command::Open => {
             shared.hidden.store(false, Ordering::Release);
             platform::show_main_window()
@@ -308,13 +326,22 @@ fn install_fonts(ctx: &egui::Context) {
         &["consola.ttf", "cour.ttf"],
         egui::FontFamily::Monospace,
     );
-    // Symbols (arrows, the middle dot) for both families.
-    if add("symbols", &["seguisym.ttf"], egui::FontFamily::Proportional) {
-        fonts
-            .families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .push("symbols".into());
+    // Symbols (arrows, the middle dot), then Windows' icon font for the published icons it
+    // draws best (the microphone), for both families.
+    let symbols = add("symbols", &["seguisym.ttf"], egui::FontFamily::Proportional);
+    let icons = add(
+        "icons",
+        &["SegoeIcons.ttf", "segmdl2.ttf"],
+        egui::FontFamily::Proportional,
+    );
+    for (name, found) in [("symbols", symbols), ("icons", icons)] {
+        if found {
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .push(name.into());
+        }
     }
     if !mono && ui {
         fonts
@@ -353,6 +380,85 @@ struct Hub {
     palette: Palette,
     /// From manifests and the registry (H2.2); empty until modules exist.
     entries: Vec<Entry>,
+    /// The tray flyout while it is open.
+    flyout: Option<FlyoutState>,
+    /// When the flyout last closed because it lost focus (a tray click's toggle).
+    flyout_closed_by_focus: Option<std::time::Instant>,
+    /// The tray panel's tile layout, saved in `hideout.toml` `[tray]`.
+    tray_layout: TrayLayout,
+}
+
+/// The open tray flyout.
+struct FlyoutState {
+    /// The tray icon it opened from (physical pixels).
+    icon: placement::Rect,
+    /// Edit tiles is open.
+    editing: bool,
+    /// It had the focus once: losing it now closes the flyout.
+    had_focus: bool,
+    /// The height (points) it was last placed with; `None` before it is first shown.
+    placed: Option<f32>,
+    /// Frames that couldn't find its window yet.
+    misses: u8,
+}
+
+/// The flyout's viewport.
+fn flyout_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("hideout.tray.flyout")
+}
+
+/// The page that Update Hideout opens: the hub has no updater of its own yet.
+pub const RELEASES_URL: &str = "https://github.com/BanditF/foxglove/releases";
+
+fn layout_from(p: &crate::prefs::TrayPrefs) -> TrayLayout {
+    TrayLayout {
+        order: p.order.clone(),
+        hidden: p.hidden.iter().cloned().collect(),
+        shown: p.shown.iter().cloned().collect(),
+    }
+}
+
+fn prefs_from(l: &TrayLayout) -> crate::prefs::TrayPrefs {
+    crate::prefs::TrayPrefs {
+        order: l.order.clone(),
+        hidden: l.hidden.iter().cloned().collect(),
+        shown: l.shown.iter().cloned().collect(),
+    }
+}
+
+/// What one flyout frame saw.
+struct FlyoutFrame {
+    focused: Option<bool>,
+    close: bool,
+    report: hideout_panels::tray::TrayReport,
+    /// The panel's height in points (the grid plus its margins).
+    height: f32,
+}
+
+/// The flyout's margin, in points.
+const FLYOUT_MARGIN: i8 = 14;
+
+/// The flyout's frame: the surface with a border.
+fn flyout_frame(t: &Tokens) -> egui::Frame {
+    egui::Frame::new()
+        .fill(c(t.surface))
+        .stroke(egui::Stroke::new(1.0_f32, c(t.border)))
+        .inner_margin(egui::Margin::same(FLYOUT_MARGIN))
+}
+
+/// The flyout's contents (the tray panel) inside its frame. Returns the report and the height
+/// the flyout needs, frame included. Window-free (the review renders it).
+fn flyout_panel(
+    ui: &mut egui::Ui,
+    panels: &mut PanelHost,
+    layout: &mut TrayLayout,
+    editing: &mut bool,
+) -> (hideout_panels::tray::TrayReport, f32) {
+    let now = std::time::Instant::now();
+    // Measured on a child: a panel's own rect is the whole window.
+    let r = ui.vertical(|ui| hideout_panels::tray_panel_ui(panels, ui, layout, editing, now));
+    let frame = 2.0 * (FLYOUT_MARGIN as f32 + 1.0);
+    (r.inner, r.response.rect.height() + frame)
 }
 
 fn key_of(id: &TabId) -> Option<PanelKey> {
@@ -391,9 +497,15 @@ impl Hub {
                 Tabs::default()
             }
         };
+        let tray_layout = shared
+            .prefs
+            .lock()
+            .map(|p| layout_from(&p.tray))
+            .unwrap_or_default();
         Self {
             shared,
             pages,
+            tray_layout,
             tabs,
             strip: StripState::default(),
             asking: None,
@@ -403,6 +515,151 @@ impl Hub {
             title: String::new(),
             palette: Palette::default(),
             entries: Vec::new(),
+            flyout: None,
+            flyout_closed_by_focus: None,
+        }
+    }
+
+    fn close_flyout(&mut self, ctx: &egui::Context, by_focus: bool) {
+        if self.flyout.take().is_some() {
+            self.panels.set_tray_open(false);
+            if by_focus {
+                self.flyout_closed_by_focus = Some(std::time::Instant::now());
+            }
+            // One more frame drops its window (it isn't shown in that frame).
+            ctx.request_repaint();
+        }
+    }
+
+    /// Shows Hideout's own window (from the flyout).
+    fn show_main(&self) {
+        self.shared.hidden.store(false, Ordering::Release);
+        platform::show_main_window();
+    }
+
+    fn save_tray_layout(&self) {
+        let Ok(mut p) = self.shared.prefs.lock() else {
+            return;
+        };
+        p.tray = prefs_from(&self.tray_layout);
+        if let Err(e) = p.save(&self.shared.paths.prefs_file()) {
+            log::warn!("saving {}: {e}", self.shared.paths.prefs_file().display());
+        }
+    }
+
+    /// The tray flyout (#991): opened and closed by tray clicks, drawn as its own window from
+    /// this frame, closed on focus loss, Esc, or anything that leaves it.
+    fn flyout_ui(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let click = self
+            .shared
+            .flyout_click
+            .lock()
+            .ok()
+            .and_then(|mut c| c.take());
+        if let Some((icon, at)) = click {
+            match flyout::on_click(self.flyout.is_some(), self.flyout_closed_by_focus, at) {
+                flyout::Click::Open => {
+                    self.flyout = Some(FlyoutState {
+                        icon,
+                        editing: false,
+                        had_focus: false,
+                        placed: None,
+                        misses: 0,
+                    });
+                    self.panels.set_tray_open(true);
+                }
+                flyout::Click::Close => self.close_flyout(ctx, false),
+                flyout::Click::Nothing => {}
+            }
+        }
+        let Some(fly) = self.flyout.as_mut() else {
+            flyout::set_live(false);
+            platform::forget_flyout();
+            return;
+        };
+        flyout::set_live(true);
+        let title = window_title("Tray");
+        let builder = egui::ViewportBuilder::default()
+            .with_title(title.clone())
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            // Shown once placed against the taskbar (no flash at a default spot).
+            .with_visible(false)
+            .with_inner_size([flyout::WIDTH, flyout::FIRST_HEIGHT]);
+        let (panels, layout) = (&mut self.panels, &mut self.tray_layout);
+        let editing = &mut fly.editing;
+        let frame = ctx.show_viewport_immediate(flyout_id(), builder, |ctx, class| {
+            let focused = ctx.input(|i| i.viewport().focused);
+            let close = ctx.input_mut(|i| {
+                i.consume_key(Modifiers::NONE, Key::Escape) || i.viewport().close_requested()
+            });
+            let draw = |ui: &mut egui::Ui| flyout_panel(ui, panels, layout, editing);
+            let (report, height) = if class == egui::ViewportClass::Embedded {
+                // No second window (tests, or a backend without viewports): an area on top.
+                egui::Area::new(egui::Id::new("hideout.tray.flyout"))
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| flyout_frame(t).show(ui, draw).inner)
+                    .inner
+            } else {
+                egui::CentralPanel::default()
+                    .frame(flyout_frame(t))
+                    .show(ctx, draw)
+                    .inner
+            };
+            FlyoutFrame {
+                focused,
+                close,
+                report,
+                height,
+            }
+        });
+        if frame.focused == Some(true) {
+            fly.had_focus = true;
+        }
+        let placed_ok = fly.placed.is_some_and(|h| (h - frame.height).abs() < 0.5);
+        if !placed_ok {
+            let first = fly.placed.is_none();
+            if platform::place_flyout(&title, fly.icon, (flyout::WIDTH, frame.height), first) {
+                fly.placed = Some(frame.height);
+            } else if fly.misses < 3 {
+                fly.misses += 1;
+                ctx.request_repaint();
+            } else if first {
+                // Its window can't be found to place: show it where Windows put it.
+                ctx.send_viewport_cmd_to(flyout_id(), egui::ViewportCommand::Visible(true));
+                fly.placed = Some(frame.height);
+            }
+        }
+        if let Some(d) = frame.report.repaint_in {
+            ctx.request_repaint_after(d);
+        }
+        let lost = fly.had_focus && frame.focused == Some(false);
+        let mut leave = frame.close || lost;
+        for a in frame.report.actions {
+            match a {
+                TrayAction::Open { module, target } => {
+                    if let Some(page) = self.panels.navigate(&module, &target) {
+                        self.open(TabId::panel(&page.module, &page.panel));
+                    }
+                    self.show_main();
+                    leave = true;
+                }
+                TrayAction::OpenHub => {
+                    self.show_main();
+                    leave = true;
+                }
+                TrayAction::UpdateHub => {
+                    log::info!("update hideout: opening {RELEASES_URL}");
+                    platform::open_url(RELEASES_URL);
+                    leave = true;
+                }
+                TrayAction::LayoutChanged => self.save_tray_layout(),
+            }
+        }
+        if leave {
+            self.close_flyout(ctx, lost && !frame.close);
         }
     }
 
@@ -966,6 +1223,7 @@ impl Hub {
             .show(ctx, |ui| self.page_area(ui, &t));
         self.ask_ui(ctx, &t);
         self.palette_ui(ctx, &t);
+        self.flyout_ui(ctx, &t);
         // Input from the panel and a change of what is on screen (ui.visibility, 5.9) go out on
         // this frame, not the next one.
         let shown = self.on_screen(ctx);
