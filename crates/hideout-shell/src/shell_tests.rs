@@ -40,6 +40,7 @@ fn hub_in(dir: &std::path::Path, feed: Option<Box<dyn PanelFeed>>) -> Hub {
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
         start_normally: None,
+        quit: QuitAsk::default(),
     });
     let pages: Vec<Box<dyn Page>> = vec![
         Box::new(FakePage("modules", "Modules")),
@@ -1171,6 +1172,7 @@ fn the_tile_layout_is_saved_in_hideout_toml() {
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
         start_normally: None,
+        quit: QuitAsk::default(),
     });
     let again = Hub::new(shared, Vec::new(), None, None);
     assert_eq!(again.tray_layout, hub.tray_layout);
@@ -2069,6 +2071,7 @@ fn renders_the_modules_page_for_review() {
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
         start_normally: None,
+        quit: QuitAsk::default(),
     });
     let pages: Vec<Box<dyn Page>> = vec![Box::new(ModulesPage(rows, false))];
     let mut hub = Hub::new(shared.clone(), pages, None, None);

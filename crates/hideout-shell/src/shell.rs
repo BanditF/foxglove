@@ -126,6 +126,16 @@ struct Shared {
     flyout_click: Mutex<Option<(placement::Rect, std::time::Instant)>>,
     /// The tray menu's Start normally.
     start_normally: Option<StartNormally>,
+    /// Quit Hideout's one ask across windows (#1012.5).
+    quit: QuitAsk,
+}
+
+/// What Quit Hideout needs from the frame: the pages with unsaved work as the last frame saw
+/// them (main window and pop-outs), and a tray Quit waiting for the frame to ask.
+#[derive(Default)]
+struct QuitAsk {
+    unsaved: Mutex<Vec<String>>,
+    wanted: AtomicBool,
 }
 
 impl Shared {
@@ -139,6 +149,27 @@ impl Shared {
         if let Err(e) = p.save(&self.paths.prefs_file()) {
             log::warn!("saving {}: {e}", self.paths.prefs_file().display());
         }
+    }
+
+    /// Quit Hideout from the tray: at once when no page has unsaved work (they close quietly),
+    /// else the main window comes forward with the one ask (#1012.5).
+    fn ask_quit(&self, ctx: &egui::Context) {
+        if !self.quit_needs_ask() {
+            self.quit();
+        }
+        self.quit.wanted.store(true, Ordering::Release);
+        self.hidden.store(false, Ordering::Release);
+        platform::show_main_window();
+        ctx.request_repaint();
+    }
+
+    /// Some page, in any window, had unsaved work on the last frame.
+    fn quit_needs_ask(&self) -> bool {
+        self.quit
+            .unsaved
+            .lock()
+            .map(|u| !u.is_empty())
+            .unwrap_or(false)
     }
 
     fn quit(&self) -> ! {
@@ -203,6 +234,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
         start_normally: opts.start_normally.clone(),
+        quit: QuitAsk::default(),
     });
     let pages = opts.pages;
     let feed = opts.panels;
@@ -233,6 +265,8 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             if let Ok(h) = cc.window_handle() {
                 if let RawWindowHandle::Win32(w) = h.as_raw() {
                     platform::set_main_window(w.hwnd.get());
+                    // The Menu key and the window menu's Quit Hideout.
+                    platform::install_main_hooks(w.hwnd.get());
                     if start_in_tray {
                         // Hidden from creation: eframe's show after the first frame is held
                         // off until the first real show (#1012).
@@ -367,7 +401,7 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
                 log::warn!("open {}: {e}", dir.display());
             }
         }
-        tray::Command::Quit => shared.quit(),
+        tray::Command::Quit => shared.ask_quit(ctx),
         tray::Command::StartNormally => match &shared.start_normally {
             Some(f) => {
                 log::info!("Start normally from the tray");
@@ -503,6 +537,12 @@ struct Hub {
     strip: StripState,
     /// "Close <Title>?" is open for these tabs.
     asking: Option<Vec<TabId>>,
+    /// "Quit Hideout?" is open (#1012.5).
+    quitting: bool,
+    /// The ask said Quit anyway, or nothing was unsaved: `update` ends the process.
+    quit_now: bool,
+    /// Pop-out window-menu picks taken at the frame's start, for the pop-out pass.
+    menu_cmds: Vec<(isize, platform::MenuCommand)>,
     panels: PanelHost,
     feed: Option<Box<dyn PanelFeed>>,
     hooks: Option<Box<dyn TabHooks>>,
@@ -771,6 +811,9 @@ impl Hub {
             tabs,
             strip: StripState::default(),
             asking: None,
+            quitting: false,
+            quit_now: false,
+            menu_cmds: Vec::new(),
             panels: PanelHost::default(),
             feed,
             hooks,
@@ -1051,6 +1094,7 @@ impl Hub {
         match self.target(&tab.id) {
             Some(Target::Page(p)) => Look {
                 title: self.pages[p].title().to_string(),
+                icon: hideout_panels::tray::icon_glyph(self.pages[p].icon()),
                 state: TabState::Live,
                 mark: Mark::None,
                 popped: tab.popped,
@@ -1079,6 +1123,7 @@ impl Hub {
                 // Restored before its module registered again (§2.4): "Starting".
                 None => Look {
                     title: tab.title.clone(),
+                    icon: hideout_panels::tray::icon_glyph(""),
                     state: TabState::Busy(hideout_panels::state_words("starting").into()),
                     mark: Mark::None,
                     popped: tab.popped,
@@ -1086,6 +1131,7 @@ impl Hub {
             },
             None => Look {
                 title: tab.title.clone(),
+                icon: hideout_panels::tray::icon_glyph(""),
                 state: TabState::Live,
                 mark: Mark::None,
                 popped: tab.popped,
@@ -1784,6 +1830,110 @@ impl Hub {
         }
     }
 
+    /// The window menus' picks since the last frame: the main window's (Quit Hideout, the Menu
+    /// key) now, the pop-outs' for the pop-out pass.
+    fn main_window_commands(&mut self, ctx: &egui::Context) {
+        let main = platform::main_hwnd();
+        for (h, cmd) in platform::take_menu_commands() {
+            if h != main || main == 0 {
+                self.menu_cmds.push((h, cmd));
+                continue;
+            }
+            match cmd {
+                platform::MenuCommand::Quit => self.request_quit(),
+                // The focused tab takes it as Shift+F10 this frame (egui has no Menu key).
+                platform::MenuCommand::MenuKey => hideout_panels::tray::menu_key(ctx),
+                _ => {}
+            }
+        }
+    }
+
+    /// Pages with unsaved work (`dirty`) in strip order, in any window: "Scenes", or
+    /// "Chat (in its own window)" for a popped-out one.
+    fn unsaved_pages(&self) -> Vec<String> {
+        self.tabs
+            .tabs()
+            .iter()
+            .enumerate()
+            .filter(|(_, tab)| self.dirty(&tab.id))
+            .map(|(i, tab)| {
+                let title = self.look(i).title;
+                if tab.popped {
+                    format!("{title} ({QUIT_IN_OWN_WINDOW})")
+                } else {
+                    title
+                }
+            })
+            .collect()
+    }
+
+    /// Quit Hideout (tray or window menu): one ask when any page has unsaved work, else quit.
+    fn request_quit(&mut self) {
+        if self.unsaved_pages().is_empty() {
+            self.quit_now = true;
+        } else {
+            // The one ask replaces a close ask or the palette that was open.
+            self.asking = None;
+            self.palette.close();
+            self.quitting = true;
+        }
+    }
+
+    /// "Quit Hideout?" listing every unsaved page across the main window and the pop-outs.
+    /// Keep open is the default (Enter and Esc); Quit anyway ends the hub.
+    fn quit_ui(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let unsaved = self.unsaved_pages();
+        if unsaved.is_empty() {
+            // Saved meanwhile: nothing would be lost.
+            self.quitting = false;
+            self.quit_now = true;
+            return;
+        }
+        let mut choice = None;
+        let modal = egui::Modal::new(egui::Id::new("hideout.quit")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(egui::RichText::new(QUIT_HEAD).size(16.0).color(c(t.text)));
+            ui.add_space(6.0);
+            let body = match unsaved.as_slice() {
+                [one] => format!("Your changes in {one} aren't saved."),
+                _ => QUIT_BODY_MANY.to_string(),
+            };
+            ui.label(egui::RichText::new(body).color(c(t.text)));
+            if unsaved.len() > 1 {
+                ui.add_space(4.0);
+                for page in &unsaved {
+                    ui.label(egui::RichText::new(format!("\u{2022} {page}")).color(c(t.text)));
+                }
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let keep = ui.button(QUIT_KEEP);
+                if !ui.ctx().memory(|m| m.focused().is_some()) {
+                    keep.request_focus();
+                }
+                if keep.clicked() {
+                    choice = Some(false);
+                }
+                if ui.button(QUIT_ANYWAY).clicked() {
+                    choice = Some(true);
+                }
+            });
+        });
+        let esc = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        if modal.should_close() || esc {
+            choice.get_or_insert(false);
+        }
+        match choice {
+            Some(true) => {
+                log::info!("quit with {} unsaved page(s)", unsaved.len());
+                self.quitting = false;
+                self.quit_now = true;
+            }
+            Some(false) => self.quitting = false,
+            None => {}
+        }
+    }
+
     /// "Close <Title>?" for unsaved tabs. Keep open is the default (Enter and Esc).
     fn ask_ui(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(ids) = self.asking.clone() else {
@@ -1956,7 +2106,11 @@ impl Hub {
             }
         }
         self.take_open_requests();
-        if self.asking.is_none() && !self.palette.open {
+        self.main_window_commands(ctx);
+        if self.shared.quit.wanted.swap(false, Ordering::AcqRel) {
+            self.request_quit();
+        }
+        if self.asking.is_none() && !self.palette.open && !self.quitting {
             for s in strip::shortcuts(ctx) {
                 self.shortcut(s);
             }
@@ -1971,8 +2125,12 @@ impl Hub {
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(ctx, |ui| self.page_area(ui, &t));
-        self.ask_ui(ctx, &t);
-        self.palette_ui(ctx, &t);
+        if self.quitting {
+            self.quit_ui(ctx, &t);
+        } else {
+            self.ask_ui(ctx, &t);
+            self.palette_ui(ctx, &t);
+        }
         self.announce_ui(ctx, &Said::Main);
         let fly_shot = job.as_ref().filter(|j| j.flyout).map(|j| j.shots.clone());
         let pop_shot = job
@@ -2004,6 +2162,13 @@ impl Hub {
         self.panels.set_visible(&shown);
         if let Some(feed) = self.feed.as_mut() {
             self.panels.send_out(feed.as_mut());
+        }
+        // Quit Hideout's snapshot of unsaved pages, for a tray Quit between frames.
+        let unsaved = self.unsaved_pages();
+        if let Ok(mut u) = self.shared.quit.unsaved.lock() {
+            if *u != unsaved {
+                *u = unsaved;
+            }
         }
         if self.tabs.take_changed() {
             let f = self.shared.paths.tabs_file();
@@ -2217,7 +2382,7 @@ impl Hub {
         let tabs = &self.tabs;
         self.popouts
             .retain(|p| tabs.position(&p.id).is_some_and(|i| tabs.tabs()[i].popped));
-        for (h, cmd) in platform::take_menu_commands() {
+        for (h, cmd) in std::mem::take(&mut self.menu_cmds) {
             let Some(id) = self
                 .popouts
                 .iter()
@@ -2233,6 +2398,8 @@ impl Hub {
                         self.dock(i, false);
                     }
                 }
+                platform::MenuCommand::Quit => self.request_quit(),
+                platform::MenuCommand::MenuKey => {}
             }
         }
         let mut list = std::mem::take(&mut self.popouts);
@@ -2818,8 +2985,19 @@ impl eframe::App for Hub {
             log::info!("window closed to the tray");
         }
         self.frame(ctx);
+        if self.quit_now {
+            self.shared.quit();
+        }
     }
 }
+
+// Quit Hideout's one ask (#1012.5). The plans set the pattern ("Close <Title>?" / Keep open /
+// Close anyway) but give no quit strings; these are proposed for the designer.
+const QUIT_HEAD: &str = "Quit Hideout?";
+const QUIT_BODY_MANY: &str = "Your changes in these pages aren't saved:";
+const QUIT_KEEP: &str = "Keep open";
+const QUIT_ANYWAY: &str = "Quit anyway";
+const QUIT_IN_OWN_WINDOW: &str = "in its own window";
 
 #[cfg(test)]
 #[path = "shell_tests.rs"]

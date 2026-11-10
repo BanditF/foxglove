@@ -427,6 +427,9 @@ pub enum Mark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Look {
     pub title: String,
+    /// The page's icon glyph before the title (its panel's published `icon`, a hub page's own;
+    /// `hideout_panels::tray::icon_glyph`). A stopped page shows the warning mark instead.
+    pub icon: &'static str,
     pub state: TabState,
     pub mark: Mark,
     pub popped: bool,
@@ -729,6 +732,7 @@ mod tests {
     fn badges_follow_the_precedence_and_read_in_words() {
         let mut l = Look {
             title: "Chat".into(),
+            icon: "",
             state: TabState::Live,
             mark: Mark::Count(3),
             popped: false,
