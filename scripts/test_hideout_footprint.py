@@ -179,8 +179,10 @@ class Files(unittest.TestCase):
             self.assertTrue(set(base['sets'][name]) <= set(fc.BASELINE_KEYS))
             for e in base['sets'][name].values():
                 self.assertGreater(e['value'], 0)
-            # The gate's wake limit (#1000): at most 1 loop wake/s hidden, no flyout.
-            self.assertEqual(fc.limit(base['sets'][name]['loop_wakes_per_s']), 1)
+            # The gate's wake limits (#1000, Hub 11/10): at most 2 loop wakes/s hidden (no
+            # flyout) and 5/s shown.
+            self.assertEqual(fc.limit(base['sets'][name]['loop_wakes_per_s']), 2)
+            self.assertEqual(fc.limit(base['sets'][name]['loop_wakes_shown_per_s']), 5)
             self.assertIn('loop_wakes_shown_per_s', base['sets'][name])
 
     def test_record_is_per_batch(self):

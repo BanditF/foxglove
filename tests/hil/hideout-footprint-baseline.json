@@ -1,5 +1,5 @@
 {
-  "_comment": "Measured baseline for scripts/lab/hideout_footprint.py (#935), from On-call's lab runs on main b6ce0081 (11/10, after #967): the max of the window-shown and window-hidden runs. A metric fails past value * (1 + pct/100) + slack, or past max where an entry has one. loop_wakes_per_s is the gate's wake limit (#1000): the hub's own event-loop wakes, at most 1/s hidden to the tray with no flyout (value: ~8 per 10 min plus the lab's report wake every 15 s); loop_wakes_shown_per_s is the shown window's own limit, provisional until On-call's first --state shown run. wakeups_per_s (context switches, mostly the NVIDIA OpenGL driver thread and other OS work) is recorded as INFO only and never fails; its value is kept for reference (see docs/hideout-footprint.md). Private memory ~75 MB is the glow/egui/GPU stack floor on this machine. The default set is empty for now, so it shares the numbers.",
+  "_comment": "Measured baseline for scripts/lab/hideout_footprint.py (#935), from On-call's lab runs on main b6ce0081 (11/10, after #967): the max of the window-shown and window-hidden runs. A metric fails past value * (1 + pct/100) + slack, or past max where an entry has one. loop_wakes_per_s is the gate's wake limit (#1000): the hub's own event-loop wakes, at most 2/s hidden to the tray with no flyout and at most 5/s shown (loop_wakes_shown_per_s), set 11/10 from On-call's 2bc31b90 runs (hidden ~1.6/s, shown ~4.4/s, nearly all cause 'other', CPU 0.03-0.17 %; the Hub raised the limits from 1/s at that cost). wakeups_per_s (context switches, mostly the NVIDIA OpenGL driver thread and other OS work) is recorded as INFO only and never fails; its value is kept for reference (see docs/hideout-footprint.md). Private memory ~75 MB is the glow/egui/GPU stack floor on this machine. The default set is empty for now, so it shares the numbers.",
   "sets": {
     "none": {
       "private_mb": {
@@ -18,13 +18,12 @@
         "slack": 0.2
       },
       "loop_wakes_per_s": {
-        "value": 0.08,
-        "max": 1
+        "value": 1.6,
+        "max": 2
       },
       "loop_wakes_shown_per_s": {
-        "value": 0.1,
-        "pct": 100,
-        "slack": 2
+        "value": 4.4,
+        "max": 5
       },
       "wakeups_per_s": {
         "value": 12
@@ -62,13 +61,12 @@
         "slack": 0.2
       },
       "loop_wakes_per_s": {
-        "value": 0.08,
-        "max": 1
+        "value": 1.6,
+        "max": 2
       },
       "loop_wakes_shown_per_s": {
-        "value": 0.1,
-        "pct": 100,
-        "slack": 2
+        "value": 4.4,
+        "max": 5
       },
       "wakeups_per_s": {
         "value": 12
