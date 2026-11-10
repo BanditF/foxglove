@@ -3,6 +3,8 @@
 
 pub mod accent;
 pub mod api;
+// Foxglove (#981): an app's icon from its program file.
+pub mod app_icon;
 pub mod app_log;
 #[cfg(target_os = "windows")]
 mod app_manifest;

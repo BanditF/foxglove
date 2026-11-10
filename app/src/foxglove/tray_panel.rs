@@ -901,6 +901,7 @@ fn knob(ui: &mut egui::Ui, row: &KnobRow, out: &mut Vec<Intent>) {
         |ui| match row {
             KnobRow::On { name, line, exe } => {
                 ui.horizontal(|ui| {
+                    super::app_icon::show(ui, exe.as_deref());
                     ui.vertical(|ui| {
                         ui.label(RichText::new(name).color(p.text_strong));
                         ui.label(RichText::new(line).small().color(p.muted));

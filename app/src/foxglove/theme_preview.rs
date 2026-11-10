@@ -1829,8 +1829,27 @@ fn tray_panel_renders() {
     );
 }
 
-/// #952: the tray panel's Knob row with Hide from knob, the row after a hide, and the Keyboard
-/// page's Knob card (its list, and empty), for the designer's review.
+/// A stand-in app icon: a rounded square in `c` with a light dot, 48 px like a read one.
+fn sample_icon(c: Color32) -> egui::ColorImage {
+    let n = 48usize;
+    let mut img = egui::ColorImage::filled([n, n], Color32::TRANSPARENT);
+    for y in 0..n {
+        for x in 0..n {
+            let (dx, dy) = ((x as f32 - 23.5).abs(), (y as f32 - 23.5).abs());
+            let r = 10.0;
+            let (qx, qy) = ((dx - (23.0 - r)).max(0.0), (dy - (23.0 - r)).max(0.0));
+            if qx * qx + qy * qy <= r * r {
+                let dot = (dx * dx + dy * dy).sqrt() < 9.0;
+                img[(x, y)] = if dot { Color32::from_gray(0xf2) } else { c };
+            }
+        }
+    }
+    img
+}
+
+/// #952, #981 (icons, one Undo size): the tray panel's Knob row with Hide from knob, the row
+/// after a hide, and the Keyboard page's Knob card (its list, and empty), for the designer's
+/// review.
 #[test]
 fn knob_hide_renders() {
     use crate::foxglove::knob_hide::{card_body, Row, Why};
@@ -1852,7 +1871,24 @@ fn knob_hide_renders() {
         }),
         ..base
     };
+    // #981: icons as the cache would hold them (window-free: no app's file is read here).
+    let seed_icons = |ctx: &egui::Context| {
+        for (path, c) in [
+            (
+                r"C:\Program Files\LogiOptionsPlus\LogiOptionsMgr.exe",
+                Color32::from_rgb(0x2d, 0x8c, 0xf0),
+            ),
+            (
+                r"C:\Users\u\AppData\Local\Discord\app-1.0.9\Discord.exe",
+                Color32::from_rgb(0x58, 0x65, 0xf2),
+            ),
+            (r"C:\Apps\Spotify.exe", Color32::from_rgb(0x1e, 0xd7, 0x60)),
+        ] {
+            crate::foxglove::app_icon::insert(ctx, path, Some(sample_icon(c)));
+        }
+    };
     let ctx = preview_ctx();
+    seed_icons(&ctx);
     let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
         for (i, v) in [&on, &hidden].into_iter().enumerate() {
             egui::Area::new(egui::Id::new(("knob-tray-preview", i)))
@@ -1865,7 +1901,7 @@ fn knob_hide_renders() {
                 });
         }
     });
-    keep("ui-952-tray-knob.png", &img);
+    keep("ui-981-tray-knob.png", &img);
     let total = (img.width() * img.height()) as usize;
     let ground = img
         .pixels()
@@ -1889,6 +1925,7 @@ fn knob_hide_renders() {
     ];
     let apps = vec![("Spotify".to_string(), r"C:\Apps\Spotify.exe".to_string())];
     let ctx = preview_ctx();
+    seed_icons(&ctx);
     let img = render_ui(&ctx, egui::vec2(1040.0, 540.0), DARK.ground, |ui| {
         egui::Frame::new().inner_margin(16).show(ui, |ui| {
             crate::foxglove::settings_ui::card(ui, "Knob", |ui| card_body(ui, &rows, None, &apps));
@@ -1908,7 +1945,7 @@ fn knob_hide_renders() {
             });
         });
     });
-    keep("ui-952-settings-knob.png", &img);
+    keep("ui-981-settings-knob.png", &img);
 }
 
 /// The Lights page (#387) with a keyboard and without one.

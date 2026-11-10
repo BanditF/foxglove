@@ -288,6 +288,17 @@ pub fn row_hover(row: &Row) -> String {
     )
 }
 
+/// Where a row's icon is read from: its full path, else (a shipped list's bare file name) the
+/// path of the same program among the apps with sound right now.
+pub fn icon_path(row: &Row, apps: &[(String, String)]) -> String {
+    if file_name(&row.path) != row.path {
+        return row.path.clone();
+    }
+    apps.iter()
+        .find(|(_, path)| same_program(path, &row.path))
+        .map_or_else(|| row.path.clone(), |(_, path)| path.clone())
+}
+
 /// What a click on the card asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CardIntent {
@@ -315,7 +326,8 @@ pub fn card_body(
     if let Some(line) = undo_line {
         ui.horizontal(|ui| {
             ui.label(RichText::new(line).color(p.text));
-            if ui.small_button("Undo").clicked() {
+            // The tray panel's Undo is a full button too (#981: one size).
+            if ui.button("Undo").clicked() {
                 out = Some(CardIntent::Undo);
             }
         });
@@ -325,6 +337,7 @@ pub fn card_body(
     }
     for row in rows {
         ui.horizontal(|ui| {
+            super::app_icon::show(ui, Some(&icon_path(row, apps)));
             ui.vertical(|ui| {
                 ui.label(RichText::new(&row.name).color(p.text_strong))
                     .on_hover_text(row_hover(row));
@@ -567,6 +580,11 @@ mod tests {
         assert_eq!(rows[1].why.words(), "On Foxglove's list");
         assert_eq!(row_hover(&rows[0]), "Chat\nChat.exe · matched by this file");
         assert_eq!(back_line("Chat"), "Chat is back in the knob's cycle.");
+        // Icons: a full path is used; a bare shipped name borrows a live app's path.
+        let live = vec![("Center".to_string(), r"C:\Vendor\CenterMgr.exe".to_string())];
+        assert_eq!(icon_path(&rows[0], &live), r"C:\Apps\Chat\Chat.exe");
+        assert_eq!(icon_path(&rows[1], &live), r"C:\Vendor\CenterMgr.exe");
+        assert_eq!(icon_path(&rows[1], &[]), "CenterMgr.exe");
         // UX plan: "Hide", never "exclude" or "block"; no "session" in the UI.
         for s in INTRO.iter().chain([&CAPTION, &EMPTY]) {
             let l = s.to_lowercase();
