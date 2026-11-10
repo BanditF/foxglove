@@ -190,6 +190,7 @@ pub fn monitors() -> Vec<Monitor> {
             let (mut dx, mut dy) = (96u32, 96u32);
             let _ = GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
             let w = info.monitorInfo.rcWork;
+            let a = info.monitorInfo.rcMonitor;
             let len = info
                 .szDevice
                 .iter()
@@ -197,6 +198,13 @@ pub fn monitors() -> Vec<Monitor> {
                 .unwrap_or(info.szDevice.len());
             out.push(Monitor {
                 key: String::from_utf16_lossy(&info.szDevice[..len]),
+                path: String::new(),
+                area: Rect {
+                    x: a.left,
+                    y: a.top,
+                    w: a.right - a.left,
+                    h: a.bottom - a.top,
+                },
                 work: Rect {
                     x: w.left,
                     y: w.top,
@@ -213,7 +221,71 @@ pub fn monitors() -> Vec<Monitor> {
     unsafe {
         let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM(&mut out as *mut _ as isize));
     }
+    let paths = display_paths();
+    for m in &mut out {
+        if let Some((_, p)) = paths.iter().find(|(g, _)| g.eq_ignore_ascii_case(&m.key)) {
+            m.path = p.clone();
+        }
+    }
     out
+}
+
+/// Each active display's GDI device name (`\.\DISPLAY1`) with its target's
+/// `monitorDevicePath` (§2.5), from the display configuration.
+fn display_paths() -> Vec<(String, String)> {
+    use windows::Win32::Devices::Display::{
+        DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
+        DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+        DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+        DISPLAYCONFIG_TARGET_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
+    };
+    let text = |w: &[u16]| {
+        let n = w.iter().position(|&c| c == 0).unwrap_or(w.len());
+        String::from_utf16_lossy(&w[..n])
+    };
+    let (mut np, mut nm) = (0u32, 0u32);
+    unsafe {
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).is_err() {
+            return Vec::new();
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+        if QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &mut np,
+            paths.as_mut_ptr(),
+            &mut nm,
+            modes.as_mut_ptr(),
+            None,
+        )
+        .is_err()
+        {
+            return Vec::new();
+        }
+        paths.truncate(np as usize);
+        let mut out = Vec::new();
+        for p in &paths {
+            let mut src = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            src.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            src.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+            src.header.adapterId = p.sourceInfo.adapterId;
+            src.header.id = p.sourceInfo.id;
+            let mut tgt = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            tgt.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            tgt.header.size = std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
+            tgt.header.adapterId = p.targetInfo.adapterId;
+            tgt.header.id = p.targetInfo.id;
+            if DisplayConfigGetDeviceInfo(&mut src.header) == 0
+                && DisplayConfigGetDeviceInfo(&mut tgt.header) == 0
+            {
+                let path = text(&tgt.monitorDevicePath);
+                if !path.is_empty() {
+                    out.push((text(&src.viewGdiDeviceName), path));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// The main window as winit names it (its HWND), for `wake::Gate`.
@@ -225,20 +297,22 @@ pub fn main_window_id() -> Option<winit::window::WindowId> {
 /// handle); 0 while none.
 static FLYOUT_HWND: AtomicIsize = AtomicIsize::new(0);
 
-/// Finds this thread's window titled `title` (not the main window).
-fn find_own_window(title: &str) -> Option<HWND> {
+/// Finds this thread's window titled `title` (not the main window, nor one in `skip`).
+fn find_own_window(title: &str, skip: &[isize]) -> Option<HWND> {
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, GetWindowTextW};
-    struct Find {
+    struct Find<'a> {
         title: Vec<u16>,
         main: isize,
+        skip: &'a [isize],
         found: isize,
     }
     unsafe extern "system" fn each(h: HWND, data: LPARAM) -> BOOL {
         let f = &mut *(data.0 as *mut Find);
         let mut buf = [0u16; 128];
         let n = GetWindowTextW(h, &mut buf) as usize;
-        if h.0 as isize != f.main && buf[..n] == f.title[..] {
+        let id = h.0 as isize;
+        if id != f.main && !f.skip.contains(&id) && buf[..n] == f.title[..] {
             f.found = h.0 as isize;
             return false.into();
         }
@@ -247,6 +321,7 @@ fn find_own_window(title: &str) -> Option<HWND> {
     let mut f = Find {
         title: title.encode_utf16().collect(),
         main: MAIN_HWND.load(Ordering::Acquire),
+        skip,
         found: 0,
     };
     unsafe {
@@ -279,7 +354,7 @@ pub fn place_flyout(title: &str, icon: Rect, size: (f32, f32), first: bool) -> b
         0 => None,
         h => Some(HWND(h as *mut _)).filter(|&h| unsafe { IsWindow(Some(h)).as_bool() }),
     };
-    let Some(h) = cached.or_else(|| find_own_window(title)) else {
+    let Some(h) = cached.or_else(|| find_own_window(title, &[])) else {
         return false;
     };
     FLYOUT_HWND.store(h.0 as isize, Ordering::Release);
@@ -450,6 +525,303 @@ pub fn pick_file(filter: Option<&str>) -> Option<String> {
         log::warn!("file picker: {e}");
         None
     })
+}
+
+// ---- Pop-out windows (H2.11, contract §2.5) -------------------------------------------------
+//
+// eframe gives an immediate viewport no handle, so a pop-out's window is found by its title once
+// (as the flyout's) and kept. A subclass tells the frame code when a move or resize ends
+// (`WM_EXITSIZEMOVE`: placement is saved then, never during a drag or on a timer) and carries the
+// window menu's Keep on top and Dock back. Both wake the UI through the waker, never a poll.
+
+/// A pop-out's place as Windows has it, in physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WinPlace {
+    /// Where it is now (the snapped rectangle while snapped).
+    pub actual: Rect,
+    /// Its restored rectangle (screen coordinates).
+    pub normal: Rect,
+    pub maximized: bool,
+    pub minimized: bool,
+}
+
+/// What the window menu (Alt+Space) asked of a pop-out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuCommand {
+    KeepOnTop,
+    DockBack,
+}
+
+const MENU_KEEP_ON_TOP: usize = 0x4810;
+const MENU_DOCK_BACK: usize = 0x4820;
+const SUBCLASS_ID: usize = 0x4844;
+
+#[derive(Default)]
+struct PopoutHooks {
+    /// In a move or resize loop (between `WM_ENTERSIZEMOVE` and `WM_EXITSIZEMOVE`).
+    moving: Vec<isize>,
+    /// A move or resize ended since the frame code last asked.
+    ended: Vec<isize>,
+    menu: Vec<(isize, MenuCommand)>,
+    waker: Option<Box<dyn Fn()>>,
+}
+
+thread_local! {
+    static HOOKS: std::cell::RefCell<PopoutHooks> = std::cell::RefCell::new(PopoutHooks::default());
+}
+
+fn hwnd(h: isize) -> HWND {
+    HWND(h as *mut _)
+}
+
+/// Finds this thread's pop-out window titled `title`, not one of `skip` (other pop-outs).
+pub fn find_popout(title: &str, skip: &[isize]) -> Option<isize> {
+    let mut skip = skip.to_vec();
+    skip.push(FLYOUT_HWND.load(Ordering::Acquire));
+    find_own_window(title, &skip).map(|h| h.0 as isize)
+}
+
+/// Whether `h` is still a window.
+pub fn window_alive(h: isize) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+    unsafe { IsWindow(Some(hwnd(h))).as_bool() }
+}
+
+/// Moves `h` onto the target screen first (Windows rescales it for that screen's DPI), then sets
+/// the exact rectangle (physical pixels).
+pub fn place_window(h: isize, r: Rect) {
+    let h = hwnd(h);
+    unsafe {
+        let _ = SetWindowPos(
+            h,
+            None,
+            r.x,
+            r.y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = SetWindowPos(h, None, r.x, r.y, r.w, r.h, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+/// Shows `h` normal or maximised; `activate` brings it forward with the focus (a pop out by the
+/// user), else it shows without taking the focus (a restore).
+pub fn show_window(h: isize, maximized: bool, activate: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWMAXIMIZED, SW_SHOWNOACTIVATE};
+    let h = hwnd(h);
+    unsafe {
+        let cmd = match (maximized, activate) {
+            (true, _) => SW_SHOWMAXIMIZED,
+            (false, true) => SW_SHOW,
+            (false, false) => SW_SHOWNOACTIVATE,
+        };
+        let _ = ShowWindow(h, cmd);
+        if activate {
+            let _ = SetForegroundWindow(h);
+        }
+    }
+}
+
+/// Keep on top: above other windows (never above an exclusive full-screen app, which Windows
+/// doesn't allow), without taking the focus.
+pub fn set_topmost(h: isize, on: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE};
+    let after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd(h),
+            Some(after),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+    check_menu(h, on);
+}
+
+/// Brings `h` forward (restoring it when minimised): a click on its placeholder tab.
+pub fn focus_window(h: isize) {
+    let h = hwnd(h);
+    unsafe {
+        if IsIconic(h).as_bool() {
+            let _ = ShowWindow(h, SW_RESTORE);
+        }
+        let _ = SetForegroundWindow(h);
+    }
+}
+
+/// The window's place: its rectangle now and its restored one, maximised, minimised.
+pub fn window_place(h: isize) -> Option<WinPlace> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, WINDOWPLACEMENT};
+    let h = hwnd(h);
+    let mut wp = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    let mut r = RECT::default();
+    unsafe {
+        GetWindowPlacement(h, &mut wp).ok()?;
+        GetWindowRect(h, &mut r).ok()?;
+    }
+    let rect = |r: RECT| Rect {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
+    };
+    // `rcNormalPosition` is in workspace coordinates: off from the screen's by the primary work
+    // area's corner when the taskbar is at the top or the left.
+    let (dx, dy) = monitors()
+        .iter()
+        .find(|m| m.primary)
+        .map(|m| (m.work.x - m.area.x, m.work.y - m.area.y))
+        .unwrap_or((0, 0));
+    let mut normal = rect(wp.rcNormalPosition);
+    normal.x += dx;
+    normal.y += dy;
+    let (minimized, maximized) = unsafe { (IsIconic(h).as_bool(), IsZoomed(h).as_bool()) };
+    Some(WinPlace {
+        actual: rect(r),
+        normal,
+        maximized,
+        minimized,
+    })
+}
+
+/// The main window's rectangle in any state (the anchor a new pop-out opens next to).
+pub fn main_window_any_rect() -> Option<Rect> {
+    let h = main_window()?;
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(h, &mut r).ok()? };
+    Some(Rect {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
+    })
+}
+
+/// The subclass: move/resize loop tracking and the window menu's own items.
+unsafe extern "system" fn popout_proc(
+    h: HWND,
+    msg: u32,
+    wp: windows::Win32::Foundation::WPARAM,
+    lp: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SYSCOMMAND,
+    };
+    let id = h.0 as isize;
+    let mut wake = false;
+    let mut handled = false;
+    HOOKS.with(|k| {
+        let mut k = k.borrow_mut();
+        match msg {
+            WM_ENTERSIZEMOVE => k.moving.push(id),
+            WM_EXITSIZEMOVE => {
+                k.moving.retain(|&m| m != id);
+                k.ended.push(id);
+                wake = true;
+            }
+            WM_SYSCOMMAND => {
+                let cmd = match wp.0 & 0xFFF0 {
+                    MENU_KEEP_ON_TOP => Some(MenuCommand::KeepOnTop),
+                    MENU_DOCK_BACK => Some(MenuCommand::DockBack),
+                    _ => None,
+                };
+                if let Some(c) = cmd {
+                    k.menu.push((id, c));
+                    wake = true;
+                    handled = true;
+                }
+            }
+            WM_NCDESTROY => {
+                k.moving.retain(|&m| m != id);
+                k.ended.retain(|&m| m != id);
+            }
+            _ => {}
+        }
+    });
+    if wake {
+        HOOKS.with(|k| {
+            if let Some(w) = k.borrow().waker.as_ref() {
+                w();
+            }
+        });
+    }
+    if handled {
+        return windows::Win32::Foundation::LRESULT(0);
+    }
+    DefSubclassProc(h, msg, wp, lp)
+}
+
+/// Sets the waker the subclass calls when a move ends or a menu item is picked (the UI thread's
+/// `request_repaint`).
+pub fn set_popout_waker(w: Box<dyn Fn()>) {
+    HOOKS.with(|k| k.borrow_mut().waker = Some(w));
+}
+
+/// Hooks a pop-out window: the subclass and the window menu's Keep on top and Dock back.
+pub fn install_popout_hooks(h: isize, keep_on_top: bool) {
+    use windows::core::w;
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AppendMenuW, GetSystemMenu, MF_SEPARATOR, MF_STRING,
+    };
+    unsafe {
+        let _ = SetWindowSubclass(hwnd(h), Some(popout_proc), SUBCLASS_ID, 0);
+        let menu = GetSystemMenu(hwnd(h), false);
+        if !menu.is_invalid() {
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            let _ = AppendMenuW(menu, MF_STRING, MENU_KEEP_ON_TOP, w!("Keep on top"));
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_DOCK_BACK,
+                w!("Dock back\tCtrl+Shift+O"),
+            );
+        }
+    }
+    check_menu(h, keep_on_top);
+}
+
+fn check_menu(h: isize, on: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CheckMenuItem, GetSystemMenu, MF_BYCOMMAND, MF_CHECKED, MF_UNCHECKED,
+    };
+    unsafe {
+        let menu = GetSystemMenu(hwnd(h), false);
+        if !menu.is_invalid() {
+            let state = if on { MF_CHECKED } else { MF_UNCHECKED };
+            CheckMenuItem(menu, MENU_KEEP_ON_TOP as u32, (MF_BYCOMMAND | state).0);
+        }
+    }
+}
+
+/// Whether `h` is in a move or resize loop now (its place isn't saved then).
+pub fn in_size_move(h: isize) -> bool {
+    HOOKS.with(|k| k.borrow().moving.contains(&h))
+}
+
+/// Whether a move or resize of `h` ended since the last call.
+pub fn take_size_move_ended(h: isize) -> bool {
+    HOOKS.with(|k| {
+        let mut k = k.borrow_mut();
+        let had = k.ended.contains(&h);
+        k.ended.retain(|&m| m != h);
+        had
+    })
+}
+
+/// The window menu's picks since the last call.
+pub fn take_menu_commands() -> Vec<(isize, MenuCommand)> {
+    HOOKS.with(|k| std::mem::take(&mut k.borrow_mut().menu))
 }
 
 #[cfg(test)]

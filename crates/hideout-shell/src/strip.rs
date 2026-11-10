@@ -17,6 +17,10 @@ pub const MIN_TAB_W: f32 = 96.0;
 const MAX_TAB_W: f32 = 220.0;
 /// ‹ › ˅ at the right end when the tabs don't fit.
 const OVERFLOW_W: f32 = 84.0;
+/// The ↗ Pop out button at the strip's right end, for the active tab (H2.11).
+pub const POPOUT_W: f32 = 36.0;
+/// Its tooltip.
+pub const POPOUT_TIP: &str = "Pop out (Ctrl+Shift+O)";
 
 /// What the user did in the strip, by strip position.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +95,8 @@ pub enum Shortcut {
     Reopen,
     MoveLeft,
     MoveRight,
+    /// Ctrl+Shift+O: pop the active tab out, or dock it back when it is out.
+    PopOut,
 }
 
 /// Takes this frame's strip shortcuts out of the input: Ctrl+Tab / Ctrl+Shift+Tab and
@@ -110,6 +116,7 @@ pub fn shortcuts(ctx: &egui::Context) -> Vec<Shortcut> {
         take(cs, Key::PageUp, Shortcut::MoveLeft);
         take(cs, Key::PageDown, Shortcut::MoveRight);
         take(cs, Key::T, Shortcut::Reopen);
+        take(cs, Key::O, Shortcut::PopOut);
         take(Modifiers::COMMAND, Key::Tab, Shortcut::Next);
         take(Modifiers::COMMAND, Key::PageDown, Shortcut::Next);
         take(Modifiers::COMMAND, Key::PageUp, Shortcut::Prev);
@@ -166,14 +173,20 @@ pub fn strip_ui(
     state: &mut StripState,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
-    let full = ui.available_rect_before_wrap();
-    let full = Rect::from_min_size(full.min, Vec2::new(full.width(), STRIP_H));
-    ui.painter().rect_filled(full, 0.0, c(t.chrome));
+    let whole = ui.available_rect_before_wrap();
+    let whole = Rect::from_min_size(whole.min, Vec2::new(whole.width(), STRIP_H));
+    // The ↗ button keeps its place at the right end; the tabs get the rest.
+    let full = Rect::from_min_size(
+        whole.min,
+        Vec2::new((whole.width() - POPOUT_W).max(0.0), STRIP_H),
+    );
+    ui.painter().rect_filled(whole, 0.0, c(t.chrome));
     ui.painter().hline(
-        full.x_range(),
-        full.bottom() - 0.5,
+        whole.x_range(),
+        whole.bottom() - 0.5,
         Stroke::new(1.0_f32, c(t.border)),
     );
+    popout_button_ui(ui, whole, tabs, t, &mut actions);
     if tabs.active() != state.last_active {
         state.follow = true;
         state.last_active = tabs.active();
@@ -279,8 +292,36 @@ pub fn strip_ui(
             state.scroll = (state.scroll - d).clamp(0.0, max_scroll);
         }
     }
-    ui.allocate_rect(full, Sense::hover());
+    ui.allocate_rect(whole, Sense::hover());
     actions
+}
+
+/// The ↗ Pop out button for the active tab (the pop-outs plan, Decision 3). Not drawn while the
+/// active tab is out already or nothing is open.
+fn popout_button_ui(ui: &mut Ui, whole: Rect, tabs: &Tabs, t: &Tokens, actions: &mut Vec<Action>) {
+    let Some(i) = tabs.active().filter(|&i| !tabs.tabs()[i].popped) else {
+        return;
+    };
+    let r = Rect::from_center_size(
+        Pos2::new(whole.right() - POPOUT_W / 2.0, whole.center().y),
+        Vec2::splat(26.0),
+    );
+    let resp = ui.interact(r, ui.id().with("hideout.popout-button"), Sense::click());
+    if resp.hovered() || resp.has_focus() {
+        ui.painter()
+            .rect_filled(r, CornerRadius::same(4), c(t.surface));
+    }
+    ui.painter().text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        "\u{2197}",
+        FontId::proportional(16.0),
+        c(t.text),
+    );
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Pop out"));
+    if resp.on_hover_text(POPOUT_TIP).clicked() {
+        actions.push(Action::PopOut(i));
+    }
 }
 
 /// Where a tab dragged from `from` lands for a pointer at `x`.
@@ -445,11 +486,8 @@ fn tab_ui(
     if close_resp.clicked() || resp.middle_clicked() {
         actions.push(Action::Close(i));
     } else if resp.clicked() {
-        actions.push(if popped {
-            Action::DockBack(i)
-        } else {
-            Action::Activate(i)
-        });
+        // A placeholder's click brings its window forward (the hub, `Activate`); it never docks.
+        actions.push(Action::Activate(i));
     }
     if resp.drag_started() {
         state.drag = Some(i);

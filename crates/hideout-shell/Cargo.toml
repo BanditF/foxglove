@@ -7,12 +7,16 @@ license = "MIT"
 
 [dependencies]
 hideout-acl = { path = "../hideout-acl" }
+# `config::Windows`: the `[windows]` table of pop-out placement (§2.5, spec v1.6).
+hideout-contract = { path = "../hideout-contract" }
 # Only its `words` (every string the supervisor's states show) for the crash bar, the stopped
 # card and the tray lines.
 hideout-supervisor = { path = "../hideout-supervisor" }
 log = "0.4"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+# The screen layout id (§2.5).
+sha2 = "0.10"
 toml = "0.9"
 
 [target.'cfg(windows)'.dependencies]
@@ -31,6 +35,7 @@ windows = { version = "0.62", features = [
     "Data_Xml_Dom",
     "Foundation",
     "UI_Notifications",
+    "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
@@ -48,6 +53,5 @@ windows = { version = "0.62", features = [
 ] }
 
 [target.'cfg(windows)'.dev-dependencies]
-hideout-contract = { path = "../hideout-contract" }
 # Headless review PNGs of the tab strip (the test rasterises egui's meshes itself).
 image = { version = "0.25", default-features = false, features = ["png"] }

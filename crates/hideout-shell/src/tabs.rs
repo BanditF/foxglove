@@ -275,11 +275,34 @@ impl Tabs {
         }
     }
 
-    /// The page moved to its own window: the tab stays, dimmed.
+    /// The page moved to its own window: the tab stays, dimmed. When it was the active tab, the
+    /// next tab to its right that isn't popped out becomes active, else the nearest to its left
+    /// (the close rule); with none, the placeholder stays active.
     pub fn pop_out(&mut self, i: usize) {
         if let Some(t) = self.tabs.get_mut(i) {
             if !t.popped {
                 t.popped = true;
+                t.popout_shown = false;
+                self.changed = true;
+            }
+        }
+        if self.active == Some(i) {
+            let free = |j: &usize| !self.tabs[*j].popped;
+            let next = (i + 1..self.tabs.len())
+                .find(free)
+                .or_else(|| (0..i).rev().find(free));
+            if let Some(j) = next {
+                self.activate(j);
+            }
+        }
+    }
+
+    /// Closing the pop-out (×, Ctrl+W, Alt+F4): the page goes back to its tab quietly, in its
+    /// old place, and the active tab stays as it is (§2.5, spec v1.6).
+    pub fn dock_quiet(&mut self, i: usize) {
+        if let Some(t) = self.tabs.get_mut(i) {
+            if t.popped {
+                t.popped = false;
                 t.popout_shown = false;
                 self.changed = true;
             }
@@ -679,15 +702,27 @@ mod tests {
         t.activate(1);
         t.pop_out(1);
         assert_eq!(ids(&t), ["a", "b", "c", "d"], "order doesn't shift");
-        assert!(t.on_screen(true).is_empty(), "no window yet: hidden");
+        assert_eq!(t.active(), Some(2), "the tab to its right comes up");
+        assert_eq!(t.on_screen(true), [&p("c")], "no window yet: b is hidden");
         t.set_popout_shown(1, true);
         assert_eq!(t.on_screen(false), [&p("b")]);
-        t.activate(2);
         assert_eq!(t.on_screen(true), [&p("b"), &p("c")]);
         t.dock_back(1);
         assert!(!t.tabs()[1].popped);
         assert_eq!(t.on_screen(true), [&p("b")]);
         assert!(t.on_screen(false).is_empty(), "hub in the tray");
+        // Popping out the last free tab leaves its placeholder active; the left one otherwise.
+        t.activate(3);
+        t.pop_out(3);
+        assert_eq!(t.active(), Some(2));
+        // × docks back quietly: the active tab stays.
+        t.dock_quiet(3);
+        assert!(!t.tabs()[3].popped);
+        assert_eq!(t.active(), Some(2));
+        let mut one = Tabs::default();
+        one.open(p("x"));
+        one.pop_out(0);
+        assert_eq!(one.active(), Some(0));
     }
 
     #[test]

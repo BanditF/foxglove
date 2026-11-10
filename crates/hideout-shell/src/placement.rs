@@ -29,6 +29,10 @@ impl Rect {
 pub struct Monitor {
     /// A stable name for the display (its device name on Windows).
     pub key: String,
+    /// Its Windows display target path (`monitorDevicePath`, §2.5), empty when unknown.
+    pub path: String,
+    /// The whole monitor, in the virtual desktop.
+    pub area: Rect,
     /// The work area: the monitor minus the taskbar.
     pub work: Rect,
     /// Physical pixels per point (1.0 at 96 DPI).
@@ -152,6 +156,8 @@ mod tests {
     fn mon(key: &str, x: i32, w: i32, h: i32, scale: f32, primary: bool) -> Monitor {
         Monitor {
             key: key.into(),
+            path: String::new(),
+            area: Rect { x, y: 0, w, h },
             work: Rect { x, y: 0, w, h },
             scale,
             primary,

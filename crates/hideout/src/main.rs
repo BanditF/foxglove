@@ -92,8 +92,10 @@ fn main() {
         version: env!("CARGO_PKG_VERSION"),
         // Module panels from the router (§5, #991): pages, Keys and Settings.
         panels: started.panels.take(),
-        // The supervisor's Start again; pop-out windows (H2.11) come later.
+        // The supervisor's Start again and its ladder.
         hooks: started.hooks.take(),
+        // `--tray` (sign-in): saved pop-outs wait for the first open of Hideout (§2.5).
+        start_in_tray: std::env::args().any(|a| a == "--tray"),
     };
     if let Err(e) = hideout_shell::run(opts) {
         log::error!("hub stopped: {e}");

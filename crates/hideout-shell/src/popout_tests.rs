@@ -1,0 +1,529 @@
+// SPDX-License-Identifier: MIT
+//! Window-free tests of pop-outs (H2.11, `docs/hideout-popouts-ux.md`): popping out and docking
+//! back by every way, `ui.visibility` through a pop-out, Close page's ask, the palette, the
+//! restore after a start in the tray, `[windows]` in `hideout.toml`, and the review PNGs.
+
+use super::*;
+
+const CHAT: (&str, &str) = ("mod.chat", "chat");
+
+fn chat() -> TabId {
+    TabId::panel(CHAT.0, CHAT.1)
+}
+
+/// Modules, Chat, Art open (in that order), Chat active, the router's end to read messages.
+fn chat_hub(dir: &std::path::Path) -> (Hub, RouterEnd, egui::Context) {
+    let (router, feed) = channel();
+    let mut hub = hub_in(dir, Some(Box::new(feed)));
+    let ctx = ctx();
+    router.push(register(CHAT.0, "Chat", CHAT.1, "Chat"));
+    router.push(register("mod.art", "Art", "art", "Art"));
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    hub.open(chat());
+    hub.open(TabId::panel("mod.art", "art"));
+    hub.tabs.activate(1);
+    let _ = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    let _ = router.take();
+    (hub, router, ctx)
+}
+
+fn frame(ctx: &egui::Context, hub: &mut Hub, events: Vec<Event>) {
+    let _ = ctx.run(input(1100.0, 640.0, events), |c| hub.frame(c));
+}
+
+/// One frame of `id`'s pop-out on its own context, with `events`; what the user did.
+fn popout_frame(hub: &mut Hub, id: &TabId, events: Vec<Event>) -> (Vec<PopCmd>, Vec<String>) {
+    let pctx = ctx();
+    let i = hub.tabs.position(id).unwrap();
+    let t = theme::tokens(true);
+    let mut cmds = Vec::new();
+    // Two frames: a dialog shows from the second one; the input goes to the last.
+    let _ = pctx.run(input(640.0, 420.0, vec![]), |c| {
+        let _ = hub.popout_window_ui(c, &t, i);
+    });
+    let out = pctx.run(input(640.0, 420.0, events), |c| {
+        cmds = hub.popout_window_ui(c, &t, i).cmds;
+    });
+    (cmds, drawn(&out))
+}
+
+fn saved_windows(dir: &std::path::Path) -> BTreeMap<String, PageWindow> {
+    let (prefs, err) = Prefs::load(&dir.join("hideout.toml"));
+    assert!(err.is_none(), "{err:?}");
+    let (w, errors) = popout::load(&prefs.rest);
+    assert!(errors.is_empty(), "{errors:?}");
+    w
+}
+
+fn cs() -> Modifiers {
+    Modifiers::COMMAND | Modifiers::SHIFT
+}
+
+#[test]
+fn ctrl_shift_o_pops_out_and_docks_back_from_either_window() {
+    let dir = temp_dir("pop-keys");
+    let (mut hub, _router, ctx) = chat_hub(&dir);
+    frame(&ctx, &mut hub, vec![key(Key::O, cs())]);
+    assert!(hub.tabs.tabs()[1].popped, "Chat is in its own window");
+    assert_eq!(hub.tabs.active(), Some(2), "the tab to its right comes up");
+    assert_eq!(hub.popouts.len(), 1);
+    assert!(saved_windows(&dir)["mod.chat/chat"].popped_out);
+    // Ctrl+Shift+O in the pop-out docks it back as the active tab.
+    let (cmds, _) = popout_frame(&mut hub, &chat(), vec![key(Key::O, cs())]);
+    assert_eq!(cmds, [PopCmd::DockBack]);
+    hub.popout_cmd(&chat(), PopCmd::DockBack);
+    assert!(!hub.tabs.tabs()[1].popped);
+    assert_eq!(hub.tabs.active(), Some(1));
+    assert!(hub.popouts.is_empty());
+    assert!(!saved_windows(&dir)["mod.chat/chat"].popped_out);
+    // From the main window: Ctrl+Shift+O on the active placeholder docks it back too.
+    frame(&ctx, &mut hub, vec![key(Key::O, cs())]);
+    hub.tabs.activate(1);
+    frame(&ctx, &mut hub, vec![key(Key::O, cs())]);
+    assert!(!hub.tabs.tabs()[1].popped);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_menu_and_the_button_pop_out_and_closing_docks_back_quietly() {
+    let dir = temp_dir("pop-close");
+    let (mut hub, _router, hctx) = chat_hub(&dir);
+    hub.apply(Action::PopOut(1));
+    assert!(hub.tabs.tabs()[1].popped);
+    hub.tabs.activate(0);
+    frame(&hctx, &mut hub, vec![]);
+    // × (a close request) and Ctrl+W both ask for the quiet dock.
+    let mut close = input(640.0, 420.0, vec![]);
+    close.viewports.insert(
+        egui::ViewportId::ROOT,
+        egui::ViewportInfo {
+            events: vec![egui::ViewportEvent::Close],
+            ..Default::default()
+        },
+    );
+    let pctx = ctx();
+    let t = theme::tokens(true);
+    let mut cmds = Vec::new();
+    let _ = pctx.run(close, |c| cmds = hub.popout_window_ui(c, &t, 1).cmds);
+    assert_eq!(cmds, [PopCmd::Close]);
+    let (cmds, _) = popout_frame(&mut hub, &chat(), vec![key(Key::W, Modifiers::COMMAND)]);
+    assert_eq!(cmds, [PopCmd::Close]);
+    hub.popout_cmd(&chat(), PopCmd::Close);
+    assert!(!hub.tabs.tabs()[1].popped, "back in its tab");
+    assert_eq!(
+        hub.tabs.active(),
+        Some(0),
+        "not activated; Hideout left as it is"
+    );
+    assert!(hub.popouts.is_empty());
+    // The ↗ button pops the active tab out.
+    hub.tabs.activate(1);
+    let mut popped = false;
+    for _ in 0..3 {
+        let rects = hub.strip_button_click(&hctx);
+        popped |= rects;
+    }
+    assert!(popped && hub.tabs.tabs()[1].popped);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+impl Hub {
+    /// Clicks the ↗ button at the strip's right end (1100 px wide window); whether Chat popped.
+    fn strip_button_click(&mut self, ctx: &egui::Context) -> bool {
+        let at = egui::pos2(1100.0 - strip::POPOUT_W / 2.0, strip::STRIP_H / 2.0);
+        let ev = vec![
+            Event::PointerMoved(at),
+            Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ];
+        frame(ctx, self, ev);
+        let up = vec![Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }];
+        frame(ctx, self, up);
+        self.tabs
+            .position(&chat())
+            .is_some_and(|i| self.tabs.tabs()[i].popped)
+    }
+}
+
+#[test]
+fn visibility_through_a_pop_out_and_the_tray() {
+    let dir = temp_dir("pop-vis");
+    let (mut hub, router, ctx) = chat_hub(&dir);
+    frame(&ctx, &mut hub, vec![]);
+    let _ = visibility(&router);
+    hub.apply(Action::PopOut(1));
+    // The window code says it is on screen (the tests draw no second window).
+    hub.tabs.set_popout_shown(1, true);
+    frame(&ctx, &mut hub, vec![]);
+    let v = visibility(&router);
+    assert!(v.contains(&("art".into(), Visibility::Visible)), "{v:?}");
+    assert!(
+        !v.iter().any(|(p, _)| p == "chat"),
+        "popping out the active tab sends nothing new: {v:?}"
+    );
+    // Hideout to the tray: its tabs are hidden, the pop-out stays visible.
+    hub.shared.hidden.store(true, Ordering::Release);
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(visibility(&router), [("art".into(), Visibility::Hidden)]);
+    // Minimised: hidden.
+    hub.tabs.set_popout_shown(1, false);
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(visibility(&router), [("chat".into(), Visibility::Hidden)]);
+    hub.tabs.set_popout_shown(1, true);
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(visibility(&router), [("chat".into(), Visibility::Visible)]);
+    // × docks back quietly while Hideout is in the tray: hidden, never closed.
+    hub.popout_cmd(&chat(), PopCmd::Close);
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(visibility(&router), [("chat".into(), Visibility::Hidden)]);
+    assert!(
+        hub.shared.hidden.load(Ordering::Acquire),
+        "Hideout stays in the tray"
+    );
+    // Out again; Dock back shows Hideout and lands as the active tab: visible.
+    hub.apply(Action::PopOut(1));
+    hub.tabs.set_popout_shown(1, true);
+    frame(&ctx, &mut hub, vec![]);
+    let _ = visibility(&router);
+    hub.popout_cmd(&chat(), PopCmd::DockBack);
+    assert!(
+        !hub.shared.hidden.load(Ordering::Acquire),
+        "Hideout came forward"
+    );
+    frame(&ctx, &mut hub, vec![]);
+    // It was on screen in its window and is on screen as the active tab: nothing new, and
+    // never `closed`.
+    assert_eq!(hub.tabs.active_id(), Some(&chat()));
+    assert_eq!(visibility(&router), []);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn close_page_asks_only_with_unsaved_work_and_sends_closed() {
+    let dir = temp_dir("pop-closepage");
+    let (mut hub, router, ctx) = chat_hub(&dir);
+    hub.apply(Action::PopOut(1));
+    hub.tabs.set_popout_shown(1, true);
+    frame(&ctx, &mut hub, vec![]);
+    let _ = visibility(&router);
+    badge(&mut hub, CHAT.0, CHAT.1, Badge::Dirty, None);
+    hub.popout_cmd(&chat(), PopCmd::ClosePage);
+    assert_eq!(hub.popout_asking, Some(chat()), "asks first");
+    let (_, texts) = popout_frame(&mut hub, &chat(), vec![]);
+    assert!(texts.iter().any(|s| s == "Close Chat?"), "{texts:?}");
+    assert!(texts
+        .iter()
+        .any(|s| s == "Your changes in Chat aren't saved."));
+    // Esc keeps it open (the default).
+    let (cmds, _) = popout_frame(&mut hub, &chat(), vec![key(Key::Escape, Modifiers::NONE)]);
+    assert_eq!(cmds, [PopCmd::KeepOpen]);
+    hub.popout_cmd(&chat(), PopCmd::KeepOpen);
+    assert!(hub.tabs.is_open(&chat()));
+    hub.popout_cmd(&chat(), PopCmd::ClosePage);
+    hub.popout_cmd(&chat(), PopCmd::CloseAnyway);
+    assert!(!hub.tabs.is_open(&chat()));
+    assert!(hub.popouts.is_empty());
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(visibility(&router), [("chat".into(), Visibility::Closed)]);
+    // Without unsaved work Close page closes at once.
+    hub.open(chat());
+    let i = hub.tabs.position(&chat()).unwrap();
+    hub.apply(Action::PopOut(i));
+    badge(&mut hub, CHAT.0, CHAT.1, Badge::None, None);
+    hub.popout_cmd(&chat(), PopCmd::ClosePage);
+    assert!(hub.popout_asking.is_none() && !hub.tabs.is_open(&chat()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_palette_pops_out_a_page_that_isnt_open_yet() {
+    let dir = temp_dir("pop-palette");
+    let (mut hub, _router, ctx) = chat_hub(&dir);
+    hub.tabs.close_now(&[TabId::panel("mod.art", "art")]);
+    let (entries, _) = hub.palette_entries();
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    assert!(labels.contains(&"Pop out Art"), "{labels:?}");
+    assert!(labels.contains(&"Pop out Modules"));
+    hub.palette.toggle();
+    hub.palette.query = "pop out art".into();
+    frame(&ctx, &mut hub, vec![key(Key::Enter, Modifiers::NONE)]);
+    let art = TabId::panel("mod.art", "art");
+    let i = hub
+        .tabs
+        .position(&art)
+        .expect("Art has a tab (its placeholder)");
+    assert!(hub.tabs.tabs()[i].popped);
+    assert!(!hub.palette.open);
+    // A page out already isn't offered again.
+    let (entries, _) = hub.palette_entries();
+    assert!(!entries.iter().any(|e| e.label == "Pop out Art"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pop_outs_come_back_at_once_after_a_restart_and_wait_after_a_tray_start() {
+    let dir = temp_dir("pop-restore");
+    {
+        let (mut hub, _router, ctx) = chat_hub(&dir);
+        hub.apply(Action::PopOut(1));
+        frame(&ctx, &mut hub, vec![]);
+    }
+    // A hub restart (a crash, a normal open): the pop-out opens on the first frame.
+    let ctx = ctx();
+    let mut hub = hub_in(&dir, None);
+    assert!(hub.tabs.tabs()[1].popped, "restored as its placeholder");
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(hub.popouts.len(), 1);
+    assert_eq!(hub.popouts[0].id, chat());
+    assert!(!hub.popouts[0].focus, "a restore never takes the focus");
+    // Started in the tray at sign-in: it waits until Hideout is first shown.
+    let mut hub = hub_in(&dir, None);
+    hub.popouts_held = true;
+    hub.shared.hidden.store(true, Ordering::Release);
+    for _ in 0..3 {
+        frame(&ctx, &mut hub, vec![]);
+    }
+    assert!(
+        hub.popouts.is_empty(),
+        "no window while Hideout is in the tray"
+    );
+    assert!(hub.tabs.tabs()[1].popped, "a placeholder meanwhile");
+    hub.show_main();
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(hub.popouts.len(), 1, "back with Hideout's first open");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn keep_on_top_is_off_by_default_and_remembered_per_page() {
+    let dir = temp_dir("pop-top");
+    let (mut hub, _router, _ctx) = chat_hub(&dir);
+    hub.apply(Action::PopOut(1));
+    assert!(!hub.keep_on_top(&chat()));
+    let (_, texts) = popout_frame(&mut hub, &chat(), vec![]);
+    assert!(texts.iter().any(|s| s == "Chat"), "{texts:?}");
+    assert!(texts.iter().any(|s| s.contains("Dock back")));
+    assert!(
+        !texts.iter().any(|s| s.contains("mod.") || s.contains('/')),
+        "no ids in a pop-out: {texts:?}"
+    );
+    hub.popout_cmd(&chat(), PopCmd::ToggleTop);
+    assert!(hub.keep_on_top(&chat()));
+    let saved = saved_windows(&dir);
+    assert!(saved["mod.chat/chat"].keep_on_top && saved["mod.chat/chat"].popped_out);
+    // Docked and out again: still on, for that page only.
+    hub.popout_cmd(&chat(), PopCmd::DockBack);
+    hub.apply(Action::PopOut(1));
+    assert!(hub.keep_on_top(&chat()));
+    assert!(!hub.keep_on_top(&TabId::panel("mod.art", "art")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pop_out_shows_the_crash_bar_and_counts_down_while_the_hub_is_in_the_tray() {
+    let dir = temp_dir("pop-crash");
+    let (mut hub, _asked) = restarting(&dir, 4, 2, Duration::from_millis(200));
+    let i = hub.tabs.position(&TabId::panel(SUP, "art")).unwrap();
+    hub.apply(Action::PopOut(i));
+    hub.shared.hidden.store(true, Ordering::Release);
+    let pctx = ctx();
+    let t = theme::tokens(true);
+    let _ = pctx.run(input(720.0, 460.0, vec![]), |c| {
+        let _ = hub.popout_window_ui(c, &t, i);
+    });
+    let out = pctx.run(input(720.0, 460.0, vec![]), |c| {
+        let _ = hub.popout_window_ui(c, &t, i);
+    });
+    let texts = drawn(&out);
+    assert!(
+        texts
+            .iter()
+            .any(|s| s.starts_with("Art stopped unexpectedly")),
+        "{texts:?}"
+    );
+    let d = repaint_delay(&out);
+    assert!(
+        d > Duration::from_millis(900) && d <= Duration::from_secs(1),
+        "its countdown ticks: {d:?}"
+    );
+    // The stopped card too, with its one main button.
+    let dir2 = temp_dir("pop-stopped");
+    let (mut hub, _asked) = stopped(&dir2, "start-again", None);
+    let i = hub.tabs.position(&TabId::panel(SUP, "art")).unwrap();
+    hub.apply(Action::PopOut(i));
+    let out = pctx.run(input(720.0, 460.0, vec![]), |c| {
+        let _ = hub.popout_window_ui(c, &t, i);
+    });
+    assert!(drawn(&out).iter().any(|s| s == "Start again"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
+fn a_bad_windows_entry_is_dropped_and_the_file_kept() {
+    let dir = temp_dir("pop-bad");
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = "theme = \"dark\"\n[windows.\"mod.chat/chat\"]\npopped_out = true\nkeep_on_top = true\n\n[windows.\"mod.art/art\"]\nplaces = 3\n";
+    let (prefs, err) = Prefs::load(&{
+        let f = dir.join("hideout.toml");
+        std::fs::write(&f, text).unwrap();
+        f
+    });
+    assert!(err.is_none(), "the file still reads: {err:?}");
+    let (w, errors) = popout::load(&prefs.rest);
+    assert_eq!(w.len(), 1);
+    assert!(w["mod.chat/chat"].keep_on_top);
+    assert_eq!(errors.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- Review PNGs (HIDEOUT_REVIEW_DIR) ------------------------------------------------------
+
+/// Windows' own caption over a rendered pop-out, so the review reads as a window.
+fn caption(ctx: &egui::Context, title: &str) {
+    egui::TopBottomPanel::top("review.caption")
+        .exact_height(30.0)
+        .show_separator_line(false)
+        .frame(
+            egui::Frame::new()
+                .fill(Color32::from_rgb(0x20, 0x20, 0x20))
+                .inner_margin(egui::Margin::symmetric(10, 0)),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(12.0)
+                        .color(Color32::from_rgb(0xe6, 0xe6, 0xe6)),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("\u{2014}      \u{25a1}      \u{2715}")
+                            .size(12.0)
+                            .color(Color32::from_rgb(0xe6, 0xe6, 0xe6)),
+                    );
+                });
+            });
+        });
+}
+
+/// A pop-out window of `hub`'s tab `id`, with its caption, `events` per frame.
+fn render_popout(
+    hub: &mut Hub,
+    id: &TabId,
+    w: u32,
+    h: u32,
+    events: Vec<Vec<Event>>,
+) -> Option<Vec<u8>> {
+    let i = hub.tabs.position(id)?;
+    let t = theme::tokens(true);
+    let title = window_title(&hub.look(i).title);
+    rasterise_events(w, h, events, |c| {
+        caption(c, &title);
+        let _ = hub.popout_window_ui(c, &t, i);
+    })
+}
+
+/// Copies `src` (w × h) onto `dst` (dw wide) at (x, y), with a 1 px window border.
+fn blit(dst: &mut [u8], dw: u32, src: &[u8], (w, h): (u32, u32), (x, y): (u32, u32)) {
+    for r in 0..h {
+        for col in 0..w {
+            let s = ((r * w + col) * 4) as usize;
+            let d = (((y + r) * dw + x + col) * 4) as usize;
+            let edge = r == 0 || col == 0 || r == h - 1 || col == w - 1;
+            let px = if edge {
+                [0x55, 0x55, 0x55, 0xff]
+            } else {
+                [src[s], src[s + 1], src[s + 2], 0xff]
+            };
+            dst[d..d + 4].copy_from_slice(&px);
+        }
+    }
+}
+
+#[test]
+fn renders_the_pop_outs_for_review() {
+    // 1. Hideout with two placeholder tabs (Chat and Images) and their two pop-outs, Images
+    //    kept on top.
+    let dir = temp_dir("png-pop");
+    let mut hub = mock_hub(&dir);
+    for id in [chat(), TabId::panel("mod.images", "images")] {
+        let i = hub.tabs.position(&id).unwrap();
+        hub.tabs.dock_quiet(i);
+        hub.apply(Action::PopOut(i));
+    }
+    hub.toggle_keep_on_top(&TabId::panel("mod.images", "images"));
+    let lights = hub
+        .tabs
+        .position(&TabId::panel("mod.lights", "lights"))
+        .unwrap();
+    hub.tabs.activate(lights);
+    let Some(main) = render(&mut hub, 1100, 600, |_| {}) else {
+        eprintln!("no system font; pop-out review skipped");
+        return;
+    };
+    let chat_win = render_popout(&mut hub, &chat(), 640, 430, vec![]).unwrap();
+    let images = TabId::panel("mod.images", "images");
+    let images_win = render_popout(&mut hub, &images, 600, 400, vec![]).unwrap();
+    let (cw, ch) = (1760u32, 1060u32);
+    let mut canvas: Vec<u8> = [0x18u8, 0x1c, 0x22, 0xff].repeat((cw * ch) as usize);
+    blit(&mut canvas, cw, &main, (1100, 600), (30, 30));
+    blit(&mut canvas, cw, &chat_win, (640, 430), (1090, 70));
+    blit(&mut canvas, cw, &images_win, (600, 400), (1120, 620));
+    save_png("built-popouts-hub-two-windows.png", cw, ch, canvas);
+
+    // 2. A pop-out while its module restarts: the crash bar, the page kept below.
+    let dir2 = temp_dir("png-pop-crash");
+    let (mut hub, _asked) = restarting(&dir2, 4, 2, Duration::from_millis(200));
+    let art = TabId::panel(SUP, "art");
+    let i = hub.tabs.position(&art).unwrap();
+    hub.apply(Action::PopOut(i));
+    let img = render_popout(&mut hub, &art, 720, 460, vec![]).unwrap();
+    save_png("built-popout-crash-bar.png", 720, 460, img);
+
+    // 3. The More menu open (a click on …).
+    let dir3 = temp_dir("png-pop-more");
+    let (mut hub, _router, _ctx) = chat_hub(&dir3);
+    hub.apply(Action::PopOut(1));
+    let probe = egui::Context::default();
+    install_fonts(&probe);
+    set_theme(&probe, ThemeChoice::Dark);
+    let t = theme::tokens(true);
+    let title = window_title("Chat");
+    let mut out = None;
+    for _ in 0..2 {
+        out = Some(probe.run(input(640.0, 430.0, vec![]), |c| {
+            caption(c, &title);
+            let _ = hub.popout_window_ui(c, &t, 1);
+        }));
+    }
+    let x = text_x(out.as_ref().unwrap(), "\u{2026}").expect("the More button");
+    let at = egui::pos2(x + 4.0, 30.0 + POPOUT_TITLE_H / 2.0);
+    let press = |down: bool| Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed: down,
+        modifiers: Modifiers::NONE,
+    };
+    let events = vec![
+        vec![Event::PointerMoved(at)],
+        vec![press(true)],
+        vec![press(false)],
+        vec![],
+        vec![],
+    ];
+    let img = render_popout(&mut hub, &chat(), 640, 430, events).unwrap();
+    save_png("built-popout-more-menu.png", 640, 430, img);
+    for d in [dir, dir2, dir3] {
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
