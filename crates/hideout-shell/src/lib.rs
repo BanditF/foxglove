@@ -23,6 +23,8 @@ pub mod tabs;
 pub mod theme;
 
 #[cfg(windows)]
+pub mod capture;
+#[cfg(windows)]
 pub mod notify;
 #[cfg(windows)]
 mod platform;

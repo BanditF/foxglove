@@ -75,6 +75,9 @@ fn main() {
         eprintln!("hideout: neither HIDEOUT_CONFIG_DIR nor LOCALAPPDATA is set");
         std::process::exit(2);
     };
+    if let Some(code) = capture_client(&paths, std::env::args_os().skip(1)) {
+        std::process::exit(code);
+    }
     let mut started = start(&paths);
     let opts = hideout_shell::ShellOptions {
         paths,
@@ -93,6 +96,41 @@ fn main() {
     drop(started);
 }
 
+/// `hideout.exe --capture <out.png>` (#1002): asks the lab hub on the same folder for a PNG of
+/// its window (and `<out>-flyout.png` of an open flyout), prints its answer and exits; it opens
+/// no window and starts nothing. `None` for any other command line: the hub starts as usual.
+/// Exit 0 when every window was written, 1 otherwise.
+#[cfg(windows)]
+fn capture_client(
+    paths: &hideout_shell::paths::HubPaths,
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Option<i32> {
+    use hideout_shell::capture;
+    if args.next()? != "--capture" {
+        return None;
+    }
+    let Some(out) = args.next().map(std::path::PathBuf::from) else {
+        eprintln!("hideout: --capture needs an output path (.png)");
+        return Some(2);
+    };
+    let out = std::path::absolute(&out).unwrap_or(out);
+    let pipe = capture::pipe_name(paths);
+    match capture::request(&pipe, &out) {
+        Ok(reply) => {
+            print!("{reply}");
+            Some(if capture::answer_ok(&reply) { 0 } else { 1 })
+        }
+        Err(e) => {
+            println!(
+                "error no lab hub with capture on for {} ({pipe}: {e}); start it with HIDEOUT_CONFIG_DIR and {}=1",
+                paths.root.display(),
+                capture::ENV
+            );
+            Some(1)
+        }
+    }
+}
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("hideout: the hub runs on Windows only");
@@ -102,6 +140,29 @@ fn main() {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    /// `--capture` never starts a hub: with no lab hub it answers an error and exits 1; any
+    /// other command line falls through to the hub.
+    #[test]
+    fn capture_without_a_lab_hub_fails_fast() {
+        let dir = std::env::temp_dir().join(format!("hideout-main-cap-{}", std::process::id()));
+        let root = dir.as_os_str().to_owned();
+        let paths = hideout_shell::paths::HubPaths::resolve(|k| {
+            (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())
+        })
+        .unwrap();
+        let args = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        let out = dir.join("x.png");
+        let cap = args(&["--capture", out.to_str().unwrap()]);
+        assert_eq!(capture_client(&paths, cap.into_iter()), Some(1));
+        assert_eq!(
+            capture_client(&paths, args(&["--capture"]).into_iter()),
+            Some(2)
+        );
+        assert_eq!(capture_client(&paths, args(&[]).into_iter()), None);
+        assert_eq!(capture_client(&paths, args(&["--other"]).into_iter()), None);
+        assert!(!dir.exists(), "the client made the hub folder");
+    }
 
     /// The supervisor's first line reaches `hideout.log` (#986). Window-free: no shell, a temp
     /// `HIDEOUT_CONFIG_DIR`, and a user name of its own so the router pipe and lock are its own.

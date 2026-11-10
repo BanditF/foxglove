@@ -2092,12 +2092,14 @@ name = "hideout-shell"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "foxglove-plugin",
  "hideout-acl",
  "hideout-contract",
  "hideout-panels",
  "hideout-supervisor",
  "image",
  "log",
+ "png",
  "raw-window-handle",
  "serde",
  "serde_json",

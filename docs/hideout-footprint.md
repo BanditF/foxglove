@@ -18,6 +18,7 @@ about 80 MB private, 77 MB working set, 0.0 % CPU, 9 to 11 wakeups/s, 20.7 MB de
 | Router timer (`hideout-router-timer`) | `recv()` with no timeout while no call is pending, `recv_timeout` only up to the next call deadline (30 s call timeout). | Unchanged. New test `crates/hideout-router/tests/idle.rs` serves a pipe, then checks that the timer and accept threads use zero CPU cycles over a quiet second (`QueryThreadCycleTime`). |
 | Router accept threads (`hideout-router-accept`, one per pipe) | Overlapped `ConnectNamedPipe` waited with `GetOverlappedResult(bWait = TRUE)`: a kernel wait. | Unchanged; covered by the same test. |
 | Router events thread | `for event in rx`: blocks on the channel. | Unchanged. |
+| Lab capture (`hideout-capture`, #1002) | Did not exist. | Off on the user's hub: no thread, no pipe. On a lab folder with `HIDEOUT_LAB_CAPTURE=1`, one thread in a kernel wait (`ConnectNamedPipe`); a frame checks an empty slot. A capture costs one frame. See "Lab capture" below. |
 | Registry | Read once at start (`Registry::open`); no watcher, no poll. | Unchanged. When the registry needs live updates (H2.2) it must use `ReadDirectoryChangesW` / `FindFirstChangeNotification`, not a timer. |
 | Log | `FileLog` writes each line straight to the file; no flusher thread, no timer. | Unchanged. |
 
@@ -141,3 +142,61 @@ threads that switch most, with id, description and switches/s.
 
 After the hidden-hub fix: window closed to the tray, main thread under 1 switch/s (was 1100 to
 1600), and the log shows `event loop: N wakes in 10 min` with N in the tens at most.
+
+## Lab capture (#1002)
+
+`PrintWindow` and `BitBlt` give a blank image of the hub: it draws with OpenGL (eframe's glow
+backend). A lab hub can instead read back the frame it has just drawn and write it as a PNG.
+
+How it works: `hideout.exe --capture <out.png>` connects to the lab hub's capture pipe
+(`\\.\pipe\hideout-capture-<user><folder suffix>`, current user only, no remote clients) and sends
+one line. The hub runs one frame; a paint callback on its topmost layer reads the back buffer
+(`Painter::read_screen_rgba`, as eframe's own screenshot does) of the main window and, if it is
+open, the tray flyout. The pipe thread writes the PNGs and answers. `ViewportCommand::Screenshot`
+is not used: eframe 0.33's glow backend drops it for immediate viewports (the flyout), and its
+answer only comes with a later frame. Code: `crates/hideout-shell/src/capture.rs`.
+
+Cost: the user's hub (default folder) never serves captures, whatever the environment says.
+A lab hub serves them only with `HIDEOUT_LAB_CAPTURE=1`: one thread blocked in
+`ConnectNamedPipe`, nothing per frame but an empty-slot check, no timer, no extra frame. Each
+capture costs one frame; the pipe thread waits at most 5 s for it (fallback only). Tests:
+`shell::tests::a_capture_adds_one_readback_only_to_the_frame_that_answers_it` (no read-back and
+no repaint while unused, one read-back on the asked frame only),
+`shell::tests::a_rendered_frame_goes_through_the_capture_png_writer` (a headless hub frame
+through the same PNG writer), and `capture::tests::a_capture_round_trips_over_the_pipe`.
+
+### On-call usage
+
+1. Start the lab hub with its own folder and the switch (both are needed):
+
+   ```powershell
+   $env:HIDEOUT_CONFIG_DIR = 'C:\lab\hub-1'      # any lab folder; never the default
+   $env:HIDEOUT_LAB_CAPTURE = '1'
+   Start-Process <path>\hideout.exe
+   ```
+
+   `hideout.log` in that folder says `capture: lab capture on, \\.\pipe\hideout-capture-...`.
+2. Bring up what the proof needs (the window on screen; the flyout open for a flyout shot).
+3. From a shell with the same `HIDEOUT_CONFIG_DIR` (the pipe name follows the folder), capture:
+
+   ```powershell
+   $p = Start-Process <path>\hideout.exe -ArgumentList '--capture','C:\lab\shots\hub.png' `
+       -NoNewWindow -Wait -PassThru -RedirectStandardOutput C:\lab\shots\capture.txt
+   $p.ExitCode                                   # 0: every window was written
+   ```
+
+   The main window goes to `hub.png`, an open flyout to `hub-flyout.png` beside it. Each answer
+   line starts `ok <window> <w>x<h> <path>` or `error ...`; `hideout.log` gets one
+   `capture: <window> <w>x<h> to <path>` line per file. The client opens no window and starts
+   nothing; the release `hideout.exe` is a GUI-subsystem program, so its answer is only seen
+   with the output redirected as above (`Start-Process -Wait`, or `subprocess.run(...,
+   capture_output=True)` from Python).
+4. Errors: `nothing on screen` (the window is hidden or minimised and the flyout is closed: run
+   `hideout.exe` on the same folder to show the window, then capture again); `no lab hub with
+   capture on` (the hub isn't running on that folder, or started without
+   `HIDEOUT_LAB_CAPTURE=1`); `<window> was not drawn within 5 s` (the window went away).
+
+The PNGs are opaque RGBA at the window's size in physical pixels (client area only: the title
+bar is drawn by Windows, not by the hub). Pass a `.png` path; relative paths are taken from the
+client's working directory.
+

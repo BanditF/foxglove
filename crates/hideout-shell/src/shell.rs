@@ -244,6 +244,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             let mut hub = Hub::new(shared, pages, feed, hooks);
             // Choose file for file settings: the Windows picker (tests leave it out).
             hub.panels.picker = Some(hideout_panels::model::Picker(Box::new(platform::pick_file)));
+            hub.capture = start_capture(&hub.shared.paths, &ctx);
             Ok(Box::new(hub))
         }),
         &event_loop,
@@ -259,6 +260,33 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
     log::info!("window closed: {result:?}");
     log::logger().flush();
     result.map_err(|e| e.to_string())
+}
+
+/// The lab capture pipe (#1002), only on a lab folder with `HIDEOUT_LAB_CAPTURE=1`.
+fn start_capture(
+    paths: &crate::paths::HubPaths,
+    ctx: &egui::Context,
+) -> Option<Arc<crate::capture::Slot>> {
+    use crate::capture;
+    if !capture::enabled(paths, |k| std::env::var_os(k)) {
+        return None;
+    }
+    let name = capture::pipe_name(paths);
+    let slot = Arc::new(capture::Slot::default());
+    let wake_ctx = ctx.clone();
+    let on_screen = || (platform::main_window_on_screen(), flyout::live());
+    match capture::serve(&name, slot.clone(), on_screen, move || {
+        wake_ctx.request_repaint()
+    }) {
+        Ok(()) => {
+            log::info!("capture: lab capture on, {name}");
+            Some(slot)
+        }
+        Err(e) => {
+            log::warn!("capture: {name}: {e}");
+            None
+        }
+    }
 }
 
 fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
@@ -437,6 +465,8 @@ struct Hub {
     /// The page the focus rule last saw: opening another page (and coming back) focuses the
     /// card's main button again.
     card_target: Option<TabId>,
+    /// Lab captures (#1002): `None` unless the lab switch is on.
+    capture: Option<Arc<crate::capture::Slot>>,
 }
 
 /// The open tray flyout.
@@ -574,6 +604,7 @@ impl Hub {
             flyout_closed_by_focus: None,
             card_focus: None,
             card_target: None,
+            capture: None,
         }
     }
 
@@ -606,7 +637,12 @@ impl Hub {
 
     /// The tray flyout (#991): opened and closed by tray clicks, drawn as its own window from
     /// this frame, closed on focus loss, Esc, or anything that leaves it.
-    fn flyout_ui(&mut self, ctx: &egui::Context, t: &Tokens) {
+    fn flyout_ui(
+        &mut self,
+        ctx: &egui::Context,
+        t: &Tokens,
+        mut capture: Option<std::sync::mpsc::Sender<crate::capture::Shot>>,
+    ) {
         let click = self
             .shared
             .flyout_click
@@ -652,6 +688,9 @@ impl Hub {
             let close = ctx.input_mut(|i| {
                 i.consume_key(Modifiers::NONE, Key::Escape) || i.viewport().close_requested()
             });
+            if let Some(tx) = capture.take() {
+                crate::capture::queue_readback(ctx, crate::capture::Window::Flyout, tx);
+            }
             let draw = |ui: &mut egui::Ui| flyout_panel(ui, panels, layout, editing, t);
             let (report, height) = if class == egui::ViewportClass::Embedded {
                 // No second window (tests, or a backend without viewports): an area on top.
@@ -1520,6 +1559,8 @@ impl Hub {
     /// One frame of the hub window, without the platform calls (tests draw it headless).
     fn frame(&mut self, ctx: &egui::Context) {
         let t = theme::tokens(ctx.theme() == egui::Theme::Dark);
+        // A lab capture (#1002) waiting for this frame; nothing while none is asked for.
+        let job = self.capture.as_ref().and_then(|s| s.take());
         if let Some(feed) = self.feed.as_mut() {
             let now = std::time::Instant::now();
             // Event-driven: the feed's waker brought this frame; a held-back patch asks for one
@@ -1547,7 +1588,11 @@ impl Hub {
             .show(ctx, |ui| self.page_area(ui, &t));
         self.ask_ui(ctx, &t);
         self.palette_ui(ctx, &t);
-        self.flyout_ui(ctx, &t);
+        let fly_shot = job.as_ref().filter(|j| j.flyout).map(|j| j.shots.clone());
+        self.flyout_ui(ctx, &t, fly_shot);
+        if let Some(j) = job.filter(|j| j.main) {
+            crate::capture::queue_readback(ctx, crate::capture::Window::Main, j.shots);
+        }
         // Input from the panel and a change of what is on screen (ui.visibility, 5.9) go out on
         // this frame, not the next one.
         let shown = self.on_screen(ctx);
