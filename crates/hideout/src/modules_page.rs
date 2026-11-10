@@ -403,6 +403,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            finder: None,
         };
         let (rows, _) = page.rows();
         assert_eq!(rows[0].state, "Withdrawn \u{b7} 0.5.0");
