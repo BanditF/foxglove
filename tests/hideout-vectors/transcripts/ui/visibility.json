@@ -6,7 +6,7 @@
     "5.9",
     "8.8"
   ],
-  "description": "ui.visibility tells a module when its panel is on screen, hidden (background tab, minimised, hub in the tray) or closed. Sent on change only; the hub closes the panel's streams when it is not visible.",
+  "description": "ui.visibility tells a module when its panel is on screen, hidden (background tab, minimised, hub in the tray) or closed. Sent on change only; the hub closes the panel's streams when it is not visible. (v1.4) A tile panel gets the same message: visible while the tray panel is open, hidden when it closes; a tile is never closed.",
   "steps": [
     {
       "from": "module",
@@ -28,6 +28,27 @@
                 "id": "root",
                 "props": {},
                 "children": []
+              }
+            },
+            {
+              "id": "art.tile",
+              "slot": "tile",
+              "title": "Art",
+              "icon": "image",
+              "tree": {
+                "type": "column",
+                "id": "root",
+                "props": {},
+                "children": [
+                  {
+                    "type": "value",
+                    "id": "v",
+                    "props": {
+                      "text": "Ready",
+                      "tone": "ok"
+                    }
+                  }
+                ]
               }
             }
           ]
@@ -111,6 +132,41 @@
       "expect": {
         "module": "keeps running; stops work for this panel",
         "streams_open": 0
+      }
+    },
+    {
+      "event": "user opens the tray panel"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "art.tile",
+          "state": "visible"
+        }
+      }
+    },
+    {
+      "event": "user closes the tray panel"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "art.tile",
+          "state": "hidden"
+        }
+      }
+    },
+    {
+      "expect": {
+        "module": "stops the tile's once-a-second patches until the tile is visible again"
       }
     }
   ]

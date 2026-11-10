@@ -25,8 +25,13 @@ pub mod permission;
 
 pub use error::{Error, ErrorId};
 
-/// The contract version this crate reads (`hub` in a manifest, §8.7).
-pub const HUB_VERSION: Version = Version { major: 1, minor: 0 };
+/// The contract version this crate reads (`hub` in a manifest, §8.7). 1.1 since spec v1.4 (a
+/// `file` setting kind and its `filter` key).
+pub const HUB_VERSION: Version = Version { major: 1, minor: 1 };
+
+/// The spec version this crate implements (docs/hideout-contract.md's status line, the test
+/// vectors' `index.json` and README). A drift test keeps them equal.
+pub const SPEC_VERSION: &str = "1.4";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];
@@ -115,6 +120,7 @@ pub fn schema() -> serde_json::Value {
         module::PanelDecl,
         module::WindowDecl,
         module::ModuleSetting,
+        module::ModuleSettingKind,
         module::ModuleAction,
         module::McpTool,
         module::Pin,
@@ -144,10 +150,21 @@ pub fn schema() -> serde_json::Value {
         messages::ChannelOpened,
         messages::ChannelCreate,
         messages::ModuleIdParams,
+        messages::RestartFact,
+        messages::Recovery,
         config::Config,
     );
     serde_json::json!({
         "hub": HUB_VERSION.to_string(),
+        "spec": SPEC_VERSION,
+        "icons": panel::ICONS,
+        "tones": panel::TONES,
+        "tile_limits": {
+            "nodes": panel::TILE_LIMITS.nodes,
+            "depth": panel::TILE_LIMITS.depth,
+            "text_bytes": panel::TILE_LIMITS.text_bytes,
+            "buttons": panel::TILE_BUTTONS,
+        },
         "types": types,
     })
 }
@@ -226,6 +243,34 @@ mod tests {
         );
     }
 
+    /// The spec version is written in four places; they must agree with [`SPEC_VERSION`].
+    #[test]
+    fn spec_version_agrees() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
+        let spec = read("docs/hideout-contract.md");
+        assert!(
+            spec.contains(&format!("contract version **{SPEC_VERSION}**")),
+            "docs/hideout-contract.md's status line must say contract version **{SPEC_VERSION}**"
+        );
+        assert!(
+            spec.contains(&format!("- **{SPEC_VERSION}** (")),
+            "docs/hideout-contract.md's changelog needs a {SPEC_VERSION} entry"
+        );
+        let index: serde_json::Value =
+            serde_json::from_str(&read("tests/hideout-vectors/index.json")).unwrap();
+        assert_eq!(
+            index["contract"], SPEC_VERSION,
+            "tests/hideout-vectors/index.json"
+        );
+        assert!(
+            read("tests/hideout-vectors/README.md")
+                .contains(&format!("Contract version {SPEC_VERSION}.")),
+            "tests/hideout-vectors/README.md"
+        );
+        assert_eq!(schema()["spec"], SPEC_VERSION);
+    }
+
     #[test]
     fn scopes() {
         assert!(scope_covers("foxglove.*", "foxglove.art"));
@@ -239,7 +284,8 @@ mod tests {
 
     #[test]
     fn versions() {
-        assert_eq!(Version::parse("1.0"), Some(HUB_VERSION));
+        assert_eq!(Version::parse("1.1"), Some(HUB_VERSION));
+        assert!(Version::parse("1.0").unwrap().served_by(HUB_VERSION));
         assert_eq!(Version::parse("1.0.0"), None);
         assert_eq!(Version::parse("+1.0"), None);
         assert_eq!(Version::parse("1"), None);

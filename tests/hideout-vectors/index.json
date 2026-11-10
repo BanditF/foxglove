@@ -1,8 +1,8 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.3",
-  "reader_hub": "1.0",
+  "contract": "1.4",
+  "reader_hub": "1.1",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
   "vectors": {
@@ -504,7 +504,7 @@
       ],
       "result": "invalid",
       "id": "manifest.hub",
-      "note": "Written for a newer minor than a v1.0 reader serves."
+      "note": "Written for a newer minor than a v1.0 reader serves. (v1.4: this reader serves 1.1, so the vector says 1.2.)"
     },
     "manifests/invalid/hub-single-number.toml": {
       "spec": [
@@ -2523,7 +2523,15 @@
       "final": {
         "crashes_to_stop": 5,
         "window_s": 600,
-        "backoff_steps_s": [1, 2, 4, 8, 16, 32, 60],
+        "backoff_steps_s": [
+          1,
+          2,
+          4,
+          8,
+          16,
+          32,
+          60
+        ],
         "backoff_after_last_step_s": 60,
         "jitter": false,
         "notifications": 1
@@ -2977,7 +2985,7 @@
         "5.9",
         "8.8"
       ],
-      "note": "ui.visibility (v1.3): visible, hidden, closed, sent on change; streams close when not visible.",
+      "note": "ui.visibility (v1.3): visible, hidden, closed, sent on change; streams close when not visible. (v1.4) tile panels too: visible while the tray panel is open.",
       "result": "valid",
       "final": {
         "states_sent": [
@@ -2986,7 +2994,11 @@
           "visible",
           "closed"
         ],
-        "streams_open_when_hidden": 0
+        "streams_open_when_hidden": 0,
+        "tile_states_sent": [
+          "visible",
+          "hidden"
+        ]
       }
     },
     "transcripts/ui/window-open.json": {
@@ -4010,6 +4022,304 @@
         "root_pinned_key": "trust/keys/root.pub",
         "seen": {}
       }
+    },
+    "panels/valid/tone-value-and-label.json": {
+      "spec": [
+        "5.2"
+      ],
+      "result": "valid",
+      "note": "tone (v1.4) on value and label: the six words, and an unknown word, which registers and draws as neutral."
+    },
+    "panels/invalid/tone-not-string.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "tone (v1.4) must be a string; a number rejects that panel."
+    },
+    "panels/valid/button-opens.json": {
+      "spec": [
+        "5.2"
+      ],
+      "result": "valid",
+      "note": "button opens (v1.4): page, page#<node id> and settings, the module's own panels only."
+    },
+    "panels/invalid/button-opens-other-module.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "opens (v1.4) names only the module's own page, a node in it, or its settings."
+    },
+    "panels/invalid/button-opens-empty-node.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "page#<node id> (v1.4) needs a node id."
+    },
+    "panels/invalid/button-opens-and-action.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "A button (v1.4) has opens or action, not both."
+    },
+    "panels/valid/button-action.json": {
+      "spec": [
+        "5.2",
+        "4.7"
+      ],
+      "result": "valid",
+      "context": {
+        "actions": [
+          "toggle",
+          "mute",
+          "unmute"
+        ]
+      },
+      "note": "button action (v1.4) names one of the module's [[actions]]: the hub sends action.invoke (source panel) and shows the bound key."
+    },
+    "panels/invalid/button-action-unknown.json": {
+      "spec": [
+        "5.2",
+        "4.7",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.action",
+      "context": {
+        "actions": [
+          "toggle"
+        ]
+      },
+      "note": "button action (v1.4) naming no [[actions]] entry rejects that panel."
+    },
+    "panels/invalid/button-action-bad-id.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "button action (v1.4) is an action id (a-z, 0-9, -)."
+    },
+    "panels/valid/tile-at-caps.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "valid",
+      "note": "A tile at every tile cap (v1.4): 12 nodes, depth 3, one button, a 64-byte string."
+    },
+    "panels/invalid/tile-over-nodes.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "id": "ui.limits",
+      "note": "13 nodes in a tile, over the tile cap of 12 (v1.4)."
+    },
+    "panels/invalid/tile-over-depth.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "id": "ui.limits",
+      "note": "Depth 4 in a tile, over the tile cap of 3 (v1.4)."
+    },
+    "panels/invalid/tile-two-buttons.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "id": "ui.limits",
+      "note": "Two buttons in a tile, over the tile cap of one (v1.4)."
+    },
+    "panels/invalid/tile-over-text.json": {
+      "spec": [
+        "5.5"
+      ],
+      "result": "invalid",
+      "id": "ui.limits",
+      "note": "A 65-byte string in a tile, over the tile text cap of 64 bytes (v1.4)."
+    },
+    "panels/invalid/tile-bad-page-good.json": {
+      "spec": [
+        "5.5",
+        "8.8"
+      ],
+      "result": "partial",
+      "rejected": [
+        {
+          "panel": "tile",
+          "error": "ui.limits"
+        }
+      ],
+      "registered": [
+        "page"
+      ],
+      "note": "The same 65-byte string: over the tile cap, far under the page cap (v1.4). Only the tile is rejected."
+    },
+    "manifests/valid/setting-file.toml": {
+      "spec": [
+        "4.2",
+        "4.7",
+        "8.7"
+      ],
+      "result": "valid",
+      "note": "kind = \"file\" settings (v1.4, hub 1.1), with and without a filter; the default is a path string, \"\" for none.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.1",
+        "visibility": "public",
+        "api": {},
+        "transport": "pipe",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-art.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 0,
+          "windows": 0,
+          "settings": 2,
+          "actions": 0,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/invalid/setting-file-hub-1-0.toml": {
+      "spec": [
+        "4.1",
+        "4.7",
+        "8.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.hub",
+      "note": "kind = \"file\" is new in hub 1.1 (v1.4): a manifest using it says hub = \"1.1\", so a 1.0 reader refuses it."
+    },
+    "manifests/invalid/setting-filter-on-text.toml": {
+      "spec": [
+        "4.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.settings",
+      "note": "filter (v1.4) is for kind = \"file\" only."
+    },
+    "manifests/invalid/setting-filter-path.toml": {
+      "spec": [
+        "4.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.settings",
+      "note": "A filter (v1.4) is file-name patterns only: no folders or drive."
+    },
+    "manifests/invalid/setting-file-default-not-string.toml": {
+      "spec": [
+        "4.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.settings",
+      "note": "A file setting's default is a path string (v1.4)."
+    },
+    "legacy/invalid-setting-kind-file.plugin.toml": {
+      "spec": [
+        "4.10"
+      ],
+      "result": "invalid",
+      "id": "manifest.syntax",
+      "note": "kind = \"file\" (v1.4) is module.toml only; a legacy file keeps plugin.toml's three kinds."
+    },
+    "manifests/valid/stdio-module-with-panels.toml": {
+      "spec": [
+        "4.2",
+        "4.6",
+        "4.10",
+        "5.1",
+        "8.2"
+      ],
+      "result": "valid",
+      "note": "A legacy plugin's module.toml (v1.4): the stdio transport kept, a tile and a page declared, an icon from the published list and one that is not (draws the generic icon), and a tile shown once its app was seen (apps.seen.<name>, an optional fact).",
+      "normalized": {
+        "id": "org.foxglove.example-tool",
+        "name": "Example Tool",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.0",
+        "visibility": "public",
+        "api": {
+          "foxglove": "1.3"
+        },
+        "transport": "stdio",
+        "swap": "overlap",
+        "activation_on": [
+          "enable"
+        ],
+        "lifecycle_data": "ask",
+        "requires": [],
+        "run": [
+          "example-tool.exe"
+        ],
+        "provides": [],
+        "permissions": [],
+        "counts": {
+          "panels": 2,
+          "windows": 0,
+          "settings": 0,
+          "actions": 1,
+          "secrets": 0,
+          "mcp_tools": 0
+        }
+      }
+    },
+    "manifests/invalid/when-apps-seen-with-exe.toml": {
+      "spec": [
+        "4.6"
+      ],
+      "result": "invalid",
+      "id": "manifest.activation",
+      "note": "apps.seen.<name> (v1.4) names the app by one lowercase label, the exe name without .exe."
+    },
+    "transcripts/supervisor/outside-app-missing.json": {
+      "spec": [
+        "7.7",
+        "7.8"
+      ],
+      "result": "valid",
+      "note": "An outside problem (app closed, busy port) is shown in the module's panels and retried; the module stays running and no crash is counted (v1.4).",
+      "final": {
+        "module_state": "running",
+        "crashes_counted": 0
+      }
+    },
+    "facts/supervisor-facts.json": {
+      "spec": [
+        "7.7",
+        "7.8",
+        "8.8"
+      ],
+      "result": "table",
+      "note": "module.<id>.restart {delay_s, crash, of} or null, and module.<id>.recovery start-again | defaults | go-back (v1.4)."
     }
   }
 }

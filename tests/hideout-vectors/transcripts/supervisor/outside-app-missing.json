@@ -1,0 +1,103 @@
+{
+  "name": "outside-app-missing",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.7",
+    "7.8",
+    "5.3"
+  ],
+  "description": "An outside app that is closed, or a port another app holds, is a module state, not a crash (v1.4). The module keeps running, says what it needs in its tile and page, and tries again on an event or the user's Try again. Only a real fault exits non-zero.",
+  "steps": [
+    {
+      "event": "the module starts; the port it listens on is held by another app"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.patch",
+        "params": {
+          "panel": "tile",
+          "ops": [
+            {
+              "op": "set",
+              "node": "v",
+              "props": {
+                "text": "Port is busy",
+                "tone": "attention"
+              }
+            },
+            {
+              "op": "set",
+              "node": "b",
+              "props": {
+                "label": "Try again"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "module_state": "running",
+        "supervisor_crashes_counted": 0
+      }
+    },
+    {
+      "event": "the other app lets go of the port; the user clicks Try again"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ui.event",
+        "params": {
+          "panel": "tile",
+          "node": "b",
+          "kind": "click",
+          "value": null
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {}
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.patch",
+        "params": {
+          "panel": "tile",
+          "ops": [
+            {
+              "op": "set",
+              "node": "v",
+              "props": {
+                "text": "Following",
+                "tone": "active"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "expect": {
+        "module_state": "running",
+        "supervisor_crashes_counted": 0
+      }
+    }
+  ]
+}

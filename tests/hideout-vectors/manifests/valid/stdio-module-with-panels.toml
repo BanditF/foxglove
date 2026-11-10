@@ -1,0 +1,27 @@
+id = "org.foxglove.example-tool"
+name = "Example Tool"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-tool.exe"]
+transport = "stdio"
+api = "1.3"
+enriches = ["example-app.exe"]
+
+[[ui.panels]]
+id = "tile"
+slot = "tile"
+title = "Example Tool"
+icon = "mic"
+when = "apps.seen.example-app"
+
+[[ui.panels]]
+id = "page"
+slot = "page"
+title = "Example Tool"
+icon = "a-future-icon"
+
+[[actions]]
+id = "toggle"
+name = "Toggle"

@@ -182,6 +182,11 @@ def render():
         "from ._model import Model",
         "",
         f"HUB = {schema['hub']!r}",
+        f"SPEC = {schema['spec']!r}",
+        "# The published icon names (unknown draws the generic 'module' icon) and tone words.",
+        f"ICONS = {tuple(schema['icons'])!r}",
+        f"TONES = {tuple(schema['tones'])!r}",
+        f"TILE_LIMITS = {schema['tile_limits']!r}",
         "",
     ]
     types = ["", "# The schema's top-level types by their schema key.", "TYPES = {"]

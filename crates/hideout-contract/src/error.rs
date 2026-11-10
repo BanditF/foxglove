@@ -62,6 +62,8 @@ error_ids! {
     PermissionProvider => "permission.provider",
     UiUndeclared => "ui.undeclared",
     UiLimits => "ui.limits",
+    UiProp => "ui.prop",
+    UiAction => "ui.action",
     LifecycleApi => "lifecycle.api",
     LifecycleRequires => "lifecycle.requires",
     LifecycleRequiredBy => "lifecycle.required-by",

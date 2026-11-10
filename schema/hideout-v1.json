@@ -1,5 +1,55 @@
 {
-  "hub": "1.0",
+  "hub": "1.1",
+  "icons": [
+    "module",
+    "battery",
+    "bell",
+    "bluetooth",
+    "book",
+    "brush",
+    "calendar",
+    "camera",
+    "chart",
+    "chat",
+    "cloud",
+    "folder",
+    "gamepad",
+    "gear",
+    "headphones",
+    "image",
+    "info",
+    "key",
+    "keyboard",
+    "lights",
+    "link",
+    "lock",
+    "mic",
+    "music",
+    "palette",
+    "play",
+    "screen",
+    "sparkle",
+    "speaker",
+    "terminal",
+    "timer",
+    "video",
+    "wifi"
+  ],
+  "spec": "1.4",
+  "tile_limits": {
+    "buttons": 1,
+    "depth": 3,
+    "nodes": 12,
+    "text_bytes": 64
+  },
+  "tones": [
+    "neutral",
+    "active",
+    "live",
+    "ok",
+    "attention",
+    "off"
+  ],
   "types": {
     "config.Config": {
       "$defs": {
@@ -617,6 +667,27 @@
       "title": "ModuleRegister",
       "type": "object"
     },
+    "messages.Recovery": {
+      "description": "The fact `module.<id>.recovery` (§7.8, spec v1.4): the step of the recovery ladder a\n`crash-stopped` module's card offers first.",
+      "oneOf": [
+        {
+          "const": "start-again",
+          "description": "**Start again** (the first stop this sign-in).",
+          "type": "string"
+        },
+        {
+          "const": "defaults",
+          "description": "**Start with default settings** (the second stop, or later with no previous version).",
+          "type": "string"
+        },
+        {
+          "const": "go-back",
+          "description": "**Go back to <previous>** (the third stop and later, when a previous version is kept).",
+          "type": "string"
+        }
+      ],
+      "title": "Recovery"
+    },
     "messages.RegisterResult": {
       "$defs": {
         "RejectedItem": {
@@ -646,6 +717,35 @@
         }
       },
       "title": "RegisterResult",
+      "type": "object"
+    },
+    "messages.RestartFact": {
+      "additionalProperties": false,
+      "description": "The fact `module.<id>.restart` (§7.8, spec v1.4): set by the supervisor while the module waits\nto be restarted, `null` once the restart starts. `crash` is this crash's number in the\nten-minute window, 1 to `of` - 1 (the `of`-th stops it instead).",
+      "properties": {
+        "crash": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "delay_s": {
+          "description": "Seconds until the restart: one of the §7.7 backoff steps.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "of": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "delay_s",
+        "crash",
+        "of"
+      ],
+      "title": "RestartFact",
       "type": "object"
     },
     "messages.SettingsSet": {
@@ -983,25 +1083,43 @@
     },
     "module.ModuleSetting": {
       "$defs": {
-        "SettingKind": {
-          "enum": [
-            "bool",
-            "int",
-            "text"
-          ],
-          "type": "string"
+        "ModuleSettingKind": {
+          "description": "A `[[settings]]` kind: plugin.toml's three, plus `file` (spec v1.4, `hub = \"1.1\"`).",
+          "oneOf": [
+            {
+              "enum": [
+                "bool",
+                "int",
+                "text"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "file",
+              "description": "A path the user picks with the hub's Choose file button (a native picker); the value is\nthe path as a string, `\"\"` for none.",
+              "type": "string"
+            }
+          ]
         }
       },
-      "description": "`[[settings]]`: as plugin.toml, plus `when`.",
+      "additionalProperties": false,
+      "description": "`[[settings]]`: as plugin.toml, plus `when`, and (spec v1.4) `kind = \"file\"` with `filter`.",
       "properties": {
         "default": {
-          "description": "The value until the user changes it; its type must match `kind`."
+          "description": "The value until the user changes it; its type must match `kind` (a string for `file`)."
+        },
+        "filter": {
+          "description": "For `file` only: the file names the picker offers, as `*`/`?` patterns joined by `;`\n(`ExampleSDK*.dll`). No path separators (spec v1.4).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "kind": {
-          "$ref": "#/$defs/SettingKind"
+          "$ref": "#/$defs/ModuleSettingKind"
         },
         "label": {
-          "description": "For the Plugins tab (`Focus minutes`).",
+          "description": "For the settings form (`Focus minutes`).",
           "type": "string"
         },
         "max": {
@@ -1014,7 +1132,7 @@
         },
         "min": {
           "default": null,
-          "description": "For `int`: the range the Plugins tab allows.",
+          "description": "For `int`: the range the form allows.",
           "format": "int64",
           "type": [
             "integer",
@@ -1022,7 +1140,7 @@
           ]
         },
         "name": {
-          "description": "What the plugin reads (`focus-minutes`).",
+          "description": "What the module reads (`focus-minutes`).",
           "type": "string"
         },
         "when": {
@@ -1041,6 +1159,25 @@
       ],
       "title": "ModuleSetting",
       "type": "object"
+    },
+    "module.ModuleSettingKind": {
+      "description": "A `[[settings]]` kind: plugin.toml's three, plus `file` (spec v1.4, `hub = \"1.1\"`).",
+      "oneOf": [
+        {
+          "enum": [
+            "bool",
+            "int",
+            "text"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "file",
+          "description": "A path the user picks with the hub's Choose file button (a native picker); the value is\nthe path as a string, `\"\"` for none.",
+          "type": "string"
+        }
+      ],
+      "title": "ModuleSettingKind"
     },
     "module.PanelDecl": {
       "$defs": {

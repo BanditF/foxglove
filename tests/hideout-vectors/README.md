@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.3. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.4. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -27,7 +27,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 
 | Path | Covers | Spec |
 |---|---|---|
-| `manifests/valid/*.toml` | every kind, `[[ui.panels]]` (five slots), `[[ui.windows]]`, `[[settings]]`, `[[actions]]`, `[[secrets]]`, `[[mcp.tools]]`, `hub = "1.0"`, activation events, `when` clauses (with `!`), `requires` forms, `api` string form, `arete` alias, `[edition]`, `[[pin]]`, `[identity]`, private module | 3, 4, 9, 13 |
+| `manifests/valid/*.toml` | every kind, `[[ui.panels]]` (five slots), `[[ui.windows]]`, `[[settings]]`, `[[actions]]`, `[[secrets]]`, `[[mcp.tools]]`, `hub = "1.0"`, activation events, `when` clauses (with `!`, and `apps.seen.<name>`, v1.4), `kind = "file"` settings (v1.4, hub 1.1), a stdio module with panels (v1.4), `requires` forms, `api` string form, `arete` alias, `[edition]`, `[[pin]]`, `[identity]`, private module | 3, 4, 9, 13 |
 | `manifests/invalid/*.toml` | one broken thing each: syntax, unknown keys (top, nested, from a newer minor), missing keys, ids, family, kind, version, `hub` (shape and not served: `1.1`, `2.0`), `api`, `run`, visibility, `requires`, `enriches`, `provides`, activation and `when` grammar, UI, MCP, pin, edition, identity, actions, settings, secrets | 4, 15 |
 | `legacy/*.plugin.toml`, `legacy/*.kit.toml` | what a legacy file reads as (kind service, stdio, `hub` 1.0, family by id prefix, `[lifecycle] data = "remove"`); legacy files with new keys fail | 4.10 |
 | `legacy/precedence-*/` | `module.toml` before `plugin.toml` before `kit.toml` | 4.10 |
@@ -39,14 +39,15 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `trust/archives/`, `trust/folders/` | the signed archives and unpacked folders the catalogs pin | 12.4 |
 | `trust/keys/` | TEST-ONLY public keys | 12 |
 | `config/` | `hideout.toml` `[[sources]]` and `[[trust.anchors]]` tables, valid, overlapping, and the four `config.*` errors | 13.4, 13.6 |
-| `panels/` | `ui.register` trees: all node types, under the caps, over each cap, an unknown node type, one bad panel with a good one | 5.2, 5.5 |
+| `panels/` | `ui.register` trees: all node types, under the caps, over each cap, an unknown node type, one bad panel with a good one; (v1.4) `tone`, button `opens` and `action` (an index `context.actions` lists the module's `[[actions]]`), the tile caps | 5.2, 5.5 |
+| `facts/supervisor-facts.json` | (v1.4) the supervisor's `module.<id>.restart` and `module.<id>.recovery` values, valid and invalid rows | 7.8 |
 | `frames/panel-frames.json` | binary stream frames as hex: image, canvas, text, length mismatches | 5.4, 8.4 |
 | `transcripts/lifecycle/` | `initialize` (module, tool, bad token, hub not served, not first), `module.register`/`module.ready`, re-registration, `ui.undeclared`, 30 s ready timeout, errors -32601, 2, 4, 8, bad hub minor (7), late reply after timeout, malformed JSON (-32700), module crash mid-call, duplicate request id and oversized line (v1.2) | 7.5, 8.1, 8.8 |
 | `transcripts/swap/` | hot swap overlap and handover, drain `done`, `busy`, Force, Not now, `module.idle`, key action queued during a swap | 7.6 |
-| `transcripts/ui/` | `ui.patch`, `ui.event` refusal, `ui.asset.put`, `ui.window.open`, `action.invoke`, `settings.get`/`set`, `hub.notify`, `ui.badge`, `ui.visibility` (v1.3) | 5.3, 5.9, 8.8 |
+| `transcripts/ui/` | `ui.patch`, `ui.event` refusal, `ui.asset.put`, `ui.window.open`, `action.invoke`, `settings.get`/`set`, `hub.notify`, `ui.badge`, `ui.visibility` (v1.3; tiles too, v1.4) | 5.3, 5.9, 8.8 |
 | `transcripts/stream/` | a live panel stream grant, `channel.open`/`channel.create`, denial, offer rejected | 5.4, 8.4 |
 | `transcripts/facts/`, `modules/`, `mcp/`, `gpu/` | facts, `modules.*`, required-by, MCP and private modules, GPU methods | 8.8, 9, 8.9, 13.5 |
-| `transcripts/supervisor/` | each of the 12 states (`state-<id>.json`), crash backoff and stop, exit 0, rollback, root-cause-once, update waiting | 7.7, 7.8 |
+| `transcripts/supervisor/` | each of the 12 states (`state-<id>.json`), crash backoff and stop, exit 0, rollback, root-cause-once, update waiting, an outside problem that is not a crash (v1.4) | 7.7, 7.8 |
 | `transcripts/hub/` | hub restart takes modules back, 30 s grace, safe mode, quarantine, bisect | 7.9, 7.10, 5.5 |
 
 A transcript is `{name, spec, description, steps}`. A step is a wire message `{from, to, msg}` (one JSON-RPC 2.0
