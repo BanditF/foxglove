@@ -2001,6 +2001,7 @@ dependencies = [
 name = "hideout"
 version = "0.1.0"
 dependencies = [
+ "hideout-contract",
  "hideout-registry",
  "hideout-router",
  "hideout-shell",

@@ -19,23 +19,45 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub struct DrawReport {
     pub rects: HashMap<String, Rect>,
     pub panicked: bool,
+    /// Buttons with `opens` or `action` that were pressed (v1.4). An `action` is already queued
+    /// as `action.invoke` ([`PanelHost::invoke`]); an `opens` is for the hub to navigate
+    /// ([`PanelHost::navigate`]).
+    pub go: Vec<Go>,
+}
+
+/// A button that the hub handles itself (§5.2, v1.4): no `ui.event` is sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Go {
+    /// `opens`: `"page"`, `"page#<node id>"` or `"settings"`, in the panel's own module.
+    Open { module: String, target: String },
+    /// `action`: one of the module's `[[actions]]`.
+    Action { module: String, action: String },
 }
 
 /// Draws the panel `key` into `ui`. Unknown keys draw nothing.
 pub fn panel_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport {
+    panel_body(host, ui, key, true)
+}
+
+/// [`panel_ui`]; `banner` draws the state line above a panel that isn't live (a tile's frame
+/// says the state itself, without the module's name).
+fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, banner: bool) -> DrawReport {
     let mut report = DrawReport::default();
     let mut out = Vec::new();
+    let mut go = Vec::new();
     host.breadcrumb = Some(key.clone());
-    if let Some((panel, view, facts, assets)) = host.parts(key) {
+    if let Some((panel, view, facts, assets, keys)) = host.parts(key) {
         let mut d = Draw {
             key,
             view,
             facts,
             assets,
+            keys,
             out: &mut out,
+            go: &mut go,
             rects: &mut report.rects,
         };
-        let result = catch_unwind(AssertUnwindSafe(|| draw_panel(ui, panel, &mut d)));
+        let result = catch_unwind(AssertUnwindSafe(|| draw_panel(ui, panel, &mut d, banner)));
         if result.is_err() {
             log::error!("{}/{}: drawing the panel panicked", key.module, key.panel);
             panel.state = PanelState::Broken;
@@ -46,71 +68,34 @@ pub fn panel_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport
     for i in out {
         host.emit(i);
     }
-    report
-}
-
-/// What a tile draw saw: the body's rects, and whether the frame's **Open** was pressed (the
-/// hub then opens the module's first page).
-#[derive(Debug, Default)]
-pub struct TileReport {
-    pub draw: DrawReport,
-    pub open: bool,
-}
-
-/// Width of a tile in the tray panel.
-pub const TILE_WIDTH: f32 = 228.0;
-
-/// Draws the tile `key` (§5.1, v1.4): the hub's frame (title and the module's state) around the
-/// module's body. A module stopped after its crashes, or a tile that couldn't be shown, offers
-/// only **Open** (to the page's recovery ladder); a restarting module's body greys under its
-/// state line. Each tile draws in its own guarded scope, like a page (§5.5).
-pub fn tile_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> TileReport {
-    let mut report = TileReport::default();
-    let Some(p) = host.panel(key) else {
-        return report;
-    };
-    let (title, state) = (p.title.clone(), p.state.clone());
-    let stopped = match &state {
-        PanelState::Greyed(s) => matches!(s.as_str(), "crash-stopped" | "crash-looped"),
-        PanelState::Live => false,
-        _ => true,
-    };
-    egui::Frame::group(ui.style())
-        .inner_margin(10.0)
-        .corner_radius(8.0)
-        .show(ui, |ui| {
-            ui.set_width(TILE_WIDTH);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(&title).strong());
-                if stopped {
-                    let words = match &state {
-                        PanelState::Greyed(s) => crate::model::state_words(s).to_string(),
-                        _ => "Its tile couldn't be shown".to_string(),
-                    };
-                    ui.label(RichText::new(words).color(ui.visuals().error_fg_color));
-                    report.open = ui.button("Open").clicked();
-                } else {
-                    report.draw = panel_ui(host, ui, key);
-                }
-            });
-        });
+    for g in &go {
+        if let Go::Action { module, action } = g {
+            host.invoke(module, action);
+        }
+    }
+    report.go = go;
     report
 }
 
 /// The colour for a `tone` (§5.2, v1.4) on the current theme; `None` for `neutral` and unknown
 /// words (the text colour). Each is at least 4.5:1 on the panel surface.
 fn tone_color(ui: &Ui, p: &Map<String, Value>) -> Option<Color32> {
-    let dark = ui.visuals().dark_mode;
-    let pick = |d: (u8, u8, u8), l: (u8, u8, u8)| {
-        let (r, g, b) = if dark { d } else { l };
-        Some(Color32::from_rgb(r, g, b))
-    };
-    match s(p, "tone")? {
+    let word = s(p, "tone")?;
+    if word == "off" {
+        return Some(ui.visuals().weak_text_color());
+    }
+    tone_rgb(word, ui.visuals().dark_mode).map(|(r, g, b)| Color32::from_rgb(r, g, b))
+}
+
+/// The theme colour of a coloured `tone` word on a dark or light surface; `None` for
+/// `neutral`, `off` (the weak text colour) and unknown words.
+pub fn tone_rgb(word: &str, dark: bool) -> Option<(u8, u8, u8)> {
+    let pick = |d: (u8, u8, u8), l: (u8, u8, u8)| Some(if dark { d } else { l });
+    match word {
         "active" => pick((0xFF, 0x9E, 0x57), (0xA8, 0x46, 0x00)),
         "live" => pick((0xFF, 0x7A, 0x7A), (0xB0, 0x1E, 0x1E)),
         "ok" => pick((0x72, 0xD6, 0x8F), (0x1C, 0x6E, 0x34)),
         "attention" => pick((0xF5, 0xC4, 0x51), (0x80, 0x5A, 0x00)),
-        "off" => Some(ui.visuals().weak_text_color()),
         _ => None,
     }
 }
@@ -127,7 +112,9 @@ struct Draw<'a> {
     view: &'a mut ViewState,
     facts: &'a HashMap<String, Value>,
     assets: &'a Assets,
+    keys: &'a HashMap<(String, String), String>,
     out: &'a mut Vec<Interaction>,
+    go: &'a mut Vec<Go>,
     rects: &'a mut HashMap<String, Rect>,
 }
 
@@ -197,8 +184,8 @@ fn text_of(v: &Value) -> String {
     }
 }
 
-fn draw_panel(ui: &mut Ui, panel: &mut HostedPanel, d: &mut Draw) {
-    if let Some(b) = panel.state.banner(&panel.module_name) {
+fn draw_panel(ui: &mut Ui, panel: &mut HostedPanel, d: &mut Draw, banner: bool) {
+    if let Some(b) = panel.state.banner(&panel.module_name).filter(|_| banner) {
         let label = ui.label(RichText::new(b).color(ui.visuals().warn_fg_color));
         // The state or error id lives in the tooltip, not in the line a person reads.
         if let Some(d) = panel.state.details() {
@@ -222,6 +209,10 @@ fn draw_panel(ui: &mut Ui, panel: &mut HostedPanel, d: &mut Draw) {
 
 fn node(ui: &mut Ui, n: &Node, d: &mut Draw) {
     let r = ui.scope(|ui| widget(ui, n, d)).response;
+    if d.view.focus.as_deref() == Some(n.id.as_str()) {
+        r.scroll_to_me(Some(egui::Align::TOP));
+        d.view.focus = None;
+    }
     d.rects.entry(n.id.clone()).or_insert(r.rect);
 }
 
@@ -255,6 +246,9 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
         "section" => {
             let title = s(&p, "title").unwrap_or(&label).to_string();
             let default = p.get("open").and_then(Value::as_bool).unwrap_or(true);
+            if d.view.focus.as_deref() == Some(n.id.as_str()) {
+                d.view.open.insert(n.id.clone(), true);
+            }
             let open = *d.view.open.get(&n.id).unwrap_or(&default);
             let r = egui::CollapsingHeader::new(title)
                 .id_salt(d.salt(n))
@@ -279,9 +273,27 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
             });
         }
         "button" => {
-            if ui.button(&label).clicked() {
-                d.emit(&n.id, "click", Value::Null, false);
-            }
+            let action = s(&p, "action").map(String::from);
+            let opens = s(&p, "opens").map(String::from);
+            ui.horizontal(|ui| {
+                let clicked = ui.button(&label).clicked();
+                // The bound key as a chip beside the button (v1.4).
+                if let Some(k) = action
+                    .as_ref()
+                    .and_then(|a| d.keys.get(&(d.key.module.clone(), a.clone())))
+                {
+                    key_chip(ui, k);
+                }
+                if !clicked {
+                    return;
+                }
+                let module = d.key.module.clone();
+                match (action, opens) {
+                    (Some(action), _) => d.go.push(Go::Action { module, action }),
+                    (None, Some(target)) => d.go.push(Go::Open { module, target }),
+                    (None, None) => d.emit(&n.id, "click", Value::Null, false),
+                }
+            });
         }
         "toggle" => {
             let mut on = p.get("value").and_then(Value::as_bool).unwrap_or(false);
@@ -607,6 +619,24 @@ pub fn test_fonts() -> Option<egui::FontDefinitions> {
         fonts.families.insert(fam, vec!["test".into()]);
     }
     Some(fonts)
+}
+
+/// A bound key as a small chip ("F13"), drawn by the hub beside a button with `action` and in the
+/// Keys section.
+pub fn key_chip(ui: &mut Ui, key: &str) {
+    let stroke = Stroke::new(1.0_f32, ui.visuals().weak_text_color());
+    egui::Frame::new()
+        .stroke(stroke)
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| {
+            ui.label(RichText::new(key).small().monospace());
+        });
+}
+
+/// The tile body without the state line (the tile frame says it), for [`crate::tray`].
+pub(crate) fn tile_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport {
+    panel_body(host, ui, key, false)
 }
 
 #[cfg(test)]

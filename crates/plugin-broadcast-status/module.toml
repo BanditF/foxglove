@@ -11,7 +11,7 @@ api = { foxglove = "1.3" }
 run = ["broadcast-status.exe"]
 permissions = ["net.connect:127.0.0.1:4455", "apps.watch:obs64.exe", "secrets", "facts.write:broadcast.*", "devices.read", "lighting.write", "screens.write"]
 enriches = ["obs64.exe"]
-description = "Shows whether OBS is recording or streaming, REC or LIVE and the scene on the keyboard's info screen and red on the keyboard. It connects to OBS's WebSocket server on this PC (Tools → WebSocket Server Settings, port 4455) and only listens: it never starts, stops or switches anything."
+description = "Shows on your keyboard whether OBS is recording or live: REC or LIVE and the scene on the info screen, red lights. It only listens; it never starts, stops or switches anything."
 
 # The tile shows once OBS has been seen on this PC (UX plan, decision 2).
 [[ui.panels]]

@@ -36,7 +36,7 @@ pub fn tile(f: &Feed) -> Tile {
         Feed::Waiting { ever: true } => Tile {
             value: "Waiting for OpenRGB".into(),
             tone: "off",
-            sub: Some("Follows again when colours come".into()),
+            sub: Some("Follows again when OpenRGB sends".into()),
             ..Tile::default()
         },
         Feed::PortBusy { port } => Tile {
@@ -62,7 +62,7 @@ pub fn panels(f: &Feed) -> Vec<Value> {
                 "1. In OpenRGB, open Settings > E1.31 Devices.\n\
                  2. Click Add.\n\
                  3. Set IP to 127.0.0.1 and Universe to 1.\n\
-                 4. Save, then restart OpenRGB's devices (or OpenRGB).",
+                 4. Save, then click Rescan Devices.",
             )],
         ));
     }

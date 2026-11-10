@@ -20,6 +20,9 @@ pub struct ViewState {
     /// Values the user set that wait for the module's answer to their `ui.event` (§5.3). Drawn
     /// in place of the tree's value; a refusal drops them.
     pub optimistic: HashMap<String, Value>,
+    /// A node to bring into view on the next draw (a button's `opens = "page#<node>"`, v1.4);
+    /// a `section` there opens. Cleared once drawn.
+    pub focus: Option<String>,
     /// Set when the panel was (re)built: the next draw pushes the scroll offsets back into egui.
     pub(crate) restore: bool,
 }

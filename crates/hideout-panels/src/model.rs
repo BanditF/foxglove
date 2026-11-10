@@ -9,10 +9,10 @@ use hideout_contract::error::{Error, ErrorId};
 use hideout_contract::messages::{
     Badge, PatchOp, UiBadge, UiEvent, UiPatch, UiVisibility, Visibility,
 };
-use hideout_contract::module::Slot;
+use hideout_contract::module::{Module, Slot};
 use hideout_contract::panel::{self, Limits, Node, Panel, Register, Rejected, LIMITS};
-use serde_json::Value;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use serde_json::{Map, Value};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Patches applied per panel at most this often (~20 a second, §5.3); the rest are coalesced.
@@ -22,6 +22,16 @@ pub const PATCH_INTERVAL: Duration = Duration::from_millis(50);
 pub const MAX_QUEUED_PATCHES: usize = 256;
 /// `ui.event` calls in flight at once; past this new input is dropped (with a log line).
 pub const MAX_PENDING_EVENTS: usize = 1024;
+
+/// What drawing one panel borrows from the host: the panel, its view state, the facts, the
+/// assets and the bound keys.
+pub(crate) type Parts<'a> = (
+    &'a mut HostedPanel,
+    &'a mut ViewState,
+    &'a HashMap<String, Value>,
+    &'a Assets,
+    &'a HashMap<(String, String), String>,
+);
 
 /// A panel's name in the hub: its module and its id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -192,6 +202,88 @@ pub struct PanelHost {
     tray_open: bool,
     /// Tiles the user hid (Edit tiles): `hidden` even while the tray panel is open.
     hidden_tiles: HashSet<PanelKey>,
+    /// What each module's manifest declares (§4.7): panels with `when`, actions, settings.
+    manifests: BTreeMap<String, Module>,
+    /// Bound keys by (module, action), as people read them ("F13").
+    keys: HashMap<(String, String), String>,
+    /// When each module's panels last went from live to greyed ("Last seen", §7.8).
+    gone_at: HashMap<String, Instant>,
+    /// When the current `module.<id>.restart` fact arrived (the restart countdown, §7.8).
+    restart_since: HashMap<String, Instant>,
+    /// Settings values per module for the generated form (§4.7), from `settings.get`.
+    settings: HashMap<String, Map<String, Value>>,
+    settings_asked: HashSet<String>,
+    /// The reason of the last refused setting, per module, shown under the form.
+    pub settings_notice: HashMap<String, String>,
+    hub_calls: Vec<HubCall>,
+    /// Which secrets each module has saved, once asked.
+    secrets_saved: HashMap<String, BTreeSet<String>>,
+    /// The system file picker, when the hub has one.
+    pub picker: Option<Picker>,
+}
+
+/// A call the hub makes to a module for its own UI (not a `ui.event`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum HubCall {
+    /// A button with `action`, or a bound key: `action.invoke {action, source}` (§8.8).
+    Invoke { module: String, action: String },
+    /// The settings form needs the values: `settings.get`.
+    SettingsGet { module: String },
+    /// The user changed one setting: `settings.set {name, value}`.
+    SettingsSet {
+        module: String,
+        name: String,
+        value: Value,
+    },
+    /// Which of the module's `[[secrets]]` have a value saved (never the values).
+    SecretsStatus { module: String },
+    /// The user typed a secret: the hub stores it for the module (`None` clears it).
+    SetSecret {
+        module: String,
+        name: String,
+        value: Option<String>,
+    },
+}
+
+/// Opens the system file picker for a `kind = "file"` setting (v1.4): given the manifest's
+/// `filter`, the chosen path, or `None` when the user cancelled. The shell installs the
+/// Windows one; tests install a fake, and with none the button is not drawn.
+pub type FilePicker = Box<dyn FnMut(Option<&str>) -> Option<String>>;
+
+/// [`FilePicker`] in the host (it has no `Debug`).
+pub struct Picker(pub FilePicker);
+
+impl std::fmt::Debug for Picker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Picker")
+    }
+}
+
+/// A `when` clause (§4.6, grammar v1): one fact name, optionally prefixed by `!`; true when the
+/// fact is set and is not `false`, `null`, `0` or `""`. No clause is true.
+pub fn when_true(when: Option<&str>, facts: &HashMap<String, Value>) -> bool {
+    let Some(w) = when.map(str::trim).filter(|w| !w.is_empty()) else {
+        return true;
+    };
+    let (neg, name) = match w.strip_prefix('!') {
+        Some(n) => (true, n.trim()),
+        None => (false, w),
+    };
+    let set = match facts.get(name) {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(Value::Number(n)) => n.as_f64() != Some(0.0),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(_) => true,
+    };
+    set != neg
+}
+
+/// The restart countdown of a restarting module (§7.8): seconds left, which crash of how many.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Restart {
+    pub in_s: u64,
+    pub crash: u64,
+    pub of: u64,
 }
 
 impl Default for PanelHost {
@@ -220,7 +312,213 @@ impl PanelHost {
             shown: Vec::new(),
             tray_open: false,
             hidden_tiles: HashSet::new(),
+            manifests: BTreeMap::new(),
+            keys: HashMap::new(),
+            gone_at: HashMap::new(),
+            restart_since: HashMap::new(),
+            settings: HashMap::new(),
+            settings_asked: HashSet::new(),
+            settings_notice: HashMap::new(),
+            hub_calls: Vec::new(),
+            secrets_saved: HashMap::new(),
+            picker: None,
         }
+    }
+
+    /// Whether the module's secret `name` is saved; the first call for a module asks the hub.
+    pub fn secret_saved(&mut self, module: &str, name: &str) -> bool {
+        match self.secrets_saved.get(module) {
+            Some(s) => s.contains(name),
+            None => {
+                self.secrets_saved.insert(module.into(), BTreeSet::new());
+                self.hub_calls.push(HubCall::SecretsStatus {
+                    module: module.into(),
+                });
+                false
+            }
+        }
+    }
+
+    /// The hub's answer: the module's saved secret names.
+    pub fn secrets_result(&mut self, module: &str, saved: BTreeSet<String>) {
+        self.secrets_saved.insert(module.into(), saved);
+    }
+
+    /// The user saved a secret in the form. Shown as saved at once; a refusal shows the reason
+    /// and asks again.
+    pub fn set_secret(&mut self, module: &str, name: &str, value: String) {
+        self.settings_notice.remove(module);
+        self.secrets_saved
+            .entry(module.into())
+            .or_default()
+            .insert(name.into());
+        self.hub_calls.push(HubCall::SetSecret {
+            module: module.into(),
+            name: name.into(),
+            value: Some(value),
+        });
+    }
+
+    /// Saving a secret failed.
+    pub fn secret_refused(&mut self, module: &str, reason: String) {
+        self.settings_notice.insert(module.into(), reason);
+        self.hub_calls.push(HubCall::SecretsStatus {
+            module: module.into(),
+        });
+    }
+
+    /// Opens the file picker, if the hub has one.
+    pub fn pick_file(&mut self, filter: Option<&str>) -> Option<String> {
+        self.picker.as_mut().and_then(|p| (p.0)(filter))
+    }
+
+    /// What `module`'s manifest declares (§4.7). The tray panel and the generated page sections
+    /// read it; a module the hub has no manifest for still draws what it registers.
+    pub fn set_manifest(&mut self, manifest: Module) {
+        self.manifests.insert(manifest.id.clone(), manifest);
+    }
+
+    pub fn manifest(&self, module: &str) -> Option<&Module> {
+        self.manifests.get(module)
+    }
+
+    pub fn manifests(&self) -> impl Iterator<Item = &Module> {
+        self.manifests.values()
+    }
+
+    /// The module's name for people: its manifest's `name`, else what it registered with.
+    pub fn module_name(&self, module: &str) -> String {
+        self.manifests
+            .get(module)
+            .map(|m| m.name.clone())
+            .or_else(|| {
+                self.panels
+                    .iter()
+                    .find(|p| p.key.module == module)
+                    .map(|p| p.module_name.clone())
+            })
+            .unwrap_or_else(|| module.to_string())
+    }
+
+    /// Binds (or with `None` unbinds) a key to one of the module's actions, as people read it.
+    pub fn set_key(&mut self, module: &str, action: &str, key: Option<String>) {
+        let k = (module.to_string(), action.to_string());
+        match key {
+            Some(v) => self.keys.insert(k, v),
+            None => self.keys.remove(&k),
+        };
+    }
+
+    pub fn key(&self, module: &str, action: &str) -> Option<&str> {
+        self.keys
+            .get(&(module.to_string(), action.to_string()))
+            .map(String::as_str)
+    }
+
+    /// A `when` clause against the hub's facts (§4.6).
+    pub fn when(&self, when: Option<&str>) -> bool {
+        when_true(when, &self.facts)
+    }
+
+    /// `module.<id>.state` (§7.8), when the supervisor has published one.
+    pub fn module_state(&self, module: &str) -> Option<&str> {
+        self.facts
+            .get(&format!("module.{module}.state"))
+            .and_then(Value::as_str)
+    }
+
+    /// The restart countdown at `now`, while `module.<id>.restart` is set (§7.8).
+    pub fn restart(&self, module: &str, now: Instant) -> Option<Restart> {
+        let f = self.facts.get(&format!("module.{module}.restart"))?;
+        let delay = f.get("delay_s")?.as_u64()?;
+        let since = self.restart_since.get(module).copied().unwrap_or(now);
+        let gone = now.saturating_duration_since(since);
+        // Rounded up: "in 1 s" until it is due, never "in 0 s" while it still waits.
+        let left = Duration::from_secs(delay).saturating_sub(gone);
+        let in_s = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+        Some(Restart {
+            in_s,
+            crash: f.get("crash").and_then(Value::as_u64).unwrap_or(1),
+            of: f.get("of").and_then(Value::as_u64).unwrap_or(5),
+        })
+    }
+
+    /// When the restart countdown fact arrived (tests and review renders set it).
+    pub fn set_restart_since(&mut self, module: &str, at: Instant) {
+        self.restart_since.insert(module.to_string(), at);
+    }
+
+    /// How long ago the module's panels were last live, while they are greyed.
+    pub fn last_seen(&self, module: &str, now: Instant) -> Option<Duration> {
+        self.gone_at
+            .get(module)
+            .map(|t| now.saturating_duration_since(*t))
+    }
+
+    /// A button with `action` was pressed, or a bound key: queues `action.invoke`. Like a key
+    /// press it is sent while the module restarts too (UX3).
+    pub fn invoke(&mut self, module: &str, action: &str) {
+        self.hub_calls.push(HubCall::Invoke {
+            module: module.into(),
+            action: action.into(),
+        });
+    }
+
+    /// The settings form's values: every declared setting with the module's value, else its
+    /// default. The first call for a module asks it (`settings.get`).
+    pub fn settings_values(&mut self, module: &str) -> Map<String, Value> {
+        if self.settings_asked.insert(module.to_string()) {
+            self.hub_calls.push(HubCall::SettingsGet {
+                module: module.into(),
+            });
+        }
+        let known = self.settings.get(module);
+        let mut out = Map::new();
+        for d in self
+            .manifests
+            .get(module)
+            .map(|m| &m.settings[..])
+            .unwrap_or(&[])
+        {
+            let v = known
+                .and_then(|k| k.get(&d.name))
+                .cloned()
+                .unwrap_or_else(|| d.default.clone());
+            out.insert(d.name.clone(), v);
+        }
+        out
+    }
+
+    /// The module's `settings.get` answer.
+    pub fn settings_result(&mut self, module: &str, values: Map<String, Value>) {
+        self.settings.insert(module.into(), values);
+    }
+
+    /// The user changed one setting in the form: drawn at once, sent with `settings.set`.
+    pub fn set_setting(&mut self, module: &str, name: &str, value: Value) {
+        self.settings_notice.remove(module);
+        self.settings
+            .entry(module.into())
+            .or_default()
+            .insert(name.into(), value.clone());
+        self.hub_calls.push(HubCall::SettingsSet {
+            module: module.into(),
+            name: name.into(),
+            value,
+        });
+    }
+
+    /// The module refused a setting: show why, and read the values back.
+    pub fn setting_refused(&mut self, module: &str, reason: String) {
+        self.settings_notice.insert(module.into(), reason);
+        self.hub_calls.push(HubCall::SettingsGet {
+            module: module.into(),
+        });
+    }
+
+    /// The calls to make for the hub's own UI, oldest first.
+    pub fn take_hub_calls(&mut self) -> Vec<HubCall> {
+        std::mem::take(&mut self.hub_calls)
     }
 
     /// `ui.register` from `module` (§5.1, §5.6): validates each panel (§5.5) and replaces all of
@@ -410,11 +708,26 @@ impl PanelHost {
 
     /// A module went away (§5.6, §7.8): its panels grey with `state`, keeping tree and view state.
     pub fn module_gone(&mut self, module: &str, state: &str) {
+        self.module_gone_at(module, state, Instant::now());
+    }
+
+    /// [`PanelHost::module_gone`] at a given time ("Last seen" counts from it). A greyed panel
+    /// takes the newer state.
+    pub fn module_gone_at(&mut self, module: &str, state: &str, now: Instant) {
+        let mut was_live = false;
         for p in self.panels.iter_mut().filter(|p| p.key.module == module) {
-            if p.state == PanelState::Live {
-                p.state = PanelState::Greyed(state.to_string());
+            match &p.state {
+                PanelState::Live => {
+                    was_live = true;
+                    p.state = PanelState::Greyed(state.to_string());
+                }
+                PanelState::Greyed(_) => p.state = PanelState::Greyed(state.to_string()),
+                _ => {}
             }
             p.gate.queued.clear();
+        }
+        if was_live {
+            self.gone_at.insert(module.to_string(), now);
         }
         self.forget_pending(module);
     }
@@ -474,6 +787,34 @@ impl PanelHost {
             self.hidden_tiles.remove(key);
         }
         self.sync_visibility();
+    }
+
+    /// Whether the user hid the tile (or the tray panel shows it not).
+    pub fn tile_hidden(&self, key: &PanelKey) -> bool {
+        self.hidden_tiles.contains(key)
+    }
+
+    /// A button's `opens` (v1.4) or a tile click: the module's first `page` panel to open, with
+    /// the node to bring into view (`page#<node>`; `settings` is the generated Settings
+    /// section). `None` when the module has no page.
+    pub fn navigate(&mut self, module: &str, target: &str) -> Option<PanelKey> {
+        let page = self
+            .manifests
+            .get(module)
+            .and_then(|m| m.panels.iter().find(|p| p.slot == Slot::Page))
+            .map(|p| PanelKey::new(module, &p.id))
+            .or_else(|| {
+                self.panels
+                    .iter()
+                    .find(|p| p.key.module == module && p.slot == Slot::Page)
+                    .map(|p| p.key.clone())
+            })?;
+        let focus = match target {
+            "settings" => Some(crate::sections::SETTINGS_ID.to_string()),
+            t => t.strip_prefix("page#").map(String::from),
+        };
+        self.view_mut(&page).focus = focus;
+        Some(page)
     }
 
     /// Queues a `ui.visibility` for each page or tile panel whose state changed. A tile is never
@@ -549,11 +890,61 @@ impl PanelHost {
 
     /// A fact for bindings changed. Returns whether a panel binds it (and needs a redraw).
     pub fn set_fact(&mut self, name: &str, value: Value) -> bool {
-        if self.facts.get(name) == Some(&value) {
+        if self.facts.get(name) == Some(&value)
+            || (value.is_null() && !self.facts.contains_key(name))
+        {
             return false;
         }
-        self.facts.insert(name.to_string(), value);
-        self.bound_facts().contains(name)
+        let module_fact = name
+            .strip_prefix("module.")
+            .and_then(|r| r.rsplit_once('.'))
+            .map(|(m, k)| (m.to_string(), k.to_string()));
+        if value.is_null() {
+            self.facts.remove(name);
+        } else {
+            self.facts.insert(name.to_string(), value.clone());
+        }
+        match module_fact.as_ref().map(|(m, k)| (m.as_str(), k.as_str())) {
+            // A module that isn't running greys its panels (§7.8); `running` and `starting`
+            // wait for its `ui.register`, which makes them live again.
+            Some((m, "state")) => {
+                match value.as_str() {
+                    Some("running") | None => {}
+                    Some("starting") => {
+                        for p in self.panels.iter_mut().filter(|p| p.key.module == m) {
+                            if matches!(p.state, PanelState::Greyed(_)) {
+                                p.state = PanelState::Greyed("starting".into());
+                            }
+                        }
+                    }
+                    Some(s) => {
+                        let s = s.to_string();
+                        self.module_gone(m, &s);
+                    }
+                }
+                true
+            }
+            Some((m, "restart")) => {
+                if value.is_null() {
+                    self.restart_since.remove(m);
+                } else {
+                    self.restart_since.insert(m.to_string(), Instant::now());
+                }
+                true
+            }
+            Some(_) => true,
+            // `when` clauses (`apps.seen.<name>` and others) decide which tiles show.
+            None => {
+                self.bound_facts().contains(name)
+                    || self.manifests.values().any(|m| {
+                        m.panels.iter().any(|p| {
+                            p.when
+                                .as_deref()
+                                .is_some_and(|w| w.trim_start_matches('!') == name)
+                        })
+                    })
+            }
+        }
     }
 
     pub fn fact(&self, name: &str) -> Option<&Value> {
@@ -709,18 +1100,21 @@ impl PanelHost {
     }
 
     /// Split borrows for the renderer.
-    pub(crate) fn parts(
-        &mut self,
-        key: &PanelKey,
-    ) -> Option<(
-        &mut HostedPanel,
-        &mut ViewState,
-        &HashMap<String, Value>,
-        &Assets,
-    )> {
+    pub(crate) fn parts(&mut self, key: &PanelKey) -> Option<Parts<'_>> {
         let i = self.index(key)?;
         let view = self.views.entry(key.clone()).or_default();
-        Some((&mut self.panels[i], view, &self.facts, &self.assets))
+        Some((
+            &mut self.panels[i],
+            view,
+            &self.facts,
+            &self.assets,
+            &self.keys,
+        ))
+    }
+
+    /// The hub's facts (for `when` clauses).
+    pub fn facts(&self) -> &HashMap<String, Value> {
+        &self.facts
     }
 }
 

@@ -11,6 +11,8 @@ use hideout_router::server::{alias_pipe_name, router_pipe_name, Hub};
 use hideout_router::{Router, Settings};
 use hideout_supervisor::driver::Supervisor;
 
+use crate::panel_feed::{self, HubFeed};
+
 /// Outside tools until the permission dialog exists (lab only, Phase 2): what isn't sensitive is
 /// approved once per tool; sensitive asks (red in the dialog, §6.1) are left out.
 fn approver() -> hideout_router::Approver {
@@ -32,14 +34,37 @@ impl hideout_shell::TabHooks for Hooks {
     }
 }
 
-pub fn start(home: &Path) -> (Hub, Supervisor) {
+/// Starts the router and the supervisor; the panel feed is for the shell (§5): every module's
+/// manifest is loaded into the router (`ui.register` checked against its panels and actions)
+/// and handed to the panel host (tiles, `when`, Keys and Settings).
+pub fn start(home: &Path) -> (Hub, Supervisor, HubFeed) {
     let mut router = Router::new(Settings::default(), approver());
+    let mut manifests = Vec::new();
     match hideout_registry::Registry::open(home, hideout_registry::dev_mode_from_env()) {
-        Ok(reg) => router.load_registry(&reg),
+        Ok(reg) => {
+            router.load_registry(&reg);
+            manifests.extend(
+                reg.inventory
+                    .modules
+                    .keys()
+                    .filter_map(|id| reg.manifest(id)),
+            );
+        }
         Err(e) => log::warn!("router: registry not read ({e:?}); no modules"),
     }
+    log::info!("router: {} module manifest(s) loaded", manifests.len());
+    // The panel host draws from every fact it may need: module states, `when` facts such as
+    // `apps.seen.<name>`, and bindings. Facts that exist already come out first.
+    let early = router.watch_facts(vec![String::new()]);
     let (events, rx) = mpsc::channel();
     let hub = Hub::new(router, events);
+    let (side, feed) = panel_feed::feed(hub.clone());
+    for m in manifests {
+        side.manifest(m);
+    }
+    for o in &early {
+        side.on_router(o);
+    }
     #[cfg(windows)]
     {
         let name = router_pipe_name();
@@ -63,9 +88,10 @@ pub fn start(home: &Path) -> (Hub, Supervisor) {
         .spawn(move || {
             for event in rx {
                 s.on_router(&event);
+                side.on_router(&event);
                 log::debug!("router: {event:?}");
             }
         })
         .expect("router events thread");
-    (hub, sup)
+    (hub, sup, feed)
 }

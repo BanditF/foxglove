@@ -190,7 +190,10 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
                 let wake_ctx = ctx.clone();
                 f.set_waker(Box::new(move || wake_ctx.request_repaint()));
             }
-            Ok(Box::new(Hub::new(shared, pages, feed, hooks)))
+            let mut hub = Hub::new(shared, pages, feed, hooks);
+            // Choose file for file settings: the Windows picker (tests leave it out).
+            hub.panels.picker = Some(hideout_panels::model::Picker(Box::new(platform::pick_file)));
+            Ok(Box::new(hub))
         }),
         &event_loop,
     );
@@ -446,6 +449,18 @@ impl Hub {
         key_of(id)
             .and_then(|k| self.panels.panel(&k))
             .is_some_and(|p| p.badge == hideout_panels::Badge::Dirty)
+    }
+
+    /// Buttons with `opens` (v1.4): the module's own page as a tab, scrolled to the node or to
+    /// its Settings section. `action` buttons are already queued as `action.invoke`.
+    fn go(&mut self, go: Vec<hideout_panels::Go>) {
+        for g in go {
+            if let hideout_panels::Go::Open { module, target } = g {
+                if let Some(page) = self.panels.navigate(&module, &target) {
+                    self.open(TabId::panel(&page.module, &page.panel));
+                }
+            }
+        }
     }
 
     fn open(&mut self, id: TabId) {
@@ -769,7 +784,10 @@ impl Hub {
                     TabState::Off | TabState::Live => {}
                 }
                 if self.panels.panel(&key).is_some() {
-                    hideout_panels::panel_ui(&mut self.panels, ui, &key);
+                    let report = hideout_panels::panel_ui(&mut self.panels, ui, &key);
+                    // Keys and Settings, drawn by the hub after the module's tree (4.7).
+                    hideout_panels::page_sections_ui(&mut self.panels, ui, &key);
+                    self.go(report.go);
                 }
             }
             None => {}
@@ -953,12 +971,7 @@ impl Hub {
         let shown = self.on_screen(ctx);
         self.panels.set_visible(&shown);
         if let Some(feed) = self.feed.as_mut() {
-            for e in self.panels.take_events() {
-                feed.send(hideout_panels::Outbound::Event(e));
-            }
-            for (module, visibility) in self.panels.take_visibility() {
-                feed.send(hideout_panels::Outbound::Visibility { module, visibility });
-            }
+            self.panels.send_out(feed.as_mut());
         }
         if self.tabs.take_changed() {
             let f = self.shared.paths.tabs_file();

@@ -255,6 +255,63 @@ pub fn map_file(path: &std::path::Path) -> Option<&'static [u8]> {
     Some(unsafe { std::slice::from_raw_parts(view.Value as *const u8, len as usize) })
 }
 
+/// The Windows file picker for a `kind = "file"` setting (contract §4.7 v1.4), modal to the hub
+/// window: `filter` is the manifest's pattern list (`a*.dll;b?.dll`), offered with "All files".
+/// The chosen full path, or `None` when cancelled or the picker failed (logged).
+pub fn pick_file(filter: Option<&str>) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH,
+    };
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let result = (|| -> windows::core::Result<Option<String>> {
+        // SAFETY: COM calls on the UI thread; every wide string outlives the calls using it and
+        // the path from GetDisplayName is freed after it is copied.
+        unsafe {
+            // The UI thread may already be initialised (S_FALSE or a different mode): either way
+            // the dialog works, so the result is ignored.
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+            dialog.SetOptions(FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM)?;
+            let (name_f, spec_f, name_all, spec_all) = (
+                wide("Matching files"),
+                wide(filter.unwrap_or("*.*")),
+                wide("All files"),
+                wide("*.*"),
+            );
+            let specs = [
+                COMDLG_FILTERSPEC {
+                    pszName: PCWSTR(name_f.as_ptr()),
+                    pszSpec: PCWSTR(spec_f.as_ptr()),
+                },
+                COMDLG_FILTERSPEC {
+                    pszName: PCWSTR(name_all.as_ptr()),
+                    pszSpec: PCWSTR(spec_all.as_ptr()),
+                },
+            ];
+            let n = if filter.is_some() { 2 } else { 1 };
+            dialog.SetFileTypes(&specs[specs.len() - n..])?;
+            if dialog.Show(main_window()).is_err() {
+                return Ok(None); // cancelled
+            }
+            let item = dialog.GetResult()?;
+            let path = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let s = path.to_string().ok();
+            windows::Win32::System::Com::CoTaskMemFree(Some(path.0 as *const _));
+            Ok(s)
+        }
+    })();
+    result.unwrap_or_else(|e| {
+        log::warn!("file picker: {e}");
+        None
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

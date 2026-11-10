@@ -68,8 +68,16 @@ pub enum Out {
     ModuleFault(String),
     /// `hub.notify` from a module, already permission-checked.
     Notify { module: String, params: Value },
-    /// Accepted panels from `ui.register`, for the panel host (§5.1).
-    Panels { module: String, panels: Value },
+    /// Accepted panels from `ui.register`, for the panel host (§5.1), with the instance that
+    /// registered them.
+    Panels {
+        module: String,
+        instance: String,
+        panels: Value,
+    },
+    /// A fact the hub watches changed (`null`: removed), for the panel host: module states,
+    /// `when` facts and bindings (§4.6, §5.2). See [`Router::watch_facts`].
+    Fact { key: String, value: Value },
     /// `ui.patch` from a module, for the panel host (§5.3).
     Patch { module: String, params: Value },
     /// The answer to [`Router::open_host_channel`]: `Ok({pipe, nonce})` or the error.
@@ -275,7 +283,18 @@ pub struct Router {
     /// Each module's `[[actions]]` ids, when known: a button's `action` must name one
     /// (`ui.action`, spec v1.4).
     actions: HashMap<String, Vec<String>>,
+    /// Fact key prefixes the hub's panel host watches (`""` = every fact).
+    hub_watch: Vec<String>,
+    /// Each module's `[[settings]]` from its manifest, for the settings a v1 plugin keeps in
+    /// the hub (§4.10: it asks with `settings.get` and hears `settings.changed`).
+    settings_decl: HashMap<String, Vec<hideout_contract::module::ModuleSetting>>,
+    /// Each module's `[[secrets]]` names: the only ones it may read or set.
+    secrets_decl: HashMap<String, Vec<String>>,
+    secret_store: Box<dyn crate::secrets::SecretStore>,
 }
+
+/// The file in a v1 plugin's settings folder where the hub keeps the values the user changed.
+pub const SETTINGS_FILE: &str = "settings.json";
 
 fn error(id: &Value, code: i64, message: &str, reason: Option<&str>) -> Value {
     let mut e = json!({"code": code, "message": message});
@@ -317,6 +336,10 @@ impl Router {
             next_call: 1,
             queue: VecDeque::new(),
             actions: HashMap::new(),
+            hub_watch: Vec::new(),
+            settings_decl: HashMap::new(),
+            secrets_decl: HashMap::new(),
+            secret_store: crate::secrets::default_store(),
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -334,11 +357,237 @@ impl Router {
         self.actions.insert(module.into(), actions);
     }
 
-    /// Every installed module from the registry.
+    /// Every installed module from the registry, with what its manifest declares (its name,
+    /// `[[ui.panels]]` and `[[actions]]`), so `ui.register` is checked against them live.
     pub fn load_registry(&mut self, reg: &Registry) {
         for id in reg.inventory.modules.keys() {
             if let Some(m) = ModuleEntry::from_registry(reg, id) {
                 self.add_module(m);
+                match reg.manifest(id) {
+                    Some(manifest) => self.apply_manifest(&manifest),
+                    None => log::warn!("router: {id}: manifest not read; panels unchecked"),
+                }
+            }
+        }
+    }
+
+    /// Fills a known module's entry from its manifest (§4.7, §4.10): the name people read, the
+    /// declared panel ids (a `ui.register` panel not declared is `ui.undeclared`; a legacy
+    /// `plugin.toml` declares none), `activation.on = call`, and the `[[actions]]` ids
+    /// (`ui.action`). A module the router doesn't know is left alone.
+    pub fn apply_manifest(&mut self, m: &hideout_contract::module::Module) {
+        let Some(e) = self.modules.get_mut(&m.id) else {
+            return;
+        };
+        e.name = m.name.clone();
+        e.panels = Some(m.panels.iter().map(|p| p.id.clone()).collect());
+        e.activate_on_call = m.activation_on.iter().any(|a| a == "call");
+        let actions = m.actions.iter().map(|a| a.decl.id.clone()).collect();
+        self.set_actions(&m.id, actions);
+        self.settings_decl.insert(m.id.clone(), m.settings.clone());
+        let secrets = m.secrets.iter().map(|s| s.name.clone()).collect();
+        self.secrets_decl.insert(m.id.clone(), secrets);
+    }
+
+    /// Where module secrets live (Windows Credential Manager by default; tests use memory).
+    pub fn set_secret_store(&mut self, store: Box<dyn crate::secrets::SecretStore>) {
+        self.secret_store = store;
+    }
+
+    fn secret_declared(&self, module: &str, name: &str) -> bool {
+        self.secrets_decl
+            .get(module)
+            .is_some_and(|d| d.iter().any(|n| n == name))
+    }
+
+    /// The module's declared secrets that have a value saved. The value itself never leaves
+    /// the router except to its own module.
+    pub fn secrets_saved(&self, module: &str) -> Vec<String> {
+        self.secrets_decl
+            .get(module)
+            .into_iter()
+            .flatten()
+            .filter(|n| {
+                self.secret_store
+                    .get(&crate::secrets::target(module, n))
+                    .is_some()
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The hub's form asks which secrets are saved: [`Out::HubResult`] `{saved: [names]}`.
+    pub fn secrets_status(&mut self, module: &str, tag: u64) -> Vec<Out> {
+        vec![Out::HubResult {
+            tag,
+            result: Ok(json!({ "saved": self.secrets_saved(module) })),
+        }]
+    }
+
+    /// The user typed a secret in the hub's form (`None` clears it). Only a declared name, at
+    /// most 2048 bytes. The answer is [`Out::HubResult`]; the module reads it with
+    /// `secrets.get` when it next needs it.
+    pub fn set_secret(
+        &mut self,
+        module: &str,
+        name: &str,
+        value: Option<String>,
+        tag: u64,
+    ) -> Vec<Out> {
+        let result = self.store_secret(module, name, value.as_deref());
+        vec![Out::HubResult {
+            tag,
+            result: result.map(|_| json!({})).map_err(|r| {
+                json!({"code": code::INVALID_PARAMS, "message": "invalid params",
+                    "data": {"reason": r}})
+            }),
+        }]
+    }
+
+    fn store_secret(
+        &mut self,
+        module: &str,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<(), String> {
+        if !self.secret_declared(module, name) {
+            return Err("This module has no such secret.".into());
+        }
+        if value.is_some_and(|v| v.len() > crate::secrets::MAX_SECRET) {
+            return Err("That is too long (at most 2048 bytes).".into());
+        }
+        self.secret_store
+            .set(&crate::secrets::target(module, name), value)
+            .map_err(|e| {
+                log::warn!("router: {module}: secret {name} not saved: {e}");
+                "Hideout couldn't save it in Windows' credential store.".to_string()
+            })
+    }
+
+    /// True when `module` is connected over the v1 wire (a Foxglove plugin, bridged): the hub
+    /// keeps its settings and answers its `settings.get` (§4.10, §8.2).
+    fn hub_keeps_settings(&self, module: &str) -> bool {
+        self.module_conn(module)
+            .is_some_and(|c| matches!(&self.conns[&c].who, Who::Module { v1: true, .. }))
+    }
+
+    /// A v1 plugin's settings: every declared setting with the user's value, else its default.
+    pub fn kept_settings(&self, module: &str) -> Map<String, Value> {
+        let saved: Map<String, Value> = self
+            .modules
+            .get(module)
+            .filter(|m| !m.settings_dir.is_empty())
+            .and_then(|m| {
+                std::fs::read_to_string(std::path::Path::new(&m.settings_dir).join(SETTINGS_FILE))
+                    .ok()
+            })
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        let mut values = Map::new();
+        for d in self.settings_decl.get(module).into_iter().flatten() {
+            let v = saved
+                .get(&d.name)
+                .and_then(|v| d.accept(v))
+                .unwrap_or_else(|| d.default.clone());
+            values.insert(d.name.clone(), v);
+        }
+        values
+    }
+
+    /// The hub's settings form asks for a module's values (§4.7): `settings.get` to the module,
+    /// or the values the hub keeps for a v1 plugin. The answer is [`Out::HubResult`] `{values}`.
+    pub fn get_settings(&mut self, module: &str, tag: u64, now: Instant) -> Vec<Out> {
+        if self.hub_keeps_settings(module) {
+            let values = self.kept_settings(module);
+            return vec![Out::HubResult {
+                tag,
+                result: Ok(json!({ "values": values })),
+            }];
+        }
+        self.call_module(module, "settings.get", json!({}), tag, now)
+    }
+
+    /// The user changed one setting in the hub's form (§4.7, §8.8): `settings.set {name, value}`
+    /// to the module, which may refuse with `data.reason`. A v1 plugin's value is checked
+    /// against its declaration, saved in its settings folder and sent as `settings.changed`
+    /// with every value. The answer is [`Out::HubResult`].
+    pub fn set_setting(
+        &mut self,
+        module: &str,
+        name: &str,
+        value: Value,
+        tag: u64,
+        now: Instant,
+    ) -> Vec<Out> {
+        if !self.hub_keeps_settings(module) {
+            let params = json!({"name": name, "value": value});
+            return self.call_module(module, "settings.set", params, tag, now);
+        }
+        let refused = |reason: &str| {
+            vec![Out::HubResult {
+                tag,
+                result: Err(
+                    json!({"code": code::INVALID_PARAMS, "message": "invalid params",
+                    "data": {"reason": reason}}),
+                ),
+            }]
+        };
+        let decl = self
+            .settings_decl
+            .get(module)
+            .and_then(|d| d.iter().find(|d| d.name == name));
+        let Some(accepted) = decl.and_then(|d| d.accept(&value)) else {
+            return refused("That value doesn't fit this setting.");
+        };
+        let mut values = self.kept_settings(module);
+        values.insert(name.into(), accepted);
+        let dir = self.modules.get(module).map(|m| m.settings_dir.clone());
+        if let Some(dir) = dir.filter(|d| !d.is_empty()) {
+            let path = std::path::Path::new(&dir).join(SETTINGS_FILE);
+            let text = serde_json::to_string_pretty(&values).unwrap_or_default();
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text))
+            {
+                log::warn!("router: {module}: settings not saved: {e}");
+                return refused("Hideout couldn't save the setting.");
+            }
+        }
+        let mut out = self.notify_module(module, "settings.changed", json!({ "values": values }));
+        out.push(Out::HubResult {
+            tag,
+            result: Ok(json!({})),
+        });
+        out
+    }
+
+    /// The hub's panel host watches facts starting with any of `prefixes` (`""` = all): each
+    /// change comes out as [`Out::Fact`]. Replaces the last list. No permission applies: the
+    /// panel host is the hub.
+    pub fn watch_facts(&mut self, prefixes: Vec<String>) -> Vec<Out> {
+        self.hub_watch = prefixes;
+        let mut out = Vec::new();
+        for (key, value) in &self.facts {
+            if self.hub_watch.iter().any(|p| key.starts_with(p.as_str())) {
+                out.push(Out::Fact {
+                    key: key.clone(),
+                    value: value.clone(),
+                });
+            }
+        }
+        out
+    }
+
+    /// A notification from the hub to a module (`ui.visibility`, §5.9). Like
+    /// [`Router::call_module`] it needs no `module.ready` (a bridged plugin may skip it, §8.2);
+    /// with no connection it is dropped (a notification has no answer).
+    pub fn notify_module(&mut self, module: &str, method: &str, params: Value) -> Vec<Out> {
+        match self.module_conn(module) {
+            Some(c) => vec![Out::Send(
+                c,
+                json!({"jsonrpc": "2.0", "method": method, "params": params}),
+            )],
+            None => {
+                log::debug!("router: {method} for {module} dropped: not connected");
+                Vec::new()
             }
         }
     }
@@ -639,6 +888,39 @@ impl Router {
         let answer = |v| Out::Send(conn, v);
         match method {
             "ping" => out.push(answer(ok(&id, json!({})))),
+            // A v1 plugin's own settings, kept by the hub (§4.10).
+            "settings.get"
+                if module
+                    .as_deref()
+                    .is_some_and(|m| self.hub_keeps_settings(m)) =>
+            {
+                let values = self.kept_settings(module.as_deref().unwrap_or_default());
+                out.push(answer(ok(&id, json!({ "values": values }))));
+            }
+            // A module's own `[[secrets]]` (Foxglove API 1.2), kept by the hub.
+            "secrets.get" | "secrets.set" if module.is_some() => {
+                let m = module.as_deref().unwrap_or_default();
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let reply = if !self.secret_declared(m, name) {
+                    denied(&id, Some("not one of this module's secrets"))
+                } else if method == "secrets.get" {
+                    let value = self.secret_store.get(&crate::secrets::target(m, name));
+                    ok(&id, json!({ "value": value }))
+                } else {
+                    let value = params
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .map(String::from);
+                    match self.store_secret(m, name, value.as_deref()) {
+                        Ok(()) => ok(&id, json!({})),
+                        Err(r) => error(&id, code::INVALID_PARAMS, "invalid params", Some(&r)),
+                    }
+                };
+                out.push(answer(reply));
+            }
             "facts.get" | "facts.list" | "facts.subscribe" | "facts.unsubscribe" | "facts.set" => {
                 let reply =
                     self.facts_call(conn, &caps, module.as_deref(), &id, method, &params, out);
@@ -995,6 +1277,7 @@ impl Router {
             panel::register_with(&reg, declared.as_deref(), actions, &LIMITS);
         out.push(Out::Panels {
             module: module.into(),
+            instance: reg.instance.clone(),
             panels: serde_json::to_value(&accepted).unwrap_or_default(),
         });
         ok(id, json!({ "rejected": rejected }))
@@ -1292,6 +1575,12 @@ impl Router {
         };
         if !changed {
             return;
+        }
+        if self.hub_watch.iter().any(|p| key.starts_with(p.as_str())) {
+            out.push(Out::Fact {
+                key: key.into(),
+                value: value.clone(),
+            });
         }
         for (n, (c, pattern)) in &self.subs {
             if key_matches(pattern, key) {

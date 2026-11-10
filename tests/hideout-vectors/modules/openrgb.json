@@ -188,7 +188,7 @@
                   {
                     "id": "connect-steps",
                     "props": {
-                      "text": "1. In OpenRGB, open Settings > E1.31 Devices.\n2. Click Add.\n3. Set IP to 127.0.0.1 and Universe to 1.\n4. Save, then restart OpenRGB's devices (or OpenRGB)."
+                      "text": "1. In OpenRGB, open Settings > E1.31 Devices.\n2. Click Add.\n3. Set IP to 127.0.0.1 and Universe to 1.\n4. Save, then click Rescan Devices."
                     },
                     "type": "markdown"
                   }
@@ -259,7 +259,7 @@
               {
                 "id": "sub",
                 "props": {
-                  "text": "Follows again when colours come"
+                  "text": "Follows again when OpenRGB sends"
                 },
                 "type": "label"
               }
@@ -288,7 +288,7 @@
                   {
                     "id": "now-sub",
                     "props": {
-                      "text": "Follows again when colours come"
+                      "text": "Follows again when OpenRGB sends"
                     },
                     "type": "label"
                   }

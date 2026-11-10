@@ -393,7 +393,7 @@
                 "id": "glance",
                 "props": {
                   "tone": "attention",
-                  "value": "Couldn't mute"
+                  "value": "Couldn't unmute"
                 },
                 "type": "value"
               },
@@ -429,7 +429,7 @@
                     "id": "now-value",
                     "props": {
                       "tone": "attention",
-                      "value": "Couldn't mute"
+                      "value": "Couldn't unmute"
                     },
                     "type": "value"
                   },

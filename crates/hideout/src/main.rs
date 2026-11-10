@@ -9,6 +9,8 @@
 
 mod modules_page;
 #[cfg(windows)]
+mod panel_feed;
+#[cfg(windows)]
 mod router_start;
 
 /// What runs beside the shell: kept alive for the life of the process.
@@ -18,6 +20,7 @@ struct Started {
     _lock: Option<hideout_supervisor::win::Handle>,
     _router: Option<hideout_router::server::Hub>,
     hooks: Option<Box<dyn hideout_shell::TabHooks>>,
+    panels: Option<Box<dyn hideout_shell::hideout_panels::PanelFeed>>,
 }
 
 /// Opens `logs\hideout.log` first, so the router's and the supervisor's start-up lines land in it
@@ -48,6 +51,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
                 _lock: None,
                 _router: None,
                 hooks: None,
+                panels: None,
             };
         }
         Err(e) => {
@@ -55,11 +59,12 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
             None
         }
     };
-    let (router, supervisor) = router_start::start(&paths.root);
+    let (router, supervisor, feed) = router_start::start(&paths.root);
     Started {
         _lock: lock,
         _router: Some(router),
         hooks: Some(Box::new(router_start::Hooks(supervisor))),
+        panels: Some(Box::new(feed)),
     }
 }
 
@@ -75,8 +80,8 @@ fn main() {
         paths,
         pages: modules_page::pages(),
         version: env!("CARGO_PKG_VERSION"),
-        // The router (H2.3) supplies the feed; until then the hub starts with no module panels.
-        panels: None,
+        // Module panels from the router (§5, #991): pages, Keys and Settings.
+        panels: started.panels.take(),
         // The supervisor's Start again; pop-out windows (H2.11) come later.
         hooks: started.hooks.take(),
     };
