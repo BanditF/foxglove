@@ -37,7 +37,7 @@ fn main() {
         return;
     } // Foxglove (#444): MSI uninstall
       // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
-    if !foxglove::single_instance::claim() {
+    if !foxglove::single_instance::claim(!foxglove::settings_open::tray_start()) {
         return;
     }
     // Foxglove: settings and log redirected into another app's package (started from it)?

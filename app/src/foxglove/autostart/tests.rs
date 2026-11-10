@@ -24,20 +24,25 @@ impl RunKey for FakeRun {
 
 /// The shortcut in memory, counting writes.
 #[derive(Default)]
-struct FakeEntry(RefCell<Option<PathBuf>>, RefCell<u32>);
+struct FakeEntry(RefCell<Option<PathBuf>>, RefCell<u32>, RefCell<String>);
 
 impl Entry for FakeEntry {
     fn target(&self) -> std::io::Result<Option<PathBuf>> {
         Ok(self.0.borrow().clone())
     }
-    fn create(&self, exe: &Path) -> std::io::Result<()> {
+    fn args(&self) -> std::io::Result<String> {
+        Ok(self.2.borrow().clone())
+    }
+    fn create(&self, exe: &Path, args: &str) -> std::io::Result<()> {
         *self.1.borrow_mut() += 1;
         *self.0.borrow_mut() = Some(exe.into());
+        *self.2.borrow_mut() = args.into();
         Ok(())
     }
     fn remove(&self) -> std::io::Result<()> {
         *self.1.borrow_mut() += 1;
         *self.0.borrow_mut() = None;
+        self.2.borrow_mut().clear();
         Ok(())
     }
 }
@@ -174,7 +179,7 @@ fn the_switch_writes_what_windows_toggle_writes() {
 #[test]
 fn the_switch_claims_the_shortcut_from_another_exe() {
     let rig = Rig::default();
-    rig.entry.create(Path::new(OTHER_FILE)).unwrap();
+    rig.entry.create(Path::new(OTHER_FILE), "").unwrap();
     apply(true, &me(), &rig.places()).unwrap();
     assert_eq!(live(&rig.places()).unwrap(), Live::On(me()));
 }
@@ -236,7 +241,7 @@ fn off_in_settings_writes_nothing_at_startup() {
 #[test]
 fn startup_repairs_a_shortcut_whose_file_is_gone_keeping_its_toggle() {
     let rig = Rig::default();
-    rig.entry.create(Path::new(GONE_FILE)).unwrap();
+    rig.entry.create(Path::new(GONE_FILE), "").unwrap();
     rig.windows_toggle(true);
     let mut s = AutostartSettings {
         start_with_windows: true,
@@ -247,7 +252,7 @@ fn startup_repairs_a_shortcut_whose_file_is_gone_keeping_its_toggle() {
     assert_eq!(live(&rig.places()).unwrap(), Live::On(me()));
     // Off in Windows, a stale shortcut is left as it is: no repair turns it back on.
     let rig = Rig::default();
-    rig.entry.create(Path::new(GONE_FILE)).unwrap();
+    rig.entry.create(Path::new(GONE_FILE), "").unwrap();
     rig.windows_toggle(false);
     let r = reconcile(&mut s, &me(), None, &rig.places(), &only(&[ME_FILE])).unwrap();
     assert_eq!(r, Startup::DisabledInWindows);
@@ -258,7 +263,7 @@ fn startup_repairs_a_shortcut_whose_file_is_gone_keeping_its_toggle() {
 fn startup_never_takes_over_another_existing_exe() {
     for dev in [None, DEV] {
         let rig = Rig::default();
-        rig.entry.create(Path::new(OTHER_FILE)).unwrap();
+        rig.entry.create(Path::new(OTHER_FILE), "").unwrap();
         let mut s = fresh();
         let r = reconcile(
             &mut s,
@@ -359,7 +364,7 @@ fn uninstall_removes_only_this_exes_entries() {
         !cleanup(&me(), &rig.places()).unwrap(),
         "nothing left to remove"
     );
-    rig.entry.create(Path::new(OTHER_FILE)).unwrap();
+    rig.entry.create(Path::new(OTHER_FILE), "").unwrap();
     assert!(
         !cleanup(&me(), &rig.places()).unwrap(),
         "another install's shortcut stays"
@@ -435,11 +440,11 @@ fn the_start_menu_shortcut_is_made_repaired_and_removed() {
     menu.remove().unwrap();
     assert_eq!(run(None), StartMenu::Written);
     // A file that's gone: repaired.
-    menu.create(Path::new(GONE_FILE)).unwrap();
+    menu.create(Path::new(GONE_FILE), "").unwrap();
     assert_eq!(run(None), StartMenu::Replaced(GONE_FILE.into()));
     assert_eq!(menu.target().unwrap().as_deref(), Some(me));
     // A second install that exists: left alone, and uninstall leaves it.
-    menu.create(Path::new(OTHER_FILE)).unwrap();
+    menu.create(Path::new(OTHER_FILE), "").unwrap();
     assert_eq!(run(None), StartMenu::KeptOther(OTHER_FILE.into()));
     assert!(!cleanup_start_menu(me, &menu).unwrap());
     assert_eq!(
@@ -447,7 +452,7 @@ fn the_start_menu_shortcut_is_made_repaired_and_removed() {
         Some(Path::new(OTHER_FILE))
     );
     // This exe's: uninstall removes it.
-    menu.create(me).unwrap();
+    menu.create(me, "").unwrap();
     assert!(cleanup_start_menu(me, &menu).unwrap());
     assert_eq!(menu.target().unwrap(), None);
     let line = |r: StartMenu| describe_start_menu(&Ok(r), me);
@@ -479,7 +484,7 @@ fn the_start_menu_resolves_inside_the_test_sandbox() {
     let outside = Shortcut {
         dir: std::env::temp_dir().join("foxglove-not-the-sandbox"),
     };
-    let wrote = std::panic::catch_unwind(|| outside.create(&exe));
+    let wrote = std::panic::catch_unwind(|| outside.create(&exe, ""));
     assert!(wrote.is_err(), "a write outside the sandbox panics");
     assert!(!outside.dir.exists());
 }
@@ -512,6 +517,11 @@ fn the_windows_places_round_trip_on_a_test_root() {
         // App → Windows.
         apply(true, &exe, &p).unwrap();
         assert!(dir.join(SHORTCUT).is_file());
+        assert_eq!(
+            p.entry.args().unwrap(),
+            "--tray",
+            "the real shortcut keeps --tray"
+        );
         match live(&p).unwrap() {
             Live::On(t) => assert!(same_path(&t, &exe), "{} vs {}", t.display(), exe.display()),
             other => panic!("{other:?}"),
@@ -556,4 +566,99 @@ fn the_windows_places_round_trip_on_a_test_root() {
     if let Err(e) = result {
         std::panic::resume_unwind(e);
     }
+}
+
+/// #992: the Startup shortcut starts Foxglove in the tray (`--tray`); the Start menu's has no
+/// arguments, so a start by hand opens Settings.
+#[test]
+fn the_startup_shortcut_starts_in_the_tray_and_the_start_menu_one_does_not() {
+    let rig = Rig::default();
+    let mut s = fresh();
+    let r = reconcile(&mut s, &me(), None, &rig.places(), &only(&[ME_FILE])).unwrap();
+    assert_eq!(r, Startup::Written);
+    assert_eq!(rig.entry.args().unwrap(), "--tray");
+    assert_eq!(STARTUP_ARGS, crate::foxglove::settings_open::TRAY_ARG);
+    // The switch turned on in Settings makes it with them too.
+    let rig = Rig::default();
+    apply(true, &me(), &rig.places()).unwrap();
+    assert_eq!(rig.entry.args().unwrap(), "--tray");
+    // The Start menu shortcut: none.
+    let menu = FakeEntry::default();
+    reconcile_start_menu(&me(), None, &menu, &only(&[ME_FILE])).unwrap();
+    assert_eq!(menu.args().unwrap(), "");
+    assert_eq!(
+        reconcile_start_menu(&me(), None, &menu, &only(&[ME_FILE])).unwrap(),
+        StartMenu::Unchanged,
+        "and it isn't rewritten for having none"
+    );
+}
+
+/// #992: a Startup shortcut made before, starting this exe without `--tray`, is rewritten in
+/// place with it; Windows' toggle is untouched, and a second start changes nothing.
+#[test]
+fn an_old_startup_shortcut_gets_the_tray_argument_keeping_its_toggle() {
+    let rig = Rig::default();
+    rig.entry.create(&me(), "").unwrap();
+    rig.windows_toggle(true);
+    let toggle = *rig.approved.0.borrow();
+    let mut s = AutostartSettings {
+        start_with_windows: true,
+        made: true,
+    };
+    let r = reconcile(&mut s, &me(), None, &rig.places(), &only(&[ME_FILE])).unwrap();
+    assert_eq!(r, Startup::TrayAdded);
+    assert_eq!(rig.entry.args().unwrap(), "--tray");
+    assert_eq!(rig.entry.target().unwrap(), Some(me()));
+    assert_eq!(
+        *rig.approved.0.borrow(),
+        toggle,
+        "StartupApproved untouched"
+    );
+    assert!(s.start_with_windows && s.made);
+    let r = reconcile(&mut s, &me(), None, &rig.places(), &only(&[ME_FILE])).unwrap();
+    assert_eq!((r, rig.writes()), (Startup::Unchanged, 2));
+    assert!(describe(&Ok(Startup::TrayAdded), &me()).contains("in the tray (--tray)"));
+    // A dev build doesn't rewrite it.
+    let rig = Rig::default();
+    rig.entry.create(&me(), "").unwrap();
+    let r = reconcile(&mut s, &me(), DEV, &rig.places(), &only(&[ME_FILE])).unwrap();
+    assert_eq!(
+        (r, rig.entry.args().unwrap()),
+        (Startup::Skipped("a dev build"), String::new())
+    );
+}
+
+/// #992: one disabled in Windows, or starting another exe, is left exactly as it is.
+#[test]
+fn a_disabled_or_other_exe_startup_shortcut_is_not_given_the_tray_argument() {
+    let rig = Rig::default();
+    rig.entry.create(&me(), "").unwrap();
+    rig.windows_toggle(false);
+    let mut s = fresh();
+    let r = reconcile(&mut s, &me(), None, &rig.places(), &only(&[ME_FILE])).unwrap();
+    assert_eq!(r, Startup::DisabledInWindows);
+    assert_eq!(
+        (rig.writes(), rig.entry.args().unwrap()),
+        (1, String::new())
+    );
+    assert_eq!(
+        rig.approved.get().unwrap(),
+        Some(false),
+        "still off in Windows"
+    );
+    let rig = Rig::default();
+    rig.entry.create(Path::new(OTHER_FILE), "").unwrap();
+    let r = reconcile(
+        &mut s,
+        &me(),
+        None,
+        &rig.places(),
+        &only(&[ME_FILE, OTHER_FILE]),
+    )
+    .unwrap();
+    assert_eq!(r, Startup::KeptOther(OTHER_FILE.into()));
+    assert_eq!(
+        (rig.writes(), rig.entry.args().unwrap()),
+        (1, String::new())
+    );
 }

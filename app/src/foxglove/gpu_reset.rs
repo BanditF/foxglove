@@ -234,7 +234,9 @@ mod imp {
         };
         // No stdio handed down: the copy sets up its own.
         let null = std::process::Stdio::null;
+        // In the tray: a copy started for a GPU reset doesn't throw Settings up.
         let spawned = std::process::Command::new(exe)
+            .arg(crate::foxglove::settings_open::TRAY_ARG)
             .env(super::ENV, history)
             .stdin(null())
             .stdout(null())

@@ -430,8 +430,9 @@ impl SettingsWindow {
             let overlay_monitor = under_mouse.as_str();
             match self.hwnd {
                 Some(hwnd) => {
-                    // The opening was shown last frame: if it's still hidden (the one show at
-                    // sign-in didn't take), show it again, once. Nothing else hides it while
+                    // The opening was shown last frame: if it's still hidden (the one show while
+                    // the desktop was still starting didn't take; seen at sign-in before the
+                    // Startup entry started in the tray, #992), show it again, once. Nothing else hides it while
                     // it's open (minimizing closes it).
                     if std::mem::take(&mut self.check_shown) && !imp::visible(hwnd) {
                         eprintln!(

@@ -290,7 +290,9 @@ fn relaunch() {
     super::quit::hand_back("the identity package was registered");
     super::single_instance::release();
     let null = std::process::Stdio::null;
+    // The same arguments, so a start in the tray (`--tray`) stays one.
     match std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
         .env(RELAUNCHED, "1")
         .stdin(null())
         .stdout(null())

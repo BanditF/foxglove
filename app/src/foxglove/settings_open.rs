@@ -16,6 +16,25 @@
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
+/// The start argument for a start in the tray: Settings stays closed until the tray (or a second
+/// launch) opens it, and a launch that finds Foxglove running leaves it as it is. Without it a
+/// start opens Settings, as KeyPeek did: a start by hand, the Start menu entry. The Startup-folder
+/// entry carries it, so sign-in is quiet (`autostart::STARTUP_ARGS`); so do On-call's restarts
+/// (through a shortcut, since `explorer.exe <exe>` passes no arguments) and the app's own
+/// relaunches (#346, the identity package).
+pub const TRAY_ARG: &str = "--tray";
+
+/// Whether these arguments (the program first, as `std::env::args_os`) ask for a start in the
+/// tray ([`TRAY_ARG`]).
+pub fn tray_start_in<S: AsRef<std::ffi::OsStr>>(args: impl IntoIterator<Item = S>) -> bool {
+    args.into_iter().skip(1).any(|a| a.as_ref() == TRAY_ARG)
+}
+
+/// This process was started in the tray ([`TRAY_ARG`]).
+pub fn tray_start() -> bool {
+    tray_start_in(std::env::args_os())
+}
+
 /// Where an open request came from, for the log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -136,6 +155,21 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, Mutex};
+
+    /// An On-call restart (`foxglove.exe --tray`) starts in the tray; a start with no arguments
+    /// (by hand, the Startup-folder entry) opens Settings; the program's own name never counts.
+    #[test]
+    fn only_the_tray_argument_starts_in_the_tray() {
+        assert!(tray_start_in([r"C:pp-mainoxglove.exe", "--tray"]));
+        assert!(tray_start_in(["foxglove.exe", "--other", "--tray"]));
+        assert!(!tray_start_in([r"C:pp-mainoxglove.exe"]));
+        assert!(
+            !tray_start_in(["--tray"]),
+            "the program itself is not an argument"
+        );
+        assert!(!tray_start_in(["foxglove.exe", "--TRAY-ish", "tray"]));
+        assert!(!tray_start_in(Vec::<String>::new()));
+    }
 
     /// The tray menu's request runs on its own thread with no frame running: it sets the flag
     /// and wakes the UI there and then, and shows a known window at once.
