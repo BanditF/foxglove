@@ -218,14 +218,21 @@ pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
     // wait in the channel until then.
     let sup = Supervisor::start(home, hub.clone());
     sup.set_notifier(notifier(sup.clone(), home));
-    // Check for updates (#1026): the catalog fetch isn't built yet, so a normal hub answers
-    // "Couldn't check". A lab hub's check re-reads lab-withdrawn.json (the registry reads it
-    // again on every open), the lab's stand-in for a fresh catalog.
+    // Check for updates (#1026) and the catalog fetch (#1049): a normal hub fetches each
+    // source once now and the module's source on Check for updates (no source configured:
+    // nothing is fetched and the check reads "Couldn't check"). A lab hub reads no trust; its
+    // check re-reads lab-withdrawn.json (the registry reads it again on every open), the lab's
+    // stand-in for a fresh catalog.
     if hideout_registry::lab::lab_mode_from_env(home).on() {
         sup.set_refresh(std::sync::Arc::new(|id: &str| {
             log::info!("lab: check for updates for {id}: lab-withdrawn.json read again");
             Ok(())
         }));
+    } else {
+        let fetch: crate::catalog_fetch::Fetcher =
+            std::sync::Arc::new(crate::https::WinHttp::default());
+        sup.set_refresh(crate::catalog_fetch::refresh(home, fetch.clone()));
+        crate::catalog_fetch::fetch_at_start(home, sup.clone(), fetch);
     }
     let s = sup.clone();
     std::thread::Builder::new()

@@ -6,6 +6,8 @@
 //! - [`hub_config`]: `hideout.toml`, enabled state, sources and anchors (§7.3, §13.4)
 //! - [`Registry`]: installs into versioned folders (§7.2), enables, and checks the catalog and
 //!   every file before each launch (§12.5, §12.6); tracks what runs.
+//! - [`catalogs`]: accepted catalogs saved per source and loaded at open; fetching a source
+//!   once (§2.3, §12.4, §13.4, #1049).
 //! - [`lab`]: lab mode, the first-party modules of `<config>\lab-modules\` in a lab hub only
 //!   (#1001, docs/hideout-lab.md).
 //!
@@ -13,6 +15,7 @@
 //! puts a module's permissions in `pending_permissions`, and only [`Registry::approve`] grants.
 //! Nothing here starts a process or opens a window.
 
+pub mod catalogs;
 pub mod hub_config;
 /// The installed ids for the hub's change watch (#1012.4).
 pub mod installed;
@@ -57,6 +60,8 @@ pub enum Failure {
     Disabled(String),
     /// The step would overwrite or remove the version that runs (§7.2).
     Running(String),
+    /// A catalog source couldn't be read: not configured, offline, no root key (#1049).
+    Source(String),
 }
 
 impl Failure {
@@ -77,6 +82,7 @@ impl fmt::Display for Failure {
             Failure::NotInstalled(id) => write!(f, "{id} is not installed"),
             Failure::Disabled(id) => write!(f, "{id} is off"),
             Failure::Running(id) => write!(f, "{id} is running"),
+            Failure::Source(why) => write!(f, "{why}"),
         }
     }
 }
@@ -146,6 +152,17 @@ pub struct Registry {
     /// Lab mode only: `lab-withdrawn.json`, the lab's stand-in for a catalog revocation of a
     /// lab module (#1026, [`lab::LAB_WITHDRAWN_FILE`]).
     lab_withdrawn: BTreeMap<String, lab::LabWithdrawn>,
+    /// The Hideout root's public key root-anchored catalogs verify against (§12.2):
+    /// [`trust::PINNED_ROOT_KEY`] unless a test sets another.
+    pub root_key: Option<String>,
+    /// The accepted `root.json` and its signature, stored with each root-anchored catalog.
+    root_file: Option<(String, String)>,
+    /// One line per source whose stored catalog was read at open: loaded, or why not. For the
+    /// hub's log (#1049).
+    pub catalog_report: Vec<String>,
+    /// Per source: the sequence and accepted time of the catalog this registry verified and
+    /// uses (loaded at open or accepted since). Copy diagnostics reads only this (#1049).
+    accepted_info: BTreeMap<String, catalogs::CatalogInfo>,
 }
 
 fn hash_files(dir: &Path) -> io::Result<BTreeMap<String, String>> {
@@ -167,8 +184,16 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 impl Registry {
-    /// Opens the registry in `home` (it holds `inventory.json`, `hideout.toml` and `modules\`).
+    /// Opens the registry in `home` (it holds `inventory.json`, `hideout.toml` and `modules\`)
+    /// and loads each source's stored catalog ([`Registry::load_catalogs`], #1049).
     pub fn open(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
+        let mut reg = Registry::open_bare(home, dev_mode)?;
+        reg.load_catalogs(&foxglove_plugin_trust::now_utc());
+        Ok(reg)
+    }
+
+    /// [`Registry::open`] without the stored catalogs (a lab hub reads no trust).
+    fn open_bare(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
         let mut inventory = Inventory::load(&home.join("inventory.json"))?;
         // A lab entry is never on disk; one written there by hand is not a lab module.
         inventory.modules.retain(|_, m| m.source != LAB);
@@ -184,6 +209,10 @@ impl Registry {
             lab: false,
             lab_report: Vec::new(),
             lab_withdrawn: BTreeMap::new(),
+            root_key: trust::PINNED_ROOT_KEY.map(String::from),
+            root_file: None,
+            catalog_report: Vec::new(),
+            accepted_info: BTreeMap::new(),
         })
     }
 
@@ -191,8 +220,14 @@ impl Registry {
     /// the hub and the supervisor use. In lab mode the lab modules are loaded
     /// ([`Registry::load_lab`]); a refused lab mode loads none.
     pub fn open_from_env(home: &Path) -> Result<Registry, Failure> {
-        let mut reg = Registry::open(home, dev_mode_from_env())?;
-        if lab::lab_mode_from_env(home) == LabMode::On {
+        let lab = lab::lab_mode_from_env(home) == LabMode::On;
+        // A lab hub reads no trust (docs/hideout-lab.md), so no stored catalog either.
+        let mut reg = if lab {
+            Registry::open_bare(home, dev_mode_from_env())?
+        } else {
+            Registry::open(home, dev_mode_from_env())?
+        };
+        if lab {
             reg.load_lab();
         }
         Ok(reg)
@@ -321,6 +356,7 @@ impl Registry {
         pinned_key: &str,
         now: &str,
     ) -> Result<(), Failure> {
+        self.reload_inventory()?;
         let root = verify_root(
             json,
             signature,
@@ -329,16 +365,16 @@ impl Registry {
             self.inventory.seen.get(ROOT_ANCHOR),
         )?;
         self.hub.validate(&root.scopes())?;
-        let mut inventory = self.inventory.clone();
-        inventory
-            .seen
-            .entry(ROOT_ANCHOR.into())
-            .or_default()
-            .record_root(&root);
-        inventory.save(&self.home.join("inventory.json"))?;
-        self.inventory = inventory;
+        self.raise_seen(|seen| {
+            seen.entry(ROOT_ANCHOR.into())
+                .or_default()
+                .record_root(&root)
+        })?;
         self.trust.catalogs.retain(|a| a.anchor != ROOT_ANCHOR);
         self.trust.root = Some(root);
+        self.root_file = std::str::from_utf8(json)
+            .ok()
+            .map(|t| (t.to_string(), signature.to_string()));
         Ok(())
     }
 
@@ -353,8 +389,9 @@ impl Registry {
             .ok_or_else(|| Error::new(ErrorId::ConfigUnknownAnchor, format!("no anchor {id}")))
     }
 
-    /// Verifies a catalog from `source` against its anchor (§12.4, §13.6), stores `seen`, then
-    /// adds it to the trust set.
+    /// Verifies a catalog from `source` against its anchor (§12.4, §13.6), saves it under
+    /// `catalogs\<source>\` (with its sequence and `now` as the accepted time, #1049), stores
+    /// `seen`, then adds it to the trust set. If either can't be written it is not used.
     pub fn accept_catalog(
         &mut self,
         json: &[u8],
@@ -364,6 +401,8 @@ impl Registry {
         visibility: Visibility,
         now: &str,
     ) -> Result<(), Failure> {
+        // `seen` as saved now, not as read at open: another writer may have raised it.
+        self.reload_inventory()?;
         let seen = self.inventory.seen.get(anchor).cloned();
         let catalog = if anchor == ROOT_ANCHOR {
             let root = self.trust.root.as_ref().ok_or_else(|| {
@@ -385,14 +424,19 @@ impl Registry {
             };
             verify_catalog(json, signature, signer, source, now, seen.as_ref())?
         };
-        let mut inventory = self.inventory.clone();
-        inventory
-            .seen
-            .entry(anchor.into())
-            .or_default()
-            .record_catalog(source, &catalog);
-        inventory.save(&self.home.join("inventory.json"))?;
-        self.inventory = inventory;
+        self.store_catalog(json, signature, anchor, source, &catalog, now)?;
+        self.raise_seen(|seen| {
+            seen.entry(anchor.into())
+                .or_default()
+                .record_catalog(source, &catalog)
+        })?;
+        self.accepted_info.insert(
+            source.into(),
+            catalogs::CatalogInfo {
+                sequence: catalog.sequence,
+                accepted: now.into(),
+            },
+        );
         self.trust
             .catalogs
             .retain(|a| !(a.anchor == anchor && a.source == source));
@@ -402,6 +446,56 @@ impl Registry {
             visibility,
             catalog,
         });
+        Ok(())
+    }
+
+    /// The lab entries this registry holds in memory only (never on disk).
+    fn lab_entries(&self) -> Vec<(String, Installed)> {
+        self.inventory
+            .modules
+            .iter()
+            .filter(|(_, m)| m.source == LAB)
+            .map(|(k, m)| (k.clone(), m.clone()))
+            .collect()
+    }
+
+    /// `seen` held here joined into `into` (each anchor at the higher of the two).
+    fn join_seen(&self, into: &mut BTreeMap<String, trust::SeenAnchor>) {
+        for (anchor, s) in &self.inventory.seen {
+            into.entry(anchor.clone()).or_default().merge(s);
+        }
+    }
+
+    /// Reads `inventory.json` again (lab entries kept): what another writer saved since open,
+    /// with `seen` at the higher of the file's and this registry's.
+    fn reload_inventory(&mut self) -> io::Result<()> {
+        let lab = self.lab_entries();
+        let mut disk = Inventory::load(&self.home.join("inventory.json"))?;
+        disk.modules.retain(|_, m| m.source != LAB);
+        disk.modules.extend(lab);
+        self.join_seen(&mut disk.seen);
+        self.inventory = disk;
+        Ok(())
+    }
+
+    /// Raises `seen` in the file under `inventory.lock` (read, change, write), then holds the
+    /// file's inventory: nothing another writer saved is written over, and `seen` never drops.
+    fn raise_seen(
+        &mut self,
+        f: impl FnOnce(&mut BTreeMap<String, trust::SeenAnchor>),
+    ) -> io::Result<()> {
+        hideout_acl::create_private_dir_all(&self.home)?;
+        let lab = self.lab_entries();
+        let mut held = BTreeMap::new();
+        self.join_seen(&mut held);
+        let mut disk = Inventory::update(&self.home.join("inventory.json"), |inv| {
+            for (anchor, s) in &held {
+                inv.seen.entry(anchor.clone()).or_default().merge(s);
+            }
+            f(&mut inv.seen)
+        })?;
+        disk.modules.extend(lab);
+        self.inventory = disk;
         Ok(())
     }
 
@@ -753,6 +847,17 @@ impl Registry {
             version: version.into(),
             reason: r.reason.clone(),
         })
+    }
+
+    /// Whether what withdraws `id` can be read now: its source's verified catalog is loaded (a
+    /// lab module's `lab-withdrawn.json` and a sideload always can). When it can't (offline
+    /// with the stored catalog expired, corrupt or unread), a withdrawal shown stays (#1049).
+    pub fn withdrawals_known(&self, id: &str) -> bool {
+        match self.inventory.modules.get(id) {
+            None => true,
+            Some(m) if m.source == LAB || m.source == SIDELOAD => true,
+            Some(m) => self.catalog_loaded(&m.source),
+        }
     }
 
     /// The revocation of `id`'s installed version, running or not (#1026): the supervisor

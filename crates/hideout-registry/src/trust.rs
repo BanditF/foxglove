@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 
 pub use hideout_contract::config::ROOT_ANCHOR;
 
+/// The Hideout root's public key, pinned in the hub (§12.2). `None` until the root key is made
+/// (#90): until then a root-anchored source is not fetched or loaded, and says so in the log.
+/// Never a test key (tests/hideout-vectors/trust/keys/README.txt).
+pub const PINNED_ROOT_KEY: Option<&str> = None;
+
 /// The family a catalog signed by a user anchor reads as (§12.4, v1.1).
 pub const USER_FAMILY: &str = hideout_contract::DEFAULT_USER_CATALOG_FAMILY;
 
@@ -37,6 +42,22 @@ impl SeenAnchor {
         }
         self.root_version = self.root_version.max(root.version);
         self.epoch = self.epoch.max(root.epoch);
+    }
+
+    /// Raises the state to `other` wherever it is higher (two copies of `seen` joined: it never
+    /// goes down, #1049).
+    pub fn merge(&mut self, other: &SeenAnchor) {
+        if other.epoch > self.epoch {
+            self.catalogs.clear();
+        }
+        self.root_version = self.root_version.max(other.root_version);
+        self.epoch = self.epoch.max(other.epoch);
+        if other.epoch == self.epoch {
+            for (source, seq) in &other.catalogs {
+                let s = self.catalogs.entry(source.clone()).or_default();
+                *s = (*s).max(*seq);
+            }
+        }
     }
 
     /// Raises the state to an accepted catalog from `source`.
@@ -378,7 +399,11 @@ pub fn verify_catalog(
     }
     if let Some(seen) = seen {
         let last = seen.catalogs.get(source_id).copied().unwrap_or(0);
-        if file.epoch == seen.epoch && file.sequence < last {
+        // §12.4: the sequence is never below `seen`. Only a new root epoch (raised in `seen` by
+        // `record_root`, which restarts the sequences) may start it again; a user anchor has no
+        // root, so its catalog's `epoch` never excuses a lower sequence (#1049 review).
+        let restarted = root_epoch.is_some() && file.epoch > seen.epoch;
+        if !restarted && file.sequence < last {
             return err(
                 ErrorId::TrustRollback,
                 format!("sequence {} is below seen {last}", file.sequence),
