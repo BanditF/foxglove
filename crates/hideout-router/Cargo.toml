@@ -1,0 +1,14 @@
+[package]
+name = "hideout-router"
+version = "0.1.0"
+edition = "2021"
+description = "Hideout's IPC router (contract §8): the router pipe, launch tokens, the provider table, the facts cache, permission checks, the legacy stdio bridge and the foxglove-<user> alias. Clean-room MIT."
+license = "MIT"
+
+[dependencies]
+foxglove-plugin = { path = "../plugin-sdk" }
+foxglove-plugin-api = { path = "../plugin-api" }
+hideout-contract = { path = "../hideout-contract" }
+hideout-registry = { path = "../hideout-registry" }
+log = "0.4"
+serde_json = "1"

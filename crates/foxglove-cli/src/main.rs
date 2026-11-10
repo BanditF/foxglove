@@ -185,9 +185,20 @@ fn lights_text(list: &PcDevices) -> String {
 
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).unwrap_or("status");
+    // FOXGLOVE_PIPE names another pipe (the lab, the router's tests); default `foxglove-<user>`,
+    // which the Hideout hub also serves as an alias (contract §8.2).
     #[cfg(windows)]
-    let pipe = foxglove_plugin_host::pipe::connect()
-        .map_err(|e| format!("Foxglove isn't running (or its API is off): {e}"))?;
+    let pipe = match std::env::var("FOXGLOVE_PIPE")
+        .ok()
+        .filter(|p| !p.is_empty())
+    {
+        Some(name) => std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(name),
+        None => foxglove_plugin_host::pipe::connect(),
+    }
+    .map_err(|e| format!("Foxglove isn't running (or its API is off): {e}"))?;
     #[cfg(not(windows))]
     return Err("the local API is Windows-only for now".into());
     #[cfg(windows)]

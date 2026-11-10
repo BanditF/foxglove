@@ -25,7 +25,8 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, LocalFree, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, LocalFree, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
@@ -34,12 +35,16 @@ use windows_sys::Win32::Security::{
     GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
     TOKEN_USER,
 };
+use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, FILE_FLAG_OVERLAPPED};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+use windows_sys::Win32::System::Pipes::PIPE_UNLIMITED_INSTANCES;
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_BYTE, PIPE_WAIT,
 };
+use windows_sys::Win32::System::Threading::CreateEventW;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 /// The most a channel frame may carry. A longer length prefix is a protocol error.
 pub const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -278,6 +283,134 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(Some(buf))
+}
+
+/// An owned pipe handle, closed on drop.
+struct Owned(HANDLE);
+
+// SAFETY: a pipe handle may be used from any thread; overlapped I/O keeps reads and writes apart.
+unsafe impl Send for Owned {}
+unsafe impl Sync for Owned {}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// One overlapped operation on `h`, waited for in the kernel (no polling).
+fn overlapped(h: HANDLE, op: impl FnOnce(*mut OVERLAPPED) -> i32) -> io::Result<u32> {
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let event = Owned(event);
+    let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+    ov.hEvent = event.0;
+    if op(&mut ov) == 0 {
+        let code = unsafe { GetLastError() };
+        if code == ERROR_PIPE_CONNECTED {
+            return Ok(0);
+        }
+        if code != ERROR_IO_PENDING {
+            return Err(io::Error::from_raw_os_error(code as i32));
+        }
+    }
+    let mut n = 0u32;
+    if unsafe { GetOverlappedResult(h, &ov, &mut n, 1) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(n)
+}
+
+/// One instance of a many-client server pipe (the hub's router pipe, §8.2): a current-user-only
+/// DACL, remote clients rejected, overlapped I/O so one connection reads and writes at the same
+/// time. The first instance takes the name with the first-instance flag, so a squatter makes it
+/// fail instead of serving beside it.
+pub struct ServerPipe {
+    handle: Owned,
+}
+
+impl ServerPipe {
+    /// Creates an instance of `name`; `first` for the first one a server makes.
+    pub fn create(name: &str, first: bool) -> io::Result<ServerPipe> {
+        let sd = Descriptor::current_user_only()?;
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.0,
+            bInheritHandle: 0,
+        };
+        let wname = wide(name);
+        let first = if first {
+            FILE_FLAG_FIRST_PIPE_INSTANCE
+        } else {
+            0
+        };
+        let h = unsafe {
+            CreateNamedPipeW(
+                wname.as_ptr(),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | first,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                PIPE_UNLIMITED_INSTANCES,
+                64 * 1024,
+                64 * 1024,
+                0,
+                &sa,
+            )
+        };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(ServerPipe { handle: Owned(h) })
+    }
+
+    /// The instance's handle, for inspecting it (the test reads its DACL).
+    pub fn raw_handle(&self) -> RawHandle {
+        self.handle.0 as RawHandle
+    }
+
+    /// Blocks until a client connects to this instance.
+    pub fn accept(self) -> io::Result<PipeConn> {
+        let h = self.handle.0;
+        overlapped(h, |ov| unsafe { ConnectNamedPipe(h, ov) })?;
+        Ok(PipeConn(std::sync::Arc::new(self.handle)))
+    }
+}
+
+/// A connected server pipe. Clones share the connection: one thread reads while another writes.
+/// The last clone dropped closes it.
+#[derive(Clone)]
+pub struct PipeConn(std::sync::Arc<Owned>);
+
+impl Read for PipeConn {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let h = self.0 .0;
+        let len = buf.len().min(u32::MAX as usize) as u32;
+        let ptr = buf.as_mut_ptr();
+        match overlapped(h, |ov| unsafe {
+            ReadFile(h, ptr, len, std::ptr::null_mut(), ov)
+        }) {
+            Ok(n) => Ok(n as usize),
+            // The client closed its end: end of stream.
+            Err(e) if e.raw_os_error() == Some(ERROR_BROKEN_PIPE) => Ok(0),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl Write for PipeConn {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let h = self.0 .0;
+        let len = buf.len().min(u32::MAX as usize) as u32;
+        let ptr = buf.as_ptr();
+        overlapped(h, |ov| unsafe {
+            WriteFile(h, ptr, len, std::ptr::null_mut(), ov)
+        })
+        .map(|n| n as usize)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

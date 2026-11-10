@@ -1364,6 +1364,8 @@ version = "0.3.0"
 dependencies = [
  "foxglove-plugin-api",
  "foxglove-plugin-host",
+ "hideout-contract",
+ "hideout-router",
  "serde_json",
 ]
 
@@ -1998,8 +2000,11 @@ dependencies = [
 name = "hideout"
 version = "0.1.0"
 dependencies = [
+ "hideout-registry",
+ "hideout-router",
  "hideout-shell",
  "log",
+ "serde_json",
 ]
 
 [[package]]
@@ -2030,6 +2035,18 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "hideout-router"
+version = "0.1.0"
+dependencies = [
+ "foxglove-plugin",
+ "foxglove-plugin-api",
+ "hideout-contract",
+ "hideout-registry",
+ "log",
+ "serde_json",
 ]
 
 [[package]]
