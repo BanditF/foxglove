@@ -47,6 +47,9 @@ pub enum State {
     Restarting,
     CrashStopped,
     InstallFailed,
+    /// Its publisher withdrew the installed version (a catalog revoked it, §12.4): stopped, not
+    /// started again until another version is installed or gone back to (§7.8 v1.9, #1026).
+    Revoked,
 }
 
 impl State {
@@ -59,6 +62,7 @@ impl State {
             State::Restarting => "restarting",
             State::CrashStopped => "crash-stopped",
             State::InstallFailed => "install-failed",
+            State::Revoked => "revoked",
         })
     }
 }
@@ -143,6 +147,29 @@ pub enum Ev {
     /// **Start normally** (§7.10): safe mode ends and every enabled module that starts at
     /// enable starts now, without a hub restart.
     StartNormally,
+    /// An accepted catalog revoked the installed `version` (§12.4; found at a launch, at hub
+    /// start or when a catalog is accepted). `go_back` is the kept previous version that isn't
+    /// withdrawn itself, for "Go back to <version>". The router has already ended its leases.
+    Revoked {
+        id: String,
+        version: String,
+        go_back: Option<String>,
+    },
+    /// The installed version is no longer withdrawn: another one was installed, or the catalog
+    /// no longer revokes it. It starts as an enabled module does.
+    Cleared {
+        id: String,
+    },
+    /// **Check for updates** on the withdrawn card: the check starts ([`Cmd::CheckUpdates`]).
+    Check {
+        id: String,
+    },
+    /// The check ended: `reached` the source or not. A newer version that isn't withdrawn comes
+    /// as [`Ev::Cleared`] (the update path), not here.
+    Checked {
+        id: String,
+        reached: bool,
+    },
 }
 
 /// What the driver must do.
@@ -167,6 +194,12 @@ pub enum Cmd {
     ResetSettings { id: String },
     /// Go back to the previous version (§7.8), before the next launch.
     RollBack { id: String },
+    /// Fetch the module's source's catalog now (one fetch, no retry loop) and answer with
+    /// [`Ev::Cleared`] or [`Ev::Checked`] (#1026).
+    CheckUpdates { id: String },
+    /// Remember that the withdrawal of `id@version` was notified, in the hub's own state, so
+    /// no later sign-in notifies it again (decision 3, 11/10).
+    RememberNotified { id: String, version: String },
 }
 
 #[derive(Debug)]
@@ -197,6 +230,10 @@ struct Slot {
     then_launch: bool,
     /// Rename the settings folder before the next launch (Start with default settings).
     reset_first: bool,
+    /// The installed version its publisher withdrew: it doesn't start (#1026).
+    withdrawn: Option<String>,
+    /// The version the withdrawn card's Go back names (kept, not withdrawn itself).
+    go_back: Option<String>,
 }
 
 /// The supervisor's state for every module.
@@ -205,6 +242,9 @@ pub struct Policy {
     slots: BTreeMap<String, Slot>,
     /// Modules already notified this sign-in (§7.7).
     notified: BTreeSet<String>,
+    /// Withdrawn versions already notified, `(id, version)`: once per version, ever (seeded
+    /// from the hub's state with [`Policy::already_notified`]).
+    notified_withdrawn: BTreeSet<(String, String)>,
     /// Safe mode (§7.10): nothing starts by itself.
     pub safe_mode: bool,
     /// What happened to each module, for Copy diagnostics only (exit codes, crashes, the
@@ -239,6 +279,21 @@ impl Policy {
             .get(id)
             .map(|h| h.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// A withdrawal notified before (by an earlier hub): it isn't notified again.
+    pub fn already_notified(&mut self, id: &str, version: &str) {
+        self.notified_withdrawn.insert((id.into(), version.into()));
+    }
+
+    /// The withdrawn version of `id`, while it is withdrawn.
+    pub fn withdrawn(&self, id: &str) -> Option<&str> {
+        self.slots.get(id).and_then(|s| s.withdrawn.as_deref())
+    }
+
+    /// The ids of every module the policy knows.
+    pub fn known(&self) -> Vec<String> {
+        self.slots.keys().cloned().collect()
     }
 
     /// Crash stops this sign-in (the recovery ladder's count).
@@ -298,6 +353,16 @@ impl Policy {
         let Some(s) = self.slots.get_mut(id) else {
             return;
         };
+        if s.withdrawn.is_some() {
+            // A withdrawn version never starts: whatever asked (Turn on from a file, an
+            // activation, a restart timer), it stays Withdrawn (#1026).
+            s.restart_at = None;
+            s.then_launch = false;
+            if s.enabled {
+                self.show_withdrawn(id, out);
+            }
+            return;
+        }
         s.restart_at = None;
         s.exit_by = None;
         s.adopt_by = None;
@@ -347,6 +412,8 @@ impl Policy {
                     stops: 0,
                     then_launch: false,
                     reset_first: false,
+                    withdrawn: None,
+                    go_back: None,
                 });
                 s.name = name;
                 s.enabled = enabled;
@@ -464,6 +531,20 @@ impl Policy {
             }
             Ev::StartAgain { id } => self.start_by_hand(&id, false, &mut out),
             Ev::StartDefaults { id } => self.start_by_hand(&id, true, &mut out),
+            Ev::GoBack { id } if self.state(&id) == Some(State::Revoked) => {
+                // The withdrawn card's Go back: the user's click, never automatic. The
+                // registry refuses a revoked version, and the launch checks it again.
+                let s = self.slots.get_mut(&id).unwrap();
+                if s.ended && s.go_back.take().is_some() {
+                    s.withdrawn = None;
+                    s.previous = None;
+                    s.crashes.clear();
+                    s.run_restarts = 0;
+                    publish(&mut out, format!("module.{id}.check"), Value::Null);
+                    out.push(Cmd::RollBack { id: id.clone() });
+                    self.launch(&id, &mut out);
+                }
+            }
             Ev::GoBack { id } => {
                 let stopped = self.slots.get(&id).is_some_and(|s| {
                     s.state == State::CrashStopped && s.ended && s.previous.is_some()
@@ -515,6 +596,48 @@ impl Policy {
                     self.set_state(&id, State::Off, None, &mut out);
                 }
             }
+            Ev::Revoked {
+                id,
+                version,
+                go_back,
+            } => self.revoked(&id, version, go_back, &mut out),
+            Ev::Cleared { id } => {
+                let Some(s) = self.slots.get_mut(&id) else {
+                    return out;
+                };
+                if s.withdrawn.take().is_none() {
+                    return out;
+                }
+                s.go_back = None;
+                s.crashes.clear();
+                s.run_restarts = 0;
+                let start = s.enabled && s.at_enable && !self.safe_mode;
+                let was = s.state;
+                publish(&mut out, format!("module.{id}.check"), Value::Null);
+                // The router's notice ends too (also when the same version is no longer
+                // revoked, which no new connection would clear).
+                publish(&mut out, format!("module.{id}.revoked"), Value::Null);
+                if was == State::Revoked {
+                    publish(&mut out, format!("module.{id}.previous"), Value::Null);
+                    if start {
+                        self.launch(&id, &mut out);
+                    } else {
+                        self.set_state(&id, State::Idle, None, &mut out);
+                    }
+                }
+            }
+            Ev::Check { id } => {
+                if self.slots.get(&id).is_some_and(|s| s.withdrawn.is_some()) {
+                    publish(&mut out, format!("module.{id}.check"), json!("checking"));
+                    out.push(Cmd::CheckUpdates { id });
+                }
+            }
+            Ev::Checked { id, reached } => {
+                if self.slots.get(&id).is_some_and(|s| s.withdrawn.is_some()) {
+                    let v = if reached { "none" } else { "failed" };
+                    publish(&mut out, format!("module.{id}.check"), json!(v));
+                }
+            }
             Ev::StartNormally => {
                 self.safe_mode = false;
                 let waiting: Vec<String> = self
@@ -530,6 +653,79 @@ impl Policy {
             }
         }
         out
+    }
+
+    /// The installed version was withdrawn (§12.4, #1026): the module stops (the router ended
+    /// its leases; the Job Object ends the process), its timers end, and it reads Withdrawn
+    /// until another version is installed or gone back to. Files, data, settings and grants
+    /// are kept, and it stays enabled, so a fixed version starts by itself. Turned off, it
+    /// stays Off (the row says the version was withdrawn). One notification per withdrawn
+    /// version, ever.
+    fn revoked(&mut self, id: &str, version: String, go_back: Option<String>, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        let again = s.withdrawn.as_deref() == Some(version.as_str());
+        s.withdrawn = Some(version.clone());
+        s.go_back = go_back;
+        s.restart_at = None;
+        s.ready_by = None;
+        s.adopt_by = None;
+        s.exit_by = None;
+        s.then_launch = false;
+        s.reset_first = false;
+        if !s.ended {
+            s.ended = true;
+            out.push(Cmd::Kill { id: id.into() });
+        }
+        if !s.enabled {
+            return;
+        }
+        let name = s.name.clone();
+        if again && s.state == State::Revoked {
+            // Seen again (another catalog, a second look): Go back's version may have changed.
+            let go_back = s.go_back.clone();
+            publish(
+                out,
+                format!("module.{id}.previous"),
+                go_back.map_or(Value::Null, Value::String),
+            );
+        }
+        self.show_withdrawn(id, out);
+        if self.notified_withdrawn.insert((id.into(), version.clone())) {
+            let (title, body, actions) = words::withdrawn_notification(&name, &version);
+            out.push(Cmd::Notify {
+                id: id.into(),
+                title,
+                body,
+                actions,
+            });
+            out.push(Cmd::RememberNotified {
+                id: id.into(),
+                version,
+            });
+        }
+    }
+
+    /// The state `revoked` with its facts: the reason line, Go back's version, and the crash
+    /// bar's, ladder's and launch failure's facts cleared.
+    fn show_withdrawn(&mut self, id: &str, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get(id) else {
+            return;
+        };
+        if s.state == State::Revoked {
+            return;
+        }
+        let go_back = s.go_back.clone();
+        self.set_state(id, State::Revoked, Some(words::WITHDRAWN_LINE.into()), out);
+        for k in ["restart", "recovery", "failed"] {
+            publish(out, format!("module.{id}.{k}"), Value::Null);
+        }
+        publish(
+            out,
+            format!("module.{id}.previous"),
+            go_back.map_or(Value::Null, Value::String),
+        );
     }
 
     /// "Start again" / "Start with default settings": the count starts fresh (§7.8, UX ladder).
@@ -734,6 +930,25 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
             (id.clone(), "step tried: turn-off".into())
         }
         Ev::Disable { id } => (id.clone(), "disabled".into()),
+        Ev::Revoked { id, version, .. } => {
+            if p.slots.get(id).and_then(|s| s.withdrawn.as_deref()) == Some(version.as_str()) {
+                return None;
+            }
+            (
+                id.clone(),
+                format!("stopped: its publisher withdrew {version} (catalog revocation)"),
+            )
+        }
+        Ev::Cleared { id } => (id.clone(), "no longer withdrawn".into()),
+        Ev::Check { id } => (id.clone(), "check for updates: started".into()),
+        Ev::Checked { id, reached } => (
+            id.clone(),
+            if *reached {
+                "check for updates: nothing newer".into()
+            } else {
+                "check for updates: couldn't reach the source".into()
+            },
+        ),
         Ev::Known { .. } | Ev::Activate { .. } | Ev::StartNormally => return None,
     })
 }
@@ -896,5 +1111,258 @@ mod safe_mode_tests {
         assert_eq!(p.state("m.oak"), Some(State::Idle));
         assert_eq!(State::Idle.id(), None);
         assert_eq!(launches(&p.handle(Ev::StartNormally, t)), ["m.oak"]);
+    }
+}
+
+#[cfg(test)]
+mod withdrawn_tests {
+    use super::*;
+
+    const ID: &str = "m.art";
+
+    fn running(p: &mut Policy, t: Instant, previous: Option<&str>) {
+        p.handle(
+            Ev::Known {
+                id: ID.into(),
+                name: "Art".into(),
+                enabled: true,
+                at_enable: true,
+                previous: previous.map(String::from),
+            },
+            t,
+        );
+        p.handle(
+            Ev::Started {
+                id: ID.into(),
+                instance: 1,
+            },
+            t,
+        );
+        p.handle(Ev::Ready { id: ID.into() }, t);
+    }
+
+    fn revoked(go_back: Option<&str>) -> Ev {
+        Ev::Revoked {
+            id: ID.into(),
+            version: "0.5.0".into(),
+            go_back: go_back.map(String::from),
+        }
+    }
+
+    fn fact<'a>(cmds: &'a [Cmd], key: &str) -> Option<&'a Value> {
+        let want = format!("module.{ID}.{key}");
+        cmds.iter().rev().find_map(|c| match c {
+            Cmd::Publish { key: k, value } if *k == want => Some(value),
+            _ => None,
+        })
+    }
+
+    fn count(cmds: &[Cmd], f: impl Fn(&Cmd) -> bool) -> usize {
+        cmds.iter().filter(|c| f(c)).count()
+    }
+
+    /// Stopped, Withdrawn, one notification per version, and nothing starts it.
+    #[test]
+    fn a_withdrawn_running_module_stops_and_stays_stopped() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        running(&mut p, t, Some("0.4.2"));
+        let cmds = p.handle(revoked(Some("0.4.2")), t);
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Kill { .. })), 1);
+        assert_eq!(p.state(ID), Some(State::Revoked));
+        assert_eq!(fact(&cmds, "state"), Some(&json!("revoked")));
+        assert_eq!(fact(&cmds, "reason"), Some(&json!(words::WITHDRAWN_LINE)));
+        assert_eq!(fact(&cmds, "previous"), Some(&json!("0.4.2")));
+        let notes: Vec<&Cmd> = cmds
+            .iter()
+            .filter(|c| matches!(c, Cmd::Notify { .. }))
+            .collect();
+        assert_eq!(notes.len(), 1);
+        if let Cmd::Notify { title, body, .. } = notes[0] {
+            assert_eq!(title, "Art 0.5.0 was withdrawn");
+            assert_eq!(body, "Its publisher withdrew it, so Hideout stopped it.");
+        }
+        assert!(cmds.contains(&Cmd::RememberNotified {
+            id: ID.into(),
+            version: "0.5.0".into()
+        }));
+        // Its exit afterwards is no crash; nothing restarts it.
+        let cmds = p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 1,
+                code: 1,
+            },
+            t,
+        );
+        assert!(cmds.is_empty(), "{cmds:?}");
+        assert_eq!(p.crashes(ID, t), 0);
+        // Start again, an activation, Enable and Start normally start nothing.
+        for ev in [
+            Ev::StartAgain { id: ID.into() },
+            Ev::Activate { id: ID.into() },
+            Ev::Enable { id: ID.into() },
+            Ev::StartNormally,
+        ] {
+            let cmds = p.handle(ev.clone(), t);
+            assert_eq!(
+                count(&cmds, |c| matches!(c, Cmd::Launch { .. })),
+                0,
+                "{ev:?} started it"
+            );
+            assert_eq!(p.state(ID), Some(State::Revoked), "{ev:?}");
+        }
+        // Seen again: no second notification.
+        let cmds = p.handle(revoked(Some("0.4.2")), t);
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Notify { .. })), 0);
+    }
+
+    /// A later sign-in: the card again (state revoked), no notification.
+    #[test]
+    fn a_withdrawal_notified_before_is_not_notified_again() {
+        let mut p = Policy::new();
+        p.already_notified(ID, "0.5.0");
+        let t = Instant::now();
+        p.handle(
+            Ev::Known {
+                id: ID.into(),
+                name: "Art".into(),
+                enabled: true,
+                at_enable: false,
+                previous: None,
+            },
+            t,
+        );
+        let cmds = p.handle(revoked(None), t);
+        assert_eq!(p.state(ID), Some(State::Revoked));
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Notify { .. })), 0);
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Kill { .. })), 0);
+        // Another withdrawn version is a new event: notified once.
+        let cmds = p.handle(
+            Ev::Revoked {
+                id: ID.into(),
+                version: "0.5.1".into(),
+                go_back: None,
+            },
+            t,
+        );
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Notify { .. })), 1);
+    }
+
+    /// Turn off: Off (the dot goes), still withdrawn; a Turn on that arrives anyway doesn't
+    /// start it.
+    #[test]
+    fn turned_off_it_stays_off_and_withdrawn() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        running(&mut p, t, None);
+        p.handle(revoked(None), t);
+        let cmds = p.handle(Ev::Disable { id: ID.into() }, t);
+        assert_eq!(fact(&cmds, "state"), Some(&json!("off")));
+        assert_eq!(p.withdrawn(ID), Some("0.5.0"));
+        let cmds = p.handle(Ev::Enable { id: ID.into() }, t);
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Launch { .. })), 0);
+        assert_eq!(p.state(ID), Some(State::Revoked));
+        // Withdrawn while off: nothing to stop, no notification.
+        let mut p = Policy::new();
+        p.handle(
+            Ev::Known {
+                id: ID.into(),
+                name: "Art".into(),
+                enabled: false,
+                at_enable: true,
+                previous: None,
+            },
+            t,
+        );
+        let cmds = p.handle(revoked(None), t);
+        assert_eq!(p.state(ID), Some(State::Off));
+        assert!(cmds.iter().all(|c| !matches!(c, Cmd::Notify { .. })));
+    }
+
+    /// Check for updates: checking, then nothing newer or couldn't check; a fixed version
+    /// clears it and the module starts.
+    #[test]
+    fn check_for_updates_then_a_fixed_version_starts() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        running(&mut p, t, None);
+        p.handle(revoked(None), t);
+        let cmds = p.handle(Ev::Check { id: ID.into() }, t);
+        assert_eq!(fact(&cmds, "check"), Some(&json!("checking")));
+        assert!(cmds.contains(&Cmd::CheckUpdates { id: ID.into() }));
+        let cmds = p.handle(
+            Ev::Checked {
+                id: ID.into(),
+                reached: true,
+            },
+            t,
+        );
+        assert_eq!(fact(&cmds, "check"), Some(&json!("none")));
+        let cmds = p.handle(
+            Ev::Checked {
+                id: ID.into(),
+                reached: false,
+            },
+            t,
+        );
+        assert_eq!(fact(&cmds, "check"), Some(&json!("failed")));
+        let cmds = p.handle(Ev::Cleared { id: ID.into() }, t);
+        assert_eq!(fact(&cmds, "check"), Some(&Value::Null));
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Launch { .. })), 1);
+        assert_eq!(p.state(ID), Some(State::Starting));
+        // Not withdrawn: a check does nothing.
+        assert!(p.handle(Ev::Check { id: ID.into() }, t).is_empty());
+    }
+
+    /// Go back: only with a kept version that isn't withdrawn; a rollback, then a start.
+    #[test]
+    fn go_back_rolls_back_and_starts() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        running(&mut p, t, Some("0.4.2"));
+        p.handle(revoked(None), t);
+        let cmds = p.handle(Ev::GoBack { id: ID.into() }, t);
+        assert!(cmds.is_empty(), "no Go back without a version: {cmds:?}");
+        p.handle(revoked(Some("0.4.2")), t);
+        let cmds = p.handle(Ev::GoBack { id: ID.into() }, t);
+        let order: Vec<&Cmd> = cmds
+            .iter()
+            .filter(|c| matches!(c, Cmd::RollBack { .. } | Cmd::Launch { .. }))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                &Cmd::RollBack { id: ID.into() },
+                &Cmd::Launch { id: ID.into() }
+            ]
+        );
+        assert_eq!(p.withdrawn(ID), None);
+        assert!(p
+            .history(ID)
+            .iter()
+            .any(|(_, l)| l == "stopped: its publisher withdrew 0.5.0 (catalog revocation)"));
+    }
+
+    /// A restart that was waiting is called off, and the crash bar's fact goes.
+    #[test]
+    fn a_waiting_restart_is_called_off() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        running(&mut p, t, None);
+        p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 1,
+                code: 1,
+            },
+            t,
+        );
+        assert_eq!(p.state(ID), Some(State::Restarting));
+        let cmds = p.handle(revoked(None), t);
+        assert_eq!(fact(&cmds, "restart"), Some(&Value::Null));
+        assert_eq!(p.next_deadline(), None);
+        assert!(p.tick(t + Duration::from_secs(120)).is_empty());
+        assert_eq!(p.state(ID), Some(State::Revoked));
     }
 }

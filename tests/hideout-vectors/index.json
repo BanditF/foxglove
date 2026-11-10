@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.8",
+  "contract": "1.9",
   "reader_hub": "1.1",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -2819,6 +2819,25 @@
         ]
       }
     },
+    "transcripts/supervisor/state-revoked.json": {
+      "spec": [
+        "7.8",
+        "8.5",
+        "12.4"
+      ],
+      "note": "State revoked (v1.9): a catalog revoked the running version; the hub ended its leases and stopped it.",
+      "result": "valid",
+      "final": {
+        "state": "revoked",
+        "ui_name": "Withdrawn (\"<Module> <version> was withdrawn\")",
+        "ways_out": [
+          "Check for updates",
+          "Go back to <previous>",
+          "Turn off <Module>",
+          "Copy diagnostics"
+        ]
+      }
+    },
     "transcripts/supervisor/state-restarting.json": {
       "spec": [
         "7.8"
@@ -4569,7 +4588,7 @@
         "8.8"
       ],
       "result": "table",
-      "note": "module.<id>.restart {delay_s, crash, of} or null, and module.<id>.recovery start-again | defaults | go-back | last, module.<id>.previous and module.<id>.failed (v1.4, #983)."
+      "note": "module.<id>.restart {delay_s, crash, of} or null, and module.<id>.recovery start-again | defaults | go-back | last, module.<id>.previous and module.<id>.failed (v1.4, #983); module.<id>.revoked {version, reason} or null (v1.6) and module.<id>.check checking | none | failed | null (v1.9)."
     },
     "manifests/invalid/when-apps-running-with-exe.toml": {
       "spec": [

@@ -37,6 +37,24 @@ isn't needed. **Lab mode** loads them as they ship, only in a lab hub.
 - **The user's hub.** Lab mode is refused on the default folder, so the user's Hideout never
   loads `lab-modules`.
 
+## A withdrawn version in the lab (#1026)
+
+Lab modules have no catalog, so a catalog can't revoke one. Instead a lab hub reads
+`<config>\lab-withdrawn.json` (lab mode only, never in the user's hub):
+
+```json
+{ "org.foxglove.focus-timer": { "version": "0.1.0", "reason": "Please update to 0.1.1." } }
+```
+
+A lab module whose loaded version it names reads as withdrawn by its publisher (contract §7.8
+`revoked`, v1.9): the hub ends its leases with `"revoked"`, publishes `module.<id>.revoked`,
+stops it and shows the withdrawn card, the red marks, the tile and the tray line, with one
+notification per version (remembered in `<config>\run\withdrawn-notified.json`; delete that
+file to see the notification again). `hideout.log` says `lab: <id>: <version> reads as withdrawn
+(lab-withdrawn.json)`. **Check for updates** in a lab hub reads the file again: still named, it
+says "No new version yet"; taken out of the file (or the version changed), the module starts
+again. A normal hub has no catalog fetch yet, so its Check for updates says "Couldn't check".
+
 ## Pipe names: one set per hub folder (#1010)
 
 A lab hub and the user's hub can run side by side: every pipe and kernel object a hub names

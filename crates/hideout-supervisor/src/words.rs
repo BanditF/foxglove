@@ -27,6 +27,26 @@ pub const OPEN: &str = "Open";
 pub const TURN_ON: &str = "Turn on";
 pub const UPDATE_HIDEOUT: &str = "Update Hideout";
 
+/// A version its publisher withdrew (state `revoked`, §7.8 v1.9, docs/hideout-revoked-ux.md).
+/// The short name, for tooltips and the tray tile.
+pub const WITHDRAWN: &str = "Withdrawn";
+/// The withdrawn card's reason line and `module.<id>.reason` (no "for safety": Hideout doesn't
+/// know why).
+pub const WITHDRAWN_LINE: &str = "Its publisher withdrew this version, so Hideout stopped it.";
+/// The label before the publisher's own words on the card (and nowhere else).
+pub const PUBLISHERS_NOTE: &str = "Publisher's note:";
+pub const CHECK_FOR_UPDATES: &str = "Check for updates";
+/// The button while the check runs (disabled).
+pub const CHECKING: &str = "Checking\u{2026}";
+pub const NOTHING_NEWER: &str = "No new version yet. Checked just now.";
+pub const COULDNT_CHECK: &str = "Couldn't check. Try again later.";
+/// The tray tile's two lines.
+pub const TILE_WITHDRAWN: (&str, &str) = ("Version withdrawn", "by its publisher");
+/// The tab's state words (the strip's tooltip: "Art, withdrawn by its publisher").
+pub const WITHDRAWN_TAB: &str = "Withdrawn by its publisher";
+/// The longest publisher's note drawn on the card, in characters (decision 1, 11/10).
+pub const NOTE_MAX: usize = 160;
+
 /// The safe-mode banner on the Modules page (§7.10, UX plan "Safe mode and finding the
 /// culprit"): title, line, main button, second action.
 pub const SAFE_MODE: &str = "Safe mode";
@@ -165,6 +185,119 @@ pub fn couldnt_start(module: &str) -> (String, String, Vec<String>) {
     )
 }
 
+/// The withdrawn card's title: "<Module> <version> was withdrawn" (the version is in it: only
+/// that version is).
+pub fn withdrawn_title(module: &str, version: &str) -> String {
+    format!("{module} {version} was withdrawn")
+}
+
+/// The Modules row's state words: "Withdrawn · 0.5.0".
+pub fn withdrawn_row(version: &str) -> String {
+    format!("{WITHDRAWN} \u{b7} {version}")
+}
+
+/// A withdrawn module after Turn off: "Off · 0.5.0 was withdrawn" (row and Off card).
+pub fn off_withdrawn(version: &str) -> String {
+    format!("Off \u{b7} {version} was withdrawn")
+}
+
+/// The red mark's tooltip and accessible name: "Art, withdrawn by its publisher".
+pub fn withdrawn_mark(module: &str) -> String {
+    row_label(module, WITHDRAWN_TAB)
+}
+
+/// The card's status line while Check for updates runs.
+pub fn checking_source(module: &str) -> String {
+    format!("Checking {module}'s source\u{2026}")
+}
+
+/// The one polite announcement when the state arrives with the page on screen. The note is
+/// never in it.
+pub fn withdrawn_announcement(module: &str, version: &str) -> String {
+    format!("{module} {version} was withdrawn by its publisher and stopped")
+}
+
+/// The tray menu lines for a withdrawn module: (status, action).
+pub fn withdrawn_tray_lines(module: &str) -> (String, String) {
+    (
+        format!("{module} was withdrawn"),
+        format!("Open {module} to check for updates"),
+    )
+}
+
+/// The notification, once per withdrawn version: title, body, buttons. The publisher's note is
+/// never in it (outside the window, no label, no cap).
+pub fn withdrawn_notification(module: &str, version: &str) -> (String, String, Vec<String>) {
+    (
+        withdrawn_title(module, version),
+        "Its publisher withdrew it, so Hideout stopped it.".into(),
+        vec![CHECK_FOR_UPDATES.into(), open_module(module)],
+    )
+}
+
+/// Characters dropped from a publisher's note: C0 and C1 controls, bidi marks, overrides and
+/// isolates, zero-width characters and other invisible format characters. Whitespace (tabs,
+/// newlines) is not dropped here: [`clean_note`] folds it to one space.
+pub fn hidden_char(c: char) -> bool {
+    if c.is_whitespace() {
+        return false;
+    }
+    matches!(c as u32,
+        0x00..=0x1F | 0x7F..=0x9F // C0, DEL, C1
+        | 0x00AD // soft hyphen
+        | 0x061C // Arabic letter mark
+        | 0x180E // Mongolian vowel separator
+        | 0x200B..=0x200F // zero-width space and joiners, LRM, RLM
+        | 0x202A..=0x202E // bidi embeddings and overrides
+        | 0x2060..=0x2064 // word joiner, invisible operators
+        | 0x2066..=0x206F // bidi isolates, deprecated format characters
+        | 0xFEFF // zero-width no-break space
+        | 0xFFF9..=0xFFFB // interlinear annotation
+        | 0xE0000..=0xE007F) // tags
+}
+
+/// The publisher's note as the card draws it (decision 1, 11/10): plain text, control and
+/// format characters dropped, every run of whitespace one space, the ends trimmed, and at most
+/// [`NOTE_MAX`] characters, cut on a whole character with "…". Empty: the card leaves the note
+/// lines out.
+pub fn clean_note(raw: &str) -> String {
+    let mut out = String::new();
+    let mut space = false;
+    for c in raw.chars().filter(|c| !hidden_char(*c)) {
+        if c.is_whitespace() {
+            space = !out.is_empty();
+            continue;
+        }
+        if space {
+            out.push(' ');
+            space = false;
+        }
+        out.push(c);
+    }
+    if out.chars().count() <= NOTE_MAX {
+        return out;
+    }
+    let mut cut: String = out.chars().take(NOTE_MAX - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('\u{2026}');
+    cut
+}
+
+/// The full note for Copy diagnostics: as written, with control and format characters (and
+/// whitespace other than a space) escaped as `\u{202e}`, so the text can't reorder or hide
+/// itself.
+pub fn escape_note(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if hidden_char(c) || (c.is_whitespace() && c != ' ') {
+                format!("\\u{{{:x}}}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Which step of the recovery ladder the stopped card offers (UX plan, one action per step).
 /// Published as the fact `module.<id>.recovery`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,6 +364,12 @@ impl Recovery {
 /// "Never shown" (UX plan): none of these may reach a drawn string.
 pub const NEVER_SHOWN: &[&str] = &[
     "crash-stopped",
+    "revoked",
+    "trust.",
+    "lease",
+    "catalog",
+    "seq",
+    "signature",
     "install-failed",
     "rpc.",
     "frame-too-large",
@@ -250,7 +389,19 @@ pub fn every_string() -> Vec<String> {
     let (nt, nb, na) = stopped_notification("Art");
     let (rt, rb) = rollback("Art", "0.4.2", "0.5.0");
     let (ct, cb, ca) = couldnt_start("Art");
+    let (wt, wm) = withdrawn_tray_lines("Art");
+    let (wnt, wnb, wna) = withdrawn_notification("Art", "0.5.0");
     let mut v = vec![
+        withdrawn_title("Art", "0.5.0"),
+        withdrawn_row("0.5.0"),
+        off_withdrawn("0.5.0"),
+        withdrawn_mark("Art"),
+        checking_source("Art"),
+        withdrawn_announcement("Art", "0.5.0"),
+        wt,
+        wm,
+        wnt,
+        wnb,
         a,
         b,
         restarting_row(4, 2),
@@ -275,6 +426,7 @@ pub fn every_string() -> Vec<String> {
     ];
     v.extend(na);
     v.extend(ca);
+    v.extend(wna);
     for r in [
         Recovery::StartAgain,
         Recovery::Defaults,
@@ -308,6 +460,16 @@ pub fn every_string() -> Vec<String> {
         FIND_CULPRIT,
         COMES_LATER,
         SAFE_MODE_TIP,
+        WITHDRAWN,
+        WITHDRAWN_LINE,
+        PUBLISHERS_NOTE,
+        CHECK_FOR_UPDATES,
+        CHECKING,
+        NOTHING_NEWER,
+        COULDNT_CHECK,
+        TILE_WITHDRAWN.0,
+        TILE_WITHDRAWN.1,
+        WITHDRAWN_TAB,
     ] {
         v.push(s.into());
     }
@@ -390,6 +552,65 @@ mod tests {
         );
         assert_eq!(Recovery::Last.button("Art", None), "Turn off Art");
         assert_eq!(Recovery::Last.line("Art", None), None);
+    }
+
+    /// The withdrawn strings (docs/hideout-revoked-ux.md, decided 11/10).
+    #[test]
+    fn withdrawn_wording_matches_the_ux_plan() {
+        assert_eq!(withdrawn_title("Art", "0.5.0"), "Art 0.5.0 was withdrawn");
+        assert_eq!(
+            WITHDRAWN_LINE,
+            "Its publisher withdrew this version, so Hideout stopped it."
+        );
+        assert!(!WITHDRAWN_LINE.contains("safety"));
+        assert_eq!(withdrawn_row("0.5.0"), "Withdrawn \u{b7} 0.5.0");
+        assert_eq!(off_withdrawn("0.5.0"), "Off \u{b7} 0.5.0 was withdrawn");
+        assert_eq!(withdrawn_mark("Art"), "Art, withdrawn by its publisher");
+        assert_eq!(
+            withdrawn_tray_lines("Art"),
+            (
+                "Art was withdrawn".to_string(),
+                "Open Art to check for updates".to_string()
+            )
+        );
+        assert_eq!(
+            withdrawn_notification("Art", "0.5.0"),
+            (
+                "Art 0.5.0 was withdrawn".to_string(),
+                "Its publisher withdrew it, so Hideout stopped it.".to_string(),
+                vec!["Check for updates".to_string(), "Open Art".into()]
+            )
+        );
+        assert_eq!(checking_source("Art"), "Checking Art's source\u{2026}");
+    }
+
+    /// Decision 1: the note is cleaned and capped at 160 characters.
+    #[test]
+    fn the_publishers_note_is_cleaned_and_capped() {
+        // A bidi override, a newline, a tab, zero-width characters, a C1 control.
+        let raw = "  Please\u{202e}draw\u{202c} update\n\tto 0.5.1.\u{200b}\u{feff} \u{85}See https://x.test  ";
+        assert_eq!(
+            clean_note(raw),
+            "Pleasedraw update to 0.5.1. See https://x.test"
+        );
+        assert_eq!(clean_note(""), "");
+        assert_eq!(clean_note("\u{2066}\u{2069}\n \u{200d}"), "");
+        // 300 characters: at most 160, ending in the ellipsis, cut on a whole character.
+        let long: String = "\u{e9}a".repeat(150);
+        let c = clean_note(&long);
+        assert_eq!(c.chars().count(), NOTE_MAX);
+        assert!(c.ends_with('\u{2026}'));
+        let words = "word ".repeat(60);
+        let c = clean_note(&words);
+        assert!(
+            c.chars().count() <= NOTE_MAX && c.ends_with("word\u{2026}"),
+            "{c:?}"
+        );
+        // Exactly 160 stays whole.
+        let exact = "x".repeat(NOTE_MAX);
+        assert_eq!(clean_note(&exact), exact);
+        // Copy diagnostics keeps every character, escaped.
+        assert_eq!(escape_note("a\u{202e}b\nc d"), "a\\u{202e}b\\u{a}c d");
     }
 
     #[test]

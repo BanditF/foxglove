@@ -49,6 +49,9 @@ pub struct Input {
     pub hub_under_profile: Option<String>,
     /// `Windows 11 Pro 25H2 (build 26300.1234)`.
     pub windows: Option<String>,
+    /// A withdrawn version (state `revoked`, #1026): one `(label, value)` line each, already in
+    /// plain text (the publisher's note escaped, `words::escape_note`).
+    pub withdrawn: Vec<(String, String)>,
 }
 
 /// A name hidden as a whole word: not inside a longer word. `in_paths` (a short user name):
@@ -109,6 +112,12 @@ pub fn report(i: &Input) -> String {
         &i.crashes_in_window.to_string(),
     );
     line(&mut head, "Crash stops this sign-in", &i.stops.to_string());
+    if !i.withdrawn.is_empty() {
+        head.push_str("Withdrawn by its publisher:\n");
+        for (k, v) in &i.withdrawn {
+            line(&mut head, &format!("  {k}"), v);
+        }
+    }
     if let Some(p) = i.pid {
         line(&mut head, "Pid", &p.to_string());
     }
@@ -498,6 +507,7 @@ mod tests {
             }],
             hub_under_profile: Some("AppData\\Local\\Hideout".into()),
             windows: Some("Windows 11 Pro 25H2 (build 26300.1)".into()),
+            withdrawn: Vec::new(),
         }
     }
 

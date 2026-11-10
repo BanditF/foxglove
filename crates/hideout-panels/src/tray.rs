@@ -477,12 +477,14 @@ fn tile_ui_keyed(
     };
     let current = fact_state.clone().or(greyed.clone());
     let stopped = matches!(current.as_deref(), Some("crash-stopped" | "crash-looped"));
+    // A version its publisher withdrew (#1026): red like a stopped one, Open only.
+    let withdrawn = current.as_deref() == Some("revoked");
     let needs_hub = current.as_deref() == Some("needs-hub");
     let unshowable = matches!(
         state,
         Some(PanelState::Broken | PanelState::Quarantined | PanelState::Rejected(_))
     ) || current.as_deref() == Some("quarantined");
-    let red = stopped || needs_hub || unshowable;
+    let red = stopped || withdrawn || needs_hub || unshowable;
     let danger = ui.visuals().error_fg_color;
     let dark = ui.visuals().dark_mode;
     let amber = rgb(tone_rgb("attention", dark).unwrap_or((0xF5, 0xC4, 0x51)));
@@ -542,6 +544,15 @@ fn tile_ui_keyed(
                     }
                 });
             });
+            if withdrawn {
+                // The tile never carries the publisher's note (too small for its label).
+                let (a, b) = ("Version withdrawn", "by its publisher");
+                spoken.push(format!("{a} {b}"));
+                ui.label(RichText::new(a).color(danger));
+                ui.label(RichText::new(b).color(danger));
+                report.open |= ui.button("Open").clicked();
+                return;
+            }
             if stopped || unshowable {
                 let words = if stopped {
                     crate::model::state_words("crash-stopped")

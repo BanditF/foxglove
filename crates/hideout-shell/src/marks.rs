@@ -16,6 +16,8 @@ pub const QUIET_LINE: &str = "No modules yet";
 enum Need {
     Stopped,
     NeedsHub,
+    /// Its publisher withdrew the running version (#1026).
+    Withdrawn,
 }
 
 /// The tray's view of the modules.
@@ -53,6 +55,7 @@ impl Marks {
         let need = match value.as_str() {
             Some("crash-stopped" | "crash-looped") => Some(Need::Stopped),
             Some("needs-hub") => Some(Need::NeedsHub),
+            Some("revoked") => Some(Need::Withdrawn),
             _ => None,
         };
         let at = self.needs.iter().position(|(i, _)| i == id);
@@ -86,6 +89,10 @@ impl Marks {
                     format!("{a} \u{b7} {b}")
                 }
                 Need::NeedsHub => format!("{name} needs a newer Hideout"),
+                Need::Withdrawn => {
+                    let (a, b) = hideout_supervisor::words::withdrawn_tray_lines(&name);
+                    format!("{a} \u{b7} {b}")
+                }
             };
             let tip = format!("{product} \u{b7} {line}");
             return (State::NeedsYou, line, tip);
@@ -216,6 +223,30 @@ mod tests {
         assert_eq!(m.look().0, State::NeedsYou);
         m.set_paused(true);
         assert_eq!(m.look().0, State::Paused);
+    }
+
+    /// A withdrawn version (#1026): the red dot and "Art was withdrawn", root cause only; the
+    /// dot goes once it is turned off or updated. The publisher's note never reaches the tray.
+    #[test]
+    fn a_withdrawn_module_puts_a_red_dot_on_the_tray() {
+        let mut m = Marks::default();
+        m.name("a.art", "Art");
+        let _ = m.take_change();
+        m.fact(
+            "module.a.art.revoked",
+            &json!({"version": "0.5.0", "reason": "secret note"}),
+        );
+        assert_eq!(m.take_change(), None, "the router's fact alone is no state");
+        m.fact("module.a.art.state", &json!("revoked"));
+        let (state, line, tip) = m.take_change().unwrap();
+        assert_eq!(state, State::NeedsYou);
+        assert_eq!(
+            line,
+            "Art was withdrawn \u{b7} Open Art to check for updates"
+        );
+        assert!(!tip.contains("secret") && !line.contains("secret"));
+        m.fact("module.a.art.state", &json!("off"));
+        assert_eq!(m.take_change().unwrap().0, State::Normal);
     }
 
     #[test]

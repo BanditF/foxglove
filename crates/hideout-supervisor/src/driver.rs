@@ -28,6 +28,58 @@ use crate::words;
 /// A notification for the shell (§7.7): title, body, buttons, the module it is about.
 pub type Notifier = Box<dyn FnMut(&str, &str, &str, &[String]) + Send>;
 
+/// Fetches the catalog of a module's source now and accepts it into the hub's trust store
+/// (§12.4): one fetch, no retry loop. `Err` says why the source couldn't be reached. The
+/// catalog fetch registers one; without one, Check for updates reads "Couldn't check" (#1026).
+pub type Refresh = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+/// What Copy diagnostics says about a withdrawal (#1026).
+#[derive(Clone, Debug, Default)]
+struct Withdrawal {
+    version: String,
+    reason: String,
+    source: String,
+    previous: Option<String>,
+    go_back: Option<String>,
+    at: Option<SystemTime>,
+    leases_ended: usize,
+    /// The last Check for updates: when, and what came of it.
+    last_check: Option<(SystemTime, String)>,
+}
+
+/// `run\withdrawn-notified.json`: the withdrawn versions already notified (`id@version`), so a
+/// later sign-in shows the card and the dot but no second notification (decision 3, 11/10).
+fn notified_path(home: &Path) -> PathBuf {
+    home.join("run").join("withdrawn-notified.json")
+}
+
+fn load_notified(home: &Path) -> BTreeSet<String> {
+    std::fs::read_to_string(notified_path(home))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| {
+            v["notified"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn save_notified(home: &Path, set: &BTreeSet<String>) -> std::io::Result<()> {
+    let path = notified_path(home);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(&serde_json::json!({ "notified": set }))?,
+    )?;
+    std::fs::rename(tmp, path)
+}
+
 /// What the launch check compares (§7.5): the pid the hub started or took back, and its exe.
 #[derive(Clone, Debug)]
 struct Expected {
@@ -127,7 +179,18 @@ struct Inner {
     nudge: Mutex<Sender<()>>,
     notifier: Mutex<Option<Notifier>>,
     caps: Caps,
+    refresh: Mutex<Option<Refresh>>,
+    withdrawals: Mutex<BTreeMap<String, Withdrawal>>,
+    /// Notifications made before the shell's notifier was set (a withdrawal found at hub start):
+    /// delivered by [`Supervisor::set_notifier`]. At most [`EARLY_NOTES`].
+    early: Mutex<Vec<EarlyNote>>,
 }
+
+/// A notification held for the notifier: module id, title, body, buttons.
+type EarlyNote = (String, String, String, Vec<String>);
+
+/// The most notifications held for a notifier that isn't set yet.
+const EARLY_NOTES: usize = 16;
 
 /// The supervisor. Cheap to clone; clones share everything.
 #[derive(Clone)]
@@ -191,13 +254,24 @@ impl Supervisor {
             nudge: Mutex::new(nudge),
             notifier: Mutex::new(None),
             caps: Caps::default(),
+            refresh: Mutex::new(None),
+            withdrawals: Mutex::new(BTreeMap::new()),
+            early: Mutex::new(Vec::new()),
         }));
         hub.act(|r| {
             r.set_launch_check(Box::new(move |id, pid| launch_check(&expected, id, pid)));
             Vec::new()
         });
         let safe = hub.read(|r| r.fact("hub.safe_mode").and_then(Value::as_bool)) == Some(true);
-        sup.0.policy.lock().unwrap().safe_mode = safe;
+        {
+            let mut p = sup.0.policy.lock().unwrap();
+            p.safe_mode = safe;
+            for k in load_notified(home) {
+                if let Some((id, v)) = k.split_once('@') {
+                    p.already_notified(id, v);
+                }
+            }
+        }
         let weak = Arc::downgrade(&sup.0);
         std::thread::Builder::new()
             .name("hideout-supervisor-timer".into())
@@ -329,7 +403,142 @@ impl Supervisor {
         for ev in adopted {
             sup.feed(ev);
         }
+        // A version withdrawn while the hub was away (or turned off, or waiting for a call):
+        // the card, the dot and the Off row say so from the start (§12.5, #1026).
+        sup.catalog_accepted();
         sup
+    }
+
+    /// Where Check for updates fetches a source's catalog (#1026). The catalog fetch sets it;
+    /// a lab hub sets one that re-reads `lab-withdrawn.json`.
+    pub fn set_refresh(&self, r: Refresh) {
+        *self.0.refresh.lock().unwrap() = Some(r);
+    }
+
+    /// An accepted catalog may have revoked or restored installed versions (§12.4): call after
+    /// every catalog the hub accepts, and once at start. A newly withdrawn version is stopped
+    /// (its leases end with `"revoked"` first) and reads Withdrawn; a version no longer
+    /// withdrawn (an update installed, the revocation gone) starts as usual.
+    pub fn catalog_accepted(&self) {
+        let reg = match Registry::open_from_env(&self.0.home) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("supervisor: registry not read for withdrawals ({e:?})");
+                return;
+            }
+        };
+        let known = self.0.policy.lock().unwrap().known();
+        for id in known {
+            let now = self
+                .0
+                .policy
+                .lock()
+                .unwrap()
+                .withdrawn(&id)
+                .map(String::from);
+            match reg.revocation_of(&id) {
+                Some(r) if now.as_deref() != Some(r.version.as_str()) => {
+                    self.withdraw(&reg, &id, r)
+                }
+                Some(_) => {}
+                None if now.is_some() => {
+                    log::info!("supervisor: {id}: no longer withdrawn");
+                    self.0.withdrawals.lock().unwrap().remove(&id);
+                    self.feed(Ev::Cleared { id });
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// Ends `id`'s leases with `"revoked"` and publishes `module.<id>.revoked` (the router),
+    /// then stops it (the policy, #1026).
+    fn withdraw(&self, reg: &Registry, id: &str, r: hideout_registry::Revoked) {
+        let go_back = reg.go_back_version(id);
+        let mut ended = 0;
+        self.0.hub.act(|rt| {
+            let out = rt.revoke(id, &r.version, &r.reason);
+            ended = out
+                .iter()
+                .filter(|o| matches!(o, Out::Send(_, m) if m["method"] == "lease.closed"))
+                .count();
+            out
+        });
+        let m = reg.inventory.modules.get(id);
+        log::warn!(
+            "supervisor: {id} {} was withdrawn by its publisher (source {}); stopping it, {ended} lease(s) ended",
+            r.version,
+            m.map_or("unknown", |m| m.source.as_str())
+        );
+        self.0.withdrawals.lock().unwrap().insert(
+            id.into(),
+            Withdrawal {
+                version: r.version.clone(),
+                reason: r.reason.clone(),
+                source: m.map(|m| m.source.clone()).unwrap_or_default(),
+                previous: m.and_then(|m| m.previous.clone()),
+                go_back: go_back.clone(),
+                at: Some(SystemTime::now()),
+                leases_ended: ended,
+                last_check: None,
+            },
+        );
+        self.feed(Ev::Revoked {
+            id: id.into(),
+            version: r.version,
+            go_back,
+        });
+    }
+
+    /// **Check for updates** on the withdrawn card, its notification and its Modules row:
+    /// fetches the source's catalog once, off the caller's thread, then answers on the card
+    /// (`module.<id>.check`, #1026).
+    pub fn check_for_updates(&self, id: &str) {
+        self.feed(Ev::Check { id: id.into() });
+    }
+
+    /// Runs one check (after [`Cmd::CheckUpdates`]): the refresh, then what it changed.
+    fn run_check(&self, id: &str) {
+        let refresh = self.0.refresh.lock().unwrap().clone();
+        let sup = self.clone();
+        let id = id.to_string();
+        let spawned = std::thread::Builder::new()
+            .name(format!("hideout-check-{id}"))
+            .spawn(move || {
+                let got = match refresh {
+                    Some(f) => f(&id),
+                    None => Err("no catalog fetch in this hub".into()),
+                };
+                let outcome = match &got {
+                    Ok(()) => {
+                        sup.catalog_accepted();
+                        let still = sup.0.policy.lock().unwrap().withdrawn(&id).is_some();
+                        if still {
+                            sup.feed(Ev::Checked {
+                                id: id.clone(),
+                                reached: true,
+                            });
+                            "nothing newer".to_string()
+                        } else {
+                            "found a version that isn't withdrawn".to_string()
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("supervisor: {id}: check for updates: {e}");
+                        sup.feed(Ev::Checked {
+                            id: id.clone(),
+                            reached: false,
+                        });
+                        format!("couldn't reach the source ({e})")
+                    }
+                };
+                if let Some(w) = sup.0.withdrawals.lock().unwrap().get_mut(&id) {
+                    w.last_check = Some((SystemTime::now(), outcome));
+                }
+            });
+        if let Err(e) = spawned {
+            log::warn!("supervisor: check for updates not started: {e}");
+        }
     }
 
     /// The pid of the module's live instance (started or taken back), if any.
@@ -337,9 +546,14 @@ impl Supervisor {
         self.0.live.lock().unwrap().get(id).map(|l| l.pid)
     }
 
-    /// Where the shell's notifications go (§7.7). Without one they are logged.
+    /// Where the shell's notifications go (§7.7). Those made before it was set (at hub start)
+    /// go to it now; without one they are logged.
     pub fn set_notifier(&self, n: Notifier) {
-        *self.0.notifier.lock().unwrap() = Some(n);
+        let mut slot = self.0.notifier.lock().unwrap();
+        let n = slot.insert(n);
+        for (id, title, body, actions) in std::mem::take(&mut *self.0.early.lock().unwrap()) {
+            n(&id, &title, &body, &actions);
+        }
     }
 
     /// What the router reported (the hub's events thread forwards every [`Out`] here).
@@ -393,6 +607,15 @@ impl Supervisor {
     /// on here: that dialog isn't built, so it answers why and the caller opens the module. In
     /// safe mode it is saved as on and not started ("On · not started in safe mode").
     pub fn turn_on(&self, id: &str) -> Result<(), String> {
+        // A withdrawn version is never turned on, however the ask came (#1026).
+        let withdrawn = Registry::open_from_env(&self.0.home)
+            .ok()
+            .and_then(|r| r.revocation_of(id));
+        if let Some(w) = withdrawn {
+            let e = format!("trust.revoked: {id}@{} was withdrawn", w.version);
+            log::warn!("supervisor: {id}: not turned on: {e}");
+            return Err(e);
+        }
         let saved = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
             .map_err(|e| format!("{e:?}"))
             .and_then(|mut r| {
@@ -517,6 +740,9 @@ impl Supervisor {
             });
         }
         i.windows = win::windows_version();
+        if let Some(w) = self.0.withdrawals.lock().unwrap().get(id) {
+            i.withdrawn = withdrawn_lines(w);
+        }
         report(&i)
     }
 
@@ -530,6 +756,15 @@ impl Supervisor {
         for c in cmds {
             match c {
                 Cmd::Launch { id } => {
+                    // The shallow verify refuses a revoked version (§12.5): it reads
+                    // Withdrawn, not Couldn't start.
+                    if let Some((reg, r)) = Registry::open_from_env(&self.0.home)
+                        .ok()
+                        .and_then(|reg| reg.revocation_of(&id).map(|r| (reg, r)))
+                    {
+                        self.withdraw(&reg, &id, r);
+                        continue;
+                    }
                     if let Err(reason) = self.launch(&id) {
                         log::warn!("supervisor: {id} not started: {reason}");
                         self.feed(Ev::LaunchFailed {
@@ -551,11 +786,25 @@ impl Supervisor {
                     actions,
                 } => {
                     log::info!("supervisor: notify {id}: {title} / {body}");
-                    if let Some(n) = self.0.notifier.lock().unwrap().as_mut() {
-                        n(&id, &title, &body, &actions);
+                    match self.0.notifier.lock().unwrap().as_mut() {
+                        Some(n) => n(&id, &title, &body, &actions),
+                        None => {
+                            let mut early = self.0.early.lock().unwrap();
+                            if early.len() < EARLY_NOTES {
+                                early.push((id, title, body, actions));
+                            }
+                        }
                     }
                 }
                 Cmd::ResetSettings { id } => self.reset_settings(&id),
+                Cmd::CheckUpdates { id } => self.run_check(&id),
+                Cmd::RememberNotified { id, version } => {
+                    let mut set = load_notified(&self.0.home);
+                    set.insert(format!("{id}@{version}"));
+                    if let Err(e) = save_notified(&self.0.home, &set) {
+                        log::warn!("supervisor: run\\withdrawn-notified.json not written: {e}");
+                    }
+                }
                 Cmd::RollBack { id } => {
                     let done = Registry::open_from_env(&self.0.home)
                         .map_err(|e| format!("{e:?}"))
@@ -763,6 +1012,51 @@ impl Supervisor {
             log::warn!("supervisor: run\\instances.json not written: {e}");
         }
     }
+}
+
+/// Copy diagnostics' withdrawn lines (#1026): ids and the note as written, escaped.
+fn withdrawn_lines(w: &Withdrawal) -> Vec<(String, String)> {
+    let at = |t: SystemTime| {
+        t.duration_since(UNIX_EPOCH)
+            .map(|d| format!("{} (unix s)", d.as_secs()))
+            .unwrap_or_default()
+    };
+    let mut v = vec![
+        ("state".into(), "revoked".into()),
+        ("withdrawn version".into(), w.version.clone()),
+        (
+            "previous version".into(),
+            match (&w.previous, &w.go_back) {
+                (None, _) => "none kept".into(),
+                (Some(p), Some(_)) => format!("{p} (not withdrawn; Go back offered)"),
+                (Some(p), None) => format!("{p} (withdrawn or its folder is gone; not offered)"),
+            },
+        ),
+        ("source".into(), w.source.clone()),
+        ("revocation action".into(), "revoke".into()),
+        (
+            "publisher's reason".into(),
+            if w.reason.is_empty() {
+                "(none given)".into()
+            } else {
+                format!("\"{}\"", words::escape_note(&w.reason))
+            },
+        ),
+        (
+            "leases ended with \"revoked\"".into(),
+            w.leases_ended.to_string(),
+        ),
+    ];
+    if let Some(t) = w.at {
+        v.push(("stopped at".into(), at(t)));
+    }
+    v.push((
+        "last check for updates".into(),
+        w.last_check
+            .as_ref()
+            .map_or("not yet".into(), |(t, o)| format!("{}: {o}", at(*t))),
+    ));
+    v
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {

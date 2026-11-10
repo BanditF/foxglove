@@ -264,7 +264,8 @@ pub enum Recovery {
 }
 
 /// Checks a value of a fact the hub's supervisor publishes (`module.<id>.restart`,
-/// `module.<id>.recovery`, `module.<id>.previous`, `module.<id>.failed`; spec v1.4). Other keys
+/// `module.<id>.recovery`, `module.<id>.previous`, `module.<id>.failed`; spec v1.4;
+/// `module.<id>.revoked`, v1.6, and `module.<id>.check`, v1.9). Other keys
 /// are not this check's: `Ok`. Also the app watch's facts (§4.6): `apps.seen.<name>` is `true`
 /// or `null`, `apps.running.<name>` (v1.7) is `true`, `false` or `null`, and `<name>` is one
 /// app label.
@@ -324,6 +325,36 @@ pub fn check_hub_fact(key: &str, value: &serde_json::Value) -> Result<(), String
             serde_json::Value::Null => Ok(()),
             serde_json::Value::String(v) if !v.is_empty() => Ok(()),
             _ => Err("module.<id>.previous is a version or null".into()),
+        };
+    }
+    if let Some(id) = rest.strip_suffix(".check") {
+        if id.is_empty() {
+            return Err("module.<id>.check needs an id".into());
+        }
+        return match value.as_str() {
+            _ if value.is_null() => Ok(()),
+            Some("checking" | "none" | "failed") => Ok(()),
+            _ => Err("module.<id>.check is \"checking\", \"none\", \"failed\" or null".into()),
+        };
+    }
+    if let Some(id) = rest.strip_suffix(".revoked") {
+        if id.is_empty() {
+            return Err("module.<id>.revoked needs an id".into());
+        }
+        if value.is_null() {
+            return Ok(());
+        }
+        let ok = value.as_object().is_some_and(|o| {
+            o.len() == 2
+                && o.get("version")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|v| !v.is_empty())
+                && o.get("reason").is_some_and(|r| r.is_string())
+        });
+        return if ok {
+            Ok(())
+        } else {
+            Err("module.<id>.revoked is {version, reason} or null".into())
         };
     }
     if let Some(id) = rest.strip_suffix(".failed") {

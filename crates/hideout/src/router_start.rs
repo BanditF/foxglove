@@ -45,6 +45,10 @@ impl hideout_shell::TabHooks for Hooks {
         self.0.turn_off(module);
     }
 
+    fn check_for_updates(&mut self, module: &str) {
+        self.0.check_for_updates(module);
+    }
+
     fn diagnostics(&mut self, module: &str) -> Option<String> {
         Some(self.0.diagnostics(module, env!("CARGO_PKG_VERSION")))
     }
@@ -56,6 +60,11 @@ impl hideout_shell::TabHooks for Hooks {
 pub fn on_toast(sup: &Supervisor, home: &Path, arg: &str) {
     match arg.split_once(':') {
         Some(("start-again", id)) => sup.start_again(id),
+        // The withdrawn notification (#1026): the check runs, and the page shows its result.
+        Some(("check-updates", id)) => {
+            sup.check_for_updates(id);
+            hideout_shell::open_module(id);
+        }
         Some(("open", id)) => hideout_shell::open_module(id),
         Some(("open-log", id)) => hideout_shell::open_module_log(home, id),
         _ => {}
@@ -66,13 +75,17 @@ pub fn on_toast(sup: &Supervisor, home: &Path, arg: &str) {
 /// <Module> (the stopped one), Open log (the rollback one); anything else (OK) closes it.
 pub fn toast_buttons(id: &str, actions: &[String]) -> Vec<(String, String)> {
     use hideout_supervisor::words;
-    let open = actions.first().map(|a| a == words::START_AGAIN) == Some(true);
+    let open = actions
+        .first()
+        .is_some_and(|a| a == words::START_AGAIN || a == words::CHECK_FOR_UPDATES);
     actions
         .iter()
         .enumerate()
         .map(|(i, label)| {
             let arg = if label == words::START_AGAIN {
                 format!("start-again:{id}")
+            } else if label == words::CHECK_FOR_UPDATES {
+                format!("check-updates:{id}")
             } else if label == words::OPEN_LOG {
                 format!("open-log:{id}")
             } else if i == 1 && open {
@@ -192,6 +205,15 @@ pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
     // wait in the channel until then.
     let sup = Supervisor::start(home, hub.clone());
     sup.set_notifier(notifier(sup.clone(), home));
+    // Check for updates (#1026): the catalog fetch isn't built yet, so a normal hub answers
+    // "Couldn't check". A lab hub's check re-reads lab-withdrawn.json (the registry reads it
+    // again on every open), the lab's stand-in for a fresh catalog.
+    if hideout_registry::lab::lab_mode_from_env(home).on() {
+        sup.set_refresh(std::sync::Arc::new(|id: &str| {
+            log::info!("lab: check for updates for {id}: lab-withdrawn.json read again");
+            Ok(())
+        }));
+    }
     let s = sup.clone();
     std::thread::Builder::new()
         .name("hideout-router-events".into())
@@ -218,6 +240,17 @@ mod tests {
             toast_buttons("m.art", &stopped),
             vec![
                 ("Start again".to_string(), "start-again:m.art".to_string()),
+                ("Open Art".into(), "open:m.art".into()),
+            ]
+        );
+        let (_, _, withdrawn) = words::withdrawn_notification("Art", "0.5.0");
+        assert_eq!(
+            toast_buttons("m.art", &withdrawn),
+            vec![
+                (
+                    "Check for updates".to_string(),
+                    "check-updates:m.art".to_string()
+                ),
                 ("Open Art".into(), "open:m.art".into()),
             ]
         );

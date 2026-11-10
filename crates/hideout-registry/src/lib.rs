@@ -141,6 +141,9 @@ pub struct Registry {
     pub lab: bool,
     /// One line per lab module folder: loaded, or why not. For the hub's log.
     pub lab_report: Vec<String>,
+    /// Lab mode only: `lab-withdrawn.json`, the lab's stand-in for a catalog revocation of a
+    /// lab module (#1026, [`lab::LAB_WITHDRAWN_FILE`]).
+    lab_withdrawn: BTreeMap<String, lab::LabWithdrawn>,
 }
 
 fn hash_files(dir: &Path) -> io::Result<BTreeMap<String, String>> {
@@ -178,6 +181,7 @@ impl Registry {
             legacy_api: foxglove_plugin_api::API_VERSION,
             lab: false,
             lab_report: Vec::new(),
+            lab_withdrawn: BTreeMap::new(),
         })
     }
 
@@ -200,6 +204,20 @@ impl Registry {
     /// root, catalogs, anchors, `seen`) is not read or written.
     pub fn load_lab(&mut self) {
         self.lab = true;
+        match lab::load_withdrawn(&self.home) {
+            Ok(w) => {
+                for (id, e) in &w {
+                    self.lab_report.push(format!(
+                        "{id}: {} reads as withdrawn (lab-withdrawn.json)",
+                        e.version
+                    ));
+                }
+                self.lab_withdrawn = w;
+            }
+            Err(e) => self
+                .lab_report
+                .push(format!("lab-withdrawn.json not read: {e}")),
+        }
         let base = LabMode::modules_dir(&self.home);
         let mut dirs: Vec<PathBuf> = match std::fs::read_dir(&base) {
             Ok(rd) => rd
@@ -533,6 +551,19 @@ impl Registry {
         if m.source == SIDELOAD || !home.join("modules").join(id).join(&prev).is_dir() {
             return Err(Failure::NotInstalled(format!("{id} {prev}")));
         }
+        // §7.4: a revoked version is never gone back to.
+        if self.trust.revocation(id, &prev).is_some() {
+            return Err(Error::new(
+                ErrorId::TrustRevoked,
+                format!("{id}@{prev} is revoked; not gone back to"),
+            )
+            .into());
+        }
+        let m = self
+            .inventory
+            .modules
+            .get_mut(id)
+            .ok_or_else(|| Failure::NotInstalled(id.into()))?;
         m.previous = Some(std::mem::replace(&mut m.version, prev.clone()));
         self.save_inventory()?;
         Ok(prev)
@@ -696,6 +727,54 @@ impl Registry {
         }
     }
 
+    /// The revocation of `id@version` (§12.4), if an accepted catalog of its source revoked it
+    /// (a yank is not one). Sideloads have no catalog and are never revoked; a lab module only
+    /// through the lab's `lab-withdrawn.json` (lab mode, #1026).
+    fn revocation_at(&self, id: &str, version: &str) -> Option<Revoked> {
+        let m = self.inventory.modules.get(id)?;
+        if m.source == LAB {
+            return self
+                .lab_withdrawn
+                .get(id)
+                .filter(|w| self.lab && w.version == version)
+                .map(|w| Revoked {
+                    id: id.into(),
+                    version: version.into(),
+                    reason: w.reason.clone(),
+                });
+        }
+        if m.source == SIDELOAD {
+            return None;
+        }
+        self.trust.revocation(id, version).map(|r| Revoked {
+            id: id.into(),
+            version: version.into(),
+            reason: r.reason.clone(),
+        })
+    }
+
+    /// The revocation of `id`'s installed version, running or not (#1026): the supervisor
+    /// stops it and won't start it (state `revoked`, §7.8 v1.9).
+    pub fn revocation_of(&self, id: &str) -> Option<Revoked> {
+        let v = &self.inventory.modules.get(id)?.version;
+        self.revocation_at(id, v)
+    }
+
+    /// The version a withdrawn module's card offers in "Go back to <version>" (#1026): the kept
+    /// previous version, when its folder is still there and it isn't revoked itself (a yanked
+    /// one still runs, §12.4). `None` for sideloads, which never roll back.
+    pub fn go_back_version(&self, id: &str) -> Option<String> {
+        let m = self.inventory.modules.get(id)?;
+        let prev = m.previous.clone()?;
+        if m.source == SIDELOAD || m.source == LAB {
+            return None;
+        }
+        if !self.home.join("modules").join(id).join(&prev).is_dir() {
+            return None;
+        }
+        self.revocation_at(id, &prev).is_none().then_some(prev)
+    }
+
     /// Running modules whose version a newly accepted catalog revoked: the hub stops them.
     pub fn revoked_running(&self) -> Vec<String> {
         self.revoked().into_iter().map(|r| r.id).collect()
@@ -707,19 +786,7 @@ impl Registry {
     pub fn revoked(&self) -> Vec<Revoked> {
         self.running
             .iter()
-            .filter(|(id, _)| {
-                self.inventory
-                    .modules
-                    .get(*id)
-                    .is_some_and(|m| m.source != SIDELOAD && m.source != LAB)
-            })
-            .filter_map(|(id, v)| {
-                self.trust.revocation(id, v).map(|r| Revoked {
-                    id: id.clone(),
-                    version: v.clone(),
-                    reason: r.reason.clone(),
-                })
-            })
+            .filter_map(|(id, v)| self.revocation_at(id, v))
             .collect()
     }
 }
