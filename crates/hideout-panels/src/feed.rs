@@ -8,7 +8,7 @@
 
 use crate::model::{Outgoing, PanelHost};
 use hideout_contract::error::Error;
-use hideout_contract::messages::{UiAssetPut, UiPatch};
+use hideout_contract::messages::{UiAssetPut, UiBadge, UiPatch, UiVisibility};
 use hideout_contract::panel::{Register, Rejected};
 use serde_json::Value;
 use std::sync::mpsc;
@@ -33,6 +33,8 @@ pub enum Inbound {
     },
     /// `ui.patch` (a notification).
     Patch { module: String, patch: UiPatch },
+    /// `ui.badge` (a notification, v1.3).
+    Badge { module: String, badge: UiBadge },
     /// `ui.asset.put` (a call: answer with [`Outbound::Asset`]).
     AssetPut {
         call: u64,
@@ -67,6 +69,11 @@ pub enum Outbound {
     },
     /// A `ui.event` call for the owning module only.
     Event(Outgoing),
+    /// A `ui.visibility` notification for the owning module (v1.3), sent on change only.
+    Visibility {
+        module: String,
+        visibility: UiVisibility,
+    },
 }
 
 /// What the router implements for the hub.
@@ -110,6 +117,10 @@ impl PanelHost {
                     }
                     changed = true;
                 }
+                Inbound::Badge { module, badge } => {
+                    self.set_badge(&module, &badge);
+                    changed = true;
+                }
                 Inbound::AssetPut {
                     call,
                     module,
@@ -136,6 +147,9 @@ impl PanelHost {
         }
         for e in self.take_events() {
             feed.send(Outbound::Event(e));
+        }
+        for (module, visibility) in self.take_visibility() {
+            feed.send(Outbound::Visibility { module, visibility });
         }
         (changed, self.flush(now))
     }

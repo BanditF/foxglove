@@ -197,3 +197,110 @@ fn re_registration_transcript_keeps_view_state() {
     assert_eq!(p.instance, "inst-2");
     assert_eq!(host.view(&key).unwrap().scroll["root"], [0.0, 120.0]);
 }
+
+const ART: &str = "foxglove.example-art";
+
+fn register_art(host: &mut PanelHost) -> PanelKey {
+    let s = steps("transcripts/ui/visibility.json");
+    let reg = s
+        .iter()
+        .find(|s| s["msg"]["method"] == "ui.register")
+        .unwrap();
+    let params: Register = serde_json::from_value(reg["msg"]["params"].clone()).unwrap();
+    assert!(host.register(ART, "Art", None, &params).is_empty());
+    PanelKey::new(ART, "art.page")
+}
+
+#[test]
+fn badge_transcript_is_stored_per_panel() {
+    use hideout_contract::messages::{Badge, UiBadge};
+    let mut host = PanelHost::default();
+    let key = register_art(&mut host);
+    let mut seen = Vec::new();
+    for s in steps("transcripts/ui/badge.json") {
+        if s["msg"]["method"] != "ui.badge" {
+            continue;
+        }
+        let b: UiBadge = serde_json::from_value(s["msg"]["params"].clone()).unwrap();
+        host.set_badge(ART, &b);
+        let p = host.panel(&key).unwrap();
+        seen.push((p.badge, p.badge_count));
+    }
+    // attention, count 120 (the hub shows 99+), dirty, none; the unregistered panel is ignored.
+    assert_eq!(
+        seen,
+        [
+            (Badge::Attention, None),
+            (Badge::Count, Some(120)),
+            (Badge::Dirty, None),
+            (Badge::None, None),
+            (Badge::None, None),
+        ]
+    );
+    // A new instance resets the badge; the same instance keeps it.
+    host.set_badge(
+        ART,
+        &UiBadge {
+            panel: "art.page".into(),
+            badge: Badge::Attention,
+            count: None,
+        },
+    );
+    let reg = steps("transcripts/ui/visibility.json")
+        .into_iter()
+        .find(|s| s["msg"]["method"] == "ui.register")
+        .unwrap();
+    let mut params: Register = serde_json::from_value(reg["msg"]["params"].clone()).unwrap();
+    host.register(ART, "Art", None, &params);
+    assert_eq!(host.panel(&key).unwrap().badge, Badge::Attention);
+    params.instance = "i-2".into();
+    host.register(ART, "Art", None, &params);
+    assert_eq!(host.panel(&key).unwrap().badge, Badge::None);
+}
+
+#[test]
+fn visibility_transcript_is_emitted_on_change_only() {
+    use hideout_contract::messages::Visibility;
+    let mut host = PanelHost::default();
+    let key = register_art(&mut host);
+    let mut got = Vec::new();
+    let mut step = |host: &mut PanelHost, shown: Option<&PanelKey>| {
+        host.set_shown(shown);
+        host.set_shown(shown); // unchanged: nothing more
+        got.extend(host.take_visibility());
+    };
+    step(&mut host, Some(&key)); // shown right after ui.register
+    step(&mut host, None); // the user switches to another tab
+    step(&mut host, Some(&key)); // and back
+    host.close_panel(&key); // the user closes the tab
+    step(&mut host, None);
+    let wire: Vec<(String, Visibility)> = got.into_iter().map(|(m, v)| (m, v.state)).collect();
+    let expected: Vec<Visibility> = steps("transcripts/ui/visibility.json")
+        .iter()
+        .filter(|s| s["msg"]["method"] == "ui.visibility")
+        .map(|s| serde_json::from_value(s["msg"]["params"]["state"].clone()).unwrap())
+        .collect();
+    assert_eq!(
+        wire,
+        expected
+            .into_iter()
+            .map(|v| (ART.to_string(), v))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn banners_use_plain_words_and_keep_ids_in_details() {
+    let mut host = PanelHost::default();
+    let key = register_art(&mut host);
+    host.module_gone(ART, "crash-looped");
+    let p = host.panel(&key).unwrap();
+    let line = p.state.banner("Art").unwrap();
+    assert_eq!(line, "Art: Stopped after repeated crashes.");
+    assert!(!line.contains("crash-looped"));
+    assert_eq!(p.state.details().unwrap(), "State: crash-looped");
+    let rejected = PanelState::Rejected("ui.limits".into());
+    let line = rejected.banner("Art").unwrap();
+    assert_eq!(line, "Art's page couldn't be shown.");
+    assert_eq!(rejected.details().unwrap(), "Error: ui.limits");
+}

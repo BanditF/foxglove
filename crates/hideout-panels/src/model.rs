@@ -6,7 +6,9 @@ use crate::assets::Assets;
 use crate::tree;
 use crate::view::ViewState;
 use hideout_contract::error::{Error, ErrorId};
-use hideout_contract::messages::{PatchOp, UiEvent, UiPatch};
+use hideout_contract::messages::{
+    Badge, PatchOp, UiBadge, UiEvent, UiPatch, UiVisibility, Visibility,
+};
 use hideout_contract::module::Slot;
 use hideout_contract::panel::{self, Limits, Node, Panel, Register, Rejected, LIMITS};
 use serde_json::Value;
@@ -51,6 +53,45 @@ pub enum PanelState {
     Quarantined,
 }
 
+/// The words a person reads for a module state id (section 7.8). Unknown ids read "Not running".
+pub fn state_words(state: &str) -> &'static str {
+    match state {
+        "starting" => "Starting",
+        "updating" => "Updating",
+        "restarting" => "Restarting",
+        "crash-stopped" | "crash-looped" => "Stopped after repeated crashes",
+        "waiting" => "Waiting for another module",
+        "needs-hub" => "Needs a newer Hideout",
+        "install-failed" => "Couldn't install or update",
+        "off" => "Off",
+        _ => "Not running",
+    }
+}
+
+impl PanelState {
+    /// The line a person reads above a panel that is not live, in plain words. No ids.
+    pub fn banner(&self, module_name: &str) -> Option<String> {
+        match self {
+            PanelState::Live => None,
+            PanelState::Greyed(state) => Some(format!("{module_name}: {}.", state_words(state))),
+            PanelState::Rejected(_) | PanelState::Broken | PanelState::Quarantined => {
+                Some(format!("{module_name}'s page couldn't be shown."))
+            }
+        }
+    }
+
+    /// The technical detail for a tooltip or "Copy diagnostics": the state or error id.
+    pub fn details(&self) -> Option<String> {
+        match self {
+            PanelState::Live => None,
+            PanelState::Greyed(state) => Some(format!("State: {state}")),
+            PanelState::Rejected(id) => Some(format!("Error: {id}")),
+            PanelState::Broken => Some("Drawing it failed".into()),
+            PanelState::Quarantined => Some("Quarantined after repeated hub restarts".into()),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct HostedPanel {
     pub key: PanelKey,
@@ -64,6 +105,10 @@ pub struct HostedPanel {
     pub state: PanelState,
     /// The reason of the last refused `ui.event`, shown until the next input (§5.3).
     pub notice: Option<String>,
+    /// The tab badge the module set with `ui.badge` (5.9); `none` until it does.
+    pub badge: Badge,
+    /// The count with `Badge::Count` (at least 1), else `None`.
+    pub badge_count: Option<u32>,
     gate: PatchGate,
 }
 
@@ -137,6 +182,10 @@ pub struct PanelHost {
     next_seq: u64,
     quarantined: HashSet<String>,
     pub(crate) breadcrumb: Option<PanelKey>,
+    /// The last `ui.visibility` queued per page panel (sent on change only, 5.9).
+    sent_visibility: HashMap<PanelKey, Visibility>,
+    closed: HashSet<PanelKey>,
+    visibility_out: Vec<(String, UiVisibility)>,
 }
 
 impl Default for PanelHost {
@@ -159,6 +208,9 @@ impl PanelHost {
             next_seq: 1,
             quarantined: HashSet::new(),
             breadcrumb: None,
+            sent_visibility: HashMap::new(),
+            closed: HashSet::new(),
+            visibility_out: Vec::new(),
         }
     }
 
@@ -203,8 +255,16 @@ impl PanelHost {
             .partition(|p| p.key.module == module);
         self.panels = rest;
         let mut fresh = Vec::new();
+        // A new instance starts with no badge and a fresh `ui.visibility` (5.9).
+        self.sent_visibility.retain(|k, _| k.module != module);
+        self.closed.retain(|k| k.module != module);
         for p in accepted {
             let key = PanelKey::new(module, &p.id);
+            let kept = old
+                .iter()
+                .find(|o| o.key == key && o.instance == params.instance && o.slot == p.slot);
+            let (badge, badge_count) =
+                kept.map_or((Badge::None, None), |o| (o.badge, o.badge_count));
             self.views.entry(key.clone()).or_default().rebuilt(&p.tree);
             fresh.push(HostedPanel {
                 key,
@@ -220,6 +280,8 @@ impl PanelHost {
                     PanelState::Live
                 },
                 notice: None,
+                badge,
+                badge_count,
                 gate: PatchGate::default(),
             });
         }
@@ -252,6 +314,8 @@ impl PanelHost {
                 tree: prior.map_or_else(empty_tree, |o| o.tree.clone()),
                 state: PanelState::Rejected(r.error.clone()),
                 notice: None,
+                badge: Badge::None,
+                badge_count: None,
                 gate: PatchGate::default(),
             });
         }
@@ -331,6 +395,74 @@ impl PanelHost {
             p.gate.queued.clear();
         }
         self.forget_pending(module);
+    }
+
+    /// `ui.badge` from `module` (5.9). A badge for a panel the module didn't register, or for a
+    /// slot other than `page`, is ignored and logged.
+    pub fn set_badge(&mut self, module: &str, b: &UiBadge) {
+        let Some(p) = self
+            .panels
+            .iter_mut()
+            .find(|p| p.key.module == module && p.key.panel == b.panel && p.slot == Slot::Page)
+        else {
+            log::warn!(
+                "{module}: ui.badge for {} ignored: not a page panel",
+                b.panel
+            );
+            return;
+        };
+        match (b.badge, b.count) {
+            (Badge::Count, Some(n)) if n >= 1 => {
+                p.badge = Badge::Count;
+                p.badge_count = Some(n);
+            }
+            (Badge::Count, _) => log::warn!("{module}: ui.badge count without a count ignored"),
+            (other, _) => {
+                p.badge = other;
+                p.badge_count = None;
+            }
+        }
+    }
+
+    /// The content area changed: `shown` is the page panel on screen, if any. Every other page
+    /// panel is `hidden` (5.9). Queues a `ui.visibility` for each panel whose state changed.
+    pub fn set_shown(&mut self, shown: Option<&PanelKey>) {
+        let mut out = Vec::new();
+        for p in self.panels.iter().filter(|p| p.slot == Slot::Page) {
+            let want = if self.closed.contains(&p.key) {
+                Visibility::Closed
+            } else if shown == Some(&p.key) {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+            if self.sent_visibility.get(&p.key) != Some(&want) {
+                self.sent_visibility.insert(p.key.clone(), want);
+                out.push((
+                    p.key.module.clone(),
+                    UiVisibility {
+                        panel: p.key.panel.clone(),
+                        state: want,
+                    },
+                ));
+            }
+        }
+        self.visibility_out.extend(out);
+    }
+
+    /// The user closed the panel's tab: it reads `closed` until it is opened again.
+    pub fn close_panel(&mut self, key: &PanelKey) {
+        self.closed.insert(key.clone());
+    }
+
+    /// Opening a panel again (from the sidebar) clears `closed`.
+    pub fn reopen_panel(&mut self, key: &PanelKey) {
+        self.closed.remove(key);
+    }
+
+    /// The `ui.visibility` notifications to send: the owning module and the message.
+    pub fn take_visibility(&mut self) -> Vec<(String, UiVisibility)> {
+        std::mem::take(&mut self.visibility_out)
     }
 
     /// Starts `module`'s panels quarantined (§5.5) until [`PanelHost::release`].

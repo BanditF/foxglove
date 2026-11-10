@@ -96,6 +96,18 @@ pub fn nav_label(t: &Tokens, selected: bool) -> Rgb {
     }
 }
 
+/// The label colour of a palette row. A selected row sits on the accent fill, so its label is
+/// `on_accent` whether or not the entry can run; an unavailable row that is not selected is muted.
+pub fn palette_label(t: &Tokens, selected: bool, unavailable: bool) -> Rgb {
+    if selected {
+        t.on_accent
+    } else if unavailable {
+        t.text_muted
+    } else {
+        t.text
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +123,24 @@ mod tests {
                 contrast(nav_label(&t, false), nav_fill(&t, false)) >= 4.5,
                 "{t:?} unselected"
             );
+        }
+    }
+
+    #[test]
+    fn every_palette_label_reads_on_its_fill() {
+        for t in [LIGHT, DARK] {
+            for selected in [false, true] {
+                for unavailable in [false, true] {
+                    // The row's fill: the accent when selected, else the modal's surface.
+                    let fill = if selected { t.accent } else { t.surface };
+                    let label = palette_label(&t, selected, unavailable);
+                    assert!(
+                        contrast(label, fill) >= 4.5,
+                        "{t:?} selected={selected} unavailable={unavailable}: {:.2}",
+                        contrast(label, fill)
+                    );
+                }
+            }
         }
     }
 

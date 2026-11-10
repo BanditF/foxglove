@@ -364,6 +364,9 @@ impl Hub {
                         egui::Button::selectable(selected, text),
                     );
                     if resp.clicked() {
+                        if let Current::Panel(key) = &target {
+                            self.panels.reopen_panel(key);
+                        }
                         self.current = target;
                     }
                 }
@@ -452,12 +455,17 @@ impl Hub {
                 ui.label(egui::RichText::new(msg).color(c(t.text_muted)));
             }
             for (i, e) in matches.iter().enumerate() {
-                let mut text = egui::RichText::new(&e.label);
-                if let Some(why) = &e.unavailable {
-                    text =
-                        egui::RichText::new(format!("{}  ({why})", e.label)).color(c(t.text_muted));
-                }
-                ui.add(egui::Button::selectable(i == self.palette.selected, text));
+                let selected = i == self.palette.selected;
+                let shown = match &e.unavailable {
+                    Some(why) => format!("{}  ({why})", e.label),
+                    None => e.label.clone(),
+                };
+                let text = egui::RichText::new(shown).color(c(theme::palette_label(
+                    t,
+                    selected,
+                    e.unavailable.is_some(),
+                )));
+                ui.add(egui::Button::selectable(selected, text));
             }
         });
         if esc || modal.should_close() {
@@ -505,9 +513,18 @@ impl eframe::App for Hub {
                     }
                 }
                 // Input from the panel goes out on this frame, not the next one.
+                // So does a change of what the content area shows (ui.visibility, 5.9).
+                let shown = match &self.current {
+                    Current::Panel(key) => Some(key),
+                    Current::Page(_) => None,
+                };
+                self.panels.set_shown(shown);
                 if let Some(feed) = self.feed.as_mut() {
                     for e in self.panels.take_events() {
                         feed.send(hideout_panels::Outbound::Event(e));
+                    }
+                    for (module, visibility) in self.panels.take_visibility() {
+                        feed.send(hideout_panels::Outbound::Visibility { module, visibility });
                     }
                 }
             });

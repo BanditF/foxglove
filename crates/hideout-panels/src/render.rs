@@ -125,19 +125,12 @@ fn text_of(v: &Value) -> String {
 }
 
 fn draw_panel(ui: &mut Ui, panel: &mut HostedPanel, d: &mut Draw) {
-    let banner = match &panel.state {
-        PanelState::Live => None,
-        PanelState::Greyed(state) => Some(format!("{} is {state}.", panel.module_name)),
-        PanelState::Rejected(id) => Some(format!(
-            "{}'s page couldn't be shown ({id}).",
-            panel.module_name
-        )),
-        PanelState::Broken | PanelState::Quarantined => {
-            Some(format!("{}'s page couldn't be shown.", panel.module_name))
+    if let Some(b) = panel.state.banner(&panel.module_name) {
+        let label = ui.label(RichText::new(b).color(ui.visuals().warn_fg_color));
+        // The state or error id lives in the tooltip, not in the line a person reads.
+        if let Some(d) = panel.state.details() {
+            label.on_hover_text(d);
         }
-    };
-    if let Some(b) = &banner {
-        ui.label(RichText::new(b).color(ui.visuals().warn_fg_color));
     }
     if let Some(n) = &panel.notice {
         ui.label(RichText::new(n).color(ui.visuals().error_fg_color));
