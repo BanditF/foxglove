@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.1'
-SPEC = '1.5'
+SPEC = '1.6'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -80,6 +80,63 @@ class Config(Model):
     FIELDS: ClassVar[dict] = {
         'sources': ('sources', ('list', ('ref', 'Source'))),
         'trust': ('trust', ('ref', 'Trust')),
+    }
+
+
+@dataclass(kw_only=True)
+class PageWindow(Model):
+    """What the hub keeps for one page (`[windows."<module id>/<panel id>"]`, spec v1.6)."""
+
+    keep_on_top: bool = False
+    places: list[Place] = field(default_factory=lambda: [])
+    popped_out: bool = False
+
+    FIELDS: ClassVar[dict] = {
+        'keep_on_top': ('keep_on_top', 'bool'),
+        'places': ('places', ('list', ('ref', 'Place'))),
+        'popped_out': ('popped_out', 'bool'),
+    }
+    CLOSED: ClassVar[bool] = True
+
+
+@dataclass(kw_only=True)
+class Place(Model):
+    """One saved place of a pop-out: where it was in one screen layout (§2.5, spec v1.6)."""
+
+    height: float
+    layout: str
+    saved: str
+    screen: str
+    state: WindowState
+    width: float
+    x: float
+    y: float
+
+    FIELDS: ClassVar[dict] = {
+        'height': ('height', 'num'),
+        'layout': ('layout', 'str'),
+        'saved': ('saved', 'str'),
+        'screen': ('screen', 'str'),
+        'state': ('state', ('ref', 'WindowState')),
+        'width': ('width', 'num'),
+        'x': ('x', 'num'),
+        'y': ('y', 'num'),
+    }
+    CLOSED: ClassVar[bool] = True
+
+
+WindowState = Any
+WINDOWSTATE_SPEC = 'any'
+
+
+@dataclass(kw_only=True)
+class Windows(Model):
+    """`hideout.toml`'s `[windows]` table (§2.5, §7.3, spec v1.6): keys are `<module id>/<panel id>`."""
+
+    windows: dict[str, PageWindow] = field(default_factory=lambda: {})
+
+    FIELDS: ClassVar[dict] = {
+        'windows': ('windows', ('map', ('ref', 'PageWindow'))),
     }
 
 
@@ -766,6 +823,7 @@ class Rejected(Model):
 # The schema's top-level types by their schema key.
 TYPES = {
     'config.Config': Config,
+    'config.Windows': Windows,
     'legacy.Manifest': Manifest,
     'messages.ActionInvoke': ActionInvoke,
     'messages.ChannelCreate': ChannelCreate,

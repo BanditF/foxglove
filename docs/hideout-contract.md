@@ -1,13 +1,29 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.5** (v1.4 plus the live stream rules of #976; additive, no
-breaking change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one
-"(v1.3)", every v1.4 one "(v1.4)", every v1.5 one "(v1.5)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+Status: spec, contract version **1.6** (v1.5 plus the pop-out window rules of H2.11, #998;
+additive, no breaking change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)",
+every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5 one "(v1.5)", every v1.6 one
+"(v1.6)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.6** (#998): the seven pop-out spec gaps of the pop-outs plan
+  ([hideout-popouts-ux.md](hideout-popouts-ux.md)), for hub windows (§2.5). Closing a pop-out
+  (×, Ctrl+W, Alt+F4) docks the page back quietly: it is never `closed` and never asks; only
+  Close page sends `closed` and asks about unsaved work (§2.5, §5.9). A pop-out on screen stays
+  `visible` while the hub's main window is in the tray; only the main window's tabs go `hidden`
+  (§5.9). Pop-outs are unowned top-level windows (§2.5). They come back at once after a hub
+  restart or when the user opens Hideout; a start in the tray at sign-in waits for the user's
+  first open (§2.5). Placement is kept per page and per screen layout, at most 4 layouts per
+  page, a screen known by its display target path (§2.5), in a new hub-owned `hideout.toml`
+  table, `[windows]` (§2.3, §7.3; crate `config::Windows`, schema, vectors `config/windows.*`)
+  with the id `config.windows` (§15), which drops one page's entry and never the file. Docking
+  by dragging a pop-out onto the tab strip is optional (MAY; it may ship later). Module windows
+  keep the title, AUMID and placement rules themselves, under their `data\`; Keep on top
+  is the hub's, for pop-outs only (§2.5, §5.7). A ↗ Pop out button for the active tab is named as
+  one way to pop out (hub UI, no wire). No message, no manifest key: `hub` stays 1.1 (§8.7).
 - **1.5** (#976): the nine stream spec gaps of the live streams plan
   ([hideout-streams-ux.md](hideout-streams-ux.md)), for panel streams (§5.4). Panels (§5.2): a
   `canvas` declares its unit size (`width`, `height`) and an `image` its `aspect` (and optionally
@@ -148,7 +164,8 @@ The hub MUST NOT contain:
 
 ```
 %LOCALAPPDATA%\Hideout\
-  hideout.toml            the hub's own preferences (§7.3); written only by the hub
+  hideout.toml            the hub's own preferences (§7.3); written only by the hub;
+                          (v1.6) its [windows] table keeps pop-out placement (§2.5)
   inventory.json          machine state: install records and grants (§7.3); written only by hideout-core
   modules\<id>\<version>\ an installed version; manifest at the top
   modules\<id>\data\      the module's own state; writable; not hashed
@@ -160,6 +177,10 @@ The hub MUST NOT contain:
 %APPDATA%\Hideout\modules\<id>\settings\   the module's settings folder, assigned by the hub
 ```
 
+- (v1.6) Window placement: a pop-out's (popped out or not, Keep on top, its places per screen
+  layout) is `hideout.toml`'s `[windows]` table (§2.5, §7.3); the main window's is the hub's own
+  part of the same file. A module window's placement is the module's, under its `data\`
+  (§2.5).
 - `HIDEOUT_HOME`, when set, replaces `%LOCALAPPDATA%\Hideout` and `%APPDATA%\Hideout` (tests).
 - Every file and pipe here MUST have a current-user-only ACL.
 - A module's files outside `data\` and `settings\` are written only by `hideout-core`.
@@ -181,6 +202,8 @@ The hub MUST NOT contain:
 
 ### 2.5 Windows: pop-outs and module windows (UX19)
 
+UX, states and wording (v1.6): [hideout-popouts-ux.md](hideout-popouts-ux.md).
+
 Two kinds of window, one rule set:
 - **Pop-out:** any page drawn by the hub in a second viewport of the hub process (§5.7).
 - **Module window:** a top-level window a module draws itself (editors and wizards, §5.7).
@@ -188,13 +211,95 @@ Two kinds of window, one rule set:
 Both MUST:
 - use the title form `Hideout · <page or window name>`;
 - share Hideout's AUMID, so they group under one taskbar button;
-- remember their placement per monitor;
-- ask on close only if work would be lost.
+- remember their placement per screen layout (v1.6; was: per monitor), by the rules below;
+- ask on close only if work would be lost. (v1.6) For a pop-out that is never: closing it docks
+  the page back with its view state, so nothing is lost. Only Close page and Quit Hideout ask
+  (§5.9).
 
 Pop-outs also:
-- go back to their tab when closed (v1.3; was: the sidebar);
-- reopen at their places after a hub restart;
-- offer "Keep on top", off by default.
+- (v1.6) are **unowned top-level windows** of the hub process. No pop-out is owned by the main
+  window, so none minimises, hides or closes with it: with the main window in the tray, pop-outs
+  stay open and live (`visible`, §5.9). Quit Hideout closes every window, after one ask that
+  lists the pages with unsaved work.
+- open from a tab's menu (Pop out), Ctrl+Shift+O, (v1.6) a ↗ **Pop out** button at the tab
+  strip's right end for the active tab, the command palette, or dragging a tab out of the window.
+  Popping out leaves a placeholder tab; a page is in one place at a time.
+- go back to their tab when closed (v1.3; was: the sidebar). (v1.6) Spelt out:
+  - **×** (and Ctrl+W, Alt+F4): the page docks back **quietly**, at its placeholder's place, as
+    a tab that isn't activated. The main window is left as it is (in the tray stays in the tray,
+    behind stays behind). Not `closed`, no ask.
+  - **Dock back** (title row, More, window menu, Ctrl+Shift+O): the page lands at its
+    placeholder's place as the active tab, and the main window is shown and brought forward.
+  - **Close page** (More): the page closes as its tab would: `closed` (§5.9), after the ask if
+    its badge is `dirty`.
+- (v1.6, optional) MAY dock back when the user drags the window by its title row onto the main
+  window's tab strip, landing where the drop shows. This needs the hub to see one of its windows
+  move over another, which a viewport toolkit may not report; a hub without it leaves the drag
+  out (it may ship later), and Dock back and × are the required ways. A drop on another pop-out
+  does nothing (no tab groups).
+- reopen at their places (v1.6, when):
+  - after a hub restart (a crash, a GPU reset, §7.9): every page saved as popped out comes back
+    in its window at once, drawn from the cache with "Starting…" (§2.4);
+  - when the user opens Hideout (Start menu, tray): every saved pop-out comes back with it;
+  - when the hub starts in the tray at sign-in: pop-outs do **not** open. They wait as
+    placeholder tabs (`hidden`, §5.9) and come back the first time the user opens Hideout.
+- offer "Keep on top", off by default, remembered per page (v1.6). It never puts the window above
+  an exclusive full-screen app and never takes focus by itself.
+
+Module windows (v1.6) follow the title, AUMID and placement rules, but the module keeps them: it
+owns its window, saves its places by the rules below under its own `data\`, and restores
+them itself. The hub never moves another process's window and adds no Keep on top to it; a module
+MAY offer its own. The overlay (§5.7) is topmost by nature and keeps no placement beyond its own.
+
+**Placement (v1.6).**
+- **Screen.** A screen is known by its Windows display target path
+  (`DISPLAYCONFIG_TARGET_DEVICE_NAME.monitorDevicePath`), compared without case. It carries the
+  monitor's EDID maker and product code and its connector, so it stays the same when the screen
+  is unplugged and plugged back into the same port. When no connected screen has a saved path, a
+  connected screen whose EDID id (the path's second `#` part) matches, and is the only one that
+  does, counts as the same screen (the same monitor on another port).
+- **Screen layout.** The set of connected screens, each with its position and size in the
+  virtual desktop and its scaling. Its id is the first 16 lowercase hex digits of the SHA-256 of
+  one line per screen, `<path> <x> <y> <width> <height> <dpi>` (path lowercased; physical
+  pixels; effective DPI), sorted, joined by `\n`. Only the hub computes and compares it.
+- **Kept:** per page, popped out or not, Keep on top, and up to **4 places**, one per screen
+  layout. A place is the layout, the screen, the position from that screen's top-left and the
+  size, both in device-independent units (per-monitor DPI v2), the state (`normal`, `maximized`,
+  or `snapped` with the snapped rectangle) and when it was saved. A fifth layout drops the place
+  saved longest ago.
+- **Saved** when the window stops moving or resizing and when it closes; never during a drag,
+  never on a timer.
+- **Restoring:** the place for the current layout; else the newest place on a screen that is
+  connected now (from another layout); else the main window's screen, offset 32 px, the same size
+  in device-independent units, clamped fully on screen. The title row is always on a screen. A
+  pop-out is at least 360 × 240.
+- **Screen unplugged while open:** Windows moves the window; the hub saves a place for the new
+  layout and keeps the old one for when the screen is back.
+- **File:** `hideout.toml`'s `[windows]` table, one entry per page, keyed `<module id>/<panel
+  id>` (schema `config.Windows`, vectors `config/windows.*`):
+
+```toml
+[windows."example.chat/chat"]
+popped_out = true
+keep_on_top = false
+
+[[windows."example.chat/chat".places]]
+layout = "0123456789abcdef"
+screen = '\\?\DISPLAY#TST0001#5&1a2b3c&0&UID1#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+x = 32.0          # from the screen's top-left, device-independent units
+y = -8.0
+width = 640.0     # above 0
+height = 480.0
+state = "normal"  # normal | maximized | snapped
+saved = "2026-11-09T12:00:00Z"
+```
+
+  A reader checks each entry: a key that isn't `<module id>/<panel id>` (§4.3, §5.1), more than
+  4 places or two for one layout, a `layout` that isn't 16 lowercase hex digits, an empty
+  `screen`, a position that isn't a finite number, a size not above 0, an unknown `state` or key,
+  or a `saved` not in the form `YYYY-MM-DDTHH:MM:SSZ` is `config.windows` (§15). The hub then
+  drops that page's entry (it opens with the fallback place) and logs; it never refuses
+  `hideout.toml` or stops for it, and the sources reader (§13.4) passes over `[windows]`.
 
 ### 2.6 Command palette
 
@@ -686,7 +791,8 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
   module code, so it works for every language.
 - **Module window:** only where free-form editing can't be expressed as panels: the keymap editor,
   the LED wizard, the calibrator, and the overlay (a topmost click-through layer, not a page).
-  These are the module's own windows and follow §2.5.
+  These are the module's own windows and follow §2.5 (v1.6: the module keeps their placement;
+  Keep on top is for pop-outs).
 
 ### 5.8 Vulpes in the hub (pick C)
 
@@ -712,27 +818,35 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 - **Badge:** `ui.badge {panel, badge, count?}` (notification, M → H) sets the tab's badge:
   - `none`: no badge (the default);
   - `attention`: a dot, "something new wants a look";
-  - `dirty`: unsaved work. Closing the tab, its pop-out, or the hub window asks first (§2.5);
+  - `dirty`: unsaved work. Closing the tab, Close page, or Quit Hideout asks first (§2.5).
+    (v1.6; was: closing its pop-out too) Closing a pop-out docks the page back and never asks;
   - `count` with `count` ≥ 1: a number; the hub shows `99+` above 99.
   A new `ui.register` from a new instance resets the badge to `none`. A badge for a panel the
   module didn't register, or for a slot other than `page`, is ignored and logged. Badges follow the
   patch rate (§5.3). The hub may also show the badge on the panel's sidebar entry.
 - **Visibility:** `ui.visibility {panel, state}` (notification, H → M), sent after `ui.register`
   and then only on change:
-  - `visible`: on screen (the active tab, or a pop-out that isn't minimised);
-  - `hidden`: still open but not on screen (a background tab, a minimised window, the hub hidden
-    in the tray). The hub has closed the panel's streams (§5.4) and keeps what they drew (v1.5:
+  - `visible`: on screen (the active tab, or a pop-out that isn't minimised). (v1.6) A pop-out
+    on screen stays `visible` while the hub's main window is in the tray;
+  - `hidden`: still open but not on screen (a background tab, a minimised window, (v1.6) a tab
+    or placeholder of the hub's main window while that window is in the tray; was: "the hub
+    hidden in the tray"). The hub has closed the panel's streams (§5.4) and keeps what they drew (v1.5:
     the last frame, a text node's text). On the way back the hub sends `visible` before it opens
     the streams again;
-  - `closed`: the user closed the tab or its pop-out. The module SHOULD stop work for that panel.
-    It keeps running; the panel stays registered and opens again from the sidebar.
+  - `closed`: the user closed the page: its tab, or (v1.6) Close page in its pop-out. Closing a
+    pop-out (×) docks the page back and is never `closed` (§2.5). The module SHOULD stop work for
+    that panel. It keeps running; the panel stays registered and opens again from the sidebar.
+  (v1.6) Through a pop-out: popping out sends nothing new if the page was the active tab (it
+  stays `visible`), else `visible`; minimising it `hidden`; docking back `visible` if it lands as
+  the active tab of a shown main window, else `hidden`.
   A module needs no answer and MAY ignore both messages.
 - **Tiles (v1.4).** `ui.visibility` is sent for `tile` panels too: `visible` while the tray panel
   is open (and the tile isn't hidden by the user), `hidden` otherwise. A tile is never `closed`.
   A module that patches a tile on a timer (a countdown) SHOULD stop while its tile is `hidden`.
   `ui.badge` stays page-only.
-- **Hub-owned, not in the contract:** tab order, the active tab, pop-out placement and which
-  tabs to restore after a restart live in the hub's own files (§2.3). A module can't open, close
+- **Hub-owned, not in the contract:** tab order, the active tab and which tabs to restore after
+  a restart live in the hub's own files (§2.3). (v1.6) Pop-out placement is hub-owned too, but its
+  file shape is written down (`[windows]`, §2.5) so the hub's readers agree; no module reads it. A module can't open, close
   or reorder tabs; it can ask for attention with a badge or `hub.notify`.
 - **States:** a tab shows its module's state (§7.8) from `module.<id>.state`: a spinner for
   `starting`, `updating` and `restarting`, a warning mark for `crash-stopped`, `install-failed`,
@@ -882,7 +996,9 @@ error 5.
 
 `hideout.toml` (the hub's own state, written only by the hub):
 - `[modules.<id>] enabled`;
-- `autostart`, window placement, open pop-outs, theme;
+- `autostart`, the main window's placement, theme;
+- (v1.6) `[windows]`: per page, popped out or not, Keep on top and its places per screen layout
+  (§2.5). Checked on its own (`config.windows`); a bad entry is dropped, never the file;
 - `[[sources]]` and `[[trust.anchors]]` (§13);
 - `[privacy]` sharing settings (§13.5);
 - `safe_mode` flag (§7.10).
@@ -1212,7 +1328,8 @@ Rules:
 - **`hub`** (this contract, `MAJOR.MINOR`): manifests, the inventory, catalogs, the panel
   vocabulary and the hub messages below. Spec versions and `hub` move separately: spec 1.0 to 1.3
   are `hub` 1.0; spec 1.4 is `hub` 1.1 (a new setting kind and key), and so is spec 1.5 (only
-  optional panel props and stream rules, no manifest key). The hub answers `initialize`
+  optional panel props and stream rules, no manifest key), and so is spec 1.6 (hub window rules
+and a hub-owned `hideout.toml` table, no message or manifest key). The hub answers `initialize`
   with its own `hub`.
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
@@ -1648,6 +1765,7 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `config.folder-url` | (v1.1) a `folder` source with a `url`, or another kind with a `path` |
 | `config.source-id` | (v1.1) a source id breaks §13.4 or is used twice |
 | `config.unknown-anchor` | (v1.1) a source's `anchor` names no `[[trust.anchors]]` entry |
+| `config.windows` | (v1.6) a `[windows]` entry breaks §2.5's shape; the hub drops that page's entry |
 | `trust.signature` | a signature doesn't verify |
 | `trust.root-expired`, `trust.root-rollback` | the root expired or is older than `seen` |
 | `trust.scope` | an entry is outside its family's or anchor's scope |

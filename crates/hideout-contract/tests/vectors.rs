@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use hideout_contract::capability::{check_grantable, Capability, Holder, Source};
 use hideout_contract::channel::{is_channel_pipe, read_stream};
-use hideout_contract::config::Config;
+use hideout_contract::config::{Config, Windows};
 use hideout_contract::frame::{decode_wire, Frame};
 use hideout_contract::messages::{check_hub_fact, check_message};
 use hideout_contract::module::{read_dir, Context, Module};
@@ -265,6 +265,18 @@ fn permission_row(row: &Value) -> Result<(), String> {
 }
 
 fn config(file: &Path, expected: &Value) -> Result<Value, String> {
+    if file
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("windows.")
+    {
+        // `[windows]` (§2.5, spec v1.6): read on its own; the sources aren't looked at.
+        let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+        let w = Windows::parse(&text).map_err(|e| e.to_string())?;
+        w.validate().map_err(|e| e.to_string())?;
+        return Ok(json!({ "pages": w.windows.len() }));
+    }
     let ctx = &expected["context"];
     let families = match ctx.get("root_scopes") {
         Some(s) => s.clone(),

@@ -1,0 +1,35 @@
+# Test hideout.toml: pop-out placement, [windows] (2.5, spec v1.6). Values are TEST-ONLY.
+[[sources]]
+id = "test-public"
+kind = "catalog"
+visibility = "public"
+url = "https://example.invalid/catalog.json"
+anchor = "hideout-root"
+
+[windows."example.chat/chat"]
+popped_out = true
+keep_on_top = true
+
+[[windows."example.chat/chat".places]]
+layout = "0123456789abcdef"
+screen = '\\?\DISPLAY#TST0001#5&1a2b3c&0&UID1#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+x = 32.0
+y = -8.0
+width = 640.0
+height = 480.0
+state = "normal"
+saved = "2026-11-09T12:00:00Z"
+
+[[windows."example.chat/chat".places]]
+layout = "fedcba9876543210"
+screen = '\\?\DISPLAY#TST0002#5&4d5e6f&0&UID2#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+x = 32.0
+y = -8.0
+width = 640.0
+height = 480.0
+state = "maximized"
+saved = "2026-11-08T09:30:00Z"
+
+[windows."example.lights/editor"]
+popped_out = false
+keep_on_top = true

@@ -9,7 +9,8 @@
 //! - [`frame`]: direct-channel stream frames (§5.4, §8.4)
 //! - [`channel`]: the direct channel's wire: pipe names, the nonce frame, framing (§8.4)
 //! - [`messages`]: registration and channel handshake messages (§8.8)
-//! - [`config`]: `hideout.toml` sources and trust anchors (§13.4, §13.6)
+//! - [`config`]: `hideout.toml` sources and trust anchors (§13.4, §13.6), and pop-out placement
+//!   (`[windows]`, §2.5)
 //! - [`error`]: the §15 error ids
 //!
 //! `foxglove-plugin-api` re-exports this crate, so plugins built against it are unchanged.
@@ -33,7 +34,7 @@ pub const HUB_VERSION: Version = Version { major: 1, minor: 1 };
 
 /// The spec version this crate implements (docs/hideout-contract.md's status line, the test
 /// vectors' `index.json` and README). A drift test keeps them equal.
-pub const SPEC_VERSION: &str = "1.5";
+pub const SPEC_VERSION: &str = "1.6";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];
@@ -155,6 +156,7 @@ pub fn schema() -> serde_json::Value {
         messages::RestartFact,
         messages::Recovery,
         config::Config,
+        config::Windows,
     );
     serde_json::json!({
         "hub": HUB_VERSION.to_string(),

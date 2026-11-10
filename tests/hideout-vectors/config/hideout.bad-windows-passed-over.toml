@@ -1,0 +1,10 @@
+# Test hideout.toml: a broken [windows] table (spec v1.6) does not stop the sources being read. TEST-ONLY.
+[[sources]]
+id = "test-public"
+kind = "catalog"
+visibility = "public"
+url = "https://example.invalid/catalog.json"
+anchor = "hideout-root"
+
+[windows."example.chat"]
+places = "not a list"

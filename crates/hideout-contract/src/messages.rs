@@ -172,9 +172,11 @@ pub struct UiBadge {
 pub enum Visibility {
     /// On screen.
     Visible,
-    /// Still open but not on screen: a background tab, a minimised window, the hub in the tray.
+    /// Still open but not on screen: a background tab, a minimised window, a tab of the hub's
+    /// main window while it is in the tray. A pop-out on screen stays visible (spec v1.6).
     Hidden,
-    /// The user closed its tab or pop-out.
+    /// The user closed the page (its tab, or Close page). Closing a pop-out docks it back
+    /// instead and is never `closed` (spec v1.6).
     Closed,
 }
 

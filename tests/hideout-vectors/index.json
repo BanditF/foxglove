@@ -1,11 +1,74 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.5",
+  "contract": "1.6",
   "reader_hub": "1.1",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
   "vectors": {
+    "config/windows.valid.toml": {
+      "spec": [
+        "2.5",
+        "7.3"
+      ],
+      "result": "valid",
+      "note": "Two pages: a popped-out page with two places (two screen layouts, normal and maximized) and a docked page that remembers Keep on top.",
+      "normalized": {
+        "pages": 2
+      }
+    },
+    "config/windows.invalid-too-many-places.toml": {
+      "spec": [
+        "2.5"
+      ],
+      "result": "invalid",
+      "id": "config.windows",
+      "note": "Five places for one page; at most four are kept (the oldest goes)."
+    },
+    "config/windows.invalid-layout-twice.toml": {
+      "spec": [
+        "2.5"
+      ],
+      "result": "invalid",
+      "id": "config.windows",
+      "note": "Two places for the same screen layout."
+    },
+    "config/windows.invalid-key.toml": {
+      "spec": [
+        "2.5"
+      ],
+      "result": "invalid",
+      "id": "config.windows",
+      "note": "A page key without the /<panel id> part."
+    },
+    "config/windows.invalid-size.toml": {
+      "spec": [
+        "2.5"
+      ],
+      "result": "invalid",
+      "id": "config.windows",
+      "note": "A place with width 0."
+    },
+    "config/windows.invalid-state.toml": {
+      "spec": [
+        "2.5"
+      ],
+      "result": "invalid",
+      "id": "config.windows",
+      "note": "A place whose state is not normal, maximized or snapped."
+    },
+    "config/hideout.bad-windows-passed-over.toml": {
+      "spec": [
+        "2.5",
+        "7.3",
+        "13.4"
+      ],
+      "result": "valid",
+      "note": "A broken [windows] table: the sources reader passes over it, so placement never blocks the sources.",
+      "context": {
+        "root_scopes": {}
+      }
+    },
     "config/hideout.anchor-overlaps-root-exact.toml": {
       "spec": [
         "13.6"

@@ -75,6 +75,7 @@ error_ids! {
     ConfigFolderUrl => "config.folder-url",
     ConfigSourceId => "config.source-id",
     ConfigUnknownAnchor => "config.unknown-anchor",
+    ConfigWindows => "config.windows",
     TrustSignature => "trust.signature",
     TrustRootExpired => "trust.root-expired",
     TrustRootRollback => "trust.root-rollback",

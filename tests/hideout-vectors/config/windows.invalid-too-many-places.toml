@@ -1,0 +1,53 @@
+# Test hideout.toml: pop-out placement, [windows] (2.5, spec v1.6). Values are TEST-ONLY.
+[windows."example.chat/chat"]
+popped_out = true
+
+[[windows."example.chat/chat".places]]
+layout = "0000000000000000"
+screen = '\\?\DISPLAY#TST0001#5&1a2b3c&0&UID1#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+x = 32.0
+y = -8.0
+width = 640.0
+height = 480.0
+state = "normal"
+saved = "2026-11-01T12:00:00Z"
+
+[[windows."example.chat/chat".places]]
+layout = "0000000000000001"
+screen = '\\?\DISPLAY#TST0001#5&1a2b3c&0&UID1#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+x = 32.0
+y = -8.0
+width = 640.0
+height = 480.0
+state = "normal"
+saved = "2026-11-02T12:00:00Z"
+
+[[windows."example.chat/chat".places]]
+layout = "0000000000000002"
+screen = '\\?\DISPLAY#TST0001#5&1a2b3c&0&UID1#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+x = 32.0
+y = -8.0
+width = 640.0
+height = 480.0
+state = "normal"
+saved = "2026-11-03T12:00:00Z"
+
+[[windows."example.chat/chat".places]]
+layout = "0000000000000003"
+screen = '\\?\DISPLAY#TST0001#5&1a2b3c&0&UID1#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+x = 32.0
+y = -8.0
+width = 640.0
+height = 480.0
+state = "normal"
+saved = "2026-11-04T12:00:00Z"
+
+[[windows."example.chat/chat".places]]
+layout = "0000000000000004"
+screen = '\\?\DISPLAY#TST0001#5&1a2b3c&0&UID1#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+x = 32.0
+y = -8.0
+width = 640.0
+height = 480.0
+state = "normal"
+saved = "2026-11-05T12:00:00Z"

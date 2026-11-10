@@ -39,7 +39,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.5",
+  "spec": "1.6",
   "streams": {
     "nodes": [
       "canvas",
@@ -185,6 +185,113 @@
         }
       },
       "title": "Config",
+      "type": "object"
+    },
+    "config.Windows": {
+      "$defs": {
+        "PageWindow": {
+          "additionalProperties": false,
+          "description": "What the hub keeps for one page (`[windows.\"<module id>/<panel id>\"]`, spec v1.6).",
+          "properties": {
+            "keep_on_top": {
+              "default": false,
+              "type": "boolean"
+            },
+            "places": {
+              "default": [],
+              "description": "At most [`PLACES_PER_PAGE`], one per layout.",
+              "items": {
+                "$ref": "#/$defs/Place"
+              },
+              "type": "array"
+            },
+            "popped_out": {
+              "default": false,
+              "description": "Open in its own window (restored as a pop-out, §2.5).",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "Place": {
+          "additionalProperties": false,
+          "description": "One saved place of a pop-out: where it was in one screen layout (§2.5, spec v1.6).",
+          "properties": {
+            "height": {
+              "format": "double",
+              "type": "number"
+            },
+            "layout": {
+              "description": "The screen layout's id: 16 lowercase hex digits (§2.5).",
+              "type": "string"
+            },
+            "saved": {
+              "description": "When it was saved, `YYYY-MM-DDTHH:MM:SSZ` (UTC); the oldest goes first.",
+              "type": "string"
+            },
+            "screen": {
+              "description": "The screen the window was on, by its display target path (§2.5).",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/WindowState"
+            },
+            "width": {
+              "description": "Size in device-independent units, above 0.",
+              "format": "double",
+              "type": "number"
+            },
+            "x": {
+              "description": "Position from that screen's top-left, in device-independent units.",
+              "format": "double",
+              "type": "number"
+            },
+            "y": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "layout",
+            "screen",
+            "x",
+            "y",
+            "width",
+            "height",
+            "state",
+            "saved"
+          ],
+          "type": "object"
+        },
+        "WindowState": {
+          "description": "A pop-out's window state when it was saved (§2.5, spec v1.6).",
+          "oneOf": [
+            {
+              "enum": [
+                "normal",
+                "maximized"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "snapped",
+              "description": "Snapped by Windows; the place is the snapped rectangle.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "`hideout.toml`'s `[windows]` table (§2.5, §7.3, spec v1.6): keys are `<module id>/<panel id>`.",
+      "properties": {
+        "windows": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PageWindow"
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "title": "Windows",
       "type": "object"
     },
     "legacy.Manifest": {
@@ -955,12 +1062,12 @@
             },
             {
               "const": "hidden",
-              "description": "Still open but not on screen: a background tab, a minimised window, the hub in the tray.",
+              "description": "Still open but not on screen: a background tab, a minimised window, a tab of the hub's\nmain window while it is in the tray. A pop-out on screen stays visible (spec v1.6).",
               "type": "string"
             },
             {
               "const": "closed",
-              "description": "The user closed its tab or pop-out.",
+              "description": "The user closed the page (its tab, or Close page). Closing a pop-out docks it back\ninstead and is never `closed` (spec v1.6).",
               "type": "string"
             }
           ]
