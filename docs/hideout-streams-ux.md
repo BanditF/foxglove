@@ -84,7 +84,7 @@ channel grant flow itself (H4.3, no user-facing step), module windows (§5.7), s
 | State | When | What the box shows | Ways out |
 |---|---|---|---|
 | Connecting… | channel opening, no frame yet | empty box; after **1 s** a small ring + "Connecting…" (never before 1 s, so a fast open shows nothing) | none needed |
-| Live | frames arriving | the frames, full colour, no mark | Pause (hover/focus) |
+| Live | frames arriving | the frames, full colour, no mark (a Live dot with reduced motion on) | Pause (hover/focus) |
 | Back on screen | panel turned `visible` again; channel reopening | the **last frame, unchanged, no mark** for up to **2 s**; then the next frame replaces it | none needed |
 | Paused by you | the user pressed Pause | last frame at **full colour**, "Paused" chip top-left, Play button bottom-right; the channel is closed as if hidden | Play, Space |
 | No new frames | open channel, no frame for longer than the node's expected gap (spec gap 3); also "back on screen" past 2 s | last frame **dimmed**, chip "Last seen <n> s ago" | none (it recovers by itself) |
@@ -162,6 +162,9 @@ Rules:
   hub may also read less often from the channel; the module is not told.
 - Text follows by jumping to the end, never smooth scrolling; the caret mark does not blink.
 - The Pause control is there in every mode, so motion can always be stopped (WCAG 2.2.2).
+- At 2 frames a second the motion no longer says "live", so a live canvas or image stream shows
+  a small **Live** dot in its top corner (the `live` tone, not colour alone: dot + the word). It
+  goes away when the stream pauses, goes stale or ends. Without reduced motion there is no mark.
 
 ## Keyboard and screen reader
 
@@ -187,6 +190,7 @@ Rules:
 | Stale chip | "Last seen <n> s ago" / "Last seen <n> min ago" (the stale view's words) |
 | Ended chip | "Stopped updating" · Try again |
 | Refused | "This preview couldn't be shown." · Open log |
+| Live dot (reduced motion only) | "Live" |
 | Paused | "Paused" · Play (button names "Pause <label>", "Play <label>") |
 | Text | "Jump to latest" · "Copy" / "Copied" · "Earlier text was trimmed." |
 | Screen reader | "<label>, live preview" / "paused" / "not updating, last seen <n> seconds ago" / "couldn't be shown" · "New text in <label>" |
@@ -245,12 +249,9 @@ Acceptance, in the lab hub with the sample room map (canvas, image and text stre
 9. **Image alt.** A streamed `image` needs a `label` for the screen reader; say it is required
    when `stream` is set.
 
-## Open questions for the user (via the Hub)
+## Decisions (11/10, Hub, designer's picks)
 
-1. **Frozen frame when out of date:** **dimmed + "Last seen" chip** (matches the stale view) /
-   full colour + chip only. Image:
-   `C:\Users\fuchs\splitkeeb\worktrees\_review\h29\ux-h29-proposed-states.png`.
-2. **Reduced motion:** **2 frames a second** / full rate (Pause is enough) / frozen until hover.
-   Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h29\ux-h29-proposed-sizing.png`.
-3. **Live mark on a live stream:** **none** (the motion is the sign) / a small "Live" dot.
-   Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h29\ux-h29-proposed-states.png`.
+1. Frozen frame when out of date: **dimmed + "Last seen" chip**.
+2. Reduced motion: **2 frames a second**.
+3. Live mark: **none** in normal use; with reduced motion on, a small **Live** dot (Hub's tweak:
+   at 2 fps the motion no longer signals live). See Reduced motion.
