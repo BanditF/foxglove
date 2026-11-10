@@ -52,6 +52,7 @@ Surfaces: **S** sidebar module list, **T** its tab (#953), **P** the page area (
 | Updating (`updating`) | orange ring; tooltip "Updating…" | header line "Updating… Your place on this page is kept." | "Updating…" | nothing | — |
 | Off (`off`) | muted label, no mark | "Off" + **Turn on** | "Off" + Turn on | nothing | — |
 | Needs a newer Hideout (`needs-hub`) | red warning mark | card "Needs a newer Hideout" + **Update Hideout**, Go back to <previous> | same words + Update Hideout | red dot; menu line "Art needs a newer Hideout" | once, at the update that caused it |
+| Withdrawn (`revoked`, #1026) | red warning mark | withdrawn card, see [hideout-revoked-ux.md](hideout-revoked-ux.md) | "Withdrawn · <version>" + **Check for updates** | red dot; menu line "Art was withdrawn" | once per withdrawn version |
 | Safe mode (§7.10) | only Modules and Settings in the sidebar | banner (below) on the Modules page | each enabled module "On · not started in safe mode" | amber dot; tooltip "Hideout · safe mode"; menu item **Start normally** | once at start |
 
 Rules shared by all rows:
@@ -60,7 +61,7 @@ Rules shared by all rows:
 - **Root cause once** (§7.8): a module waiting on a stopped one shows "Waiting for Art" with
   **Go to Art**, never its own crash bar; the tray names only Art.
 - **Tray quiet rule:** the icon's dot is only for states that need the user (stopped, needs a
-  newer Hideout, safe mode). Restarts, updates and starts never touch the tray.
+  newer Hideout, withdrawn, safe mode). Restarts, updates and starts never touch the tray.
 - **Notifications** only for: stopped after 5 crashes, automatic rollback, needs a newer Hideout,
   safe mode. One per module per sign-in (§7.7). Never for a restart.
 
