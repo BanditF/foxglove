@@ -3238,6 +3238,8 @@ mod contention_tests {
         unanswered: AtomicU32,
         statuses: AtomicU32,
         selects: AtomicU32,
+        /// Pushes begun (BEGIN).
+        pushes: AtomicU32,
         others: AtomicU32,
         /// Each ART_KEYS the app sent (D7 0D on), in order.
         art_keys: Mutex<Vec<u8>>,
@@ -3334,6 +3336,22 @@ mod contention_tests {
                         r[2] = left_state::FAILED;
                         r[3] = 1;
                     }
+                    b.push(r);
+                }
+                // A push (#1053's restart parity): BEGIN, DATA, COMMIT, then the right half
+                // plays it as a pushed set (set -1).
+                (protocol::ART, protocol::art::BEGIN) => {
+                    b.pushes.fetch_add(1, Ordering::SeqCst);
+                    let mut r = b.status(protocol::art::BEGIN, 0);
+                    r[2] = left_state::RECEIVING;
+                    b.push(r);
+                }
+                (protocol::ART, protocol::art::DATA) => {}
+                (protocol::ART, protocol::art::COMMIT) => {
+                    *b.right_state.lock().unwrap() = protocol::right_state::PLAYING;
+                    *b.set.lock().unwrap() = -1;
+                    let mut r = b.status(protocol::art::COMMIT, 0);
+                    r[2] = left_state::DONE;
                     b.push(r);
                 }
                 (protocol::SETTINGS, protocol::settings::ART_KEYS) => {
@@ -3470,32 +3488,74 @@ mod contention_tests {
         }
     }
 
-    /// #1044: the right half still plays the set an earlier run pushed (STATUS "playing pushed
-    /// set, set -1"). A new service on the same settings folder names it from the last-pushed
-    /// record on connect, so the feed has its frames instead of NO FRAMES; nothing is sent.
+    /// Restart parity (#1053, docs/agents.md "Restart parity"): a fact a feature publishes
+    /// before Foxglove restarts is published again after it, while the keyboard keeps going.
+    /// `establish` makes the state on a first service through its real commands, never by
+    /// writing the snapshot or the store by hand (that is the state a restart loses or keeps,
+    /// the thing under test). `facts` reads the published fact from a snapshot (`None`: not
+    /// there yet). The first service then stops; a fresh one starts on the same board and
+    /// settings folder with the same `pinned` (the pin is persisted: `save_pin`/`load_pinned`),
+    /// and must come to the same facts. Returns the fresh rig and the facts.
+    fn restart_parity<T: PartialEq + std::fmt::Debug>(
+        board: Arc<Board>,
+        pinned: Option<Choice>,
+        establish: impl FnOnce(&Rig),
+        facts: impl Fn(&Snapshot) -> Option<T>,
+    ) -> (Rig, T) {
+        let before = {
+            let rig = Rig::on(board.clone(), pinned.clone(), 0);
+            rig.until("the first service connected", |s| {
+                s.connected && !s.busy && s.status.is_some()
+            });
+            establish(&rig);
+            let s = rig.until("the state was established", |s| facts(s).is_some());
+            facts(&s).unwrap()
+        }; // the service stops here; the board keeps what it plays
+        let rig = Rig::on(board, pinned, 0);
+        let what = format!("after a restart the same facts: {before:?}");
+        let s = rig.until(&what, |s| !s.busy && facts(s).as_ref() == Some(&before));
+        let after = facts(&s).unwrap();
+        (rig, after)
+    }
+
+    /// #1044 under restart parity: a piece pushed in one run (a real push: BEGIN, DATA, COMMIT;
+    /// the right then plays "pushed set, set -1") is the feed's piece, with its frames, after a
+    /// restart too, named from the last-pushed record; nothing is sent again. Shown, not
+    /// pinned, so the shared test store's pin stays untouched.
     #[test]
-    fn a_pushed_set_is_named_again_after_a_restart() {
+    fn restart_parity_a_pushed_set() {
+        use crate::foxglove::live_art::{art, source, Source};
         let file = crate::foxglove::art_service::tests_fury();
-        let hash = crate::foxglove::art_library::blob_hash(&pushed_bytes(&file).unwrap());
-        // What a push writes (`choose`), by the run before the restart.
-        remember_pushed(&file, hash);
-        assert_eq!(
-            crate::foxglove::store::try_load::<PushedRecord>(PUSHED_SECTION).map(|r| r.path),
-            Some(file.clone())
+        let board = Board::new(2);
+        let facts = |s: &Snapshot| {
+            let src = source(s).filter(|src| matches!(src, Source::File(..)))?;
+            let a = art(&src, "fury".into());
+            Some((src, a.nva.is_some(), a.missing))
+        };
+        let (rig, after) = restart_parity(
+            board.clone(),
+            None,
+            |rig| {
+                rig.h
+                    .commands
+                    .send(Command::Show(Choice::File(file.clone())))
+                    .unwrap();
+            },
+            facts,
         );
-        let board = Board::new(-1);
-        *board.right_state.lock().unwrap() = protocol::right_state::PLAYING;
-        let rig = Rig::on(board, None, 0);
-        let s = rig.until("the connect named the pushed set", |s| {
-            s.connected && !s.busy && s.sent.is_some()
-        });
-        assert_eq!(s.sent, Some((file.clone(), hash)));
-        let src = rig.art().expect("the feed has a piece");
-        assert_eq!(src, crate::foxglove::live_art::Source::File(file, hash));
-        let art = crate::foxglove::live_art::art(&src, "fury".into());
-        assert!(art.nva.is_some(), "frames: {:?}", art.missing);
-        let (_, selects, others) = rig.board.requests();
-        assert_eq!((selects, others), (0, 0), "nothing sent again");
+        let hash = crate::foxglove::art_library::blob_hash(&pushed_bytes(&file).unwrap());
+        assert_eq!(
+            after,
+            (Source::File(file, hash), true, None),
+            "frames after the restart"
+        );
+        assert_eq!(
+            board.pushes.load(Ordering::SeqCst),
+            1,
+            "pushed once, before the restart"
+        );
+        let (_, selects, _) = rig.board.requests();
+        assert_eq!(selects, 0, "nothing selected after the restart");
     }
 
     /// #618: `art.status` right after a start waits for the connect's status read (woken by the

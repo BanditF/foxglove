@@ -83,6 +83,30 @@ The PC is shared with the user, and every gate is minutes of full CPU (the PC im
 - **Remove a finished worktree on merge:** `git worktree remove <dir>` plus its target dir, or
   `scripts/clean-worktrees.ps1 -Apply`.
 
+## Restart parity
+
+A fact Foxglove publishes (the live feed, health, the tray, an API answer) must come back the same
+after the app restarts or the keyboard reconnects, while the keyboard keeps going (#1053, from the
+Live Board "NO FRAMES after restart" retro: `Snapshot.sent` was in memory only).
+- **Each in-memory field a published fact depends on** is one of: **persisted** (the store),
+  **derived** (read again from the device on connect), or covered by a test that starts with the
+  field cleared. The PR template asks: "State lost on restart/reconnect: persisted / derived / n/a".
+- **Tests may not hand-build the state their own restart loses.** A test that writes
+  `sent: Some(..)` (or a store section) by hand and then checks the published fact proves
+  nothing about a restart. Establish the state through the feature's real commands, restart,
+  and check the fact again.
+- **Unit level:** `restart_parity` in `art_service.rs`'s contention tests: establish on a first
+  service over the fake board, stop it, start a fresh one on the same board and settings folder,
+  and wait (on snapshot changes) for the same facts. First case: `restart_parity_a_pushed_set`.
+- **Lab level:** `labkit.restart_parity(app, check, name, establish, read)` with `App.restart()`
+  (same temp config folder, one restore guard per test app) in `scripts/lab/restart_parity.py`.
+  To add a case for a state-publishing feature: write `establish()` (an API call or UI flow,
+  never a store write by hand) and `read(want)` (event-driven, bounded: the feed's pushed
+  messages, an API answer, a `facts.changed` event), add it to `CASES`, and test the pure parts
+  in `scripts/test_restart_parity.py`. On-call runs it (`FOXGLOVE_APP_OK=1`).
+- **Health:** a published fact the keyboard can contradict gets a read-time health row comparing
+  the two (`live_parity`'s `feed_art`: the keyboard shows art, the feed has `art: null`).
+
 ## This PC's values (`tools/local.toml`)
 
 The dev tooling's machine-specific values live in one place, `scripts/local_config.py`: the

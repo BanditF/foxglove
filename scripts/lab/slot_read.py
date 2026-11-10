@@ -22,10 +22,10 @@ Exit 0 PASS, 1 FAIL, 2 BLOCKED (no app OK, no kept place, the right not connecte
 Backups stay in <temp>/foxglove-slot-backups (this script never deletes them).
 On-call runs it; it launches Foxglove and (unless --dry-run) rewrites one flash place and restores it.
 """
-import argparse, base64, binascii, json, os, socket, struct, subprocess, sys, tempfile, time
+import argparse, base64, binascii, json, os, subprocess, sys, tempfile, time
 from pathlib import Path
 
-from labkit import App, Checks, REPO, TARGET, temp_config, tool_arg, log_lines
+from labkit import App, Checks, REPO, TARGET, feed_messages, temp_config, tool_arg, log_lines
 
 BLOB = REPO / 'tests' / 'art' / 'ink-fixture.bin'
 SUITE = REPO / 'tests' / 'hil' / 'slot-read.toml'
@@ -33,49 +33,8 @@ PORT = 8768
 TOKEN = 'labslotread0000000000000'  # 24 characters, the feed's own length
 
 
-def ws_read(port, token, seconds):
-    """Yields the feed's JSON text messages for `seconds` (a minimal client: handshake, then frames)."""
-    s = socket.create_connection(('127.0.0.1', port), timeout=5)
-    key = base64.b64encode(os.urandom(16)).decode()
-    s.sendall((f'GET /live?token={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\n'
-               f'Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
-    buf = b''
-    while b'\r\n\r\n' not in buf:
-        chunk = s.recv(4096)
-        if not chunk:
-            return
-        buf += chunk
-    buf = buf.split(b'\r\n\r\n', 1)[1]
-    end = time.time() + seconds
-    s.settimeout(1)
-    while time.time() < end:
-        try:
-            while len(buf) < 2:
-                buf += s.recv(65536)
-            n = buf[1] & 0x7f
-            at = 2
-            if n == 126:
-                while len(buf) < 4:
-                    buf += s.recv(65536)
-                n, at = struct.unpack('>H', buf[2:4])[0], 4
-            elif n == 127:
-                while len(buf) < 10:
-                    buf += s.recv(65536)
-                n, at = struct.unpack('>Q', buf[2:10])[0], 10
-            while len(buf) < at + n:
-                buf += s.recv(65536)
-        except socket.timeout:
-            continue
-        except OSError:
-            return
-        payload, buf = buf[at:at + n], buf[at + n:]
-        if not payload:
-            continue
-        try:
-            yield json.loads(payload)
-        except ValueError:
-            continue
-    s.close()
+# The feed client is shared with restart_parity.py (#1053).
+ws_read = feed_messages
 
 
 def lab_step(args, case, env):

@@ -17,6 +17,10 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
   shows the tray and overlay, and it once caused duplicate apps during a sitting. Prove behaviour
   with window-free tests; live runs go to Test lab via On-call. The guard blocks launches.
 - Tests that touch the store set `FOXGLOVE_CONFIG_DIR` to a temp dir first.
+- Restart parity (`docs/agents.md`): every in-memory field a published fact depends on is
+  persisted, derived from the device, or tested with it cleared. Tests may not hand-build the
+  state their own restart loses: establish it through real commands, restart (`restart_parity`),
+  check again. Fill the PR line "State lost on restart/reconnect: persisted / derived / n/a".
 - Foxglove code stays in `app/src/foxglove`; keep edits to upstream KeyPeek files small. The wire
   format lives in `crates/foxglove-link` only.
 - Never offer `&bt`, `&out`, `&bootloader`, `&sys_reset` or `&soft_off` in the app. For QMK/VIA,
