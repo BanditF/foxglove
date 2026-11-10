@@ -32,7 +32,8 @@ pub use feed::{Inbound, Outbound, PanelFeed};
 pub use hideout_contract::messages::{Badge, Visibility};
 pub use hideout_contract::module::Slot;
 pub use model::{
-    state_words, when_true, HostedPanel, HubCall, Outgoing, PanelHost, PanelKey, PanelState,
+    state_words, when_true, FilePicker, HostedPanel, HubCall, Outgoing, PanelHost, PanelKey,
+    PanelState,
 };
 pub use render::{key_chip, panel_ui, DrawReport, Go};
 pub use sections::page_sections_ui;

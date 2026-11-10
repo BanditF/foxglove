@@ -14,6 +14,7 @@ mod checks;
 mod router;
 pub mod server;
 
+pub mod secrets;
 pub use router::{
     fresh_secret, Approver, ConnId, LaunchCheck, ModuleEntry, Origin, Out, Router, Settings,
     CALL_TIMEOUT, HOST_CONSUMER,

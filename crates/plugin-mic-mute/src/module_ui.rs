@@ -11,7 +11,13 @@ pub fn tile(mic: Mic, refused: bool) -> Tile {
     let sub = Some("Default communications mic".to_string());
     if refused {
         return Tile {
-            value: "Couldn't mute".into(),
+            // The change Windows refused: unmuting while muted, muting otherwise.
+            value: if mic == Mic::Muted {
+                "Couldn't unmute"
+            } else {
+                "Couldn't mute"
+            }
+            .into(),
             tone: "attention",
             sub: Some("Windows said no. Try again.".into()),
             button: Some(Button::new("Try again", Press::Event("retry"))),

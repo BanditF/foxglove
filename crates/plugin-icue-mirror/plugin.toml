@@ -17,7 +17,7 @@ default = ""
 
 [[settings]]
 name = "device"
-label = "Corsair device to follow (part of its model name; empty: the first one with lights)"
+label = "Corsair device to follow (part of its name; leave empty for the first one with lights)"
 kind = "text"
 default = ""
 

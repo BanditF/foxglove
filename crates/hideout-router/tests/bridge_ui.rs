@@ -262,3 +262,61 @@ fn the_hub_keeps_a_v1_plugins_settings() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `[[secrets]]` live in the hub (Credential Manager; memory here): the form saves one and
+/// learns only that it is saved; the module reads its own declared secret, nothing else.
+#[test]
+fn secrets_are_kept_by_the_hub_and_read_by_their_module_only() {
+    use hideout_router::secrets::MemorySecrets;
+    let mut router = Router::new(Settings::default(), Box::new(|_, asked| asked.to_vec()));
+    router.set_secret_store(Box::new(MemorySecrets::default()));
+    router.add_module(entry());
+    let text = format!(
+        "{}\n[[secrets]]\nname = \"pw\"\nlabel = \"Password\"\n",
+        MANIFEST.replace(
+            "description =",
+            "permissions = [\"secrets\"]\ndescription ="
+        )
+    );
+    router.apply_manifest(&Module::parse(&text, &Context::default()).unwrap());
+    let conn = router.connect(Origin::Bridged(ID.into()));
+    let now = Instant::now();
+    router.receive(conn, &initialize().to_string(), now);
+    let get = |r: &mut Router, n: i64, name: &str| {
+        let line = json!({"jsonrpc":"2.0","id": n,"method":"secrets.get","params":{"name": name}});
+        r.receive(conn, &line.to_string(), now)
+            .into_iter()
+            .find_map(|o| match o {
+                Out::Send(_, v) if v["id"] == n => Some(v),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(get(&mut router, 2, "pw")["result"], json!({"value": null}));
+    assert_eq!(
+        router.secrets_status(ID, 1),
+        [Out::HubResult {
+            tag: 1,
+            result: Ok(json!({"saved": []}))
+        }]
+    );
+    let out = router.set_secret(ID, "pw", Some("hunter2".into()), 2);
+    assert_eq!(
+        out,
+        [Out::HubResult {
+            tag: 2,
+            result: Ok(json!({}))
+        }]
+    );
+    assert_eq!(router.secrets_saved(ID), ["pw"]);
+    assert_eq!(
+        get(&mut router, 3, "pw")["result"],
+        json!({"value": "hunter2"})
+    );
+    // Not declared: refused both ways.
+    assert!(get(&mut router, 4, "other").get("error").is_some());
+    assert!(matches!(
+        &router.set_secret(ID, "other", Some("x".into()), 5)[..],
+        [Out::HubResult { result: Err(_), .. }]
+    ));
+}

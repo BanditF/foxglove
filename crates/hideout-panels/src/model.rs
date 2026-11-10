@@ -216,6 +216,10 @@ pub struct PanelHost {
     /// The reason of the last refused setting, per module, shown under the form.
     pub settings_notice: HashMap<String, String>,
     hub_calls: Vec<HubCall>,
+    /// Which secrets each module has saved, once asked.
+    secrets_saved: HashMap<String, BTreeSet<String>>,
+    /// The system file picker, when the hub has one.
+    pub picker: Option<Picker>,
 }
 
 /// A call the hub makes to a module for its own UI (not a `ui.event`).
@@ -231,6 +235,28 @@ pub enum HubCall {
         name: String,
         value: Value,
     },
+    /// Which of the module's `[[secrets]]` have a value saved (never the values).
+    SecretsStatus { module: String },
+    /// The user typed a secret: the hub stores it for the module (`None` clears it).
+    SetSecret {
+        module: String,
+        name: String,
+        value: Option<String>,
+    },
+}
+
+/// Opens the system file picker for a `kind = "file"` setting (v1.4): given the manifest's
+/// `filter`, the chosen path, or `None` when the user cancelled. The shell installs the
+/// Windows one; tests install a fake, and with none the button is not drawn.
+pub type FilePicker = Box<dyn FnMut(Option<&str>) -> Option<String>>;
+
+/// [`FilePicker`] in the host (it has no `Debug`).
+pub struct Picker(pub FilePicker);
+
+impl std::fmt::Debug for Picker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Picker")
+    }
 }
 
 /// A `when` clause (§4.6, grammar v1): one fact name, optionally prefixed by `!`; true when the
@@ -294,7 +320,56 @@ impl PanelHost {
             settings_asked: HashSet::new(),
             settings_notice: HashMap::new(),
             hub_calls: Vec::new(),
+            secrets_saved: HashMap::new(),
+            picker: None,
         }
+    }
+
+    /// Whether the module's secret `name` is saved; the first call for a module asks the hub.
+    pub fn secret_saved(&mut self, module: &str, name: &str) -> bool {
+        match self.secrets_saved.get(module) {
+            Some(s) => s.contains(name),
+            None => {
+                self.secrets_saved.insert(module.into(), BTreeSet::new());
+                self.hub_calls.push(HubCall::SecretsStatus {
+                    module: module.into(),
+                });
+                false
+            }
+        }
+    }
+
+    /// The hub's answer: the module's saved secret names.
+    pub fn secrets_result(&mut self, module: &str, saved: BTreeSet<String>) {
+        self.secrets_saved.insert(module.into(), saved);
+    }
+
+    /// The user saved a secret in the form. Shown as saved at once; a refusal shows the reason
+    /// and asks again.
+    pub fn set_secret(&mut self, module: &str, name: &str, value: String) {
+        self.settings_notice.remove(module);
+        self.secrets_saved
+            .entry(module.into())
+            .or_default()
+            .insert(name.into());
+        self.hub_calls.push(HubCall::SetSecret {
+            module: module.into(),
+            name: name.into(),
+            value: Some(value),
+        });
+    }
+
+    /// Saving a secret failed.
+    pub fn secret_refused(&mut self, module: &str, reason: String) {
+        self.settings_notice.insert(module.into(), reason);
+        self.hub_calls.push(HubCall::SecretsStatus {
+            module: module.into(),
+        });
+    }
+
+    /// Opens the file picker, if the hub has one.
+    pub fn pick_file(&mut self, filter: Option<&str>) -> Option<String> {
+        self.picker.as_mut().and_then(|p| (p.0)(filter))
     }
 
     /// What `module`'s manifest declares (§4.7). The tray panel and the generated page sections

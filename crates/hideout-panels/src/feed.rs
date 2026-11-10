@@ -59,6 +59,10 @@ pub enum Inbound {
     },
     /// The module refused [`Outbound::Call`] `SettingsSet`, with `data.reason`.
     SettingRefused { module: String, reason: String },
+    /// The answer to `SecretsStatus`: the saved secret names.
+    SecretsSaved { module: String, names: Vec<String> },
+    /// Saving a secret failed, with the reason.
+    SecretRefused { module: String, reason: String },
     /// A module's manifest (§4.7): its tiles with `when`, actions and settings.
     Manifest(Box<hideout_contract::module::Module>),
 }
@@ -165,6 +169,14 @@ impl PanelHost {
                 }
                 Inbound::Settings { module, values } => {
                     self.settings_result(&module, values);
+                    changed = true;
+                }
+                Inbound::SecretsSaved { module, names } => {
+                    self.secrets_result(&module, names.into_iter().collect());
+                    changed = true;
+                }
+                Inbound::SecretRefused { module, reason } => {
+                    self.secret_refused(&module, reason);
                     changed = true;
                 }
                 Inbound::Manifest(m) => {

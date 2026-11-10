@@ -288,6 +288,9 @@ pub struct Router {
     /// Each module's `[[settings]]` from its manifest, for the settings a v1 plugin keeps in
     /// the hub (§4.10: it asks with `settings.get` and hears `settings.changed`).
     settings_decl: HashMap<String, Vec<hideout_contract::module::ModuleSetting>>,
+    /// Each module's `[[secrets]]` names: the only ones it may read or set.
+    secrets_decl: HashMap<String, Vec<String>>,
+    secret_store: Box<dyn crate::secrets::SecretStore>,
 }
 
 /// The file in a v1 plugin's settings folder where the hub keeps the values the user changed.
@@ -335,6 +338,8 @@ impl Router {
             actions: HashMap::new(),
             hub_watch: Vec::new(),
             settings_decl: HashMap::new(),
+            secrets_decl: HashMap::new(),
+            secret_store: crate::secrets::default_store(),
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -380,6 +385,83 @@ impl Router {
         let actions = m.actions.iter().map(|a| a.decl.id.clone()).collect();
         self.set_actions(&m.id, actions);
         self.settings_decl.insert(m.id.clone(), m.settings.clone());
+        let secrets = m.secrets.iter().map(|s| s.name.clone()).collect();
+        self.secrets_decl.insert(m.id.clone(), secrets);
+    }
+
+    /// Where module secrets live (Windows Credential Manager by default; tests use memory).
+    pub fn set_secret_store(&mut self, store: Box<dyn crate::secrets::SecretStore>) {
+        self.secret_store = store;
+    }
+
+    fn secret_declared(&self, module: &str, name: &str) -> bool {
+        self.secrets_decl
+            .get(module)
+            .is_some_and(|d| d.iter().any(|n| n == name))
+    }
+
+    /// The module's declared secrets that have a value saved. The value itself never leaves
+    /// the router except to its own module.
+    pub fn secrets_saved(&self, module: &str) -> Vec<String> {
+        self.secrets_decl
+            .get(module)
+            .into_iter()
+            .flatten()
+            .filter(|n| {
+                self.secret_store
+                    .get(&crate::secrets::target(module, n))
+                    .is_some()
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The hub's form asks which secrets are saved: [`Out::HubResult`] `{saved: [names]}`.
+    pub fn secrets_status(&mut self, module: &str, tag: u64) -> Vec<Out> {
+        vec![Out::HubResult {
+            tag,
+            result: Ok(json!({ "saved": self.secrets_saved(module) })),
+        }]
+    }
+
+    /// The user typed a secret in the hub's form (`None` clears it). Only a declared name, at
+    /// most 2048 bytes. The answer is [`Out::HubResult`]; the module reads it with
+    /// `secrets.get` when it next needs it.
+    pub fn set_secret(
+        &mut self,
+        module: &str,
+        name: &str,
+        value: Option<String>,
+        tag: u64,
+    ) -> Vec<Out> {
+        let result = self.store_secret(module, name, value.as_deref());
+        vec![Out::HubResult {
+            tag,
+            result: result.map(|_| json!({})).map_err(|r| {
+                json!({"code": code::INVALID_PARAMS, "message": "invalid params",
+                    "data": {"reason": r}})
+            }),
+        }]
+    }
+
+    fn store_secret(
+        &mut self,
+        module: &str,
+        name: &str,
+        value: Option<&str>,
+    ) -> Result<(), String> {
+        if !self.secret_declared(module, name) {
+            return Err("This module has no such secret.".into());
+        }
+        if value.is_some_and(|v| v.len() > crate::secrets::MAX_SECRET) {
+            return Err("That is too long (at most 2048 bytes).".into());
+        }
+        self.secret_store
+            .set(&crate::secrets::target(module, name), value)
+            .map_err(|e| {
+                log::warn!("router: {module}: secret {name} not saved: {e}");
+                "Hideout couldn't save it in Windows' credential store.".to_string()
+            })
     }
 
     /// True when `module` is connected over the v1 wire (a Foxglove plugin, bridged): the hub
@@ -814,6 +896,30 @@ impl Router {
             {
                 let values = self.kept_settings(module.as_deref().unwrap_or_default());
                 out.push(answer(ok(&id, json!({ "values": values }))));
+            }
+            // A module's own `[[secrets]]` (Foxglove API 1.2), kept by the hub.
+            "secrets.get" | "secrets.set" if module.is_some() => {
+                let m = module.as_deref().unwrap_or_default();
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let reply = if !self.secret_declared(m, name) {
+                    denied(&id, Some("not one of this module's secrets"))
+                } else if method == "secrets.get" {
+                    let value = self.secret_store.get(&crate::secrets::target(m, name));
+                    ok(&id, json!({ "value": value }))
+                } else {
+                    let value = params
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .map(String::from);
+                    match self.store_secret(m, name, value.as_deref()) {
+                        Ok(()) => ok(&id, json!({})),
+                        Err(r) => error(&id, code::INVALID_PARAMS, "invalid params", Some(&r)),
+                    }
+                };
+                out.push(answer(reply));
             }
             "facts.get" | "facts.list" | "facts.subscribe" | "facts.unsubscribe" | "facts.set" => {
                 let reply =

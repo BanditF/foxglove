@@ -746,9 +746,20 @@ fn renders_the_tray_panel_for_review() {
             .cloned()
     };
     let keys = first(&host, &|m| !m.actions.is_empty());
-    let settings = first(&host, &|m| !m.settings.is_empty());
+    let settings = first(&host, &|m| {
+        m.settings
+            .iter()
+            .any(|s| s.kind == hideout_contract::module::ModuleSettingKind::File)
+    });
+    let secrets = first(&host, &|m| !m.secrets.is_empty());
+    // Choose file shows with a picker; the review never opens a real one.
+    host.picker = Some(hideout_panels::model::Picker(Box::new(|_| None)));
+    // Secrets answer as not saved yet (the masked field).
+    if let Some(id) = &secrets {
+        host.secrets_result(id, Default::default());
+    }
     let mut pages = Vec::new();
-    for id in [keys, settings].into_iter().flatten() {
+    for id in [keys, settings, secrets].into_iter().flatten() {
         let first_action = host
             .manifest(&id)
             .and_then(|m| m.actions.first().map(|a| a.decl.id.clone()));
@@ -760,7 +771,7 @@ fn renders_the_tray_panel_for_review() {
             pages.push(page);
         }
     }
-    let (w, h) = (1300u32, 760u32);
+    let (w, h) = (1600u32, 760u32);
     let rgba = rasterise(w, h, |c| {
         egui::CentralPanel::default().show(c, |ui| {
             ui.columns(pages.len().max(1), |cols| {

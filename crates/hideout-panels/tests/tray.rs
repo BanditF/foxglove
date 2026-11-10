@@ -284,3 +284,45 @@ fn the_tray_panel_draws_and_edits() {
         tray_panel_ui(&mut host, ui, &mut layout, &mut editing, Instant::now());
     });
 }
+
+#[test]
+fn choose_file_uses_the_hubs_picker_with_the_filter_and_secrets_never_echo() {
+    use std::sync::{Arc, Mutex};
+    let mut host = PanelHost::default();
+    let seen = Arc::new(Mutex::new(None::<Option<String>>));
+    let s = seen.clone();
+    assert_eq!(
+        host.pick_file(Some("A*.dll")),
+        None,
+        "no picker: nothing opens"
+    );
+    host.picker = Some(hideout_panels::model::Picker(Box::new(move |f| {
+        *s.lock().unwrap() = Some(f.map(String::from));
+        Some(r"C:\sdk\A1.dll".into())
+    })));
+    assert_eq!(
+        host.pick_file(Some("A*.dll")).as_deref(),
+        Some(r"C:\sdk\A1.dll")
+    );
+    assert_eq!(*seen.lock().unwrap(), Some(Some("A*.dll".into())));
+    // Secrets: the first look asks which are saved; saving marks it saved, value goes out once.
+    assert!(!host.secret_saved("m.six", "pw"));
+    assert_eq!(
+        host.take_hub_calls(),
+        [HubCall::SecretsStatus {
+            module: "m.six".into()
+        }]
+    );
+    host.set_secret("m.six", "pw", "hunter2".into());
+    assert!(host.secret_saved("m.six", "pw"));
+    assert_eq!(
+        host.take_hub_calls(),
+        [HubCall::SetSecret {
+            module: "m.six".into(),
+            name: "pw".into(),
+            value: Some("hunter2".into())
+        }]
+    );
+    host.secret_refused("m.six", "Hideout couldn't save it.".into());
+    assert!(host.settings_notice.contains_key("m.six"));
+}

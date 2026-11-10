@@ -24,6 +24,8 @@ enum Tag {
     Invoke { module: String, action: String },
     SettingsGet(String),
     SettingsSet(String),
+    SecretsStatus(String),
+    SetSecret(String),
 }
 
 /// Tags start high so they never meet the supervisor's.
@@ -155,6 +157,25 @@ impl RouterSide {
                         reason: reason(e),
                     },
                     (Tag::SettingsSet(_), Ok(_)) => return,
+                    (Tag::SecretsStatus(module), r) => Inbound::SecretsSaved {
+                        module,
+                        names: r
+                            .as_ref()
+                            .ok()
+                            .and_then(|v| v.get("saved"))
+                            .and_then(Value::as_array)
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|n| n.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    },
+                    (Tag::SetSecret(module), Err(e)) => Inbound::SecretRefused {
+                        module,
+                        reason: reason(e),
+                    },
+                    (Tag::SetSecret(_), Ok(_)) => return,
                     (Tag::Invoke { module, action }, Err(e)) => {
                         log::info!("panels: {module}: action {action}: {}", reason(e));
                         return;
@@ -209,6 +230,18 @@ impl PanelFeed for HubFeed {
             Outbound::Call(HubCall::SettingsGet { module }) => {
                 let tag = self.tag(Tag::SettingsGet(module.clone()));
                 self.hub.act(|r| r.get_settings(&module, tag, now));
+            }
+            Outbound::Call(HubCall::SecretsStatus { module }) => {
+                let tag = self.tag(Tag::SecretsStatus(module.clone()));
+                self.hub.act(|r| r.secrets_status(&module, tag));
+            }
+            Outbound::Call(HubCall::SetSecret {
+                module,
+                name,
+                value,
+            }) => {
+                let tag = self.tag(Tag::SetSecret(module.clone()));
+                self.hub.act(|r| r.set_secret(&module, &name, value, tag));
             }
             Outbound::Call(HubCall::SettingsSet {
                 module,

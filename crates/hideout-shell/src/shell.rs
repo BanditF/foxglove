@@ -190,7 +190,10 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
                 let wake_ctx = ctx.clone();
                 f.set_waker(Box::new(move || wake_ctx.request_repaint()));
             }
-            Ok(Box::new(Hub::new(shared, pages, feed, hooks)))
+            let mut hub = Hub::new(shared, pages, feed, hooks);
+            // Choose file for file settings: the Windows picker (tests leave it out).
+            hub.panels.picker = Some(hideout_panels::model::Picker(Box::new(platform::pick_file)));
+            Ok(Box::new(hub))
         }),
         &event_loop,
     );
