@@ -113,6 +113,13 @@ impl RouterSide {
         self.0.push(Inbound::Manifest(Box::new(m)));
     }
 
+    /// The module left the inventory (#1012.4): the shell closes its tabs and pop-outs.
+    pub fn removed(&self, module: &str) {
+        self.0.push(Inbound::ModuleRemoved {
+            module: module.to_string(),
+        });
+    }
+
     /// One router event (the supervisor has seen it too).
     pub fn on_router(&self, out: &Out) {
         if let Out::HostChannel {

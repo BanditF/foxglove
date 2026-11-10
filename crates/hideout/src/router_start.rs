@@ -184,6 +184,19 @@ pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
     for m in manifests {
         side.manifest(m);
     }
+    // A module that leaves the inventory (§7.1, #1012.4): its tabs and pop-outs close.
+    let gone = side.clone();
+    let watched = crate::inventory_watch::start(
+        home,
+        Box::new(move |ids| {
+            for id in ids {
+                gone.removed(&id);
+            }
+        }),
+    );
+    if let Err(e) = watched {
+        log::warn!("inventory watch not started: {e}; a removed module's windows stay open");
+    }
     for o in &early {
         side.on_router(o);
     }

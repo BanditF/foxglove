@@ -18,3 +18,8 @@ hideout-shell = { path = "../hideout-shell" }
 hideout-supervisor = { path = "../hideout-supervisor" }
 log = "0.4"
 serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+# The inventory change watch (#1012.4): FindFirstChangeNotificationW and its wait. Already in
+# the tree through hideout-supervisor (MIT/Apache-2.0).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading"] }

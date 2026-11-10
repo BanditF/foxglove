@@ -11,6 +11,8 @@
 //! and the lab control pipe is served (#1003). `hideout.exe --lab-do <verb> [args]` is its client.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod inventory_watch;
 mod modules_page;
 #[cfg(windows)]
 mod panel_feed;

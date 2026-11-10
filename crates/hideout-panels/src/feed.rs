@@ -52,6 +52,9 @@ pub enum Inbound {
     Fact { name: String, value: Value },
     /// The module's instance went away; its panels grey with `state` (§7.8).
     ModuleGone { module: String, state: String },
+    /// The module was removed (it left the inventory, §7.1): its panels go for good and the hub
+    /// closes its tabs and pop-outs (#1012.4).
+    ModuleRemoved { module: String },
     /// The answer to [`Outbound::Call`] `SettingsGet`: the module's values.
     Settings {
         module: String,
@@ -169,6 +172,10 @@ impl PanelHost {
                 Inbound::Fact { name, value } => changed |= self.set_fact(&name, value),
                 Inbound::ModuleGone { module, state } => {
                     self.module_gone(&module, &state);
+                    changed = true;
+                }
+                Inbound::ModuleRemoved { module } => {
+                    self.module_removed(&module);
                     changed = true;
                 }
                 Inbound::Settings { module, values } => {

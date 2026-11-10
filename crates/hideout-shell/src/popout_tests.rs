@@ -1315,3 +1315,105 @@ fn renders_the_tab_leftovers_for_review() {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// #1012.4: a removed module's pop-out closes with its tab, its saved places go, and the status
+/// strip says "<Module> was removed; its window was closed." (announced once in Hideout). A
+/// removed module without a window out closes its tabs silently. The line goes 10 s after the
+/// main window first shows it, and waits while Hideout is in the tray.
+#[test]
+fn a_removed_modules_window_closes_and_the_status_strip_says_so() {
+    let dir = temp_dir("pop-removed");
+    let (mut hub, router, ctx) = chat_hub(&dir);
+    hub.apply(Action::PopOut(1));
+    hub.toggle_keep_on_top(&chat());
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(hub.popouts.len(), 1);
+    assert!(saved_windows(&dir).contains_key("mod.chat/chat"));
+    // Hideout in the tray: the pop-out keeps the frames coming, so the removal lands now.
+    hub.shared.hidden.store(true, Ordering::Release);
+    router.push(Inbound::ModuleRemoved {
+        module: CHAT.0.into(),
+    });
+    frame(&ctx, &mut hub, vec![]);
+    assert!(hub.popouts.is_empty(), "the window closed");
+    assert!(hub.tabs.position(&chat()).is_none(), "the tab closed");
+    assert!(
+        !saved_windows(&dir).contains_key("mod.chat/chat"),
+        "its places are forgotten"
+    );
+    let words = "Chat was removed; its window was closed.";
+    assert_eq!(
+        hub.removed_notice.as_ref().map(|n| n.text.as_str()),
+        Some(words)
+    );
+    // In the tray nothing is said yet (it would be gone before Hideout is opened).
+    assert!(
+        hub.announce.as_ref().is_none_or(|a| a.text != words),
+        "said while in the tray"
+    );
+    // Reopen (Ctrl+Shift+T) can't bring it back.
+    hub.apply(Action::Reopen);
+    assert!(hub.tabs.position(&chat()).is_none());
+    // In the tray the line waits; shown, it is in the strip and its 10 s start.
+    assert!(hub.removed_notice.as_ref().unwrap().until.is_none());
+    hub.shared.hidden.store(false, Ordering::Release);
+    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert!(drawn(&out).iter().any(|t| t == words), "{:?}", drawn(&out));
+    let until = hub.removed_notice.as_ref().unwrap().until.unwrap();
+    assert!(until > std::time::Instant::now() + Duration::from_secs(9));
+    // Said once, politely, in the main window, with the line's first shown frame.
+    assert_eq!(
+        hub.announce.as_ref().map(|a| (a.text.as_str(), &a.place)),
+        Some((words, &Said::Main))
+    );
+    let n = hub.announce.as_ref().unwrap().n;
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(
+        hub.announce.as_ref().map(|a| a.n),
+        Some(n),
+        "said only once"
+    );
+    // Its time is up: gone with the next frame.
+    hub.removed_notice.as_mut().unwrap().until = Some(std::time::Instant::now());
+    let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert!(hub.removed_notice.is_none());
+    assert!(!drawn(&out).iter().any(|t| t == words));
+    // Art, not popped out: its tab closes, nothing is said.
+    hub.announce = None;
+    router.push(Inbound::ModuleRemoved {
+        module: "mod.art".into(),
+    });
+    frame(&ctx, &mut hub, vec![]);
+    assert!(hub.tabs.position(&TabId::panel("mod.art", "art")).is_none());
+    assert!(hub.removed_notice.is_none() && hub.announce.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_removal_words_follow_the_plan() {
+    assert_eq!(
+        removed_words("Art", 1),
+        "Art was removed; its window was closed."
+    );
+    assert_eq!(
+        removed_words("Art", 2),
+        "Art was removed; its windows were closed."
+    );
+}
+
+#[test]
+fn renders_the_removal_line_for_review() {
+    let dir = temp_dir("png-removed");
+    let (mut hub, router, ctx) = chat_hub(&dir);
+    hub.apply(Action::PopOut(1));
+    frame(&ctx, &mut hub, vec![]);
+    router.push(Inbound::ModuleRemoved {
+        module: CHAT.0.into(),
+    });
+    let Some(rgba) = render(&mut hub, 1100, 420, |_| {}) else {
+        eprintln!("no system font; removal review skipped");
+        return;
+    };
+    save_png("built-popout-removed-status.png", 1100, 420, rgba);
+    let _ = std::fs::remove_dir_all(&dir);
+}

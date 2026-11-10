@@ -224,6 +224,8 @@ pub struct PanelHost {
     pub picker: Option<Picker>,
     /// The live streams of the page panels (§5.4, H2.9).
     pub streams: crate::streams::Streams,
+    /// Modules removed since the hub last asked, with their names (#1012.4).
+    removed_out: Vec<(String, String)>,
 }
 
 /// A call the hub makes to a module for its own UI (not a `ui.event`).
@@ -247,6 +249,19 @@ pub enum HubCall {
         name: String,
         value: Option<String>,
     },
+}
+
+impl HubCall {
+    /// The module the call is for.
+    pub fn module(&self) -> &str {
+        match self {
+            HubCall::Invoke { module, .. }
+            | HubCall::SettingsGet { module }
+            | HubCall::SettingsSet { module, .. }
+            | HubCall::SecretsStatus { module }
+            | HubCall::SetSecret { module, .. } => module,
+        }
+    }
 }
 
 /// Opens the system file picker for a `kind = "file"` setting (v1.4): given the manifest's
@@ -327,6 +342,7 @@ impl PanelHost {
             secrets_saved: HashMap::new(),
             picker: None,
             streams: Default::default(),
+            removed_out: Vec::new(),
         }
     }
 
@@ -724,6 +740,44 @@ impl PanelHost {
                 v.optimistic.remove(node);
             }
         }
+    }
+
+    /// The module was removed (§5.9 "A removed module's tabs close", #1012.4): its panels, view
+    /// state, manifest and what was queued for it go, unlike [`PanelHost::module_gone`], which
+    /// keeps them for its return. The hub learns it from [`PanelHost::take_removed`], with the
+    /// module's name as it was. A module the host never saw is still reported (its tabs may have
+    /// been restored from the last run).
+    pub fn module_removed(&mut self, module: &str) {
+        let name = self.module_name(module);
+        self.forget_pending(module);
+        self.panels.retain(|p| p.key.module != module);
+        self.views.retain(|k, _| k.module != module);
+        self.sent_visibility.retain(|k, _| k.module != module);
+        self.closed.retain(|k| k.module != module);
+        self.hidden_tiles.retain(|k| k.module != module);
+        self.shown.retain(|k| k.module != module);
+        self.visibility_out.retain(|(m, _)| m != module);
+        self.hub_calls.retain(|c| c.module() != module);
+        self.keys.retain(|(m, _), _| m != module);
+        self.manifests.remove(module);
+        self.quarantined.remove(module);
+        self.gone_at.remove(module);
+        self.restart_since.remove(module);
+        self.settings.remove(module);
+        self.settings_asked.remove(module);
+        self.settings_notice.remove(module);
+        self.secrets_saved.remove(module);
+        if self.breadcrumb.as_ref().is_some_and(|b| b.module == module) {
+            self.breadcrumb = None;
+        }
+        if !self.removed_out.iter().any(|(m, _)| m == module) {
+            self.removed_out.push((module.to_string(), name));
+        }
+    }
+
+    /// The modules removed since the last call, as (id, name).
+    pub fn take_removed(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.removed_out)
     }
 
     /// A module went away (§5.6, §7.8): its panels grey with `state`, keeping tree and view state.
