@@ -26,6 +26,13 @@
 //! wakers asked for, a timer a frame asked for) or the OS's (a message to a window of the thread
 //! that winit handled itself) (#1000). `HIDEOUT_WAKE_REPORT_S` shortens the period for the lab's
 //! footprint case (`scripts/lab/hideout_footprint.py`), which reads the lines from the log.
+//!
+//! Each turn starts from `Wait` (#1000, the P0 spin): winit keeps the control flow from one turn
+//! to the next, and eframe sets it only while it has a repaint due (`check_redraw_requests`).
+//! Without the reset, a turn eframe left alone handed the gate its own previous answer back,
+//! the wait until the last wake report, already in the past, and `settle` kept it: winit got
+//! `WaitUntil(past)` on every turn and spun at millions of `timer` wakes a second, hidden and
+//! shown. A guard behind it ([`guard`]) never hands winit a deadline that has passed.
 
 use eframe::UserEvent;
 use std::time::{Duration, Instant};
@@ -38,6 +45,14 @@ use winit::window::WindowId;
 /// gate waits for an event: about half a second of frames at 60 Hz. Settling (an animation, a
 /// placing) takes a few; anything longer is a loop, and a loop must not spin the hidden hub.
 pub const HIDDEN_STREAK: u32 = 30;
+
+/// The most turns in a row a drawable window may turn on a deadline that has passed without a
+/// frame (`RedrawRequested`) between them (#1000): a deadline that passed while the turn ran is
+/// normal once, a few times at most; more is a loop that no frame will clear.
+pub const PAST_TURNS: u32 = 3;
+
+/// How often a firing [`guard`] is logged, at most.
+pub const GUARD_LOG_EVERY: Duration = Duration::from_secs(3600);
 
 /// How often the wake count is logged.
 pub const REPORT_EVERY: Duration = Duration::from_secs(600);
@@ -134,6 +149,49 @@ pub fn settle(flow: ControlFlow, drawable: bool, report_at: Instant) -> ControlF
     }
 }
 
+/// Why [`guard`] changed a turn's flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stale {
+    /// A passed deadline while no frame can run (hidden, minimised, not drawable).
+    NoFrame,
+    /// A drawable window turned [`PAST_TURNS`] times on passed deadlines without a frame.
+    NoRedraw,
+}
+
+impl Stale {
+    pub fn name(self) -> &'static str {
+        match self {
+            Stale::NoFrame => "a passed deadline with no frame able to run",
+            Stale::NoRedraw => "passed deadlines with no frame between them",
+        }
+    }
+}
+
+/// Defence in depth behind [`settle`] (#1000): winit never gets `WaitUntil(t)` with `t <= now`.
+/// With no frame able to run, a passed deadline becomes the wait until the report. A drawable
+/// window turns at once (`Poll`) for at most [`PAST_TURNS`] such turns since its last frame
+/// (`past_turns`), then waits until the report too. Any other flow passes unchanged.
+pub fn guard(
+    flow: ControlFlow,
+    now: Instant,
+    drawable: bool,
+    past_turns: u32,
+    report_at: Instant,
+) -> (ControlFlow, Option<Stale>) {
+    match flow {
+        ControlFlow::WaitUntil(t) if t <= now => {
+            if !drawable {
+                (ControlFlow::WaitUntil(report_at), Some(Stale::NoFrame))
+            } else if past_turns >= PAST_TURNS {
+                (ControlFlow::WaitUntil(report_at), Some(Stale::NoRedraw))
+            } else {
+                (ControlFlow::Poll, None)
+            }
+        }
+        other => (other, None),
+    }
+}
+
 /// Whether the hidden main window must run a frame now: eframe has one due (`Poll`), the window
 /// is hidden (so `RedrawRequested` won't come), and a window drawn from its frame is up (the
 /// tray flyout). Never true with the flyout closed: the hidden, idle hub keeps waiting (#935).
@@ -221,6 +279,10 @@ pub struct Gate<A> {
     /// How this wake started and what it dispatched, for its [`Cause`].
     start: StartCause,
     seen: Seen,
+    /// Turns on a passed deadline since the last frame ([`PAST_TURNS`]).
+    past_turns: u32,
+    /// When a firing [`guard`] was last logged ([`GUARD_LOG_EVERY`]).
+    guard_logged: Option<Instant>,
 }
 
 impl<A> Gate<A> {
@@ -244,6 +306,8 @@ impl<A> Gate<A> {
             streak: 0,
             start: StartCause::Init,
             seen: Seen::default(),
+            past_turns: 0,
+            guard_logged: None,
         }
     }
 }
@@ -253,6 +317,10 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
         self.start = cause;
         self.seen = Seen::default();
         self.streak = next_streak(self.streak, cause);
+        // eframe decides this turn's flow afresh: it sets one only while it has a repaint due,
+        // so whatever the gate set last turn (a wait until a deadline now passed) must not
+        // stand in for its answer (#1000).
+        event_loop.set_control_flow(ControlFlow::Wait);
         self.app.new_events(event_loop, cause);
     }
 
@@ -270,6 +338,9 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         self.seen.window = true;
+        if matches!(event, WindowEvent::RedrawRequested) {
+            self.past_turns = 0;
+        }
         self.app.window_event(event_loop, id, event);
     }
 
@@ -292,6 +363,7 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
             if let Some(root) = (self.root)() {
                 // eframe's own frame path, as Windows would run it for a shown window.
                 self.streak += 1;
+                self.past_turns = 0;
                 self.app
                     .window_event(event_loop, root, WindowEvent::RedrawRequested);
             }
@@ -305,6 +377,27 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
             drawable || side,
             self.wakes.report_at(),
         );
+        let now = Instant::now();
+        let past = matches!(flow, ControlFlow::WaitUntil(t) if t <= now);
+        let (flow, stale) = guard(
+            flow,
+            now,
+            drawable || side,
+            self.past_turns,
+            self.wakes.report_at(),
+        );
+        if past && stale.is_none() {
+            self.past_turns += 1;
+        }
+        if let Some(why) = stale {
+            if self
+                .guard_logged
+                .is_none_or(|t| now.saturating_duration_since(t) >= GUARD_LOG_EVERY)
+            {
+                self.guard_logged = Some(now);
+                log::warn!("event loop: wait guard fired: {} (#1000)", why.name());
+            }
+        }
         event_loop.set_control_flow(flow);
     }
 
@@ -532,5 +625,177 @@ mod tests {
         // 14 feed events (every 4 s up to 56 s) plus 4 reports, the last at 60 s.
         assert_eq!(wakes, 18, "{lines:?}");
         assert!(wakes as f64 / 60.0 <= 1.0);
+    }
+
+    #[test]
+    fn the_report_is_always_ahead() {
+        // The footprint script's period (HIDEOUT_WAKE_REPORT_S=15) and the default: after any
+        // wake, the next report is in the future, so the wait until it never spins.
+        for every in [report_every(Some("15")), REPORT_EVERY] {
+            let t0 = Instant::now();
+            let mut w = WakeCount::new(t0, every);
+            for k in [0u32, 1, 7, 15, 16, 31, 600, 1201] {
+                let now = t0 + Duration::from_secs(k as u64);
+                w.wake(now, Cause::Timer);
+                assert!(w.report_at() > now, "every {every:?}, at {k} s");
+            }
+        }
+    }
+
+    #[test]
+    fn the_guard_never_hands_winit_a_passed_deadline() {
+        let now = Instant::now();
+        let report = now + Duration::from_secs(15);
+        let past = now - Duration::from_millis(1);
+        let soon = now + Duration::from_millis(16);
+        // No frame can run: the wait until the report, named.
+        assert_eq!(
+            guard(WaitUntil(past), now, false, 0, report),
+            (WaitUntil(report), Some(Stale::NoFrame))
+        );
+        assert_eq!(
+            guard(WaitUntil(now), now, false, 0, report),
+            (WaitUntil(report), Some(Stale::NoFrame))
+        );
+        // Drawable: a few turns at once, then the wait until the report.
+        for n in 0..PAST_TURNS {
+            assert_eq!(guard(WaitUntil(past), now, true, n, report), (Poll, None));
+        }
+        assert_eq!(
+            guard(WaitUntil(past), now, true, PAST_TURNS, report),
+            (WaitUntil(report), Some(Stale::NoRedraw))
+        );
+        // Anything else passes unchanged.
+        for drawable in [false, true] {
+            for flow in [Poll, Wait, WaitUntil(soon), WaitUntil(report)] {
+                assert_eq!(guard(flow, now, drawable, PAST_TURNS, report), (flow, None));
+            }
+        }
+    }
+
+    /// The gate's per-turn decision against an eframe that keeps answering a passed deadline,
+    /// for 1 s of fake time, hidden and shown: the turns stay a few, not a spin (#1000).
+    #[test]
+    fn a_passed_deadline_every_turn_does_not_spin() {
+        for drawable in [false, true] {
+            let t0 = Instant::now();
+            let end = t0 + Duration::from_secs(1);
+            let mut w = WakeCount::new(t0, report_every(Some("15")));
+            let mut now = t0;
+            let mut past_turns = 0;
+            let mut turns = 0u32;
+            while now < end && turns < 1_000_000 {
+                turns += 1;
+                w.wake(now, Cause::Timer);
+                let flow = settle(
+                    WaitUntil(now - Duration::from_millis(5)),
+                    drawable,
+                    w.report_at(),
+                );
+                let past = matches!(flow, WaitUntil(t) if t <= now);
+                let (flow, stale) = guard(flow, now, drawable, past_turns, w.report_at());
+                if past && stale.is_none() {
+                    past_turns += 1;
+                }
+                now = match flow {
+                    WaitUntil(t) => {
+                        assert!(t > now, "a passed deadline reached winit");
+                        t
+                    }
+                    // winit turns again at once: a microsecond of fake time.
+                    _ => now + Duration::from_micros(1),
+                };
+            }
+            assert!(
+                turns <= 1 + PAST_TURNS,
+                "drawable {drawable}: {turns} turns in 1 s"
+            );
+        }
+    }
+
+    /// eframe's `check_redraw_requests` in miniature: it sets the flow only while it has a
+    /// repaint due; an answered frame (a shown window's) sets `Wait`.
+    struct Eframe {
+        next: Option<Instant>,
+        drawable: bool,
+        t0: Instant,
+        turns: u64,
+    }
+
+    impl ApplicationHandler<UserEvent> for Eframe {
+        fn new_events(&mut self, event_loop: &ActiveEventLoop, _: StartCause) {
+            let now = Instant::now();
+            match self.next {
+                Some(t) if t <= now => {
+                    self.next = None;
+                    event_loop.set_control_flow(Poll);
+                }
+                Some(t) => event_loop.set_control_flow(WaitUntil(t)),
+                None => {}
+            }
+        }
+
+        fn resumed(&mut self, _: &ActiveEventLoop) {}
+
+        fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+
+        fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+            self.turns += 1;
+            if self.drawable && event_loop.control_flow() == Poll {
+                // The shown window's frame ran and answered Wait.
+                event_loop.set_control_flow(Wait);
+            }
+            if self.t0.elapsed() >= Duration::from_secs(1) || self.turns > 1_000_000 {
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn hidden() -> bool {
+        false
+    }
+    fn shown() -> bool {
+        true
+    }
+    fn no_side() -> bool {
+        false
+    }
+    fn no_root() -> Option<WindowId> {
+        None
+    }
+    fn no_tray() {}
+
+    /// The P0 of #1000 on a real winit loop (its hidden message window only, no window of ours):
+    /// eframe asks for one repaint and then nothing, the report comes every 200 ms. On cde0b451
+    /// the gate handed winit its own passed report deadline back on every turn: a million turns
+    /// before the second report. Now: the reports and the repaint, under 20 turns a second.
+    #[test]
+    fn the_real_loop_sleeps_when_eframe_sets_no_flow() {
+        use winit::event_loop::EventLoop;
+        use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+        let mut event_loop = EventLoop::<UserEvent>::with_user_event()
+            .with_any_thread(true)
+            .build()
+            .expect("event loop");
+        for (drawable, drawn) in [(false, hidden as fn() -> bool), (true, shown)] {
+            let t0 = Instant::now();
+            let app = Eframe {
+                next: Some(t0 + Duration::from_millis(10)),
+                drawable,
+                t0,
+                turns: 0,
+            };
+            let mut gate = Gate::new(app, drawn, no_side, no_root, no_tray);
+            gate.wakes = WakeCount::new(t0, Duration::from_millis(200));
+            event_loop.run_app_on_demand(&mut gate).expect("run");
+            let secs = t0.elapsed().as_secs_f64();
+            let rate = gate.app.turns as f64 / secs;
+            assert!(
+                rate <= 20.0,
+                "drawable {drawable}: {} turns in {secs:.2} s ({rate:.0}/s)",
+                gate.app.turns
+            );
+        }
     }
 }

@@ -214,6 +214,30 @@ next event or report, 18 wakes in 60 s, under 1/s), `wake::tests::a_wake_is_name
 and `wake::tests::wakes_are_reported_once_per_ten_minutes_by_cause`; the compare and the log
 reading are in `scripts/test_hideout_footprint.py`.
 
+### The P0 spin on main cde0b451 (#1000)
+
+On-call's case 7 on cde0b451 read ~4.2 M loop wakes/s hidden and ~3.5 M shown, 70–90 % of a core,
+every wake `timer`. The cause was the gate's own previous answer, not a frame or a waker: winit
+keeps the control flow from turn to turn, and eframe sets it only while it has a repaint due
+(`check_redraw_requests` in eframe's `native/run.rs`). On a turn where eframe had nothing due,
+`about_to_wait` read back the gate's last flow, the wait until the wake report, which the report
+had just made a passed deadline, and `settle` kept it (`t.min(report_at)` of a passed `t` is that
+`t`). winit returned at once with `ResumeTimeReached` on every turn, forever. The bug was older
+than #1004–#1009; it showed only once the first report had passed, and d333bd52's 63 s reading
+ended long before its 10 min report. #1007 set `HIDEOUT_WAKE_REPORT_S=15` in the footprint case,
+so the report passed inside the window.
+
+The fix: `Gate::new_events` resets the flow to `Wait` before eframe's `new_events`, so each turn's
+flow is eframe's own decision. Behind it `wake::guard` never hands winit `WaitUntil(t)` with
+`t <= now`: with no frame able to run (hidden, minimised, not drawable) it waits until the report;
+a drawable window gets at most `PAST_TURNS` (3) such turns without a `RedrawRequested`, then waits
+until the report too. A firing guard logs `event loop: wait guard fired: …` at most once an hour.
+Tests: `wake::tests::the_real_loop_sleeps_when_eframe_sets_no_flow` drives the real `Gate` on a
+real winit loop (its hidden message window only) with a mock eframe that asks for one repaint and
+then nothing; on cde0b451's gate it ran 1,000,002 turns in 0.68 s (1.46 M/s), now under 20/s.
+`wake::tests::a_passed_deadline_every_turn_does_not_spin` runs the per-turn decision against an
+eframe answering a passed deadline every turn for 1 s of fake time, hidden and shown.
+
 Re-open #1000 only if a cheap non-admin check (the per-cause count, `top_threads` with thread
 descriptions) shows our own threads causing the readies, or idle CPU or power (for example
 `powercfg /srumutil` energy per app, or CPU % over a long hidden window) shows a real cost.
