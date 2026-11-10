@@ -657,6 +657,13 @@ impl Router {
         out
     }
 
+    /// Safe mode on or off (§7.10): the `initialize` result's `safe_mode` and the fact
+    /// `hub.safe_mode`. **Start normally** turns it off without a hub restart.
+    pub fn set_safe_mode(&mut self, on: bool) -> Vec<Out> {
+        self.settings.safe_mode = on;
+        self.publish("hub.safe_mode", json!(on))
+    }
+
     /// How many wire faults (§8.1 frame-too-large) module `id` has caused; the supervisor counts
     /// each as one crash (§7.7).
     pub fn module_faults(&self, id: &str) -> u32 {

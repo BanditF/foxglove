@@ -73,6 +73,25 @@ impl HubConfig {
         }
     }
 
+    /// The `safe_mode` flag (§7.10): the hub set it for itself after closing 3 times in 5
+    /// minutes; **Start normally** clears it.
+    pub fn safe_mode(&self) -> bool {
+        self.table
+            .get("safe_mode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Sets the flag; off removes the key.
+    pub fn set_safe_mode(&mut self, on: bool) {
+        if on {
+            self.table
+                .insert("safe_mode".into(), toml::Value::Boolean(true));
+        } else {
+            self.table.remove("safe_mode");
+        }
+    }
+
     /// Drops a removed module's table.
     pub fn forget(&mut self, id: &str) {
         if let Some(toml::Value::Table(modules)) = self.table.get_mut("modules") {
@@ -86,5 +105,24 @@ impl HubConfig {
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, path)
+    }
+}
+
+#[cfg(test)]
+mod safe_mode_tests {
+    use super::*;
+
+    #[test]
+    fn safe_mode_is_a_flag_that_clears_and_keeps_the_rest() {
+        let mut c = HubConfig::parse("safe_mode = true\ntheme = \"dark\"\n").unwrap();
+        assert!(c.safe_mode());
+        c.set_safe_mode(false);
+        assert!(!c.safe_mode());
+        let text = toml::to_string_pretty(&c.table).unwrap();
+        assert!(
+            !text.contains("safe_mode") && text.contains("dark"),
+            "{text}"
+        );
+        assert!(!HubConfig::default().safe_mode());
     }
 }

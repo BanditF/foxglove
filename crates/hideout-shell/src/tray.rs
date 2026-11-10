@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! The tray icon and its fixed menu frame (design UX8): a status line, Open Hideout; then the
 //! pinned quick actions (none until modules declare actions); then Pause Hideout, Open log
-//! folder, Quit Hideout. The icon has three states (`icon::State`).
+//! folder, Quit Hideout. The icon has three states (`icon::State`). In safe mode **Start
+//! normally** comes right under the status line (docs/hideout-supervisor-ux.md, column Tr).
 //!
 //! tray-icon delivers its events on the thread that made the icon (the UI thread), from inside
 //! the Win32 message loop, so they arrive even while the window is hidden and draws no frames.
@@ -20,17 +21,26 @@ pub enum Command {
     Pause(bool),
     OpenLogs,
     Quit,
+    /// **Start normally** (safe mode only): safe mode ends and the enabled modules start.
+    StartNormally,
 }
 
 const OPEN: &str = "hideout.open";
 const PAUSE: &str = "hideout.pause";
 const LOGS: &str = "hideout.logs";
 const QUIT: &str = "hideout.quit";
+const START_NORMALLY: &str = "hideout.start-normally";
+/// The menu item's words (the banner's button says the same).
+pub const START_NORMALLY_LABEL: &str = hideout_supervisor::words::START_NORMALLY;
 
 struct Tray {
     icon: TrayIcon,
+    menu: Menu,
     status: MenuItem,
     pause: CheckMenuItem,
+    start_normally: MenuItem,
+    /// Whether `start_normally` is in the menu now.
+    safe_shown: bool,
 }
 
 thread_local! {
@@ -80,6 +90,7 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
     let pause = CheckMenuItem::with_id(PAUSE, "Pause Hideout", true, false, None);
     let logs = MenuItem::with_id(LOGS, "Open log folder", true, None);
     let quit = MenuItem::with_id(QUIT, "Quit Hideout", true, None);
+    let start_normally = MenuItem::with_id(START_NORMALLY, START_NORMALLY_LABEL, true, None);
     let menu = Menu::new();
     menu.append_items(&[
         &status,
@@ -92,7 +103,7 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
     .map_err(|e| e.to_string())?;
     let icon = TrayIconBuilder::new()
         .with_tooltip(crate::PRODUCT)
-        .with_menu(Box::new(menu))
+        .with_menu(Box::new(menu.clone()))
         .with_menu_on_left_click(false)
         .with_icon(glyph(State::Normal).ok_or("tray glyph")?)
         .build()
@@ -104,8 +115,11 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
     TRAY.with(|t| {
         *t.borrow_mut() = Some(Tray {
             icon,
+            menu,
             status,
             pause,
+            start_normally,
+            safe_shown: false,
         })
     });
 
@@ -119,6 +133,7 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             ),
             LOGS => Command::OpenLogs,
             QUIT => Command::Quit,
+            START_NORMALLY => Command::StartNormally,
             _ => return,
         };
         menu_cmd(cmd);
@@ -182,6 +197,27 @@ pub fn set_state(state: State, status_line: &str, tooltip: &str) {
             let _ = t.icon.set_tooltip(Some(tooltip));
             t.status.set_text(status_line);
             t.pause.set_checked(state == State::Paused);
+        }
+    });
+}
+
+/// Puts **Start normally** under the status line in safe mode and takes it out after. A no-op
+/// off the UI thread or before `install`.
+pub fn set_safe_mode(on: bool) {
+    TRAY.with(|t| {
+        if let Some(t) = t.borrow_mut().as_mut() {
+            if on == t.safe_shown {
+                return;
+            }
+            let done = if on {
+                t.menu.insert(&t.start_normally, 1)
+            } else {
+                t.menu.remove(&t.start_normally)
+            };
+            match done {
+                Ok(()) => t.safe_shown = on,
+                Err(e) => log::warn!("tray: Start normally item: {e}"),
+            }
         }
     });
 }

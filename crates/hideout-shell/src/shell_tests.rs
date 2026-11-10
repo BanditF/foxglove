@@ -39,6 +39,7 @@ fn hub_in(dir: &std::path::Path, feed: Option<Box<dyn PanelFeed>>) -> Hub {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        start_normally: None,
     });
     let pages: Vec<Box<dyn Page>> = vec![
         Box::new(FakePage("modules", "Modules")),
@@ -1169,6 +1170,7 @@ fn the_tile_layout_is_saved_in_hideout_toml() {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        start_normally: None,
     });
     let again = Hub::new(shared, Vec::new(), None, None);
     assert_eq!(again.tray_layout, hub.tray_layout);
@@ -1962,12 +1964,13 @@ fn lab_control_drives_the_tabs_through_the_hub_frame() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The Modules page's rows (#983) through the real hub frame, for review: every row state the
-/// supervisor UX plan's column M names, and no drawn id.
+/// The Modules page's rows (#983, #1029) through the real hub frame, for review: every row
+/// state the supervisor UX plan's column M names with its one main button, the needs-you rows
+/// first and Off last; then the same hub in safe mode with the banner. No drawn id.
 #[test]
 fn renders_the_modules_page_for_review() {
-    use crate::modules_list::{page_ui, row, Installed, Row};
-    struct ModulesPage(Vec<Row>);
+    use crate::modules_list::{order, page_ui, row, Installed, Row};
+    struct ModulesPage(Vec<Row>, bool);
     impl Page for ModulesPage {
         fn id(&self) -> &str {
             "hub.modules"
@@ -1976,16 +1979,18 @@ fn renders_the_modules_page_for_review() {
             "Modules"
         }
         fn ui(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-            page_ui(ui, t, &self.0);
+            page_ui(ui, t, &self.0, self.1);
         }
     }
     let facts: HashMap<String, serde_json::Value> = [
         ("module.m.beat.state", serde_json::json!("restarting")),
         ("module.m.chat.state", serde_json::json!("crash-stopped")),
+        ("module.m.chat.recovery", serde_json::json!("defaults")),
         ("module.m.dock.state", serde_json::json!("install-failed")),
         ("module.m.dock.failed", serde_json::json!("launch")),
         ("module.m.lamp.state", serde_json::json!("starting")),
         ("module.m.art.state", serde_json::json!("running")),
+        ("module.m.kiln.state", serde_json::json!("needs-hub")),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -2004,16 +2009,38 @@ fn renders_the_modules_page_for_review() {
         (m("m.dock", "Dock", "2.0.0", true), None),
         (m("m.lamp", "Lamp", "0.9.4", true), None),
         (m("m.notes", "Notes", "0.1.0", false), None),
+        (m("m.kiln", "Kiln", "1.0.0", true), None),
     ]
     .iter()
     .map(|(i, r)| row(i, &fact, *r))
     .collect();
+    let mut rows = rows;
+    order(&mut rows);
     for r in &rows {
-        for never in hideout_supervisor::words::NEVER_SHOWN {
-            assert!(!r.state.contains(never), "{never} drawn: {}", r.state);
+        let mut drawn = vec![r.state.clone(), r.label.clone()];
+        drawn.extend(r.primary.iter().map(|p| p.label.clone()));
+        for s in &drawn {
+            for never in hideout_supervisor::words::NEVER_SHOWN {
+                assert!(!s.contains(never), "{never} drawn: {s}");
+            }
+            assert!(!s.contains(&r.id), "{} drawn", r.id);
         }
-        assert!(!r.state.contains(&r.id), "{} drawn", r.id);
     }
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Chat", "Dock", "Kiln", "Art", "Beat", "Lamp", "Notes"]
+    );
+    // Safe mode: nothing started, every enabled module "On · not started in safe mode".
+    let safe_facts = |k: &str| (k == "hub.safe_mode").then_some(serde_json::Value::Bool(true));
+    let safe_rows: Vec<Row> = [
+        m("m.art", "Art", "0.5.0", true),
+        m("m.beat", "Beat", "1.2.0", true),
+        m("m.notes", "Notes", "0.1.0", false),
+    ]
+    .iter()
+    .map(|i| row(i, &safe_facts, None))
+    .collect();
     let dir = temp_dir("png-modules");
     let root = dir.as_os_str().to_owned();
     let paths = HubPaths::resolve(|k| (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())).unwrap();
@@ -2023,13 +2050,19 @@ fn renders_the_modules_page_for_review() {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        start_normally: None,
     });
-    let pages: Vec<Box<dyn Page>> = vec![Box::new(ModulesPage(rows))];
-    let mut hub = Hub::new(shared, pages, None, None);
-    let Some(rgba) = render(&mut hub, 1000, 640, |_| {}) else {
+    let pages: Vec<Box<dyn Page>> = vec![Box::new(ModulesPage(rows, false))];
+    let mut hub = Hub::new(shared.clone(), pages, None, None);
+    let Some(rgba) = render(&mut hub, 1000, 720, |_| {}) else {
         eprintln!("no system font; render test skipped");
         return;
     };
-    save_png("built-modules-page.png", 1000, 640, rgba);
+    save_png("built-modules-page.png", 1000, 720, rgba);
+    let pages: Vec<Box<dyn Page>> = vec![Box::new(ModulesPage(safe_rows, true))];
+    let mut hub = Hub::new(shared, pages, None, None);
+    if let Some(rgba) = render(&mut hub, 1000, 640, |_| {}) {
+        save_png("built-modules-safe-mode.png", 1000, 640, rgba);
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

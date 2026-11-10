@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! The Modules page, the hub's one page of its own (contract §2.1 job 2): every installed module
-//! with its name, version, state in plain words (docs/hideout-supervisor-ux.md, column **M**)
-//! and **Open**. With nothing installed it shows the empty state. Generic only: it names no
-//! module (§2.2). The rows and their drawing live in `hideout_shell::modules_list`.
+//! with its name, version, state in plain words (docs/hideout-supervisor-ux.md, column **M**),
+//! one main button for the state and **Open**. In safe mode the banner with **Start normally**
+//! comes first (§7.10). With nothing installed it shows the empty state. Generic only: it names
+//! no module (§2.2). The rows and their drawing live in `hideout_shell::modules_list`.
 #![cfg_attr(not(windows), allow(dead_code))]
 
 /// The page's id and title, kept apart from egui so they test window-free.
@@ -13,16 +14,122 @@ pub const TITLE: &str = "Modules";
 #[cfg(windows)]
 pub type Facts = Box<dyn Fn(&str) -> Option<serde_json::Value>>;
 
+/// What the page's buttons ask of the supervisor (Start normally, the ladder, Turn on); `None`
+/// on a hub without one. Turn on answers whether the module was turned on.
+#[cfg(windows)]
+pub trait Actions {
+    fn start_normally(&self);
+    fn start_again(&self, id: &str);
+    fn start_with_defaults(&self, id: &str);
+    fn go_back(&self, id: &str);
+    fn turn_off(&self, id: &str);
+    fn turn_on(&self, id: &str) -> bool;
+}
+
+#[cfg(windows)]
+impl Actions for hideout_supervisor::driver::Supervisor {
+    fn start_normally(&self) {
+        hideout_supervisor::driver::Supervisor::start_normally(self)
+    }
+    fn start_again(&self, id: &str) {
+        hideout_supervisor::driver::Supervisor::start_again(self, id)
+    }
+    fn start_with_defaults(&self, id: &str) {
+        hideout_supervisor::driver::Supervisor::start_with_defaults(self, id)
+    }
+    fn go_back(&self, id: &str) {
+        hideout_supervisor::driver::Supervisor::go_back(self, id)
+    }
+    fn turn_off(&self, id: &str) {
+        hideout_supervisor::driver::Supervisor::turn_off(self, id)
+    }
+    fn turn_on(&self, id: &str) -> bool {
+        hideout_supervisor::driver::Supervisor::turn_on(self, id)
+    }
+}
+
 #[cfg(windows)]
 pub struct ModulesPage {
     pub installed: Vec<hideout_shell::modules_list::Installed>,
     pub facts: Option<Facts>,
+    pub actions: Option<Box<dyn Actions>>,
     restarts: hideout_shell::modules_list::Restarts,
 }
 
 #[cfg(windows)]
 impl ModulesPage {
-    /// The rows for this frame, and whether a countdown is running (repaint in a second).
+    /// Whether the hub is in safe mode (the banner shows).
+    fn safe_mode(&self) -> bool {
+        self.facts
+            .as_ref()
+            .and_then(|f| f("hub.safe_mode"))
+            .and_then(|v| v.as_bool())
+            == Some(true)
+    }
+
+    /// Carries out a click. Open, Update Hideout and a Turn on that waits for the permission
+    /// dialog leave the page (the module's page, the releases page).
+    fn on_click(&mut self, click: hideout_shell::modules_list::Click) {
+        use hideout_shell::modules_list::{Click, Does};
+        let id = match &click {
+            Click::Open(id) | Click::Primary(id, _) => Some(id.clone()),
+            Click::StartNormally => None,
+        };
+        let a = self.actions.as_deref();
+        let open = match click {
+            Click::Open(_) => true,
+            Click::StartNormally => {
+                match a {
+                    Some(a) => a.start_normally(),
+                    None => log::warn!("Start normally: no supervisor in this hub"),
+                }
+                false
+            }
+            Click::Primary(id, does) => match (does, a) {
+                (Does::UpdateHub, _) => {
+                    hideout_shell::open_update_page();
+                    false
+                }
+                (_, None) => true,
+                (Does::StartAgain | Does::TryAgain, Some(a)) => {
+                    a.start_again(&id);
+                    false
+                }
+                (Does::StartDefaults, Some(a)) => {
+                    a.start_with_defaults(&id);
+                    false
+                }
+                (Does::GoBack, Some(a)) => {
+                    a.go_back(&id);
+                    false
+                }
+                (Does::TurnOff, Some(a)) => {
+                    a.turn_off(&id);
+                    self.set_enabled(&id, false);
+                    false
+                }
+                (Does::TurnOn, Some(a)) => {
+                    let on = a.turn_on(&id);
+                    if on {
+                        self.set_enabled(&id, true);
+                    }
+                    !on
+                }
+            },
+        };
+        if let (true, Some(id)) = (open, id) {
+            hideout_shell::open_module(&id);
+        }
+    }
+
+    fn set_enabled(&mut self, id: &str, on: bool) {
+        if let Some(m) = self.installed.iter_mut().find(|m| m.id == id) {
+            m.enabled = on;
+        }
+    }
+
+    /// The rows for this frame, in the page's order, and whether a countdown is running
+    /// (repaint in a second).
     fn rows(&mut self) -> (Vec<hideout_shell::modules_list::Row>, bool) {
         use hideout_shell::modules_list::row;
         let none = |_: &str| None;
@@ -32,7 +139,7 @@ impl ModulesPage {
         };
         let now = std::time::Instant::now();
         let mut counting = false;
-        let rows = self
+        let mut rows: Vec<_> = self
             .installed
             .iter()
             .map(|m| {
@@ -44,6 +151,7 @@ impl ModulesPage {
                 row(m, facts, left)
             })
             .collect();
+        hideout_shell::modules_list::order(&mut rows);
         (rows, counting)
     }
 }
@@ -81,8 +189,9 @@ impl hideout_shell::Page for ModulesPage {
 
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
         let (rows, counting) = self.rows();
-        if let Some(id) = hideout_shell::modules_list::page_ui(ui, t, &rows) {
-            hideout_shell::open_module(&id);
+        let safe = self.safe_mode();
+        if let Some(click) = hideout_shell::modules_list::page_ui(ui, t, &rows, safe) {
+            self.on_click(click);
         }
         // Only while a row counts down and the page is drawn (no frames while hidden).
         if counting {
@@ -92,15 +201,18 @@ impl hideout_shell::Page for ModulesPage {
     }
 }
 
-/// The hub's pages, in sidebar order: only Modules. `facts` is `None` on a second hub.
+/// The hub's pages, in sidebar order: only Modules. `facts` and `actions` are `None` on a
+/// second hub.
 #[cfg(windows)]
 pub fn pages(
     installed: Vec<hideout_shell::modules_list::Installed>,
     facts: Option<Facts>,
+    actions: Option<Box<dyn Actions>>,
 ) -> Vec<Box<dyn hideout_shell::Page>> {
     vec![Box::new(ModulesPage {
         installed,
         facts,
+        actions,
         restarts: Default::default(),
     })]
 }
@@ -113,7 +225,7 @@ mod tests {
 
     #[test]
     fn the_hub_starts_with_only_the_modules_page() {
-        let pages = pages(Vec::new(), None);
+        let pages = pages(Vec::new(), None, None);
         assert_eq!(pages.len(), 1);
         assert_eq!((pages[0].id(), pages[0].title()), (ID, TITLE));
         assert_eq!(
@@ -139,6 +251,7 @@ mod tests {
         let mut page = ModulesPage {
             installed: vec![inst("m.a", "Art"), inst("m.b", "Beat"), inst("m.c", "Chat")],
             facts: Some(facts),
+            actions: None,
             restarts: Default::default(),
         };
         let (rows, counting) = page.rows();
@@ -158,5 +271,67 @@ mod tests {
     fn installed_reads_an_empty_folder_as_nothing() {
         let dir = std::env::temp_dir().join(format!("hideout-modpage-{}", std::process::id()));
         assert!(installed(&dir).is_empty());
+    }
+
+    /// What the page asked of the supervisor, in order.
+    #[derive(Clone, Default)]
+    struct Log(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    impl Actions for Log {
+        fn start_normally(&self) {
+            self.0.borrow_mut().push("start-normally".into());
+        }
+        fn start_again(&self, id: &str) {
+            self.0.borrow_mut().push(format!("start-again {id}"));
+        }
+        fn start_with_defaults(&self, id: &str) {
+            self.0.borrow_mut().push(format!("defaults {id}"));
+        }
+        fn go_back(&self, id: &str) {
+            self.0.borrow_mut().push(format!("go-back {id}"));
+        }
+        fn turn_off(&self, id: &str) {
+            self.0.borrow_mut().push(format!("turn-off {id}"));
+        }
+        fn turn_on(&self, id: &str) -> bool {
+            self.0.borrow_mut().push(format!("turn-on {id}"));
+            true
+        }
+    }
+
+    /// Safe mode: the banner shows, every enabled row reads "On · not started in safe mode", and
+    /// Start normally goes to the supervisor. Once `hub.safe_mode` is off the banner goes.
+    #[test]
+    fn start_normally_from_the_banner_reaches_the_supervisor() {
+        use hideout_shell::modules_list::{Click, Does};
+        let safe = std::rc::Rc::new(std::cell::Cell::new(true));
+        let s = safe.clone();
+        let facts: Facts = Box::new(move |k| (k == "hub.safe_mode").then(|| json!(s.get())));
+        let log = Log::default();
+        let inst = |id: &str, name: &str, enabled: bool| Installed {
+            id: id.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            enabled,
+        };
+        let mut page = ModulesPage {
+            installed: vec![inst("m.a", "Art", true), inst("m.o", "Oak", false)],
+            facts: Some(facts),
+            actions: Some(Box::new(log.clone())),
+            restarts: Default::default(),
+        };
+        assert!(page.safe_mode());
+        let (rows, _) = page.rows();
+        let words: Vec<_> = rows.iter().map(|r| r.state.as_str()).collect();
+        assert_eq!(words, ["On \u{b7} not started in safe mode", "Off"]);
+        page.on_click(Click::StartNormally);
+        page.on_click(Click::Primary("m.o".into(), Does::TurnOn));
+        assert_eq!(*log.0.borrow(), ["start-normally", "turn-on m.o"]);
+        assert!(page.installed[1].enabled, "Turn on didn't stick to the row");
+        safe.set(false);
+        assert!(!page.safe_mode());
+        let (rows, _) = page.rows();
+        assert_eq!(rows[0].state, "On");
+        assert_eq!(rows[1].state, "On");
     }
 }

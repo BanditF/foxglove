@@ -28,6 +28,8 @@ pub struct Marks {
     paused: bool,
     /// What the tray shows now (the last `take_change`).
     shown: Option<(State, String, String)>,
+    /// Whether the tray menu has **Start normally** now (the last `take_safe_change`).
+    shown_safe: Option<bool>,
 }
 
 impl Marks {
@@ -108,9 +110,20 @@ impl Marks {
         Some(look)
     }
 
-    /// Whether the look differs from what the tray shows (a wake is worth it).
+    /// Safe mode, for the menu's **Start normally**, when it differs from what the menu has.
+    /// Kept apart from the look: a stopped module is named over safe mode, but the way out of
+    /// safe mode stays in the menu.
+    pub fn take_safe_change(&mut self) -> Option<bool> {
+        if self.shown_safe == Some(self.safe_mode) {
+            return None;
+        }
+        self.shown_safe = Some(self.safe_mode);
+        Some(self.safe_mode)
+    }
+
+    /// Whether the look or the menu differs from what the tray shows (a wake is worth it).
     pub fn changed(&self) -> bool {
-        self.shown.as_ref() != Some(&self.look())
+        self.shown.as_ref() != Some(&self.look()) || self.shown_safe != Some(self.safe_mode)
     }
 }
 
@@ -157,6 +170,11 @@ pub(crate) fn set_waker(w: Box<dyn Fn() + Send>) {
 /// The change for the UI thread to apply to the tray, if any.
 pub(crate) fn take_change() -> Option<(State, String, String)> {
     with(|m| m.take_change())
+}
+
+/// Safe mode for the tray menu's **Start normally**, when it changed.
+pub(crate) fn take_safe_change() -> Option<bool> {
+    with(|m| m.take_safe_change())
 }
 
 #[cfg(test)]
@@ -213,6 +231,23 @@ mod tests {
         assert!(m.look().1.starts_with("Zed stopped"));
         m.fact("module.z.last.state", &json!("starting"));
         assert!(m.look().1.starts_with("Art stopped"));
+    }
+
+    /// The menu's Start normally follows safe mode even while a stopped module is named.
+    #[test]
+    fn start_normally_stays_in_the_menu_while_safe_mode_lasts() {
+        let mut m = Marks::default();
+        assert_eq!(m.take_safe_change(), Some(false));
+        assert_eq!(m.take_safe_change(), None);
+        m.fact("module.a.art.state", &json!("crash-stopped"));
+        let _ = m.take_change();
+        m.fact("hub.safe_mode", &json!(true));
+        assert!(m.changed());
+        assert_eq!(m.take_change(), None, "the stopped module stays named");
+        assert_eq!(m.take_safe_change(), Some(true));
+        m.fact("hub.safe_mode", &json!(false));
+        assert_eq!(m.take_safe_change(), Some(false));
+        assert!(!m.changed());
     }
 
     #[test]

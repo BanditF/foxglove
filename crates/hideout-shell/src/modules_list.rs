@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 //! The Modules page's rows (docs/hideout-supervisor-ux.md, column **M**): one row per installed
-//! module with its name, version, the state in plain words and **Open**. Generic: the hub hands
-//! in what is installed and reads facts; this file names no module (§2.2).
+//! module with its name, version, the state in plain words, one main button for the state and
+//! **Open**. Generic: the hub hands in what is installed and reads facts; this file names no
+//! module (§2.2).
 //!
-//! Layout is a minimal list: the UX docs define the row words, not the page's layout, so the
-//! product designer reviews it.
+//! Layout (designer review of #1028, #1029): `[mark] Name  version` over the state words; the
+//! red warning mark before a row that needs the user, so the warning doesn't rest on colour;
+//! those rows first, then the others A–Z, Off last and muted. In safe mode the banner sits above
+//! the rows with **Start normally** (§7.10).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -25,6 +28,29 @@ pub struct Installed {
     pub enabled: bool,
 }
 
+/// What a row's main button does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Does {
+    /// The ladder (§7.8): Start again, Start with default settings, Go back, Turn off.
+    StartAgain,
+    StartDefaults,
+    GoBack,
+    TurnOff,
+    /// Off: Turn on.
+    TurnOn,
+    /// Needs a newer Hideout: Update Hideout.
+    UpdateHub,
+    /// Couldn't start: Try again.
+    TryAgain,
+}
+
+/// A row's one main button (never two on a row).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Primary {
+    pub label: String,
+    pub does: Does,
+}
+
 /// One drawn row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
@@ -33,8 +59,26 @@ pub struct Row {
     pub version: String,
     /// The state in plain words (never an id).
     pub state: String,
-    /// Drawn in the danger colour: stopped, couldn't start, needs a newer Hideout.
+    /// It needs the user (stopped, couldn't start or install, needs a newer Hideout): the red
+    /// mark before the name, the state in the danger colour, and the top of the list.
     pub stopped: bool,
+    /// Off: last in the list, muted.
+    pub off: bool,
+    /// The row's accessible name: "Art, stopped after 5 crashes".
+    pub label: String,
+    /// The main button for the state; Open is always there besides.
+    pub primary: Option<Primary>,
+}
+
+/// What a click on the page asks for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Click {
+    /// **Open** on a row: the module's page.
+    Open(String),
+    /// A row's main button.
+    Primary(String, Does),
+    /// The safe-mode banner's **Start normally**.
+    StartNormally,
 }
 
 /// Seconds left of a `restarting` module's backoff, counted from when its
@@ -67,56 +111,136 @@ pub fn row(
     fact: &dyn Fn(&str) -> Option<Value>,
     restart: Option<(u64, usize)>,
 ) -> Row {
-    let get = |k: &str| fact(&format!("module.{}.{k}", m.id));
-    let state = get("state").and_then(|v| v.as_str().map(String::from));
+    let get =
+        |k: &str| fact(&format!("module.{}.{k}", m.id)).and_then(|v| v.as_str().map(String::from));
+    let state = get("state");
     let safe_mode = fact("hub.safe_mode").and_then(|v| v.as_bool()) == Some(true);
-    let (words, stopped) = match state.as_deref() {
-        None | Some("running") if !m.enabled => ("Off".to_string(), false),
-        None if safe_mode => ("On \u{b7} not started in safe mode".into(), false),
-        None | Some("running") => ("On".into(), false),
-        Some("starting") => ("Starting\u{2026}".into(), false),
-        Some("updating") => ("Updating\u{2026}".into(), false),
+    let primary = |label: &str, does| {
+        Some(Primary {
+            label: label.into(),
+            does,
+        })
+    };
+    let (words, stopped, main) = match state.as_deref() {
+        None | Some("running") | Some("off") if !m.enabled => (
+            "Off".to_string(),
+            false,
+            primary(words::TURN_ON, Does::TurnOn),
+        ),
+        None if safe_mode => ("On \u{b7} not started in safe mode".into(), false, None),
+        None | Some("running") => ("On".into(), false, None),
+        Some("starting") => ("Starting\u{2026}".into(), false, None),
+        Some("updating") => ("Updating\u{2026}".into(), false, None),
         Some("restarting") => {
             let (secs, k) = restart.unwrap_or((0, 1));
-            (words::restarting_row(secs, k), false)
+            (words::restarting_row(secs, k), false, None)
         }
-        Some("crash-stopped") | Some("crash-looped") => (words::STOPPED.into(), true),
-        Some("install-failed")
-            if get("failed")
-                .and_then(|v| v.as_str().map(String::from))
-                .as_deref()
-                == Some("launch") =>
-        {
-            (words::couldnt_start_title(&m.name), true)
+        Some("crash-stopped") | Some("crash-looped") => {
+            // The ladder's step, worded as the stopped card's main button.
+            let step = words::Recovery::from_id(get("recovery").as_deref());
+            let previous = get("previous");
+            let does = match (step, previous.is_some()) {
+                (words::Recovery::StartAgain, _) => Does::StartAgain,
+                (words::Recovery::Defaults, _) => Does::StartDefaults,
+                (words::Recovery::GoBack, true) => Does::GoBack,
+                (words::Recovery::GoBack, false) | (words::Recovery::Last, _) => Does::TurnOff,
+            };
+            let label = step.button(&m.name, previous.as_deref());
+            (words::STOPPED.into(), true, primary(&label, does))
         }
-        Some(s) => (
-            state_words(s).to_string(),
-            matches!(s, "install-failed" | "needs-hub"),
+        Some("install-failed") if get("failed").as_deref() == Some("launch") => (
+            words::COULDNT_START.into(),
+            true,
+            primary(words::TRY_AGAIN, Does::TryAgain),
         ),
+        Some("needs-hub") => (
+            state_words("needs-hub").to_string(),
+            true,
+            primary(words::UPDATE_HIDEOUT, Does::UpdateHub),
+        ),
+        Some("off") => ("Off".into(), false, primary(words::TURN_ON, Does::TurnOn)),
+        Some(s) => (state_words(s).to_string(), s == "install-failed", None),
     };
     Row {
         id: m.id.clone(),
         name: m.name.clone(),
         version: m.version.clone(),
+        label: words::row_label(&m.name, &words),
+        off: words == "Off",
         state: words,
         stopped,
+        primary: main,
     }
+}
+
+/// The list's order: rows that need the user first, then the others A–Z, Off last. No
+/// headings (fewer than about 8 modules).
+pub fn order(rows: &mut [Row]) {
+    rows.sort_by_cached_key(|r| {
+        let group = if r.stopped {
+            0
+        } else if r.off {
+            2
+        } else {
+            1
+        };
+        (group, r.name.to_lowercase())
+    });
 }
 
 /// The page's empty state.
 pub const EMPTY_HEADING: &str = "No modules yet";
 pub const EMPTY_BODY: &str = "Modules add pages, tray tiles, status items and commands to \
 Hideout. Installed modules will be listed here, with their state and version.";
-/// The rows' button.
-pub const OPEN: &str = "Open";
+/// The rows' secondary button.
+pub const OPEN: &str = words::OPEN;
 
 fn c(x: Rgb) -> egui::Color32 {
     egui::Color32::from_rgb(x.0, x.1, x.2)
 }
 
-/// Draws the page: title, then the rows (or the empty state). Returns the module whose **Open**
-/// was clicked.
-pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row]) -> Option<String> {
+/// The safe-mode banner (§7.10): "Safe mode" / the line / **Start normally** · Find the module
+/// that breaks Hideout. Bisect isn't built: its link is greyed with "Comes in a later
+/// Hideout.". Amber, like the tray's dot. True when Start normally was clicked.
+pub fn safe_mode_banner(ui: &mut egui::Ui, t: &Tokens) -> bool {
+    use egui::RichText;
+    let mut start = false;
+    egui::Frame::new()
+        .fill(c(crate::theme::warn_fill(t)))
+        .stroke(egui::Stroke::new(1.0_f32, c(t.warn)))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(16, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(words::SAFE_MODE)
+                    .size(16.0)
+                    .strong()
+                    .color(c(t.text)),
+            );
+            ui.add_space(2.0);
+            ui.label(RichText::new(words::SAFE_MODE_LINE).color(c(t.text)));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let b =
+                    egui::Button::new(RichText::new(words::START_NORMALLY).color(c(t.on_accent)))
+                        .fill(c(t.accent));
+                start = ui.add(b).clicked();
+                ui.label(RichText::new("\u{b7}").color(c(t.text_muted)));
+                ui.add_enabled(
+                    false,
+                    egui::Link::new(RichText::new(words::FIND_CULPRIT).color(c(t.text_muted))),
+                )
+                .on_disabled_hover_text(words::COMES_LATER);
+            });
+        });
+    ui.add_space(16.0);
+    start
+}
+
+/// Draws the page: title, the safe-mode banner when `safe_mode`, then the rows (or the empty
+/// state). Returns what was clicked.
+pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], safe_mode: bool) -> Option<Click> {
     use egui::RichText;
     ui.label(
         RichText::new("Modules")
@@ -125,41 +249,72 @@ pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row]) -> Option<String> {
             .color(c(t.text)),
     );
     ui.add_space(20.0);
+    let mut click = None;
+    if safe_mode && safe_mode_banner(ui, t) {
+        click = Some(Click::StartNormally);
+    }
     if rows.is_empty() {
         ui.label(RichText::new(EMPTY_HEADING).size(17.0).color(c(t.text)));
         ui.add_space(4.0);
         ui.label(RichText::new(EMPTY_BODY).color(c(t.text_muted)));
-        return None;
+        return click;
     }
-    let mut open = None;
     for r in rows {
-        egui::Frame::new()
-            .fill(c(t.surface))
-            .stroke(egui::Stroke::new(1.0_f32, c(t.border)))
-            .corner_radius(egui::CornerRadius::same(6))
-            .inner_margin(egui::Margin::symmetric(16, 10))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&r.name).size(15.0).strong().color(c(t.text)));
-                            ui.label(RichText::new(&r.version).color(c(t.text_muted)));
+        let (name_col, state_col) = match (r.stopped, r.off) {
+            (true, _) => (t.text, t.danger),
+            (false, true) => (t.text_muted, t.text_muted),
+            (false, false) => (t.text, t.text_muted),
+        };
+        ui.push_id(("hub.modules.row", &r.id), |ui| {
+            egui::Frame::new()
+                .fill(c(t.surface))
+                .stroke(egui::Stroke::new(1.0_f32, c(t.border)))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(16, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                if r.stopped {
+                                    ui.label(
+                                        RichText::new("\u{26A0}").size(15.0).color(c(t.danger)),
+                                    );
+                                }
+                                let name = ui.label(
+                                    RichText::new(&r.name)
+                                        .size(15.0)
+                                        .strong()
+                                        .color(c(name_col)),
+                                );
+                                let said = r.label.clone();
+                                ui.ctx()
+                                    .accesskit_node_builder(name.id, |n| n.set_label(said));
+                                ui.label(RichText::new(&r.version).color(c(t.text_muted)));
+                            });
+                            ui.label(RichText::new(&r.state).color(c(state_col)));
                         });
-                        let col = if r.stopped { t.danger } else { t.text_muted };
-                        ui.label(RichText::new(&r.state).color(c(col)));
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let b = ui.button(OPEN).on_hover_text(words::open_module(&r.name));
-                        if b.clicked() {
-                            open = Some(r.id.clone());
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let b = ui.button(OPEN).on_hover_text(words::open_module(&r.name));
+                            if b.clicked() {
+                                click = Some(Click::Open(r.id.clone()));
+                            }
+                            if let Some(p) = &r.primary {
+                                let b = egui::Button::new(
+                                    RichText::new(&p.label).color(c(t.on_accent)),
+                                )
+                                .fill(c(t.accent));
+                                if ui.add(b).clicked() {
+                                    click = Some(Click::Primary(r.id.clone(), p.does));
+                                }
+                            }
+                        });
                     });
                 });
-            });
+        });
         ui.add_space(8.0);
     }
-    open
+    click
 }
 
 #[cfg(test)]
@@ -247,7 +402,7 @@ mod tests {
                     ("module.m.art.failed", json!("launch")),
                 ],
                 None,
-                "Couldn't start Art",
+                "Couldn't start",
                 true,
             ),
             (
@@ -275,11 +430,135 @@ mod tests {
         for (enabled, facts, restart, want, stopped) in cases {
             let r = row(&m("m.art", enabled), &with(&facts), restart);
             assert_eq!((r.state.as_str(), r.stopped), (want, stopped), "{facts:?}");
-            for never in words::NEVER_SHOWN {
-                assert!(!r.state.contains(never), "{never} in {}", r.state);
+            let mut drawn = vec![r.state.clone(), r.label.clone()];
+            drawn.extend(r.primary.iter().map(|p| p.label.clone()));
+            for s in &drawn {
+                for never in words::NEVER_SHOWN {
+                    assert!(!s.contains(never), "{never} in {s}");
+                }
+                assert!(!s.contains("m.art"), "{s}");
             }
-            assert!(!r.state.contains("m.art"));
         }
+    }
+
+    type ButtonCase<'a> = (bool, Vec<(&'a str, Value)>, Option<(&'a str, Does)>);
+
+    /// One main button per state (designer review of #1028): the ladder's wording for a
+    /// stopped row, Turn on, Update Hideout, Try again; none for the other states.
+    #[test]
+    fn each_state_has_at_most_one_main_button() {
+        let stopped = |extra: Vec<(&'static str, Value)>| {
+            let mut f = vec![("module.m.art.state", json!("crash-stopped"))];
+            f.extend(extra);
+            f
+        };
+        let cases: Vec<ButtonCase> = vec![
+            (
+                true,
+                stopped(vec![]),
+                Some(("Start again", Does::StartAgain)),
+            ),
+            (
+                true,
+                stopped(vec![("module.m.art.recovery", json!("defaults"))]),
+                Some(("Start with default settings", Does::StartDefaults)),
+            ),
+            (
+                true,
+                stopped(vec![
+                    ("module.m.art.recovery", json!("go-back")),
+                    ("module.m.art.previous", json!("0.4.2")),
+                ]),
+                Some(("Go back to 0.4.2", Does::GoBack)),
+            ),
+            (
+                true,
+                stopped(vec![("module.m.art.recovery", json!("last"))]),
+                Some(("Turn off Art", Does::TurnOff)),
+            ),
+            (false, vec![], Some(("Turn on", Does::TurnOn))),
+            (
+                true,
+                vec![("module.m.art.state", json!("off"))],
+                Some(("Turn on", Does::TurnOn)),
+            ),
+            (
+                true,
+                vec![("module.m.art.state", json!("needs-hub"))],
+                Some(("Update Hideout", Does::UpdateHub)),
+            ),
+            (
+                true,
+                vec![
+                    ("module.m.art.state", json!("install-failed")),
+                    ("module.m.art.failed", json!("launch")),
+                ],
+                Some(("Try again", Does::TryAgain)),
+            ),
+            (
+                true,
+                vec![("module.m.art.state", json!("install-failed"))],
+                None,
+            ),
+            (true, vec![], None),
+            (true, vec![("module.m.art.state", json!("starting"))], None),
+            (
+                true,
+                vec![("module.m.art.state", json!("restarting"))],
+                None,
+            ),
+            (true, vec![("hub.safe_mode", json!(true))], None),
+        ];
+        for (enabled, facts, want) in cases {
+            let r = row(&m("m.art", enabled), &with(&facts), None);
+            let got = r.primary.as_ref().map(|p| (p.label.as_str(), p.does));
+            assert_eq!(got, want, "{facts:?}");
+        }
+        let r = row(&m("m.art", true), &with(&stopped(vec![])), None);
+        assert_eq!(r.label, "Art, stopped after 5 crashes");
+    }
+
+    /// Rows that need the user first, then A–Z, Off last.
+    #[test]
+    fn needs_you_first_then_a_to_z_then_off() {
+        let mk = |name: &str, stopped: bool, off: bool| Row {
+            id: name.to_lowercase(),
+            name: name.into(),
+            version: "1".into(),
+            state: String::new(),
+            stopped,
+            off,
+            label: String::new(),
+            primary: None,
+        };
+        let mut rows = vec![
+            mk("Beat", false, false),
+            mk("Alpha", false, true),
+            mk("Zed", true, false),
+            mk("art", false, false),
+            mk("Dock", true, false),
+        ];
+        order(&mut rows);
+        let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["Dock", "Zed", "art", "Beat", "Alpha"]);
+    }
+
+    /// The banner's words and the tray item's are the UX plan's, and none is an id.
+    #[test]
+    fn safe_mode_words_never_show_an_id() {
+        for s in [
+            words::SAFE_MODE,
+            words::SAFE_MODE_LINE,
+            words::START_NORMALLY,
+            words::FIND_CULPRIT,
+            words::COMES_LATER,
+            crate::tray::START_NORMALLY_LABEL,
+        ] {
+            for never in words::NEVER_SHOWN {
+                assert!(!s.to_lowercase().contains(&never.to_lowercase()), "{s}");
+            }
+        }
+        assert_eq!(crate::tray::START_NORMALLY_LABEL, "Start normally");
     }
 
     #[test]
