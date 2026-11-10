@@ -26,6 +26,8 @@ pub mod theme;
 #[cfg(windows)]
 pub mod capture;
 #[cfg(windows)]
+pub mod lab_control;
+#[cfg(windows)]
 pub mod notify;
 #[cfg(windows)]
 mod platform;

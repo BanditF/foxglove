@@ -1781,3 +1781,93 @@ fn a_rendered_frame_goes_through_the_capture_png_writer() {
 
 #[path = "popout_tests.rs"]
 mod popouts;
+
+/// Lab control (#1003) through the real hub frame, window-free: `state` lists the tabs and the
+/// active page as drawn, `key ctrl+tab` goes through the hub's own shortcut code, and
+/// `focus <tab>` (an AccessKit click on the tab) switches back.
+#[test]
+fn lab_control_drives_the_tabs_through_the_hub_frame() {
+    use crate::lab_control::{self, Lab};
+    struct Host(egui::Context);
+    impl lab_control::Host for Host {
+        fn wake(&self) {
+            self.0.request_repaint();
+        }
+        fn arm(&self) {
+            self.0.enable_accesskit();
+        }
+        fn windows(&self) -> (bool, bool, bool) {
+            (true, false, false)
+        }
+        fn post_tray(&self, _: u32) -> Result<(), String> {
+            Err("no tray in tests".into())
+        }
+        fn close_main(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn foreground(&self) -> &'static str {
+            "main"
+        }
+        fn menu(&self) -> Option<Vec<lab_control::MenuItem>> {
+            None
+        }
+        fn menu_key(&self, _: u16) -> Result<(), String> {
+            Ok(())
+        }
+        fn menu_pick(&self, _: u32) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let ctx = ctx();
+    let lab = Arc::new(Lab::new(flyout_id()));
+    ctx.add_plugin(lab_control::Plugin::new(lab.clone(), || (true, false)));
+    let dir = temp_dir("lab-control");
+    let mut hub = hub_in(&dir, None);
+    hub.open(TabId::page("settings"));
+    let host = Arc::new(Host(ctx.clone()));
+    let pass = |hub: &mut Hub| {
+        let _ = ctx.run(input(960.0, 640.0, vec![]), |ctx| hub.frame(ctx));
+    };
+    // One request on a worker thread (as the pipe thread does) while this thread runs the hub's
+    // passes.
+    let ask = |hub: &mut Hub, line: &str| -> serde_json::Value {
+        let worker = {
+            let (lab, host, line) = (lab.clone(), host.clone(), line.to_string());
+            std::thread::spawn(move || lab_control::answer(&line, &lab, &*host))
+        };
+        while !worker.is_finished() {
+            pass(hub);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        pass(hub);
+        let r = worker.join().unwrap();
+        assert!(lab_control::answer_ok(&r), "{line}: {r}");
+        serde_json::from_str(r.trim()).unwrap()
+    };
+    ask(&mut hub, "state");
+    let s = ask(&mut hub, "state");
+    let tabs: Vec<&str> = s["tabs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(tabs.len(), 2, "{s}");
+    assert!(
+        s["active_page"].as_str().unwrap().starts_with("Settings"),
+        "{s}"
+    );
+    ask(&mut hub, "key ctrl+tab");
+    let s = ask(&mut hub, "state");
+    assert!(
+        s["active_page"].as_str().unwrap().starts_with("Modules"),
+        "{s}"
+    );
+    ask(&mut hub, "focus Settings");
+    let s = ask(&mut hub, "state");
+    assert!(
+        s["active_page"].as_str().unwrap().starts_with("Settings"),
+        "{s}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

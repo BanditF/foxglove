@@ -7,7 +7,8 @@
 //! `%LOCALAPPDATA%\Hideout`.
 //!
 //! `--lab` (or `HIDEOUT_LAB=1`) asks for lab mode: with a `HIDEOUT_CONFIG_DIR` outside the
-//! user's hub folder, the modules in `<config>\lab-modules\` load (#1001, docs/hideout-lab.md).
+//! user's hub folder, the modules in `<config>\lab-modules\` load (#1001, docs/hideout-lab.md),
+//! and the lab control pipe is served (#1003). `hideout.exe --lab-do <verb> [args]` is its client.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod modules_page;
@@ -85,6 +86,11 @@ fn main() {
     if let Some(code) = capture_client(&paths, std::env::args_os().skip(1)) {
         std::process::exit(code);
     }
+    if let Some(code) = lab_do_client(&paths, std::env::args_os().skip(1)) {
+        std::process::exit(code);
+    }
+    // Lab control only where the registry allows lab mode (never on the user's folder).
+    hideout_shell::lab_control::allow(hideout_registry::lab::lab_mode_from_env(&paths.root).on());
     let mut started = start(&paths);
     let opts = hideout_shell::ShellOptions {
         paths,
@@ -140,6 +146,40 @@ fn capture_client(
     }
 }
 
+/// `hideout.exe --lab-do <verb> [args]` (#1003): sends one lab control request to the lab hub on
+/// the same folder, prints its JSON answer and exits; it opens no window and starts nothing.
+/// `None` for any other command line. Exit 0 when the answer says ok, 1 otherwise.
+#[cfg(windows)]
+fn lab_do_client(
+    paths: &hideout_shell::paths::HubPaths,
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Option<i32> {
+    use hideout_shell::lab_control;
+    if args.next()? != "--lab-do" {
+        return None;
+    }
+    let line: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+    if line.is_empty() {
+        eprintln!("hideout: --lab-do needs a verb; {}", lab_control::HELP);
+        return Some(2);
+    }
+    let pipe = lab_control::pipe_name(paths);
+    match lab_control::request(&pipe, &line.join(" ")) {
+        Ok(reply) => {
+            print!("{reply}");
+            Some(if lab_control::answer_ok(&reply) { 0 } else { 1 })
+        }
+        Err(e) => {
+            let msg = format!(
+                "no lab hub with lab control for {} ({pipe}: {e}); start it with HIDEOUT_CONFIG_DIR and HIDEOUT_LAB=1",
+                paths.root.display()
+            );
+            println!("{}", serde_json::json!({"ok": false, "error": msg}));
+            Some(1)
+        }
+    }
+}
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("hideout: the hub runs on Windows only");
@@ -170,6 +210,17 @@ mod tests {
         );
         assert_eq!(capture_client(&paths, args(&[]).into_iter()), None);
         assert_eq!(capture_client(&paths, args(&["--other"]).into_iter()), None);
+        // `--lab-do` the same: an error and exit 1 with no lab hub, 2 without a verb.
+        let lab = args(&["--lab-do", "state"]);
+        assert_eq!(lab_do_client(&paths, lab.into_iter()), Some(1));
+        assert_eq!(
+            lab_do_client(&paths, args(&["--lab-do"]).into_iter()),
+            Some(2)
+        );
+        assert_eq!(
+            lab_do_client(&paths, args(&["--capture"]).into_iter()),
+            None
+        );
         assert!(!dir.exists(), "the client made the hub folder");
     }
 

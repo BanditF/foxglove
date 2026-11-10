@@ -37,6 +37,14 @@ thread_local! {
     static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
 }
 
+/// The icon's message window (tray-icon's), for lab control (#1003); 0 while there is no icon.
+static MESSAGE_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// The icon's message window, any thread; 0 while there is no icon.
+pub fn message_window() -> isize {
+    MESSAGE_WINDOW.load(std::sync::atomic::Ordering::Acquire)
+}
+
 fn glyph(state: State) -> Option<Icon> {
     Icon::from_rgba(icon::rgba(32, state), 32, 32).ok()
 }
@@ -89,6 +97,10 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
         .with_icon(glyph(State::Normal).ok_or("tray glyph")?)
         .build()
         .map_err(|e| e.to_string())?;
+    MESSAGE_WINDOW.store(
+        icon.window_handle() as isize,
+        std::sync::atomic::Ordering::Release,
+    );
     TRAY.with(|t| {
         *t.borrow_mut() = Some(Tray {
             icon,
@@ -176,6 +188,7 @@ pub fn set_state(state: State, status_line: &str, tooltip: &str) {
 
 /// Removes the icon now (before a quick exit, so no ghost icon stays in the tray).
 pub fn remove() {
+    MESSAGE_WINDOW.store(0, std::sync::atomic::Ordering::Release);
     TRAY.with(|t| drop(t.borrow_mut().take()));
 }
 
@@ -196,6 +209,8 @@ mod tests {
             "tray-icon changed ({version}): re-check LEAVE_TIMER_ID"
         );
         assert_eq!(LEAVE_TIMER_ID, 6007);
+        // Lab control (#1003) posts tray-icon's callback message, private as well.
+        assert_eq!(crate::lab_control::WM_USER_TRAYICON, 6002);
     }
 
     #[test]

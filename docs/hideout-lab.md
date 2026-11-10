@@ -102,3 +102,102 @@ $env:HIDEOUT_CONFIG_DIR = $lab
 Then run #995's steps 2 to 5 on the module pages.
 
 Clean up: stop the lab hub (only that process, by its pid), then delete `$lab` and the target dir.
+
+## Lab control (#1003)
+
+A lab hub can be driven from a script, so the tray, keyboard and flicker checks don't need hands.
+`hideout.exe --lab-do <verb> [args]` sends one line to the lab hub's control pipe
+(`\\.\pipe\hideout-lab-<user><folder suffix>`, current user only, no remote clients) and prints
+the hub's answer, one JSON object with `"ok"` (exit 0 when ok). The client opens no window and
+starts nothing. Code: `crates/hideout-shell/src/lab_control.rs`.
+
+**Only a lab hub serves it.** Lab mode must be on (`HIDEOUT_LAB=1` or `--lab`, with a
+`HIDEOUT_CONFIG_DIR` that is not the user's hub folder, as above). The user's hub (default
+folder) never serves it, whatever the environment says: it starts no thread, no pipe and no
+plugin. A lab hub has one thread blocked in `ConnectNamedPipe` and an egui plugin that counts
+passes. The accessible tree is built only after the first request. `hideout.log` says
+`lab control: on, \\.\pipe\hideout-lab-…`, then one `lab control: <verb>` line per request.
+
+| Verb | What it does |
+|---|---|
+| `state` | JSON: `tabs` and `active_page`; per window (`main`, `flyout`, other viewports as `popouts`) the accessible nodes as last drawn (role, name or text, selected, disabled, focused), `focus`, `on_screen` / `open` / `visible`, `passes`, and the flyout's `geometry` (window, monitor, work area); `foreground` (main, flyout, menu, tray, other); `tray.events` and `tray.last` (tray events that reached the hub's handler) and `tray.menu` (the open tray menu's items: text, enabled, checked, highlighted); `loop.wakes` (event-loop wakes since start) and `loop.root_passes`. |
+| `frames <ms> [<from_t>]` | The frame log from `from_t` (default: now) for `ms` (at most 10 s): one row per pass of each window, with whether the main window was on screen and the flyout window visible; passes per window; the first and last time the flyout was visible. |
+| `tray-click` | Posts `WM_LBUTTONDOWN`, `WM_LBUTTONUP` as tray-icon's callback message to its window. |
+| `tray-double-click [<gap_ms>]` | Down, up, a gap (default 150 ms), `WM_LBUTTONDBLCLK`, up: Windows' order for a double click. |
+| `tray-menu` | `WM_RBUTTONDOWN`, `WM_RBUTTONUP`: tray-icon opens the tray menu. |
+| `tray-key-select` | What the shell sends for Enter or Space on the icon (Win+B, arrows). With notify version 0, which tray-icon 0.24 uses, that is the right-button pair, so it opens the menu. |
+| `menu-key <down\|up\|left\|right\|enter\|esc\|home\|end>` | Posts the key to the open tray menu's window (`#32768`), for the menu's own keyboard loop. |
+| `menu-pick <text>` | Closes the open tray menu and posts the item's `WM_COMMAND` to the tray window, which muda turns into the menu event. |
+| `key <chord> [main\|flyout]` | A chord (`ctrl+k`, `shift+tab`, `esc`, `enter`, `down`, `f6`) as key press and release in the window's next egui pass. Without a window named: the foreground one, else an open flyout, else the main window. |
+| `text <text>` | A text event, for typing into the focused field. |
+| `click <name>[#n] \| @<i> [main\|flyout]` | AccessKit Focus and Click on the node with that accessible name (or text), on the `n`-th node with it, or on node `i` of `state`. This is what a screen reader or UI Automation sends. |
+| `focus <tab or page>` | The same on a tab (or sidebar entry) of the main window: makes it the active page. |
+| `open-flyout` / `close-flyout` | A tray click if the flyout is closed / Esc into the flyout if it is open. |
+| `close-window` | Posts `WM_CLOSE` to the main window, which closes it to the tray. |
+
+An action answers after the pass that took it and the frame after that (at most 2 s + 0.5 s; an
+action no pass took is dropped). A window that isn't on screen is refused at once.
+
+**Same code path.** The tray verbs post the messages Windows sends a notification-area icon to
+tray-icon's own window. tray-icon's window procedure makes its `TrayIconEvent` (or opens the
+menu), and the hub's handler runs as for a real click. Keys and clicks enter at egui's input,
+before the hub's frame reads it.
+
+**What it does not prove** (each stays one hand check, listed below):
+- that Windows delivers a real click, double click or key to the icon: the shell's own messages,
+  its double-click timing and the keyboard focus in the notification area;
+- that the keyboard reaches the hub window through Windows and winit (keys enter at egui);
+- foreground rights: `SetForegroundWindow` after a posted message can be refused where a real
+  click is allowed, so closing on focus loss isn't tested;
+- how anything looks: the `--capture` PNGs are for a person or the designer to look at;
+- toasts, the browser that Update Hideout opens, taskbar edges and a second monitor.
+
+### `scripts/lab/hideout_lab_checks.py`
+
+Runs the steps below against a lab hub and prints PASS, FAIL or BLOCKED per step, with
+`--capture` PNGs in `<lab>\lab-shots`. It needs `FOXGLOVE_APP_OK=1` (it shows windows) and
+refuses the user's hub folder.
+
+```powershell
+$env:FOXGLOVE_APP_OK = '1'
+python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --start
+# Against a lab hub that already runs (HIDEOUT_LAB=1, HIDEOUT_LAB_CAPTURE=1): leave out --start.
+# One group only: --only flyout, --only pages or --only supervisor.
+```
+
+**Automated now** (step numbers from the PRs' lab steps):
+- #997 1: a tray click opens the flyout with the default tiles (Focus timer, Mic mute), against
+  the taskbar and inside the work area, with a capture.
+- #997 1: a double click opens the main window, and the frame log says whether the flyout was on
+  screen first. A FAIL gives how long it was on screen: that is the flicker to file.
+- #997 2: a second click closes the flyout and it stays closed; Esc closes it.
+- #997 4: ··· > Hide tile, then Edit tiles shows the tile unticked; tick it, Done;
+  `hideout.toml` has `[tray]`.
+- #997 5: Open Hideout opens the main window and closes the flyout; a tile's "Open <Module>"
+  opens its page; keyboard select on the icon opens the tray menu, and arrows and Enter pick
+  Open Hideout.
+- #997 8: OBS Change, type, Cancel: back to "Saved" (BLOCKED unless a password is saved).
+- #997 9: the hidden hub's loop wakes stay at 2 a second or fewer, before and after the flyout.
+- #995 1: the sidebar lists every lab module, and `hideout.log` has the manifest line.
+- #995 2: Focus timer page: Keys lists its two actions, and Pause is clicked.
+- #995 3: Corsair iCUE: the SDK file field takes a typed path and Enter, and `settings.json`
+  appears.
+- #995 4: OBS How to opens How to connect (BLOCKED when the page has no How to).
+- #995 5 and #1004: one kill shows the crash bar (two lines, Open log, no Restart now) and
+  leaves the tray menu's status line alone, then the page comes back live. Five kills show the
+  stopped card with Start again focused and Copy diagnostics, and the tray menu names the module.
+  Esc changes nothing; Enter starts it again.
+
+**Still needs a human** (one check each; these stay in #90):
+1. A real click on the tray icon opens the flyout, and a real double click opens the window
+   (Windows delivers them). Note any flash.
+2. With the flyout open, click on the desktop: it closes (focus loss).
+3. Win+B, arrow to the Hideout icon, Enter, then Shift+F10 or the Menu key: the tray menu opens.
+4. The taskbar on the top, left and right, or a second monitor at another scale: the flyout
+   follows.
+5. The flyout has no taskbar button.
+6. Update Hideout opens the releases page in the browser (needs a module that needs a newer hub).
+7. The stopped toast shows, and its Start again and Open <Module> work.
+8. #996's visual steps: the room map moves smoothly, pauses when minimised or on another tab,
+   and follows "animation effects" off.
+9. A look at the `lab-shots` PNGs (the designer's taste check) when a step's drawing changed.
