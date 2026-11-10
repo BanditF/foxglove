@@ -19,6 +19,52 @@ pub const GAP: f32 = 12.0;
 /// A tray click this soon after the flyout closed because the click took its focus is the same
 /// click: it leaves the flyout closed (a toggle), instead of opening it again.
 pub const TOGGLE_WINDOW: Duration = Duration::from_millis(400);
+/// How long a shown flyout may go without ever getting the focus. Windows refuses the focus
+/// hand-off when Hideout may not take the foreground (no recent input of its own), and such a
+/// flyout could never close on focus loss: it would stay up, and keep the hidden hub drawing,
+/// for good (#1000).
+pub const FOCUS_GRACE: Duration = Duration::from_millis(750);
+
+/// What the flyout does about the focus it should have got when it was shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusCheck {
+    /// It has (or had) the focus, or its window can't say (no own window): nothing to do.
+    Fine,
+    /// Not yet: look again in this long (one wake, only while the flyout is up).
+    LookIn(Duration),
+    /// The hand-off failed: close it.
+    Close,
+}
+
+/// The focus check for a flyout shown at `shown_at` (`None` before it is shown) that never had
+/// the focus, now seen with `focused` (`None` when its window can't say, as in tests).
+pub fn focus_check(
+    had_focus: bool,
+    focused: Option<bool>,
+    shown_at: Option<Instant>,
+    now: Instant,
+) -> FocusCheck {
+    let Some(shown) = shown_at else {
+        return FocusCheck::Fine;
+    };
+    if had_focus || focused != Some(false) {
+        return FocusCheck::Fine;
+    }
+    let up = now.saturating_duration_since(shown);
+    if up >= FOCUS_GRACE {
+        FocusCheck::Close
+    } else {
+        FocusCheck::LookIn(FOCUS_GRACE - up)
+    }
+}
+
+/// Whether the flyout must be placed (sized) again for a grid now `height` points tall, last
+/// placed at `placed` points, at `ppp` physical pixels per point: only for a change of at least
+/// one whole pixel. Each placing resizes the window and the resize brings another frame, so a
+/// sub-pixel difference (a fractional scale rounding back and forth) would loop (#1000).
+pub fn needs_place(placed: Option<f32>, height: f32, ppp: f32) -> bool {
+    placed.is_none_or(|h| ((h - height) * ppp).abs() >= 1.0)
+}
 
 /// The screen edge the taskbar is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,6 +234,39 @@ mod tests {
         let work = Rect { h: 1392, ..mon };
         let r = place(icon(-100, 1404), mon, work, (804, 600), 18);
         assert_eq!((r.x + r.w, r.y + r.h), (-18, 1392 - 18));
+    }
+
+    #[test]
+    fn a_flyout_that_never_got_the_focus_closes_after_the_grace() {
+        let now = Instant::now();
+        let shown = Some(now);
+        let end = now + FOCUS_GRACE;
+        // Before it is shown, with the focus, or when its window can't say: nothing.
+        assert_eq!(focus_check(false, Some(false), None, end), FocusCheck::Fine);
+        assert_eq!(focus_check(true, Some(false), shown, end), FocusCheck::Fine);
+        assert_eq!(focus_check(false, Some(true), shown, end), FocusCheck::Fine);
+        assert_eq!(focus_check(false, None, shown, end), FocusCheck::Fine);
+        // Shown without the focus: one look when the grace ends, then it closes.
+        let quarter = Duration::from_millis(250);
+        assert_eq!(
+            focus_check(false, Some(false), shown, now + quarter),
+            FocusCheck::LookIn(FOCUS_GRACE - quarter)
+        );
+        assert_eq!(
+            focus_check(false, Some(false), shown, end),
+            FocusCheck::Close
+        );
+    }
+
+    #[test]
+    fn it_is_placed_again_only_for_a_whole_pixel() {
+        assert!(needs_place(None, 300.0, 1.25));
+        assert!(!needs_place(Some(300.0), 300.0, 1.25));
+        // 0.6 pt at 125 % is 0.75 px: the same size.
+        assert!(!needs_place(Some(300.0), 300.6, 1.25));
+        assert!(needs_place(Some(300.0), 301.0, 1.25));
+        assert!(needs_place(Some(300.0), 299.0, 1.0));
+        assert!(!needs_place(Some(300.0), 299.5, 1.0));
     }
 
     #[test]

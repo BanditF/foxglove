@@ -5,17 +5,62 @@ runs it window-free anywhere.
 Metrics (all about the hub process, hideout.exe, while it idles):
   private_mb, working_set_mb  memory (MB)
   cpu_pct                     CPU time over the window / wall time, % of one core
+  loop_wakes_per_s            the hub's own event-loop wakes per second, from its log lines
+                              (`event loop: N wakes in S s (repaint a, timer b, ...)`, #1000); the
+                              limit is per window state: `loop_wakes_per_s` hidden (at most 1/s),
+                              `loop_wakes_shown_per_s` shown
   wakeups_per_s               context switches per second summed over all the process's threads
                               (the Thread counter class: the Process class reads 0 for the hub),
-                              None where no counter exists
+                              None where no counter exists. INFO only, never a failure (#1000):
+                              most are OS and driver work on the hub's threads (the GL driver,
+                              TSF/IME, COM) that never return from the loop's wait
   gdi_handles, user_handles   GetGuiResources counts
   vram_mb                     dedicated GPU memory, None where Windows has no counter for it
 """
 import json
+import re
 
 # Metrics that may legitimately have no reading on a Windows build: recorded as unavailable, never a failure.
 OPTIONAL = ('wakeups_per_s', 'vram_mb')
-METRICS = ('private_mb', 'working_set_mb', 'cpu_pct', 'wakeups_per_s', 'gdi_handles', 'user_handles', 'vram_mb')
+# Recorded and shown, never compared: status INFO whatever the reading.
+INFO = ('wakeups_per_s',)
+METRICS = ('private_mb', 'working_set_mb', 'cpu_pct', 'loop_wakes_per_s', 'wakeups_per_s', 'gdi_handles',
+           'user_handles', 'vram_mb')
+STATES = ('hidden', 'shown')
+# Baseline entries: the metrics, plus the shown window's own loop-wake limit.
+BASELINE_KEYS = METRICS + ('loop_wakes_shown_per_s',)
+
+WAKE_LINE = re.compile(r'event loop: (\d+) wakes in (\d+) s(?: \(([^)]*)\))?')
+
+
+def baseline_key(metric, state='hidden'):
+    """The baseline entry a metric is compared with in `state`: the loop-wake limit is per state."""
+    if metric == 'loop_wakes_per_s' and state == 'shown':
+        return 'loop_wakes_shown_per_s'
+    return metric
+
+
+def loop_wakes(text):
+    """The hub's wake reports in `text` (log lines written during the window, in order) ->
+    (wakes per second or None, {cause: count}). The first report is dropped: its period began
+    before the window opened. None when no whole period is left."""
+    found = []
+    for m in WAKE_LINE.finditer(text):
+        causes = {}
+        for part in (m.group(3) or '').split(','):
+            bits = part.split()
+            if len(bits) == 2 and bits[1].isdigit():
+                causes[bits[0]] = int(bits[1])
+        found.append((int(m.group(1)), int(m.group(2)), causes))
+    found = found[1:]
+    wakes, secs = sum(f[0] for f in found), sum(f[1] for f in found)
+    if not found or secs <= 0:
+        return None, {}
+    total = {}
+    for _, _, causes in found:
+        for k, v in causes.items():
+            total[k] = total.get(k, 0) + v
+    return round(wakes / secs, 3), total
 
 
 def load_sets(text):
@@ -85,18 +130,24 @@ def top_threads(first, last, wall_s, names=None, n=3):
 def limit(entry):
     """The most a metric may read: baseline * (1 + pct/100) + slack. A baseline entry is
     {"value": v, "pct": p, "slack": s}; slack (an absolute allowance in the metric's unit) keeps
-    a tiny baseline from failing on noise."""
+    a tiny baseline from failing on noise. {"max": m} is a fixed limit instead (the hidden hub's
+    1 loop wake/s): the value is then only the expected reading."""
+    if 'max' in entry:
+        return entry['max']
     return entry['value'] * (1 + entry.get('pct', 0) / 100) + entry.get('slack', 0)
 
 
-def compare(measured, baseline):
+def compare(measured, baseline, state='hidden'):
     """Per metric: (name, measured, limit, status). Status is PASS, FAIL (past the limit), SKIP
-    (no baseline for it, or no reading such as VRAM without a counter) or MISSING (a baselined
-    metric that should have a reading but has none, except the OPTIONAL ones)."""
+    (no baseline for it, or no reading such as VRAM without a counter), MISSING (a baselined
+    metric that should have a reading but has none, except the OPTIONAL ones) or INFO (recorded
+    only: context switches). `state` picks the window state's loop-wake limit."""
     rows = []
     for name in METRICS:
-        got, entry = measured.get(name), baseline.get(name)
-        if entry is None:
+        got, entry = measured.get(name), baseline.get(baseline_key(name, state))
+        if name in INFO:
+            rows.append((name, got, None, 'INFO'))
+        elif entry is None:
             rows.append((name, got, None, 'SKIP'))
         elif got is None:
             rows.append((name, None, limit(entry), 'SKIP' if name in OPTIONAL else 'MISSING'))
@@ -107,7 +158,8 @@ def compare(measured, baseline):
 
 
 def verdict(rows):
-    """FAIL when any metric is past its limit, BLOCKED when a reading is missing, else PASS."""
+    """FAIL when any metric is past its limit, BLOCKED when a reading is missing, else PASS
+    (INFO rows never count)."""
     states = {r[3] for r in rows}
     return 'FAIL' if 'FAIL' in states else 'BLOCKED' if 'MISSING' in states else 'PASS'
 

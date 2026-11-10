@@ -66,20 +66,70 @@ class WakeupsUnavailable(unittest.TestCase):
         self.assertIsNone(m['wakeups_per_s'])
         self.assertEqual(m['cpu_pct'], 0.5)
 
-    def test_a_baselined_wakeups_metric_without_a_reading_is_skipped(self):
-        rows = fc.compare({'wakeups_per_s': None}, {'wakeups_per_s': {'value': 30, 'pct': 50}})
-        self.assertEqual(rows[3][3], 'SKIP')
-        self.assertEqual(fc.verdict(rows), 'PASS')
+    def test_context_switches_are_info_never_a_failure(self):
+        # #1000: thread readies are OS and driver work; they are recorded, never compared.
+        for got in (None, 12.0, 9999.0):
+            rows = {r[0]: r for r in fc.compare({'wakeups_per_s': got}, {'wakeups_per_s': {'value': 1}})}
+            self.assertEqual(rows['wakeups_per_s'], ('wakeups_per_s', got, None, 'INFO'))
+        self.assertEqual(fc.verdict(fc.compare({'wakeups_per_s': 9999.0}, {})), 'PASS')
+
+
+class LoopWakes(unittest.TestCase):
+    LINES = (
+        '2026-11-10T08:00:15Z INFO  hideout_shell::wake: event loop: 40 wakes in 15 s (repaint 30, timer 1, '
+        'window 9, accesskit 0, device 0, poll 0, other 0)\n'
+        '2026-11-10T08:00:30Z INFO  hideout_shell::wake: event loop: 2 wakes in 15 s (repaint 0, timer 1, '
+        'window 0, accesskit 0, device 0, poll 0, other 1)\n'
+        '2026-11-10T08:00:31Z INFO  hideout: something else\n'
+        '2026-11-10T08:00:45Z INFO  hideout_shell::wake: event loop: 1 wakes in 15 s (repaint 0, timer 1, '
+        'window 0, accesskit 0, device 0, poll 0, other 0)\n')
+
+    def test_the_rate_comes_from_the_hubs_own_lines_without_the_first(self):
+        # The first report's period began before the window (settling, the close to the tray).
+        rate, causes = fc.loop_wakes(self.LINES)
+        self.assertEqual(rate, 0.1)  # 3 wakes in 30 s
+        self.assertEqual(causes, {'repaint': 0, 'timer': 2, 'window': 0, 'accesskit': 0, 'device': 0,
+                                  'poll': 0, 'other': 1})
+
+    def test_no_whole_period_gives_no_reading(self):
+        self.assertEqual(fc.loop_wakes(''), (None, {}))
+        self.assertEqual(fc.loop_wakes(self.LINES.splitlines()[0]), (None, {}))
+
+    def test_a_line_without_causes_still_counts(self):
+        rate, causes = fc.loop_wakes('event loop: 9 wakes in 10 s\nevent loop: 30 wakes in 20 s\n')
+        self.assertEqual((rate, causes), (1.5, {}))
+
+    def test_hidden_is_at_most_one_per_second_whatever_the_value(self):
+        base = {'loop_wakes_per_s': {'value': 0.08, 'max': 1}, 'loop_wakes_shown_per_s': {'value': 0.1, 'slack': 5}}
+        status = lambda got, state: {r[0]: r[3] for r in fc.compare({'loop_wakes_per_s': got}, base, state)}[
+            'loop_wakes_per_s']
+        self.assertEqual(status(1.0, 'hidden'), 'PASS')
+        self.assertEqual(status(1.97, 'hidden'), 'FAIL')  # d333bd52: 1182 wakes in 10 min
+        # A shown window has its own limit.
+        self.assertEqual(status(1.97, 'shown'), 'PASS')
+        self.assertEqual(status(5.2, 'shown'), 'FAIL')
+
+    def test_a_missing_loop_reading_blocks(self):
+        rows = fc.compare({'loop_wakes_per_s': None}, {'loop_wakes_per_s': {'value': 0.08, 'max': 1}})
+        self.assertEqual(fc.verdict(rows), 'BLOCKED')
+
+    def test_the_baseline_key_is_per_state(self):
+        self.assertEqual(fc.baseline_key('loop_wakes_per_s'), 'loop_wakes_per_s')
+        self.assertEqual(fc.baseline_key('loop_wakes_per_s', 'shown'), 'loop_wakes_shown_per_s')
+        self.assertEqual(fc.baseline_key('private_mb', 'shown'), 'private_mb')
 
     def test_a_metric_missing_from_the_baseline_is_not_compared(self):
-        rows = dict((r[0], r[3]) for r in fc.compare({'wakeups_per_s': 9999}, {}))
-        self.assertEqual(rows['wakeups_per_s'], 'SKIP')
+        rows = dict((r[0], r[3]) for r in fc.compare({'loop_wakes_per_s': 9999}, {}))
+        self.assertEqual(rows['loop_wakes_per_s'], 'SKIP')
 
 
 class Thresholds(unittest.TestCase):
     def test_limit_is_pct_plus_slack(self):
         self.assertAlmostEqual(fc.limit({'value': 100, 'pct': 10, 'slack': 5}), 115)
         self.assertEqual(fc.limit({'value': 7}), 7)
+
+    def test_a_max_is_a_fixed_limit(self):
+        self.assertEqual(fc.limit({'value': 0.08, 'max': 1, 'pct': 50, 'slack': 3}), 1)
 
     def test_at_the_limit_passes_past_it_fails(self):
         rows = {r[0]: r for r in fc.compare({'private_mb': 33.0, 'cpu_pct': 0.61}, BASE)}
@@ -126,9 +176,12 @@ class Files(unittest.TestCase):
         base = json.loads(path.read_text(encoding='utf-8'))
         for name in ('none', 'default'):
             self.assertIn(name, base['sets'])
-            self.assertTrue(set(base['sets'][name]) <= set(fc.METRICS))
+            self.assertTrue(set(base['sets'][name]) <= set(fc.BASELINE_KEYS))
             for e in base['sets'][name].values():
                 self.assertGreater(e['value'], 0)
+            # The gate's wake limit (#1000): at most 1 loop wake/s hidden, no flyout.
+            self.assertEqual(fc.limit(base['sets'][name]['loop_wakes_per_s']), 1)
+            self.assertIn('loop_wakes_shown_per_s', base['sets'][name])
 
     def test_record_is_per_batch(self):
         d = json.loads(fc.record('b1', {'none': {'verdict': 'PASS'}}))

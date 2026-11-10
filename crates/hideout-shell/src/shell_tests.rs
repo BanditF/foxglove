@@ -548,6 +548,119 @@ fn a_hidden_frame_requests_no_repaint() {
     );
 }
 
+/// Closed to the tray with live modules (#1000): a module restarting (its countdown, its state
+/// facts) wakes the hub once per router event, and the hidden frames that brings ask for no
+/// repaint and no repaint-after. Only a shown page or the open flyout may count down.
+#[test]
+fn a_hidden_hub_with_a_restarting_module_requests_no_repaint() {
+    let ctx = ctx();
+    let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (router, mut feed) = channel();
+    let w = wakes.clone();
+    let wake_ctx = ctx.clone();
+    feed.set_waker(Box::new(move || {
+        w.fetch_add(1, Ordering::Relaxed);
+        wake_ctx.request_repaint();
+    }));
+    let mut hub = hub_in(&temp_dir("hidden-restart"), Some(Box::new(feed)));
+    router.push(register("mod.chat", "Chat", "chat", "Chat"));
+    for _ in 0..4 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    hub.open(TabId::panel("mod.chat", "chat"));
+    for _ in 0..4 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    hub.shared.hidden.store(true, Ordering::Release);
+    for _ in 0..2 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    let before = wakes.load(Ordering::Relaxed);
+    // The supervisor's restart while hidden: state, restart countdown, then running again.
+    let fact = |name: &str, value: serde_json::Value| Inbound::Fact {
+        name: name.into(),
+        value,
+    };
+    router.push(fact(
+        "module.mod.chat.state",
+        serde_json::json!("restarting"),
+    ));
+    router.push(fact(
+        "module.mod.chat.restart",
+        serde_json::json!({"delay_s": 8, "crash": 2, "of": 5}),
+    ));
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        before + 2,
+        "one wake per event"
+    );
+    // The frame the wake brings takes the events in (egui's own second frame of a wake).
+    quiet_frame(&ctx, &mut hub, vec![]);
+    for pass in 0..4 {
+        assert!(
+            !quiet_frame(&ctx, &mut hub, vec![]),
+            "hidden pass {pass} with a restarting module asked for a repaint"
+        );
+    }
+    router.push(fact("module.mod.chat.state", serde_json::json!("running")));
+    quiet_frame(&ctx, &mut hub, vec![]);
+    for pass in 0..3 {
+        assert!(
+            !quiet_frame(&ctx, &mut hub, vec![]),
+            "hidden pass {pass} after the restart asked for a repaint"
+        );
+    }
+}
+
+/// The footprint gate's case (#1000), window-free: a hidden hub with no flyout and a mock feed.
+/// Each loop wake eframe would get is egui's repaint callback (its `RequestRepaint` user event).
+/// A burst of feed events while hidden is one wake, and the hidden frames that follow ask for no
+/// repaint: the loop then waits until the next event, so it stays under 1 wake/s.
+#[test]
+fn a_hidden_hub_with_a_busy_feed_wakes_the_loop_once_per_burst() {
+    let ctx = ctx();
+    let loop_wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let lw = loop_wakes.clone();
+    ctx.set_request_repaint_callback(move |_| {
+        lw.fetch_add(1, Ordering::Relaxed);
+    });
+    let (router, mut feed) = channel();
+    let wake_ctx = ctx.clone();
+    feed.set_waker(Box::new(move || wake_ctx.request_repaint()));
+    let mut hub = hub_in(&temp_dir("hidden-burst"), Some(Box::new(feed)));
+    router.push(register("mod.chat", "Chat", "chat", "Chat"));
+    for _ in 0..4 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    hub.shared.hidden.store(true, Ordering::Release);
+    for _ in 0..3 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    assert!(hub.flyout.is_none(), "no flyout in this case");
+    for round in 0..3 {
+        let before = loop_wakes.load(Ordering::Relaxed);
+        for i in 0..20 {
+            router.push(Inbound::Fact {
+                name: format!("apps.seen.tool{i}"),
+                value: serde_json::json!(round),
+            });
+        }
+        assert_eq!(
+            loop_wakes.load(Ordering::Relaxed),
+            before + 1,
+            "round {round}: 20 feed events while hidden are one loop wake"
+        );
+        // The frame the wake brings drains the feed; the hidden hub then asks for nothing.
+        quiet_frame(&ctx, &mut hub, vec![]);
+        for pass in 0..3 {
+            assert!(
+                !quiet_frame(&ctx, &mut hub, vec![]),
+                "round {round}: hidden pass {pass} asked for a repaint"
+            );
+        }
+    }
+}
+
 /// The tray panel's tiles for the review (H2.8): every module in tests/hideout-vectors/modules,
 /// each state as a tile, plus the first module stopped after its crashes and restarting, and the
 /// first state's page of the module whose vector file sorts first. The hub names no module: it
@@ -852,6 +965,81 @@ fn the_flyout_opens_settles_and_closes_while_the_hub_is_hidden() {
     tray_click(&hub);
     quiet_frame(&ctx, &mut hub, vec![]);
     assert!(hub.flyout.is_none());
+}
+
+/// A frame whose flyout window says it lacks the focus (Windows refused the hand-off).
+fn unfocused_frame(ctx: &egui::Context, hub: &mut Hub) -> bool {
+    let mut raw = input(960.0, 640.0, vec![]);
+    raw.viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .focused = Some(false);
+    let out = ctx.run(raw, |ctx| hub.frame(ctx));
+    out.viewport_output[&egui::ViewportId::ROOT].repaint_delay != std::time::Duration::MAX
+}
+
+/// A flyout shown without ever getting the focus (#1000) can't close on focus loss: it asks for
+/// one look when the grace ends and closes then, so the hidden hub goes back to waiting.
+#[test]
+fn a_flyout_that_never_got_the_focus_closes() {
+    let ctx = ctx();
+    let mut hub = hub_in(&temp_dir("flyout-nofocus"), None);
+    hub.shared.hidden.store(true, Ordering::Release);
+    tray_click(&hub);
+    for _ in 0..8 {
+        unfocused_frame(&ctx, &mut hub);
+    }
+    let shown = hub.flyout.as_ref().and_then(|f| f.shown_at);
+    assert!(shown.is_some(), "the flyout is up and shown");
+    // Within the grace: it stays, with one look asked for (a repaint-after, not a loop).
+    assert!(unfocused_frame(&ctx, &mut hub), "it asks for the look");
+    assert!(hub.flyout.is_some());
+    // The grace is over: it closes, and the hidden hub asks for nothing after that.
+    if let Some(f) = hub.flyout.as_mut() {
+        f.shown_at = Some(std::time::Instant::now() - flyout::FOCUS_GRACE);
+    }
+    unfocused_frame(&ctx, &mut hub);
+    assert!(
+        hub.flyout.is_none(),
+        "a flyout that never got the focus closes"
+    );
+    for _ in 0..2 {
+        unfocused_frame(&ctx, &mut hub);
+    }
+    assert!(!unfocused_frame(&ctx, &mut hub));
+    assert!(
+        hub.flyout_closed_by_focus.is_none(),
+        "not a focus-loss toggle"
+    );
+}
+
+/// An open flyout that has the focus settles: frames after the first few ask for nothing, so
+/// `wake::Gate` stops running hidden frames (#1000).
+#[test]
+fn an_idle_open_flyout_settles_to_no_repaint() {
+    let ctx = ctx();
+    let mut hub = hub_in(&temp_dir("flyout-idle"), None);
+    hub.shared.hidden.store(true, Ordering::Release);
+    tray_click(&hub);
+    let focused = |ctx: &egui::Context, hub: &mut Hub| {
+        let mut raw = input(960.0, 640.0, vec![]);
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .focused = Some(true);
+        let out = ctx.run(raw, |ctx| hub.frame(ctx));
+        out.viewport_output[&egui::ViewportId::ROOT].repaint_delay != std::time::Duration::MAX
+    };
+    for _ in 0..8 {
+        focused(&ctx, &mut hub);
+    }
+    for pass in 0..crate::wake::HIDDEN_STREAK {
+        assert!(
+            !focused(&ctx, &mut hub),
+            "idle flyout pass {pass} asked for a repaint"
+        );
+    }
+    assert!(hub.flyout.is_some(), "a focused flyout stays open");
 }
 
 /// The tile layout (order, hidden, shown) lives in `hideout.toml` `[tray]` and comes back with

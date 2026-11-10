@@ -62,10 +62,17 @@ window keeps eframe's `Poll` (its frame comes and answers `Wait`). Showing the w
 tray or a second instance repaints it as before (Windows sends `WM_PAINT` on show, plus the
 existing `request_repaint`).
 
-Health signal: the gate counts loop wakes (`new_events`) and logs
-`event loop: N wakes in M min` every 10 minutes; every wait ends by the next report, so an idle
-hub logs the line on time (one wake per 10 minutes is its cost). A hidden, idle hub should log a
-few wakes per report, not hundreds of thousands.
+Health signal: the gate counts loop wakes (one per `new_events` .. `about_to_wait`) and logs
+`event loop: N wakes in 600 s (repaint a, timer b, window c, accesskit d, device e, poll f,
+other g)` every 10 minutes; every wait ends by the next report, so an idle hub logs the line on
+time (one wake per 10 minutes is its cost). A hidden, idle hub should log a few wakes per report,
+not hundreds of thousands. The causes say whose wakes they are (#1000, `wake::Cause`): `repaint`
+is eframe's repaint event (our wakers: the panel feed, stream readers, the show signal, tray
+commands; and egui), `timer` a wait the loop asked for (a frame's `request_repaint_after`, the
+report), `window` and `device` winit events, `accesskit` a screen reader or UI Automation client
+walking the window, `poll` a `Poll` turn, and `other` a message winit handled itself or one for
+another window of the thread (the tray icon's, IME, COM) that reaches no handler of ours.
+`HIDEOUT_WAKE_REPORT_S` (5 to 600 s) shortens the period; the lab's footprint case uses 15 s.
 
 ### What is left, and why it may not reach < 1/s
 
@@ -124,6 +131,93 @@ leaves a hidden frame that asks for nothing. Hover and clicks in the flyout cost
 hidden main window each, as a shown window's would; a restart countdown on a tile asks for one
 frame a second only while it is on screen.
 
+### The hidden hub at ~97 wakeups/s (#1000, main d333bd52)
+
+On-call measured the hidden hub at 91 to 97 wakeups/s (main thread 63 to 68/s, CPU 0.10 to
+0.12 %) after #995 to #997. A hand check on d333bd52 with the flyout never opened read the main
+thread at 100 switches/s while the hub logged `event loop: 1182 wakes in 10 min` (about 2/s): the
+main thread is woken about 100 times a second **without** winit's wait returning, so the flyout
+is not the cause and the source is still open (#1000). The hub crates install no
+`SetWindowsHookEx`, `SetWinEventHook`, `RegisterRawInputDevices`, `SetTimer`, device or session
+notification, or message-only window of their own, and with the flyout closed no path runs
+frames (read through eframe 0.33.3, egui 0.33.3, winit 0.30.13, tray-icon 0.24.2):
+
+- A background `request_repaint` (the panel feed's waker, stream readers) wakes the hidden hub
+  at most once: egui only calls the repaint callback when the new delay is shorter than the
+  stored one, and no frame runs to reset it.
+- `wake::hidden_pass` needs `flyout::live()`, which only a tray click sets.
+- The tray-icon leave timer is still killed as it is armed.
+
+Three ways an open flyout could keep the hidden hub drawing are now closed:
+
+1. **The focus hand-off failed.** A hub that may not take the foreground (started by a script,
+   no recent input of its own) shows the flyout without the focus, so it could never close on
+   focus loss. Now a flyout that was shown but never had the focus closes after
+   `flyout::FOCUS_GRACE` (750 ms), with one wake to look (`flyout::focus_check`).
+2. **A frame loop.** Hidden frames the flyout asks for right away are bounded: after
+   `wake::HIDDEN_STREAK` (30) back to back with no event between them, the gate waits for the
+   next event (input, a timer the frame asked for, a wake). Only a `Poll` wake continues the
+   streak (`wake::next_streak`, `wake::side_frames`).
+3. **Placing again for a rounding.** The flyout is placed (resized) again only for a change of
+   at least one whole physical pixel (`flyout::needs_place`); each placing resizes, and a resize
+   brings a frame, so a sub-pixel difference at a fractional scale could loop.
+
+Tests: `flyout::tests::a_flyout_that_never_got_the_focus_closes_after_the_grace`,
+`flyout::tests::it_is_placed_again_only_for_a_whole_pixel`,
+`wake::tests::hidden_frames_stop_after_a_streak_and_start_again_on_an_event`,
+`shell::tests::a_flyout_that_never_got_the_focus_closes`,
+`shell::tests::an_idle_open_flyout_settles_to_no_repaint`, and
+`shell::tests::a_hidden_hub_with_a_restarting_module_requests_no_repaint` (a module restarting
+while hidden: one wake per router event, and the frames it brings ask for nothing; a crash bar
+countdown must only count down while its page or the flyout is on screen).
+
+### #1000 resolved: loop wakes are ours and limited, thread readies are recorded
+
+The readings above mix two things. **Loop wakes** are the hub's own: each is a return from
+winit's `MsgWaitForMultipleObjectsEx` and one turn of our handlers. **Thread readies** (context
+switches) also count every time Windows runs one of the hub's threads for its own work and puts
+it back to sleep without the wait returning: the NVIDIA OpenGL driver thread (~11/s even on the
+#967 build), TSF/IME and COM apartment work on the UI thread, and messages sent to the thread's
+windows from other processes. The ~100 readies/s on the main thread of d333bd52 never reached
+the loop (it counted ~2 wakes/s), so they are OS and driver work, not ours. On-call's harness
+listed and closed windows during case A (window enumeration sends messages to every top-level
+window), which may have added to them.
+
+So the footprint gate (`scripts/lab/hideout_footprint.py`) now limits **loop wakes**: at most
+1/s with the window hidden to the tray and no flyout (`--state hidden`, the default; the case
+closes the main window by `WM_CLOSE`, as its X does), and the shown window has its own limit
+(`--state shown`, `loop_wakes_shown_per_s`). The reading is the hub's own counter: the case
+starts the hub with `HIDEOUT_WAKE_REPORT_S=15` and reads the report lines written during the
+window from `logs\hideout.log` under its `HIDEOUT_CONFIG_DIR`, dropping the first (its period
+began before the window). That needs no admin, no request channel into the hub and no wake beyond
+the report itself (0.07/s, inside the reading), and On-call reads the same line on any hub. The
+causes go to the result as `loop_wake_causes`. Context switches (`wakeups_per_s`) and
+`top_threads` stay in the result as **INFO**, never compared or failed.
+
+**The ~2 loop wakes/s on d333bd52** (1182 in 10 min; #967 measured about 8): read through our
+code, none of our wakers can fire that often while hidden with the flyout closed. The router,
+supervisor and panel feed reach the loop only through `request_repaint`, and egui calls the
+repaint callback once until a frame runs, which a hidden hub without the flyout never does
+(`shell::tests::a_hidden_hub_with_a_busy_feed_wakes_the_loop_once_per_burst`: 20 feed events
+while hidden are one loop wake, and the frames after it ask for no repaint). The report timer is
+one wake per 10 minutes, and no other timer of ours arms while hidden (`flyout::focus_check` only
+while an unfocused flyout is up, the tray-icon leave timer is killed on arm). So the cause is not
+found in our code and is left to the per-cause count: the next hidden run says whether the wakes
+are `other` (an OS message to a window of the UI thread: 1182 is close to a 530 ms caret-blink or
+similar system timer, 1132 per 10 min, but that is unverified), `accesskit` (a UI Automation
+client such as the harness walking the window) or ours (`repaint`, `timer`). If they are ours,
+#1000 comes back with the cause named.
+
+The gate's case, window-free: `wake::tests::a_hidden_hub_without_the_flyout_wakes_only_for_events`
+(a hidden hub, no flyout, a feed event every 4 s: every flow eframe leaves is a wait until the
+next event or report, 18 wakes in 60 s, under 1/s), `wake::tests::a_wake_is_named_by_what_it_dispatched`
+and `wake::tests::wakes_are_reported_once_per_ten_minutes_by_cause`; the compare and the log
+reading are in `scripts/test_hideout_footprint.py`.
+
+Re-open #1000 only if a cheap non-admin check (the per-cause count, `top_threads` with thread
+descriptions) shows our own threads causing the readies, or idle CPU or power (for example
+`powercfg /srumutil` energy per app, or CPU % over a long hidden window) shows a real cost.
+
 ## What On-call re-measures
 
 `scripts/lab/hideout_footprint.py` on the PR build, sets "none" and "default":
@@ -139,6 +233,14 @@ threads that switch most, with id, description and switches/s.
 
 4. Window closed to the tray, then the flyout opened and closed (click the icon, then Esc):
    wakeups and CPU must come back to case 2 within a few seconds of closing it.
+
+5. (#1000) Window closed to the tray by its X, **the flyout never opened**, and the harness
+   closing only the main window (one window): main thread under 1 switch/s, total wakeups as in
+   case 2 of the #967 re-measure (about 11/s). This tells whether the no-flyout hub is clean.
+6. (#1000) Window closed to the tray, then the flyout opened by a tray click and dismissed (Esc,
+   or a click elsewhere), and also once opened by a click from a script with no click after it
+   (no focus): within about a second of each it closes by itself or is gone, and wakeups come
+   back to case 5. The hub log says `tray flyout closed: it never got the focus` for the second.
 
 After the hidden-hub fix: window closed to the tray, main thread under 1 switch/s (was 1100 to
 1600), and the log shows `event loop: N wakes in 10 min` with N in the tens at most.
@@ -200,3 +302,10 @@ The PNGs are opaque RGBA at the window's size in physical pixels (client area on
 bar is drawn by Windows, not by the hub). Pass a `.png` path; relative paths are taken from the
 client's working directory.
 
+1600), and the log shows `event loop: N wakes in 600 s (...)` with N in the tens at most.
+
+7. (#1000, the gate) `hideout_footprint.py --app <hideout.exe>` (hidden, the default) on this
+   PR's build, sets "none" and "default", with no other tool listing windows during the window:
+   `loop_wakes_per_s` at most 1 (PASS), and the `loop_wake_causes` of the result posted on #1000.
+   Then once with `--state shown --update-baseline` to set the shown window's loop-wake value.
+   Context switches and `top_threads` are INFO.
