@@ -905,7 +905,7 @@ fn renders_the_flyout_for_review() {
             egui::CentralPanel::default()
                 .frame(flyout_frame(&t))
                 .show(c, |ui| {
-                    height = flyout_panel(ui, host, &mut layout, &mut ed).1
+                    height = flyout_panel(ui, host, &mut layout, &mut ed, &t).1
                 });
         })?;
         let h = height.ceil() as u32;
@@ -913,7 +913,7 @@ fn renders_the_flyout_for_review() {
         let rgba = rasterise(w, h, |c| {
             egui::CentralPanel::default()
                 .frame(flyout_frame(&t))
-                .show(c, |ui| flyout_panel(ui, host, &mut layout, &mut ed));
+                .show(c, |ui| flyout_panel(ui, host, &mut layout, &mut ed, &t));
         })?;
         save_png(name, w, h, rgba);
         Some(())

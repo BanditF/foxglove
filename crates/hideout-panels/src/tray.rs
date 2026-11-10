@@ -296,7 +296,10 @@ pub fn tile_ui_at(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, now: Instan
             }
             if needs_hub {
                 ui.label(RichText::new(crate::model::state_words("needs-hub")).color(danger));
-                report.update_hub |= ui.button("Update Hideout").clicked();
+                report.update_hub |= ui
+                    .button("Update Hideout")
+                    .on_hover_text("Opens the Hideout download page in your browser.")
+                    .clicked();
                 return;
             }
             let restarting = current.as_deref() == Some("restarting");

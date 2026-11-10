@@ -453,7 +453,11 @@ fn flyout_panel(
     panels: &mut PanelHost,
     layout: &mut TrayLayout,
     editing: &mut bool,
+    t: &Tokens,
 ) -> (hideout_panels::tray::TrayReport, f32) {
+    // Tracks (a meter's bar) are `extreme_bg_color`, the hub's surface: on the flyout's own
+    // surface they vanish, so here they take the page colour (the same contrast, reversed).
+    ui.visuals_mut().extreme_bg_color = c(t.bg);
     let now = std::time::Instant::now();
     // Measured on a child: a panel's own rect is the whole window.
     let r = ui.vertical(|ui| hideout_panels::tray_panel_ui(panels, ui, layout, editing, now));
@@ -595,7 +599,7 @@ impl Hub {
             let close = ctx.input_mut(|i| {
                 i.consume_key(Modifiers::NONE, Key::Escape) || i.viewport().close_requested()
             });
-            let draw = |ui: &mut egui::Ui| flyout_panel(ui, panels, layout, editing);
+            let draw = |ui: &mut egui::Ui| flyout_panel(ui, panels, layout, editing, t);
             let (report, height) = if class == egui::ViewportClass::Embedded {
                 // No second window (tests, or a backend without viewports): an area on top.
                 egui::Area::new(egui::Id::new("hideout.tray.flyout"))
