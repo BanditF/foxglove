@@ -9,3 +9,7 @@ license = "MIT"
 foxglove-plugin-host = { path = "../plugin-host" }
 foxglove-plugin-api = { path = "../plugin-api" }
 serde_json = "1"
+
+[dev-dependencies]
+hideout-contract = { path = "../hideout-contract" }
+hideout-router = { path = "../hideout-router" }
