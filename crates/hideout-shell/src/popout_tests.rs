@@ -558,3 +558,295 @@ fn an_idle_pop_out_asks_for_no_frame_and_held_ones_cost_nothing() {
     assert_eq!(repaint_delay(out.as_ref().unwrap()), Duration::MAX);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- #1012: the tray start, announcements, focus, F6 and the page icon -----------------------
+
+#[test]
+fn a_tray_start_never_shows_the_main_viewport() {
+    // Created hidden; `platform::hold_hidden` keeps eframe's show after the first frame off
+    // (its own test shows a held window stays hidden), and only a real show lets go.
+    assert_eq!(main_viewport("Modules", true).visible, Some(false));
+    assert_eq!(
+        main_viewport("Modules", false).visible,
+        None,
+        "a normal start as before"
+    );
+}
+
+/// The live (announced) nodes' words in a frame's AccessKit tree.
+fn live_words(out: &egui::FullOutput) -> Vec<String> {
+    out.platform_output
+        .accesskit_update
+        .as_ref()
+        .map(|u| {
+            u.nodes
+                .iter()
+                .filter(|(_, n)| n.live().is_some_and(|l| l != egui::accesskit::Live::Off))
+                .map(|(_, n)| n.label().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The label of the node that has the focus in a frame's AccessKit tree.
+fn focus_label(out: &egui::FullOutput) -> Option<String> {
+    let u = out.platform_output.accesskit_update.as_ref()?;
+    u.nodes
+        .iter()
+        .find(|(id, _)| *id == u.focus)
+        .and_then(|(_, n)| n.label().map(str::to_string))
+}
+
+fn a11y_ctx() -> egui::Context {
+    let c = ctx();
+    c.enable_accesskit();
+    c
+}
+
+/// One frame of `id`'s pop-out on `pctx`.
+fn popout_out(
+    pctx: &egui::Context,
+    hub: &mut Hub,
+    id: &TabId,
+    events: Vec<Event>,
+) -> egui::FullOutput {
+    let i = hub.tabs.position(id).unwrap();
+    let t = theme::tokens(true);
+    pctx.run(input(640.0, 420.0, events), |c| {
+        let _ = hub.popout_window_ui(c, &t, i);
+    })
+}
+
+#[test]
+fn popping_out_and_docking_back_are_announced_once_politely() {
+    let dir = temp_dir("pop-say");
+    let (mut hub, _router, hctx) = chat_hub(&dir);
+    hctx.enable_accesskit();
+    let pctx = a11y_ctx();
+    hub.apply(Action::PopOut(1));
+    let out = popout_out(&pctx, &mut hub, &chat(), vec![]);
+    assert_eq!(live_words(&out), ["Chat opened in its own window"]);
+    let main = hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert!(
+        live_words(&main).is_empty(),
+        "said in the window the page went to"
+    );
+    // Docked back: said in Hideout, with the tab's place.
+    hub.popout_cmd(&chat(), PopCmd::DockBack);
+    let main = hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert_eq!(live_words(&main), ["Chat docked, tab 2 of 3"]);
+    // Once: stale, it leaves the tree with the next frame (none is asked for to drop it).
+    // The dock's own frames (activation, focus) settle; the announcement asks for none.
+    let main = frames(&hctx, &mut hub, vec![]);
+    assert_eq!(repaint_delay(&main), Duration::MAX, "no frame asked for");
+    assert!(hub.announce.is_some(), "still fresh");
+    hub.announce.as_mut().unwrap().at -= ANNOUNCE_FOR;
+    let main = hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert!(live_words(&main).is_empty());
+    assert!(hub.announce.is_none());
+    // The close button docks back quietly, and still says where the page went, as a new node.
+    hub.apply(Action::PopOut(1));
+    let n = hub.announce.as_ref().unwrap().n;
+    hub.popout_cmd(&chat(), PopCmd::Close);
+    let a = hub.announce.as_ref().unwrap();
+    assert_eq!(a.text, "Chat docked, tab 2 of 3");
+    assert!(a.n > n, "a new node, so it is said again");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A hub page with two buttons, Send and Keep (focusable elements of the page).
+struct FormPage;
+
+impl Page for FormPage {
+    fn id(&self) -> &str {
+        "form"
+    }
+    fn title(&self) -> &str {
+        "Form"
+    }
+    fn icon(&self) -> &str {
+        "chat"
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, _t: &Tokens) {
+        let _ = ui.button("Send");
+        let _ = ui.button("Keep");
+    }
+}
+
+fn form_hub(dir: &std::path::Path) -> Hub {
+    let root = dir.as_os_str().to_owned();
+    let paths = HubPaths::resolve(|k| (k == "HIDEOUT_CONFIG_DIR").then(|| root.clone())).unwrap();
+    let shared = Arc::new(Shared {
+        paths,
+        prefs: Mutex::new(Prefs::default()),
+        paused: AtomicBool::new(false),
+        hidden: AtomicBool::new(false),
+        flyout_click: Mutex::new(None),
+    });
+    let pages: Vec<Box<dyn Page>> = vec![
+        Box::new(FormPage),
+        Box::new(FakePage("settings", "Settings")),
+    ];
+    Hub::new(shared, pages, None, None)
+}
+
+/// Tab presses on `ctx` until the focus is on `label`.
+fn tab_to(ctx: &egui::Context, hub: &mut Hub, label: &str) {
+    for _ in 0..16 {
+        let tab = vec![key(Key::Tab, Modifiers::NONE)];
+        let _ = ctx.run(input(1100.0, 640.0, tab), |c| hub.frame(c));
+        let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+        if focus_label(&out).as_deref() == Some(label) {
+            return;
+        }
+    }
+    panic!("Tab never reached {label}");
+}
+
+#[test]
+fn the_focus_goes_with_the_page_and_comes_back_on_dock() {
+    let dir = temp_dir("pop-focus");
+    let mut hub = form_hub(&dir);
+    let form = TabId::page("form");
+    let hctx = a11y_ctx();
+    let _ = hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    tab_to(&hctx, &mut hub, "Keep");
+    // Ctrl+Shift+O: the pop-out opens with Keep focused, as it was in Hideout.
+    let _ = hctx.run(input(1100.0, 640.0, vec![key(Key::O, cs())]), |c| {
+        hub.frame(c)
+    });
+    assert!(hub.tabs.tabs()[0].popped);
+    let pctx = a11y_ctx();
+    let _ = popout_out(&pctx, &mut hub, &form, vec![]);
+    let out = popout_out(&pctx, &mut hub, &form, vec![]);
+    assert_eq!(focus_label(&out).as_deref(), Some("Keep"));
+    // Shift+Tab to Send in the pop-out, then Dock back: Send has the focus in Hideout.
+    let back = vec![key(Key::Tab, Modifiers::SHIFT)];
+    let _ = popout_out(&pctx, &mut hub, &form, back);
+    let out = popout_out(&pctx, &mut hub, &form, vec![]);
+    assert_eq!(focus_label(&out).as_deref(), Some("Send"));
+    hub.popout_cmd(&form, PopCmd::DockBack);
+    let _ = hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    let out = hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    assert_eq!(focus_label(&out).as_deref(), Some("Send"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn f6_moves_between_the_title_row_and_the_page() {
+    let dir = temp_dir("pop-f6");
+    let mut hub = form_hub(&dir);
+    let form = TabId::page("form");
+    let hctx = ctx();
+    let _ = hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    hub.apply(Action::PopOut(0));
+    let pctx = a11y_ctx();
+    let f6 = || vec![key(Key::F6, Modifiers::NONE)];
+    let _ = popout_out(&pctx, &mut hub, &form, vec![]);
+    // Nothing focused: F6 goes to the title row's first element, Keep on top.
+    let _ = popout_out(&pctx, &mut hub, &form, f6());
+    let out = popout_out(&pctx, &mut hub, &form, vec![]);
+    assert_eq!(focus_label(&out).as_deref(), Some("Keep on top"));
+    // From the title row: the page's first element (none had the focus there yet).
+    let _ = popout_out(&pctx, &mut hub, &form, f6());
+    let out = popout_out(&pctx, &mut hub, &form, vec![]);
+    assert_eq!(focus_label(&out).as_deref(), Some("Send"));
+    // Tab on to Keep, Shift+F6 up to the title row, F6 back down to Keep (where it was).
+    let _ = popout_out(&pctx, &mut hub, &form, vec![key(Key::Tab, Modifiers::NONE)]);
+    let out = popout_out(&pctx, &mut hub, &form, vec![]);
+    assert_eq!(focus_label(&out).as_deref(), Some("Keep"));
+    let _ = popout_out(&pctx, &mut hub, &form, vec![key(Key::F6, Modifiers::SHIFT)]);
+    let out = popout_out(&pctx, &mut hub, &form, vec![]);
+    assert_eq!(focus_label(&out).as_deref(), Some("Keep on top"));
+    let _ = popout_out(&pctx, &mut hub, &form, f6());
+    let out = popout_out(&pctx, &mut hub, &form, vec![]);
+    assert_eq!(focus_label(&out).as_deref(), Some("Keep"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_title_row_draws_the_page_icon_before_the_title() {
+    let dir = temp_dir("pop-icon");
+    let mut hub = form_hub(&dir);
+    let form = TabId::page("form");
+    let hctx = ctx();
+    let _ = hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    hub.apply(Action::PopOut(0));
+    let pctx = ctx();
+    let _ = popout_out(&pctx, &mut hub, &form, vec![]);
+    let out = popout_out(&pctx, &mut hub, &form, vec![]);
+    let icon = hideout_panels::tray::icon_glyph("chat");
+    let (ix, tx) = (text_x(&out, icon), text_x(&out, "Form"));
+    assert!(ix.is_some() && tx.is_some(), "{:?}", drawn(&out));
+    assert!(ix < tx, "icon, then title");
+    // A module page uses its panel's icon (an unknown name: the generic one).
+    let (hub2, _r, _c) = chat_hub(&dir.join("m"));
+    assert_eq!(
+        hub2.page_icon(&chat()),
+        hideout_panels::tray::icon_glyph("x")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `register` with a published icon name.
+fn register_icon(module: &str, name: &str, panel: &str, title: &str, icon: &str) -> Inbound {
+    match register(module, name, panel, title) {
+        Inbound::Register {
+            call,
+            module,
+            name,
+            declared,
+            actions,
+            params,
+        } => {
+            let mut v = serde_json::to_value(&params).unwrap();
+            v["panels"][0]["icon"] = serde_json::json!(icon);
+            Inbound::Register {
+                call,
+                module,
+                name,
+                declared,
+                actions,
+                params: serde_json::from_value(v).unwrap(),
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn renders_the_title_row_icons_for_review() {
+    // Two pop-outs' title rows (#1012): the page icon before the title; Images kept on top.
+    let dir = temp_dir("png-pop-icons");
+    let (router, feed) = channel();
+    let mut hub = hub_in(&dir, Some(Box::new(feed)));
+    router.push(register_icon(CHAT.0, "Chat", CHAT.1, "Chat", "chat"));
+    router.push(register_icon(
+        "mod.images",
+        "Images",
+        "images",
+        "Images",
+        "image",
+    ));
+    let probe = ctx();
+    let _ = probe.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
+    let images = TabId::panel("mod.images", "images");
+    for id in [chat(), images.clone()] {
+        hub.open(id.clone());
+        let i = hub.tabs.position(&id).unwrap();
+        hub.apply(Action::PopOut(i));
+    }
+    hub.toggle_keep_on_top(&images);
+    let (w, h) = (640u32, 160u32);
+    let Some(chat_win) = render_popout(&mut hub, &chat(), w, h, vec![]) else {
+        eprintln!("no system font; title row review skipped");
+        return;
+    };
+    let images_win = render_popout(&mut hub, &images, w, h, vec![]).unwrap();
+    let (cw, ch) = (w + 60, 2 * h + 90);
+    let mut canvas: Vec<u8> = [0x18u8, 0x1c, 0x22, 0xff].repeat((cw * ch) as usize);
+    blit(&mut canvas, cw, &chat_win, (w, h), (30, 30));
+    blit(&mut canvas, cw, &images_win, (w, h), (30, h + 60));
+    save_png("built-popout-title-row-icons.png", cw, ch, canvas);
+    let _ = std::fs::remove_dir_all(&dir);
+}

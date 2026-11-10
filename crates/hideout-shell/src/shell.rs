@@ -27,6 +27,11 @@ pub trait Page {
     fn id(&self) -> &str;
     /// The sidebar label and the window title's page name.
     fn title(&self) -> &str;
+    /// A published icon name (`hideout_contract::panel::ICONS`) for the pop-out's title row;
+    /// the generic module icon unless the page names one.
+    fn icon(&self) -> &str {
+        "module"
+    }
     fn ui(&mut self, ui: &mut egui::Ui, tokens: &Tokens);
 }
 
@@ -188,17 +193,8 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         .first()
         .map(|p| p.title().to_string())
         .unwrap_or_default();
-    let glyph = crate::icon::rgba(64, State::Normal);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(window_title(&first_title))
-            .with_inner_size(placement::DEFAULT_SIZE)
-            .with_min_inner_size(placement::MIN_SIZE)
-            .with_icon(egui::IconData {
-                rgba: glyph,
-                width: 64,
-                height: 64,
-            }),
+        viewport: main_viewport(&first_title, start_in_tray),
         ..Default::default()
     };
     let (_instance, show) = instance;
@@ -214,7 +210,16 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             if let Ok(h) = cc.window_handle() {
                 if let RawWindowHandle::Win32(w) = h.as_raw() {
                     platform::set_main_window(w.hwnd.get());
+                    if start_in_tray {
+                        // Hidden from creation: eframe's show after the first frame is held
+                        // off until the first real show (#1012).
+                        platform::hold_hidden(w.hwnd.get());
+                    }
                 }
+            }
+            if start_in_tray {
+                shared.hidden.store(true, Ordering::Release);
+                log::info!("started in the tray; saved pop-outs wait for Hideout to open");
             }
             let ctx = cc.egui_ctx.clone();
             if let Ok(p) = shared.prefs.lock() {
@@ -254,7 +259,6 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             let pop_ctx = ctx.clone();
             platform::set_popout_waker(Box::new(move || pop_ctx.request_repaint()));
             let mut hub = Hub::new(shared, pages, feed, hooks);
-            hub.start_hidden = if start_in_tray { 2 } else { 0 };
             hub.popouts_held = start_in_tray;
             // Choose file for file settings: the Windows picker (tests leave it out).
             hub.panels.picker = Some(hideout_panels::model::Picker(Box::new(platform::pick_file)));
@@ -496,15 +500,52 @@ struct Hub {
     windows: BTreeMap<String, PageWindow>,
     /// Started in the tray: pop-outs wait until Hideout is first shown.
     popouts_held: bool,
-    /// Started in the tray: frames until the main window hides (eframe shows it after the
-    /// first one), 0 once done.
-    start_hidden: u8,
     /// The active tab last frame: a placeholder that becomes active brings its window forward.
     last_active: Option<TabId>,
     /// The page area's size (points): a new pop-out's size.
     page_size: egui::Vec2,
     /// Close page with unsaved work: "Close <page>?" shows in that pop-out.
     popout_asking: Option<TabId>,
+    /// Per page, the element of it that last had the focus (in either window): popping out and
+    /// docking back put the focus there again (#1012).
+    page_focus: HashMap<TabId, egui::Id>,
+    /// The focus to give an element of this page the next time its body is drawn.
+    focus_page: Option<(TabId, egui::Id)>,
+    /// The pop-out title row's focusable elements, in focus order (the same in every pop-out):
+    /// F6 tells the title row from the page by them.
+    popout_title_ids: Vec<egui::Id>,
+    /// The one polite announcement of a pop out or dock back, while it is fresh.
+    announce: Option<Announce>,
+}
+
+/// Where an announcement is said: the window the focus is in after the move.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Said {
+    Main,
+    Popout(TabId),
+}
+
+/// One polite announcement (#1012): a live node with its own id, so the screen reader says it
+/// once, when it appears; it leaves the tree on the first frame after [`ANNOUNCE_FOR`].
+#[derive(Clone, Debug)]
+struct Announce {
+    text: String,
+    place: Said,
+    n: u64,
+    at: std::time::Instant,
+}
+
+/// How long an announcement stays in the tree (it is said when it appears).
+const ANNOUNCE_FOR: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// "Chat opened in its own window".
+fn opened_words(title: &str) -> String {
+    format!("{title} opened in its own window")
+}
+
+/// "Chat docked, tab 3 of 4".
+fn docked_words(title: &str, n: usize, m: usize) -> String {
+    format!("{title} docked, tab {n} of {m}")
 }
 
 /// The open tray flyout.
@@ -654,11 +695,57 @@ impl Hub {
             popouts: Vec::new(),
             windows,
             popouts_held: false,
-            start_hidden: 0,
             last_active: None,
             page_size: egui::vec2(popout::FIRST_MIN.0 as f32, popout::FIRST_MIN.1 as f32),
             popout_asking: None,
+            page_focus: HashMap::new(),
+            focus_page: None,
+            popout_title_ids: Vec::new(),
+            announce: None,
         }
+    }
+
+    /// Says `text` once, politely, in `place`'s window.
+    fn say(&mut self, text: String, place: Said) {
+        let n = self.announce.as_ref().map_or(0, |a| a.n + 1);
+        self.announce = Some(Announce {
+            text,
+            place,
+            n,
+            at: std::time::Instant::now(),
+        });
+    }
+
+    /// The announcement's live node in `place`'s window, while it is fresh. No frame is asked
+    /// for: a stale one goes with the next frame that comes anyway.
+    fn announce_ui(&mut self, ctx: &egui::Context, place: &Said) {
+        let Some(a) = self.announce.as_ref().filter(|a| &a.place == place) else {
+            return;
+        };
+        if a.at.elapsed() >= ANNOUNCE_FOR {
+            self.announce = None;
+            return;
+        }
+        let (id, text) = (egui::Id::new(("hideout.announce", a.n)), a.text.clone());
+        ctx.accesskit_node_builder(id, |n| {
+            n.set_role(egui::accesskit::Role::Status);
+            n.set_live(egui::accesskit::Live::Polite);
+            n.set_label(text);
+        });
+    }
+
+    /// The page's icon glyph (its panel's `icon`, a hub page's own).
+    fn page_icon(&self, id: &TabId) -> &'static str {
+        let name = match self.target(id) {
+            Some(Target::Page(p)) => self.pages[p].icon().to_string(),
+            Some(Target::Panel(key)) => self
+                .panels
+                .panel(&key)
+                .map(|p| p.icon.clone())
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+        hideout_panels::tray::icon_glyph(&name)
     }
 
     fn close_flyout(&mut self, ctx: &egui::Context, by_focus: bool) {
@@ -1443,10 +1530,29 @@ impl Hub {
     /// module's panel with the supervisor's surfaces (crash bar, stopped card, Couldn't start)
     /// and the state line. Under one id per page, so scroll, open sections and typed text are the
     /// same widgets in either place (§5.6).
+    /// The ids are global (not under the window's own), so an element of the page is the same
+    /// widget in either window and the focus can follow it (#1012).
     fn page_body(&mut self, ui: &mut egui::Ui, t: &Tokens, id: &TabId, look: &Look, popout: bool) {
-        ui.push_id(("hideout.page", id), |ui| {
-            self.page_body_inner(ui, t, id, look, popout)
-        });
+        let ctx = ui.ctx().clone();
+        if self.focus_page.as_ref().is_some_and(|(p, _)| p == id) {
+            if let Some((_, f)) = self.focus_page.take() {
+                ctx.memory_mut(|m| m.request_focus(f));
+            }
+        }
+        let area = ui
+            .scope_builder(egui::UiBuilder::new().id(("hideout.page", id)), |ui| {
+                self.page_body_inner(ui, t, id, look, popout)
+            })
+            .response
+            .rect;
+        if let Some(f) = ctx.memory(|m| m.focused()) {
+            if ctx
+                .read_response(f)
+                .is_some_and(|r| area.intersects(r.rect))
+            {
+                self.page_focus.insert(id.clone(), f);
+            }
+        }
     }
 
     fn page_body_inner(
@@ -1748,6 +1854,7 @@ impl Hub {
             .show(ctx, |ui| self.page_area(ui, &t));
         self.ask_ui(ctx, &t);
         self.palette_ui(ctx, &t);
+        self.announce_ui(ctx, &Said::Main);
         let fly_shot = job.as_ref().filter(|j| j.flyout).map(|j| j.shots.clone());
         let pop_shot = job
             .as_ref()
@@ -1889,6 +1996,9 @@ impl Hub {
         self.tabs.pop_out(i);
         self.set_popped_out(&id, true);
         self.start_popout(id.clone(), true);
+        // The focus goes with the page, onto the element that had it.
+        self.focus_page = self.page_focus.get(&id).map(|f| (id.clone(), *f));
+        self.say(opened_words(&title), Said::Popout(id.clone()));
         log::info!("{title} opened in its own window");
         if let Some(h) = self.hooks.as_mut() {
             h.pop_out(&id, &title);
@@ -1918,6 +2028,15 @@ impl Hub {
             self.tabs.dock_back(i);
             self.last_active = Some(id.clone());
             self.show_main();
+            // Focus on the element that had it in the pop-out (x leaves the focus to Windows).
+            self.focus_page = self.page_focus.get(&id).map(|f| (id.clone(), *f));
+        }
+        if was {
+            if let Some(n) = self.tabs.position(&id) {
+                let title = self.look(n).title;
+                let m = self.tabs.tabs().len();
+                self.say(docked_words(&title, n + 1, m), Said::Main);
+            }
         }
         self.set_popped_out(&id, false);
         if was {
@@ -2219,7 +2338,18 @@ impl Hub {
                 out.cmds.push(PopCmd::Palette);
             }
         }
+        let f6 = !asking
+            && ctx.input_mut(|inp| {
+                inp.consume_key(Modifiers::NONE, Key::F6)
+                    | inp.consume_key(Modifiers::SHIFT, Key::F6)
+            });
+        if f6 {
+            self.f6(ctx, &id);
+        }
+        self.announce_ui(ctx, &Said::Popout(id.clone()));
         let top = self.keep_on_top(&id);
+        let icon = self.page_icon(&id);
+        let mut title_ids = Vec::new();
         egui::TopBottomPanel::top("hideout.popout.title")
             .exact_height(POPOUT_TITLE_H)
             .show_separator_line(false)
@@ -2229,8 +2359,9 @@ impl Hub {
                     .inner_margin(egui::Margin::symmetric(12, 0)),
             )
             .show(ctx, |ui| {
-                popout_title_row(ui, t, &look.title, top, &mut out.cmds);
+                title_ids = popout_title_row(ui, t, icon, &look.title, top, &mut out.cmds);
             });
+        self.popout_title_ids = title_ids;
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -2244,6 +2375,30 @@ impl Hub {
             }
         }
         out
+    }
+
+    /// F6 in a pop-out: from the title row to the page (the element that last had the focus
+    /// there, else its first), and from the page (or nowhere) to the title row's first element.
+    /// Decided before this frame's widgets, from the title row's ids of the last frame.
+    fn f6(&mut self, ctx: &egui::Context, id: &TabId) {
+        // Focus order is the order drawn: More, Dock back, Keep on top (right to left), so Keep
+        // on top is the last, and the leftmost: the first in reading order.
+        let Some(&pin) = self.popout_title_ids.last() else {
+            return;
+        };
+        let now = ctx.memory(|m| m.focused());
+        let in_title = now.is_some_and(|f| self.popout_title_ids.contains(&f));
+        if !in_title {
+            ctx.memory_mut(|m| m.request_focus(pin));
+        } else if let Some(&f) = self.page_focus.get(id) {
+            ctx.memory_mut(|m| m.request_focus(f));
+        } else {
+            // The page's first element: the one after the title row's last.
+            ctx.memory_mut(|m| {
+                m.request_focus(pin);
+                m.move_focus(egui::FocusDirection::Next);
+            });
+        }
     }
 
     /// "Pop out <page>" for the palette: every page (the hub's and the modules') that isn't out.
@@ -2347,14 +2502,32 @@ fn side_windows_live() -> bool {
     flyout::live() || popouts_open()
 }
 
-/// The pop-out's title row: the page's title, then Keep on top, Dock back and More (…). A
-/// toolbar for screen readers.
-fn popout_title_row(ui: &mut egui::Ui, t: &Tokens, title: &str, top: bool, cmds: &mut Vec<PopCmd>) {
+/// The pop-out's title row: the page's icon and title, then Keep on top, Dock back and More
+/// (…). A toolbar for screen readers. Returns its focusable elements in focus order.
+fn popout_title_row(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    icon: &str,
+    title: &str,
+    top: bool,
+    cmds: &mut Vec<PopCmd>,
+) -> Vec<egui::Id> {
     ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
         n.set_role(egui::accesskit::Role::Toolbar);
         n.set_label("Window");
     });
+    let mut ids = Vec::new();
     ui.horizontal_centered(|ui| {
+        // The page's icon before the title: painted, not a widget (the title names the page).
+        let (r, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+        ui.painter().text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(15.0),
+            c(t.text),
+        );
+        ui.add_space(2.0);
         ui.label(
             egui::RichText::new(title)
                 .size(14.0)
@@ -2367,19 +2540,24 @@ fn popout_title_row(ui: &mut egui::Ui, t: &Tokens, title: &str, top: bool, cmds:
             });
             more.response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "More"));
+            ids.push(more.response.id);
             // The arrow a size up: at the label's size it reads as a tick.
             let dock = ui.add(egui::Button::new((
                 egui::RichText::new("\u{2199}").size(17.0).color(c(t.text)),
                 egui::RichText::new("Dock back").color(c(t.text)),
             )));
+            ids.push(dock.id);
             if dock.on_hover_text("Dock back (Ctrl+Shift+O)").clicked() {
                 cmds.push(PopCmd::DockBack);
             }
-            if keep_on_top_toggle(ui, t, top).clicked() {
+            let pin = keep_on_top_toggle(ui, t, top);
+            ids.push(pin.id);
+            if pin.clicked() {
                 cmds.push(PopCmd::ToggleTop);
             }
         });
     });
+    ids
 }
 
 /// Keep on top: a pin that fills orange when on. Its accessible name says the state.
@@ -2468,6 +2646,26 @@ fn main_button(ui: &mut egui::Ui, t: &Tokens, text: &str, focus: bool) -> egui::
     b
 }
 
+/// The main window's viewport. Started in the tray (sign-in) it is created hidden and stays
+/// so until the first open of Hideout (#1012; `platform::hold_hidden` keeps eframe's show after
+/// the first frame off the screen).
+fn main_viewport(title: &str, start_in_tray: bool) -> egui::ViewportBuilder {
+    let b = egui::ViewportBuilder::default()
+        .with_title(window_title(title))
+        .with_inner_size(placement::DEFAULT_SIZE)
+        .with_min_inner_size(placement::MIN_SIZE)
+        .with_icon(egui::IconData {
+            rgba: crate::icon::rgba(64, State::Normal),
+            width: 64,
+            height: 64,
+        });
+    if start_in_tray {
+        b.with_visible(false)
+    } else {
+        b
+    }
+}
+
 /// Opens a module's log, `logs\<id>.log` under the hub folder, in the app Windows opens `.log`
 /// files with (the crash bar, Couldn't start and the rollback notification's Open log).
 pub fn open_module_log(home: &std::path::Path, module: &str) {
@@ -2492,18 +2690,6 @@ fn card(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui)) {
 
 impl eframe::App for Hub {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.start_hidden > 0 {
-            // Started in the tray (sign-in): eframe shows the window after its first frame, so
-            // it hides on the second; tabs read `hidden` from the start.
-            self.shared.hidden.store(true, Ordering::Release);
-            self.start_hidden -= 1;
-            if self.start_hidden == 0 {
-                platform::hide_main_window();
-                log::info!("started in the tray; saved pop-outs wait for Hideout to open");
-            } else {
-                ctx.request_repaint();
-            }
-        }
         // Closing the window keeps the hub in the tray; Quit is in the tray menu.
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);

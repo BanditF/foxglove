@@ -112,9 +112,64 @@ fn main_window() -> Option<HWND> {
     }
 }
 
+// ---- Starting in the tray (#1012) ------------------------------------------------------------
+//
+// eframe 0.33 creates the root window hidden and shows it after its first painted frame
+// (`post_rendering`), whatever the viewport builder says. A sign-in start must never show it,
+// not even for a frame: while held, the subclass takes the show (`SWP_SHOWWINDOW`) and the
+// activation out of every position change of the window, so it stays hidden and never takes the
+// focus. The first real show (tray Open, a second start, Open <Module>) lets go first.
+
+/// The window held hidden (0: none).
+static HELD_HIDDEN: AtomicIsize = AtomicIsize::new(0);
+const HOLD_SUBCLASS_ID: usize = 0x4845;
+
+/// The flags a position change keeps while its window is held hidden: no show, no activation.
+pub fn held_flags(flags: u32) -> u32 {
+    use windows::Win32::UI::WindowsAndMessaging::{SWP_NOACTIVATE, SWP_SHOWWINDOW};
+    (flags & !SWP_SHOWWINDOW.0) | SWP_NOACTIVATE.0
+}
+
+unsafe extern "system" fn hold_proc(
+    h: HWND,
+    msg: u32,
+    wp: windows::Win32::Foundation::WPARAM,
+    lp: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::Shell::DefSubclassProc;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SET_WINDOW_POS_FLAGS, WINDOWPOS, WM_WINDOWPOSCHANGING,
+    };
+    if msg == WM_WINDOWPOSCHANGING && HELD_HIDDEN.load(Ordering::Acquire) == h.0 as isize {
+        if let Some(pos) = (lp.0 as *mut WINDOWPOS).as_mut() {
+            pos.flags = SET_WINDOW_POS_FLAGS(held_flags(pos.flags.0));
+        }
+    }
+    DefSubclassProc(h, msg, wp, lp)
+}
+
+/// Keeps `h` hidden until [`let_go_hidden`] (a start in the tray). Call on its thread, before
+/// its first frame.
+pub fn hold_hidden(h: isize) {
+    use windows::Win32::UI::Shell::SetWindowSubclass;
+    HELD_HIDDEN.store(h, Ordering::Release);
+    unsafe {
+        let _ = SetWindowSubclass(hwnd(h), Some(hold_proc), HOLD_SUBCLASS_ID, 0);
+    }
+}
+
+/// Ends the hold: the window shows again when asked. Any thread.
+pub fn let_go_hidden() {
+    HELD_HIDDEN.store(0, Ordering::Release);
+}
+
 /// Shows, restores and focuses the main window. Works while eframe draws nothing (a hidden
-/// window gets no frames), so the tray and the second instance call it directly.
+/// window gets no frames), so the tray and the second instance call it directly. Ends a hold
+/// from a start in the tray.
 pub fn show_main_window() {
+    let_go_hidden();
     if let Some(h) = main_window() {
         unsafe {
             let _ = ShowWindow(
@@ -837,6 +892,83 @@ pub fn take_menu_commands() -> Vec<(isize, MenuCommand)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_position_change_neither_shows_nor_activates() {
+        use windows::Win32::UI::WindowsAndMessaging::{SWP_NOMOVE, SWP_SHOWWINDOW};
+        let f = held_flags(SWP_SHOWWINDOW.0 | SWP_NOMOVE.0);
+        assert_eq!(f & SWP_SHOWWINDOW.0, 0);
+        assert_ne!(f & SWP_NOACTIVATE.0, 0);
+        assert_ne!(f & SWP_NOMOVE.0, 0, "the rest kept");
+    }
+
+    /// A tray start never shows the main window (#1012): eframe's show after the first frame,
+    /// and any other show, leave a held window hidden. The window is a tool window far off
+    /// screen that never activates, so even a failing run puts nothing on the desktop.
+    #[test]
+    fn a_held_window_stays_hidden_when_shown() {
+        use windows::core::w;
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowPos,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNORMAL, WNDCLASSW, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
+        };
+        unsafe extern "system" fn proc_(
+            h: HWND,
+            m: u32,
+            wp: windows::Win32::Foundation::WPARAM,
+            lp: LPARAM,
+        ) -> windows::Win32::Foundation::LRESULT {
+            DefWindowProcW(h, m, wp, lp)
+        }
+        unsafe {
+            let inst = GetModuleHandleW(None).unwrap();
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(proc_),
+                hInstance: inst.into(),
+                lpszClassName: w!("HideoutHoldTest"),
+                ..Default::default()
+            };
+            RegisterClassW(&class);
+            let h = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                w!("HideoutHoldTest"),
+                w!("hold test"),
+                WS_OVERLAPPEDWINDOW,
+                -32000,
+                -32000,
+                200,
+                100,
+                None,
+                None,
+                Some(inst.into()),
+                None,
+            )
+            .unwrap();
+            hold_hidden(h.0 as isize);
+            // winit's `set_visible(true)` and a plain show.
+            let _ = ShowWindow(h, SW_SHOW);
+            let _ = ShowWindow(h, SW_SHOWNORMAL);
+            let _ = SetWindowPos(
+                h,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
+            assert!(!IsWindowVisible(h).as_bool(), "held: never shown");
+            let_go_hidden();
+            assert_eq!(
+                HELD_HIDDEN.load(Ordering::Acquire),
+                0,
+                "let go for the first show"
+            );
+            let _ = DestroyWindow(h);
+        }
+    }
 
     #[test]
     fn maps_a_file_read_only() {
