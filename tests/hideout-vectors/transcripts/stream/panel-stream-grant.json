@@ -32,7 +32,7 @@
         "jsonrpc": "2.0",
         "id": 30,
         "result": {
-          "pipe": "\\\\.\\pipe\\hideout-example-previews-0001"
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0001"
         }
       }
     },

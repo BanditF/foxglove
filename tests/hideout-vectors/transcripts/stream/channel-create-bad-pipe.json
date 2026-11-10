@@ -1,0 +1,64 @@
+{
+  "name": "channel-create-bad-pipe",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.4"
+  ],
+  "description": "(v1.4, #977) The provider answers channel.create with a pipe that is not a local hideout-ch- pipe. The hub never passes it on: the consumer gets error 6 with data.id channel.pipe.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "channel.open",
+        "params": {
+          "module": "foxglove.example-art",
+          "channel": "previews"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 40,
+        "method": "channel.create",
+        "params": {
+          "channel": "previews",
+          "consumer": "tool:example-cli",
+          "nonce": "n-5678"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 40,
+        "result": {
+          "pipe": "\\\\example-host\\pipe\\hideout-ch-previews-0003"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 6,
+          "message": "backend",
+          "data": {
+            "id": "channel.pipe",
+            "reason": "Example Art offered a channel Hideout won't connect to. Update Example Art."
+          }
+        }
+      }
+    }
+  ]
+}

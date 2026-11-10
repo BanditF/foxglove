@@ -7,6 +7,7 @@
 //! - [`capability`]: the full §6.1 grammar and the never-list (§6.6)
 //! - [`panel`]: the panel schema, `ui.register` trees and their caps (§5)
 //! - [`frame`]: direct-channel stream frames (§5.4, §8.4)
+//! - [`channel`]: the direct channel's wire: pipe names, the nonce frame, framing (§8.4)
 //! - [`messages`]: registration and channel handshake messages (§8.8)
 //! - [`config`]: `hideout.toml` sources and trust anchors (§13.4, §13.6)
 //! - [`error`]: the §15 error ids
@@ -14,6 +15,7 @@
 //! `foxglove-plugin-api` re-exports this crate, so plugins built against it are unchanged.
 
 pub mod capability;
+pub mod channel;
 pub mod config;
 pub mod error;
 pub mod frame;

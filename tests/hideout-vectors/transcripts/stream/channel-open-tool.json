@@ -41,7 +41,7 @@
         "jsonrpc": "2.0",
         "id": 40,
         "result": {
-          "pipe": "\\\\.\\pipe\\hideout-example-previews-0002"
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0002"
         }
       }
     },
@@ -52,7 +52,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "pipe": "\\\\.\\pipe\\hideout-example-previews-0002",
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0002",
           "nonce": "n-5678"
         }
       }

@@ -362,7 +362,7 @@ fn setup(name: &str) -> Replay {
             );
             r
         }
-        "channel-open-tool" => {
+        "channel-open-tool" | "channel-create-bad-pipe" => {
             let mut r = Replay::new(vec![]);
             r.module(
                 "module",

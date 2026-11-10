@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use hideout_contract::capability::{check_grantable, Capability, Holder, Source};
+use hideout_contract::channel::{is_channel_pipe, read_stream};
 use hideout_contract::config::Config;
 use hideout_contract::frame::{decode_wire, Frame};
 use hideout_contract::messages::{check_hub_fact, check_message};
@@ -192,6 +193,43 @@ fn frame_row(row: &Value) -> Result<(), String> {
     Ok(())
 }
 
+fn unhex(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// Every row of `channels/channel-wire.json`, as (name, outcome).
+fn channel_rows(doc: &Value) -> Vec<(String, Result<(), String>)> {
+    let nonce = doc["nonce"].as_str().unwrap();
+    let mut rows = Vec::new();
+    for row in doc["streams"].as_array().unwrap() {
+        let (frames, end) = read_stream(&unhex(row["hex"].as_str().unwrap()), nonce);
+        let got = json!({
+            "frames_hex": frames.iter().map(|f| f.iter().map(|b| format!("{b:02x}")).collect::<String>()).collect::<Vec<_>>(),
+            "end": end.as_str(),
+        });
+        let result = if got == row["expect"] {
+            Ok(())
+        } else {
+            Err(format!("want {}, got {got}", row["expect"]))
+        };
+        rows.push((row["name"].as_str().unwrap().to_string(), result));
+    }
+    for row in doc["pipes"].as_array().unwrap() {
+        let pipe = row["pipe"].as_str().unwrap();
+        let want = row["result"] == "valid";
+        let result = if is_channel_pipe(pipe) == want {
+            Ok(())
+        } else {
+            Err(format!("want {}", row["result"]))
+        };
+        rows.push((format!("pipe:{pipe}"), result));
+    }
+    rows
+}
+
 fn holder(ctx: &Value) -> Option<Holder> {
     let source = || match (ctx["source"].as_str(), ctx["anchor"].as_str()) {
         (Some("sideload"), _) => Source::Sideload,
@@ -343,6 +381,14 @@ fn every_vector_matches_the_index() {
                         (want, got) => Err(format!("want {want:?}, got {got:?}")),
                     };
                     t.check(&format!("{key}#{fact}={}", row["value"]), result);
+                }
+            }
+            // The channel wire (v1.4, #977): streams as the provider reads them, and pipe names.
+            "channels" => {
+                let doc: Value =
+                    serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+                for (name, result) in channel_rows(&doc) {
+                    t.check(&format!("{key}#{name}"), result);
                 }
             }
             "transcripts" => transcript(&mut t, key, &file),

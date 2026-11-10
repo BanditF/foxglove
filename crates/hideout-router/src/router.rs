@@ -1080,7 +1080,7 @@ impl Router {
                 out.push(Out::Send(c, envelope(&id, result)))
             }
             Waiter::Channel { caller, id, nonce } => {
-                let r = result.map(|v| json!({"pipe": v["pipe"], "nonce": nonce}));
+                let r = crate::channels::grant(result, &nonce, &self.provider_name(conn));
                 out.push(Out::Send(caller, envelope(&id, r)));
             }
             Waiter::Host {
@@ -1090,7 +1090,7 @@ impl Router {
             } => out.push(Out::HostChannel {
                 module,
                 channel,
-                result: result.map(|v| json!({"pipe": v["pipe"], "nonce": nonce})),
+                result: crate::channels::grant(result, &nonce, &self.provider_name(conn)),
             }),
             Waiter::Hub(tag) => out.push(Out::HubResult { tag, result }),
         }
@@ -1388,6 +1388,16 @@ impl Router {
                     out,
                 )
             }
+        }
+    }
+
+    /// A provider connection's display name, for refusals.
+    fn provider_name(&self, conn: ConnId) -> String {
+        match self.conns.get(&conn).map(|c| &c.who) {
+            Some(Who::Module { id, .. }) => {
+                self.modules.get(id).map_or(id.clone(), |m| m.name.clone())
+            }
+            _ => "The module".into(),
         }
     }
 
