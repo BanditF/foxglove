@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Windows pieces (§7.7): a named Job Object per instance with memory and CPU caps and no
 //! breakaway, starting a process inside it before it runs a single instruction, opening a
-//! process again by pid after a hub restart, and its image path.
+//! process again by pid after a hub restart, its image path and start time, and the
+//! one-supervisor-per-folder lock.
 
 use std::ffi::OsString;
 use std::io;
@@ -11,7 +12,10 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
@@ -23,9 +27,10 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_JOB_MEMORY,
 };
 use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread,
-    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, INFINITE, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    CreateMutexW, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread,
+    QueryFullProcessImageNameW, ResumeThread, TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, INFINITE, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     THREAD_SUSPEND_RESUME,
 };
 
@@ -77,8 +82,10 @@ impl Default for Caps {
 }
 
 /// A named Job Object. Closing the handle does not end the processes (no kill-on-close): a
-/// module keeps running for its grace period when the hub goes (§7.9), and the restarted hub
-/// opens the job again by name.
+/// module keeps running for its grace period when the hub goes (§7.9). Only the hub holds a
+/// handle, so the name goes with the hub: the process stays inside the (now nameless) job with
+/// its caps, and a restarted hub nests it into a fresh job ([`Job::assign`]) instead of opening
+/// the old one (#986).
 pub struct Job {
     handle: Handle,
     pub name: String,
@@ -150,6 +157,17 @@ impl Job {
         })
     }
 
+    /// Puts a running process in this job (§7.9 take-back). A process already in a job is nested:
+    /// this job must be new and empty, and it becomes a child of the old one, whose caps still
+    /// hold. Processes the module started before are not moved.
+    pub fn assign(&self, p: &Process) -> io::Result<()> {
+        // SAFETY: owned job and process handles; the process has PROCESS_SET_QUOTA.
+        if unsafe { AssignProcessToJobObject(self.handle.0, p.0 .0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Ends every process in the job.
     pub fn kill(&self, code: u32) {
         // SAFETY: an owned job handle.
@@ -219,12 +237,33 @@ impl Process {
         // SAFETY: plain call; the handle is checked.
         let h = unsafe {
             OpenProcess(
-                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
+                PROCESS_SYNCHRONIZE
+                    | PROCESS_QUERY_LIMITED_INFORMATION
+                    | PROCESS_TERMINATE
+                    | PROCESS_SET_QUOTA,
                 0,
                 pid,
             )
         };
         Ok(Process(check(h)?))
+    }
+
+    /// When it started: a FILETIME (100 ns since 1601). With the pid, this names one process;
+    /// a reused pid has another start time.
+    pub fn started(&self) -> io::Result<u64> {
+        started_of(self.0 .0)
+    }
+
+    /// False once it has ended (a handle can outlive the process).
+    pub fn running(&self) -> bool {
+        // SAFETY: a process handle with SYNCHRONIZE.
+        unsafe { WaitForSingleObject(self.0 .0, 0) == WAIT_TIMEOUT }
+    }
+
+    /// Ends this one process (never by name).
+    pub fn kill(&self, code: u32) {
+        // SAFETY: a process handle with PROCESS_TERMINATE.
+        unsafe { TerminateProcess(self.0 .0, code) };
     }
 
     /// The full path of its exe.
@@ -257,6 +296,34 @@ fn image_of(h: HANDLE) -> io::Result<PathBuf> {
         return Err(io::Error::last_os_error());
     }
     Ok(PathBuf::from(OsString::from_wide(&buf[..len as usize])))
+}
+
+fn started_of(h: HANDLE) -> io::Result<u64> {
+    let mut t = [FILETIME::default(); 4];
+    let [c, e, k, u] = &mut t;
+    // SAFETY: four valid FILETIME out-pointers.
+    if unsafe { GetProcessTimes(h, c, e, k, u) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((u64::from(t[0].dwHighDateTime) << 32) | u64::from(t[0].dwLowDateTime))
+}
+
+/// The start time of a process the hub just started (see [`Process::started`]).
+pub fn child_started(child: &Child) -> io::Result<u64> {
+    started_of(child.as_raw_handle() as HANDLE)
+}
+
+/// Takes the named mutex `name` for the life of the process. `None` when another process holds
+/// it: one supervisor per hub folder, so a second hub never starts or takes back modules.
+pub fn claim(name: &str) -> io::Result<Option<Handle>> {
+    let w = wide(name);
+    // SAFETY: a valid wide string; the handle is checked.
+    let h = check(unsafe { CreateMutexW(std::ptr::null(), 0, w.as_ptr()) })?;
+    // SAFETY: read right after the call that set it.
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        return Ok(None);
+    }
+    Ok(Some(h))
 }
 
 /// The image path of process `pid`.
@@ -300,5 +367,41 @@ mod tests {
         again.kill(7);
         assert_eq!(p.wait().unwrap(), 7);
         assert_eq!(child.wait().unwrap().code(), Some(7));
+    }
+
+    #[test]
+    fn a_process_outlives_its_job_name_and_nests_into_a_fresh_job() {
+        let old = job("nest-old");
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null());
+        let mut child = old.spawn(cmd).unwrap();
+        let started = child_started(&child).unwrap();
+        let name = old.name.clone();
+        // The hub goes: its handle was the only one, so the name goes too (#986).
+        drop(old);
+        assert!(
+            Job::open(&name).is_err(),
+            "the job name outlived its last handle"
+        );
+        let p = Process::open(child.id()).unwrap();
+        assert!(p.running());
+        assert_eq!(p.started().unwrap(), started);
+        let fresh = Job::create(&format!("{name}-again"), Caps::default()).unwrap();
+        fresh.assign(&p).unwrap();
+        fresh.kill(9);
+        assert_eq!(p.wait().unwrap(), 9);
+        assert!(!p.running());
+        assert_eq!(child.wait().unwrap().code(), Some(9));
+    }
+
+    #[test]
+    fn one_holder_per_lock_name() {
+        let name = format!(r"Local\hideout-test-lock-{}", std::process::id());
+        let first = claim(&name).unwrap();
+        assert!(first.is_some());
+        assert!(claim(&name).unwrap().is_none());
+        drop(first);
+        assert!(claim(&name).unwrap().is_some());
     }
 }

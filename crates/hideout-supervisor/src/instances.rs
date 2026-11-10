@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! `run\instances.json` (§7.9): the instances the hub started, so a restarted hub can take them
 //! back. One record per module; written on every launch and end.
+//!
+//! A record names one process by its pid and start time, and the exe it runs by path and
+//! SHA-256: a restarted hub takes back only a process that matches all of them (#986).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -12,12 +15,19 @@ use serde::{Deserialize, Serialize};
 pub struct Record {
     pub instance: u64,
     pub pid: u32,
+    /// The process's start time (FILETIME, 100 ns since 1601). With `pid` it names one process;
+    /// a pid Windows gave to another process has another start time. Absent in records written
+    /// before #986.
+    #[serde(default)]
+    pub started: Option<u64>,
     /// The launch token (`HIDEOUT_TOKEN`), reused when it reconnects (§7.9).
     pub token: String,
     pub exe: PathBuf,
     /// SHA-256 of `exe` at launch, lowercase hex.
     pub sha256: String,
-    /// The Job Object's name, to open it again.
+    /// The Job Object's name; empty when the instance was taken back without one. Informational:
+    /// the name goes with the hub that made the job (see `win::Job`).
+    #[serde(default)]
     pub job: String,
 }
 
@@ -64,6 +74,7 @@ mod tests {
             Record {
                 instance: 3,
                 pid: 42,
+                started: Some(133_000_000_000_000_000),
                 token: "t".into(),
                 exe: "C:/m/a.exe".into(),
                 sha256: "00".into(),
@@ -74,5 +85,12 @@ mod tests {
         assert_eq!(Instances::load(&dir), i);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(Instances::load(&dir), Instances::default());
+    }
+
+    #[test]
+    fn records_from_before_start_times_still_load() {
+        let old = r#"{"modules":{"a.b":{"instance":1,"pid":2,"token":"t","exe":"C:/a.exe","sha256":"00","job":"j"}}}"#;
+        let i: Instances = serde_json::from_str(old).unwrap();
+        assert_eq!(i.modules["a.b"].started, None);
     }
 }
