@@ -49,7 +49,8 @@ impl OverlayApp {
             settings_requested,
             ui_wake,
             ui: UiState {
-                settings_visible: true,
+                // Foxglove: a start in the tray (`--tray`, On-call's restarts) keeps it closed.
+                settings_visible: !crate::foxglove::settings_open::tray_start(),
                 settings_error: None,
                 settings_warning: None,
                 mouse_passthrough: None,

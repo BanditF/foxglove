@@ -49,7 +49,7 @@ mod imp {
     /// The guard itself, kept so a restart after a GPU reset (#346) can hand it to the copy.
     static MUTEX: OnceLock<Show> = OnceLock::new();
 
-    pub fn claim(config_dir: Option<&std::ffi::OsStr>) -> bool {
+    pub fn claim(config_dir: Option<&std::ffi::OsStr>, show: bool) -> bool {
         let (mutex_name, event_name) = super::names(config_dir);
         // The event first (auto-reset, opened if it exists), so a second launch can always signal
         // it, even while the first instance is still starting: the signal waits for its waiter.
@@ -70,6 +70,13 @@ mod imp {
                 "Foxglove: no single-instance guard (mutex: {e}); starting anyway"
             ));
             return true;
+        }
+        if already && !show {
+            // A start in the tray (`--tray`) leaves the running one as it is.
+            crate::foxglove::app_log::early(
+                "Foxglove: already running; started in the tray, so left as it is",
+            );
+            return false;
         }
         if already {
             unsafe {
@@ -118,7 +125,7 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    pub fn claim(_config_dir: Option<&std::ffi::OsStr>) -> bool {
+    pub fn claim(_config_dir: Option<&std::ffi::OsStr>, _show: bool) -> bool {
         true
     }
 
@@ -128,12 +135,13 @@ mod imp {
 }
 
 /// Takes the guard at startup. False when another Foxglove already holds it; that one has been
-/// asked to show itself, and this process should exit 0.
-pub fn claim() -> bool {
+/// asked to show itself (unless `show` is false: a start in the tray), and this process should
+/// exit 0.
+pub fn claim(show: bool) -> bool {
     match super::store::test_sandbox() {
         // A test build gets names of its own folder, never the shared ones.
-        Some(dir) => imp::claim(Some(dir.as_os_str())),
-        None => imp::claim(std::env::var_os("FOXGLOVE_CONFIG_DIR").as_deref()),
+        Some(dir) => imp::claim(Some(dir.as_os_str()), show),
+        None => imp::claim(std::env::var_os("FOXGLOVE_CONFIG_DIR").as_deref(), show),
     }
 }
 
@@ -172,13 +180,16 @@ mod tests {
         use std::sync::mpsc;
         // The folder is passed in, not set in the environment other tests change.
         let dir = std::env::temp_dir().join(format!("foxglove-single-{}", std::process::id()));
-        assert!(imp::claim(Some(dir.as_os_str())), "the first claim wins");
+        assert!(
+            imp::claim(Some(dir.as_os_str()), true),
+            "the first claim wins"
+        );
         let (tx, rx) = mpsc::channel();
         on_show(move || {
             let _ = tx.send(());
         });
         assert!(
-            !imp::claim(Some(dir.as_os_str())),
+            !imp::claim(Some(dir.as_os_str()), true),
             "a second claim for the same folder loses"
         );
         rx.recv_timeout(std::time::Duration::from_secs(10))

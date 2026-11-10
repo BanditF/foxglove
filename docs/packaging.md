@@ -42,6 +42,11 @@ updates -> Start with Windows** and is on by default.
 - The MSI writes no Run value. On uninstall (not on an upgrade), it runs
   `foxglove.exe --uninstall-cleanup` as the user, which removes the value if it starts that exe.
 
+Every start without arguments opens the Settings window, the Startup-folder entry's too.
+`foxglove.exe --tray` starts in the tray instead: Settings stays closed until the tray opens it,
+and when Foxglove is already running that one is left as it is. On-call's restarts use it, and so
+do the app's own relaunches (after a GPU reset, after registering the identity package).
+
 Uninstall removes the installed files, the shortcut, the installer's registry values and the
 app's Run value. It never removes user settings or cached keymaps. Major upgrades replace the
 previous package and reject downgrades. Quit the running app before upgrading or uninstalling;
