@@ -116,14 +116,12 @@ Banner on the Modules page, the only page that opens:
 > **Start normally** · Find the module that breaks Hideout
 
 - **Start normally** clears the flag and starts the enabled modules. One click.
-- **Find the module that breaks Hideout** runs §7.10's halving. Each step is a small always-on-top
-  window with one question and two answers:
-  - "Step 1 of about 3" / "Half your modules are off for now. Use Hideout as before." /
-    "Is the problem still there?" / **Still broken** · Works now · Stop
-  - End: "Found it" / "Art seems to break Hideout." / "Your other modules are back on." /
-    **Turn off Art** · Go back to Art 0.4.2
-- **Stop** at any step puts every module back as it was saved. Bisect never edits the saved list;
-  only the last choice does.
+- **Find the module that breaks Hideout** runs §7.10's halving across Hideout restarts: a round
+  bar on Hideout's pages, one close counts a round, and the end offers **Turn off <Module>**.
+  The full plan (rounds, results, stopping, tray, keyboard, wording) is
+  [hideout-safe-mode-ux.md](hideout-safe-mode-ux.md) (#1033); it replaces the earlier
+  always-on-top "Still broken?" window. The search never edits the saved list; only the last
+  choice does.
 - Turning a module off from the safe-mode Modules page is saved as usual.
 
 ### Hub restart and adoption
@@ -161,7 +159,7 @@ crashes" everywhere (state_words should change to match, or both to the other; s
 - The crash bar is a polite live region, announced once per crash ("Art stopped unexpectedly,
   restarting"), not every second. The countdown is not announced.
 - The stopped card's primary button takes focus when the user opens the page; Esc does nothing.
-- Bisect windows: Enter = the first answer, Esc = Stop.
+- Finding the module: see hideout-safe-mode-ux.md (Enter = primary, Esc does nothing).
 
 ## Hand-off to app-engineer (H2.5)
 
