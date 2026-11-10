@@ -40,8 +40,9 @@ You never flash: On-call does.
 
 ## Hardware
 Ask the Planner for a Test lab pass. On-call flashes your build. A dev test build that is
-flashed, measured and reverted to current main has a standing OK. GA flashes, reset taps,
-rollbacks, and leaving non-main firmware on the board need the user's go via the Hub.
+flashed, measured and reverted to current main has a standing OK. Other flashes (rollbacks,
+leaving non-main firmware on the board) are the Hub's call; GA flashes need the user's go via
+the Hub, and reset taps are a human step.
 
 ## Report
 To the Planner: the PR number from `gh pr create`, CI run ids, sizes, and what needs hardware.
