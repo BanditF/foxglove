@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.5. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.6. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -38,7 +38,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `trust/install/` (index only) | unknown archive, yanked, revoked, exact folder, extra or changed file, sideload scope | 12.5, 12.6 |
 | `trust/archives/`, `trust/folders/` | the signed archives and unpacked folders the catalogs pin | 12.4 |
 | `trust/keys/` | TEST-ONLY public keys | 12 |
-| `config/` | `hideout.toml` `[[sources]]` and `[[trust.anchors]]` tables, valid, overlapping, and the four `config.*` errors | 13.4, 13.6 |
+| `config/` | `hideout.toml` `[[sources]]` and `[[trust.anchors]]` tables, valid, overlapping, and the four `config.*` errors; (v1.6) the `[windows]` pop-out placement table (`windows.*`, read on its own), valid and `config.windows`, and a broken `[windows]` the sources reader passes over | 2.5, 13.4, 13.6 |
 | `panels/` | `ui.register` trees: all node types, under the caps, over each cap, an unknown node type, one bad panel with a good one; (v1.4) `tone`, button `opens` and `action` (an index `context.actions` lists the module's `[[actions]]`), the tile caps; (v1.5) canvas and image sizes, `scaling`, `stale_after_ms`, `mono`, a `markdown` stream, a streamed image's `label`, no streams in a tile | 5.2, 5.4, 5.5 |
 | `facts/supervisor-facts.json` | (v1.4) the supervisor's `module.<id>.restart` and `module.<id>.recovery` values, valid and invalid rows | 7.8 |
 | `frames/panel-frames.json` | binary stream frames as hex: image, canvas, text, length mismatches; (v1.5) a multibyte character, and a text frame split inside one (dropped) | 5.4, 8.4 |

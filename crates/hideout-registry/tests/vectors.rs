@@ -271,6 +271,9 @@ fn trust_and_config_vectors_match_the_index() {
         let home = Home::new();
         let group = match key.split('/').take(2).collect::<Vec<_>>()[..] {
             ["trust", _] => "trust",
+            // `[windows]` pop-out placement (spec v1.6) is the hub's, not the registry's:
+            // hideout-contract's vector test reads those.
+            ["config", f] if f.starts_with("windows.") => continue,
             ["config", _] => "config",
             _ => continue,
         };
@@ -294,5 +297,5 @@ fn trust_and_config_vectors_match_the_index() {
         failed.join("\n")
     );
     assert_eq!(passed.get("trust"), Some(&42), "every trust vector runs");
-    assert_eq!(passed.get("config"), Some(&7), "every config vector runs");
+    assert_eq!(passed.get("config"), Some(&8), "every config vector runs");
 }
