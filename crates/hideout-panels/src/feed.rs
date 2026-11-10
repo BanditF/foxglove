@@ -100,6 +100,10 @@ pub trait PanelFeed: Send {
     fn send(&mut self, out: Outbound);
     /// The feed calls `waker` whenever new items arrive.
     fn set_waker(&mut self, waker: Waker);
+    /// Runs the panels' live streams (§5.4, H2.9): opens what `streams` asks for through the
+    /// router, reads the channels and draws what is due (`stream_io::StreamIo::pump`). Called
+    /// on every pump and after each visibility change. A feed without channels does nothing.
+    fn streams(&mut self, _streams: &mut crate::streams::Streams, _now: Instant) {}
 }
 
 impl PanelHost {
@@ -190,7 +194,11 @@ impl PanelHost {
             }
         }
         self.send_out(feed);
-        (changed, self.flush(now))
+        let next = match (self.flush(now), self.streams.next_wake()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        (changed, next)
     }
 
     /// Sends what the host queued: `ui.event` calls, `ui.visibility` and the hub's own calls.
@@ -204,6 +212,11 @@ impl PanelHost {
         for (module, visibility) in self.take_visibility() {
             feed.send(Outbound::Visibility { module, visibility });
         }
+        // After `visible` went out: the panels' streams open or close (§5.4, §5.9), and the
+        // feed reads their channels.
+        let now = Instant::now();
+        self.sync_streams(now);
+        feed.streams(&mut self.streams, now);
     }
 }
 

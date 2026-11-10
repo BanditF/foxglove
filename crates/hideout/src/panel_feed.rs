@@ -14,6 +14,8 @@ use std::time::Instant;
 use hideout_router::server::Hub;
 use hideout_router::Out;
 use hideout_shell::hideout_panels::feed::Waker;
+use hideout_shell::hideout_panels::stream_io::{system_reduced_motion, StreamIo};
+use hideout_shell::hideout_panels::streams::{StreamCommand, Streams};
 use hideout_shell::hideout_panels::{HubCall, Inbound, Outbound, PanelFeed};
 use serde_json::{json, Value};
 
@@ -36,9 +38,20 @@ struct Shared {
     tx: mpsc::Sender<Inbound>,
     waker: Arc<Mutex<Option<Waker>>>,
     tags: Arc<Mutex<HashMap<u64, Tag>>>,
+    /// The router's answers to the panel host's stream opens (`Out::HostChannel`), in order.
+    grants: Arc<Mutex<Vec<Grant>>>,
 }
 
+/// One `Out::HostChannel`: module, channel, `{pipe, nonce}` or the error.
+type Grant = (String, String, Result<Value, Value>);
+
 impl Shared {
+    fn wake(&self) {
+        if let Some(w) = self.waker.lock().unwrap().as_ref() {
+            w();
+        }
+    }
+
     fn push(&self, item: Inbound) {
         if self.tx.send(item).is_ok() {
             if let Some(w) = self.waker.lock().unwrap().as_ref() {
@@ -58,6 +71,8 @@ pub struct HubFeed {
     rx: mpsc::Receiver<Inbound>,
     shared: Shared,
     next: AtomicU64,
+    /// The live streams' channel readers (H2.9), made on first use.
+    io: Option<StreamIo>,
 }
 
 /// A feed pair over `hub`.
@@ -67,6 +82,7 @@ pub fn feed(hub: Hub) -> (RouterSide, HubFeed) {
         tx,
         waker: Arc::new(Mutex::new(None)),
         tags: Arc::new(Mutex::new(HashMap::new())),
+        grants: Arc::new(Mutex::new(Vec::new())),
     };
     (
         RouterSide(shared.clone()),
@@ -75,6 +91,7 @@ pub fn feed(hub: Hub) -> (RouterSide, HubFeed) {
             rx,
             shared,
             next: AtomicU64::new(FIRST_TAG),
+            io: None,
         },
     )
 }
@@ -96,6 +113,17 @@ impl RouterSide {
 
     /// One router event (the supervisor has seen it too).
     pub fn on_router(&self, out: &Out) {
+        if let Out::HostChannel {
+            module,
+            channel,
+            result,
+        } = out
+        {
+            let g = (module.clone(), channel.clone(), result.clone());
+            self.0.grants.lock().unwrap().push(g);
+            self.0.wake();
+            return;
+        }
         let item = match out {
             Out::Panels {
                 module,
@@ -257,5 +285,27 @@ impl PanelFeed for HubFeed {
 
     fn set_waker(&mut self, waker: Waker) {
         *self.shared.waker.lock().unwrap() = Some(waker);
+    }
+
+    fn streams(&mut self, streams: &mut Streams, now: Instant) {
+        let shared = self.shared.clone();
+        let io = self
+            .io
+            .get_or_insert_with(|| StreamIo::new(Arc::new(move || shared.wake())));
+        let grants = std::mem::take(&mut *self.shared.grants.lock().unwrap());
+        for (module, channel, result) in grants {
+            io.granted(streams, &module, &channel, result);
+        }
+        streams.reduced_motion = system_reduced_motion();
+        let (_, opens) = io.pump(streams, now);
+        for o in opens {
+            if let StreamCommand::Open {
+                module, channel, ..
+            } = o
+            {
+                self.hub
+                    .act(|r| r.open_host_channel(&module, &channel, now));
+            }
+        }
     }
 }

@@ -224,6 +224,13 @@ pub struct ChannelConn {
 }
 
 impl ChannelConn {
+    /// Ends a read or write blocked on this channel in another thread (`CancelIoEx`): that
+    /// call returns an error. For a consumer that stops reading (the hub's panel host closing a
+    /// hidden panel's stream): set its own stop flag first, then cancel.
+    pub fn cancel(&self) {
+        unsafe { CancelIoEx((self.pipe.0).0, std::ptr::null()) };
+    }
+
     /// Reads the consumer's first frame and checks it is `nonce` (at most [`MAX_NONCE`] bytes,
     /// compared in constant time). A wrong nonce is `PermissionDenied`; drop the connection then.
     pub fn read_nonce(&mut self, nonce: &str) -> io::Result<()> {

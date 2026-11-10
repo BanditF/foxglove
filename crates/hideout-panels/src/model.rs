@@ -31,6 +31,7 @@ pub(crate) type Parts<'a> = (
     &'a HashMap<String, Value>,
     &'a Assets,
     &'a HashMap<(String, String), String>,
+    &'a crate::streams::Streams,
 );
 
 /// A panel's name in the hub: its module and its id.
@@ -220,6 +221,8 @@ pub struct PanelHost {
     secrets_saved: HashMap<String, BTreeSet<String>>,
     /// The system file picker, when the hub has one.
     pub picker: Option<Picker>,
+    /// The live streams of the page panels (§5.4, H2.9).
+    pub streams: crate::streams::Streams,
 }
 
 /// A call the hub makes to a module for its own UI (not a `ui.event`).
@@ -322,6 +325,7 @@ impl PanelHost {
             hub_calls: Vec::new(),
             secrets_saved: HashMap::new(),
             picker: None,
+            streams: Default::default(),
         }
     }
 
@@ -658,6 +662,7 @@ impl PanelHost {
                     format!("{module} has no panel {}", patch.panel),
                 )
             })?;
+        self.streams.patch_received(&self.panels[i].key, &patch.ops);
         let p = &mut self.panels[i];
         if p.gate.due(now) && p.gate.queued.is_empty() {
             p.gate.last = Some(now);
@@ -699,6 +704,7 @@ impl PanelHost {
 
     fn after_patch(&mut self, i: usize, ops: &[PatchOp]) {
         let key = self.panels[i].key.clone();
+        self.streams.patch_landed(&key, ops);
         if let Some(v) = self.views.get_mut(&key) {
             for node in tree::touched(ops) {
                 v.optimistic.remove(node);
@@ -862,6 +868,12 @@ impl PanelHost {
     /// The `ui.visibility` notifications to send: the owning module and the message.
     pub fn take_visibility(&mut self) -> Vec<(String, UiVisibility)> {
         std::mem::take(&mut self.visibility_out)
+    }
+
+    /// Opens and closes the page panels' streams to match what is on screen (§5.4). Call after
+    /// sending [`PanelHost::take_visibility`]: `visible` goes out before a panel's opens.
+    pub fn sync_streams(&mut self, now: std::time::Instant) {
+        self.streams.sync(&self.panels, &self.shown, now);
     }
 
     /// Starts `module`'s panels quarantined (§5.5) until [`PanelHost::release`].
@@ -1109,6 +1121,7 @@ impl PanelHost {
             &self.facts,
             &self.assets,
             &self.keys,
+            &self.streams,
         ))
     }
 
