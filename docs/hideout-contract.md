@@ -69,6 +69,11 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   `\\.\pipe\hideout-ch-<rest>`, and the hub refuses any other `{pipe}` with error 6, `data.id`
   `channel.pipe` (new id in §15). Vectors: `channels/channel-wire.json`,
   `transcripts/stream/channel-create-bad-pipe.json`.
+  Also (#959, #985), additive: a catalog revoking a running module's version ends the leases it
+  holds with `lease.closed {reason: "revoked"}` (§8.5), and the hub fact `module.<id>.revoked`
+  carries the catalog's reason (§7.8). A legacy `plugin.toml`'s `api` is checked against the
+  Foxglove plugin API version, not `hub` (§4.10). Vector:
+  `transcripts/lifecycle/lease-closed-revoked.json`.
 - **1.3, added** (#959): router gaps the first router build found (#958). Lease end (§8.5, §8.8): `lease.closed {lease, reason}` (H → M) tells a provider that a lease it handed out ended, and a provider event with `to: <lease>` goes only to that lease's holder. Who is an MCP client, who is the first-party `hideout` CLI, and who runs the `initialize` pid and exe-hash check are now written down (§8.2). `hub` stays 1.0: one optional notification and one optional event field, which a peer that does not know them ignores.
 - **1.3** (#953): open page panels are tabs (§5.9). Two optional notifications: `ui.badge` (M → H) sets a tab's badge (`none`, `attention`, `dirty` or `count`), and `ui.visibility` (H → M) tells a module when its panel is `visible`, `hidden` or `closed`, so it can stop work the user can't see. A tab uses the panel's existing `title` and `icon`. Pop-outs dock back to their tab (§2.5). `hub` stays 1.0: both are optional notifications, and a peer that does not know one drops it (JSON-RPC), so nothing has to be negotiated.
 - **1.2** (#918): two wire rules the transcript vectors found missing (§8.1). A request id that is still in flight on the same connection answers error -32600 `rpc.duplicate-request-id` with id null, and the first call is unaffected. A line over 256 KiB answers -32600 `rpc.frame-too-large` with id null, then the hub closes that channel; the supervisor counts it as a crash (§7.7). Also written down, not new behaviour: a result arriving after the caller's error 4 is dropped. New ids in §15. The trust vectors' `seen_after` is keyed by source id, as §7.3 has it, not by family.
@@ -591,6 +596,9 @@ file:
   above); Foxglove, which reads only plugin.toml, keeps working. The plugin's program does not
   change transport: it still speaks the v1 wire on stdin and stdout, and the hub's stdio bridge
   carries its `ui.*` messages (§8.2).
+- **Which API a legacy `api` names (v1.6).** A plugin.toml's `api` is the Foxglove plugin API
+  version (`crates/plugin-api`'s `API_VERSION`, the one `plugin-host` serves), and a reader
+  checks it against that version (`lifecycle.api` when not served), never against `hub`.
 
 ## 5. Panels across the process boundary
 
@@ -1119,6 +1127,11 @@ supervisor beside the state:
 - **`module.<id>.failed`:** `launch` while the module is `install-failed` because launching it
   failed (the file check, or the pid or exe-hash check at `initialize`): it then reads "Couldn't
   start <Module>". `null` once it starts again (#983).
+- **`module.<id>.revoked` (v1.6):** `{version, reason}` once an accepted catalog revoked the
+  version that was running (§12.4): `reason` is the catalog's `reason` text, as its publisher
+  wrote it (it may be empty). The hub stops the module and ends the leases it held (§8.5).
+  `null` once another version of the module connects. The module's own words never reach it:
+  `module.*` facts are the hub's.
 Both are read like any fact (`facts.read:module.*`); a reader that doesn't know them ignores them.
 Values outside these shapes are a hub bug, not a module's.
 
@@ -1327,6 +1340,9 @@ Rules:
   forwards that call first, then sends `lease.closed`) or `"revoked"` (the hub ended it, for
   example when the holder's permission was withdrawn). Each lease sends it once. A provider
   whose own connection ended gets nothing and its leases are forgotten with it.
+- **Revoked holders (v1.6).** When an accepted catalog revokes the running version of a module
+  that holds leases, the hub ends each of them with `reason: "revoked"` before it stops the
+  module; the disconnect that follows sends nothing more for them.
 - **Addressed events (v1.3).** A provider event whose params carry `to: <lease>` is delivered
   only to that lease's holder, whatever permissions other connections hold. An event to a lease
   the hub does not know (ended, never handed out, or another provider's) is dropped. Events
@@ -1419,7 +1435,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 (§8.5); the hub delivers it only to that lease's holder.
 
 **Facts the hub publishes:** `module.<id>.state`, `module.<id>.reason`, `module.<id>.version`,
-(v1.4) `module.<id>.restart` and `module.<id>.recovery` (§7.8), `hub.safe_mode`. Facts about private modules never reach MCP or the tailnet by default (§13.5).
+(v1.4) `module.<id>.restart` and `module.<id>.recovery` (§7.8), (v1.6) `module.<id>.revoked` (§7.8), `hub.safe_mode`. Facts about private modules never reach MCP or the tailnet by default (§13.5).
 
 **Provider methods** (lighting, screens, art, GPU and the rest) are the providers' own API and
 are listed in their API docs (local-api.md for Foxglove; §8.9 for the GPU).

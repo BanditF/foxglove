@@ -428,6 +428,12 @@ impl TrustSet {
             .copied()
     }
 
+    /// The revocation (not a yank) that covers `id@version`, if any: a running one is stopped.
+    pub fn revocation(&self, id: &str, version: &str) -> Option<&Revocation> {
+        self.withdrawn(id, version)
+            .filter(|r| r.action == Action::Revoke)
+    }
+
     fn withdrawn_err(r: &Revocation, version: &str) -> Error {
         let (id, word) = match r.action {
             Action::Revoke => (ErrorId::TrustRevoked, "revoked"),

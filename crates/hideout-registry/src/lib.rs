@@ -27,7 +27,7 @@ use foxglove_plugin_trust::hash_dir;
 use hideout_contract::capability::Capability;
 use hideout_contract::config::Anchor;
 use hideout_contract::module::{read_dir, Context, Module, Visibility};
-use hideout_contract::{Error, ErrorId, Version, HUB_VERSION};
+use hideout_contract::{Error, ErrorId, Version};
 
 use hub_config::HubConfig;
 use inventory::{Installed, Inventory, LAB, SIDELOAD};
@@ -116,6 +116,16 @@ pub struct Launch {
     pub stdio: bool,
 }
 
+/// A running version that an accepted catalog revoked (§12.4): the hub stops it, ends the
+/// leases it holds with reason `"revoked"` and publishes `module.<id>.revoked` (§7.8, v1.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Revoked {
+    pub id: String,
+    pub version: String,
+    /// The catalog's `reason`, as the publisher wrote it (may be empty).
+    pub reason: String,
+}
+
 pub struct Registry {
     home: PathBuf,
     pub inventory: Inventory,
@@ -124,7 +134,8 @@ pub struct Registry {
     /// id to the running version.
     running: BTreeMap<String, String>,
     pub dev_mode: bool,
-    /// The API a legacy `plugin.toml` is checked against (§4.10).
+    /// The API a legacy `plugin.toml` is checked against (§4.10): the Foxglove plugin API
+    /// (`foxglove_plugin_api::API_VERSION`, what `plugin-host` serves), not the hub's version.
     pub legacy_api: Version,
     /// Lab mode (#1001): the modules of `<home>\lab-modules\` are loaded, in memory only.
     pub lab: bool,
@@ -164,7 +175,7 @@ impl Registry {
             trust: TrustSet::default(),
             running: BTreeMap::new(),
             dev_mode,
-            legacy_api: HUB_VERSION,
+            legacy_api: foxglove_plugin_api::API_VERSION,
             lab: false,
             lab_report: Vec::new(),
         })
@@ -680,19 +691,28 @@ impl Registry {
 
     /// Running modules whose version a newly accepted catalog revoked: the hub stops them.
     pub fn revoked_running(&self) -> Vec<String> {
+        self.revoked().into_iter().map(|r| r.id).collect()
+    }
+
+    /// [`Registry::revoked_running`] with the version and the catalog's reason, for the hub's
+    /// `lease.closed {reason: "revoked"}` and the `module.<id>.revoked` fact (v1.6). Sideloads
+    /// and lab modules have no catalog and are never revoked.
+    pub fn revoked(&self) -> Vec<Revoked> {
         self.running
             .iter()
-            .filter(|(id, v)| {
+            .filter(|(id, _)| {
                 self.inventory
                     .modules
                     .get(*id)
                     .is_some_and(|m| m.source != SIDELOAD && m.source != LAB)
-                    && self
-                        .trust
-                        .runnable(id, v)
-                        .is_err_and(|e| e.id == ErrorId::TrustRevoked)
             })
-            .map(|(id, _)| id.clone())
+            .filter_map(|(id, v)| {
+                self.trust.revocation(id, v).map(|r| Revoked {
+                    id: id.clone(),
+                    version: v.clone(),
+                    reason: r.reason.clone(),
+                })
+            })
             .collect()
     }
 }

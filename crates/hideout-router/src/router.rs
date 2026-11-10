@@ -773,6 +773,39 @@ impl Router {
         out
     }
 
+    /// The hub ended `module`'s run because an accepted catalog revoked its `version` (§12.4;
+    /// the registry's `revoked()` names them). Every lease the module holds ends now, and each
+    /// provider gets `lease.closed {reason: "revoked"}` once (§8.5); the later disconnect sends
+    /// nothing more. The hub fact `module.<id>.revoked` becomes `{version, reason}` with the
+    /// catalog's reason (§7.8, v1.6) until another version of the module connects. Stopping
+    /// the process stays with the supervisor.
+    pub fn revoke(&mut self, module: &str, version: &str, reason: &str) -> Vec<Out> {
+        let mut out = Vec::new();
+        let conns: Vec<ConnId> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| matches!(&c.who, Who::Module { id, .. } if id == module))
+            .map(|(k, _)| *k)
+            .collect();
+        let mut held: Vec<(String, String)> = self
+            .leases
+            .iter()
+            .filter(|(_, l)| conns.contains(&l.holder))
+            .map(|(k, _)| k.clone())
+            .collect();
+        held.sort();
+        for k in held {
+            self.leases.remove(&k);
+            self.lease_closed(&k.0, &k.1, "revoked", &mut out);
+        }
+        self.set_fact(
+            &format!("module.{module}.revoked"),
+            json!({"version": version, "reason": reason}),
+            &mut out,
+        );
+        out
+    }
+
     /// Tells `provider` a lease it handed out has ended (§8.5, v1.3).
     fn lease_closed(&self, provider: &str, lease: &str, reason: &str, out: &mut Vec<Out>) {
         if let Some(p) = self.ready_conn(provider) {
@@ -1089,6 +1122,15 @@ impl Router {
                 })
             };
             if !version.is_null() {
+                // Another version connecting ends a revocation notice (v1.6).
+                let key = format!("module.{mid}.revoked");
+                if self
+                    .facts
+                    .get(&key)
+                    .is_some_and(|r| r["version"] != version)
+                {
+                    self.set_fact(&key, Value::Null, out);
+                }
                 self.set_fact(&format!("module.{mid}.version"), version, out);
             }
             out.push(Out::Send(conn, ok(id, result)));

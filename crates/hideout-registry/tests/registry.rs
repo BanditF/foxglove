@@ -183,3 +183,69 @@ fn grants_wait_for_approval_and_skip_the_never_list() {
     assert!(again.inventory.holds(id_, &caps[1]));
     let _ = std::fs::remove_dir_all(home);
 }
+
+#[test]
+fn a_legacy_plugin_is_checked_against_the_foxglove_api() {
+    // #985: the API a plugin.toml targets is the Foxglove plugin API, not the hub's version.
+    let home = home("legacy-api");
+    let mut reg = Registry::open(&home, true).unwrap();
+    assert_eq!(reg.legacy_api, foxglove_plugin_api::API_VERSION);
+    let folder = home.join("src-legacy");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("legacy.exe"), "exe").unwrap();
+    let write = |api: &str| {
+        std::fs::write(
+            folder.join("plugin.toml"),
+            format!(
+                "id = \"com.example.legacy\"
+name = \"Legacy\"
+version = \"0.1.0\"
+                 api = \"{api}\"
+run = [\"legacy.exe\"]
+"
+            ),
+        )
+        .unwrap();
+    };
+    // Built for the API this Foxglove speaks: installs (it read as "this Foxglove speaks 1.1").
+    write(&foxglove_plugin_api::API_VERSION.to_string());
+    let m = reg.install(&folder, NOW).unwrap();
+    assert_eq!(m.source, "sideload");
+    // A newer minor than the plugin API serves is refused.
+    let api = foxglove_plugin_api::API_VERSION;
+    write(&format!("{}.{}", api.major, api.minor + 1));
+    assert_eq!(id(reg.install(&folder, NOW)), "lifecycle.api");
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[test]
+fn a_revoked_running_version_carries_its_reason() {
+    // #959: the hub needs the catalog's reason to show and to end the module's leases.
+    let home = home("revoked");
+    let mut reg = signed(&home);
+    let id_ = "foxglove.example-art";
+    reg.install(&vectors().join("folders/foxglove.example-art-0.4.0"), NOW)
+        .unwrap();
+    reg.set_enabled(id_, true).unwrap();
+    let mut launch = reg.pre_launch(id_).unwrap();
+    reg.mark_running(&launch);
+    assert!(reg.revoked().is_empty());
+    // The catalog revokes 0.2.0 (and only yanks 0.1.0, which keeps running).
+    launch.version = "0.1.0".into();
+    reg.mark_running(&launch);
+    assert!(reg.revoked().is_empty());
+    launch.version = "0.2.0".into();
+    reg.mark_running(&launch);
+    assert_eq!(
+        reg.revoked(),
+        vec![hideout_registry::Revoked {
+            id: id_.into(),
+            version: "0.2.0".into(),
+            reason: "placeholder reason".into(),
+        }]
+    );
+    assert_eq!(reg.revoked_running(), vec![id_.to_string()]);
+    reg.mark_stopped(id_);
+    assert!(reg.revoked().is_empty());
+    let _ = std::fs::remove_dir_all(home);
+}

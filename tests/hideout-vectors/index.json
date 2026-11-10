@@ -2334,6 +2334,24 @@
         "provider_notified": "released"
       }
     },
+    "transcripts/lifecycle/lease-closed-revoked.json": {
+      "spec": [
+        "8.5",
+        "8.8",
+        "12.4"
+      ],
+      "note": "(v1.6) A catalog revokes the version of a module that holds a lease: the provider gets lease.closed {lease, reason: revoked} once, nothing more at the disconnect, and the hub fact module.<id>.revoked is {version, reason}.",
+      "result": "valid",
+      "final": {
+        "provider_notified": "revoked",
+        "facts": {
+          "module.foxglove.example-scenes.revoked": {
+            "version": "0.4.0",
+            "reason": "placeholder reason"
+          }
+        }
+      }
+    },
     "transcripts/lifecycle/malformed-json.json": {
       "spec": [
         "8.1"

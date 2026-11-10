@@ -25,6 +25,7 @@ use hideout_router::{ConnId, ModuleEntry, Origin, Out, Router, Settings};
 use serde_json::{json, Value};
 
 const ART: &str = "foxglove.example-art";
+const SCENES: &str = "foxglove.example-scenes";
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/hideout-vectors")
@@ -545,6 +546,22 @@ fn setup(name: &str) -> Replay {
             r.tool("other", "second-cli", &[]);
             r
         }
+        "lease-closed-revoked" => {
+            let mut r = Replay::new(vec![]);
+            r.router
+                .add_module(other(SCENES, "Example Scenes", "example.scenes.*", None));
+            r.module(
+                "module",
+                ART,
+                Some(json!({"methods":["example.art.*"],"facts":[],"channels":[],"apis":{}})),
+            );
+            r.module(
+                "consumer",
+                SCENES,
+                Some(json!({"methods":[],"facts":[],"channels":[],"apis":{}})),
+            );
+            r
+        }
         "oversized-line" => {
             let mut r = Replay::new(vec![]);
             r.module("peer", ART, None);
@@ -616,6 +633,20 @@ fn event(r: &mut Replay, name: &str, text: &str) -> Result<(), String> {
         }
         (_, "the tool's connection ends") => {
             let c = r.parties.remove("tool").unwrap();
+            let out = r.router.disconnect(c);
+            r.take(out);
+        }
+        ("lease-closed-revoked", t) if t.starts_with("an accepted catalog revokes") => {
+            let out = r.router.revoke(SCENES, "0.4.0", "placeholder reason");
+            r.take(out);
+            let key = format!("module.{SCENES}.revoked");
+            let want = json!({"version": "0.4.0", "reason": "placeholder reason"});
+            if r.router.fact(&key) != Some(&want) {
+                return Err(format!("{key} is {:?}", r.router.fact(&key)));
+            }
+        }
+        ("lease-closed-revoked", "the consumer's connection ends") => {
+            let c = r.parties.remove("consumer").unwrap();
             let out = r.router.disconnect(c);
             r.take(out);
         }
@@ -887,4 +918,22 @@ fn hub_side_transcript_steps_pass() {
         failed.join("\n")
     );
     assert!(passed.len() >= 20, "only {} transcripts ran", passed.len());
+}
+
+#[test]
+fn a_revocation_notice_ends_when_another_version_connects() {
+    // #959: `module.<id>.revoked` stays while only the revoked version is around.
+    let key = format!("module.{ART}.revoked");
+    for (revoked, kept) in [("0.4.0", true), ("0.3.0", false)] {
+        let mut r = Replay::new(vec![]);
+        let out = r.router.revoke(ART, revoked, "");
+        r.take(out);
+        assert_eq!(
+            r.router.fact(&key),
+            Some(&json!({"version": revoked, "reason": ""}))
+        );
+        // `module` initializes as 0.4.0.
+        r.module("module", ART, None);
+        assert_eq!(r.router.fact(&key).is_some(), kept, "revoked {revoked}");
+    }
 }
