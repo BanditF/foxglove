@@ -7,7 +7,8 @@
 //!
 //! - **click:** the next app with an active audio session that has played sound during this run
 //!   (#854: a background helper holding a silent stream isn't offered), in the order first heard;
-//!   past the last one, back to master;
+//!   past the last one, back to master. Apps whose program has no window and apps on the hidden
+//!   list are skipped (#952, `knob_hide.rs`);
 //! - **turn:** the target's level, 2 % a detent: an app's through Windows' own session volume
 //!   (ISimpleAudioVolume, the Volume Mixer's); master's through the default output device's
 //!   IAudioEndpointVolume, unmuting it as Windows' volume keys do (#855);
@@ -44,6 +45,7 @@ use foxglove_link::Transport;
 use foxglove_panel::sessions::{Change, Heard, Sessions};
 
 use super::knob_health::{self, LastLevel};
+use super::knob_hide::Hidden;
 use super::knob_popup::{self, Card};
 
 /// The app the knob points at.
@@ -52,6 +54,8 @@ pub struct App {
     /// The session instance id (`foxglove_panel::sessions::Session::id`).
     pub id: String,
     pub name: String,
+    /// The program's path (#952: what "Hide from knob" hides), when Windows tells it.
+    pub exe: Option<String>,
 }
 
 /// What the keyboard must be told after an event.
@@ -78,6 +82,10 @@ pub struct Cycle {
     pub popup: Option<(Card, Duration)>,
     /// The sessions heard during this run: the only ones a click offers (#854).
     pub heard: Heard,
+    /// The apps a click skips (#952), as last saved.
+    pub hidden: Hidden,
+    /// The target's place in the cycle at the last click (1-based, of how many).
+    pub place: Option<(usize, usize)>,
     /// The keyboard sends master's turns and double click here (Foxglove holds master volume,
     /// D7 16, #855); `false`: on master it sends the volume keys and mute itself.
     pub volume: bool,
@@ -103,6 +111,7 @@ impl Cycle {
         let was = self.wire();
         if self.target.as_ref().map(|a| &a.id) != target.as_ref().map(|a| &a.id) {
             self.level = None;
+            self.place = None;
         }
         self.target = target;
         if self.wire() == was {
@@ -127,7 +136,10 @@ impl Cycle {
     pub fn click(&mut self, sessions: &dyn Sessions) -> Tell {
         self.listen(sessions);
         let list = match sessions.active() {
-            Ok(list) => self.heard.offer(list),
+            Ok(list) => {
+                publish_apps(&list);
+                self.hidden.offer(self.heard.offer(list))
+            }
             Err(e) => {
                 eprintln!("Foxglove: knob: no audio sessions: {e}");
                 return Tell::Nothing;
@@ -137,10 +149,7 @@ impl Cycle {
             None => 0,
             Some(t) => list.iter().position(|s| s.id == t.id).map_or(0, |i| i + 1),
         };
-        let next = list.get(at).map(|s| App {
-            id: s.id.clone(),
-            name: s.name.clone(),
-        });
+        let next = list.get(at).map(app_of);
         eprintln!(
             "Foxglove: knob: {}",
             next.as_ref()
@@ -148,6 +157,7 @@ impl Cycle {
         );
         let was_app = self.target.is_some();
         let tell = self.set(next);
+        self.place = self.target.as_ref().map(|_| (at + 1, list.len()));
         self.popup = Some(match &self.target {
             Some(app) => {
                 self.level = sessions.level(&app.id).ok();
@@ -175,6 +185,65 @@ impl Cycle {
             ),
         });
         tell
+    }
+
+    /// The hidden list changed (#952): when the target is hidden now, the knob moves on to the
+    /// next app as a click would (master past the last), and the card says so.
+    pub fn rehide(&mut self, sessions: &dyn Sessions, hidden: Hidden) -> Tell {
+        self.hidden = hidden;
+        let Some(app) = self.target.clone() else {
+            return Tell::Nothing;
+        };
+        if self.hidden.why(app.exe.as_deref()).is_none() {
+            return Tell::Nothing;
+        }
+        let heard = match sessions.active() {
+            Ok(list) => self.heard.offer(list),
+            Err(e) => {
+                eprintln!("Foxglove: knob: no audio sessions: {e}");
+                Vec::new()
+            }
+        };
+        // The next app after this one's place among the heard ones.
+        let before = heard
+            .iter()
+            .position(|s| s.id == app.id)
+            .unwrap_or(heard.len());
+        let list = self.hidden.offer(heard.clone());
+        let at = list
+            .iter()
+            .filter(|s| heard.iter().position(|h| h.id == s.id) < Some(before))
+            .count();
+        let next = list.get(at).map(app_of);
+        let tell = self.set(next);
+        let note = match &self.target {
+            Some(t) => {
+                self.place = Some((at + 1, list.len()));
+                self.level = sessions.level(&t.id).ok();
+                format!("knob: {} · {} of {}", t.name, at + 1, list.len())
+            }
+            None => "knob: master".to_string(),
+        };
+        self.popup = Some((
+            Card::Hidden {
+                name: app.name.clone(),
+                note,
+            },
+            knob_popup::STOPPED,
+        ));
+        tell
+    }
+
+    /// What the tray panel's Knob row shows (#952): `None` on master.
+    pub fn tray_line(&self) -> Option<TrayLine> {
+        let app = self.target.as_ref()?;
+        Some(TrayLine {
+            name: app.name.clone(),
+            exe: app.exe.clone(),
+            place: self.place,
+            level: self.level.map(|l| l.0),
+            muted: self.level.is_some_and(|l| l.1),
+        })
     }
 
     /// The card for the target now (after a turn or a mute).
@@ -391,6 +460,25 @@ impl Cycle {
     }
 }
 
+/// The knob's target for the tray panel's Knob row (#952).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrayLine {
+    pub name: String,
+    /// The program's path; `None`: it can't be hidden (Windows didn't tell it).
+    pub exe: Option<String>,
+    pub place: Option<(usize, usize)>,
+    pub level: Option<u8>,
+    pub muted: bool,
+}
+
+fn app_of(s: &foxglove_panel::sessions::Session) -> App {
+    App {
+        id: s.id.clone(),
+        name: s.name.clone(),
+        exe: s.exe.clone(),
+    }
+}
+
 /// The name master's level goes by in the health view.
 const MASTER: &str = "master volume";
 
@@ -429,6 +517,8 @@ enum Work {
     Pause,
     /// The keyboard let the knob go: Foxglove's hold lease lapsed (#847).
     Lapsed(Weak<Link>),
+    /// The hidden list was saved (#952).
+    Hidden,
 }
 
 static WORK: Mutex<Option<mpsc::Sender<Work>>> = Mutex::new(None);
@@ -446,6 +536,14 @@ fn volume_link(link: Option<Weak<Link>>) -> Option<Weak<Link>> {
         &mut *VOLUME_HELD.lock().unwrap_or_else(|e| e.into_inner()),
         link,
     )
+}
+
+/// The hidden list was saved (#952, `knob_hide.rs`): the knob reads it again, and moves on when
+/// its target is hidden now.
+pub fn hidden_changed() {
+    if let Some(tx) = WORK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(Work::Hidden);
+    }
 }
 
 /// Foxglove paused or resumed (#404): the knob goes back to the volume keys while paused.
@@ -566,7 +664,13 @@ pub fn start() {
 
 fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions) {
     let mut seen: Vec<(Weak<Link>, EventSubscription, EventSubscription)> = Vec::new();
-    let mut cycle = Cycle::default();
+    let mut cycle = Cycle {
+        hidden: Hidden::load(),
+        ..Cycle::default()
+    };
+    if let Ok(list) = sessions.active() {
+        publish_apps(&list);
+    }
     // The link the knob is held on now, and the last event's sequence number.
     let mut current: Option<Weak<Link>> = None;
     let mut last_seq: Option<u8> = None;
@@ -709,7 +813,20 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                     }
                 }
             }
-            Work::Sessions(Change::Changed) => {}
+            Work::Sessions(Change::Changed) => {
+                // The apps with sound now, for the Knob card's Add an app (#952).
+                if let Ok(list) = sessions.active() {
+                    publish_apps(&list);
+                }
+            }
+            Work::Hidden => {
+                let paused = super::pause::paused();
+                if let Tell::Target(t) = cycle.rehide(sessions, Hidden::load()) {
+                    if let Some(link) = current.as_ref().filter(|_| !paused) {
+                        tell(link, true, t);
+                    }
+                }
+            }
             Work::Sessions(Change::Master) => {
                 cycle.master_changed(current.is_some() && knob_health::now().held);
             }
@@ -749,7 +866,39 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
             }
         }
         publish_panel(cycle.panel_line());
+        *TRAY.lock().unwrap_or_else(|e| e.into_inner()) = cycle.tray_line();
     }
+}
+
+/// The tray panel's Knob row (#952): the target now.
+static TRAY: Mutex<Option<TrayLine>> = Mutex::new(None);
+
+/// What the tray panel's Knob row shows (`None`: master, no row).
+pub fn tray_line() -> Option<TrayLine> {
+    TRAY.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The apps with an active session now (name, program path), for the Knob card's Add an app.
+static APPS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+fn publish_apps(list: &[foxglove_panel::sessions::Session]) {
+    let mut apps: Vec<(String, String)> = Vec::new();
+    for s in list {
+        if let Some(exe) = &s.exe {
+            if !apps
+                .iter()
+                .any(|(_, e)| super::knob_hide::same_program(e, exe))
+            {
+                apps.push((s.name.clone(), exe.clone()));
+            }
+        }
+    }
+    *APPS.lock().unwrap_or_else(|e| e.into_inner()) = apps;
+}
+
+/// The apps with sound now (name, program path; one per program).
+pub fn apps() -> Vec<(String, String)> {
+    APPS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// The left screen's volume line: the knob's target (`None`: master).
@@ -844,6 +993,8 @@ mod tests {
                     name: name.clone(),
                     icon: None,
                     pid: 1,
+                    exe: Some(format!(r"C:\Apps\{id}.exe")),
+                    windowed: Some(true),
                 })
                 .collect())
         }
@@ -1048,6 +1199,72 @@ mod tests {
         assert_eq!(target(&c), None);
         assert_eq!(c.event(&s, EventKind::Click), Tell::Target(WireTarget::App));
         assert_eq!(target(&c), Some("Spotify"));
+    }
+
+    #[test]
+    fn hide_from_knob_moves_on_and_the_next_click_skips_it() {
+        // #952: the knob is on Discord (2 of 3) when the tray panel hides it.
+        let s = FakeSessions::with(&[
+            ("a", "Spotify", 40),
+            ("b", "Discord", 80),
+            ("c", "Game", 60),
+        ]);
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        c.event(&s, EventKind::Click);
+        assert_eq!(target(&c), Some("Discord"));
+        assert_eq!(c.tray_line().unwrap().place, Some((2, 3)));
+        let mut hidden = c.hidden.clone();
+        // Matched by file name: the list may hold just "b.exe".
+        crate::foxglove::knob_hide::hide_in(&mut hidden.user, "b.exe", "Discord", "d");
+        // As if clicked: the next app, now 2 of 2, and the card says why.
+        assert_eq!(c.rehide(&s, hidden.clone()), Tell::Nothing);
+        assert_eq!(target(&c), Some("Game"));
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::Hidden {
+                    name: "Discord".into(),
+                    note: "knob: Game · 2 of 2".into()
+                },
+                knob_popup::STOPPED
+            ))
+        );
+        // The cycle skips it from now on.
+        assert_eq!(
+            c.event(&s, EventKind::Click),
+            Tell::Target(WireTarget::Master)
+        );
+        c.event(&s, EventKind::Click);
+        assert_eq!(target(&c), Some("Spotify"));
+        c.event(&s, EventKind::Click);
+        assert_eq!(target(&c), Some("Game"));
+        // A new session id for the same program (it restarted): still skipped.
+        s.end("b");
+        c.gone("b");
+        s.start("b", "Discord");
+        c.event(&s, EventKind::Click);
+        assert_eq!(target(&c), None);
+        // Hiding the last app: master.
+        c.event(&s, EventKind::Click);
+        c.event(&s, EventKind::Click);
+        assert_eq!(target(&c), Some("Game"));
+        crate::foxglove::knob_hide::hide_in(&mut hidden.user, r"C:\Apps\c.exe", "Game", "d");
+        assert_eq!(
+            c.rehide(&s, hidden.clone()),
+            Tell::Target(WireTarget::Master)
+        );
+        assert_eq!(
+            popup(&mut c).map(|p| p.0.words()),
+            Some("Game hidden · knob: master".into())
+        );
+        // Undo: back in the cycle at its place; the knob doesn't jump back.
+        crate::foxglove::knob_hide::restore_in(&mut hidden.user, "b.exe", None);
+        assert_eq!(c.rehide(&s, hidden), Tell::Nothing);
+        assert_eq!(target(&c), None);
+        c.event(&s, EventKind::Click);
+        c.event(&s, EventKind::Click);
+        assert_eq!(target(&c), Some("Discord"));
     }
 
     #[test]

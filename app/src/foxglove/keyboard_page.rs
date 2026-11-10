@@ -345,6 +345,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
         if let Some(i) = devices(ui, v) {
             intent = Some(i);
         }
+        ui.add_space(10.0);
+        super::knob_hide::card(ui);
         ui.add_space(6.0);
         return intent;
     }
@@ -409,6 +411,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     if let Some(i) = devices(ui, v) {
         intent = Some(i);
     }
+    // #952: the apps hidden from the knob, and Show again.
+    ui.add_space(10.0);
+    super::knob_hide::card(ui);
     ui.add_space(6.0);
     intent
 }

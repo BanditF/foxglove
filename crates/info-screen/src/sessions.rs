@@ -24,6 +24,11 @@ pub struct Session {
     /// Its icon: the session's IconPath, else the program's path (the icon is the exe's).
     pub icon: Option<String>,
     pub pid: u32,
+    /// The program's full path, when Windows tells it (#952: the knob's hidden list matches it).
+    pub exe: Option<String>,
+    /// Whether the program has a window (hidden and tool windows count; [`has_window`]), `None`
+    /// when that can't be told. Filled in by [`Sessions::active`].
+    pub windowed: Option<bool>,
 }
 
 /// What changed, for the knob: it re-reads what it needs.
@@ -109,6 +114,23 @@ impl Heard {
     }
 }
 
+/// Whether a session's program has a window (#952), given the processes that own a top-level
+/// window now (`owners`: pid and program path; hidden and tool windows count, so a player
+/// minimised to the tray still has one). A process counts when it owns one, or another process
+/// of the same program does (a browser's or a chat app's sound comes from a helper process of
+/// the program that has the window). `None` when it can't be told: no pid (the system sounds),
+/// or no windows listed at all. A wrong skip is worse than one extra app.
+pub fn has_window(pid: u32, exe: Option<&str>, owners: &[(u32, Option<String>)]) -> Option<bool> {
+    if pid == 0 || owners.is_empty() {
+        return None;
+    }
+    let same = |o: &Option<String>| match (exe, o) {
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        _ => false,
+    };
+    Some(owners.iter().any(|(p, o)| *p == pid || same(o)))
+}
+
 /// The name to show: the session's display name, else "System sounds" for that session, else
 /// the program's description (its version resource's FileDescription, as Task Manager shows),
 /// else its file name without ".exe", else the process id.
@@ -146,7 +168,7 @@ pub fn display_name(
 
 #[cfg(windows)]
 mod imp {
-    use super::{display_name, step_level, Change, Session, Sessions};
+    use super::{display_name, has_window, step_level, Change, Session, Sessions};
     use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
     use std::sync::Arc;
     use std::time::Duration;
@@ -297,6 +319,32 @@ mod imp {
         }
     }
 
+    /// The processes that own a top-level window now, hidden and tool windows included (#952),
+    /// with their program paths: one EnumWindows pass, one path read per process.
+    fn window_owners() -> Vec<(u32, Option<String>)> {
+        use windows::Win32::Foundation::{HWND, LPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId};
+
+        unsafe extern "system" fn each(hwnd: HWND, data: LPARAM) -> BOOL {
+            // SAFETY: `data` is the Vec below, alive for the whole EnumWindows call.
+            let pids = unsafe { &mut *(data.0 as *mut Vec<u32>) };
+            let mut pid = 0u32;
+            // SAFETY: a window handle Windows just passed us.
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+            if pid != 0 && !pids.contains(&pid) {
+                pids.push(pid);
+            }
+            BOOL(1)
+        }
+        let mut pids: Vec<u32> = Vec::new();
+        // SAFETY: the callback only touches `pids`, which outlives the call.
+        let ok = unsafe { EnumWindows(Some(each), LPARAM(&mut pids as *mut Vec<u32> as isize)) };
+        if ok.is_err() {
+            return Vec::new();
+        }
+        pids.into_iter().map(|p| (p, exe_path(p))).collect()
+    }
+
     fn exe_path(pid: u32) -> Option<String> {
         if pid == 0 {
             return None;
@@ -428,6 +476,8 @@ mod imp {
                 ),
                 icon: Some(icon).filter(|i| !i.is_empty()).or(self.exe.clone()),
                 pid: self.pid,
+                exe: self.exe.clone(),
+                windowed: None,
             }
         }
 
@@ -581,11 +631,15 @@ mod imp {
         fn handle(&mut self, req: Req) {
             match req {
                 Req::Active(reply) => {
+                    let owners = window_owners();
                     let list = self
                         .sessions
                         .iter()
                         .filter(|t| t.state == AudioSessionStateActive)
-                        .map(Tracked::session)
+                        .map(|t| Session {
+                            windowed: has_window(t.pid, t.exe.as_deref(), &owners),
+                            ..t.session()
+                        })
                         .collect();
                     let _ = reply.send(Ok(list));
                 }
@@ -830,6 +884,8 @@ mod tests {
             name: id.into(),
             icon: None,
             pid: 1,
+            exe: None,
+            windowed: None,
         }
     }
 
@@ -839,6 +895,30 @@ mod tests {
 
     fn peaks(p: &[(&str, f32)]) -> Vec<(String, f32)> {
         p.iter().map(|(id, v)| (id.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn a_program_with_a_window_anywhere_counts_as_windowed() {
+        let owners = vec![
+            (10, Some(r"C:\Apps\Player\player.exe".to_string())),
+            (20, Some(r"C:\Apps\Chat\chat.exe".to_string())),
+            (30, None),
+        ];
+        // Its own window (hidden ones count: the list is every top-level window).
+        assert_eq!(has_window(10, None, &owners), Some(true));
+        // A helper process of a program whose main process has the window.
+        assert_eq!(
+            has_window(21, Some(r"C:\APPS\chat\CHAT.exe"), &owners),
+            Some(true)
+        );
+        // A background helper of its own: no window.
+        assert_eq!(
+            has_window(40, Some(r"C:\Vendor\helper.exe"), &owners),
+            Some(false)
+        );
+        // Can't tell: no pid (system sounds), or no windows read at all.
+        assert_eq!(has_window(0, None, &owners), None);
+        assert_eq!(has_window(40, Some("x.exe"), &[]), None);
     }
 
     #[test]

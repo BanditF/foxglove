@@ -43,6 +43,9 @@ pub enum Card {
     },
     /// The target's sound ended; the knob is on master again.
     Stopped { name: String },
+    /// The target was hidden from the knob (#952): "<app> hidden" / "knob: <next> · n of m" or
+    /// "knob: master".
+    Hidden { name: String, note: String },
     /// On master while Foxglove holds the knob: the tab over Windows' own flyout.
     MasterTab,
 }
@@ -76,6 +79,7 @@ impl Card {
             } => format!("Master volume {l} %"),
             Card::Master { note, .. } => format!("Master volume ({note})"),
             Card::Stopped { name } => format!("{name} stopped · knob: master"),
+            Card::Hidden { name, note } => format!("{name} hidden · {note}"),
             Card::MasterTab => "Knob · Master tab".into(),
         }
     }
@@ -269,6 +273,14 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
             GREY,
             format!("{name} stopped"),
             "knob: master".to_string(),
+            None,
+            false,
+        ),
+        Card::Hidden { name, note } => (
+            icon::EYE_SLASH.to_string(),
+            GREY,
+            format!("{name} hidden"),
+            note.clone(),
             None,
             false,
         ),

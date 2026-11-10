@@ -118,7 +118,7 @@ pub fn check(rows: &[HealthRow]) {
 
 /// Today in local time, `YYYY-MM-DD`.
 #[cfg(windows)]
-fn today() -> String {
+pub(super) fn today() -> String {
     // SAFETY: no arguments; it returns the time by value.
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     format!("{:04}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay)
@@ -126,7 +126,7 @@ fn today() -> String {
 
 /// Today (UTC off Windows), `YYYY-MM-DD`.
 #[cfg(not(windows))]
-fn today() -> String {
+pub(super) fn today() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
