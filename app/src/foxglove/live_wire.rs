@@ -173,6 +173,9 @@ pub const MISSING_OTHER_FIRMWARE: &str = "other_firmware";
 pub const MISSING_UNREADABLE: &str = "unreadable";
 /// `art.missing`: the upright blob is past `live_art::MAX_BLOB`.
 pub const MISSING_TOO_BIG: &str = "too_big";
+/// `art.missing`: the right half plays a set pushed earlier (by an earlier Foxglove run, or
+/// another program) that this PC has no record of, or whose file changed since (#1044).
+pub const MISSING_PUSHED_UNKNOWN: &str = "pushed_unknown";
 
 /// The left screen's PC panel as Foxglove last sent it to the keyboard (`screens`): the part of the
 /// left screen Foxglove draws (clock, volume, media). `None` while the firmware draws its own.

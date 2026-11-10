@@ -123,7 +123,11 @@ guess from its key count), and no `keys` are sent. A change of keyboard sends a 
 - **Without frames:** `nva` is `null` and `missing` says why: `not_on_pc` (a kept place whose
   bytes no piece on this PC has, until its read back lands; for good on firmware without
   `SLOT_READ`, #878), `other_firmware`
-  (a built-in of firmware whose manifest Foxglove doesn't know), `unreadable` or `too_big`.
+  (a built-in of firmware whose manifest Foxglove doesn't know), `unreadable`, `too_big`, or
+  `pushed_unknown` (`from` is `file`: the right half plays a set pushed earlier that this PC has
+  no record of, or whose file changed since the push, #1044). Foxglove remembers the last piece
+  it pushed in its settings (`[art_pushed]`), so after a restart or a replug a set it pushed
+  itself gets its name and frames back.
   The wallpaper draws a labelled placeholder then, the same for both screens.
 - **One name:** `art.name` is always the name `state.art` gives the piece at the same moment, so
   a wallpaper can draw the frames only while the two agree.

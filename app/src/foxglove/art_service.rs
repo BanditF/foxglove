@@ -1195,9 +1195,81 @@ fn choose(link: &impl Transport, h: &Handle, choice: &Choice) -> Result<ArtStatu
             .map_err(|e| e.to_string())
             .inspect(|_| {
                 let hash = super::art_library::blob_hash(&blob);
+                remember_pushed(path, hash);
                 h.update(|s| s.sent = Some((path.clone(), hash)))
             })
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn tests_fury() -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/lighting/art/fury.bin")
+}
+
+/// The store section with the piece Foxglove last pushed (#1044): the right half plays a pushed
+/// set from memory across a Foxglove restart and a USB replug, and its STATUS only says "a pushed
+/// set" (set -1), so this names it again on the next connect.
+const PUSHED_SECTION: &str = "art_pushed";
+
+/// The last pushed piece: its library file and a hash of the bytes as sent (hex: TOML integers
+/// are signed).
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+struct PushedRecord {
+    path: PathBuf,
+    hash: String,
+}
+
+/// Remembers a piece just pushed (an atomic store write; a failed write only costs the name
+/// after a restart).
+fn remember_pushed(path: &std::path::Path, hash: u64) {
+    let record = PushedRecord {
+        path: path.to_path_buf(),
+        hash: format!("{hash:016x}"),
+    };
+    if super::store::try_load::<PushedRecord>(PUSHED_SECTION).as_ref() == Some(&record) {
+        return;
+    }
+    if let Err(e) = super::store::save(PUSHED_SECTION, &record) {
+        eprintln!("Foxglove: art: remembering the pushed piece failed: {e}");
+    }
+}
+
+/// The piece the right half plays when `st` says a pushed set plays, from the last-pushed record:
+/// only while its file still makes the bytes it was sent as (same hash), else `None` (the feed
+/// then says `pushed_unknown`).
+fn remembered_pushed(st: &ArtStatus) -> Option<(PathBuf, u64)> {
+    if super::art_words::showing(st) != super::art_words::Showing::Sent {
+        return None;
+    }
+    remembered_from(super::store::try_load::<PushedRecord>(PUSHED_SECTION)?)
+}
+
+/// The record's piece while its file still makes the bytes it was sent as.
+fn remembered_from(record: PushedRecord) -> Option<(PathBuf, u64)> {
+    let hash = u64::from_str_radix(&record.hash, 16).ok()?;
+    let bytes = pushed_bytes(&record.path).ok()?;
+    (super::art_library::blob_hash(&bytes) == hash).then_some((record.path, hash))
+}
+
+/// On a connect: names the pushed set the right half still plays from the last-pushed record,
+/// when Foxglove has none for it (a restart, a replug).
+fn restore_sent(h: &Handle, st: &ArtStatus) {
+    if h.snapshot().sent.is_some() {
+        return;
+    }
+    match remembered_pushed(st) {
+        Some(sent) => {
+            eprintln!(
+                "Foxglove: art: the right half plays a pushed set; named {} from the last push",
+                file_name(&sent.0)
+            );
+            h.update(|s| s.sent = Some(sent));
+        }
+        None if super::art_words::showing(st) == super::art_words::Showing::Sent => {
+            eprintln!("Foxglove: art: the right half plays a pushed set this PC has no record of");
+        }
+        None => {}
     }
 }
 
@@ -2024,6 +2096,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     .unwrap_or_else(|| fresh_status(link, h))
                     .and_then(|st| {
                         h.update(|s| s.status = Some(st));
+                        if connected_now {
+                            restore_sent(h, &st);
+                        }
                         if connected_now && !queued_command {
                             read_slots(link, h, &st);
                             note_seen(h, true);
@@ -2490,7 +2565,33 @@ mod tests {
     }
 
     fn fury() -> PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/lighting/art/fury.bin")
+        super::tests_fury()
+    }
+
+    /// #1044: no record, or a record whose file no longer makes the bytes sent, names nothing.
+    #[test]
+    fn a_pushed_set_without_a_matching_record_stays_unnamed() {
+        let file = fury();
+        let hash = crate::foxglove::art_library::blob_hash(&pushed_bytes(&file).unwrap());
+        let record = |path: PathBuf, hash: u64| PushedRecord {
+            path,
+            hash: format!("{hash:016x}"),
+        };
+        assert_eq!(
+            remembered_from(record(file.clone(), hash)),
+            Some((file.clone(), hash))
+        );
+        assert_eq!(
+            remembered_from(record(file.clone(), hash ^ 1)),
+            None,
+            "edited since"
+        );
+        assert_eq!(
+            remembered_from(record(file.with_extension("gone"), hash)),
+            None
+        );
+        // A built-in on screen never reads the record.
+        assert_eq!(remembered_pushed(&ArtStatus::default()), None);
     }
 
     /// Keep on keyboard from this PC (#517): send, save into the place, show it from there,
@@ -3128,6 +3229,8 @@ mod contention_tests {
     struct Board {
         set: Mutex<i8>,
         link: Mutex<u8>,
+        /// The right half's state (`protocol::right_state`): 0, a built-in, unless a test says.
+        right_state: Mutex<u8>,
         /// How long a STATUS takes to answer (a slow relay): keeps a re-apply running.
         status_delay: Mutex<Duration>,
         /// How many STATUS requests go unanswered (#1044: the relay's first request after a
@@ -3157,6 +3260,7 @@ mod contention_tests {
             r[6..8].copy_from_slice(&seq.to_le_bytes());
             r[8] = *self.link.lock().unwrap();
             r[9] = 2;
+            r[10] = *self.right_state.lock().unwrap();
             r[15] = *self.set.lock().unwrap() as u8;
             r[16] = 6;
             r
@@ -3271,9 +3375,14 @@ mod contention_tests {
         /// The service started on the board, its first `unanswered` STATUS requests left
         /// unanswered; returns at once.
         fn start(showing: i8, pinned: i8, capabilities: u32, unanswered: u32) -> Rig {
-            crate::foxglove::store::test_config_dir();
             let board = Board::new(showing);
             board.unanswered.store(unanswered, Ordering::SeqCst);
+            Rig::on(board, Some(Choice::BuiltIn(pinned)), capabilities)
+        }
+
+        /// The service started on `board` with `pinned`; returns at once.
+        fn on(board: Arc<Board>, pinned: Option<Choice>, capabilities: u32) -> Rig {
+            crate::foxglove::store::test_config_dir();
             let opened = board.clone();
             let link = Arc::new(Link::start(Box::new(move || {
                 // A reconnect opens it again (`Rig::replug`).
@@ -3297,7 +3406,7 @@ mod contention_tests {
             let h = Handle {
                 commands,
                 state: Arc::new(Mutex::new(Snapshot {
-                    pinned: Some(Choice::BuiltIn(pinned)),
+                    pinned,
                     ..Snapshot::default()
                 })),
                 cancel: Arc::new(AtomicBool::new(false)),
@@ -3359,6 +3468,34 @@ mod contention_tests {
                 let _ = w.join();
             }
         }
+    }
+
+    /// #1044: the right half still plays the set an earlier run pushed (STATUS "playing pushed
+    /// set, set -1"). A new service on the same settings folder names it from the last-pushed
+    /// record on connect, so the feed has its frames instead of NO FRAMES; nothing is sent.
+    #[test]
+    fn a_pushed_set_is_named_again_after_a_restart() {
+        let file = crate::foxglove::art_service::tests_fury();
+        let hash = crate::foxglove::art_library::blob_hash(&pushed_bytes(&file).unwrap());
+        // What a push writes (`choose`), by the run before the restart.
+        remember_pushed(&file, hash);
+        assert_eq!(
+            crate::foxglove::store::try_load::<PushedRecord>(PUSHED_SECTION).map(|r| r.path),
+            Some(file.clone())
+        );
+        let board = Board::new(-1);
+        *board.right_state.lock().unwrap() = protocol::right_state::PLAYING;
+        let rig = Rig::on(board, None, 0);
+        let s = rig.until("the connect named the pushed set", |s| {
+            s.connected && !s.busy && s.sent.is_some()
+        });
+        assert_eq!(s.sent, Some((file.clone(), hash)));
+        let src = rig.art().expect("the feed has a piece");
+        assert_eq!(src, crate::foxglove::live_art::Source::File(file, hash));
+        let art = crate::foxglove::live_art::art(&src, "fury".into());
+        assert!(art.nva.is_some(), "frames: {:?}", art.missing);
+        let (_, selects, others) = rig.board.requests();
+        assert_eq!((selects, others), (0, 0), "nothing sent again");
     }
 
     /// #618: `art.status` right after a start waits for the connect's status read (woken by the
