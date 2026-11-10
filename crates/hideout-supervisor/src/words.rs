@@ -12,6 +12,10 @@ pub const START_AGAIN: &str = "Start again";
 pub const START_DEFAULTS: &str = "Start with default settings";
 pub const COPY_DIAGNOSTICS: &str = "Copy diagnostics";
 pub const TRY_AGAIN: &str = "Try again";
+/// The rollback note's dismiss button.
+pub const OK: &str = "OK";
+/// `module.<id>.reason` after a launch failure (the card's title already says "Couldn't start").
+pub const DIDNT_START: &str = "It didn't start. Open log to see why.";
 /// The ladder's second step line.
 pub const DIDNT_HELP: &str = "Starting again didn't help last time.";
 /// `install-failed` after a failed pid or exe-hash check at `initialize` (#959).
@@ -165,6 +169,8 @@ mod tests {
             COPY_DIAGNOSTICS,
             TRY_AGAIN,
             DIDNT_HELP,
+            OK,
+            DIDNT_START,
         ] {
             v.push(s.into());
         }

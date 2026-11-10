@@ -515,7 +515,7 @@ impl Policy {
                     id: id.into(),
                     title,
                     body,
-                    actions: vec!["OK".into(), words::OPEN_LOG.into()],
+                    actions: vec![words::OK.into(), words::OPEN_LOG.into()],
                 });
                 self.launch(id, out);
                 return;

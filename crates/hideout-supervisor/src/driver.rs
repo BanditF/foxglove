@@ -22,6 +22,7 @@ use crate::instances::{Instances, Record};
 use crate::policy::{Cmd, Ev, Policy};
 use crate::sha256_file;
 use crate::win::{self, Caps, Job, Process};
+use crate::words;
 
 /// A notification for the shell (§7.7): title, body, buttons, the module it is about.
 pub type Notifier = Box<dyn FnMut(&str, &str, &str, &[String]) + Send>;
@@ -254,7 +255,7 @@ impl Supervisor {
                         log::warn!("supervisor: {id} not started: {reason}");
                         self.feed(Ev::LaunchFailed {
                             id,
-                            reason: "Couldn't start it. Open log for details.".into(),
+                            reason: words::DIDNT_START.into(),
                         });
                     }
                 }
