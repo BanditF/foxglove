@@ -69,3 +69,12 @@ artifact in the issue. Only the failing lines come back, never the log.
   `compute:claude`. Record one line in `tools\local-llm-quality.csv` for LLM jobs.
 - One local job at a time; they count against the same 3-agent limit only when a Claude session runs
   them, and On-call runs them itself.
+
+## Recurring ops jobs are scripts (#949)
+`scripts/ops/` holds the recurring jobs as PowerShell, run by Windows Task Scheduler, no Claude:
+`pc-health-check`, `foxglove-digest` (optional `-Summarize` through the local LLM, at most 10
+lines, from the facts file only), `monthly-driver-check`, `weekly-repo-janitor` (proposals only),
+`logi-leak-probe` (before/after each flash) and `lab-health` (after a batch flash). All of them
+share `game-check.ps1` (exit 3 while a game runs; the list is `games.json`), run at below-normal
+priority under a hard time limit, launch no GUI, and write one summary line to
+`%LOCALAPPDATA%\Foxglove\ops\summary.log`. Tests: `scripts/ops/test-ops.ps1` (part of `check.ps1`).

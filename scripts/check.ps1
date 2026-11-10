@@ -17,6 +17,8 @@ try {
     $slot = Enter-BuildSlot
     $start = Get-Date
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
+    # The recurring ops scripts (#949) on fake inputs; window-free, no network.
+    Step 'scripts: ops tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-ops.ps1 }
     # Functions over 120 lines and files over 1,500 lines, listed as warnings; never fails.
     Step 'size budget' { python scripts/size_budget.py }
     # The left's art relay against a fake split link (tests/relay-sim, #618); CI runs it with gcc.
