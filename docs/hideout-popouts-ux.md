@@ -253,14 +253,9 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
 7. **Module windows.** §2.5's shared rule set should say whether module windows also get Keep on
    top and the same placement memory keyed per screen layout.
 
-## Open questions for the user (via the Hub)
+## Decisions (11/10, Hub, designer's picks)
 
-1. **Pop-outs at sign-in** when Hideout starts in the tray: **come back when you first open
-   Hideout** (recommended; quiet start, nothing appears over a game) / reopen at sign-in.
-   Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h211\ux-h211-proposed-states.png`.
-2. **Closing a pop-out (×):** **page goes back to its tab quietly, Hideout stays where it is**
-   (recommended; Dock back is the "show me in Hideout" way) / goes back and shows Hideout with that
-   tab. Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h211\ux-h211-proposed-windows.png`.
-3. **A Pop out button (↗) at the tab strip's right end:** **yes, for the active tab** (recommended;
-   one click, like Outlook and Teams) / no, tab menu, drag, keys and palette only.
-   Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h211\ux-h211-proposed-windows.png`.
+1. Hideout starting in the tray at sign-in: pop-outs **come back when the user first opens
+   Hideout**, not at sign-in.
+2. Closing a pop-out with ×: the page **goes back to its tab quietly**; Hideout stays where it is.
+3. A ↗ **Pop out** button at the tab strip's right end, for the active tab: **yes**.
