@@ -1603,6 +1603,40 @@ static void slot_read_scenario(void) {
     debug_line("at the end");
 }
 
+/* #943: every split link-up sends a burst (the RGB sync, the doorbell subscribe, status, polarity,
+ * lamps, effect, activity) right after the discovery's last answer. Under the response-buffer rule
+ * and a right whose system queue is busy (its art frames), a request that reaches the right
+ * before its last response's buffer is free gets no answer: hardware showed one relay timeout on
+ * every link-up and sometimes the unstick's link drop. Re-link six times; none may go unanswered. */
+static void relink_busy(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(2000);
+    sim_bt_faults.rsp_meta_rule = true;
+    sim_bt_faults.right_redraw_busy_us = 20000;
+    sim_bt_faults.right_frame_us = 100000;
+    sim_bt_faults.right_frame_busy_us = 20000;
+    uint32_t timeouts = health_get(HEALTH_RELAY_TIMEOUTS);
+    int drops = sim_bt_stats.link_drops, dropped = sim_bt_stats.rsp_dropped;
+    int up = 0;
+    for (int i = 0; i < 6; i++) {
+        sim_bt_drop(2000000);
+        k_msleep(100);
+        wait_relay(40);
+        up += art_relay_link() == 2;
+        k_msleep(5000); // the link-up burst, the doorbell's subscribe (300 ms) and what follows
+    }
+    check("relay-back", up == 6, "%d of 6 re-links found the relay", up);
+    check("no-timeouts", health_get(HEALTH_RELAY_TIMEOUTS) == timeouts, "%u relay requests timed out",
+          (unsigned)(health_get(HEALTH_RELAY_TIMEOUTS) - timeouts));
+    check("none-dropped", sim_bt_stats.rsp_dropped == dropped, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped - dropped);
+    check("no-unstick", sim_bt_stats.link_drops == drops + 6, "%d link drops beyond the 6",
+          sim_bt_stats.link_drops - drops - 6);
+    debug_line("at the end");
+}
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -1632,6 +1666,8 @@ static void lab_thread(void *arg) {
         snap_latency(true);
     } else if (!strcmp(scenario, "polarity-relink")) {
         polarity_relink();
+    } else if (!strcmp(scenario, "relink-busy")) {
+        relink_busy();
     } else if (!strcmp(scenario, "playlist-store")) {
         playlist_store();
     } else if (!strcmp(scenario, "playlist-store-old")) {
