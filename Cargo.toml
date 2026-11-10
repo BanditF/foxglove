@@ -1,7 +1,7 @@
 # Desktop side of Foxglove. The firmware (boards/, config/) is built by ZMK's own workflow.
 [workspace]
 resolver = "2"
-members = ["crates/*", "examples/hideout-module-rust"]
+members = ["crates/*", "examples/hideout-module-rust", "examples/hideout-room-map"]
 # The app keeps its own workspace and lockfile, as upstream KeyPeek has them, so pulling
 # from srwi/keypeek stays clean. Build it with --manifest-path app/Cargo.toml.
 exclude = ["app"]

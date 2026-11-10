@@ -190,6 +190,9 @@ impl PanelHost {
             }
         }
         self.send_out(feed);
+        // After `visible` went out: the panels' streams open or close (§5.9). The hub takes the
+        // opens with `StreamIo::pump` (stream_io).
+        self.sync_streams(now);
         (changed, self.flush(now))
     }
 

@@ -1,0 +1,16 @@
+[package]
+name = "hideout-room-map"
+version = "0.1.0"
+edition = "2021"
+description = "A sample Hideout module in Rust (example.room-map): a page with a room map canvas that streams its colours at 25 frames a second over a direct channel while the page is on screen"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "hideout-room-map"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-plugin = { path = "../../crates/plugin-sdk" }
+foxglove-plugin-api = { path = "../../crates/plugin-api" }
+serde_json = "1"

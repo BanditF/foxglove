@@ -11,7 +11,9 @@
 //! - [`feed`]: the trait the router implements to feed panels in and take events out, plus an
 //!   in-process channel pair.
 //! - [`render`]: draws a panel in egui, each one in its own guarded scope (§5.5). Live streams
-//!   (`canvas`, `image`, `text` with a `stream`) draw as stubs until H2.9.
+//!   (`canvas`, `image`, `text`, `markdown` with a `stream`) draw from [`streams`].
+//! - [`streams`]: live streams (§5.4, H2.9): visible only, at most 30 frames a second, reopen
+//!   and text rules; [`stream_io`] reads the channels.
 //! - [`tray`]: the tray panel's tile grid in the hub's frame (v1.4), with Edit tiles.
 //! - [`sections`]: the Keys and Settings sections the hub adds to a module's page (§4.7).
 //!
@@ -24,6 +26,10 @@ pub mod model;
 pub mod render;
 pub mod sections;
 pub mod tray;
+#[cfg(windows)]
+pub mod stream_io;
+mod stream_view;
+pub mod streams;
 pub mod tree;
 pub mod view;
 
@@ -38,4 +44,5 @@ pub use model::{
 pub use render::{key_chip, panel_ui, DrawReport, Go};
 pub use sections::page_sections_ui;
 pub use tray::{tile_ui, tile_ui_at, tray_panel_ui, TileReport, TrayAction, TrayLayout};
+pub use streams::{Look, StreamAct, StreamCommand, StreamKey, Streams};
 pub use view::ViewState;

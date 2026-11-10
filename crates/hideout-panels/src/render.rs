@@ -6,6 +6,8 @@
 
 use crate::assets::Assets;
 use crate::model::{binding, HostedPanel, Interaction, PanelHost, PanelKey, PanelState};
+use crate::stream_view::{self, StreamDraw};
+use crate::streams::{StreamAct, StreamKey, Streams};
 use crate::view::ViewState;
 use egui::{Color32, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use hideout_contract::panel::Node;
@@ -19,6 +21,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 pub struct DrawReport {
     pub rects: HashMap<String, Rect>,
     pub panicked: bool,
+    /// Stream controls pressed this draw (already applied; the hub handles `OpenLog`).
+    pub stream_acts: Vec<StreamAct>,
     /// Buttons with `opens` or `action` that were pressed (v1.4). An `action` is already queued
     /// as `action.invoke` ([`PanelHost::invoke`]); an `opens` is for the hub to navigate
     /// ([`PanelHost::navigate`]).
@@ -45,8 +49,10 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, banner: bool) -
     let mut report = DrawReport::default();
     let mut out = Vec::new();
     let mut go = Vec::new();
+    let mut acts = Vec::new();
     host.breadcrumb = Some(key.clone());
-    if let Some((panel, view, facts, assets, keys)) = host.parts(key) {
+    if let Some((panel, view, facts, assets, keys, streams)) = host.parts(key) {
+        let running = panel.state == PanelState::Live;
         let mut d = Draw {
             key,
             view,
@@ -56,6 +62,10 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, banner: bool) -
             out: &mut out,
             go: &mut go,
             rects: &mut report.rects,
+            streams,
+            stream_acts: &mut acts,
+            running,
+            now: std::time::Instant::now(),
         };
         let result = catch_unwind(AssertUnwindSafe(|| draw_panel(ui, panel, &mut d, banner)));
         if result.is_err() {
@@ -74,6 +84,11 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, banner: bool) -
         }
     }
     report.go = go;
+    let now = std::time::Instant::now();
+    for a in &acts {
+        host.streams.act(a, now);
+    }
+    report.stream_acts = acts;
     report
 }
 
@@ -116,9 +131,23 @@ struct Draw<'a> {
     out: &'a mut Vec<Interaction>,
     go: &'a mut Vec<Go>,
     rects: &'a mut HashMap<String, Rect>,
+    streams: &'a Streams,
+    stream_acts: &'a mut Vec<StreamAct>,
+    running: bool,
+    now: std::time::Instant,
 }
 
 impl Draw<'_> {
+    fn stream(&mut self) -> StreamDraw<'_> {
+        StreamDraw {
+            key: self.key,
+            streams: self.streams,
+            acts: self.stream_acts,
+            running: self.running,
+            now: self.now,
+        }
+    }
+
     fn emit(&mut self, node: &str, kind: &str, value: Value, optimistic: bool) {
         self.out.push(Interaction {
             key: self.key.clone(),
@@ -400,11 +429,12 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                     })
                     .unwrap_or_default(),
             };
-            // Stub until H2.9: the image's place, and whether its asset arrived.
+            if n.stream_name().is_some() {
+                stream_view::image(ui, n, &p, &mut d.stream());
+                return;
+            }
+            // The image's place, and whether its asset arrived.
             ui.horizontal_wrapped(|ui| {
-                if n.stream_name().is_some() {
-                    ui.label(RichText::new("Live image").weak());
-                }
                 for h in &hashes {
                     let have = d.assets.get(h).is_some();
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
@@ -438,13 +468,12 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 }
             });
         }
+        "markdown" | "text" if n.stream_name().is_some() => {
+            stream_view::text(ui, n, &p, &mut d.stream());
+        }
         "markdown" => markdown(ui, s(&p, "text").unwrap_or_default()),
         "text" => {
-            // Stub until H2.9: appended text arrives on the stream.
             ui.label(s(&p, "text").unwrap_or_default());
-            if let Some(stream) = n.stream_name() {
-                ui.label(RichText::new(format!("Live text ({stream})")).weak());
-            }
         }
         "canvas" => canvas(ui, n, &p, d),
         #[cfg(test)]
@@ -540,16 +569,24 @@ fn markdown(ui: &mut Ui, text: &str) {
     }
 }
 
-/// A retained set of shapes (§5.2): drawn from their props, a click returns the shape id.
-/// Colours from a stream are H2.9.
+/// A retained set of shapes (§5.2): drawn from their props, a click returns the shape id. A
+/// streamed canvas takes each shape's colour from the stream's last frame (in declared order)
+/// and scales uniformly to the node's width (§5.2 v1.5, UX sizing).
 fn canvas(ui: &mut Ui, n: &Node, p: &Map<String, Value>, d: &mut Draw) {
     let w = f(p, "width").unwrap_or(400.0).clamp(1.0, 4096.0) as f32;
     let h = f(p, "height").unwrap_or(200.0).clamp(1.0, 4096.0) as f32;
-    let (area, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+    let streamed = n.stream_name().is_some();
+    let k = StreamKey::new(d.key.clone(), &n.id);
+    let scale = if streamed {
+        stream_view::canvas_scale(ui, w, h)
+    } else {
+        1.0
+    };
+    let (area, resp) = ui.allocate_exact_size(Vec2::new(w, h) * scale, Sense::click());
     let painter = ui.painter_at(area);
     let fg = ui.visuals().text_color();
     let mut hit = None;
-    for sh in &n.children {
+    for (i, sh) in n.children.iter().enumerate() {
         let sp = &sh.props;
         let (x, y) = (
             f(sp, "x").unwrap_or(0.0) as f32,
@@ -559,9 +596,12 @@ fn canvas(ui: &mut Ui, n: &Node, p: &Map<String, Value>, d: &mut Draw) {
             f(sp, "w").unwrap_or(10.0) as f32,
             f(sp, "h").unwrap_or(10.0) as f32,
         );
-        let rect = Rect::from_min_size(area.min + Vec2::new(x, y), Vec2::new(sw, shh));
-        let color = s(sp, "color")
-            .and_then(|c| Color32::from_hex(c).ok())
+        let rect = Rect::from_min_size(
+            area.min + Vec2::new(x, y) * scale,
+            Vec2::new(sw, shh) * scale,
+        );
+        let color = stream_view::shape_colour(d.streams, &k, i)
+            .or_else(|| s(sp, "color").and_then(|c| Color32::from_hex(c).ok()))
             .unwrap_or(ui.visuals().widgets.inactive.bg_fill);
         match sh.kind.as_str() {
             "rect" => {
@@ -571,8 +611,8 @@ fn canvas(ui: &mut Ui, n: &Node, p: &Map<String, Value>, d: &mut Draw) {
                 painter.rect_filled(rect, 4.0, color);
             }
             "circle" => {
-                let r = f(sp, "r").map_or(sw.min(shh) / 2.0, |r| r as f32);
-                painter.circle_filled(area.min + Vec2::new(x, y), r, color);
+                let r = f(sp, "r").map_or(sw.min(shh) / 2.0, |r| r as f32) * scale;
+                painter.circle_filled(area.min + Vec2::new(x, y) * scale, r, color);
             }
             "text" => {
                 painter.text(
@@ -591,6 +631,9 @@ fn canvas(ui: &mut Ui, n: &Node, p: &Map<String, Value>, d: &mut Draw) {
                 hit = Some(sh.id.clone());
             }
         }
+    }
+    if streamed {
+        stream_view::canvas_marks(ui, area, n, p, &resp, &mut d.stream());
     }
     if let Some(id) = hit {
         d.emit(&n.id, "click", Value::String(id), false);

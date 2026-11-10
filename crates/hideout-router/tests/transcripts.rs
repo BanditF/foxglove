@@ -3,6 +3,10 @@
 //! come out, in order. The router-free parts (supervisor, swaps, safe mode, the panel host's
 //! drawing, MCP, Vulpes's own GPU broker) are listed with the reason they are not run here.
 //!
+//! The stream transcripts (H2.9) run the router together with the hub's panel host
+//! (`hideout-panels`): it sends `ui.visibility`, opens and reopens streams through the router,
+//! takes the module's patches and the frames the prose describes.
+//!
 //! Each transcript's prose `event`s and the state it starts in (who is connected, with which
 //! grant) are set up below; the wire steps are the data. Message text and `data.reason` are free
 //! (README); codes, results and params are compared. Ids and nonces the hub picks are bound on
@@ -13,6 +17,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use hideout_contract::capability::{Capability, Holder};
+use hideout_contract::frame::{encode, Frame};
+use hideout_contract::messages::UiPatch;
+use hideout_panels::streams::{Look, Phase, StreamAct, StreamCommand, StreamKey};
+use hideout_panels::{PanelHost, PanelKey};
 use hideout_router::{ConnId, ModuleEntry, Origin, Out, Router, Settings};
 use serde_json::{json, Value};
 
@@ -62,14 +70,6 @@ const NOT_ROUTER: &[(&str, &str)] = &[
     (
         "transcripts/ui/visibility.json",
         "the panel host's tab visibility",
-    ),
-    (
-        "transcripts/stream/text-restore-on-visible.json",
-        "the panel host's streams (H2.9)",
-    ),
-    (
-        "transcripts/stream/reopen-then-stopped.json",
-        "the panel host's streams (H2.9)",
     ),
 ];
 
@@ -131,6 +131,10 @@ struct Replay {
     /// Parties whose traffic the transcript leaves out.
     hidden: Vec<String>,
     tag: u64,
+    /// The hub's panel host, for the stream transcripts.
+    host: Option<PanelHost>,
+    /// The channel generation each stream node was granted last.
+    granted: HashMap<String, u64>,
 }
 
 impl Replay {
@@ -160,6 +164,8 @@ impl Replay {
             bound: HashMap::new(),
             hidden: Vec::new(),
             tag: 0,
+            host: None,
+            granted: HashMap::new(),
         }
     }
 
@@ -175,6 +181,31 @@ impl Replay {
                     self.closed.push(name);
                     let more = self.router.disconnect(c);
                     self.take(more);
+                }
+                Out::HostChannel {
+                    module,
+                    channel,
+                    result,
+                } if self.host.is_some() => {
+                    let host = self.host.as_mut().unwrap();
+                    if let Some((key, gen, _, _)) =
+                        host.streams.granted(&module, &channel, result.clone())
+                    {
+                        self.granted.insert(key.node, gen);
+                    }
+                    self.events.push(Out::HostChannel {
+                        module,
+                        channel,
+                        result,
+                    });
+                }
+                Out::Patch { module, params } if self.host.is_some() => {
+                    let patch: UiPatch = serde_json::from_value(params).unwrap();
+                    let host = self.host.as_mut().unwrap();
+                    host.patch(&module, &patch, self.now).unwrap();
+                    // A patch that removes a stream closes it (no pipe here to close).
+                    host.sync_streams(self.now);
+                    self.host_opens();
                 }
                 other => self.events.push(other),
             }
@@ -239,6 +270,87 @@ impl Replay {
         } else {
             self.inbox.remove(party);
         }
+    }
+
+    /// The panel host registers one page panel of the module with `tree`.
+    fn host_page(&mut self, panel: &str, tree: Value) {
+        let mut host = PanelHost::default();
+        let reg = serde_json::from_value(json!({"instance": "inst-1", "panels": [
+            {"id": panel, "slot": "page", "title": "Page", "icon": "x", "tree": tree}]}))
+        .unwrap();
+        assert!(host.register(ART, "Example Art", None, &reg).is_empty());
+        self.host = Some(host);
+    }
+
+    /// The panel's tab turns `visible` or `hidden`: the panel host's `ui.visibility` goes to
+    /// the module (when `tell`), then its stream opens or closes.
+    fn host_show(&mut self, panel: &str, visible: bool, tell: bool) {
+        let host = self.host.as_mut().unwrap();
+        let key = PanelKey::new(ART, panel);
+        host.set_visible(if visible {
+            std::slice::from_ref(&key)
+        } else {
+            &[]
+        });
+        let notes = host.take_visibility();
+        host.sync_streams(self.now);
+        if tell {
+            let c = self.conn("module");
+            let out = notes
+                .into_iter()
+                .map(|(_, v)| {
+                    Out::Send(
+                        c,
+                        json!({"jsonrpc": "2.0", "method": "ui.visibility",
+                               "params": serde_json::to_value(v).unwrap()}),
+                    )
+                })
+                .collect();
+            self.take(out);
+        }
+        self.host_opens();
+    }
+
+    /// The panel host's stream opens go through the router (closes need no router).
+    fn host_opens(&mut self) {
+        let cmds = self.host.as_mut().unwrap().streams.take_commands();
+        for c in cmds {
+            if let StreamCommand::Open {
+                module, channel, ..
+            } = c
+            {
+                let out = self.router.open_host_channel(&module, &channel, self.now);
+                self.take(out);
+            }
+        }
+    }
+
+    /// A frame on the stream of `node`, as its pipe would deliver it.
+    fn host_frame(&mut self, panel: &str, node: &str, frame: Frame) {
+        let gen = self.granted[node];
+        let host = self.host.as_mut().unwrap();
+        let key = StreamKey::new(PanelKey::new(ART, panel), node);
+        let wire = encode(&frame);
+        assert!(host
+            .streams
+            .frame(&key, gen, &wire[4..], self.now)
+            .is_none());
+    }
+
+    /// What a streamed text node shows: its `text` and what the stream appended.
+    fn host_text(&self, panel: &str, node: &str) -> String {
+        let host = self.host.as_ref().unwrap();
+        let key = PanelKey::new(ART, panel);
+        let tree = &host.panel(&key).unwrap().tree;
+        let n = tree.children.iter().find(|n| n.id == node).unwrap();
+        let mut t = n
+            .props
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        t.push_str(&host.streams.get(&StreamKey::new(key, node)).unwrap().text);
+        t
     }
 
     /// Replaces hub-picked values the party echoes back with the real ones.
@@ -319,6 +431,15 @@ impl Replay {
         let got = match got {
             Some(g) => g,
             // A call the hub itself makes (settings, actions, windows): the hub is the caller.
+            // The panel host's `ui.visibility`: the tab the transcript implies changed.
+            None if want["method"] == "ui.visibility" && self.host.is_some() => {
+                let panel = want["params"]["panel"].as_str().unwrap();
+                self.host_show(panel, want["params"]["state"] == "visible", true);
+                self.inbox
+                    .get_mut(party)
+                    .and_then(VecDeque::pop_front)
+                    .ok_or("the panel host sent no ui.visibility")?
+            }
             None if want.get("method").is_some() && want.get("id").is_some() => {
                 let module = match party {
                     "module" => ART,
@@ -387,6 +508,19 @@ fn setup(name: &str) -> Replay {
         "panel-stream-grant" | "notify" | "action-invoke" | "window-open" | "settings-get-set" => {
             let mut r = Replay::new(vec![]);
             r.module("module", ART, Some(json!({"methods":["example.art.*"],"facts":[],"channels":["previews"],"apis":{}})));
+            r
+        }
+        "text-restore-on-visible" | "reopen-then-stopped" => {
+            let mut r = Replay::new(vec![]);
+            let mut a = art();
+            a.granted.push("channel.offer:log".into());
+            a.channel_risk.insert("log".into(), "normal".into());
+            r.router.add_module(a);
+            r.module(
+                "module",
+                ART,
+                Some(json!({"methods":[],"facts":[],"channels":["previews","log"],"apis":{}})),
+            );
             r
         }
         "duplicate-request-id" | "late-reply-after-timeout" | "call-timeout" => {
@@ -511,6 +645,110 @@ fn event(r: &mut Replay, name: &str, text: &str) -> Result<(), String> {
             });
             if !ok {
                 return Err(format!("the panel host got no pipe: {:?}", r.events));
+            }
+        }
+        ("text-restore-on-visible", t) if t.starts_with("panel 'activity' registered") => {
+            r.host_page(
+                "activity",
+                json!({"type": "column", "id": "root", "children": [
+                    {"type": "text", "id": "log", "props": {"stream": "log", "mono": true}}]}),
+            );
+        }
+        ("text-restore-on-visible", t) if t.starts_with("frames append 'line 1") => {
+            for line in ["line 1\n", "line 2\n"] {
+                r.host_frame(
+                    "activity",
+                    "log",
+                    Frame::Text {
+                        seq: 0,
+                        append: line.into(),
+                    },
+                );
+            }
+        }
+        ("text-restore-on-visible", t) if t.starts_with("hub closes the channel") => {
+            let key = StreamKey::new(PanelKey::new(ART, "activity"), "log");
+            let phase = r.host.as_ref().unwrap().streams.get(&key).unwrap().phase;
+            if phase != Phase::Closed {
+                return Err(format!("the stream is {phase:?}, not closed"));
+            }
+            let shown = r.host_text("activity", "log");
+            if shown != "line 1\nline 2\n" {
+                return Err(format!("the node shows {shown:?} while hidden"));
+            }
+        }
+        ("text-restore-on-visible", t) if t.starts_with("frames append 'line 4") => {
+            r.host_frame(
+                "activity",
+                "log",
+                Frame::Text {
+                    seq: 0,
+                    append: "line 4\n".into(),
+                },
+            );
+            let shown = r.host_text("activity", "log");
+            if shown != "line 1\nline 2\nline 3\nline 4\n" {
+                return Err(format!("the node shows {shown:?}"));
+            }
+        }
+        ("reopen-then-stopped", t) if t.starts_with("panel 'room' visible") => {
+            r.host_page(
+                "room",
+                json!({"type": "column", "id": "root", "children": [
+                    {"type": "canvas", "id": "map", "props": {"stream": "previews"},
+                     "children": [{"type": "rect", "id": "a", "props": {}}]}]}),
+            );
+            // Visible before the transcript starts: its ui.visibility is not part of it.
+            r.host_show("room", true, false);
+        }
+        ("reopen-then-stopped", t) if t.starts_with("the provider closes the channel") => {
+            let key = StreamKey::new(PanelKey::new(ART, "room"), "map");
+            let gen = r.granted["map"];
+            r.host.as_mut().unwrap().streams.ended(&key, gen, r.now);
+        }
+        ("reopen-then-stopped", t) if t.ends_with("s later the hub reopens") => {
+            let secs: u64 = t[..1].parse().unwrap();
+            let host = r.host.as_mut().unwrap();
+            // Not a moment early.
+            host.streams
+                .tick(r.now + Duration::from_secs(secs) - Duration::from_millis(1));
+            if !host.streams.take_commands().is_empty() {
+                return Err(format!("reopened before {secs} s"));
+            }
+            r.now += Duration::from_secs(secs);
+            host.streams.tick(r.now);
+            r.host_opens();
+        }
+        ("reopen-then-stopped", t) if t.starts_with("no more reopens") => {
+            let key = StreamKey::new(PanelKey::new(ART, "room"), "map");
+            let host = r.host.as_mut().unwrap();
+            let look = host.streams.look(&key, true, r.now);
+            if look != Look::Stopped {
+                return Err(format!("the node looks {look:?}"));
+            }
+            host.streams.tick(r.now + Duration::from_secs(3600));
+            if !host.streams.take_commands().is_empty() {
+                return Err("a fourth reopen".into());
+            }
+        }
+        ("reopen-then-stopped", "the user presses Try again") => {
+            let key = StreamKey::new(PanelKey::new(ART, "room"), "map");
+            r.host
+                .as_mut()
+                .unwrap()
+                .streams
+                .act(&StreamAct::TryAgain(key), r.now);
+            r.host_opens();
+        }
+        ("reopen-then-stopped", t) if t.starts_with("hub closes the channel") => {
+            let key = StreamKey::new(PanelKey::new(ART, "room"), "map");
+            let host = r.host.as_mut().unwrap();
+            if host.streams.get(&key).is_some() {
+                return Err("the removed stream kept its state".into());
+            }
+            host.streams.tick(r.now + Duration::from_secs(3600));
+            if !host.streams.take_commands().is_empty() {
+                return Err("a removed stream reopened".into());
             }
         }
         ("notify", t) if t.starts_with("variant") => {

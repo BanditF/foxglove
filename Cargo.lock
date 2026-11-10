@@ -2042,9 +2042,13 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "egui",
+ "foxglove-plugin",
  "hideout-contract",
+ "hideout-room-map",
+ "image",
  "log",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2060,13 +2064,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "hideout-room-map"
+version = "0.1.0"
+dependencies = [
+ "foxglove-plugin",
+ "foxglove-plugin-api",
+ "serde_json",
+]
+
+[[package]]
 name = "hideout-router"
 version = "0.1.0"
 dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-api",
  "hideout-contract",
+ "hideout-panels",
  "hideout-registry",
+ "hideout-room-map",
  "log",
  "serde_json",
  "windows-sys 0.61.2",
