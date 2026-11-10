@@ -118,9 +118,32 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             button: MouseButton::Left,
             ..
         } => on_command(Command::Open),
+        // tray-icon arms a 15 ms leave-check timer on each move over the icon and only kills it
+        // when a tick still holds a fresh position; after the menu opens (the cursor leaves
+        // through the menu, so no move clears it) it ticks at 64 Hz for good. The hub uses no
+        // Enter/Leave events, so the timer goes as soon as it is armed (#935).
+        TrayIconEvent::Move { .. } => stop_leave_timer(),
         _ => {}
     }));
     Ok(())
+}
+
+/// tray-icon 0.24's private timer id for its leave check (`WM_USER_LEAVE_TIMER_ID`).
+const LEAVE_TIMER_ID: usize = 6007;
+
+/// Kills tray-icon's leave-check timer on the icon's message window. Called from inside the
+/// icon's window procedure, right after tray-icon armed it, so the timer never ticks.
+fn stop_leave_timer() {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+    TRAY.with(|t| {
+        if let Ok(t) = t.try_borrow() {
+            if let Some(t) = t.as_ref() {
+                let hwnd = HWND(t.icon.window_handle() as *mut _);
+                let _ = unsafe { KillTimer(Some(hwnd), LEAVE_TIMER_ID) };
+            }
+        }
+    });
 }
 
 /// Sets the glyph and the menu's status line. A no-op off the UI thread or before `install`.
@@ -142,6 +165,21 @@ pub fn remove() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `LEAVE_TIMER_ID` is tray-icon 0.24's private constant: a bump must re-check it.
+    #[test]
+    fn leave_timer_id_matches_the_locked_tray_icon() {
+        let lock = include_str!("../../../Cargo.lock");
+        let at = lock
+            .find("name = \"tray-icon\"")
+            .expect("tray-icon in Cargo.lock");
+        let version = lock[at..].lines().nth(1).unwrap_or_default();
+        assert!(
+            version.starts_with("version = \"0.24."),
+            "tray-icon changed ({version}): re-check LEAVE_TIMER_ID"
+        );
+        assert_eq!(LEAVE_TIMER_ID, 6007);
+    }
 
     #[test]
     fn outcome_lines() {

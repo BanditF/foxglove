@@ -21,8 +21,9 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, IsIconic, IsZoomed, SetForegroundWindow, SetWindowPos, ShowWindow,
-    MONITORINFOF_PRIMARY, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW,
+    GetWindowRect, IsIconic, IsWindowVisible, IsZoomed, SetForegroundWindow, SetWindowPos,
+    ShowWindow, MONITORINFOF_PRIMARY, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
+    SW_RESTORE, SW_SHOW,
 };
 
 /// Sets the AUMID and per-monitor v2 DPI awareness. Call first thing, before any window exists.
@@ -132,6 +133,11 @@ pub fn hide_main_window() {
     }
 }
 
+/// True while the main window is shown and not minimised; false before it exists.
+pub fn main_window_on_screen() -> bool {
+    main_window().is_some_and(|h| unsafe { IsWindowVisible(h).as_bool() && !IsIconic(h).as_bool() })
+}
+
 /// The main window's rectangle, if it is in a normal state (not minimised or maximised).
 pub fn main_window_rect() -> Option<Rect> {
     let h = main_window()?;
@@ -202,4 +208,63 @@ pub fn monitors() -> Vec<Monitor> {
         let _ = EnumDisplayMonitors(None, None, Some(each), LPARAM(&mut out as *mut _ as isize));
     }
     out
+}
+
+/// Maps `path` read-only for the life of the process (fonts, which egui keeps for good). The
+/// view stays valid after both handles close. `None` if the file can't be opened or is empty.
+pub fn map_file(path: &std::path::Path) -> Option<&'static [u8]> {
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileSizeEx, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ,
+        OPEN_EXISTING,
+    };
+    use windows::Win32::System::Memory::{
+        CreateFileMappingW, MapViewOfFile, FILE_MAP_READ, PAGE_READONLY,
+    };
+    let file = unsafe {
+        CreateFileW(
+            &HSTRING::from(path.as_os_str()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }
+    .ok()?;
+    let mut len = 0i64;
+    let sized = unsafe { GetFileSizeEx(file, &mut len) }.is_ok() && len > 0;
+    let mapping = if sized {
+        unsafe { CreateFileMappingW(file, None, PAGE_READONLY, 0, 0, None) }.ok()
+    } else {
+        None
+    };
+    unsafe { CloseHandle(file) }.ok();
+    let mapping = mapping?;
+    let view = unsafe { MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0) };
+    unsafe { CloseHandle(mapping) }.ok();
+    if view.Value.is_null() {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(view.Value as *const u8, len as usize) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_a_file_read_only() {
+        let dir = std::env::temp_dir().join(format!("hideout-map-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let full = dir.join("font.bin");
+        std::fs::write(&full, b"glyphs").unwrap();
+        assert_eq!(map_file(&full), Some(&b"glyphs"[..]));
+        let empty = dir.join("empty.bin");
+        std::fs::write(&empty, b"").unwrap();
+        assert_eq!(map_file(&empty), None);
+        assert_eq!(map_file(&dir.join("missing.bin")), None);
+        // The mapping of font.bin stays for the process (as fonts do), so the folder stays too.
+        let _ = std::fs::remove_file(&empty);
+    }
 }

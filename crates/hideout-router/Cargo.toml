@@ -12,3 +12,6 @@ hideout-contract = { path = "../hideout-contract" }
 hideout-registry = { path = "../hideout-registry" }
 log = "0.4"
 serde_json = "1"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
