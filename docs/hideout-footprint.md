@@ -116,6 +116,19 @@ memory for CPU on every frame and is not available through eframe's glow path on
 Trimming the working set while hidden (`EmptyWorkingSet`) would only move pages to the
 standby list, not lower private bytes, so it isn't done.
 
+### Limits and pop-outs (11/10)
+
+On-call's runs on 2bc31b90 (after the #1015 spin fix): CPU 0.03–0.17 %, loop wakes about 1.6/s
+hidden and 4.4/s shown, nearly all with cause `other` (window messages winit handles itself or
+that go to another window on the UI thread). At that cost the gate's limits are at most 2 loop
+wakes/s hidden (no flyout) and 5/s shown (`tests/hil/hideout-footprint-baseline.json`). Splitting
+`other` by window message id is a low-priority follow-up: fix any share that is ours (tray-icon,
+redraw messages we can avoid), leave OS/DWM traffic.
+
+One pop-out window with six modules idles at 92.8 MB private (On-call, 2bc31b90), against about
+75 MB for the hub alone: each pop-out is its own viewport with its own swap chain and GL surface.
+Whether the pop-outs can share one GL context with the main window is a follow-up.
+
 ### The tray flyout (#991)
 
 A tray click opens the flyout: an egui immediate viewport, so its frames run inside the main

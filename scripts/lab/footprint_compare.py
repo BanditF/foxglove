@@ -7,7 +7,7 @@ Metrics (all about the hub process, hideout.exe, while it idles):
   cpu_pct                     CPU time over the window / wall time, % of one core
   loop_wakes_per_s            the hub's own event-loop wakes per second, from its log lines
                               (`event loop: N wakes in S s (repaint a, timer b, ...)`, #1000); the
-                              limit is per window state: `loop_wakes_per_s` hidden (at most 1/s),
+                              limit is per window state: `loop_wakes_per_s` hidden (at most 2/s),
                               `loop_wakes_shown_per_s` shown
   wakeups_per_s               context switches per second summed over all the process's threads
                               (the Thread counter class: the Process class reads 0 for the hub),
