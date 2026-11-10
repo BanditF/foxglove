@@ -41,8 +41,11 @@ pub use model::{
     state_words, when_true, FilePicker, HostedPanel, HubCall, Outgoing, PanelHost, PanelKey,
     PanelState,
 };
-pub use render::{key_chip, panel_ui, panel_ui_quiet, DrawReport, Go};
+pub use render::{key_chip, panel_ui, panel_ui_quiet, DrawReport, Glance, Go};
 pub use sections::page_sections_ui;
 pub use streams::{Look, StreamAct, StreamCommand, StreamKey, Streams};
-pub use tray::{tile_ui, tile_ui_at, tray_panel_ui, TileReport, TrayAction, TrayLayout};
+pub use tray::{
+    tile_ui, tile_ui_at, tray_panel_ui, TileAnnouncer, TilePhase, TileReport, TrayAction,
+    TrayLayout,
+};
 pub use view::ViewState;

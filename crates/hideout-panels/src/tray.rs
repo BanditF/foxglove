@@ -8,10 +8,10 @@
 //! decides where the panel lives and tests render it without a window.
 
 use crate::model::{PanelHost, PanelKey, PanelState};
-use crate::render::{tile_body, tone_rgb, DrawReport, Go};
+use crate::render::{tile_body, tone_rgb, DrawReport, Glance, Go};
 use egui::{Color32, FocusDirection, Id, Key, Modifiers, Popup, RichText, Sense, Stroke, Ui};
 use hideout_contract::module::Slot;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 /// Width of a tile in the tray panel.
@@ -127,6 +127,150 @@ pub struct TileReport {
     pub update_hub: bool,
     /// The height of the tile's own content (inside its frame), before the row's height.
     pub content_height: f32,
+    /// The tile's phase this draw (`None` when it drew nothing).
+    pub phase: Option<TilePhase>,
+}
+
+/// A tile's phase: its state without what ticks, so a change of it is worth saying
+/// (docs/hideout-plugin-modules-ux.md, Keyboard and screen reader). Decided from the drawn tile
+/// alone, the same for every module:
+/// - the frame's state words ("Restarting", "Stopped after 5 crashes");
+/// - the glance's `tone` (Focus to Rest is `active` to `ok`);
+/// - the glance's word, unless it has a digit: "Muted" and "Live" are states, "18:42" and
+///   "42 %" are readings that tick.
+///
+/// The sub line and the meter never count: they say what the glance is about, or how far along.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TilePhase {
+    pub key: PanelKey,
+    frame: Vec<String>,
+    tone: Option<String>,
+    word: Option<String>,
+    /// What is said when the phase changes: "Mic mute, Muted", "Focus timer, Rest".
+    pub words: String,
+}
+
+impl TilePhase {
+    /// The phase of a tile titled `title` whose frame said `frame` and whose body drew `draw`.
+    /// The words: the title, then the frame's state words; or else the glance's word; or else
+    /// the sub line's first part ("Rest · then round 3" says "Rest"); or else the glance.
+    fn of(key: &PanelKey, title: &str, frame: &[String], draw: &DrawReport) -> TilePhase {
+        let ticks = |t: &str| t.chars().any(|c| c.is_ascii_digit());
+        let glance = draw.glance.clone().unwrap_or_default();
+        let word = (!glance.text.is_empty() && !ticks(&glance.text)).then(|| glance.text.clone());
+        // The sub line is a `label`'s text only: never a button's or a key chip's.
+        let sub = draw
+            .sub
+            .as_ref()
+            .filter(|t| !t.is_empty())
+            .map(|t| t.split(" \u{00B7} ").next().unwrap_or(t).to_string());
+        let what = if !frame.is_empty() {
+            frame.join(", ")
+        } else if let Some(w) = &word {
+            w.clone()
+        } else {
+            sub.unwrap_or_else(|| glance.text.clone())
+        };
+        let words = [title.to_string(), what]
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let Glance { tone, .. } = glance;
+        TilePhase {
+            key: key.clone(),
+            frame: frame.to_vec(),
+            tone,
+            word,
+            words,
+        }
+    }
+
+    fn same(&self, other: &TilePhase) -> bool {
+        (&self.frame, &self.tone, &self.word) == (&other.frame, &other.tone, &other.word)
+    }
+}
+
+/// At most one announcement per tile in this long.
+pub const ANNOUNCE_EVERY: Duration = Duration::from_secs(5);
+
+/// The tray panel's polite announcements while it is open (#991): a tile's phase change is said
+/// once, at most every [`ANNOUNCE_EVERY`] per tile; a change inside that window is said with the
+/// first draw after it, if the phase is still not the one last said. The shell keeps one per
+/// open flyout, so what changed while it was closed is never said: the first sight of a tile is
+/// only remembered. It asks for no frame of its own except one: a change held back by the
+/// window gives [`TileAnnouncer::wake_in`] once, so it is said when the window ends.
+#[derive(Debug, Default)]
+pub struct TileAnnouncer {
+    tiles: HashMap<PanelKey, Seen>,
+    /// The wake a change held back in this draw asks for.
+    wake: Option<Duration>,
+}
+
+/// One tile's announcement state.
+#[derive(Debug)]
+struct Seen {
+    /// The phase last said (or first seen).
+    last: TilePhase,
+    /// When it was last said.
+    at: Option<Instant>,
+    /// A change is held back by the window (its wake was asked for).
+    held: bool,
+}
+
+/// A held-back change is drawn this long after its window ends, so the wake's frame is never a
+/// hair early.
+const WAKE_MARGIN: Duration = Duration::from_millis(50);
+
+impl TileAnnouncer {
+    /// Takes this draw's tile phases at `now`; returns what to say, if anything (several tiles
+    /// at once are one sentence each).
+    pub fn see(&mut self, phases: &[TilePhase], now: Instant) -> Option<String> {
+        // A tile not drawn (hidden, or Edit tiles is open) starts again from its next sight.
+        self.tiles.retain(|k, _| phases.iter().any(|p| p.key == *k));
+        self.wake = None;
+        let mut say = Vec::new();
+        for p in phases {
+            let Some(t) = self.tiles.get_mut(&p.key) else {
+                self.tiles.insert(
+                    p.key.clone(),
+                    Seen {
+                        last: p.clone(),
+                        at: None,
+                        held: false,
+                    },
+                );
+                continue;
+            };
+            if t.last.same(p) {
+                // Back to what was said: nothing is owed.
+                t.held = false;
+                continue;
+            }
+            let since = t.at.map(|at| now.saturating_duration_since(at));
+            match since.filter(|s| *s < ANNOUNCE_EVERY) {
+                None => {
+                    t.last = p.clone();
+                    t.at = Some(now);
+                    t.held = false;
+                    say.push(p.words.clone());
+                }
+                Some(s) if !t.held => {
+                    t.held = true;
+                    let left = ANNOUNCE_EVERY - s + WAKE_MARGIN;
+                    self.wake = Some(self.wake.map_or(left, |w| w.min(left)));
+                }
+                Some(_) => {}
+            }
+        }
+        (!say.is_empty()).then(|| say.join(". "))
+    }
+
+    /// After [`TileAnnouncer::see`]: draw again in this long, because a change was held back by
+    /// the 5 s window in that draw. Given once per held change (one bounded wake, not a poll).
+    pub fn wake_in(&self) -> Option<Duration> {
+        self.wake
+    }
 }
 
 /// What the user asked of the tray panel.
@@ -149,6 +293,8 @@ pub struct TrayReport {
     /// Draw again after this while the panel is open (a restart countdown or a "Last seen"
     /// age is on screen); `None` when nothing on it changes by itself.
     pub repaint_in: Option<Duration>,
+    /// Each drawn tile's phase, in grid order (for [`TileAnnouncer`]).
+    pub phases: Vec<TilePhase>,
 }
 
 /// One tile the tray panel knows: shown or not.
@@ -459,6 +605,7 @@ fn tile_ui_keyed(
         content.response.rect.height()
     });
     report.content_height = inner.inner;
+    report.phase = Some(TilePhase::of(key, &title, &spoken, &report.draw));
     // A click on the tile outside its button opens the module's page (§5.1); so does Enter on
     // the focused tile.
     let tile = ui.interact(inner.response.rect, tile_focus_id(key), Sense::click());
@@ -643,6 +790,7 @@ pub fn tray_panel_ui(
         ui.ctx().request_repaint();
     }
     for (key, r) in picks {
+        report.phases.extend(r.phase.clone());
         let m = key.module.clone();
         if r.open || r.menu == Some(TileMenu::Open) {
             report.actions.push(TrayAction::Open {
