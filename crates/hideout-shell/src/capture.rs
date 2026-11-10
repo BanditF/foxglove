@@ -43,15 +43,12 @@ pub fn enabled(paths: &HubPaths, env: impl Fn(&str) -> Option<std::ffi::OsString
     paths.overridden && env(ENV).is_some_and(|v| v == "1")
 }
 
-/// `\\.\pipe\hideout-capture-<user><suffix>`: one per user and lab folder.
+/// `\\.\pipe\hideout-capture-<user><suffix>`: one per user and lab folder, the router pipe's
+/// rule (contract §8.2, #1010).
 pub fn pipe_name(paths: &HubPaths) -> String {
-    let user: String = std::env::var("USERNAME")
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
     format!(
-        r"\\.\pipe\hideout-capture-{user}{}",
+        r"\\.\pipe\hideout-capture-{}{}",
+        hideout_router::server::user(),
         paths.instance_suffix()
     )
 }

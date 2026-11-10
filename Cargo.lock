@@ -2096,6 +2096,7 @@ dependencies = [
  "hideout-acl",
  "hideout-contract",
  "hideout-panels",
+ "hideout-router",
  "hideout-supervisor",
  "image",
  "log",

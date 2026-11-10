@@ -37,6 +37,31 @@ isn't needed. **Lab mode** loads them as they ship, only in a lab hub.
 - **The user's hub.** Lab mode is refused on the default folder, so the user's Hideout never
   loads `lab-modules`.
 
+## Pipe names: one set per hub folder (#1010)
+
+A lab hub and the user's hub can run side by side: every pipe and kernel object a hub names
+carries its folder (contract §8.2). The default folder keeps the old names; any other folder
+adds `<suffix>`, a `.` and 16 hex digits hashed from the folder's canonical path, the same for
+every spelling of that folder.
+
+| What | Default folder | Lab folder |
+|---|---|---|
+| Router pipe | `\\.\pipe\hideout-<user>` | `\\.\pipe\hideout-<user><suffix>` |
+| Alias | `\\.\pipe\foxglove-<user>` | `\\.\pipe\foxglove-<user><suffix>` |
+| Capture (#1008) | not served | `\\.\pipe\hideout-capture-<user><suffix>` |
+| Lab control (#1014) | not served | `\\.\pipe\hideout-lab-<user><suffix>` |
+| Module jobs | `Local\hideout-job-<user>-<id>-<n>` | `Local\hideout-job-<user><suffix>-<id>-<n>` |
+
+- Modules the lab hub starts get its own pipe in `HIDEOUT_PIPE`, so they connect to the lab hub,
+  never the user's. The SDKs' `connect_env` (Rust and Python) opens exactly that name.
+- `hideout.log` says the name: `router: serving \\.\pipe\hideout-<user><suffix>`.
+- The `hideout.exe --capture` client works the name out from `HIDEOUT_CONFIG_DIR` itself; run
+  it with the same `HIDEOUT_CONFIG_DIR` as the lab hub.
+- An outside tool for the lab hub (for example `foxglove-cli` with `FOXGLOVE_PIPE`) takes the
+  name from the log line.
+- `HIDEOUT_CONFIG_DIR` set to `%LOCALAPPDATA%\Hideout` is the user's hub, not a lab hub: same
+  names, and lab mode stays refused.
+
 ## Also fixed in #1001: bridged plugins were ended every 30 s
 
 The contract lets a bridged plugin skip `module.ready` (§8.2), and the Foxglove plugins speak

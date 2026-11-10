@@ -9,6 +9,8 @@ license = "MIT"
 hideout-acl = { path = "../hideout-acl" }
 # `config::Windows`: the `[windows]` table of pop-out placement (§2.5, spec v1.6).
 hideout-contract = { path = "../hideout-contract" }
+# The folder suffix of the hub's pipe and kernel-object names (#1010), one rule with the router.
+hideout-router = { path = "../hideout-router" }
 # Only its `words` (every string the supervisor's states show) for the crash bar, the stopped
 # card and the tray lines.
 hideout-supervisor = { path = "../hideout-supervisor" }
