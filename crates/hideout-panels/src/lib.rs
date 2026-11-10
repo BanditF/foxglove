@@ -12,6 +12,8 @@
 //!   in-process channel pair.
 //! - [`render`]: draws a panel in egui, each one in its own guarded scope (§5.5). Live streams
 //!   (`canvas`, `image`, `text` with a `stream`) draw as stubs until H2.9.
+//! - [`tray`]: the tray panel's tile grid in the hub's frame (v1.4), with Edit tiles.
+//! - [`sections`]: the Keys and Settings sections the hub adds to a module's page (§4.7).
 //!
 //! Clean-room: written from `docs/hideout-contract.md`, the Hideout design doc and the MIT crates
 //! in `crates/`. It knows no module ids and no device code.
@@ -20,6 +22,8 @@ pub mod assets;
 pub mod feed;
 pub mod model;
 pub mod render;
+pub mod sections;
+pub mod tray;
 pub mod tree;
 pub mod view;
 
@@ -27,6 +31,10 @@ pub use egui;
 pub use feed::{Inbound, Outbound, PanelFeed};
 pub use hideout_contract::messages::{Badge, Visibility};
 pub use hideout_contract::module::Slot;
-pub use model::{state_words, HostedPanel, Outgoing, PanelHost, PanelKey, PanelState};
-pub use render::{panel_ui, tile_ui, DrawReport, TileReport};
+pub use model::{
+    state_words, when_true, HostedPanel, HubCall, Outgoing, PanelHost, PanelKey, PanelState,
+};
+pub use render::{key_chip, panel_ui, DrawReport, Go};
+pub use sections::page_sections_ui;
+pub use tray::{tile_ui, tile_ui_at, tray_panel_ui, TileReport, TrayAction, TrayLayout};
 pub use view::ViewState;

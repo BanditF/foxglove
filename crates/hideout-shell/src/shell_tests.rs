@@ -636,3 +636,143 @@ fn renders_the_module_tiles_for_review() {
         save_png("built-module-page.png", w, h, rgba);
     }
 }
+
+/// The modules' manifests next to their vectors (#991): every `crates/*/module.toml` whose id
+/// has a vectors file, with that file's first state registered. The hub names none of them.
+fn review_modules() -> (hideout_panels::PanelHost, Vec<String>) {
+    use hideout_contract::module::{Context, Module};
+    use hideout_contract::panel::Register;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut states = HashMap::new();
+    for e in std::fs::read_dir(root.join("tests/hideout-vectors/modules")).unwrap() {
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(e.unwrap().path()).unwrap()).unwrap();
+        states.insert(doc["module"].as_str().unwrap().to_string(), doc);
+    }
+    let mut host = hideout_panels::PanelHost::default();
+    let mut ids = Vec::new();
+    let mut crates: Vec<PathBuf> = std::fs::read_dir(root.join("crates"))
+        .unwrap()
+        .map(|e| e.unwrap().path().join("module.toml"))
+        .filter(|p| p.exists())
+        .collect();
+    crates.sort();
+    for p in crates {
+        let Ok(m) = Module::parse(&std::fs::read_to_string(&p).unwrap(), &Context::default())
+        else {
+            continue;
+        };
+        let Some(doc) = states.get(&m.id) else {
+            continue;
+        };
+        let params: Register = serde_json::from_value(
+            serde_json::json!({"instance": "i1", "panels": doc["states"][0]["panels"]}),
+        )
+        .unwrap();
+        let declared: Vec<String> = m.panels.iter().map(|p| p.id.clone()).collect();
+        let actions: Vec<String> = m.actions.iter().map(|a| a.decl.id.clone()).collect();
+        host.register_with(&m.id, &m.name, Some(&declared), Some(&actions), &params);
+        ids.push(m.id.clone());
+        host.set_manifest(m);
+    }
+    (host, ids)
+}
+
+/// The tray panel for the review (#991): the default tiles; every tile with a restarting and a
+/// stopped one; and one page with the hub's Keys and Settings sections.
+#[test]
+fn renders_the_tray_panel_for_review() {
+    use hideout_panels::{page_sections_ui, panel_ui, tray_panel_ui, TrayLayout};
+    use std::time::{Duration, Instant};
+    let (mut host, ids) = review_modules();
+    if ids.is_empty() {
+        eprintln!("no module vectors; tray review skipped");
+        return;
+    }
+    let now = Instant::now();
+    let draw_tray = |host: &mut hideout_panels::PanelHost, name: &str, h: u32| {
+        let mut layout = TrayLayout::default();
+        let mut editing = false;
+        let w = 520u32;
+        let Some(rgba) = rasterise(w, h, |c| {
+            egui::CentralPanel::default().show(c, |ui| {
+                tray_panel_ui(host, ui, &mut layout, &mut editing, now);
+            });
+        }) else {
+            return false;
+        };
+        save_png(name, w, h, rgba);
+        true
+    };
+    // 1. Default tiles: only those with no `when` (no app seen yet).
+    if !draw_tray(&mut host, "built-tray-default.png", 260) {
+        eprintln!("no system font; tray review skipped");
+        return;
+    }
+    // 2. Every app seen: all tiles; the last module restarting, the one before it stopped.
+    let whens: Vec<String> = host
+        .manifests()
+        .flat_map(|m| m.panels.iter().filter_map(|p| p.when.clone()))
+        .collect();
+    for w in whens {
+        host.set_fact(w.trim_start_matches('!'), serde_json::json!(true));
+    }
+    let n = ids.len();
+    if n >= 2 {
+        let restarting = &ids[n - 1];
+        host.module_gone_at(restarting, "restarting", now - Duration::from_secs(12));
+        host.set_fact(
+            &format!("module.{restarting}.restart"),
+            serde_json::json!({"delay_s": 8, "crash": 2, "of": 5}),
+        );
+        host.set_restart_since(restarting, now - Duration::from_millis(3500));
+        host.set_fact(
+            &format!("module.{restarting}.state"),
+            serde_json::json!("restarting"),
+        );
+        let stopped = &ids[n - 2];
+        host.set_fact(
+            &format!("module.{stopped}.state"),
+            serde_json::json!("crash-stopped"),
+        );
+    }
+    draw_tray(&mut host, "built-tray-all.png", 600);
+    // 3. Pages with the hub's sections: the first module with actions (Keys, one key bound)
+    // and the first with settings (Settings), side by side.
+    let first = |host: &hideout_panels::PanelHost,
+                 f: &dyn Fn(&hideout_contract::module::Module) -> bool| {
+        ids.iter()
+            .find(|id| host.manifest(id).is_some_and(f))
+            .cloned()
+    };
+    let keys = first(&host, &|m| !m.actions.is_empty());
+    let settings = first(&host, &|m| !m.settings.is_empty());
+    let mut pages = Vec::new();
+    for id in [keys, settings].into_iter().flatten() {
+        let first_action = host
+            .manifest(&id)
+            .and_then(|m| m.actions.first().map(|a| a.decl.id.clone()));
+        if let Some(a) = first_action {
+            host.set_key(&id, &a, Some("F13".into()));
+        }
+        host.set_fact(&format!("module.{id}.state"), serde_json::json!("running"));
+        if let Some(page) = host.navigate(&id, "page") {
+            pages.push(page);
+        }
+    }
+    let (w, h) = (1300u32, 760u32);
+    let rgba = rasterise(w, h, |c| {
+        egui::CentralPanel::default().show(c, |ui| {
+            ui.columns(pages.len().max(1), |cols| {
+                for (ui, page) in cols.iter_mut().zip(&pages) {
+                    ui.push_id(&page.module, |ui| {
+                        panel_ui(&mut host, ui, page);
+                        page_sections_ui(&mut host, ui, page);
+                    });
+                }
+            });
+        });
+    })
+    .unwrap();
+    save_png("built-page-keys-settings.png", w, h, rgba);
+}

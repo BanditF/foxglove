@@ -6,7 +6,7 @@
 //!
 //! [`channel`] is an in-process pair for tests and for a router that runs on its own thread.
 
-use crate::model::{Outgoing, PanelHost};
+use crate::model::{HubCall, Outgoing, PanelHost};
 use hideout_contract::error::Error;
 use hideout_contract::messages::{UiAssetPut, UiBadge, UiPatch, UiVisibility};
 use hideout_contract::panel::{Register, Rejected};
@@ -52,6 +52,15 @@ pub enum Inbound {
     Fact { name: String, value: Value },
     /// The module's instance went away; its panels grey with `state` (§7.8).
     ModuleGone { module: String, state: String },
+    /// The answer to [`Outbound::Call`] `SettingsGet`: the module's values.
+    Settings {
+        module: String,
+        values: serde_json::Map<String, Value>,
+    },
+    /// The module refused [`Outbound::Call`] `SettingsSet`, with `data.reason`.
+    SettingRefused { module: String, reason: String },
+    /// A module's manifest (§4.7): its tiles with `when`, actions and settings.
+    Manifest(Box<hideout_contract::module::Module>),
 }
 
 /// From the panel host to the modules.
@@ -76,6 +85,8 @@ pub enum Outbound {
         module: String,
         visibility: UiVisibility,
     },
+    /// `action.invoke`, `settings.get` or `settings.set` for the module (§8.8).
+    Call(HubCall),
 }
 
 /// What the router implements for the hub.
@@ -152,15 +163,35 @@ impl PanelHost {
                     self.module_gone(&module, &state);
                     changed = true;
                 }
+                Inbound::Settings { module, values } => {
+                    self.settings_result(&module, values);
+                    changed = true;
+                }
+                Inbound::Manifest(m) => {
+                    self.set_manifest(*m);
+                    changed = true;
+                }
+                Inbound::SettingRefused { module, reason } => {
+                    self.setting_refused(&module, reason);
+                    changed = true;
+                }
             }
         }
+        self.send_out(feed);
+        (changed, self.flush(now))
+    }
+
+    /// Sends what the host queued: `ui.event` calls, `ui.visibility` and the hub's own calls.
+    pub fn send_out(&mut self, feed: &mut dyn PanelFeed) {
         for e in self.take_events() {
             feed.send(Outbound::Event(e));
+        }
+        for c in self.take_hub_calls() {
+            feed.send(Outbound::Call(c));
         }
         for (module, visibility) in self.take_visibility() {
             feed.send(Outbound::Visibility { module, visibility });
         }
-        (changed, self.flush(now))
     }
 }
 
