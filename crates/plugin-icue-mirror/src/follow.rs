@@ -28,6 +28,11 @@ impl Follow {
         self.session && self.device.is_some()
     }
 
+    /// A session with iCUE is up.
+    pub fn session(&self) -> bool {
+        self.session
+    }
+
     pub fn device(&self) -> Option<&str> {
         self.device.as_ref().map(|(id, _)| id.as_str())
     }

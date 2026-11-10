@@ -32,6 +32,7 @@ pub mod channel;
 pub mod hideout;
 mod net;
 pub use net::{NetEvent, TcpListener, TcpStream};
+pub mod ui;
 pub mod ws;
 
 /// A watched app's window opening or closing (`Plugin::watch_app`): the program's file name,
@@ -138,6 +139,7 @@ pub struct Plugin {
     actions: Mutex<Option<Receiver<String>>>,
     app_windows: Mutex<Option<Receiver<AppWindowEvent>>>,
     settings_changes: Mutex<Option<Receiver<serde_json::Map<String, Value>>>>,
+    ui_inbox: Mutex<Option<Receiver<ui::UiIn>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     routes: net::Routes,
     /// What Foxglove granted this plugin.
@@ -162,6 +164,7 @@ impl Plugin {
         let (actions_tx, actions_rx) = mpsc::channel::<String>();
         let (app_tx, app_rx) = mpsc::channel::<AppWindowEvent>();
         let (settings_tx, settings_rx) = mpsc::channel::<serde_json::Map<String, Value>>();
+        let (ui_tx, ui_rx) = mpsc::channel::<ui::UiIn>();
         let reader_pending = pending.clone();
         let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_closed = closed.clone();
@@ -205,6 +208,14 @@ impl Plugin {
                                 AppWindowEvent::Closed { exe, open }
                             });
                         }
+                    } else if n.method == "ui.event" || n.method == "ui.visibility" {
+                        // Hideout's panels (contract §5.3, §5.9), through the stdio bridge.
+                        let id = n.id.map(|i| serde_json::to_value(i).unwrap_or(Value::Null));
+                        let _ = ui_tx.send(ui::UiIn {
+                            method: n.method,
+                            params: n.params,
+                            id,
+                        });
                     } else {
                         reader_routes.handle(&n.method, n.params);
                     }
@@ -227,6 +238,7 @@ impl Plugin {
             actions: Mutex::new(Some(actions_rx)),
             app_windows: Mutex::new(Some(app_rx)),
             settings_changes: Mutex::new(Some(settings_rx)),
+            ui_inbox: Mutex::new(Some(ui_rx)),
             closed,
             routes,
             granted: vec![],
@@ -271,6 +283,39 @@ impl Plugin {
             Outcome::Result(v) => Ok(v),
             Outcome::Error(e) => Err(PluginError::Api(e)),
         }
+    }
+
+    /// Sends a notification (no answer).
+    pub fn notify(&self, method: &str, params: Value) -> Result<()> {
+        let line =
+            serde_json::to_string(&Request::notification(method, params)).expect("serializable");
+        let mut w = self.write.lock().unwrap_or_else(|e| e.into_inner());
+        writeln!(w, "{line}")
+            .and_then(|()| w.flush())
+            .map_err(|_| PluginError::Closed)
+    }
+
+    /// Answers a call from the host (`ui.event`): `Ok` is `{}`; `Err(reason)` is a refusal the
+    /// hub shows (contract §5.3, `data.reason`).
+    pub fn reply(&self, id: &Value, result: std::result::Result<(), String>) -> Result<()> {
+        let msg = match result {
+            Ok(()) => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
+            Err(reason) => json!({"jsonrpc": "2.0", "id": id, "error": {
+                "code": 5, "message": "refused", "data": {"reason": reason}}}),
+        };
+        let mut w = self.write.lock().unwrap_or_else(|e| e.into_inner());
+        writeln!(w, "{msg}")
+            .and_then(|()| w.flush())
+            .map_err(|_| PluginError::Closed)
+    }
+
+    /// Hideout's `ui.event` calls and `ui.visibility` notifications (take it once). Foxglove
+    /// sends none.
+    pub fn ui_inbox(&self) -> Option<Receiver<ui::UiIn>> {
+        self.ui_inbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     fn call_as<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {

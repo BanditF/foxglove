@@ -49,6 +49,79 @@ pub fn panel_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> DrawReport
     report
 }
 
+/// What a tile draw saw: the body's rects, and whether the frame's **Open** was pressed (the
+/// hub then opens the module's first page).
+#[derive(Debug, Default)]
+pub struct TileReport {
+    pub draw: DrawReport,
+    pub open: bool,
+}
+
+/// Width of a tile in the tray panel.
+pub const TILE_WIDTH: f32 = 228.0;
+
+/// Draws the tile `key` (§5.1, v1.4): the hub's frame (title and the module's state) around the
+/// module's body. A module stopped after its crashes, or a tile that couldn't be shown, offers
+/// only **Open** (to the page's recovery ladder); a restarting module's body greys under its
+/// state line. Each tile draws in its own guarded scope, like a page (§5.5).
+pub fn tile_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) -> TileReport {
+    let mut report = TileReport::default();
+    let Some(p) = host.panel(key) else {
+        return report;
+    };
+    let (title, state) = (p.title.clone(), p.state.clone());
+    let stopped = match &state {
+        PanelState::Greyed(s) => matches!(s.as_str(), "crash-stopped" | "crash-looped"),
+        PanelState::Live => false,
+        _ => true,
+    };
+    egui::Frame::group(ui.style())
+        .inner_margin(10.0)
+        .corner_radius(8.0)
+        .show(ui, |ui| {
+            ui.set_width(TILE_WIDTH);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(&title).strong());
+                if stopped {
+                    let words = match &state {
+                        PanelState::Greyed(s) => crate::model::state_words(s).to_string(),
+                        _ => "Its tile couldn't be shown".to_string(),
+                    };
+                    ui.label(RichText::new(words).color(ui.visuals().error_fg_color));
+                    report.open = ui.button("Open").clicked();
+                } else {
+                    report.draw = panel_ui(host, ui, key);
+                }
+            });
+        });
+    report
+}
+
+/// The colour for a `tone` (§5.2, v1.4) on the current theme; `None` for `neutral` and unknown
+/// words (the text colour). Each is at least 4.5:1 on the panel surface.
+fn tone_color(ui: &Ui, p: &Map<String, Value>) -> Option<Color32> {
+    let dark = ui.visuals().dark_mode;
+    let pick = |d: (u8, u8, u8), l: (u8, u8, u8)| {
+        let (r, g, b) = if dark { d } else { l };
+        Some(Color32::from_rgb(r, g, b))
+    };
+    match s(p, "tone")? {
+        "active" => pick((0xFF, 0x9E, 0x57), (0xA8, 0x46, 0x00)),
+        "live" => pick((0xFF, 0x7A, 0x7A), (0xB0, 0x1E, 0x1E)),
+        "ok" => pick((0x72, 0xD6, 0x8F), (0x1C, 0x6E, 0x34)),
+        "attention" => pick((0xF5, 0xC4, 0x51), (0x80, 0x5A, 0x00)),
+        "off" => Some(ui.visuals().weak_text_color()),
+        _ => None,
+    }
+}
+
+fn toned(ui: &Ui, p: &Map<String, Value>, text: RichText) -> RichText {
+    match tone_color(ui, p) {
+        Some(c) => text.color(c),
+        None => text,
+    }
+}
+
 struct Draw<'a> {
     key: &'a PanelKey,
     view: &'a mut ViewState,
@@ -193,16 +266,16 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
         }
         "tabs" => tabs(ui, n, d),
         "label" => {
-            ui.label(text_of(
-                p.get("value").or(p.get("text")).unwrap_or(&Value::Null),
-            ));
+            let text = text_of(p.get("value").or(p.get("text")).unwrap_or(&Value::Null));
+            ui.label(toned(ui, &p, RichText::new(text)));
         }
         "value" => {
             ui.horizontal(|ui| {
                 if !label.is_empty() {
                     ui.label(RichText::new(&label).weak());
                 }
-                ui.label(RichText::new(text_of(p.get("value").unwrap_or(&Value::Null))).strong());
+                let text = RichText::new(text_of(p.get("value").unwrap_or(&Value::Null)));
+                ui.label(toned(ui, &p, text.strong().size(18.0)));
             });
         }
         "button" => {

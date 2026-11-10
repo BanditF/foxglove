@@ -272,6 +272,9 @@ pub struct Router {
     leases: HashMap<(String, String), Lease>,
     /// The supervisor's pid and exe-hash check (§7.5); `None` = tokens only (tests, lab).
     launch_check: Option<LaunchCheck>,
+    /// Each module's `[[actions]]` ids, when known: a button's `action` must name one
+    /// (`ui.action`, spec v1.4).
+    actions: HashMap<String, Vec<String>>,
 }
 
 fn error(id: &Value, code: i64, message: &str, reason: Option<&str>) -> Value {
@@ -313,6 +316,7 @@ impl Router {
             pending: HashMap::new(),
             next_call: 1,
             queue: VecDeque::new(),
+            actions: HashMap::new(),
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -322,6 +326,12 @@ impl Router {
     /// Adds or replaces a module the router knows.
     pub fn add_module(&mut self, m: ModuleEntry) {
         self.modules.insert(m.id.clone(), m);
+    }
+
+    /// The module's `[[actions]]` ids (from its manifest), so `ui.register` refuses a button
+    /// whose `action` names none of them (`ui.action`, spec v1.4).
+    pub fn set_actions(&mut self, module: &str, actions: Vec<String>) {
+        self.actions.insert(module.into(), actions);
     }
 
     /// Every installed module from the registry.
@@ -980,7 +990,9 @@ impl Router {
             return error(id, code::INVALID_PARAMS, "invalid params", None);
         };
         let declared = self.modules.get(module).and_then(|m| m.panels.clone());
-        let (accepted, rejected) = panel::register(&reg, declared.as_deref(), &LIMITS);
+        let actions = self.actions.get(module).map(Vec::as_slice);
+        let (accepted, rejected) =
+            panel::register_with(&reg, declared.as_deref(), actions, &LIMITS);
         out.push(Out::Panels {
             module: module.into(),
             panels: serde_json::to_value(&accepted).unwrap_or_default(),

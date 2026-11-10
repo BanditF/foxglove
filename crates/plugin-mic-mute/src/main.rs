@@ -15,12 +15,14 @@
 //!
 //! Options: `--no-lights`, `--no-panel`.
 
+mod module_ui;
 mod screens;
 
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use foxglove_plugin::ui::{Panels, UiIn};
 use foxglove_plugin::{Fact, Hsb, Lease, LeasePriority, PanelTarget, Plugin};
 use screens::{Mic, Shown};
 
@@ -28,6 +30,8 @@ use screens::{Mic, Shown};
 enum In {
     State(Mic),
     Key(String),
+    /// Hideout: a tile or page button.
+    Ui(UiIn),
 }
 
 fn parse(value: Option<&Fact>) -> Mic {
@@ -149,6 +153,16 @@ fn main() {
             }
         });
     }
+    if let Some(ui) = plugin.ui_inbox() {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for m in ui {
+                if tx.send(In::Ui(m)).is_err() {
+                    return;
+                }
+            }
+        });
+    }
     if let Some(keys) = plugin.actions() {
         std::thread::spawn(move || {
             for k in keys {
@@ -168,6 +182,23 @@ fn main() {
         flash_until: None,
     };
     out.show(&plugin, mic, false);
+    // Hideout's tile and page (Foxglove refuses them once and they stay off).
+    let mut panels = Panels::new(plugin.clone());
+    let mut refused = false;
+    let mut last_ask: Option<bool> = None;
+    panels.show(module_ui::panels(mic, refused));
+    let ask = |muted: bool| -> bool {
+        match plugin.call(
+            "audio.inputs.set_mute",
+            serde_json::json!({ "muted": muted }),
+        ) {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("mic-mute: {e}");
+                false
+            }
+        }
+    };
 
     loop {
         if plugin.is_closed() {
@@ -189,8 +220,10 @@ fn main() {
             Some(In::State(m)) => {
                 let changed = m != mic;
                 mic = m;
+                refused = false;
                 out.flash_until = None;
                 out.show(&plugin, mic, changed);
+                panels.show(module_ui::panels(mic, refused));
             }
             Some(In::Key(k)) => {
                 let muted = match k.as_str() {
@@ -199,13 +232,28 @@ fn main() {
                     "unmute" => false,
                     _ => continue,
                 };
-                if let Err(e) = plugin.call(
-                    "audio.inputs.set_mute",
-                    serde_json::json!({ "muted": muted }),
-                ) {
-                    eprintln!("mic-mute: {e}");
-                }
+                last_ask = Some(muted);
+                refused = !ask(muted);
+                panels.show(module_ui::panels(mic, refused));
                 // The new state arrives as a fact change.
+            }
+            Some(In::Ui(m)) => {
+                if let Some(id) = &m.id {
+                    // Try again: the last change Windows refused.
+                    let result = match (m.node(), last_ask) {
+                        ("retry", Some(muted)) => {
+                            refused = !ask(muted);
+                            panels.show(module_ui::panels(mic, refused));
+                            if refused {
+                                Err("Windows said no.".to_string())
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        _ => Ok(()),
+                    };
+                    let _ = plugin.reply(id, result);
+                }
             }
             None => {
                 let now = Instant::now();

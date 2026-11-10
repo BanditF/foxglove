@@ -57,6 +57,7 @@ fn register(module: &str, name: &str, panel: &str, title: &str) -> Inbound {
         module: module.into(),
         name: name.into(),
         declared: None,
+        actions: None,
         params,
     }
 }
@@ -273,6 +274,14 @@ fn mock_hub(dir: &std::path::Path) -> Hub {
 
 /// Draws a few frames of `hub` and rasterises the last one (premultiplied, nearest texel).
 fn render(hub: &mut Hub, w: u32, h: u32, setup: impl Fn(&mut Hub)) -> Option<Vec<u8>> {
+    rasterise(w, h, |c| {
+        setup(hub);
+        hub.frame(c)
+    })
+}
+
+/// Draws a few frames of `draw` on the hub's dark theme and fonts and rasterises the last one.
+fn rasterise(w: u32, h: u32, mut draw: impl FnMut(&egui::Context)) -> Option<Vec<u8>> {
     hideout_panels::render::test_fonts()?;
     let ctx = egui::Context::default();
     // The shell's own fonts (Segoe UI plus Segoe UI Symbol for the marks), as the hub draws.
@@ -281,8 +290,7 @@ fn render(hub: &mut Hub, w: u32, h: u32, setup: impl Fn(&mut Hub)) -> Option<Vec
     let mut textures: HashMap<TextureId, epaint::ColorImage> = HashMap::new();
     let mut last = None;
     for _ in 0..3 {
-        setup(hub);
-        let out = ctx.run(input(w as f32, h as f32, vec![]), |c| hub.frame(c));
+        let out = ctx.run(input(w as f32, h as f32, vec![]), &mut draw);
         for (id, delta) in &out.textures_delta.set {
             let epaint::ImageData::Color(img) = &delta.image;
             match delta.pos {
@@ -537,4 +545,94 @@ fn a_hidden_frame_requests_no_repaint() {
         "{:?}",
         asked.lock().unwrap()
     );
+}
+
+/// The tray panel's tiles for the review (H2.8): every module in tests/hideout-vectors/modules,
+/// each state as a tile, plus the first module stopped after its crashes and restarting, and the
+/// first state's page of the module whose vector file sorts first. The hub names no module: it
+/// draws whatever vectors are there.
+#[test]
+fn renders_the_module_tiles_for_review() {
+    use hideout_contract::panel::Register;
+    use hideout_panels::{panel_ui, tile_ui, PanelHost, PanelKey};
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hideout-vectors/modules");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    files.sort();
+    let mut host = PanelHost::default();
+    let mut rows: Vec<Vec<PanelKey>> = Vec::new();
+    let mut page: Option<(PanelKey, String)> = None;
+    for f in &files {
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
+        let module = doc["module"].as_str().unwrap();
+        let name = doc["name"].as_str().unwrap();
+        let mut row = Vec::new();
+        for (i, st) in doc["states"].as_array().unwrap().iter().enumerate() {
+            // One host entry per state: the module id with the state's index.
+            let id = format!("{module}#{i}");
+            let params: Register = serde_json::from_value(
+                serde_json::json!({"instance": "i1", "panels": st["panels"]}),
+            )
+            .unwrap();
+            host.register(&id, name, None, &params);
+            row.push(PanelKey::new(&id, "tile"));
+            if row.len() == 4 {
+                rows.push(std::mem::take(&mut row));
+            }
+            if page.is_none() && st["panels"].to_string().contains("\"connect\"") {
+                page = Some((PanelKey::new(&id, "page"), name.to_string()));
+            }
+        }
+        if !row.is_empty() {
+            rows.push(row);
+        }
+    }
+    // The supervisor's states on the first module's first tile (hub-drawn, §7.8).
+    if let Some(first) = rows.first().and_then(|r| r.first()).cloned() {
+        let doc: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&files[0]).unwrap()).unwrap();
+        let params: Register = serde_json::from_value(
+            serde_json::json!({"instance": "i1", "panels": doc["states"][0]["panels"]}),
+        )
+        .unwrap();
+        let mut extra = Vec::new();
+        for state in ["restarting", "crash-stopped"] {
+            let id = format!("{}#{state}", first.module);
+            host.register(&id, doc["name"].as_str().unwrap(), None, &params);
+            host.module_gone(&id, state);
+            extra.push(PanelKey::new(&id, "tile"));
+        }
+        rows.push(extra);
+    }
+    let (w, h) = (1040u32, 150 * rows.len() as u32 + 40);
+    let Some(rgba) = rasterise(w, h, |c| {
+        egui::CentralPanel::default().show(c, |ui| {
+            for row in &rows {
+                ui.horizontal_top(|ui| {
+                    for key in row {
+                        tile_ui(&mut host, ui, key);
+                    }
+                });
+                ui.add_space(8.0);
+            }
+        });
+    }) else {
+        eprintln!("no system font; review render skipped");
+        return;
+    };
+    save_png("built-module-tiles.png", w, h, rgba);
+    if let Some((key, _)) = page {
+        let (w, h) = (720u32, 900u32);
+        let rgba = rasterise(w, h, |c| {
+            egui::CentralPanel::default().show(c, |ui| {
+                panel_ui(&mut host, ui, &key);
+            });
+        })
+        .unwrap();
+        save_png("built-module-page.png", w, h, rgba);
+    }
 }
