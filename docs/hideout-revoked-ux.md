@@ -179,6 +179,8 @@ Acceptance:
 
 ## Decisions (designer's picks, for the Hub)
 
+**Decided 11/10 (Hub): the designer's picks, all three as bolded below.**
+
 1. The publisher's note: **on the card, plain text, cleaned, capped at 160 characters, full in
    Copy diagnostics** / only in Copy diagnostics / on the card uncapped. (#1025's open question.)
    Image: `ux-revoked-proposed-card.png`.
