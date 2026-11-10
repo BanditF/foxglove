@@ -327,6 +327,21 @@ fn play(file: &str, doc: &Value) -> Result<(), String> {
                 "state fact",
             )
         }
+        "supervisor/outside-app-missing.json" => {
+            // v1.4 §7.7: a busy port or a closed outside app is a module state. The module keeps
+            // running and only patches its tile; the supervisor sees no exit and counts nothing.
+            s.running();
+            s.at(60_000);
+            let ok = |s: &Sim| {
+                s.state() == ex["module_state"].as_str()
+                    && s.p.crashes(ART, s.now) as u64
+                        == ex["supervisor_crashes_counted"].as_u64().unwrap()
+            };
+            check(ok(&s), "state or crash count while the port is busy")?;
+            s.at(120_000);
+            check(ok(&s), "state or crash count after Try again")?;
+            check(s.launches().len() == 1, "restarted")
+        }
         "supervisor/state-running.json" => {
             s.running();
             check(
