@@ -1,0 +1,190 @@
+{
+  "name": "reopen-then-stopped",
+  "module": "foxglove.example-art",
+  "spec": [
+    "5.4",
+    "8.4"
+  ],
+  "description": "(v1.5) The provider closes a panel stream while the panel stays visible and the module runs. The hub reopens it after 1, 2 and 4 s; when the third reopen ends too, the node shows 'Stopped updating' with Try again (one more reopen). A patch that removes the stream closes the channel with no state shown.",
+  "steps": [
+    {
+      "event": "panel 'room' visible; canvas node 'map' has props.stream = 'previews'"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 60,
+        "method": "channel.create",
+        "params": {
+          "channel": "previews",
+          "consumer": "hub.panel-host",
+          "nonce": "n-6001"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 60,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0001"
+        }
+      }
+    },
+    {
+      "event": "the provider closes the channel; the panel stays visible"
+    },
+    {
+      "event": "1 s later the hub reopens"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 61,
+        "method": "channel.create",
+        "params": {
+          "channel": "previews",
+          "consumer": "hub.panel-host",
+          "nonce": "n-6002"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 61,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0002"
+        }
+      }
+    },
+    {
+      "event": "the provider closes the channel"
+    },
+    {
+      "event": "2 s later the hub reopens"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 62,
+        "method": "channel.create",
+        "params": {
+          "channel": "previews",
+          "consumer": "hub.panel-host",
+          "nonce": "n-6003"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 62,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0003"
+        }
+      }
+    },
+    {
+      "event": "the provider closes the channel"
+    },
+    {
+      "event": "4 s later the hub reopens"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 63,
+        "method": "channel.create",
+        "params": {
+          "channel": "previews",
+          "consumer": "hub.panel-host",
+          "nonce": "n-6004"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 63,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0004"
+        }
+      }
+    },
+    {
+      "event": "the provider closes the channel"
+    },
+    {
+      "event": "no more reopens: the node shows the last frame dimmed, 'Stopped updating' and Try again"
+    },
+    {
+      "event": "the user presses Try again"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 64,
+        "method": "channel.create",
+        "params": {
+          "channel": "previews",
+          "consumer": "hub.panel-host",
+          "nonce": "n-6005"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 64,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0005"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.patch",
+        "params": {
+          "panel": "room",
+          "ops": [
+            {
+              "op": "set",
+              "node": "map",
+              "props": {
+                "stream": null
+              }
+            }
+          ]
+        }
+      },
+      "why": "a set of null removes the prop"
+    },
+    {
+      "event": "hub closes the channel: a clean end, no state shown, no reopen"
+    }
+  ]
+}

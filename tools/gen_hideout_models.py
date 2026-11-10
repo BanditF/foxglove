@@ -187,6 +187,9 @@ def render():
         f"ICONS = {tuple(schema['icons'])!r}",
         f"TONES = {tuple(schema['tones'])!r}",
         f"TILE_LIMITS = {schema['tile_limits']!r}",
+        "# Image scaling words (unknown draws 'smooth') and the panel stream rules (v1.5).",
+        f"SCALINGS = {tuple(schema['scalings'])!r}",
+        f"STREAMS = {schema['streams']!r}",
         "",
     ]
     types = ["", "# The schema's top-level types by their schema key.", "TYPES = {"]

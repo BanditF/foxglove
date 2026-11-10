@@ -1,0 +1,134 @@
+{
+  "name": "text-restore-on-visible",
+  "module": "foxglove.example-art",
+  "spec": [
+    "5.4",
+    "5.9",
+    "8.4"
+  ],
+  "description": "(v1.5) A text stream across hidden and visible. The hub keeps the node's text while the panel is hidden; the module restores what it appended meanwhile: on visible it patches the node's text before it answers the new channel.create, so the patch lands before any frame, then it streams appends again.",
+  "steps": [
+    {
+      "event": "panel 'activity' registered; text node 'log' has props.stream = 'log', props.mono = true"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "activity",
+          "state": "visible"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 50,
+        "method": "channel.create",
+        "params": {
+          "channel": "log",
+          "consumer": "hub.panel-host",
+          "nonce": "n-5001"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 50,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-log-0001"
+        }
+      }
+    },
+    {
+      "event": "frames append 'line 1\\n' and 'line 2\\n' (kind 3)"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "activity",
+          "state": "hidden"
+        }
+      }
+    },
+    {
+      "event": "hub closes the channel; the node keeps 'line 1\\nline 2\\n'"
+    },
+    {
+      "event": "the module logs 'line 3\\n' while hidden; nothing reaches the hub"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "activity",
+          "state": "visible"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.patch",
+        "params": {
+          "panel": "activity",
+          "ops": [
+            {
+              "op": "set",
+              "node": "log",
+              "props": {
+                "text": "line 1\nline 2\nline 3\n"
+              }
+            }
+          ]
+        }
+      },
+      "why": "sent on visible, before the module answers the stream's channel.create; the full text fits the 16 KiB node cap (longer text: patch it empty and send it all as the first frames)"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 51,
+        "method": "channel.create",
+        "params": {
+          "channel": "log",
+          "consumer": "hub.panel-host",
+          "nonce": "n-5002"
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 51,
+        "result": {
+          "pipe": "\\\\.\\pipe\\hideout-ch-example-log-0002"
+        }
+      }
+    },
+    {
+      "event": "frames append 'line 4\\n' after the patched text"
+    }
+  ]
+}
