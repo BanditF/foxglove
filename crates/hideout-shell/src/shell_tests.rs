@@ -18,6 +18,14 @@ impl Page for FakePage {
     fn title(&self) -> &str {
         self.1
     }
+    /// Each hub page its own glyph (#953 F4): Settings the gear, the others the module icon.
+    fn icon(&self) -> &str {
+        if self.0 == "settings" {
+            "gear"
+        } else {
+            "module"
+        }
+    }
     fn ui(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         ui.label(egui::RichText::new(self.1).size(20.0).color(c(t.text)));
         ui.label(egui::RichText::new("A hub page.").color(c(t.text_muted)));

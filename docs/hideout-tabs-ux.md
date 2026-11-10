@@ -101,6 +101,7 @@ Badge precedence when several apply: stopped mark > unsaved dot > count > attent
 | Right-click | Close, Close others, Close to the right, Pop out, Move left, Move right, Reopen closed tab |
 | Pop-out title bar | "Hideout · <Title>", button "Dock back" |
 | Unsaved ask | "Close <Title>?" / "Your changes in <Title> aren't saved." / Keep open / Close anyway |
+| Quit ask (tray or main window menu > Quit Hideout, #953) | "Quit Hideout?" / one page: "Your changes in <Title> aren't saved." (no window note) / several: "Your changes in these pages aren't saved:" then "• <Title>" or "• <Title> (in its own window)", in strip order / **Keep open** (default, Enter and Esc) · Quit anyway. Nothing unsaved: quits with no ask |
 | Removed note | "<Module> was removed; its tab was closed." |
 
 No internal ids anywhere (no panel ids, no `ui.limits`, no state ids like `crash-stopped`).

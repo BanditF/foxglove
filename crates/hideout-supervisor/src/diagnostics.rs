@@ -661,6 +661,11 @@ mod tests {
             };
             assert_eq!(t, format!("{start}{hidden}{after}"), "{text}");
         }
+        // Known limit (#1033 review): a spaced last name with no dot, then a plain word, reads
+        // as a path that ends at the space, so the name's second word shows. Low risk: it names
+        // no file. Kept as is rather than more guessing; this pins today's behaviour.
+        let t = outside_hub("%USERPROFILE%\\My Files exited", hub);
+        assert_eq!(t, format!("{hidden} Files exited"), "known limit");
         // The hub folder with a space in it stays, logs and all.
         let spaced = Some("AppData\\Local\\My Hub");
         let text = "%USERPROFILE%\\AppData\\Local\\My Hub\\logs\\a.log ok";

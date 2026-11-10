@@ -903,23 +903,16 @@ pub fn set_popout_waker(w: Box<dyn Fn()>) {
 pub fn install_popout_hooks(h: isize, keep_on_top: bool) {
     use windows::core::w;
     use windows::Win32::UI::Shell::SetWindowSubclass;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, GetSystemMenu, MF_SEPARATOR, MF_STRING,
-    };
     unsafe {
         let _ = SetWindowSubclass(hwnd(h), Some(popout_proc), SUBCLASS_ID, 0);
-        let menu = GetSystemMenu(hwnd(h), false);
-        if !menu.is_invalid() {
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-            let _ = AppendMenuW(menu, MF_STRING, MENU_KEEP_ON_TOP, w!("Keep on top"));
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                MENU_DOCK_BACK,
-                w!("Dock back\tCtrl+Shift+O"),
-            );
-        }
     }
+    add_above_close(
+        h,
+        &[
+            (MENU_KEEP_ON_TOP, w!("Keep on top")),
+            (MENU_DOCK_BACK, w!("Dock back\tCtrl+Shift+O")),
+        ],
+    );
     check_menu(h, keep_on_top);
 }
 
@@ -928,15 +921,47 @@ pub fn install_popout_hooks(h: isize, keep_on_top: bool) {
 pub fn install_main_hooks(h: isize) {
     use windows::core::w;
     use windows::Win32::UI::Shell::SetWindowSubclass;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, GetSystemMenu, MF_SEPARATOR, MF_STRING,
-    };
     unsafe {
         let _ = SetWindowSubclass(hwnd(h), Some(popout_proc), SUBCLASS_ID, 0);
+    }
+    add_above_close(h, &[(MENU_QUIT, w!("Quit Hideout"))]);
+}
+
+/// Where Hideout's own window-menu items go (#953 F2): just above the separator before Close,
+/// so Close stays last and the order is the same in every window. `ids` are the menu's item ids
+/// in order (0 for a separator). With no Close, at the end.
+fn above_close(ids: &[u32], close: u32) -> usize {
+    match ids.iter().position(|&id| id == close) {
+        Some(at) if at > 0 && ids[at - 1] == 0 => at - 1,
+        Some(at) => at,
+        None => ids.len(),
+    }
+}
+
+/// Puts a separator and `items` into `h`'s window menu at [`above_close`].
+fn add_above_close(h: isize, items: &[(usize, windows::core::PCWSTR)]) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetMenuItemCount, GetMenuItemID, GetSystemMenu, InsertMenuW, MF_BYPOSITION, MF_SEPARATOR,
+        MF_STRING, SC_CLOSE,
+    };
+    unsafe {
         let menu = GetSystemMenu(hwnd(h), false);
-        if !menu.is_invalid() {
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-            let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit Hideout"));
+        if menu.is_invalid() {
+            return;
+        }
+        let ids: Vec<u32> = (0..GetMenuItemCount(Some(menu)).max(0))
+            .map(|i| GetMenuItemID(menu, i))
+            .collect();
+        let at = above_close(&ids, SC_CLOSE);
+        let _ = InsertMenuW(menu, at as u32, MF_BYPOSITION | MF_SEPARATOR, 0, None);
+        for (n, (id, text)) in items.iter().enumerate() {
+            let _ = InsertMenuW(
+                menu,
+                (at + 1 + n) as u32,
+                MF_BYPOSITION | MF_STRING,
+                *id,
+                *text,
+            );
         }
     }
 }
@@ -1163,6 +1188,21 @@ pub fn message_label(key: crate::wake::MsgKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hideouts_menu_items_go_just_above_closes_separator() {
+        const CLOSE: u32 = 0xF060;
+        // Restore, Move, Size, Minimize, Maximize, separator, Close: before the separator.
+        let menu = [0xF120, 0xF010, 0xF000, 0xF020, 0xF030, 0, CLOSE];
+        assert_eq!(above_close(&menu, CLOSE), 5);
+        assert_eq!(
+            above_close(&[0xF010, CLOSE], CLOSE),
+            1,
+            "no separator: above Close"
+        );
+        assert_eq!(above_close(&[0xF010], CLOSE), 1, "no Close: at the end");
+        assert_eq!(above_close(&[CLOSE], CLOSE), 0);
+    }
 
     #[test]
     fn a_held_position_change_neither_shows_nor_activates() {

@@ -193,6 +193,11 @@ impl hideout_shell::Page for ModulesPage {
         TITLE
     }
 
+    /// Its own glyph among the hub pages (#953 F4): the module icon, since it lists the modules.
+    fn icon(&self) -> &str {
+        "module"
+    }
+
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
         let (rows, counting) = self.rows();
         let banner = self

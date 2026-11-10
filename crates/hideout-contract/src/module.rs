@@ -663,6 +663,27 @@ impl Module {
         out.extend(exes.filter_map(app_label));
         out
     }
+
+    /// A permission's line for the permission dialog (§6.4): [`Permission::describe`], with an
+    /// app watch's app spelled as this manifest spells it in `name`, `enriches` or an `app:`
+    /// activation event (`apps.watch:exampleapp.exe` with `enriches = ["ExampleApp.exe"]` gives
+    /// "see whether ExampleApp is running", #991).
+    ///
+    /// [`Permission::describe`]: crate::permission::Permission::describe
+    pub fn describe_permission(&self, p: &crate::permission::Permission) -> String {
+        let names: Vec<&str> = self
+            .enriches
+            .iter()
+            .map(String::as_str)
+            .chain(
+                self.activation_on
+                    .iter()
+                    .filter_map(|e| e.strip_prefix("app:")),
+            )
+            .chain(self.name.split_whitespace())
+            .collect();
+        p.describe_spelled(&names)
+    }
 }
 
 /// One `when` clause: a fact name, optionally prefixed by `!` (§4.6). An `apps.seen.<name>`
@@ -1298,5 +1319,18 @@ when = "!apps.seen.fourth"
             .map(String::from)
             .into();
         assert_eq!(m.watched_apps(), want);
+        let watch = |exe: &str| crate::permission::Permission::AppsWatch(exe.into());
+        assert_eq!(
+            m.describe_permission(&watch("example-app.exe")),
+            "see whether Example-App is running"
+        );
+        assert_eq!(
+            m.describe_permission(&watch("other-app.exe")),
+            "see whether other-app is running"
+        );
+        assert_eq!(
+            m.describe_permission(&watch("art.exe")),
+            "see whether Art is running"
+        );
     }
 }

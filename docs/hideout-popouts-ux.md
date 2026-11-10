@@ -95,7 +95,9 @@ tabs plan's close rule). If no other tab is open, the page area shows "Nothing o
   stays above other windows (not above an exclusive full-screen game, which Windows doesn't allow).
   It never takes focus by itself.
 - Snap layouts, Win+arrows and the window menu (Alt+Space) work as on any window. Hideout adds
-  **Keep on top** and **Dock back** to the window menu.
+  **Keep on top** and **Dock back** to the window menu. The main window's window menu has
+  **Quit Hideout** instead (#953). In every window Hideout's items sit just above the separator
+  before **Close Alt+F4**, so Close stays last.
 
 ## Docking back
 
@@ -122,8 +124,9 @@ tabs plan's close rule). If no other tab is open, the page area shows "Nothing o
   usual; the pop-out shows nothing extra in its title row (the page itself shows what's new).
 - **Hideout in the tray** (main window closed to the tray): pop-outs stay open and live. The
   taskbar button stands for the pop-outs only. The tray icon opens Hideout's main window, not the
-  pop-outs. **Quit Hideout** in the tray menu closes every window, after one ask listing unsaved
-  pages (tabs plan).
+  pop-outs. **Quit Hideout** in the tray menu, or in the main window's window menu (Alt+Space),
+  closes every window, after one ask listing unsaved pages (tabs plan). Closing the main window
+  only hides it, so the window menu gives a keyboard user a way to quit without the tray.
 - **Minimising Hideout** leaves pop-outs as they are; minimising a pop-out leaves Hideout as it is.
 
 ## Module states in a pop-out
@@ -183,7 +186,7 @@ From §5.9, with pop-outs spelt out (spec gap 1):
 - **Keys:** Ctrl+Shift+O pops out the active tab, and in a pop-out docks it back. Ctrl+W in a
   pop-out closes the window (back to its tab). Ctrl+K works in a pop-out: picking a page shows it
   in Hideout (or brings its window forward). F6 moves between the title row and the page. Alt+Space
-  opens the window menu with Keep on top and Dock back. Esc cancels a tab drag. Ctrl+Tab and
+  opens the window menu with Keep on top and Dock back (in the main window: Quit Hideout). Esc cancels a tab drag. Ctrl+Tab and
   Ctrl+numbers do nothing in a pop-out (one page).
 - **Windows to cycle:** Alt+Tab and Win+number (the taskbar group) already reach each window; no
   own shortcut.
@@ -208,6 +211,8 @@ From §5.9, with pop-outs spelt out (spec gap 1):
 | Window title | "Hideout · <page>" |
 | Title row | Keep on top (tooltip "Keep on top" / "Keep on top: on"), "Dock back", More |
 | More menu | Dock back, Keep on top, Show Hideout, Close page |
+| Window menu (Alt+Space) | Pop-out: Keep on top, "Dock back Ctrl+Shift+O"; main window: "Quit Hideout"; both above Close |
+| Quit with unsaved work | tabs plan's "Quit Hideout?" dialog |
 | Placeholder tooltip | "<page> · In its own window" |
 | Empty page area | "Nothing open" / "<page> is in its own window." / Show it · Dock back |
 | Removed module | "<Module> was removed; its window was closed." |
