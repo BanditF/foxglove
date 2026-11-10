@@ -38,8 +38,32 @@ fn glyph(state: State) -> Option<Icon> {
     Icon::from_rgba(icon::rgba(32, state), 32, 32).ok()
 }
 
-/// Makes the tray icon on this (the UI) thread; `on_command` runs for each menu pick and click.
+/// The one log line for an install attempt.
+pub fn outcome_line(result: &Result<(), String>) -> String {
+    match result {
+        Ok(()) => "tray icon registered".to_string(),
+        Err(e) => format!("tray icon failed: {e}"),
+    }
+}
+
+#[cfg(test)]
+/// True while the icon is alive (kept in this thread's slot, so it is not dropped).
+pub fn is_installed() -> bool {
+    TRAY.with(|t| t.borrow().is_some())
+}
+
+/// Makes the tray icon on the UI thread and logs the outcome in one line.
 pub fn install(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result<(), String> {
+    let result = install_inner(on_command);
+    match &result {
+        Ok(()) => log::info!("{}", outcome_line(&result)),
+        Err(_) => log::error!("{}", outcome_line(&result)),
+    }
+    result
+}
+
+/// `on_command` runs for each menu pick and click.
+fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result<(), String> {
     let status = MenuItem::new("No modules yet", false, None);
     let open = MenuItem::with_id(OPEN, "Open Hideout", true, None);
     let pause = CheckMenuItem::with_id(PAUSE, "Pause Hideout", true, false, None);
@@ -113,4 +137,23 @@ pub fn set_state(state: State, status_line: &str) {
 /// Removes the icon now (before a quick exit, so no ghost icon stays in the tray).
 pub fn remove() {
     TRAY.with(|t| drop(t.borrow_mut().take()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outcome_lines() {
+        assert_eq!(outcome_line(&Ok(())), "tray icon registered");
+        assert_eq!(outcome_line(&Err("boom".into())), "tray icon failed: boom");
+    }
+
+    #[test]
+    fn glyphs_build_for_every_state() {
+        for s in [State::Normal, State::Paused, State::NeedsYou] {
+            assert!(glyph(s).is_some());
+        }
+        assert!(!is_installed());
+    }
 }

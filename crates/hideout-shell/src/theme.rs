@@ -78,9 +78,41 @@ pub fn contrast(a: Rgb, b: Rgb) -> f64 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
+/// The fill behind a sidebar item (the selection fill is the accent).
+pub fn nav_fill(t: &Tokens, selected: bool) -> Rgb {
+    if selected {
+        t.accent
+    } else {
+        t.chrome
+    }
+}
+
+/// The label colour of a sidebar item: on the accent fill when selected, else plain text.
+pub fn nav_label(t: &Tokens, selected: bool) -> Rgb {
+    if selected {
+        t.on_accent
+    } else {
+        t.text
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_nav_label_contrasts_with_its_fill() {
+        for t in [LIGHT, DARK] {
+            assert!(
+                contrast(nav_label(&t, true), nav_fill(&t, true)) >= 4.5,
+                "{t:?} selected"
+            );
+            assert!(
+                contrast(nav_label(&t, false), nav_fill(&t, false)) >= 4.5,
+                "{t:?} unselected"
+            );
+        }
+    }
 
     #[test]
     fn text_meets_wcag_aa_on_every_background() {
