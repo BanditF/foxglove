@@ -676,6 +676,30 @@ impl Supervisor {
         self.0.policy.lock().unwrap().safe_mode
     }
 
+    /// A round of finding the module that breaks Hideout (§7.10, #1033): in safe mode only
+    /// `on` starts; the modules out of it stop for the session (nothing saved changes). `None`
+    /// ends the rounds: nothing runs until Start normally.
+    pub fn set_round(&self, on: Option<BTreeSet<String>>) {
+        let n = on.as_ref().map_or(0, BTreeSet::len);
+        log::info!("supervisor: round: {n} module(s) on");
+        self.feed(Ev::Round { on });
+    }
+
+    /// The modules Start normally would start (id, name): the search's candidates.
+    pub fn startable(&self) -> Vec<(String, String)> {
+        self.0.policy.lock().unwrap().startable()
+    }
+
+    /// Back to the version kept of `id` (the search's Go back), before Start normally.
+    pub fn roll_back(&self, id: &str) {
+        self.run(vec![Cmd::RollBack { id: id.into() }]);
+    }
+
+    /// The hub folder.
+    pub fn home(&self) -> &Path {
+        &self.0.home
+    }
+
     /// The text of **Copy diagnostics** for a module (`crate::diagnostics`): ids, exit codes,
     /// crash times, the ladder steps tried, versions and the log tail; the profile folder and
     /// the user name redacted. `hub_version` is hideout.exe's.

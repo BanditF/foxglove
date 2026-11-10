@@ -170,6 +170,12 @@ pub enum Ev {
         id: String,
         reached: bool,
     },
+    /// A round of finding the module that breaks Hideout (§7.10, #1033): in safe mode only
+    /// these modules start (`None`: none, the search is over). The ones running that aren't in
+    /// it stop for the session; nothing saved changes.
+    Round {
+        on: Option<BTreeSet<String>>,
+    },
 }
 
 /// What the driver must do.
@@ -247,6 +253,8 @@ pub struct Policy {
     notified_withdrawn: BTreeSet<(String, String)>,
     /// Safe mode (§7.10): nothing starts by itself.
     pub safe_mode: bool,
+    /// The round of a search (§7.10, #1033): in safe mode these modules start anyway.
+    pub round: Option<BTreeSet<String>>,
     /// What happened to each module, for Copy diagnostics only (exit codes, crashes, the
     /// ladder steps tried). Never drawn: it holds ids and codes ("Never shown").
     history: BTreeMap<String, VecDeque<(Instant, String)>>,
@@ -259,6 +267,21 @@ fn publish(out: &mut Vec<Cmd>, key: String, value: Value) {
 impl Policy {
     pub fn new() -> Policy {
         Policy::default()
+    }
+
+    /// Safe mode holds `id` back: on, and not in the search's round.
+    fn held(&self, id: &str) -> bool {
+        self.safe_mode && !self.round.as_ref().is_some_and(|r| r.contains(id))
+    }
+
+    /// The modules **Start normally** would start (enabled, starting at enable, idle): the
+    /// search's candidates (#1033). Id and name.
+    pub fn startable(&self) -> Vec<(String, String)> {
+        self.slots
+            .iter()
+            .filter(|(_, s)| s.enabled && s.at_enable && s.state == State::Idle)
+            .map(|(id, s)| (id.clone(), s.name.clone()))
+            .collect()
     }
 
     /// One line of a module's history (known modules only), [`HISTORY`] kept.
@@ -422,7 +445,7 @@ impl Policy {
                 let idle = s.state == State::Idle || s.state == State::Off;
                 if !enabled && idle {
                     self.set_state(&id, State::Off, None, &mut out);
-                } else if enabled && idle && at_enable && !self.safe_mode {
+                } else if enabled && idle && at_enable && !self.held(&id) {
                     self.launch(&id, &mut out);
                 }
             }
@@ -479,7 +502,7 @@ impl Policy {
                     // A stop, not a crash (§7.7). A module taken back that gave up waiting for
                     // the hub starts fresh (§7.9).
                     let s = &self.slots[&id];
-                    if adopting && s.enabled && s.at_enable && !self.safe_mode {
+                    if adopting && s.enabled && s.at_enable && !self.held(&id) {
                         self.launch(&id, &mut out);
                     } else if s.state != State::Off {
                         self.set_state(&id, State::Idle, None, &mut out);
@@ -520,7 +543,7 @@ impl Policy {
                 }
             }
             Ev::Activate { id } => {
-                if self.safe_mode {
+                if self.held(&id) {
                     return out;
                 }
                 if let Some(s) = self.slots.get(&id) {
@@ -569,10 +592,11 @@ impl Policy {
                 }
             }
             Ev::Enable { id } => {
+                let held = self.held(&id);
                 if let Some(s) = self.slots.get_mut(&id) {
                     s.enabled = true;
                     if s.state == State::Off {
-                        let start = s.at_enable && !self.safe_mode;
+                        let start = s.at_enable && !held;
                         if start {
                             self.launch(&id, &mut out);
                         } else {
@@ -638,8 +662,10 @@ impl Policy {
                     publish(&mut out, format!("module.{id}.check"), json!(v));
                 }
             }
+            Ev::Round { on } => self.round(on, now, &mut out),
             Ev::StartNormally => {
                 self.safe_mode = false;
+                self.round = None;
                 let waiting: Vec<String> = self
                     .slots
                     .iter()
@@ -726,6 +752,38 @@ impl Policy {
             format!("module.{id}.previous"),
             go_back.map_or(Value::Null, Value::String),
         );
+    }
+
+    /// A search's round (#1033): the modules out of it stop (not a crash, not saved), the
+    /// enabled ones in it that start at enable start.
+    fn round(&mut self, on: Option<BTreeSet<String>>, now: Instant, out: &mut Vec<Cmd>) {
+        self.round = on;
+        let ids: Vec<String> = self.slots.keys().cloned().collect();
+        for id in ids {
+            let held = self.held(&id);
+            let in_round = self.round.as_ref().is_some_and(|r| r.contains(&id));
+            let s = self.slots.get_mut(&id).unwrap();
+            if held && s.enabled && !matches!(s.state, State::Off | State::InstallFailed) {
+                let live = !s.ended || s.restart_at.is_some();
+                s.restart_at = None;
+                s.ready_by = None;
+                s.adopt_by = None;
+                s.exit_by = None;
+                s.then_launch = false;
+                if !s.ended {
+                    s.ended = true;
+                    out.push(Cmd::Kill { id: id.clone() });
+                }
+                if live {
+                    publish(out, format!("module.{id}.restart"), Value::Null);
+                    self.set_state(&id, State::Idle, None, out);
+                    self.note(&id, now, "stopped: off for this round".into());
+                }
+            } else if in_round && s.enabled && s.at_enable && s.state == State::Idle {
+                self.note(&id, now, "started: on in this round".into());
+                self.launch(&id, out);
+            }
+        }
     }
 
     /// "Start again" / "Start with default settings": the count starts fresh (§7.8, UX ladder).
@@ -884,7 +942,9 @@ impl Policy {
                 s.adopt_by = None;
                 s.ended = true;
                 out.push(Cmd::Kill { id: id.clone() });
-                if s.enabled && !self.safe_mode {
+                let held = self.held(&id);
+                let s = self.slots.get_mut(&id).unwrap();
+                if s.enabled && !held {
                     self.launch(&id, &mut out);
                 }
             }
@@ -949,7 +1009,9 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
                 "check for updates: couldn't reach the source".into()
             },
         ),
-        Ev::Known { .. } | Ev::Activate { .. } | Ev::StartNormally => return None,
+        Ev::Known { .. } | Ev::Activate { .. } | Ev::StartNormally | Ev::Round { .. } => {
+            return None
+        }
     })
 }
 
@@ -1095,6 +1157,80 @@ mod safe_mode_tests {
             .history("m.art")
             .iter()
             .any(|(_, l)| l == "safe mode ended: started normally"));
+    }
+
+    /// A search's rounds (#1033): in safe mode only the round's modules start; the next round
+    /// stops the ones out of it (no crash, still enabled); `None` stops them all; activation
+    /// stays held for modules out of the round; Start normally ends the round and starts all.
+    #[test]
+    fn rounds_start_their_half_and_stop_the_rest() {
+        let mut p = Policy::new();
+        p.safe_mode = true;
+        let t = Instant::now();
+        for id in ["m.a", "m.b", "m.c"] {
+            assert!(launches(&p.handle(known(id, true, true), t)).is_empty());
+        }
+        p.handle(known("m.off", false, true), t);
+        let set = |ids: &[&str]| Some(ids.iter().map(|s| s.to_string()).collect());
+        assert_eq!(p.startable().len(), 3);
+        let cmds = p.handle(
+            Ev::Round {
+                on: set(&["m.a", "m.b", "m.off"]),
+            },
+            t,
+        );
+        assert_eq!(launches(&cmds), ["m.a", "m.b"]);
+        p.handle(
+            Ev::Started {
+                id: "m.a".into(),
+                instance: 1,
+            },
+            t,
+        );
+        p.handle(Ev::Ready { id: "m.a".into() }, t);
+        p.handle(
+            Ev::Started {
+                id: "m.b".into(),
+                instance: 1,
+            },
+            t,
+        );
+        assert!(launches(&p.handle(Ev::Activate { id: "m.c".into() }, t)).is_empty());
+        let cmds = p.handle(Ev::Round { on: set(&["m.c"]) }, t);
+        assert_eq!(launches(&cmds), ["m.c"]);
+        let kills: Vec<_> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Kill { id } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kills, ["m.a", "m.b"]);
+        assert_eq!(p.state("m.a"), Some(State::Idle));
+        // The killed instance's exit is no crash.
+        p.handle(
+            Ev::Exited {
+                id: "m.a".into(),
+                instance: 1,
+                code: 1,
+            },
+            t,
+        );
+        assert_eq!(p.crashes("m.a", t), 0);
+        assert_eq!(p.state("m.a"), Some(State::Idle));
+        p.handle(
+            Ev::Started {
+                id: "m.c".into(),
+                instance: 1,
+            },
+            t,
+        );
+        let cmds = p.handle(Ev::Round { on: None }, t);
+        assert!(launches(&cmds).is_empty());
+        assert!(cmds.contains(&Cmd::Kill { id: "m.c".into() }));
+        assert!(p.safe_mode && p.round.is_none());
+        let cmds = p.handle(Ev::StartNormally, t);
+        assert_eq!(launches(&cmds), ["m.a", "m.b", "m.c"]);
     }
 
     /// Turn on in safe mode (#1033): saved on, not started, no state id (the row reads "On ·

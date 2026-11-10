@@ -35,16 +35,52 @@ struct Started {
     owner: bool,
     /// Safe mode is on because the hub closed 3 times in 5 minutes (the banner's line).
     safe_by_closes: bool,
+    /// Finding the module that breaks Hideout (#1033): the search's driver.
+    finder: Option<hideout_supervisor::finder::Finder>,
 }
 
 /// How the last run ended (§7.10, #1033), in the hub that holds the supervisor lock, before the
 /// router reads `hideout.toml`: the third unclean close in 5 minutes sets `safe_mode` there and
 /// logs why. Answers whether safe mode is on because of the closes. Safe mode off at a start
 /// forgets that cause, so a flag set by hand later reads neutral.
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn closes_at_start(home: &std::path::Path, now_ms: u64) -> bool {
-    use hideout_supervisor::closes;
+    closes_and_exit(home, now_ms).0
+}
+
+/// [`closes_at_start`], and how the last run ended for a search in progress (#1033): clean,
+/// unclean, or unreadable (no readable file, or Windows started after that run did). While a
+/// search runs the 3-in-5-minutes rule is off: one close counts for its round, and safe mode
+/// is on already.
+#[cfg(windows)]
+fn closes_and_exit(
+    home: &std::path::Path,
+    now_ms: u64,
+) -> (bool, hideout_supervisor::bisect::Exit) {
+    use hideout_supervisor::{bisect, closes, finder};
+    let searching = bisect::Search::load(home).is_some_and(|s| s.active());
+    let readable = closes::readable(home);
+    let cause_before = closes::safe_mode_by_closes(home);
     let (s, saved) = closes::on_start(home, std::process::id(), now_ms);
+    if searching && s.enter_safe_mode && !cause_before {
+        // Off during a search: the closes don't become safe mode's cause either.
+        if let Err(e) = closes::clear_safe_mode_cause(home) {
+            log::warn!("run\\hub-run.json not saved: {e}");
+        }
+    }
+    let exit = finder::exit_kind(readable, &s, finder::boot_ms(now_ms));
+    (closes_after(home, s, saved, searching), exit)
+}
+
+/// The 3-in-5 rule on what the start found; answers whether the closes turned safe mode on.
+#[cfg(windows)]
+fn closes_after(
+    home: &std::path::Path,
+    s: hideout_supervisor::closes::Start,
+    saved: std::io::Result<()>,
+    searching: bool,
+) -> bool {
+    use hideout_supervisor::closes;
     if let Err(e) = saved {
         log::warn!("run\\hub-run.json not saved: {e}; this run's end can't be told apart");
     }
@@ -62,7 +98,12 @@ fn closes_at_start(home: &std::path::Path, now_ms: u64) -> bool {
             return false;
         }
     };
-    if s.enter_safe_mode {
+    if s.enter_safe_mode && searching {
+        log::info!(
+            "Hideout closed {} times in 5 minutes during a search for the module that breaks it; the search counts it",
+            s.recent
+        );
+    } else if s.enter_safe_mode {
         log::warn!(
             "safe mode on: Hideout closed {} times in 5 minutes without a clean exit; no module starts until Start normally",
             s.recent
@@ -79,6 +120,68 @@ fn closes_at_start(home: &std::path::Path, now_ms: u64) -> bool {
         return false;
     }
     closes::safe_mode_by_closes(home)
+}
+
+/// The search for the shell's bar and tray items (#1033).
+#[cfg(windows)]
+struct FinderUi(hideout_supervisor::finder::Finder);
+
+#[cfg(windows)]
+impl hideout_shell::Finder for FinderUi {
+    fn view(&self) -> Option<hideout_supervisor::bisect::View> {
+        self.0.view()
+    }
+    fn act(&self, act: hideout_supervisor::bisect::Act) {
+        self.0.act(act)
+    }
+    fn diagnostics(&self) -> String {
+        self.0.diagnostics()
+    }
+    fn set_waker(&self, wake: Box<dyn Fn() + Send + Sync>) {
+        self.0.on_change(Box::new(move |_| wake()));
+    }
+}
+
+/// The tray follows the search; its one notification comes when a result is ready and the
+/// window is closed ("Found the module" / "<Module> seems to make Hideout close." / Open
+/// Hideout). At start, "closed" is a start in the tray.
+#[cfg(windows)]
+fn watch_search(f: &hideout_supervisor::finder::Finder, start_in_tray: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+    f.on_change(Box::new(|f| hideout_shell::marks::note_search(f.tray())));
+    let first = AtomicBool::new(true);
+    let last: Mutex<Option<(String, String)>> = Mutex::new(None);
+    f.on_change(Box::new(move |f| {
+        let note = f.notification();
+        let was = std::mem::replace(&mut *last.lock().unwrap(), note.clone());
+        let hidden = if first.swap(false, Ordering::AcqRel) {
+            start_in_tray
+        } else {
+            !hideout_shell::hub_on_screen()
+        };
+        let Some((title, body)) = note.filter(|n| was.as_ref() != Some(n)) else {
+            return;
+        };
+        if !hidden {
+            return;
+        }
+        log::info!("finder: notify: {title} / {body}");
+        hideout_shell::notify::toast(
+            title,
+            body,
+            vec![(
+                hideout_supervisor::bisect::words::OPEN_HIDEOUT.into(),
+                "open-hub".into(),
+            )],
+            "open-hub".into(),
+            std::sync::Arc::new(|arg: &str| {
+                if arg == "open-hub" {
+                    hideout_shell::show_hub();
+                }
+            }),
+        );
+    }));
 }
 
 #[cfg(windows)]
@@ -122,6 +225,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
                 panels: None,
                 owner: false,
                 safe_by_closes: false,
+                finder: None,
             };
         }
         Err(e) => {
@@ -129,8 +233,15 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
             None
         }
     };
-    let safe_by_closes = closes_at_start(&paths.root, unix_ms());
+    let (safe_by_closes, exit) = closes_and_exit(&paths.root, unix_ms());
     let (router, supervisor, feed) = router_start::start(&paths.root, &paths.instance_suffix());
+    // A search in progress picks up after the supervisor started nothing (safe mode, #1033).
+    let finder = hideout_supervisor::finder::Finder::start(
+        &paths.root,
+        supervisor.clone(),
+        exit,
+        env!("CARGO_PKG_VERSION"),
+    );
     let hub = router.clone();
     let facts: modules_page::Facts = Box::new(move |k| hub.read(|r| r.fact(k).cloned()));
     let sup = supervisor.clone();
@@ -147,6 +258,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
         panels: Some(Box::new(feed)),
         owner: true,
         safe_by_closes,
+        finder: Some(finder),
     }
 }
 
@@ -180,11 +292,16 @@ fn main() {
             }
         }));
     }
+    let start_in_tray = std::env::args().any(|a| a == "--tray");
+    if let Some(f) = &started.finder {
+        watch_search(f, start_in_tray);
+    }
     let pages = modules_page::pages(
         modules_page::installed(&paths.root),
         started.facts.take(),
         started.actions.take(),
         started.safe_by_closes,
+        started.finder.clone(),
     );
     let opts = hideout_shell::ShellOptions {
         paths,
@@ -195,9 +312,14 @@ fn main() {
         // The supervisor's Start again and its ladder.
         hooks: started.hooks.take(),
         // `--tray` (sign-in): saved pop-outs wait for the first open of Hideout (§2.5).
-        start_in_tray: std::env::args().any(|a| a == "--tray"),
+        start_in_tray,
         // Safe mode's Start normally in the tray menu (§7.10).
         start_normally: started.start_normally.take(),
+        // Finding the module that breaks Hideout: the bar and the tray's items (#1033).
+        finder: started
+            .finder
+            .clone()
+            .map(|f| std::sync::Arc::new(FinderUi(f)) as hideout_shell::FinderHost),
     };
     if let Err(e) = hideout_shell::run(opts) {
         log::error!("hub stopped: {e}");
@@ -402,6 +524,51 @@ mod tests {
         reg.set_safe_mode(true).unwrap();
         assert!(!closes_at_start(&dir, t0 + 30 * MIN));
         assert!(toml_safe());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// #1033, window-free: with a search on disk, a start tells how the last run ended (no file
+    /// yet: can't tell; Quit: clean; killed: unclean, a start of its own every time), the
+    /// 3-in-5-minutes rule stays off, and the round the kill ended counts as closed.
+    #[test]
+    fn a_search_reads_each_exit_and_the_3_in_5_rule_is_off() {
+        use hideout_supervisor::bisect::{entries, Candidate, Exit, Phase, Search};
+        use hideout_supervisor::closes;
+        let dir = std::env::temp_dir().join(format!("hideout-main-bisect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut reg = hideout_registry::Registry::open_from_env(&dir).unwrap();
+        reg.set_safe_mode(true).unwrap();
+        let c: Vec<Candidate> = ["Art", "Beat", "Chat"]
+            .iter()
+            .map(|n| Candidate {
+                id: format!("m.{}", n.to_lowercase()),
+                name: n.to_string(),
+                needs: vec![],
+            })
+            .collect();
+        Search::new(entries(&c)).unwrap().save(&dir).unwrap();
+        const MIN: u64 = 60_000;
+        // Ahead of Windows' start, so no run here "started before Windows did".
+        let t0 = hideout_supervisor::finder::boot_ms(unix_ms()) + 10 * MIN;
+        // No run\hub-run.json yet: the end can't be read.
+        assert_eq!(closes_and_exit(&dir, t0).1, Exit::Unknown);
+        closes::mark_clean(&dir).unwrap();
+        assert_eq!(closes_and_exit(&dir, t0 + 1000).1, Exit::Clean);
+        // Killed four times in 4 minutes: unclean every time, and no new safe-mode cause.
+        for k in 1..=4 {
+            let (by_closes, exit) = closes_and_exit(&dir, t0 + k * MIN);
+            assert_eq!(exit, Exit::Unclean, "start {k}");
+            assert!(!by_closes, "start {k}: the 3-in-5 rule ran during a search");
+        }
+        let toml_safe = hideout_registry::Registry::open_from_env(&dir)
+            .unwrap()
+            .hub
+            .safe_mode();
+        assert!(toml_safe, "safe mode stays on during the search");
+        // What the finder does with it: round 1 closed.
+        let mut s = Search::load(&dir).unwrap();
+        s.after_exit(Exit::Unclean);
+        assert_eq!(s.phase, Phase::Closed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -11,10 +11,13 @@
 //!   launch check the router runs at `initialize` (pid and exe hash, §8.2 v1.3),
 //!   `run\instances.json` and adoption.
 
+pub mod bisect;
 pub mod closes;
 pub mod diagnostics;
 #[cfg(windows)]
 pub mod driver;
+#[cfg(windows)]
+pub mod finder;
 pub mod instances;
 pub mod policy;
 #[cfg(windows)]

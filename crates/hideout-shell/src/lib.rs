@@ -24,6 +24,8 @@ pub mod tabs;
 pub mod theme;
 
 #[cfg(windows)]
+pub mod bisect_bar;
+#[cfg(windows)]
 pub mod capture;
 #[cfg(windows)]
 pub mod exit_watch;
@@ -50,8 +52,8 @@ pub use eframe::egui;
 pub use hideout_panels;
 #[cfg(windows)]
 pub use shell::{
-    open_module, open_module_log, open_update_page, run, Page, ShellOptions, StartNormally,
-    TabHooks,
+    hub_on_screen, open_module, open_module_log, open_update_page, run, show_hub, Finder,
+    FinderHost, Page, ShellOptions, StartNormally, TabHooks,
 };
 
 /// The hub's AppUserModelID: the hub window, its pop-outs and module windows group under it

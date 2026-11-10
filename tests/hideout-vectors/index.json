@@ -2115,10 +2115,10 @@
       "spec": [
         "7.10"
       ],
-      "note": "Find the module that breaks Hideout: from safe mode the hub halves the enabled set until one module is left; the saved enabled set is never edited.",
+      "note": "Find the module that breaks Hideout: from safe mode the hub starts half of what Start normally would start, one close is 'closed', 5 minutes open is 'fine', the next round after a close starts on a click; the module on alone in a round that closed is named. The saved enabled set is never edited.",
       "result": "valid",
       "final": {
-        "culprit": "f"
+        "culprit": "c"
       }
     },
     "transcripts/hub/hub-gone-grace.json": {

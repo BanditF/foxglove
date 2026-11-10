@@ -59,6 +59,9 @@ pub struct Start {
     pub recent: usize,
     /// The [`KEEP`]th of them: turn safe mode on.
     pub enter_safe_mode: bool,
+    /// When the run that ended uncleanly had started (ms since 1970): a Windows start after
+    /// it means the PC went down with it, which the search can't count (#1033).
+    pub last_since_ms: Option<u64>,
 }
 
 impl HubRun {
@@ -88,7 +91,8 @@ impl HubRun {
     /// A start at `now_ms` by `pid`: counts the last run if it ended uncleanly, then marks this
     /// one running. Pure; [`on_start`] loads and saves.
     pub fn start(&mut self, pid: u32, now_ms: u64) -> Start {
-        let unclean = self.running.take().is_some();
+        let last = self.running.take();
+        let unclean = last.is_some();
         if unclean {
             self.unclean_ms.push(now_ms);
             let over = self.unclean_ms.len().saturating_sub(KEEP);
@@ -113,6 +117,7 @@ impl HubRun {
             unclean,
             recent,
             enter_safe_mode,
+            last_since_ms: last.map(|r| r.since_ms),
         }
     }
 }
@@ -124,6 +129,14 @@ pub fn on_start(home: &Path, pid: u32, now_ms: u64) -> (Start, io::Result<()>) {
     let start = run.start(pid, now_ms);
     let saved = run.save(home);
     (start, saved)
+}
+
+/// Whether the file is there and reads (a start that finds it missing or broken can't tell how
+/// the last run ended).
+pub fn readable(home: &Path) -> bool {
+    std::fs::read_to_string(HubRun::path(home))
+        .ok()
+        .is_some_and(|t| serde_json::from_str::<HubRun>(&t).is_ok())
 }
 
 /// A clean end: clears the running mark. Quick, for `WM_ENDSESSION` and the console handler.

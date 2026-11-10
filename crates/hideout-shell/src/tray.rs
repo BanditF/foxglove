@@ -3,6 +3,8 @@
 //! pinned quick actions (none until modules declare actions); then Pause Hideout, Open log
 //! folder, Quit Hideout. The icon has three states (`icon::State`). In safe mode **Start
 //! normally** comes right under the status line (docs/hideout-supervisor-ux.md, column Tr).
+//! While a search for the module that breaks Hideout runs (#1033), **Start round k** (between
+//! rounds) and **Stop finding** come right after Open Hideout, and Start normally goes.
 //!
 //! tray-icon delivers its events on the thread that made the icon (the UI thread), from inside
 //! the Win32 message loop, so they arrive even while the window is hidden and draws no frames.
@@ -23,6 +25,10 @@ pub enum Command {
     Quit,
     /// **Start normally** (safe mode only): safe mode ends and the enabled modules start.
     StartNormally,
+    /// **Start round k** (between rounds of a search, #1033).
+    StartRound,
+    /// **Stop finding** (during a search).
+    StopFinding,
 }
 
 const OPEN: &str = "hideout.open";
@@ -30,6 +36,8 @@ const PAUSE: &str = "hideout.pause";
 const LOGS: &str = "hideout.logs";
 const QUIT: &str = "hideout.quit";
 const START_NORMALLY: &str = "hideout.start-normally";
+const START_ROUND: &str = "hideout.start-round";
+const STOP_FINDING: &str = "hideout.stop-finding";
 /// The menu item's words (the banner's button says the same).
 pub const START_NORMALLY_LABEL: &str = hideout_supervisor::words::START_NORMALLY;
 
@@ -41,6 +49,11 @@ struct Tray {
     start_normally: MenuItem,
     /// Whether `start_normally` is in the menu now.
     safe_shown: bool,
+    /// The search's items (#1033) and whether each is in the menu now.
+    start_round: MenuItem,
+    stop_finding: MenuItem,
+    round_shown: bool,
+    stop_shown: bool,
 }
 
 thread_local! {
@@ -91,6 +104,13 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
     let logs = MenuItem::with_id(LOGS, "Open log folder", true, None);
     let quit = MenuItem::with_id(QUIT, "Quit Hideout", true, None);
     let start_normally = MenuItem::with_id(START_NORMALLY, START_NORMALLY_LABEL, true, None);
+    let start_round = MenuItem::with_id(START_ROUND, "", true, None);
+    let stop_finding = MenuItem::with_id(
+        STOP_FINDING,
+        hideout_supervisor::bisect::words::STOP,
+        true,
+        None,
+    );
     let menu = Menu::new();
     menu.append_items(&[
         &status,
@@ -120,6 +140,10 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             pause,
             start_normally,
             safe_shown: false,
+            start_round,
+            stop_finding,
+            round_shown: false,
+            stop_shown: false,
         })
     });
 
@@ -134,6 +158,8 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             LOGS => Command::OpenLogs,
             QUIT => Command::Quit,
             START_NORMALLY => Command::StartNormally,
+            START_ROUND => Command::StartRound,
+            STOP_FINDING => Command::StopFinding,
             _ => return,
         };
         menu_cmd(cmd);
@@ -217,6 +243,41 @@ pub fn set_safe_mode(on: bool) {
             match done {
                 Ok(()) => t.safe_shown = on,
                 Err(e) => log::warn!("tray: Start normally item: {e}"),
+            }
+        }
+    });
+}
+
+/// The search's items (#1033): **Start round k** between rounds and **Stop finding** while it
+/// runs, right after Open Hideout; `None` takes them out. A no-op off the UI thread or before
+/// `install`.
+pub fn set_search(s: Option<&hideout_supervisor::bisect::Tray>) {
+    TRAY.with(|t| {
+        let mut g = t.borrow_mut();
+        let Some(t) = g.as_mut() else { return };
+        // Out first, then in again at their places with the words of now.
+        if t.round_shown && t.menu.remove(&t.start_round).is_ok() {
+            t.round_shown = false;
+        }
+        if t.stop_shown && t.menu.remove(&t.stop_finding).is_ok() {
+            t.stop_shown = false;
+        }
+        // Status line, Start normally when shown, Open Hideout.
+        let mut at = 2 + usize::from(t.safe_shown);
+        if let Some(label) = s.and_then(|s| s.start_next.as_deref()) {
+            t.start_round.set_text(label);
+            match t.menu.insert(&t.start_round, at) {
+                Ok(()) => {
+                    t.round_shown = true;
+                    at += 1;
+                }
+                Err(e) => log::warn!("tray: Start round item: {e}"),
+            }
+        }
+        if s.is_some_and(|s| s.stop) {
+            match t.menu.insert(&t.stop_finding, at) {
+                Ok(()) => t.stop_shown = true,
+                Err(e) => log::warn!("tray: Stop finding item: {e}"),
             }
         }
     });

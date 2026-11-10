@@ -2,7 +2,9 @@
 //! The Modules page, the hub's one page of its own (contract §2.1 job 2): every installed module
 //! with its name, version, state in plain words (docs/hideout-supervisor-ux.md, column **M**),
 //! one main button for the state and **Open**. In safe mode the banner with **Start normally**
-//! comes first (§7.10). With nothing installed it shows the empty state. Generic only: it names
+//! and **Find the module that breaks Hideout** comes first (§7.10); during that search the
+//! shell's bar takes its place, the rows say on or off for the round and Turn on / Turn off are
+//! locked (#1033). With nothing installed it shows the empty state. Generic only: it names
 //! no module (§2.2). The rows and their drawing live in `hideout_shell::modules_list`.
 #![cfg_attr(not(windows), allow(dead_code))]
 
@@ -61,6 +63,8 @@ pub struct ModulesPage {
     /// The hub's closes turned safe mode on at this start (`run\hub-run.json`), so the banner
     /// names that cause; a hand-set flag reads neutral.
     pub safe_by_closes: bool,
+    /// Finding the module that breaks Hideout (#1033); `None` on a second hub.
+    pub finder: Option<hideout_supervisor::finder::Finder>,
     restarts: hideout_shell::modules_list::Restarts,
 }
 
@@ -81,7 +85,7 @@ impl ModulesPage {
         use hideout_shell::modules_list::{Click, Does};
         let id = match &click {
             Click::Open(id) | Click::Primary(id, _) => Some(id.clone()),
-            Click::StartNormally => None,
+            Click::StartNormally | Click::FindCulprit | Click::CopyDiagnostics => None,
         };
         let a = self.actions.as_deref();
         let open = match click {
@@ -93,6 +97,15 @@ impl ModulesPage {
                 }
                 false
             }
+            Click::FindCulprit => {
+                match &self.finder {
+                    Some(f) => f.begin(),
+                    None => log::warn!("Find the module: no supervisor in this hub"),
+                }
+                false
+            }
+            // Copied by the page itself (it has the egui context).
+            Click::CopyDiagnostics => false,
             Click::Primary(id, does) => match (does, a) {
                 (Does::UpdateHub, _) => {
                     hideout_shell::open_update_page();
@@ -167,6 +180,13 @@ impl ModulesPage {
                 row(m, facts, left)
             })
             .collect();
+        // A search's words (#1033): on or off for this round, or not part of it.
+        if let Some(s) = self.finder.as_ref().and_then(|f| f.rows()) {
+            for r in &mut rows {
+                let on = s.in_search.contains(&r.id).then(|| s.on.contains(&r.id));
+                hideout_shell::modules_list::search_words(r, on);
+            }
+        }
         hideout_shell::modules_list::order(&mut rows);
         (rows, counting)
     }
@@ -209,11 +229,39 @@ impl hideout_shell::Page for ModulesPage {
     }
 
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
+        use hideout_shell::modules_list::{page_ui_with, Banner, Click, Find, Top};
         let (rows, counting) = self.rows();
-        let banner = self
-            .safe_mode()
-            .then(|| hideout_supervisor::words::safe_mode_line(self.safe_by_closes));
-        if let Some(click) = hideout_shell::modules_list::page_ui(ui, t, &rows, banner) {
+        let searching = self.finder.as_ref().is_some_and(|f| f.searching());
+        let active = self.finder.as_ref().is_some_and(|f| f.active());
+        let banner_shown = self.safe_mode() && !searching;
+        // The link's words need the supervisor's list: only while the banner shows.
+        let parts = self
+            .finder
+            .as_ref()
+            .filter(|_| banner_shown)
+            .map(|f| f.banner());
+        let line = hideout_supervisor::words::safe_mode_line(self.safe_by_closes);
+        let find = match &parts {
+            None if self.finder.is_some() => Find::Nothing,
+            None => Find::Later,
+            Some(b) => b.find.as_deref().map_or(Find::Nothing, Find::Link),
+        };
+        let note = parts
+            .as_ref()
+            .filter(|b| b.stopped)
+            .map(|_| hideout_supervisor::bisect::words::STOPPED);
+        let top = Top {
+            // During a search the shell's bar is the banner.
+            banner: banner_shown.then_some(Banner { line, note, find }),
+            // Locked while it runs; the result's buttons are the way out.
+            locked: active,
+        };
+        if let Some(click) = page_ui_with(ui, t, &rows, top) {
+            if click == Click::CopyDiagnostics {
+                if let Some(f) = &self.finder {
+                    ui.ctx().copy_text(f.diagnostics());
+                }
+            }
             self.on_click(click);
         }
         // Only while a row counts down and the page is drawn (no frames while hidden).
@@ -232,12 +280,14 @@ pub fn pages(
     facts: Option<Facts>,
     actions: Option<Box<dyn Actions>>,
     safe_by_closes: bool,
+    finder: Option<hideout_supervisor::finder::Finder>,
 ) -> Vec<Box<dyn hideout_shell::Page>> {
     vec![Box::new(ModulesPage {
         installed,
         facts,
         actions,
         safe_by_closes,
+        finder,
         restarts: Default::default(),
     })]
 }
@@ -250,7 +300,7 @@ mod tests {
 
     #[test]
     fn the_hub_starts_with_only_the_modules_page() {
-        let pages = pages(Vec::new(), None, None, false);
+        let pages = pages(Vec::new(), None, None, false, None);
         assert_eq!(pages.len(), 1);
         assert_eq!((pages[0].id(), pages[0].title()), (ID, TITLE));
         assert_eq!(
@@ -278,6 +328,7 @@ mod tests {
             facts: Some(facts),
             actions: None,
             safe_by_closes: false,
+            finder: None,
             restarts: Default::default(),
         };
         let (rows, counting) = page.rows();
@@ -391,6 +442,7 @@ mod tests {
             facts: Some(facts),
             actions: Some(Box::new(log.clone())),
             safe_by_closes: true,
+            finder: None,
             restarts: Default::default(),
         };
         assert!(page.safe_mode());

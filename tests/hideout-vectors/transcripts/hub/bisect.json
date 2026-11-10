@@ -4,35 +4,66 @@
   "spec": [
     "7.10"
   ],
-  "description": "Find the module that breaks Hideout: from safe mode the hub halves the enabled set until one module is left; the saved enabled set is never edited.",
+  "description": "Find the module that breaks Hideout: from safe mode the hub starts half of what Start normally would start, counts a close without a clean exit as 'closed' and 5 minutes open as 'fine', starts the next round after a close only on a click, and names the module once it was on alone in a round that closed. The saved enabled set is never edited until the result's choice.",
   "steps": [
     {
-      "event": "enabled set = [a,b,c,d,e,f,g,h] (placeholder ids); hub is in safe mode"
+      "event": "enabled set = [a,b,c,d,e,f] (placeholder ids, no provider links: 6 entries); hub is in safe mode"
     },
     {
       "event": "user chooses Find the module that breaks Hideout"
     },
     {
-      "event": "round 1: turn off [e,f,g,h] for the session; user answers 'Still broken?': no"
+      "expect": {
+        "round": 1,
+        "of": 4,
+        "on": ["a", "b", "c"]
+      }
     },
     {
-      "event": "round 2: culprit in [e,f,g,h]; turn on [e,f], off [g,h]; user answers: yes"
-    },
-    {
-      "event": "round 3: [e] on, [f] off; user answers: no"
+      "event": "the hub closes without a clean exit (run\\hub-run.json still marks it running); it starts again in safe mode with nothing on"
     },
     {
       "expect": {
-        "culprit": "f",
+        "between_rounds": true,
+        "suspects": ["a", "b", "c"],
+        "modules_started": 0
+      }
+    },
+    {
+      "event": "user chooses Start round 2"
+    },
+    {
+      "expect": {
+        "round": 2,
+        "on": ["a", "b"]
+      }
+    },
+    {
+      "event": "5 minutes pass with the hub open and the PC awake"
+    },
+    {
+      "expect": {
+        "round": 3,
+        "on": ["c"]
+      }
+    },
+    {
+      "event": "the hub closes without a clean exit"
+    },
+    {
+      "expect": {
+        "culprit": "c",
+        "closed_in_rounds": [1, 3],
         "offers": [
-          "Turn off",
-          "Go back to <previous>"
+          "Turn off <Module>",
+          "Copy diagnostics",
+          "Start normally anyway",
+          "Go back to <Module> <previous> (only when an older version is kept)"
         ]
       }
     },
     {
       "expect": {
-        "saved_enabled_set_restored": true,
         "saved_enabled_set_edited": false
       }
     }

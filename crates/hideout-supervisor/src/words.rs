@@ -473,6 +473,8 @@ pub fn every_string() -> Vec<String> {
     ] {
         v.push(s.into());
     }
+    // Finding the module that breaks Hideout (#1033).
+    v.extend(crate::bisect::words::every_string());
     v
 }
 
