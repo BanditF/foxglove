@@ -42,10 +42,11 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `panels/` | `ui.register` trees: all node types, under the caps, over each cap, an unknown node type, one bad panel with a good one; (v1.4) `tone`, button `opens` and `action` (an index `context.actions` lists the module's `[[actions]]`), the tile caps | 5.2, 5.5 |
 | `facts/supervisor-facts.json` | (v1.4) the supervisor's `module.<id>.restart` and `module.<id>.recovery` values, valid and invalid rows | 7.8 |
 | `frames/panel-frames.json` | binary stream frames as hex: image, canvas, text, length mismatches | 5.4, 8.4 |
+| `channels/channel-wire.json` | (v1.4) the channel wire as hex streams (the nonce first, `u32` LE framing, the 256-byte and 64 MiB caps, truncation) with the end each reaches, and which pipe names a consumer may connect to | 8.4 |
 | `transcripts/lifecycle/` | `initialize` (module, tool, bad token, hub not served, not first), `module.register`/`module.ready`, re-registration, `ui.undeclared`, 30 s ready timeout, errors -32601, 2, 4, 8, bad hub minor (7), late reply after timeout, malformed JSON (-32700), module crash mid-call, duplicate request id and oversized line (v1.2) | 7.5, 8.1, 8.8 |
 | `transcripts/swap/` | hot swap overlap and handover, drain `done`, `busy`, Force, Not now, `module.idle`, key action queued during a swap | 7.6 |
 | `transcripts/ui/` | `ui.patch`, `ui.event` refusal, `ui.asset.put`, `ui.window.open`, `action.invoke`, `settings.get`/`set`, `hub.notify`, `ui.badge`, `ui.visibility` (v1.3; tiles too, v1.4) | 5.3, 5.9, 8.8 |
-| `transcripts/stream/` | a live panel stream grant, `channel.open`/`channel.create`, denial, offer rejected | 5.4, 8.4 |
+| `transcripts/stream/` | a live panel stream grant, `channel.open`/`channel.create`, denial, offer rejected, a provider's bad pipe (v1.4) | 5.4, 8.4 |
 | `transcripts/facts/`, `modules/`, `mcp/`, `gpu/` | facts, `modules.*`, required-by, MCP and private modules, GPU methods | 8.8, 9, 8.9, 13.5 |
 | `transcripts/supervisor/` | each of the 12 states (`state-<id>.json`), crash backoff and stop, exit 0, rollback, root-cause-once, update waiting, an outside problem that is not a crash (v1.4) | 7.7, 7.8 |
 | `transcripts/hub/` | hub restart takes modules back, 30 s grace, safe mode, quarantine, bisect | 7.9, 7.10, 5.5 |

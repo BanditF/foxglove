@@ -26,6 +26,12 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   Also (#986), hub-side only: how a restarted hub takes modules back (§7.9). A record in
   `run\instances.json` names a process by pid and start time; a survivor goes into a fresh Job
   Object; one supervisor per hub folder.
+  Also (#977), written down, not new messages: the direct channel's wire (§8.4). The nonce is
+  the consumer's first frame, at most 256 bytes, compared byte for byte; a frame is at most
+  64 MiB; the pipe takes one client ever and the provider waits 30 s for it; a channel pipe is
+  `\\.\pipe\hideout-ch-<rest>`, and the hub refuses any other `{pipe}` with error 6, `data.id`
+  `channel.pipe` (new id in §15). Vectors: `channels/channel-wire.json`,
+  `transcripts/stream/channel-create-bad-pipe.json`.
 - **1.3, added** (#959): router gaps the first router build found (#958). Lease end (§8.5, §8.8): `lease.closed {lease, reason}` (H → M) tells a provider that a lease it handed out ended, and a provider event with `to: <lease>` goes only to that lease's holder. Who is an MCP client, who is the first-party `hideout` CLI, and who runs the `initialize` pid and exe-hash check are now written down (§8.2). `hub` stays 1.0: one optional notification and one optional event field, which a peer that does not know them ignores.
 - **1.3** (#953): open page panels are tabs (§5.9). Two optional notifications: `ui.badge` (M → H) sets a tab's badge (`none`, `attention`, `dirty` or `count`), and `ui.visibility` (H → M) tells a module when its panel is `visible`, `hidden` or `closed`, so it can stop work the user can't see. A tab uses the panel's existing `title` and `icon`. Pop-outs dock back to their tab (§2.5). `hub` stays 1.0: both are optional notifications, and a peer that does not know one drops it (JSON-RPC), so nothing has to be negotiated.
 - **1.2** (#918): two wire rules the transcript vectors found missing (§8.1). A request id that is still in flight on the same connection answers error -32600 `rpc.duplicate-request-id` with id null, and the first call is unaffected. A line over 256 KiB answers -32600 `rpc.frame-too-large` with id null, then the hub closes that channel; the supervisor counts it as a crash (§7.7). Also written down, not new behaviour: a result arriving after the caller's error 4 is dropped. New ids in §15. The trust vectors' `seen_after` is keyed by source id, as §7.3 has it, not by family.
@@ -1041,6 +1047,32 @@ Rules:
 - The hub returns `{pipe, nonce}` to the consumer and steps out.
 - The consumer connects and sends the nonce first. Then frames flow directly:
   `u32 little-endian length` + payload. Either side closing ends the channel.
+- **The channel's wire (v1.4, #977).** Written down from the first SDKs; no new message.
+  - **Pipe name.** A provider answers `channel.create` with `\\.\pipe\hideout-ch-<rest>`:
+    exactly that prefix (the local machine, lower-case `pipe`), then one or more ASCII letters,
+    digits, `.`, `_` or `-`, at most 256 characters in all. The SDKs make
+    `hideout-ch-<pid>-<n>-<module>-<channel>`. The hub checks the answer before passing it on:
+    any other `pipe`, or none, answers the consumer error 6 (backend) with `data.id`
+    `channel.pipe`, so a consumer is never sent to another machine's pipe or to the router's.
+    A consumer MUST NOT connect to a name that fails this rule, and connects with
+    identification-level impersonation only.
+  - **One time.** The pipe is created with one instance, the first-instance flag, remote
+    clients rejected, and a current-user-only DACL (one allow ACE, the user's SID; as the router
+    pipe, §8.2). It takes one client ever: the provider never makes a second instance, so a
+    second connect fails (pipe busy while the first holds it, not found after). A new channel
+    needs a new `channel.open`.
+  - **Nonce.** The consumer's first frame is the nonce's UTF-8 bytes (the hub's nonces are 32
+    lower-case hex digits). The provider reads at most 256 bytes for it and compares in
+    constant time. A missing, longer or different first frame closes the pipe at once, with no
+    answer, and the channel is spent. Nothing acknowledges a good nonce: frames simply flow.
+  - **Deadline.** The provider waits at most 30 s (the call timeout, §8.1) from its
+    `channel.create` answer for the consumer to connect and send the nonce, then closes the
+    pipe.
+  - **Frames.** Both directions may carry frames; what they mean is the channel's own
+    business. A payload may be empty and is at most 64 MiB; a longer length prefix closes the
+    channel unread. A stream that stops inside a length prefix or a payload ends the channel;
+    the whole frames before it count. Panel stream frames (below) are payloads with their own
+    4 MiB cap.
 - **Panel stream frames** (§5.4) are binary, never JSON. Each payload is a 12-byte header and a
   body. Header, little-endian: `u8 kind`, `u8 flags` (0), `u16 width_or_count`, `u16 height`
   (0 unless `kind` 1), `u16 reserved` (0), `u32 seq`.
@@ -1541,6 +1573,7 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `trust.sideload-scope` | a sideloaded module uses a first-party id |
 | `rpc.duplicate-request-id` | (v1.2) a request id already in flight on the connection: error -32600, id null (§8.1) |
 | `rpc.frame-too-large` | (v1.2) a line over 256 KiB: error -32600, id null, then the channel closes (§8.1) |
+| `channel.pipe` | (v1.4, #977) a provider answered `channel.create` with no pipe or one that is not `\\.\pipe\hideout-ch-<rest>`: the consumer gets error 6 with this `data.id` (§8.4) |
 | `rpc.*` | JSON-RPC transcripts use the numeric codes of §8.1; the two ids above travel in the error's `data.id` |
 
 ## 16. Test vectors
@@ -1551,7 +1584,9 @@ tables, panel trees (under and over the caps), and JSON-RPC transcripts for ever
 (v1.3: `transcripts/ui/badge.json` and `transcripts/ui/visibility.json` for §5.9; v1.4: `tone`,
 `opens`, `action` and tile-cap panel vectors, `kind = "file"` and `apps.seen` manifests, a stdio
 module with panels, tile steps in `visibility.json`, `transcripts/supervisor/outside-app-missing.json`,
-and `facts/supervisor-facts.json`).
+and `facts/supervisor-facts.json`; #977: `channels/channel-wire.json`, the channel wire as hex
+streams with the end each reaches and the pipe names a consumer may connect to, and
+`transcripts/stream/channel-create-bad-pipe.json`).
 A panel vector's index entry may carry `context.actions`, the module's `[[actions]]` ids. The
 spec version is kept in step by a drift test: this file's status line, `index.json`'s `contract`,
 the vectors README and the schema's `spec` (`SPEC_VERSION` in the Rust crate) must agree.

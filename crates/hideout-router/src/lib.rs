@@ -9,6 +9,7 @@
 //!   `\\.\pipe\hideout-<user>` with a current-user ACL, the old `\\.\pipe\foxglove-<user>` as an
 //!   alias (§8.2, §8.6), and the legacy stdio bridge for `transport = "stdio"` plugins.
 
+mod channels;
 mod checks;
 mod router;
 pub mod server;

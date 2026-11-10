@@ -76,7 +76,8 @@ class Handler:
         return {}
 
     def channel_create(self, create: models.ChannelCreate):
-        """`channel.create` (§8.4): make a one-time pipe for the consumer and answer {pipe}."""
+        """`channel.create` (§8.4): make a one-time pipe for the consumer and answer {pipe}:
+        `{"pipe": channel.serve(module_id, create.channel, create.nonce, stream)}`."""
         raise RpcError(UNSUPPORTED, "no channels")
 
     def exit(self):

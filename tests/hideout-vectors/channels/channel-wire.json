@@ -1,0 +1,232 @@
+{
+  "format": "hideout-channel-vectors-v1",
+  "spec": "8.4",
+  "layout": "after connecting, the consumer sends the nonce as the first frame; every frame is u32 LE payload length + payload; payload at most 64 MiB, the nonce frame at most 256 bytes",
+  "nonce": "0123456789abcdef0123456789abcdef",
+  "streams": [
+    {
+      "name": "nonce-then-frames",
+      "hex": "2000000030313233343536373839616263646566303132333435363738396162636465660500000068656c6c6f0000000014000000010002000100000007000000ff0000ff00ff00ff",
+      "expect": {
+        "frames_hex": [
+          "68656c6c6f",
+          "",
+          "010002000100000007000000ff0000ff00ff00ff"
+        ],
+        "end": "closed"
+      },
+      "note": "The first frame is the nonce; then frames flow, an empty payload is a frame, a panel stream frame is one payload."
+    },
+    {
+      "name": "nonce-only",
+      "hex": "200000003031323334353637383961626364656630313233343536373839616263646566",
+      "expect": {
+        "frames_hex": [],
+        "end": "closed"
+      },
+      "note": "The consumer sent the nonce and closed."
+    },
+    {
+      "name": "frames-split-anywhere",
+      "hex": "20000000303132333435363738396162636465663031323334353637383961626364656603000000010203",
+      "expect": {
+        "frames_hex": [
+          "010203"
+        ],
+        "end": "closed"
+      },
+      "note": "Framing is by length, not by write: the same bytes in any number of reads give the same frames."
+    },
+    {
+      "name": "nothing-sent",
+      "hex": "",
+      "expect": {
+        "frames_hex": [],
+        "end": "nonce"
+      },
+      "note": "A consumer that closes before the nonce is refused."
+    },
+    {
+      "name": "wrong-nonce",
+      "hex": "2000000066656463626139383736353433323130666564636261393837363534333231300500000068656c6c6f",
+      "expect": {
+        "frames_hex": [],
+        "end": "nonce"
+      },
+      "note": "A wrong nonce: the provider closes and reads nothing more; the channel is spent."
+    },
+    {
+      "name": "nonce-prefix-only",
+      "hex": "1000000030313233343536373839616263646566",
+      "expect": {
+        "frames_hex": [],
+        "end": "nonce"
+      },
+      "note": "A nonce must match byte for byte, not as a prefix."
+    },
+    {
+      "name": "nonce-with-extra-byte",
+      "hex": "21000000303132333435363738396162636465663031323334353637383961626364656600",
+      "expect": {
+        "frames_hex": [],
+        "end": "nonce"
+      },
+      "note": "A nonce frame one byte longer is not the nonce."
+    },
+    {
+      "name": "nonce-frame-too-long",
+      "hex": "010100007878787878787878",
+      "expect": {
+        "frames_hex": [],
+        "end": "nonce"
+      },
+      "note": "A first frame over 256 bytes ends the channel before anything is buffered."
+    },
+    {
+      "name": "nonce-truncated",
+      "hex": "20000000303132333435",
+      "expect": {
+        "frames_hex": [],
+        "end": "nonce"
+      },
+      "note": "A stream that stops inside the nonce frame is refused."
+    },
+    {
+      "name": "frames-not-json",
+      "hex": "200000003031323334353637383961626364656630313233343536373839616263646566120000007b226a736f6e727063223a22322e30227d0a",
+      "expect": {
+        "frames_hex": [
+          "7b226a736f6e727063223a22322e30227d0a"
+        ],
+        "end": "closed"
+      },
+      "note": "A channel carries bytes; a JSON line is just a payload, never routed."
+    },
+    {
+      "name": "truncated-length",
+      "hex": "200000003031323334353637383961626364656630313233343536373839616263646566020000006f6b0500",
+      "expect": {
+        "frames_hex": [
+          "6f6b"
+        ],
+        "end": "truncated"
+      },
+      "note": "Stops inside a length prefix: the frames before it count."
+    },
+    {
+      "name": "truncated-payload",
+      "hex": "200000003031323334353637383961626364656630313233343536373839616263646566020000006f6b05000000616263",
+      "expect": {
+        "frames_hex": [
+          "6f6b"
+        ],
+        "end": "truncated"
+      },
+      "note": "Stops inside a payload: the frames before it count."
+    },
+    {
+      "name": "max-length-accepted",
+      "hex": "20000000303132333435363738396162636465663031323334353637383961626364656600000004",
+      "expect": {
+        "frames_hex": [],
+        "end": "truncated"
+      },
+      "note": "A length of exactly 64 MiB is allowed (here the payload never comes)."
+    },
+    {
+      "name": "too-long",
+      "hex": "200000003031323334353637383961626364656630313233343536373839616263646566020000006f6b01000004616263",
+      "expect": {
+        "frames_hex": [
+          "6f6b"
+        ],
+        "end": "too-long"
+      },
+      "note": "A length over 64 MiB ends the channel; nothing of it is buffered."
+    },
+    {
+      "name": "little-endian",
+      "hex": "2000000030313233343536373839616263646566303132333435363738396162636465660100000041",
+      "expect": {
+        "frames_hex": [
+          "41"
+        ],
+        "end": "closed"
+      },
+      "note": "The length is little-endian: 01 00 00 00 is one byte."
+    }
+  ],
+  "ends": {
+    "closed": "the consumer closed between frames",
+    "nonce": "refused: no nonce, too long, or not the nonce; the provider closes",
+    "truncated": "closed inside a length prefix or payload",
+    "too-long": "a length prefix over 64 MiB; the reader closes the channel"
+  },
+  "pipes": [
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-4242-0-foxglove.example-art-previews",
+      "result": "valid",
+      "note": "What the SDKs make: pid, counter, module, channel."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-example-previews-0002",
+      "result": "valid",
+      "note": "Any name after the prefix of letters, digits, dot, underscore, hyphen."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-",
+      "result": "invalid",
+      "note": "Nothing after the prefix."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-example-user",
+      "result": "invalid",
+      "note": "Not a channel pipe (this is the router pipe's shape)."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\other-ch-x",
+      "result": "invalid",
+      "note": "Not under hideout-ch-."
+    },
+    {
+      "pipe": "\\\\server\\pipe\\hideout-ch-x",
+      "result": "invalid",
+      "note": "Another machine: never connected to (it would send the user's credentials)."
+    },
+    {
+      "pipe": "\\\\?\\pipe\\hideout-ch-x",
+      "result": "invalid",
+      "note": "Only the local pipe form."
+    },
+    {
+      "pipe": "//./pipe/hideout-ch-x",
+      "result": "invalid",
+      "note": "Forward slashes are not the prefix."
+    },
+    {
+      "pipe": "\\\\.\\PIPE\\hideout-ch-x",
+      "result": "invalid",
+      "note": "The prefix is matched exactly, case included."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-a\\b",
+      "result": "invalid",
+      "note": "No backslash after the prefix."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-a b",
+      "result": "invalid",
+      "note": "No spaces."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": "valid",
+      "note": "256 characters in all: the longest accepted."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "result": "invalid",
+      "note": "257 characters: too long."
+    }
+  ]
+}

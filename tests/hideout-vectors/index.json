@@ -130,6 +130,13 @@
       "result": "table",
       "note": "Each frame carries its own expect; length mismatches are dropped."
     },
+    "channels/channel-wire.json": {
+      "spec": [
+        "8.4"
+      ],
+      "result": "table",
+      "note": "(v1.4, #977) The channel wire: the nonce as the first frame, u32 LE framing, the 64 MiB and 256-byte caps, and which pipe names a consumer connects to. Rows carry their own expect; the Rust and Python readers both pass them."
+    },
     "legacy/invalid-api-three-parts.plugin.toml": {
       "spec": [
         "4.10"
@@ -2496,6 +2503,17 @@
       "result": "valid",
       "final": {
         "hub_steps_out_after_reply": true
+      }
+    },
+    "transcripts/stream/channel-create-bad-pipe.json": {
+      "spec": [
+        "8.4"
+      ],
+      "note": "(v1.4, #977) The provider answers channel.create with a pipe that is not a local hideout-ch- pipe. The hub never passes it on: the consumer gets error 6 with data.id channel.pipe.",
+      "result": "valid",
+      "final": {
+        "pipe_passed_on": false,
+        "error_id": "channel.pipe"
       }
     },
     "transcripts/stream/panel-stream-grant.json": {
