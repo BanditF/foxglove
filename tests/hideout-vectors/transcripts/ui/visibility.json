@@ -1,0 +1,117 @@
+{
+  "name": "visibility",
+  "module": "foxglove.example-art",
+  "spec": [
+    "5.4",
+    "5.9",
+    "8.8"
+  ],
+  "description": "ui.visibility tells a module when its panel is on screen, hidden (background tab, minimised, hub in the tray) or closed. Sent on change only; the hub closes the panel's streams when it is not visible.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ui.register",
+        "params": {
+          "instance": "i-1",
+          "panels": [
+            {
+              "id": "art.page",
+              "slot": "page",
+              "title": "Art",
+              "icon": "image",
+              "tree": {
+                "type": "column",
+                "id": "root",
+                "props": {},
+                "children": []
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "rejected": []
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "art.page",
+          "state": "visible"
+        }
+      }
+    },
+    {
+      "event": "user switches to another tab"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "art.page",
+          "state": "hidden"
+        }
+      }
+    },
+    {
+      "expect": {
+        "streams_open": 0
+      }
+    },
+    {
+      "event": "user switches back"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "art.page",
+          "state": "visible"
+        }
+      }
+    },
+    {
+      "event": "user closes the Art tab"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "ui.visibility",
+        "params": {
+          "panel": "art.page",
+          "state": "closed"
+        }
+      }
+    },
+    {
+      "expect": {
+        "module": "keeps running; stops work for this panel",
+        "streams_open": 0
+      }
+    }
+  ]
+}
