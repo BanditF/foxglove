@@ -263,4 +263,4 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
    tab. Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h211\ux-h211-proposed-windows.png`.
 3. **A Pop out button (↗) at the tab strip's right end:** **yes, for the active tab** (recommended;
    one click, like Outlook and Teams) / no, tab menu, drag, keys and palette only.
-   Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h211\ux-h211-proposed-gestures.png`.
+   Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h211\ux-h211-proposed-windows.png`.
