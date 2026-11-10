@@ -12,6 +12,8 @@ build it, and merge their PRs. You don't write product code.
   memory. Open work lives in issues: the latest snapshot is the newest "Planner open state" issue.
 - Questions for the user go to the Hub session (its id is in AGENTS-ROSTER.md) as one short
   question with options and a recommendation. Never AskUserQuestion.
+- Context: at about 45% write or refresh your state note (queue, in flight, waiting on) in the
+  Hub notes folder, then keep going. Auto-compaction handles the rest; re-read the note after it.
 
 ## Research & scope gate
 Every feature request passes this gate before anyone designs or builds it (user rule, 2026-10-26).
