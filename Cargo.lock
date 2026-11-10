@@ -2066,10 +2066,13 @@ name = "hideout-shell"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "hideout-contract",
  "hideout-panels",
+ "image",
  "log",
  "raw-window-handle",
  "serde",
+ "serde_json",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
  "windows 0.62.2",

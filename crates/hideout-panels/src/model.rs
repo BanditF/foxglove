@@ -427,11 +427,18 @@ impl PanelHost {
     /// The content area changed: `shown` is the page panel on screen, if any. Every other page
     /// panel is `hidden` (5.9). Queues a `ui.visibility` for each panel whose state changed.
     pub fn set_shown(&mut self, shown: Option<&PanelKey>) {
+        self.set_visible(shown.map(std::slice::from_ref).unwrap_or_default());
+    }
+
+    /// Like [`PanelHost::set_shown`] for a hub with tabs and pop-outs: every panel in `shown` is
+    /// on screen (the active tab, pop-outs that aren't minimised); every other open page panel is
+    /// `hidden`, and closed ones `closed`. An empty slice is the hub minimised or in the tray.
+    pub fn set_visible(&mut self, shown: &[PanelKey]) {
         let mut out = Vec::new();
         for p in self.panels.iter().filter(|p| p.slot == Slot::Page) {
             let want = if self.closed.contains(&p.key) {
                 Visibility::Closed
-            } else if shown == Some(&p.key) {
+            } else if shown.contains(&p.key) {
                 Visibility::Visible
             } else {
                 Visibility::Hidden

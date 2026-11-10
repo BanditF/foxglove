@@ -25,6 +25,7 @@ pub mod view;
 
 pub use egui;
 pub use feed::{Inbound, Outbound, PanelFeed};
+pub use hideout_contract::messages::{Badge, Visibility};
 pub use hideout_contract::module::Slot;
 pub use model::{state_words, HostedPanel, Outgoing, PanelHost, PanelKey, PanelState};
 pub use render::{panel_ui, DrawReport};

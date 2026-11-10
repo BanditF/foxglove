@@ -108,6 +108,45 @@ pub fn palette_label(t: &Tokens, selected: bool, unavailable: bool) -> Rgb {
     }
 }
 
+/// The fill of a tab: the active one joins the page (`bg`), the others sit on the strip (`chrome`).
+pub fn tab_fill(t: &Tokens, active: bool) -> Rgb {
+    if active {
+        t.bg
+    } else {
+        t.chrome
+    }
+}
+
+/// A tab's label: full contrast on the active tab, muted on the others, and muted on a popped-out
+/// or turned-off tab even when it is active. Muted still reads at 4.5:1 or more.
+pub fn tab_label(t: &Tokens, active: bool, muted: bool) -> Rgb {
+    if active && !muted {
+        t.text
+    } else {
+        t.text_muted
+    }
+}
+
+/// Every foreground the strip draws on a tab fill, with a name, for the contrast test:
+/// label, close ×, dirty dot (label colour), count pill text on its pill, stopped mark.
+pub fn tab_pairs(t: &Tokens) -> Vec<(&'static str, Rgb, Rgb)> {
+    let mut v = Vec::new();
+    for active in [false, true] {
+        let fill = tab_fill(t, active);
+        for muted in [false, true] {
+            v.push(("tab label", tab_label(t, active, muted), fill));
+        }
+        v.push(("stopped mark", t.danger, fill));
+        v.push(("popped mark", t.text_muted, fill));
+    }
+    v.push(("count pill", t.on_accent, t.accent));
+    v.push(("overflow buttons", t.text, t.chrome));
+    v.push(("empty page hint", t.text_muted, t.bg));
+    v.push(("dialog text", t.text, t.surface));
+    v.push(("stopped card", t.text, t.surface));
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +200,18 @@ mod tests {
     fn the_pick_follows_the_mode() {
         assert!(tokens(true).dark);
         assert!(!tokens(false).dark);
+    }
+    #[test]
+    fn every_tab_label_and_mark_reads_on_its_fill() {
+        for t in [LIGHT, DARK] {
+            for (what, fg, bg) in tab_pairs(&t) {
+                let r = contrast(fg, bg);
+                assert!(
+                    r >= 4.5,
+                    "{} {what}: {r:.2}",
+                    if t.dark { "dark" } else { "light" }
+                );
+            }
+        }
     }
 }
