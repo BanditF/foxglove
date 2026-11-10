@@ -287,14 +287,11 @@ Acceptance:
 - Killing a module in the lab shows the amber strip on its tile and the crash bar on its page;
   five kills show the stopped tile with Open. A busy port never reaches the supervisor.
 
-## Open questions for the user (via the Hub)
+## Decisions (11/10, Hub, designer's picks)
 
-1. Names (manifest `name` only): **Focus timer, OBS, Corsair iCUE, OpenRGB** (plain function or
-   the product it works with, as Wallpaper Engine) / keep Pomodoro, Broadcast Status,
-   Corsair iCUE, OpenRGB (E1.31). Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h28\ux-h28-proposed-tiles.png`.
-2. Which tiles show by default: **Mic mute and Focus timer; OBS, Corsair iCUE and OpenRGB once
-   their app has been seen on this PC** (needs S11) / all five, as first-party (UX8). Image:
-   `C:\Users\fuchs\splitkeeb\worktrees\_review\h28\ux-h28-proposed-tile-states.png`.
-3. A stopped module's tile button: **Open (the page's ladder)**, matching the tray menu /
-   Start again right on the tile. Image:
-   `C:\Users\fuchs\splitkeeb\worktrees\_review\h28\ux-h28-proposed-supervisor.png`.
+1. Names (manifest `name` only): **Focus timer, OBS, Corsair iCUE, OpenRGB**.
+2. Default tiles: **Mic mute and Focus timer**; OBS, Corsair iCUE and OpenRGB show once their app
+   has been seen on this PC (needs S11).
+3. A stopped module's tile offers **Open** only (to the page's recovery ladder). The "stopped"
+   notification is unchanged from docs/hideout-supervisor-ux.md (#968): **Start again · Open
+   <Module>**. Start again lives on the notification and the stopped card, never on the tile.
