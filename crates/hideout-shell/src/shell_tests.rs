@@ -979,6 +979,96 @@ fn the_flyout_opens_settles_and_closes_while_the_hub_is_hidden() {
     assert!(hub.flyout.is_none());
 }
 
+/// #1019: the main window closed to the tray, then a tray click. The frame that hid the window
+/// asked egui for a repaint (`CancelClose`) that eframe can never answer, as a hidden window gets
+/// no `RedrawRequested`; egui then holds that request and calls eframe's repaint callback only for
+/// a sooner one, so the click's own `request_repaint` never reaches eframe and its flow stays
+/// `Wait`. On main the gate ran a hidden frame only for `Poll`: the flyout stayed open and never
+/// drawn. Now the click kicks the first frame, and from there the flyout's own requests reach
+/// eframe: it is placed and shown, then settles and the loop waits again.
+#[test]
+fn a_tray_click_draws_the_flyout_while_the_main_window_is_hidden() {
+    use std::sync::atomic::AtomicUsize;
+    use winit::event_loop::ControlFlow;
+    let ctx = ctx();
+    // eframe's side, in miniature: each callback schedules a frame (its flow turns `Poll`).
+    let asked = Arc::new(AtomicUsize::new(0));
+    let a = asked.clone();
+    ctx.set_request_repaint_callback(move |_| {
+        a.fetch_add(1, Ordering::AcqRel);
+    });
+    let mut hub = hub_in(&temp_dir("flyout-hidden-root"), None);
+    for _ in 0..3 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    // The close-to-tray frame: CancelClose asks for a repaint, and the window hides.
+    let _ = ctx.run(input(960.0, 640.0, vec![]), |ctx| {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        hub.shared.hidden.store(true, Ordering::Release);
+        hub.frame(ctx)
+    });
+    // eframe took that request; the hidden window's redraw never comes, so no frame follows.
+    let mut seen = asked.load(Ordering::Acquire);
+    let icon = placement::Rect {
+        x: 1800,
+        y: 1044,
+        w: 24,
+        h: 24,
+    };
+    on_tray(tray::Command::Flyout(icon), &hub.shared, &ctx);
+    assert_eq!(
+        asked.load(Ordering::Acquire),
+        seen,
+        "egui passes the click's repaint on (the stale request is gone?)"
+    );
+    // The gate's turns after the click (the flyout is live from the click on; read as a literal
+    // because other tests' frames flip the process-wide flag).
+    let mut frames = 0;
+    let mut streak = 0;
+    let mut kicked = flyout::take_kick();
+    for _ in 0..crate::wake::HIDDEN_STREAK * 2 {
+        let now = asked.load(Ordering::Acquire);
+        let flow = if now > seen {
+            ControlFlow::Poll
+        } else {
+            ControlFlow::Wait
+        };
+        seen = now;
+        if kicked {
+            streak = 0;
+        }
+        if !crate::wake::hidden_pass(flow, false, crate::wake::side_frames(true, streak), kicked) {
+            break;
+        }
+        kicked = false;
+        streak += 1;
+        frames += 1;
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    assert!(
+        frames > 0,
+        "no frame ran after the tray click with the main window hidden"
+    );
+    let fly = hub
+        .flyout
+        .as_ref()
+        .expect("the tray click opens the flyout");
+    assert!(
+        fly.placed.is_some(),
+        "the flyout was placed and shown in {frames} frames"
+    );
+    assert!(
+        frames < crate::wake::HIDDEN_STREAK as usize,
+        "the flyout settles: {frames} hidden frames"
+    );
+    // Esc closes it (an event on its window: a frame), and the hidden hub asks for nothing.
+    quiet_frame(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
+    assert!(hub.flyout.is_none());
+    quiet_frame(&ctx, &mut hub, vec![]);
+    assert!(!quiet_frame(&ctx, &mut hub, vec![]));
+    assert!(!flyout::take_kick(), "one kick per click");
+}
+
 /// A frame whose flyout window says it lacks the focus (Windows refused the hand-off).
 fn unfocused_frame(ctx: &egui::Context, hub: &mut Hub) -> bool {
     let mut raw = input(960.0, 640.0, vec![]);

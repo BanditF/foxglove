@@ -181,6 +181,8 @@ struct Inner {
     /// root's).
     stack: Vec<(ViewportId, String)>,
     last_tray: String,
+    /// Settings to change in the hub's next frame (`set-setting`): (module, name, value, ticket).
+    settings: Vec<(String, String, serde_json::Value, u64)>,
 }
 
 /// The control state the plugin, the tray hook and the pipe thread share.
@@ -233,6 +235,29 @@ impl Lab {
         t
     }
 
+    /// Queues a settings change for the hub's next frame (`set-setting`); returns its ticket.
+    pub fn queue_setting(&self, module: &str, name: &str, value: serde_json::Value) -> u64 {
+        let mut i = self.lock();
+        i.next_ticket += 1;
+        let t = i.next_ticket;
+        i.settings.push((module.into(), name.into(), value, t));
+        t
+    }
+
+    /// The queued settings changes, for the hub's frame to make as the Settings form does.
+    pub fn take_settings(&self) -> Vec<(String, String, serde_json::Value)> {
+        let mut i = self.lock();
+        let all = std::mem::take(&mut i.settings);
+        let Some(took) = all.iter().map(|s| s.3).max() else {
+            return Vec::new();
+        };
+        i.taken = i.taken.max(took);
+        i.taken_pass = i.root_passes;
+        drop(i);
+        self.cv.notify_all();
+        all.into_iter().map(|(m, n, v, _)| (m, n, v)).collect()
+    }
+
     /// Waits until a pass took `ticket` and the root pass around it ended (at most `timeout`);
     /// returns the root passes so far. An action no pass took is dropped, so a later pass
     /// doesn't act on it.
@@ -256,6 +281,7 @@ impl Lab {
                     return Ok(i.root_passes);
                 }
                 i.queue.retain(|q| q.3 != ticket);
+                i.settings.retain(|q| q.3 != ticket);
                 return Err(format!(
                     "no pass of the window within {} s (is it on screen?)",
                     timeout.as_secs()
@@ -473,6 +499,11 @@ impl egui::Plugin for Plugin {
 
 /// A tray event reached the hub's tray handler (the hook in `shell::run`); free while lab control
 /// is off.
+/// Settings changes `set-setting` queued for this frame (none on the user's hub: no lab).
+pub fn take_settings() -> Vec<(String, String, serde_json::Value)> {
+    LAB.get().map(|l| l.take_settings()).unwrap_or_default()
+}
+
 pub fn note_tray(what: &dyn std::fmt::Debug) {
     if let Some(lab) = LAB.get() {
         lab.note_tray(&format!("{what:?}"));
@@ -612,7 +643,7 @@ const WM_RBUTTONUP: u32 = 0x0205;
 pub const HELP: &str = "verbs: state | frames <ms> [<from_t>] | tray-click | tray-double-click [<gap_ms>] | \
 tray-menu | tray-key-select | menu-key <down|up|left|right|enter|esc|home|end> | menu-pick <text> | \
 key <chord> [main|flyout] | text <text> | click <name>[#n]|@<i> [main|flyout] | focus <tab or page> | \
-open-flyout | close-flyout | close-window";
+open-flyout | close-flyout | close-window | set-setting <module> <name> <value>";
 
 /// Answers one request line. Every answer is one JSON object with `ok` (and `error` when not).
 pub fn answer(line: &str, lab: &Lab, host: &dyn Host) -> String {
@@ -810,6 +841,31 @@ fn run_verb(
             let settled = lab.wait_pass_after(passes, SETTLE_TIMEOUT);
             Ok(serde_json::json!({"verb": verb, "t": t, "window": win.name(), "settled": settled}))
         }
+        "set-setting" => {
+            // The Settings form's own path (`PanelHost::set_setting`, then `settings.set` to the
+            // module), for a field a script can't type into (a file picker, #995.3).
+            let mut a = rest.splitn(3, ' ');
+            let (Some(module), Some(name), Some(raw)) = (a.next(), a.next(), a.next()) else {
+                return Err("set-setting <module> <name> <value>".into());
+            };
+            if !main_on {
+                return Err(
+                    "the main window is not on screen (tray-double-click or menu-pick Open Hideout)"
+                        .into(),
+                );
+            }
+            let value = setting_value(raw);
+            let ticket = lab.queue_setting(module, name, value.clone());
+            host.wake();
+            let t = lab.now_ms();
+            let passes = lab.wait_taken(ticket, PASS_TIMEOUT)?;
+            host.wake();
+            let settled = lab.wait_pass_after(passes, SETTLE_TIMEOUT);
+            Ok(
+                serde_json::json!({"verb": verb, "t": t, "module": module, "name": name,
+                "value": value, "settled": settled}),
+            )
+        }
         "open-flyout" => {
             if fly_open {
                 return Ok(serde_json::json!({"verb": verb, "t": lab.now_ms(), "already": true}));
@@ -825,6 +881,13 @@ fn run_verb(
         "help" | "" => Ok(serde_json::json!({"help": HELP})),
         other => Err(format!("unknown verb `{other}`; {HELP}")),
     }
+}
+
+/// A `set-setting` value: JSON when it parses as JSON (`10`, `true`, `"x"`), else the text as
+/// a string (a Windows path).
+fn setting_value(raw: &str) -> serde_json::Value {
+    let raw = raw.trim();
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
 }
 
 /// `<arg> [main|flyout]`.
@@ -1410,6 +1473,33 @@ mod tests {
         assert!(lab.wait_taken(t, Duration::from_millis(30)).is_err());
         assert!(lab.lock().queue.is_empty());
         assert!(!lab.wait_pass_after(0, Duration::from_millis(10)));
+    }
+
+    /// `set-setting` (#995.3): the value as JSON or as text, taken by the hub's next frame.
+    #[test]
+    fn a_queued_setting_is_taken_once_by_the_frame() {
+        assert_eq!(setting_value("10"), serde_json::json!(10));
+        assert_eq!(setting_value("true"), serde_json::json!(true));
+        assert_eq!(
+            setting_value(r"C:\lab dir\vendor sdk.dll"),
+            serde_json::json!(r"C:\lab dir\vendor sdk.dll")
+        );
+        let lab = Lab::new(ViewportId::from_hash_of("fly"));
+        let t = lab.queue_setting("org.example.module", "sdk-file", serde_json::json!("x.dll"));
+        assert_eq!(
+            lab.take_settings(),
+            vec![(
+                "org.example.module".into(),
+                "sdk-file".into(),
+                serde_json::json!("x.dll")
+            )]
+        );
+        assert!(lab.take_settings().is_empty());
+        assert!(lab.lock().taken >= t);
+        // Untaken: dropped on the timeout, as other actions are.
+        let t = lab.queue_setting("m", "n", serde_json::json!(1));
+        assert!(lab.wait_taken(t, Duration::from_millis(30)).is_err());
+        assert!(lab.take_settings().is_empty());
     }
 
     /// The whole path over the current-user pipe, window-free.

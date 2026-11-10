@@ -20,6 +20,12 @@
 //! [`HIDDEN_STREAK`], and a run of that many with no event between them stops them until the next
 //! event (input, a timer it asked for, a wake). An idle flyout asks for nothing, so it waits.
 //!
+//! A tray click also kicks one hidden frame (#1019): with the window hidden, egui's repaint
+//! request for the click can stay inside egui (it already holds an older request that eframe
+//! can't answer for a hidden window, and calls eframe again only for a sooner one), so eframe's
+//! flow stays `Wait` and no `Poll` would ever start the flyout's frames. The kick runs the first
+//! one; from there the flyout's own requests reach eframe again.
+//!
 //! It also counts loop wakes and logs one line per 10 minutes, so a live check can prove the
 //! hidden hub sleeps. The report timer is the only wake of a fully idle hub. The line names what
 //! woke the loop ([`Cause`]), so a reading says whether the wakes are ours (a repaint one of our
@@ -195,8 +201,10 @@ pub fn guard(
 /// Whether the hidden main window must run a frame now: eframe has one due (`Poll`), the window
 /// is hidden (so `RedrawRequested` won't come), and a window drawn from its frame is up (the
 /// tray flyout). Never true with the flyout closed: the hidden, idle hub keeps waiting (#935).
-pub fn hidden_pass(flow: ControlFlow, drawable: bool, side_live: bool) -> bool {
-    flow == ControlFlow::Poll && !drawable && side_live
+/// `kicked`: a tray click asked for the frame ([`crate::flyout::kick`]), whatever eframe's flow
+/// says (#1019): egui may not have passed its repaint request on.
+pub fn hidden_pass(flow: ControlFlow, drawable: bool, side_live: bool, kicked: bool) -> bool {
+    (flow == ControlFlow::Poll || kicked) && !drawable && side_live
 }
 
 /// Whether the side window still gets hidden frames: it is up, and fewer than [`HIDDEN_STREAK`]
@@ -269,6 +277,8 @@ pub struct Gate<A> {
     drawable: fn() -> bool,
     /// A window drawn from the main window's frame is up (the tray flyout).
     side_live: fn() -> bool,
+    /// Takes a tray click's request for one hidden frame ([`hidden_pass`], #1019).
+    side_kick: fn() -> bool,
     /// The main window, to run its frame while it is hidden.
     root: fn() -> Option<WindowId>,
     /// Applies a pending tray change (the icon is the UI thread's). Runs on every wake, so a
@@ -290,6 +300,7 @@ impl<A> Gate<A> {
         app: A,
         drawable: fn() -> bool,
         side_live: fn() -> bool,
+        side_kick: fn() -> bool,
         root: fn() -> Option<WindowId>,
         tray_sync: fn(),
     ) -> Self {
@@ -301,6 +312,7 @@ impl<A> Gate<A> {
             ),
             drawable,
             side_live,
+            side_kick,
             root,
             tray_sync,
             streak: 0,
@@ -358,8 +370,13 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
         }
         self.app.about_to_wait(event_loop);
         let drawable = (self.drawable)();
+        // A kick is a tray click, an event: it starts the streak again.
+        let kicked = (self.side_kick)();
+        if kicked {
+            self.streak = 0;
+        }
         let side = side_frames((self.side_live)(), self.streak);
-        if hidden_pass(event_loop.control_flow(), drawable, side) {
+        if hidden_pass(event_loop.control_flow(), drawable, side, kicked) {
             if let Some(root) = (self.root)() {
                 // eframe's own frame path, as Windows would run it for a shown window.
                 self.streak += 1;
@@ -452,14 +469,21 @@ mod tests {
         let soon = Instant::now() + Duration::from_millis(16);
         // Flyout closed: never, whatever eframe wants (the #935 wait stands).
         for flow in [Poll, Wait, WaitUntil(soon)] {
-            assert!(!hidden_pass(flow, false, false));
-            assert!(!hidden_pass(flow, true, false));
+            assert!(!hidden_pass(flow, false, false, false));
+            assert!(!hidden_pass(flow, true, false, false));
         }
         // Flyout up: only a due frame (Poll) of a hidden window.
-        assert!(hidden_pass(Poll, false, true));
-        assert!(!hidden_pass(Poll, true, true));
-        assert!(!hidden_pass(Wait, false, true));
-        assert!(!hidden_pass(WaitUntil(soon), false, true));
+        assert!(hidden_pass(Poll, false, true, false));
+        assert!(!hidden_pass(Poll, true, true, false));
+        assert!(!hidden_pass(Wait, false, true, false));
+        assert!(!hidden_pass(WaitUntil(soon), false, true, false));
+        // A tray click's kick (#1019): a frame of the hidden window whatever eframe's flow, while
+        // the flyout is up; nothing for a shown window (it paints) or with the flyout closed.
+        for flow in [Poll, Wait, WaitUntil(soon)] {
+            assert!(hidden_pass(flow, false, true, true));
+            assert!(!hidden_pass(flow, true, true, true));
+            assert!(!hidden_pass(flow, false, false, true));
+        }
     }
 
     #[test]
@@ -471,7 +495,12 @@ mod tests {
         assert!(side_frames(true, 0));
         assert!(side_frames(true, HIDDEN_STREAK - 1));
         assert!(!side_frames(true, HIDDEN_STREAK));
-        assert!(!hidden_pass(Poll, false, side_frames(true, HIDDEN_STREAK)));
+        assert!(!hidden_pass(
+            Poll,
+            false,
+            side_frames(true, HIDDEN_STREAK),
+            false
+        ));
         assert_eq!(
             settle(Poll, side_frames(true, HIDDEN_STREAK), soon),
             WaitUntil(soon)
@@ -613,7 +642,7 @@ mod tests {
             // Hidden, no flyout: no hidden frame, and every flow is a wait until the report.
             let side = side_frames(false, 0);
             for flow in [Poll, Wait, WaitUntil(now + Duration::from_secs(3600))] {
-                assert!(!hidden_pass(flow, false, side));
+                assert!(!hidden_pass(flow, false, side, false));
                 assert_eq!(settle(flow, side, w.report_at()), WaitUntil(w.report_at()));
             }
         }
@@ -786,7 +815,7 @@ mod tests {
                 t0,
                 turns: 0,
             };
-            let mut gate = Gate::new(app, drawn, no_side, no_root, no_tray);
+            let mut gate = Gate::new(app, drawn, no_side, no_side, no_root, no_tray);
             gate.wakes = WakeCount::new(t0, Duration::from_millis(200));
             event_loop.run_app_on_demand(&mut gate).expect("run");
             let secs = t0.elapsed().as_secs_f64();

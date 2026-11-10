@@ -159,6 +159,7 @@ passes. The accessible tree is built only after the first request. `hideout.log`
 | `focus <tab or page>` | The same on a tab (or sidebar entry) of the main window: makes it the active page. |
 | `open-flyout` / `close-flyout` | A tray click if the flyout is closed / Esc into the flyout if it is open. |
 | `close-window` | Posts `WM_CLOSE` to the main window, which closes it to the tray. |
+| `set-setting <module> <name> <value>` | Changes a module setting in the main window's next frame through the Settings form's own path (`settings.set` to the module), for a field a script can't type into (a file picker). The value is JSON when it parses (`10`, `true`), else text (a path). |
 
 An action answers after the pass that took it and the frame after that (at most 2 s + 0.5 s; an
 action no pass took is dropped). A window that isn't on screen is refused at once.
@@ -202,11 +203,13 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
   opens its page; keyboard select on the icon opens the tray menu, and arrows and Enter pick
   Open Hideout.
 - #997 8: OBS Change, type, Cancel: back to "Saved" (BLOCKED unless a password is saved).
+- #1019 (hard gate, runs first): main window hidden, a tray click shows and draws the flyout
+  within 1 s, and after it closes the hidden hub wakes 2 times a second or fewer.
 - #997 9: the hidden hub's loop wakes stay at 2 a second or fewer, before and after the flyout.
 - #995 1: the sidebar lists every lab module, and `hideout.log` has the manifest line.
 - #995 2: Focus timer page: Keys lists its two actions, and Pause is clicked.
-- #995 3: Corsair iCUE: the SDK file field takes a typed path and Enter, and `settings.json`
-  appears.
+- #995 3: Corsair iCUE: Settings shows the SDK file field, a path set through it (`set-setting`,
+  the form's path) lands, and `settings.json` appears.
 - #995 4: OBS How to opens How to connect (BLOCKED when the page has no How to).
 - #995 5 and #1004: one kill shows the crash bar (two lines, Open log, no Restart now) and
   leaves the tray menu's status line alone, then the page comes back live. Five kills show the

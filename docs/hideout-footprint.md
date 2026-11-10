@@ -144,6 +144,15 @@ leaves a hidden frame that asks for nothing. Hover and clicks in the flyout cost
 hidden main window each, as a shown window's would; a restart countdown on a tile asks for one
 frame a second only while it is on screen.
 
+A tray click also kicks one hidden frame (#1019): `flyout::kick` on the click, taken by the gate
+at the end of that wake (`wake::hidden_pass`'s `kicked`). Without it a hidden hub never drew the
+flyout: the frame that hid the window left egui holding a repaint request eframe could not answer
+(no `RedrawRequested` for a hidden window), and egui calls eframe's repaint callback only for a
+sooner request, so the click's own `request_repaint` stopped inside egui and eframe's flow stayed
+`Wait`. The first frame resets egui's request, so the flyout's own requests reach eframe again;
+a click costs one frame plus the few that place and show the flyout, then the hub waits.
+Test: `shell::tests::a_tray_click_draws_the_flyout_while_the_main_window_is_hidden`.
+
 ### The hidden hub at ~97 wakeups/s (#1000, main d333bd52)
 
 On-call measured the hidden hub at 91 to 97 wakeups/s (main thread 63 to 68/s, CPU 0.10 to

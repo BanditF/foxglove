@@ -158,6 +158,23 @@ pub fn live() -> bool {
     LIVE.load(Ordering::Acquire)
 }
 
+/// A tray click wants the main window's frame now (#1019). The click's own repaint request can
+/// get lost while the main window is hidden: egui calls eframe's repaint callback only for a
+/// request sooner than the one it already has, and the frame that hid the window left one due
+/// at once that eframe can never answer (no `RedrawRequested` for a hidden window). So egui says
+/// nothing, eframe's flow stays `Wait`, and the flyout was never drawn. `wake::Gate` takes this
+/// at the end of the click's wake and runs the frame itself.
+static KICK: AtomicBool = AtomicBool::new(false);
+
+pub fn kick() {
+    KICK.store(true, Ordering::Release);
+}
+
+/// Takes the kick (one frame per click).
+pub fn take_kick() -> bool {
+    KICK.swap(false, Ordering::AcqRel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
