@@ -52,20 +52,61 @@ fn dims(look: Look) -> bool {
 
 /// A small chip with `text` at `at` (top-left of the box).
 fn chip(ui: &Ui, at: Pos2, text: &str) -> Rect {
-    let font = FontId::proportional(12.0);
-    let fg = ui.visuals().text_color();
-    let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
-    let r = Rect::from_min_size(at, galley.size() + Vec2::new(12.0, 6.0));
-    ui.painter()
-        .rect_filled(r, CornerRadius::same(6), ui.visuals().extreme_bg_color);
-    ui.painter().galley(r.min + Vec2::new(6.0, 3.0), galley, fg);
+    let r = Rect::from_min_size(at, chip_size(ui, text));
+    paint_chip(ui, r, text);
     r
 }
 
+fn chip_size(ui: &Ui, text: &str) -> Vec2 {
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        FontId::proportional(12.0),
+        ui.visuals().text_color(),
+    );
+    galley.size() + Vec2::new(12.0, 6.0)
+}
+
+fn paint_chip(ui: &Ui, r: Rect, text: &str) {
+    let fg = ui.visuals().text_color();
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), FontId::proportional(12.0), fg);
+    ui.painter()
+        .rect_filled(r, CornerRadius::same(6), ui.visuals().extreme_bg_color);
+    ui.painter().galley(r.min + Vec2::new(6.0, 3.0), galley, fg);
+}
+
+/// A button with a visible word and its own accessible name ("Pause Room map").
+fn named_button(ui: &mut Ui, r: Rect, word: &str, name: String) -> egui::Response {
+    let b = ui.put(r, egui::Button::new(word));
+    b.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &name));
+    b
+}
+
 /// The hub's marks over a canvas or image box: dimming, the state chip, the Live dot (reduced
-/// motion only), Pause/Play, Try again, Open log.
-fn overlay(ui: &mut Ui, rect: Rect, label: &str, k: &StreamKey, d: &mut StreamDraw) -> Look {
+/// motion only), Pause/Play, Try again, Open log. `resp` is the box, which takes keyboard
+/// focus: Space or Enter on it pauses or plays (WCAG 2.2.2).
+///
+/// The marks draw in a Ui of their own over the box, outside the panel's greyed scope, so
+/// the words that explain a dimmed frame keep full contrast and their controls work.
+fn overlay(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    k: &StreamKey,
+    resp: &egui::Response,
+    d: &mut StreamDraw,
+) -> Look {
     let look = d.look(k);
+    let mut o = Ui::new(
+        ui.ctx().clone(),
+        resp.id.with("hideout.stream.marks"),
+        egui::UiBuilder::new()
+            .layer_id(ui.layer_id())
+            .max_rect(rect),
+    );
+    o.set_clip_rect(ui.clip_rect());
+    let ui = &mut o;
     if dims(look) {
         ui.painter().rect_filled(rect, 0.0, veil(ui));
     }
@@ -106,28 +147,27 @@ fn overlay(ui: &mut Ui, rect: Rect, label: &str, k: &StreamKey, d: &mut StreamDr
                 d.acts.push(StreamAct::OpenLog(k.clone()));
             }
         } else if look == Look::Connecting {
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                words,
-                FontId::proportional(13.0),
-                ui.visuals().weak_text_color(),
-            );
+            // On a chip centred in the box, like the other states (4.5:1 on any frame).
+            let r = Rect::from_center_size(rect.center(), chip_size(ui, &words));
+            paint_chip(ui, r, &words);
         } else {
             chip(ui, rect.min + pad, &words);
         }
     }
     if look == Look::Live && d.streams.reduced_motion {
-        // At 2 frames a second motion no longer says "live": a dot and the word.
+        // At 2 frames a second motion no longer says "live": a dot and the word, in the
+        // `live` tone (§5.2), not colour alone.
         let r = chip(
             ui,
             Pos2::new(rect.right() - 56.0, rect.top() + 8.0),
             "  Live",
         );
+        let (cr, cg, cb) =
+            crate::render::tone_rgb("live", ui.visuals().dark_mode).unwrap_or((0xFF, 0x7A, 0x7A));
         ui.painter().circle_filled(
             r.left_center() + Vec2::new(8.0, 0.0),
             3.5,
-            Color32::from_rgb(0xFF, 0x7A, 0x7A),
+            Color32::from_rgb(cr, cg, cb),
         );
     }
     let corner = |w: f32| {
@@ -136,6 +176,14 @@ fn overlay(ui: &mut Ui, rect: Rect, label: &str, k: &StreamKey, d: &mut StreamDr
             Vec2::new(w, 28.0),
         )
     };
+    // Space or Enter on the focused box toggles Pause and Play.
+    let keyed = resp.has_focus()
+        && ui.input(|i| i.key_pressed(egui::Key::Space) || i.key_pressed(egui::Key::Enter));
+    // Pause shows on hover, and while the box or the button itself has keyboard focus.
+    let button_key = resp.id.with("hideout.stream.pause-button");
+    let button_focused = ui
+        .data(|m| m.get_temp::<egui::Id>(button_key))
+        .is_some_and(|id| ui.memory(|m| m.has_focus(id)));
     match look {
         Look::Stopped => {
             if ui
@@ -146,18 +194,18 @@ fn overlay(ui: &mut Ui, rect: Rect, label: &str, k: &StreamKey, d: &mut StreamDr
             }
         }
         Look::Paused => {
-            let b = ui
-                .put(corner(56.0), egui::Button::new("Play"))
-                .on_hover_text(format!("Play {label}"));
-            if b.clicked() {
+            let b = named_button(ui, corner(56.0), "Play", format!("Play {label}"));
+            ui.data_mut(|m| m.insert_temp(button_key, b.id));
+            if b.clicked() || keyed {
                 d.acts.push(StreamAct::Play(k.clone()));
             }
         }
-        Look::Live if ui.rect_contains_pointer(rect) => {
-            let b = ui
-                .put(corner(64.0), egui::Button::new("Pause"))
-                .on_hover_text(format!("Pause {label}"));
-            if b.clicked() {
+        Look::Live
+            if ui.rect_contains_pointer(rect) || resp.has_focus() || button_focused || keyed =>
+        {
+            let b = named_button(ui, corner(64.0), "Pause", format!("Pause {label}"));
+            ui.data_mut(|m| m.insert_temp(button_key, b.id));
+            if b.clicked() || keyed {
                 d.acts.push(StreamAct::Pause(k.clone()));
             }
         }
@@ -195,7 +243,7 @@ pub(crate) fn canvas_marks(
 ) {
     let label = p.get("label").and_then(Value::as_str).unwrap_or("");
     let k = StreamKey::new(d.key.clone(), &n.id);
-    let look = overlay(ui, rect, label, &k, d);
+    let look = overlay(ui, rect, label, &k, resp, d);
     let desc = accessible_description(label, look);
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &desc));
 }
@@ -212,7 +260,8 @@ pub(crate) fn image(ui: &mut Ui, n: &Node, p: &Map<String, Value>, d: &mut Strea
     let w = num(p, "width")
         .unwrap_or(f32::INFINITY)
         .min(ui.available_width());
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, w / aspect), Sense::hover());
+    // Clickable so Tab reaches it (Pause, §5.4 UX); a click on an image does nothing else.
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, w / aspect), Sense::click());
     ui.painter()
         .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
     let pixel = p.get("scaling").and_then(Value::as_str) == Some("pixel");
@@ -259,7 +308,7 @@ pub(crate) fn image(ui: &mut Ui, n: &Node, p: &Map<String, Value>, d: &mut Strea
             Color32::WHITE,
         );
     }
-    let look = overlay(ui, rect, label, &k, d);
+    let look = overlay(ui, rect, label, &k, &resp, d);
     let desc = accessible_description(label, look);
     resp.widget_info(|| WidgetInfo::labeled(WidgetType::Image, true, &desc));
 }

@@ -51,8 +51,13 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, banner: bool) -
     let mut go = Vec::new();
     let mut acts = Vec::new();
     host.breadcrumb = Some(key.clone());
+    // A hot swap keeps its streams' last frames at full colour for up to 2 s (UX).
+    let swap_grace = host
+        .last_seen(&key.module, std::time::Instant::now())
+        .is_some_and(|d| d < crate::streams::BACK_GRACE);
     if let Some((panel, view, facts, assets, keys, streams)) = host.parts(key) {
-        let running = panel.state == PanelState::Live;
+        let running = panel.state == PanelState::Live
+            || (swap_grace && panel.state == PanelState::Greyed("updating".into()));
         let mut d = Draw {
             key,
             view,

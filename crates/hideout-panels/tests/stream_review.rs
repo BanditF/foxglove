@@ -18,19 +18,47 @@ use serde_json::{json, Value};
 
 const M: &str = "example.review";
 
-fn rasterise(w: u32, h: u32, mut draw: impl FnMut(&egui::Context)) -> Option<Vec<u8>> {
-    let fonts = hideout_panels::render::test_fonts()?;
+fn rasterise(w: u32, h: u32, draw: impl FnMut(&egui::Context)) -> Option<Vec<u8>> {
+    rasterise_with(w, h, &[vec![], vec![], vec![]], draw)
+}
+
+/// The test fonts, with a monospace face (Consolas) when the machine has one, as the hub has.
+fn fonts() -> Option<egui::FontDefinitions> {
+    let mut fonts = hideout_panels::render::test_fonts()?;
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+    if let Ok(bytes) = std::fs::read(format!("{windir}\\Fonts\\consola.ttf")) {
+        fonts.font_data.insert(
+            "mono".into(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+        );
+        fonts.families.insert(
+            egui::FontFamily::Monospace,
+            vec!["mono".into(), "test".into()],
+        );
+    }
+    Some(fonts)
+}
+
+/// Draws one frame per entry of `frames`, each with those input events, and rasterises the last.
+fn rasterise_with(
+    w: u32,
+    h: u32,
+    frames: &[Vec<egui::Event>],
+    mut draw: impl FnMut(&egui::Context),
+) -> Option<Vec<u8>> {
     let ctx = egui::Context::default();
-    ctx.set_fonts(fonts);
+    ctx.set_fonts(fonts()?);
     ctx.set_visuals(egui::Visuals::dark());
+    ctx.style_mut(|s| s.scroll_animation = egui::style::ScrollAnimation::none());
     let mut textures: HashMap<TextureId, epaint::ColorImage> = HashMap::new();
     let mut last = None;
-    for _ in 0..3 {
+    for events in frames {
         let raw = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(
                 Pos2::ZERO,
                 Vec2::new(w as f32, h as f32),
             )),
+            events: events.clone(),
             ..Default::default()
         };
         let out = ctx.run(raw, &mut draw);
@@ -480,5 +508,147 @@ fn renders_the_sample_room_map_page_for_review() {
         return;
     };
     let p = save_png("built-h29-sample-page.png", w, hh, rgba);
+    println!("{}", p.display());
+}
+
+fn key(k: egui::Key) -> egui::Event {
+    egui::Event::Key {
+        key: k,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+#[test]
+fn tab_then_space_pauses_the_stream_and_names_the_buttons() {
+    let Some(fonts) = fonts() else {
+        eprintln!("no system font; keyboard test skipped");
+        return;
+    };
+    let (mut h, page, k, g) = one(room_canvas());
+    let now = Instant::now();
+    h.streams.frame(
+        &k,
+        g,
+        &payload(Frame::Canvas {
+            seq: 1,
+            colours: warm(1),
+        }),
+        now,
+    );
+    h.streams.present(now);
+    let ctx = egui::Context::default();
+    ctx.set_fonts(fonts);
+    let names = std::cell::RefCell::new(Vec::<String>::new());
+    let run = |h: &mut PanelHost, events: Vec<egui::Event>| {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 400.0))),
+            events,
+            ..Default::default()
+        };
+        let out = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                panel_ui(h, ui, &page);
+            });
+        });
+        for e in out.platform_output.events {
+            if let egui::output::OutputEvent::FocusGained(info) = e {
+                names.borrow_mut().push(info.label.unwrap_or_default());
+            }
+        }
+    };
+    run(&mut h, vec![]);
+    run(&mut h, vec![key(egui::Key::Tab)]);
+    run(&mut h, vec![]);
+    assert_eq!(
+        h.streams.look(&k, true, Instant::now()),
+        hideout_panels::Look::Live
+    );
+    run(&mut h, vec![key(egui::Key::Space)]);
+    assert_eq!(
+        h.streams.look(&k, true, Instant::now()),
+        hideout_panels::Look::Paused,
+        "Space on the focused box pauses"
+    );
+    assert!(
+        names.borrow().iter().any(|n| n == "Room map, live preview"),
+        "the box took focus: {:?}",
+        names.borrow()
+    );
+    // Tab to the Play button: its name is "Play Room map", its word "Play".
+    run(&mut h, vec![]);
+    run(&mut h, vec![key(egui::Key::Tab)]);
+    run(&mut h, vec![]);
+    assert!(
+        names.borrow().iter().any(|n| n == "Play Room map"),
+        "the Play button's name: {:?}",
+        names.borrow()
+    );
+    // Enter on the box plays again.
+    run(
+        &mut h,
+        vec![egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        }],
+    );
+    run(&mut h, vec![]);
+    run(&mut h, vec![key(egui::Key::Enter)]);
+    assert_eq!(
+        h.streams.look(&k, true, Instant::now()),
+        hideout_panels::Look::Live
+    );
+}
+
+#[test]
+fn renders_a_scrolled_up_text_stream_with_jump_to_latest() {
+    let now = Instant::now();
+    let (mut txt, page, tk, tg) = one(json!({"type": "text", "id": "log", "props":
+        {"mono": true, "stream": "log", "label": "Activity"}}));
+    for i in 0..40u64 {
+        txt.streams.frame(
+            &tk,
+            tg,
+            &payload(Frame::Text {
+                seq: 0,
+                append: format!("12:00:{:02} light moved to room {}\n", i, i % 6),
+            }),
+            now + Duration::from_millis(20 * i),
+        );
+    }
+    let (w, h) = (640u32, 360u32);
+    let at = Pos2::new(260.0, 160.0);
+    let frames = vec![
+        vec![],
+        vec![],
+        vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, 600.0),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+        vec![egui::Event::PointerMoved(at)],
+        vec![egui::Event::PointerMoved(at)],
+    ];
+    let Some(rgba) = rasterise_with(w, h, &frames, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Text stream, scrolled up: follow stops, Jump to latest");
+            ui.allocate_ui(Vec2::new(560.0, 320.0), |ui| {
+                ui.set_width(560.0);
+                panel_ui(&mut txt, ui, &page);
+            });
+        });
+    }) else {
+        eprintln!("no system font; review render skipped");
+        return;
+    };
+    let p = save_png("built-h29-text-scrolled-up.png", w, h, rgba);
     println!("{}", p.display());
 }

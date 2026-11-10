@@ -789,8 +789,11 @@ pub fn look_words(look: Look) -> Option<String> {
 pub fn accessible_description(label: &str, look: Look) -> String {
     let state = match look {
         Look::Paused => "paused".to_string(),
+        Look::LastSeen(d) if d.as_secs() >= 60 => {
+            format!("not updating, last seen {} minutes ago", d.as_secs() / 60)
+        }
         Look::LastSeen(d) => format!("not updating, last seen {} seconds ago", d.as_secs()),
-        Look::Stopped => "not updating".to_string(),
+        Look::Stopped => "stopped updating".to_string(),
         Look::Refused => "couldn't be shown".to_string(),
         Look::Empty | Look::Connecting | Look::Live => "live preview".to_string(),
     };
