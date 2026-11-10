@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 //! Starts the router (H2.3, contract §8) before the shell: the registry's modules and grants, the
 //! router pipe `\\.\pipe\hideout-<user>`, and the `foxglove-<user>` alias when `foxglove.exe`
-//! doesn't own it. No window, no GUI change.
+//! doesn't own it. Then the supervisor (H2.5, §7.7): it takes back what the last hub left
+//! running and starts the enabled modules. No window.
 
 use std::path::Path;
 use std::sync::mpsc;
 
 use hideout_router::server::{alias_pipe_name, router_pipe_name, Hub};
-use hideout_router::{Out, Router, Settings};
-use serde_json::json;
+use hideout_router::{Router, Settings};
+use hideout_supervisor::driver::Supervisor;
 
 /// Outside tools until the permission dialog exists (lab only, Phase 2): what isn't sensitive is
 /// approved once per tool; sensitive asks (red in the dialog, §6.1) are left out.
@@ -22,7 +23,16 @@ fn approver() -> hideout_router::Approver {
     })
 }
 
-pub fn start(home: &Path) -> Hub {
+/// What the tab strip asks of the supervisor.
+pub struct Hooks(pub Supervisor);
+
+impl hideout_shell::TabHooks for Hooks {
+    fn start_again(&mut self, module: &str) {
+        self.0.start_again(module);
+    }
+}
+
+pub fn start(home: &Path) -> (Hub, Supervisor) {
     let mut router = Router::new(Settings::default(), approver());
     match hideout_registry::Registry::open(home, hideout_registry::dev_mode_from_env()) {
         Ok(reg) => router.load_registry(&reg),
@@ -30,21 +40,6 @@ pub fn start(home: &Path) -> Hub {
     }
     let (events, rx) = mpsc::channel();
     let hub = Hub::new(router, events);
-    let h = hub.clone();
-    std::thread::Builder::new()
-        .name("hideout-router-events".into())
-        .spawn(move || {
-            for event in rx {
-                match event {
-                    // No supervisor yet (H2.4): a module whose connection ends is off.
-                    Out::ModuleGone(id) => {
-                        h.act(|r| r.publish(&format!("module.{id}.state"), json!("off")))
-                    }
-                    other => log::info!("router: {other:?}"),
-                }
-            }
-        })
-        .expect("router events thread");
     #[cfg(windows)]
     {
         let name = router_pipe_name();
@@ -59,5 +54,18 @@ pub fn start(home: &Path) -> Hub {
             Err(e) => log::info!("router: alias {alias} not served (owned elsewhere): {e}"),
         }
     }
-    hub
+    // After the pipe is served, so modules it starts or takes back can connect. Router events
+    // wait in the channel until then.
+    let sup = Supervisor::start(home, hub.clone());
+    let s = sup.clone();
+    std::thread::Builder::new()
+        .name("hideout-router-events".into())
+        .spawn(move || {
+            for event in rx {
+                s.on_router(&event);
+                log::debug!("router: {event:?}");
+            }
+        })
+        .expect("router events thread");
+    (hub, sup)
 }

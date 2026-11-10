@@ -106,6 +106,10 @@ pub struct Launch {
     pub dir: PathBuf,
     pub run: Option<Vec<String>>,
     pub granted: Vec<String>,
+    /// `[activation] on` (§4.6), default `["enable"]`.
+    pub activation: Vec<String>,
+    /// A legacy `transport = "stdio"` plugin, bridged by the hub (§8.2).
+    pub stdio: bool,
 }
 
 pub struct Registry {
@@ -380,6 +384,35 @@ impl Registry {
         Ok(())
     }
 
+    /// The installed manifest of `id` (its current version), without the file check.
+    pub fn manifest(&self, id: &str) -> Option<Module> {
+        let m = self.inventory.modules.get(id)?;
+        self.read_manifest(&self.module_dir(id, &m.version)).ok()
+    }
+
+    /// Automatic rollback (§7.8): the previous version becomes the current one and the one that
+    /// crashed becomes `previous`. Only a catalog module whose previous folder is still there;
+    /// the launch check runs again before it starts. Returns the version it went back to.
+    pub fn roll_back(&mut self, id: &str) -> Result<String, Failure> {
+        let home = self.home.clone();
+        let m = self
+            .inventory
+            .modules
+            .get_mut(id)
+            .ok_or_else(|| Failure::NotInstalled(id.into()))?;
+        let Some(prev) = m.previous.clone() else {
+            return Err(Failure::NotInstalled(format!(
+                "{id} has no previous version"
+            )));
+        };
+        if m.source == SIDELOAD || !home.join("modules").join(id).join(&prev).is_dir() {
+            return Err(Failure::NotInstalled(format!("{id} {prev}")));
+        }
+        m.previous = Some(std::mem::replace(&mut m.version, prev.clone()));
+        self.save_inventory()?;
+        Ok(prev)
+    }
+
     /// Drops the previous version once the new one ran cleanly for a day (§7.2).
     pub fn drop_previous(&mut self, id: &str) -> Result<(), Failure> {
         let m = self
@@ -490,6 +523,12 @@ impl Registry {
             dir,
             run: manifest.run,
             granted: m.granted.clone(),
+            activation: if manifest.activation_on.is_empty() {
+                vec!["enable".into()]
+            } else {
+                manifest.activation_on
+            },
+            stdio: manifest.transport == hideout_contract::module::Transport::Stdio,
         })
     }
 

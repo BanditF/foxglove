@@ -58,6 +58,11 @@ pub enum Out {
     ModuleGone(String),
     /// `module.idle` from a module (§7.6).
     Idle(String),
+    /// `module.ready` from a module (§7.5): the supervisor marks it running.
+    Ready(String),
+    /// A module's `initialize` had a good token but failed the launch check (pid or exe hash,
+    /// §7.5, §8.2 v1.3): refused with error 5; the supervisor shows `install-failed`.
+    Refused(String),
     /// A module's channel broke the wire rules (a frame over 256 KiB, §8.1): one crash toward
     /// the crash bar (§7.7). Also counted in [`Router::module_faults`].
     ModuleFault(String),
@@ -79,6 +84,11 @@ pub enum Out {
         result: Result<Value, Value>,
     },
 }
+
+/// The supervisor's launch check at `initialize` (§7.5, §8.2 v1.3): given the module id and the
+/// connecting process's id (when the transport knows it), whether this is the process the
+/// supervisor started or took back. `Err` carries the reason for the log.
+pub type LaunchCheck = Box<dyn FnMut(&str, Option<u32>) -> Result<(), String> + Send>;
 
 /// Approves an outside tool's asks once per tool (§6.4): given the tool's name and what it asks
 /// for (never-list items already left out), returns what the user approved.
@@ -190,6 +200,8 @@ struct Conn {
     origin: Origin,
     who: Who,
     caps: Caps,
+    /// The peer's process id, when the transport knows it (the router pipe).
+    pid: Option<u32>,
 }
 
 /// Who waits for an answer.
@@ -258,6 +270,8 @@ pub struct Router {
     faults: HashMap<String, u32>,
     /// Leases by (provider module, lease id) (§8.5).
     leases: HashMap<(String, String), Lease>,
+    /// The supervisor's pid and exe-hash check (§7.5); `None` = tokens only (tests, lab).
+    launch_check: Option<LaunchCheck>,
 }
 
 fn error(id: &Value, code: i64, message: &str, reason: Option<&str>) -> Value {
@@ -295,6 +309,7 @@ impl Router {
             next_sub: 1,
             faults: HashMap::new(),
             leases: HashMap::new(),
+            launch_check: None,
             pending: HashMap::new(),
             next_call: 1,
             queue: VecDeque::new(),
@@ -339,9 +354,23 @@ impl Router {
                 origin,
                 who: Who::New,
                 caps: Caps::default(),
+                pid: None,
             },
         );
         id
+    }
+
+    /// Records the peer process id of `conn` (the router pipe's client, §7.5).
+    pub fn set_peer_pid(&mut self, conn: ConnId, pid: u32) {
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.pid = Some(pid);
+        }
+    }
+
+    /// Installs the supervisor's launch check, run at every module `initialize` that carries a
+    /// good token (§7.5, §8.2 v1.3).
+    pub fn set_launch_check(&mut self, check: LaunchCheck) {
+        self.launch_check = Some(check);
     }
 
     /// The fact cache's value for `key`.
@@ -716,7 +745,16 @@ impl Router {
                 if !self.token_ok(params) {
                     return refuse(out, code::DENIED, "denied", "bad launch token");
                 }
-                params.get("id").and_then(Value::as_str).map(String::from)
+                let mid = params["id"].as_str().unwrap_or_default().to_string();
+                let pid = self.conns[&conn].pid;
+                if let Some(check) = self.launch_check.as_mut() {
+                    if let Err(why) = check(&mid, pid) {
+                        log::warn!("router: {mid} failed the launch check: {why}");
+                        out.push(Out::Refused(mid));
+                        return refuse(out, code::DENIED, "denied", "launch check failed");
+                    }
+                }
+                Some(mid)
             }
             (None, None) => None,
         };
@@ -963,6 +1001,7 @@ impl Router {
                     }
                 }
                 self.set_fact(&format!("module.{module}.state"), json!("running"), out);
+                out.push(Out::Ready(module.clone()));
                 // Calls that waited for this module go now, in order.
                 let mut keep = VecDeque::new();
                 while let Some(q) = self.queue.pop_front() {

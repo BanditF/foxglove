@@ -18,15 +18,15 @@ fn main() {
         eprintln!("hideout: neither HIDEOUT_CONFIG_DIR nor LOCALAPPDATA is set");
         std::process::exit(2);
     };
-    let _router = router_start::start(&paths.root);
+    let (_router, supervisor) = router_start::start(&paths.root);
     let opts = hideout_shell::ShellOptions {
         paths,
         pages: modules_page::pages(),
         version: env!("CARGO_PKG_VERSION"),
         // The router (H2.3) supplies the feed; until then the hub starts with no module panels.
         panels: None,
-        // Pop-out windows (H2.11) and the supervisor's Start again come later.
-        hooks: None,
+        // The supervisor's Start again; pop-out windows (H2.11) come later.
+        hooks: Some(Box::new(router_start::Hooks(supervisor))),
     };
     if let Err(e) = hideout_shell::run(opts) {
         log::error!("hub stopped: {e}");

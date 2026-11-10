@@ -104,9 +104,28 @@ impl Hub {
         &self,
         origin: Origin,
         reader: impl Read + Send + 'static,
+        writer: impl Write + Send + 'static,
+    ) -> ConnId {
+        self.attach_peer(origin, None, reader, writer)
+    }
+
+    /// [`Hub::attach`] for a peer whose process id the transport knows (the router pipe's
+    /// client): the supervisor's launch check at `initialize` compares it (§7.5).
+    pub fn attach_peer(
+        &self,
+        origin: Origin,
+        pid: Option<u32>,
+        reader: impl Read + Send + 'static,
         mut writer: impl Write + Send + 'static,
     ) -> ConnId {
-        let conn = self.0.router.lock().unwrap().connect(origin);
+        let conn = {
+            let mut r = self.0.router.lock().unwrap();
+            let conn = r.connect(origin);
+            if let Some(pid) = pid {
+                r.set_peer_pid(conn, pid);
+            }
+            conn
+        };
         let (tx, rx) = mpsc::channel::<Option<String>>();
         self.0.writers.lock().unwrap().insert(conn, tx);
         std::thread::Builder::new()
@@ -182,15 +201,28 @@ impl Hub {
                             }
                         },
                     };
+                    let handle = pipe.raw_handle();
                     match pipe.accept() {
                         Ok(conn) => {
-                            hub.attach(Origin::Pipe, conn.clone(), conn);
+                            // The handle stays open while `conn` lives.
+                            let pid = client_pid(handle);
+                            hub.attach_peer(Origin::Pipe, pid, conn.clone(), conn);
                         }
                         Err(e) => log::warn!("router: {name}: accept: {e}"),
                     }
                 }
             })
     }
+}
+
+/// The process id of a connected router pipe's client.
+#[cfg(windows)]
+fn client_pid(handle: std::os::windows::io::RawHandle) -> Option<u32> {
+    use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
+    let mut pid = 0u32;
+    // SAFETY: `handle` is a connected pipe instance kept open by its `PipeConn`.
+    let ok = unsafe { GetNamedPipeClientProcessId(handle as _, &mut pid) };
+    (ok != 0 && pid != 0).then_some(pid)
 }
 
 /// One line of at most [`MAX_MESSAGE`] bytes (a longer one is returned too long, for the router

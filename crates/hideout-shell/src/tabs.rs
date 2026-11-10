@@ -703,12 +703,9 @@ mod tests {
         l.mark = Mark::Dirty;
         assert_eq!(l.shown(), Shown::Dirty);
         assert_eq!(l.accessible_name(), "Chat, not saved");
-        l.state = TabState::Stopped("Stopped after repeated crashes".into());
+        l.state = TabState::Stopped("Stopped after 5 crashes".into());
         assert_eq!(l.shown(), Shown::Stopped);
-        assert_eq!(
-            l.tooltip(),
-            "Chat\nStopped after repeated crashes, Not saved"
-        );
+        assert_eq!(l.tooltip(), "Chat\nStopped after 5 crashes, Not saved");
         l.state = TabState::Busy("Updating".into());
         l.mark = Mark::Attention;
         assert!(l.busy());
