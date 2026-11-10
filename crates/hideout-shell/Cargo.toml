@@ -44,6 +44,8 @@ windows = { version = "0.62", features = [
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    # SetConsoleCtrlHandler: Ctrl+C and a console close are clean exits (#1033).
+    "Win32_System_Console",
     # GetClipboardFormatNameW: a registered window message's name in the wake report (#1018).
     "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",

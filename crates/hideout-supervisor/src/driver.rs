@@ -390,8 +390,9 @@ impl Supervisor {
 
     /// **Turn on** from the Modules page: saved as on, then started as `enable` does (§7.4).
     /// A module with permissions still waiting for the permission dialog (§6.4) isn't turned
-    /// on here: that dialog isn't built, so it answers `false` and the caller opens the module.
-    pub fn turn_on(&self, id: &str) -> bool {
+    /// on here: that dialog isn't built, so it answers why and the caller opens the module. In
+    /// safe mode it is saved as on and not started ("On · not started in safe mode").
+    pub fn turn_on(&self, id: &str) -> Result<(), String> {
         let saved = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
             .map_err(|e| format!("{e:?}"))
             .and_then(|mut r| {
@@ -407,10 +408,13 @@ impl Supervisor {
             });
         if let Err(e) = saved {
             log::warn!("supervisor: {id}: not turned on: {e}");
-            return false;
+            return Err(e);
+        }
+        if self.safe_mode() {
+            log::info!("supervisor: {id}: turned on; not started in safe mode");
         }
         self.feed(Ev::Enable { id: id.into() });
-        true
+        Ok(())
     }
 
     /// **Start normally** (§7.10, the safe-mode banner and the tray menu): clears `hideout.toml`'s
@@ -423,6 +427,9 @@ impl Supervisor {
             .and_then(|mut r| r.set_safe_mode(false).map_err(|e| format!("{e:?}")));
         if let Err(e) = saved {
             log::warn!("supervisor: safe mode off not saved: {e}");
+        }
+        if let Err(e) = crate::closes::clear_safe_mode_cause(&self.0.home) {
+            log::warn!("supervisor: run\\hub-run.json not saved: {e}");
         }
         self.0.hub.act(|r| r.set_safe_mode(false));
         let cmds = self

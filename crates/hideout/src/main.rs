@@ -31,6 +31,61 @@ struct Started {
     /// The tray menu's Start normally (the supervisor).
     start_normally: Option<hideout_shell::StartNormally>,
     panels: Option<Box<dyn hideout_shell::hideout_panels::PanelFeed>>,
+    /// This hub runs the folder's supervisor: its clean end is marked in `run\hub-run.json`.
+    owner: bool,
+    /// Safe mode is on because the hub closed 3 times in 5 minutes (the banner's line).
+    safe_by_closes: bool,
+}
+
+/// How the last run ended (§7.10, #1033), in the hub that holds the supervisor lock, before the
+/// router reads `hideout.toml`: the third unclean close in 5 minutes sets `safe_mode` there and
+/// logs why. Answers whether safe mode is on because of the closes. Safe mode off at a start
+/// forgets that cause, so a flag set by hand later reads neutral.
+#[cfg(windows)]
+fn closes_at_start(home: &std::path::Path, now_ms: u64) -> bool {
+    use hideout_supervisor::closes;
+    let (s, saved) = closes::on_start(home, std::process::id(), now_ms);
+    if let Err(e) = saved {
+        log::warn!("run\\hub-run.json not saved: {e}; this run's end can't be told apart");
+    }
+    if s.unclean && !s.enter_safe_mode {
+        log::info!(
+            "the last run ended without a clean exit ({} in 5 minutes; safe mode at {})",
+            s.recent,
+            closes::KEEP
+        );
+    }
+    let mut reg = match hideout_registry::Registry::open_from_env(home) {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("registry not read ({e:?}); safe mode not checked");
+            return false;
+        }
+    };
+    if s.enter_safe_mode {
+        log::warn!(
+            "safe mode on: Hideout closed {} times in 5 minutes without a clean exit; no module starts until Start normally",
+            s.recent
+        );
+        if let Err(e) = reg.set_safe_mode(true) {
+            log::warn!("safe mode not saved in hideout.toml: {e:?}");
+        }
+        return true;
+    }
+    if !reg.hub.safe_mode() {
+        if let Err(e) = closes::clear_safe_mode_cause(home) {
+            log::warn!("run\\hub-run.json not saved: {e}");
+        }
+        return false;
+    }
+    closes::safe_mode_by_closes(home)
+}
+
+#[cfg(windows)]
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Opens `logs\hideout.log` first, so the router's and the supervisor's start-up lines land in it
@@ -65,6 +120,8 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
                 actions: None,
                 start_normally: None,
                 panels: None,
+                owner: false,
+                safe_by_closes: false,
             };
         }
         Err(e) => {
@@ -72,6 +129,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
             None
         }
     };
+    let safe_by_closes = closes_at_start(&paths.root, unix_ms());
     let (router, supervisor, feed) = router_start::start(&paths.root, &paths.instance_suffix());
     let hub = router.clone();
     let facts: modules_page::Facts = Box::new(move |k| hub.read(|r| r.fact(k).cloned()));
@@ -87,6 +145,8 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
         _router: Some(router),
         hooks: Some(Box::new(router_start::Hooks(supervisor))),
         panels: Some(Box::new(feed)),
+        owner: true,
+        safe_by_closes,
     }
 }
 
@@ -110,10 +170,21 @@ fn main() {
     // Lab control only where the registry allows lab mode (never on the user's folder).
     hideout_shell::lab_control::allow(hideout_registry::lab::lab_mode_from_env(&paths.root).on());
     let mut started = start(&paths);
+    if started.owner {
+        // Quit, the session's end and Ctrl+C mark the run clean (#1033).
+        let home = paths.root.clone();
+        hideout_shell::exit_watch::install(Box::new(move || {
+            match hideout_supervisor::closes::mark_clean(&home) {
+                Ok(()) => log::info!("clean exit marked"),
+                Err(e) => log::warn!("clean exit not marked in run\\hub-run.json: {e}"),
+            }
+        }));
+    }
     let pages = modules_page::pages(
         modules_page::installed(&paths.root),
         started.facts.take(),
         started.actions.take(),
+        started.safe_by_closes,
     );
     let opts = hideout_shell::ShellOptions {
         paths,
@@ -133,6 +204,8 @@ fn main() {
         eprintln!("hideout: {e}");
         std::process::exit(1);
     }
+    // The shell returned: an end on purpose (a no-op in a second hub, which installed nothing).
+    hideout_shell::exit_watch::clean_exit();
     drop(started);
 }
 
@@ -266,9 +339,69 @@ mod tests {
             text.contains("supervisor: starting; 0 instance(s) recorded"),
             "no supervisor line in hideout.log:\n{text}"
         );
-        // A second hub on the same folder starts neither router nor supervisor.
+        // A second hub on the same folder starts neither router nor supervisor, and doesn't
+        // count as a close of the first (#1033).
+        let run = hideout_supervisor::closes::HubRun::load(&paths.root);
         let second = start(&paths);
-        assert!(second.hooks.is_none() && second._router.is_none());
+        assert!(second.hooks.is_none() && second._router.is_none() && !second.owner);
+        assert_eq!(hideout_supervisor::closes::HubRun::load(&paths.root), run);
+        assert!(started.owner && run.running.is_some());
         drop(started);
+    }
+
+    /// #1033, window-free: three starts after unclean closes within 5 minutes set `safe_mode`
+    /// in hideout.toml with the closes as the cause; clean quits don't count; a start long
+    /// after doesn't; a flag set by hand reads neutral.
+    #[test]
+    fn three_unclean_closes_in_five_minutes_start_in_safe_mode() {
+        use hideout_supervisor::closes;
+        let dir = std::env::temp_dir().join(format!("hideout-main-safe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml_safe = || {
+            hideout_registry::Registry::open_from_env(&dir)
+                .unwrap()
+                .hub
+                .safe_mode()
+        };
+        const MIN: u64 = 60_000;
+        let t0 = 2_000_000_000_000;
+        // Clean quits: a start, then Quit, five times in a minute.
+        for k in 0..5 {
+            assert!(!closes_at_start(&dir, t0 + k * 1000));
+            closes::mark_clean(&dir).unwrap();
+        }
+        assert!(!toml_safe());
+        // Killed three times: the starts at 2, 3 and 4 minutes find the last run's mark.
+        assert!(!closes_at_start(&dir, t0 + MIN)); // after the last quit: clean
+        assert!(!closes_at_start(&dir, t0 + 2 * MIN));
+        assert!(!closes_at_start(&dir, t0 + 3 * MIN));
+        assert!(!toml_safe());
+        assert!(closes_at_start(&dir, t0 + 4 * MIN));
+        assert!(toml_safe(), "the third unclean close didn't set safe_mode");
+        // Closed cleanly in safe mode: the next start still names the closes.
+        closes::mark_clean(&dir).unwrap();
+        assert!(closes_at_start(&dir, t0 + 5 * MIN));
+        // Start normally clears the flag (the supervisor does it), then Quit; the next start
+        // forgets the cause.
+        let mut reg = hideout_registry::Registry::open_from_env(&dir).unwrap();
+        reg.set_safe_mode(false).unwrap();
+        closes::clear_safe_mode_cause(&dir).unwrap();
+        closes::mark_clean(&dir).unwrap();
+        assert!(!closes_at_start(&dir, t0 + 11 * MIN));
+        assert!(!toml_safe());
+        // Spread out: unclean closes noticed at 12, 14 and 18 minutes are not 3 in 5 minutes,
+        // so the third doesn't turn safe mode on.
+        for m in [12, 14, 18] {
+            assert!(!closes_at_start(&dir, t0 + m * MIN));
+        }
+        assert!(!toml_safe());
+        // Set by hand: safe mode, without the closes as its cause.
+        closes::mark_clean(&dir).unwrap();
+        let mut reg = hideout_registry::Registry::open_from_env(&dir).unwrap();
+        reg.set_safe_mode(true).unwrap();
+        assert!(!closes_at_start(&dir, t0 + 30 * MIN));
+        assert!(toml_safe());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1992,7 +1992,12 @@ fn renders_the_modules_page_for_review() {
             "Modules"
         }
         fn ui(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-            page_ui(ui, t, &self.0, self.1);
+            page_ui(
+                ui,
+                t,
+                &self.0,
+                self.1.then_some(hideout_supervisor::words::SAFE_MODE_LINE),
+            );
         }
     }
     let facts: HashMap<String, serde_json::Value> = [

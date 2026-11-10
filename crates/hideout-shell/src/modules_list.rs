@@ -200,9 +200,11 @@ fn c(x: Rgb) -> egui::Color32 {
 }
 
 /// The safe-mode banner (§7.10): "Safe mode" / the line / **Start normally** · Find the module
-/// that breaks Hideout. Bisect isn't built: its link is greyed with "Comes in a later
-/// Hideout.". Amber, like the tray's dot. True when Start normally was clicked.
-pub fn safe_mode_banner(ui: &mut egui::Ui, t: &Tokens) -> bool {
+/// that breaks Hideout. `line` is [`words::safe_mode_line`]'s. Bisect isn't built: its link is
+/// greyed with "Comes in a later Hideout." as its tooltip and its accessible description (a
+/// screen reader reads it without hovering). Amber, like the tray's dot. True when Start
+/// normally was clicked.
+pub fn safe_mode_banner(ui: &mut egui::Ui, t: &Tokens, line: &str) -> bool {
     use egui::RichText;
     let mut start = false;
     egui::Frame::new()
@@ -219,7 +221,7 @@ pub fn safe_mode_banner(ui: &mut egui::Ui, t: &Tokens) -> bool {
                     .color(c(t.text)),
             );
             ui.add_space(2.0);
-            ui.label(RichText::new(words::SAFE_MODE_LINE).color(c(t.text)));
+            ui.label(RichText::new(line).color(c(t.text)));
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let b =
@@ -227,20 +229,24 @@ pub fn safe_mode_banner(ui: &mut egui::Ui, t: &Tokens) -> bool {
                         .fill(c(t.accent));
                 start = ui.add(b).clicked();
                 ui.label(RichText::new("\u{b7}").color(c(t.text_muted)));
-                ui.add_enabled(
-                    false,
-                    egui::Link::new(RichText::new(words::FIND_CULPRIT).color(c(t.text_muted))),
-                )
-                .on_disabled_hover_text(words::COMES_LATER);
+                let later = ui
+                    .add_enabled(
+                        false,
+                        egui::Link::new(RichText::new(words::FIND_CULPRIT).color(c(t.text_muted))),
+                    )
+                    .on_disabled_hover_text(words::COMES_LATER);
+                ui.ctx().accesskit_node_builder(later.id, |n| {
+                    n.set_description(words::COMES_LATER);
+                });
             });
         });
     ui.add_space(16.0);
     start
 }
 
-/// Draws the page: title, the safe-mode banner when `safe_mode`, then the rows (or the empty
-/// state). Returns what was clicked.
-pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], safe_mode: bool) -> Option<Click> {
+/// Draws the page: title, the safe-mode banner with its line when `banner` is set, then the rows
+/// (or the empty state). Returns what was clicked.
+pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], banner: Option<&str>) -> Option<Click> {
     use egui::RichText;
     ui.label(
         RichText::new("Modules")
@@ -250,7 +256,7 @@ pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], safe_mode: bool) -> 
     );
     ui.add_space(20.0);
     let mut click = None;
-    if safe_mode && safe_mode_banner(ui, t) {
+    if banner.is_some_and(|line| safe_mode_banner(ui, t, line)) {
         click = Some(Click::StartNormally);
     }
     if rows.is_empty() {
@@ -549,6 +555,7 @@ mod tests {
         for s in [
             words::SAFE_MODE,
             words::SAFE_MODE_LINE,
+            words::SAFE_MODE_LINE_SET,
             words::START_NORMALLY,
             words::FIND_CULPRIT,
             words::COMES_LATER,
@@ -581,5 +588,34 @@ mod tests {
             Some((16, 3))
         );
         assert_eq!(r.left("m", None, t0), None);
+    }
+
+    /// The banner says the line it's given, and the greyed bisect link carries "Comes in a later
+    /// Hideout." as its accessible description, not only as a hover tooltip (#1033).
+    #[test]
+    fn the_banner_says_its_line_and_the_greyed_link_why() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let t = crate::theme::tokens(false);
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                page_ui(ui, &t, &[], Some(words::SAFE_MODE_LINE_SET));
+            });
+        });
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        let link = nodes
+            .iter()
+            .map(|(_, n)| n)
+            .find(|n| n.label() == Some(words::FIND_CULPRIT))
+            .expect("no bisect link node");
+        assert!(link.is_disabled());
+        assert_eq!(link.description(), Some(words::COMES_LATER));
+        // Labels carry their text as the value, buttons and links as the label.
+        let labels: Vec<_> = nodes
+            .iter()
+            .filter_map(|(_, n)| n.label().or(n.value()))
+            .collect();
+        assert!(labels.contains(&words::SAFE_MODE_LINE_SET), "{labels:?}");
+        assert!(!labels.contains(&words::SAFE_MODE_LINE), "{labels:?}");
     }
 }

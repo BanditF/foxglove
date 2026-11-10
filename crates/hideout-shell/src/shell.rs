@@ -144,6 +144,8 @@ impl Shared {
     fn quit(&self) -> ! {
         self.save_placement();
         log::info!("quit from the tray");
+        // A clean end (#1033): it doesn't count toward safe mode.
+        crate::exit_watch::clean_exit();
         tray::remove();
         log::logger().flush();
         std::process::exit(0)
