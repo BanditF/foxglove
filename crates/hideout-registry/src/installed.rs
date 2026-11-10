@@ -15,6 +15,12 @@ use crate::lab::{lab_mode_from_env, LabMode};
 /// `lab-modules\`. `None` when either can't be read just now, so a removal is never guessed
 /// from a failed read. A missing `inventory.json` is nothing installed.
 pub fn installed_ids(home: &Path) -> Option<BTreeSet<String>> {
+    installed_ids_in(home, lab_mode_from_env(home) == LabMode::On)
+}
+
+/// [`installed_ids`] with lab mode given rather than read from the environment (`lab`: the
+/// folder names under `lab-modules\` count too).
+pub fn installed_ids_in(home: &Path, lab: bool) -> Option<BTreeSet<String>> {
     let inv = Inventory::load(&home.join("inventory.json")).ok()?;
     let mut ids: BTreeSet<String> = inv
         .modules
@@ -22,7 +28,7 @@ pub fn installed_ids(home: &Path) -> Option<BTreeSet<String>> {
         .filter(|(_, m)| m.source != LAB)
         .map(|(id, _)| id.clone())
         .collect();
-    if lab_mode_from_env(home) == LabMode::On {
+    if lab {
         let base = LabMode::modules_dir(home);
         match std::fs::read_dir(&base) {
             Ok(rd) => {

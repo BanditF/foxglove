@@ -65,7 +65,47 @@ pub struct ModulesPage {
     pub safe_by_closes: bool,
     /// Finding the module that breaks Hideout (#1033); `None` on a second hub.
     pub finder: Option<hideout_supervisor::finder::Finder>,
+    /// A newer list from the inventory watch (#1054.1); `None` on a second hub.
+    pub fresh: Option<Fresh>,
     restarts: hideout_shell::modules_list::Restarts,
+}
+
+/// The Modules page's list as the inventory watch last read it (#1054.1): the watch thread
+/// puts a list in when it differs from the last one, and the page takes it at its next frame,
+/// so a removed module's row goes and an installed one's comes without a restart.
+#[cfg(windows)]
+#[derive(Clone, Default)]
+pub struct Fresh(std::sync::Arc<std::sync::Mutex<FreshInner>>);
+
+#[cfg(windows)]
+#[derive(Default)]
+struct FreshInner {
+    last: Option<Vec<hideout_shell::modules_list::Installed>>,
+    waiting: bool,
+}
+
+#[cfg(windows)]
+impl Fresh {
+    /// A list read just now; answers whether it differs from the last one put (the page then
+    /// needs a frame).
+    pub fn put(&self, list: Vec<hideout_shell::modules_list::Installed>) -> bool {
+        let mut f = self.0.lock().unwrap();
+        if f.last.as_ref() == Some(&list) {
+            return false;
+        }
+        f.last = Some(list);
+        f.waiting = true;
+        true
+    }
+
+    /// The list put since the last take, if any.
+    pub(crate) fn take(&self) -> Option<Vec<hideout_shell::modules_list::Installed>> {
+        let mut f = self.0.lock().unwrap();
+        if !std::mem::take(&mut f.waiting) {
+            return None;
+        }
+        f.last.clone()
+    }
 }
 
 #[cfg(windows)]
@@ -161,6 +201,9 @@ impl ModulesPage {
     /// (repaint in a second).
     fn rows(&mut self) -> (Vec<hideout_shell::modules_list::Row>, bool) {
         use hideout_shell::modules_list::row;
+        if let Some(list) = self.fresh.as_ref().and_then(Fresh::take) {
+            self.installed = list;
+        }
         let none = |_: &str| None;
         let facts: &dyn Fn(&str) -> Option<serde_json::Value> = match &self.facts {
             Some(f) => f.as_ref(),
@@ -281,6 +324,7 @@ pub fn pages(
     actions: Option<Box<dyn Actions>>,
     safe_by_closes: bool,
     finder: Option<hideout_supervisor::finder::Finder>,
+    fresh: Option<Fresh>,
 ) -> Vec<Box<dyn hideout_shell::Page>> {
     vec![Box::new(ModulesPage {
         installed,
@@ -288,6 +332,7 @@ pub fn pages(
         actions,
         safe_by_closes,
         finder,
+        fresh,
         restarts: Default::default(),
     })]
 }
@@ -300,7 +345,7 @@ mod tests {
 
     #[test]
     fn the_hub_starts_with_only_the_modules_page() {
-        let pages = pages(Vec::new(), None, None, false, None);
+        let pages = pages(Vec::new(), None, None, false, None, None);
         assert_eq!(pages.len(), 1);
         assert_eq!((pages[0].id(), pages[0].title()), (ID, TITLE));
         assert_eq!(
@@ -329,6 +374,7 @@ mod tests {
             actions: None,
             safe_by_closes: false,
             finder: None,
+            fresh: None,
             restarts: Default::default(),
         };
         let (rows, counting) = page.rows();
@@ -342,6 +388,47 @@ mod tests {
             ]
         );
         assert!(counting);
+    }
+
+    /// #1054.1: a list from the inventory watch replaces the page's at its next frame (a
+    /// removed row goes, an installed one comes); the same list again asks for nothing.
+    #[test]
+    fn the_page_takes_the_watchs_fresh_list() {
+        let inst = |id: &str, name: &str| Installed {
+            id: id.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            enabled: true,
+        };
+        let fresh = Fresh::default();
+        let mut page = ModulesPage {
+            installed: vec![inst("m.a", "Art"), inst("m.b", "Beat")],
+            facts: None,
+            actions: None,
+            safe_by_closes: false,
+            finder: None,
+            fresh: Some(fresh.clone()),
+            restarts: Default::default(),
+        };
+        let ids = |page: &mut ModulesPage| -> Vec<String> {
+            page.rows().0.into_iter().map(|r| r.id).collect()
+        };
+        assert_eq!(ids(&mut page), ["m.a", "m.b"]);
+        assert!(fresh.put(vec![inst("m.b", "Beat"), inst("m.c", "Chat")]));
+        assert_eq!(ids(&mut page), ["m.b", "m.c"]);
+        // Taken once: a Turn off on the page sticks until the watch reads something new.
+        page.set_enabled("m.c", false);
+        assert!(!page
+            .rows()
+            .0
+            .iter()
+            .any(|r| r.id == "m.c" && r.state == "On"));
+        assert!(!fresh.put(vec![inst("m.b", "Beat"), inst("m.c", "Chat")]));
+        assert!(!page
+            .rows()
+            .0
+            .iter()
+            .any(|r| r.id == "m.c" && r.state == "On"));
     }
 
     #[test]
@@ -404,6 +491,7 @@ mod tests {
             safe_by_closes: false,
             restarts: Default::default(),
             finder: None,
+            fresh: None,
         };
         let (rows, _) = page.rows();
         assert_eq!(rows[0].state, "Withdrawn \u{b7} 0.5.0");
@@ -444,6 +532,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: true,
             finder: None,
+            fresh: None,
             restarts: Default::default(),
         };
         assert!(page.safe_mode());

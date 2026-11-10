@@ -314,6 +314,18 @@ impl Policy {
         self.slots.get(id).and_then(|s| s.withdrawn.as_deref())
     }
 
+    /// `id` left the inventory (#1054): its slot (state, crashes, a waiting restart) and its
+    /// history go, as if the hub had started without it. Answers whether it was known. The
+    /// withdrawn versions already notified stay, so a reinstall isn't notified again.
+    pub fn forget(&mut self, id: &str) -> bool {
+        self.notified.remove(id);
+        self.history.remove(id);
+        if let Some(r) = self.round.as_mut() {
+            r.remove(id);
+        }
+        self.slots.remove(id).is_some()
+    }
+
     /// The ids of every module the policy knows.
     pub fn known(&self) -> Vec<String> {
         self.slots.keys().cloned().collect()
@@ -1500,5 +1512,29 @@ mod withdrawn_tests {
         assert_eq!(p.next_deadline(), None);
         assert!(p.tick(t + Duration::from_secs(120)).is_empty());
         assert_eq!(p.state(ID), Some(State::Revoked));
+    }
+
+    /// A module removed while its restart waited (#1054): forgotten, nothing starts later, and
+    /// it isn't among the startable modules or its history.
+    #[test]
+    fn a_removed_module_is_forgotten() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        running(&mut p, t, None);
+        p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance: 1,
+                code: 1,
+            },
+            t,
+        );
+        assert_eq!(p.state(ID), Some(State::Restarting));
+        assert!(p.forget(ID));
+        assert_eq!(p.state(ID), None);
+        assert!(p.known().is_empty() && p.history(ID).is_empty());
+        assert_eq!(p.next_deadline(), None);
+        assert!(p.tick(t + Duration::from_secs(120)).is_empty());
+        assert!(!p.forget(ID), "forgotten twice");
     }
 }

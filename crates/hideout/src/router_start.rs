@@ -118,8 +118,13 @@ fn notifier(sup: Supervisor, home: &Path) -> hideout_supervisor::driver::Notifie
 /// Starts the router and the supervisor; the panel feed is for the shell (§5): every module's
 /// manifest is loaded into the router (`ui.register` checked against its panels and actions)
 /// and handed to the panel host (tiles, `when`, Keys and Settings). `suffix` is the folder's
-/// (`HubPaths::instance_suffix`): the pipes and the modules' `HIDEOUT_PIPE` carry it.
-pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
+/// (`HubPaths::instance_suffix`): the pipes and the modules' `HIDEOUT_PIPE` carry it. `fresh`
+/// is the Modules page's list, which the inventory watch keeps current.
+pub fn start(
+    home: &Path,
+    suffix: &str,
+    fresh: crate::modules_page::Fresh,
+) -> (Hub, Supervisor, HubFeed) {
     let mut router = Router::new(Settings::default(), approver());
     let mut manifests = Vec::new();
     // Lab mode (#1001, docs/hideout-lab.md): said once, refused with its reason.
@@ -184,19 +189,8 @@ pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
     for m in manifests {
         side.manifest(m);
     }
-    // A module that leaves the inventory (§7.1, #1012.4): its tabs and pop-outs close.
+    // The inventory watch starts at the end, once the supervisor runs (#1054).
     let gone = side.clone();
-    let watched = crate::inventory_watch::start(
-        home,
-        Box::new(move |ids| {
-            for id in ids {
-                gone.removed(&id);
-            }
-        }),
-    );
-    if let Err(e) = watched {
-        log::warn!("inventory watch not started: {e}; a removed module's windows stay open");
-    }
     for o in &early {
         side.on_router(o);
     }
@@ -245,13 +239,119 @@ pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
             }
         })
         .expect("router events thread");
+    watch_inventory(home, gone, hub.clone(), sup.clone(), fresh);
     (hub, sup, feed)
+}
+
+/// The inventory watch (§7.1, #1012.4, #1054): a module that leaves the inventory has its
+/// tabs and pop-outs closed and is dropped by the supervisor and the router (the registry
+/// refuses to remove a running module); on any change the Modules page gets the list again.
+fn watch_inventory(
+    home: &Path,
+    side: panel_feed::RouterSide,
+    hub: Hub,
+    sup: Supervisor,
+    fresh: crate::modules_page::Fresh,
+) {
+    let at = home.to_path_buf();
+    let watched = crate::inventory_watch::start(
+        home,
+        Box::new(move |change| {
+            for id in &change.removed {
+                side.removed(id);
+                sup.forget(id);
+                hub.act(|r| r.forget_module(id));
+            }
+            if fresh.put(crate::modules_page::installed(&at)) {
+                side.wake();
+            }
+        }),
+    );
+    if let Err(e) = watched {
+        log::warn!(
+            "inventory watch not started: {e}; installs and removals show at the next start"
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hideout_supervisor::words;
+
+    /// #1054.1–2, window-free: the watch's chain on a temp hub folder with a real router,
+    /// supervisor and feed. A removal tells the shell, and the router forgets the module; an
+    /// install and the removal both give the Modules page a fresh list. Start event: the
+    /// inventory write; stop event: the feed's wake; 10 s is the fallback only.
+    #[cfg(windows)]
+    #[test]
+    fn a_removal_and_an_install_reach_the_router_and_the_modules_page() {
+        use hideout_shell::hideout_panels::{Inbound, PanelFeed};
+        let home = std::env::temp_dir().join(format!("hideout-rs-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let entry = |id: &str| {
+            format!(
+                r#""{id}": {{"version": "1.0.0", "kind": "service", "family": "foxglove",
+                   "visibility": "public", "source": "sideload", "channel": "stable",
+                   "installed": "2026-11-10T00:00:00Z", "files": {{}}}}"#
+            )
+        };
+        let save = |ids: &[&str]| {
+            let m: Vec<_> = ids.iter().map(|id| entry(id)).collect();
+            let text = format!(
+                r#"{{"format": "hideout-inventory-v1", "modules": {{{}}}}}"#,
+                m.join(",")
+            );
+            std::fs::write(home.join("inventory.json.tmp"), text).unwrap();
+            std::fs::rename(home.join("inventory.json.tmp"), home.join("inventory.json")).unwrap();
+        };
+        save(&["a.art", "b.beat"]);
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        let mut router = Router::new(Settings::default(), approver());
+        router.load_registry(&reg);
+        assert!(router.knows_module("b.beat"));
+        let (events, _rx) = mpsc::channel();
+        let hub = Hub::new(router, events);
+        hub.set_folder_suffix(&hideout_router::server::folder_suffix(&home));
+        let (side, mut feed) = panel_feed::feed(hub.clone());
+        let (woke, wakes) = mpsc::channel::<()>();
+        let woke = std::sync::Mutex::new(woke);
+        feed.set_waker(Box::new(move || {
+            let _ = woke.lock().unwrap().send(());
+        }));
+        let sup = Supervisor::start(&home, hub.clone());
+        let fresh = crate::modules_page::Fresh::default();
+        watch_inventory(&home, side, hub.clone(), sup, fresh.clone());
+        let mut ids_after = |want: &[&str]| -> Vec<Inbound> {
+            let mut seen = Vec::new();
+            loop {
+                wakes
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("no wake from the watch");
+                seen.extend(feed.drain());
+                if let Some(list) = fresh.take() {
+                    let ids: Vec<_> = list.iter().map(|m| m.id.as_str()).collect();
+                    if ids == want {
+                        return seen;
+                    }
+                }
+            }
+        };
+        save(&["a.art", "b.beat", "c.chat"]);
+        ids_after(&["a.art", "b.beat", "c.chat"]);
+        save(&["a.art", "c.chat"]);
+        let seen = ids_after(&["a.art", "c.chat"]);
+        assert!(
+            seen.contains(&Inbound::ModuleRemoved {
+                module: "b.beat".into()
+            }),
+            "the shell wasn't told: {seen:?}"
+        );
+        assert!(!hub.read(|r| r.knows_module("b.beat")));
+        assert!(hub.read(|r| r.knows_module("a.art")));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     #[test]
     fn every_toast_button_does_what_it_says() {
