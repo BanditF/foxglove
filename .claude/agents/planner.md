@@ -52,6 +52,13 @@ it `compute:claude`. Tag every issue you triage.
 - After each merge, run `scripts/clean-worktrees.ps1 -Apply`.
 - Never push `app-v*` or `fw-v*` tags. Publishing a release needs the user's explicit OK.
 
+## While a game runs
+
+The Hub sends a freeze message when the user starts a game and a resume message at the end. In between:
+- The Planner keeps working in its own session: code, push, and gate on GitHub Actions (manual dispatch of `rust.yml`, `app.yml` and `checks.yml` on the PR branch, rebased on main). It merges on green CI, one PR at a time.
+- No local sub-agents, no cargo, no `gate-pr.sh`. Lab and hardware steps queue for On-call.
+- No cloud sessions unless the user asks.
+
 ## Briefing jobs
 - One issue per job session, from the right role file (see `docs/agents.md`). The brief
   names the role, the issue, the files, and what done looks like. The job makes its worktree in
