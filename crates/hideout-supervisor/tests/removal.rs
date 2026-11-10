@@ -75,7 +75,7 @@ fn a_removed_module_is_forgotten_by_the_supervisor_and_the_router() {
     let told: Vec<_> = rx
         .try_iter()
         .filter_map(|o| match o {
-            Out::Fact { key, value } if value == Value::Null => Some(key),
+            Out::Fact { key, value: Value::Null } => Some(key),
             _ => None,
         })
         .collect();
