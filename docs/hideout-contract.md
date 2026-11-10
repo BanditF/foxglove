@@ -23,6 +23,9 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   `ui.*` both ways (§4.10, §8.2). New ids `ui.prop` and `ui.action` (§15). The one tightening:
   tile trees over the tile caps are now `ui.limits`; no module shipped a tile before this.
   Also (#982): the supervisor's facts `module.<id>.restart` and `module.<id>.recovery` (§7.8).
+  Also (#986), hub-side only: how a restarted hub takes modules back (§7.9). A record in
+  `run\instances.json` names a process by pid and start time; a survivor goes into a fresh Job
+  Object; one supervisor per hub folder.
 - **1.3, added** (#959): router gaps the first router build found (#958). Lease end (§8.5, §8.8): `lease.closed {lease, reason}` (H → M) tells a provider that a lease it handed out ended, and a provider event with `to: <lease>` goes only to that lease's holder. Who is an MCP client, who is the first-party `hideout` CLI, and who runs the `initialize` pid and exe-hash check are now written down (§8.2). `hub` stays 1.0: one optional notification and one optional event field, which a peer that does not know them ignores.
 - **1.3** (#953): open page panels are tabs (§5.9). Two optional notifications: `ui.badge` (M → H) sets a tab's badge (`none`, `attention`, `dirty` or `count`), and `ui.visibility` (H → M) tells a module when its panel is `visible`, `hidden` or `closed`, so it can stop work the user can't see. A tab uses the panel's existing `title` and `icon`. Pop-outs dock back to their tab (§2.5). `hub` stays 1.0: both are optional notifications, and a peer that does not know one drops it (JSON-RPC), so nothing has to be negotiated.
 - **1.2** (#918): two wire rules the transcript vectors found missing (§8.1). A request id that is still in flight on the same connection answers error -32600 `rpc.duplicate-request-id` with id null, and the first call is unaffected. A line over 256 KiB answers -32600 `rpc.frame-too-large` with id null, then the hub closes that channel; the supervisor counts it as a crash (§7.7). Also written down, not new behaviour: a result arriving after the caller's error 4 is dropped. New ids in §15. The trust vectors' `seen_after` is keyed by source id, as §7.3 has it, not by family.
@@ -934,6 +937,25 @@ Rules:
 - The hub restarts itself after a panic or a GPU reset. It reads `run\instances.json` and takes
   back running modules: each reconnects with `initialize` and its original token; the hub checks
   pid and exe hash.
+- **Taking back (#986).** Each record in `run\instances.json` holds the pid, the process's start
+  time, the exe path and its SHA-256, and the launch token. The restarted hub takes back a process
+  only when all of them match: the pid is open, its start time is the recorded one (else Windows
+  gave the pid to another process, which is left alone), and it runs the recorded exe with the
+  recorded hash. A process whose pid and start time match but whose exe doesn't is ended, that
+  pid only; a survivor of a module no longer enabled, or of a stdio module (its pipes went with
+  the hub), is ended the same way. The hub never ends a process by name. While a module is taken
+  back, or its grace period runs, the hub starts no second instance of it, and the restart shows
+  no crash bar, notification or crash count.
+- **Job Objects across a restart.** Jobs are made without kill-on-close, so the hub going doesn't
+  end its modules (they need the grace period). Only the hub holds a job's handle, so the job's
+  name goes with the hub; its processes stay inside it, caps included. The restarted hub puts a
+  survivor in a fresh job, nested in the old one (Windows 8 and later), and ends it through that
+  job. Processes the module started before the restart stay only in the old job. If Windows
+  refuses the fresh job, the hub tracks the process by its handle and logs that it has no job.
+  Keeping the old job by a second holder process was rejected: one more process to supervise for
+  no gain in containment.
+- **One supervisor per hub folder.** A second hub on the same folder only shows the first one's
+  window; it starts neither router nor supervisor, so it never starts or takes back a module.
 - With no hub back within the grace period, each module exits cleanly (lights handed back, the
   Info screen handed back to the firmware).
 - Pop-outs reopen at their places (§2.5).

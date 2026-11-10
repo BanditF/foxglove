@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 //! Drives the [`Policy`] with real processes (Windows): launches in Job Objects (§7.5, §7.7),
-//! the launch check the router runs at `initialize`, adoption after a hub restart (§7.9),
+//! the launch check the router runs at `initialize`, adoption after a hub restart (§7.9: pid,
+//! start time and exe hash from `run\instances.json`, then a fresh Job Object; #986),
 //! `run\instances.json`, stderr to each module's log, and one timer thread that sleeps until
 //! the policy's next deadline. Notices ends by events only: a thread per instance blocks on its
 //! process handle; the router reports the pipe closing (no heartbeats, #281).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,7 +39,81 @@ struct Expected {
 /// One running instance.
 struct Live {
     instance: u64,
-    job: Arc<Job>,
+    pid: u32,
+    /// Its Job Object; `None` for one taken back that couldn't be put in a fresh job.
+    job: Option<Arc<Job>>,
+    /// Its process, for one taken back (a started one is ended through its job).
+    process: Option<Arc<Process>>,
+}
+
+impl Live {
+    fn kill(&self, code: u32) {
+        if let Some(j) = &self.job {
+            j.kill(code);
+        }
+        if let Some(p) = &self.process {
+            p.kill(code);
+        }
+    }
+}
+
+/// What a record from the last hub turned out to be (§7.9, #986).
+enum Found {
+    /// The process the last hub started (pid and start time), still running the recorded exe.
+    Survivor(Process),
+    /// The process the last hub started, but its exe no longer matches the record: an orphan
+    /// to end (this pid only).
+    Orphan(Process, String),
+    /// Not running, or its pid now names another process (left alone): nothing to take back.
+    Gone(String),
+}
+
+/// Checks a record against the process now at its pid.
+fn examine(rec: &Record) -> Found {
+    let p = match Process::open(rec.pid) {
+        Ok(p) => p,
+        Err(e) => return Found::Gone(format!("pid {} not running ({e})", rec.pid)),
+    };
+    if !p.running() {
+        return Found::Gone(format!("pid {} has ended", rec.pid));
+    }
+    let started = match p.started() {
+        Ok(t) => t,
+        Err(e) => return Found::Gone(format!("pid {}: start time unknown ({e})", rec.pid)),
+    };
+    // A record from before start times (#982) can't prove the process is ours: a mismatch below
+    // then means another process may have the pid, and it is left alone.
+    let ours = match rec.started {
+        Some(t) if t != started => {
+            return Found::Gone(format!(
+                "pid {} now belongs to another process (started at another time)",
+                rec.pid
+            ))
+        }
+        Some(_) => true,
+        None => false,
+    };
+    let image = match p.image() {
+        Ok(i) => i,
+        Err(e) => return verdict(ours, p, format!("pid {}: image unknown ({e})", rec.pid)),
+    };
+    if !same_path(&image, &rec.exe) {
+        return verdict(ours, p, format!("pid {} runs {}", rec.pid, image.display()));
+    }
+    match sha256_file(&image) {
+        Ok(h) if h == rec.sha256 => Found::Survivor(p),
+        Ok(_) => verdict(ours, p, format!("exe hash of {} changed", image.display())),
+        Err(e) => verdict(ours, p, format!("hash of {}: {e}", image.display())),
+    }
+}
+
+/// An exe check failed: an orphan to end when pid and start time proved it ours.
+fn verdict(ours: bool, p: Process, why: String) -> Found {
+    if ours {
+        Found::Orphan(p, why)
+    } else {
+        Found::Gone(why)
+    }
 }
 
 struct Inner {
@@ -120,60 +195,95 @@ impl Supervisor {
             .spawn(move || timer(weak, wake))
             .expect("supervisor timer thread");
 
+        let old = Instances::load(home);
+        log::info!(
+            "supervisor: starting; {} instance(s) recorded in run\\instances.json{}",
+            old.modules.len(),
+            if safe { "; safe mode" } else { "" }
+        );
         let reg = match Registry::open(home, hideout_registry::dev_mode_from_env()) {
-            Ok(r) => r,
+            Ok(r) => Some(r),
             Err(e) => {
                 log::warn!("supervisor: registry not read ({e:?}); nothing to start");
-                return sup;
+                None
             }
         };
-        let old = Instances::load(home);
         let mut known = Vec::new();
-        for id in reg.inventory.modules.keys() {
-            let manifest = reg.manifest(id);
-            let activation = manifest
-                .as_ref()
-                .map(|m| m.activation_on.clone())
-                .filter(|a| !a.is_empty())
-                .unwrap_or_else(|| vec!["enable".into()]);
-            let runs = manifest.as_ref().is_some_and(|m| m.run.is_some());
-            let name = manifest
-                .as_ref()
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| id.clone());
-            if activation.iter().any(|a| a == "call") || name != *id {
-                if let Some(mut e) = ModuleEntry::from_registry(&reg, id) {
-                    e.activate_on_call = activation.iter().any(|a| a == "call");
-                    e.name = name.clone();
-                    hub.act(|r| {
-                        r.add_module(e);
-                        Vec::new()
-                    });
+        let mut runnable = BTreeSet::new();
+        if let Some(reg) = &reg {
+            for id in reg.inventory.modules.keys() {
+                let manifest = reg.manifest(id);
+                let activation = manifest
+                    .as_ref()
+                    .map(|m| m.activation_on.clone())
+                    .filter(|a| !a.is_empty())
+                    .unwrap_or_else(|| vec!["enable".into()]);
+                let runs = manifest.as_ref().is_some_and(|m| m.run.is_some());
+                let name = manifest
+                    .as_ref()
+                    .map(|m| m.name.clone())
+                    .unwrap_or_else(|| id.clone());
+                if activation.iter().any(|a| a == "call") || name != *id {
+                    if let Some(mut e) = ModuleEntry::from_registry(reg, id) {
+                        e.activate_on_call = activation.iter().any(|a| a == "call");
+                        e.name = name.clone();
+                        hub.act(|r| {
+                            r.add_module(e);
+                            Vec::new()
+                        });
+                    }
                 }
+                if !runs {
+                    continue;
+                }
+                if reg.hub.enabled(id) {
+                    runnable.insert(id.clone());
+                }
+                known.push(Ev::Known {
+                    id: id.clone(),
+                    name,
+                    enabled: reg.hub.enabled(id),
+                    at_enable: activation.iter().any(|a| a == "enable"),
+                    previous: reg.inventory.modules[id].previous.clone(),
+                });
             }
-            if !runs {
-                continue;
-            }
-            known.push(Ev::Known {
-                id: id.clone(),
-                name,
-                enabled: reg.hub.enabled(id),
-                at_enable: activation.iter().any(|a| a == "enable"),
-                previous: reg.inventory.modules[id].previous.clone(),
-            });
         }
-        // Adoption first, so `Known` doesn't start a second instance of a module still running.
+        // Take back first, so `Known` never starts a second instance of a module still running
+        // (§7.9). Every record is settled, wanted or not: what the last hub left is taken back
+        // or ended, by its own pid only, never by name (#986).
         let mut adopted = Vec::new();
         for (id, rec) in old.modules {
-            if !reg.hub.enabled(&id) {
-                continue;
-            }
-            match sup.adopt(&id, &rec) {
-                Ok(()) => adopted.push(Ev::Adopted {
-                    id,
-                    instance: rec.instance,
-                }),
-                Err(e) => log::info!("supervisor: {id} not taken back: {e}"),
+            match examine(&rec) {
+                Found::Survivor(p) => {
+                    let why_not = if !runnable.contains(&id) {
+                        Some("no longer enabled or installed")
+                    } else if rec.token.is_empty() {
+                        // A stdio module's pipes went with the last hub; it can't reconnect.
+                        Some("its stdio connection went with the last hub")
+                    } else {
+                        None
+                    };
+                    if let Some(why) = why_not {
+                        log::info!("supervisor: {id} (pid {}) ended: {why}", rec.pid);
+                        p.kill(1);
+                        continue;
+                    }
+                    match sup.adopt(&id, &rec, p) {
+                        Ok(()) => adopted.push(Ev::Adopted {
+                            id,
+                            instance: rec.instance,
+                        }),
+                        Err(e) => log::warn!("supervisor: {id} not taken back: {e}"),
+                    }
+                }
+                Found::Orphan(p, why) => {
+                    log::warn!(
+                        "supervisor: {id} (pid {}) left by the last hub doesn't match its record ({why}); ended",
+                        rec.pid
+                    );
+                    p.kill(1);
+                }
+                Found::Gone(why) => log::info!("supervisor: {id} not taken back: {why}"),
             }
         }
         sup.save_records();
@@ -211,6 +321,11 @@ impl Supervisor {
             sup.feed(ev);
         }
         sup
+    }
+
+    /// The pid of the module's live instance (started or taken back), if any.
+    pub fn pid(&self, id: &str) -> Option<u32> {
+        self.0.live.lock().unwrap().get(id).map(|l| l.pid)
     }
 
     /// Where the shell's notifications go (§7.7). Without one they are logged.
@@ -261,7 +376,7 @@ impl Supervisor {
                 }
                 Cmd::Kill { id } => {
                     if let Some(l) = self.0.live.lock().unwrap().get(&id) {
-                        l.job.kill(1);
+                        l.kill(1);
                     }
                 }
                 Cmd::Publish { key, value } => self.0.hub.act(|r| r.publish(&key, value)),
@@ -351,6 +466,9 @@ impl Supervisor {
             job.spawn(cmd).map_err(|e| format!("{e}"))?
         };
         let pid = child.id();
+        let started = win::child_started(&child)
+            .map_err(|e| log::warn!("supervisor: {id}: start time of pid {pid}: {e}"))
+            .ok();
         self.0.expected.lock().unwrap().insert(
             id.into(),
             Expected {
@@ -363,7 +481,9 @@ impl Supervisor {
             id.into(),
             Live {
                 instance,
-                job: job.clone(),
+                pid,
+                job: Some(job.clone()),
+                process: None,
             },
         );
         self.0.records.lock().unwrap().modules.insert(
@@ -371,6 +491,7 @@ impl Supervisor {
             Record {
                 instance,
                 pid,
+                started,
                 token,
                 exe,
                 sha256,
@@ -400,18 +521,25 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Takes back a module the last hub started (§7.9): it still runs, its exe is the one
-    /// recorded, and its Job Object is still there.
-    fn adopt(&self, id: &str, rec: &Record) -> Result<(), String> {
-        let p = Process::open(rec.pid).map_err(|e| format!("pid {}: {e}", rec.pid))?;
-        let image = p.image().map_err(|e| format!("image: {e}"))?;
-        if !same_path(&image, &rec.exe) {
-            return Err(format!("pid {} is now {}", rec.pid, image.display()));
-        }
-        if sha256_file(&image).map_err(|e| e.to_string())? != rec.sha256 {
-            return Err("exe hash changed".into());
-        }
-        let job = Arc::new(Job::open(&rec.job).map_err(|e| format!("job: {e}"))?);
+    /// Takes back a module the last hub started (§7.9), already checked by [`examine`]: a fresh
+    /// Job Object (the old one's name went with the last hub), or none if Windows refuses, and
+    /// its original token for the reconnect.
+    fn adopt(&self, id: &str, rec: &Record, p: Process) -> Result<(), String> {
+        let p = Arc::new(p);
+        let job = Job::create(&Job::name_for(&user(), id, rec.instance), self.0.caps)
+            .and_then(|j| j.assign(&p).map(|()| j));
+        let job = match job {
+            Ok(j) => Some(Arc::new(j)),
+            Err(e) => {
+                log::warn!(
+                    "supervisor: {id} (pid {}) taken back without a Job Object ({e}); its first job's caps still hold",
+                    rec.pid
+                );
+                None
+            }
+        };
+        let mut rec = rec.clone();
+        rec.job = job.as_ref().map(|j| j.name.clone()).unwrap_or_default();
         self.0.hub.act(|r| {
             r.set_token(id, &rec.token);
             Vec::new()
@@ -428,7 +556,9 @@ impl Supervisor {
             id.into(),
             Live {
                 instance: rec.instance,
+                pid: rec.pid,
                 job,
+                process: Some(p.clone()),
             },
         );
         self.0
