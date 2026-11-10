@@ -735,6 +735,7 @@ impl Supervisor {
         i.previous = fact("previous");
         if let Ok(reg) = Registry::open_from_env(&self.0.home) {
             i.version = reg.inventory.modules.get(id).map(|m| m.version.clone());
+            i.catalog = catalog_line(&reg, id);
             if let Some(m) = reg.manifest(id) {
                 i.name = m.name;
             }
@@ -1036,6 +1037,24 @@ impl Supervisor {
             log::warn!("supervisor: run\\instances.json not written: {e}");
         }
     }
+}
+
+/// Copy diagnostics' catalog line (#1049): the source a catalog module came from, with the
+/// sequence and accepted time of the catalog stored for it. `None` for a sideload or lab module.
+fn catalog_line(reg: &Registry, id: &str) -> Option<String> {
+    let m = reg.inventory.modules.get(id)?;
+    if m.source == hideout_registry::inventory::SIDELOAD
+        || m.source == hideout_registry::inventory::LAB
+    {
+        return None;
+    }
+    Some(match reg.stored_catalog(&m.source) {
+        Some(s) => format!(
+            "source {}, sequence {}, accepted {}",
+            m.source, s.sequence, s.accepted
+        ),
+        None => format!("source {}, no catalog accepted yet", m.source),
+    })
 }
 
 /// Copy diagnostics' withdrawn lines (#1026): ids and the note as written, escaped.

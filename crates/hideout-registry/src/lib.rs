@@ -6,6 +6,8 @@
 //! - [`hub_config`]: `hideout.toml`, enabled state, sources and anchors (§7.3, §13.4)
 //! - [`Registry`]: installs into versioned folders (§7.2), enables, and checks the catalog and
 //!   every file before each launch (§12.5, §12.6); tracks what runs.
+//! - [`catalogs`]: accepted catalogs saved per source and loaded at open; fetching a source
+//!   once (§2.3, §12.4, §13.4, #1049).
 //! - [`lab`]: lab mode, the first-party modules of `<config>\lab-modules\` in a lab hub only
 //!   (#1001, docs/hideout-lab.md).
 //!
@@ -13,6 +15,7 @@
 //! puts a module's permissions in `pending_permissions`, and only [`Registry::approve`] grants.
 //! Nothing here starts a process or opens a window.
 
+pub mod catalogs;
 pub mod hub_config;
 /// The installed ids for the hub's change watch (#1012.4).
 pub mod installed;
@@ -57,6 +60,8 @@ pub enum Failure {
     Disabled(String),
     /// The step would overwrite or remove the version that runs (§7.2).
     Running(String),
+    /// A catalog source couldn't be read: not configured, offline, no root key (#1049).
+    Source(String),
 }
 
 impl Failure {
@@ -77,6 +82,7 @@ impl fmt::Display for Failure {
             Failure::NotInstalled(id) => write!(f, "{id} is not installed"),
             Failure::Disabled(id) => write!(f, "{id} is off"),
             Failure::Running(id) => write!(f, "{id} is running"),
+            Failure::Source(why) => write!(f, "{why}"),
         }
     }
 }
@@ -146,6 +152,14 @@ pub struct Registry {
     /// Lab mode only: `lab-withdrawn.json`, the lab's stand-in for a catalog revocation of a
     /// lab module (#1026, [`lab::LAB_WITHDRAWN_FILE`]).
     lab_withdrawn: BTreeMap<String, lab::LabWithdrawn>,
+    /// The Hideout root's public key root-anchored catalogs verify against (§12.2):
+    /// [`trust::PINNED_ROOT_KEY`] unless a test sets another.
+    pub root_key: Option<String>,
+    /// The accepted `root.json` and its signature, stored with each root-anchored catalog.
+    root_file: Option<(String, String)>,
+    /// One line per source whose stored catalog was read at open: loaded, or why not. For the
+    /// hub's log (#1049).
+    pub catalog_report: Vec<String>,
 }
 
 fn hash_files(dir: &Path) -> io::Result<BTreeMap<String, String>> {
@@ -167,8 +181,16 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 impl Registry {
-    /// Opens the registry in `home` (it holds `inventory.json`, `hideout.toml` and `modules\`).
+    /// Opens the registry in `home` (it holds `inventory.json`, `hideout.toml` and `modules\`)
+    /// and loads each source's stored catalog ([`Registry::load_catalogs`], #1049).
     pub fn open(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
+        let mut reg = Registry::open_bare(home, dev_mode)?;
+        reg.load_catalogs(&foxglove_plugin_trust::now_utc());
+        Ok(reg)
+    }
+
+    /// [`Registry::open`] without the stored catalogs (a lab hub reads no trust).
+    fn open_bare(home: &Path, dev_mode: bool) -> Result<Registry, Failure> {
         let mut inventory = Inventory::load(&home.join("inventory.json"))?;
         // A lab entry is never on disk; one written there by hand is not a lab module.
         inventory.modules.retain(|_, m| m.source != LAB);
@@ -184,6 +206,9 @@ impl Registry {
             lab: false,
             lab_report: Vec::new(),
             lab_withdrawn: BTreeMap::new(),
+            root_key: trust::PINNED_ROOT_KEY.map(String::from),
+            root_file: None,
+            catalog_report: Vec::new(),
         })
     }
 
@@ -191,8 +216,14 @@ impl Registry {
     /// the hub and the supervisor use. In lab mode the lab modules are loaded
     /// ([`Registry::load_lab`]); a refused lab mode loads none.
     pub fn open_from_env(home: &Path) -> Result<Registry, Failure> {
-        let mut reg = Registry::open(home, dev_mode_from_env())?;
-        if lab::lab_mode_from_env(home) == LabMode::On {
+        let lab = lab::lab_mode_from_env(home) == LabMode::On;
+        // A lab hub reads no trust (docs/hideout-lab.md), so no stored catalog either.
+        let mut reg = if lab {
+            Registry::open_bare(home, dev_mode_from_env())?
+        } else {
+            Registry::open(home, dev_mode_from_env())?
+        };
+        if lab {
             reg.load_lab();
         }
         Ok(reg)
@@ -339,6 +370,9 @@ impl Registry {
         self.inventory = inventory;
         self.trust.catalogs.retain(|a| a.anchor != ROOT_ANCHOR);
         self.trust.root = Some(root);
+        self.root_file = std::str::from_utf8(json)
+            .ok()
+            .map(|t| (t.to_string(), signature.to_string()));
         Ok(())
     }
 
@@ -353,8 +387,9 @@ impl Registry {
             .ok_or_else(|| Error::new(ErrorId::ConfigUnknownAnchor, format!("no anchor {id}")))
     }
 
-    /// Verifies a catalog from `source` against its anchor (§12.4, §13.6), stores `seen`, then
-    /// adds it to the trust set.
+    /// Verifies a catalog from `source` against its anchor (§12.4, §13.6), saves it under
+    /// `catalogs\<source>\` (with its sequence and `now` as the accepted time, #1049), stores
+    /// `seen`, then adds it to the trust set. If either can't be written it is not used.
     pub fn accept_catalog(
         &mut self,
         json: &[u8],
@@ -385,6 +420,7 @@ impl Registry {
             };
             verify_catalog(json, signature, signer, source, now, seen.as_ref())?
         };
+        self.store_catalog(json, signature, anchor, source, &catalog, now)?;
         let mut inventory = self.inventory.clone();
         inventory
             .seen

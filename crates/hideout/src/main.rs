@@ -12,6 +12,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod catalog_fetch;
+#[cfg(windows)]
+mod https;
+#[cfg(windows)]
 mod inventory_watch;
 mod modules_page;
 #[cfg(windows)]

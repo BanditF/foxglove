@@ -12,6 +12,11 @@ use serde::{Deserialize, Serialize};
 
 pub use hideout_contract::config::ROOT_ANCHOR;
 
+/// The Hideout root's public key, pinned in the hub (§12.2). `None` until the root key is made
+/// (#90): until then a root-anchored source is not fetched or loaded, and says so in the log.
+/// Never a test key (tests/hideout-vectors/trust/keys/README.txt).
+pub const PINNED_ROOT_KEY: Option<&str> = None;
+
 /// The family a catalog signed by a user anchor reads as (§12.4, v1.1).
 pub const USER_FAMILY: &str = hideout_contract::DEFAULT_USER_CATALOG_FAMILY;
 

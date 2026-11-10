@@ -52,6 +52,10 @@ pub struct Input {
     /// A withdrawn version (state `revoked`, #1026): one `(label, value)` line each, already in
     /// plain text (the publisher's note escaped, `words::escape_note`).
     pub withdrawn: Vec<(String, String)>,
+    /// The catalog a catalog-installed module is trusted under (#1049): its source, the
+    /// sequence and when this hub accepted it, or that none is accepted yet. `None` for a
+    /// sideload or a lab module.
+    pub catalog: Option<String>,
 }
 
 /// A name hidden as a whole word: not inside a longer word. `in_paths` (a short user name):
@@ -97,6 +101,9 @@ pub fn report(i: &Input) -> String {
         "Module version",
         i.version.as_deref().unwrap_or("unknown"),
     );
+    if let Some(c) = &i.catalog {
+        line(&mut head, "Catalog", c);
+    }
     line(&mut head, "State", i.state.as_deref().unwrap_or("idle"));
     line(
         &mut head,
@@ -508,6 +515,7 @@ mod tests {
             hub_under_profile: Some("AppData\\Local\\Hideout".into()),
             windows: Some("Windows 11 Pro 25H2 (build 26300.1)".into()),
             withdrawn: Vec::new(),
+            catalog: None,
         }
     }
 
