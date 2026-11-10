@@ -1,0 +1,562 @@
+{
+  "actions": [
+    "pause",
+    "reset"
+  ],
+  "declared": [
+    "tile",
+    "page"
+  ],
+  "module": "org.foxglove.focus-timer",
+  "name": "Focus timer",
+  "states": [
+    {
+      "panels": [
+        {
+          "icon": "timer",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Focus timer",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "18:42"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Focus · round 2 of 4"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 1500.0,
+                  "value": 378.0
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "pause",
+                  "label": "Pause"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "timer",
+          "id": "page",
+          "slot": "page",
+          "title": "Focus timer",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "active",
+                      "value": "18:42"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Focus · round 2 of 4"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "pause",
+                      "label": "Pause"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-reset",
+                    "props": {
+                      "action": "reset",
+                      "label": "Start a new focus period"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: the time left and the next step"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red to focus, green to rest"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Alternates 25 minutes of focus and 5 of rest, with a 15-minute rest every 4 rounds."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Focus"
+    },
+    {
+      "panels": [
+        {
+          "icon": "timer",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Focus timer",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "3:10"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Rest · then round 2"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 300.0,
+                  "value": 110.0
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "pause",
+                  "label": "Pause"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "timer",
+          "id": "page",
+          "slot": "page",
+          "title": "Focus timer",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "ok",
+                      "value": "3:10"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Rest · then round 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "pause",
+                      "label": "Pause"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-reset",
+                    "props": {
+                      "action": "reset",
+                      "label": "Start a new focus period"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: the time left and the next step"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red to focus, green to rest"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Alternates 25 minutes of focus and 5 of rest, with a 15-minute rest every 4 rounds."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Rest"
+    },
+    {
+      "panels": [
+        {
+          "icon": "timer",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Focus timer",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "18:42"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Paused"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "pause",
+                  "label": "Resume"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "timer",
+          "id": "page",
+          "slot": "page",
+          "title": "Focus timer",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "off",
+                      "value": "18:42"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Paused"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "pause",
+                      "label": "Resume"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-reset",
+                    "props": {
+                      "action": "reset",
+                      "label": "Start a new focus period"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: the time left and the next step"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red to focus, green to rest"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Alternates 25 minutes of focus and 5 of rest, with a 15-minute rest every 4 rounds."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Paused"
+    },
+    {
+      "panels": [
+        {
+          "icon": "timer",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Focus timer",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "18:42"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Keyboard not connected"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "max": 1500.0,
+                  "value": 378.0
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "pause",
+                  "label": "Pause"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "timer",
+          "id": "page",
+          "slot": "page",
+          "title": "Focus timer",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "active",
+                      "value": "18:42"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Keyboard not connected"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "pause",
+                      "label": "Pause"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-reset",
+                    "props": {
+                      "action": "reset",
+                      "label": "Start a new focus period"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: the time left and the next step"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red to focus, green to rest"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Alternates 25 minutes of focus and 5 of rest, with a 15-minute rest every 4 rounds."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Keyboard away"
+    }
+  ]
+}

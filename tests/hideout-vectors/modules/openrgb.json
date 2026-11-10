@@ -1,0 +1,457 @@
+{
+  "actions": [],
+  "declared": [
+    "tile",
+    "page"
+  ],
+  "module": "org.foxglove.openrgb",
+  "name": "OpenRGB",
+  "states": [
+    {
+      "panels": [
+        {
+          "icon": "lights",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OpenRGB",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Following"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "OpenRGB on this PC"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "page",
+          "slot": "page",
+          "title": "OpenRGB",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "active",
+                      "value": "Following"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "OpenRGB on this PC"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: OpenRGB's colour while it sends; your own lighting otherwise"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Lets OpenRGB colour your keyboard's lights. Listens on this PC only; nothing leaves your PC."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Following"
+    },
+    {
+      "panels": [
+        {
+          "icon": "lights",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OpenRGB",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Waiting for OpenRGB"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Add Foxglove in OpenRGB"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "How to connect",
+                  "opens": "page#connect"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "page",
+          "slot": "page",
+          "title": "OpenRGB",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Waiting for OpenRGB"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Add Foxglove in OpenRGB"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "label": "How to connect",
+                      "opens": "page#connect"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "connect-steps",
+                    "props": {
+                      "text": "1. In OpenRGB, open Settings > E1.31 Devices.\n2. Click Add.\n3. Set IP to 127.0.0.1 and Universe to 1.\n4. Save, then restart OpenRGB's devices (or OpenRGB)."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "connect",
+                "props": {
+                  "title": "How to connect"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: OpenRGB's colour while it sends; your own lighting otherwise"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Lets OpenRGB colour your keyboard's lights. Listens on this PC only; nothing leaves your PC."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "First run"
+    },
+    {
+      "panels": [
+        {
+          "icon": "lights",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OpenRGB",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "Waiting for OpenRGB"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Follows again when colours come"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "page",
+          "slot": "page",
+          "title": "OpenRGB",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "off",
+                      "value": "Waiting for OpenRGB"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Follows again when colours come"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: OpenRGB's colour while it sends; your own lighting otherwise"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Lets OpenRGB colour your keyboard's lights. Listens on this PC only; nothing leaves your PC."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Quiet"
+    },
+    {
+      "panels": [
+        {
+          "icon": "lights",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OpenRGB",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Port 5568 is busy"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Another app uses it"
+                },
+                "type": "label"
+              },
+              {
+                "id": "retry",
+                "props": {
+                  "label": "Try again"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "page",
+          "slot": "page",
+          "title": "OpenRGB",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Port 5568 is busy"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Another app uses it"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "retry",
+                    "props": {
+                      "label": "Try again"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: OpenRGB's colour while it sends; your own lighting otherwise"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Lets OpenRGB colour your keyboard's lights. Listens on this PC only; nothing leaves your PC."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Port busy"
+    }
+  ]
+}

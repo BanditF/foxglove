@@ -1,0 +1,505 @@
+{
+  "actions": [
+    "toggle",
+    "mute",
+    "unmute"
+  ],
+  "declared": [
+    "tile",
+    "page"
+  ],
+  "module": "org.foxglove.mic-mute",
+  "name": "Mic mute",
+  "states": [
+    {
+      "panels": [
+        {
+          "icon": "mic",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Mic mute",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Mic on"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Default communications mic"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "toggle",
+                  "label": "Mute"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "mic",
+          "id": "page",
+          "slot": "page",
+          "title": "Mic mute",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "neutral",
+                      "value": "Mic on"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Default communications mic"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "toggle",
+                      "label": "Mute"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: MUTED while muted"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while muted"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "This is Windows' mute for the default communications mic. Apps like Discord can still mute themselves. While Mic mute isn't running, Windows keeps the mic as it was."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "On"
+    },
+    {
+      "panels": [
+        {
+          "icon": "mic",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Mic mute",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "live",
+                  "value": "Muted"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Default communications mic"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "toggle",
+                  "label": "Unmute"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "mic",
+          "id": "page",
+          "slot": "page",
+          "title": "Mic mute",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "live",
+                      "value": "Muted"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Default communications mic"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "toggle",
+                      "label": "Unmute"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: MUTED while muted"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while muted"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "This is Windows' mute for the default communications mic. Apps like Discord can still mute themselves. While Mic mute isn't running, Windows keeps the mic as it was."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Muted"
+    },
+    {
+      "panels": [
+        {
+          "icon": "mic",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Mic mute",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "No microphone"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Windows has no default mic"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "mic",
+          "id": "page",
+          "slot": "page",
+          "title": "Mic mute",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "off",
+                      "value": "No microphone"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Windows has no default mic"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "connect-steps",
+                    "props": {
+                      "text": "Plug in a microphone, or pick one in Windows Sound settings, Recording tab."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "connect",
+                "props": {
+                  "title": "How to connect"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: MUTED while muted"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while muted"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "This is Windows' mute for the default communications mic. Apps like Discord can still mute themselves. While Mic mute isn't running, Windows keeps the mic as it was."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "No microphone"
+    },
+    {
+      "panels": [
+        {
+          "icon": "mic",
+          "id": "tile",
+          "slot": "tile",
+          "title": "Mic mute",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Couldn't mute"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Windows said no. Try again."
+                },
+                "type": "label"
+              },
+              {
+                "id": "retry",
+                "props": {
+                  "label": "Try again"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "mic",
+          "id": "page",
+          "slot": "page",
+          "title": "Mic mute",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Couldn't mute"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Windows said no. Try again."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "retry",
+                    "props": {
+                      "label": "Try again"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: MUTED while muted"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while muted"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "This is Windows' mute for the default communications mic. Apps like Discord can still mute themselves. While Mic mute isn't running, Windows keeps the mic as it was."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Refused"
+    }
+  ]
+}

@@ -1,0 +1,931 @@
+{
+  "actions": [],
+  "declared": [
+    "tile",
+    "page"
+  ],
+  "module": "org.foxglove.broadcast-status",
+  "name": "OBS",
+  "states": [
+    {
+      "panels": [
+        {
+          "icon": "video",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Off air"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Scene: Gameplay"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "video",
+          "id": "page",
+          "slot": "page",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "neutral",
+                      "value": "Off air"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Scene: Gameplay"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: REC or LIVE and the scene"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while recording or live"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Hideout only listens to OBS. It never starts, stops or switches anything."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Off air"
+    },
+    {
+      "panels": [
+        {
+          "icon": "video",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "live",
+                  "value": "Recording"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Scene: Gameplay"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "video",
+          "id": "page",
+          "slot": "page",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "live",
+                      "value": "Recording"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Scene: Gameplay"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: REC or LIVE and the scene"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while recording or live"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Hideout only listens to OBS. It never starts, stops or switches anything."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Recording"
+    },
+    {
+      "panels": [
+        {
+          "icon": "video",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Recording paused"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Scene: Gameplay"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "video",
+          "id": "page",
+          "slot": "page",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Recording paused"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Scene: Gameplay"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: REC or LIVE and the scene"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while recording or live"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Hideout only listens to OBS. It never starts, stops or switches anything."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Recording paused"
+    },
+    {
+      "panels": [
+        {
+          "icon": "video",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "live",
+                  "value": "Live"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Scene: Gameplay"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "video",
+          "id": "page",
+          "slot": "page",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "live",
+                      "value": "Live"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Scene: Gameplay"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: REC or LIVE and the scene"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while recording or live"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Hideout only listens to OBS. It never starts, stops or switches anything."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Live"
+    },
+    {
+      "panels": [
+        {
+          "icon": "video",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "live",
+                  "value": "Live · Recording"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Scene: Gameplay"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "video",
+          "id": "page",
+          "slot": "page",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "live",
+                      "value": "Live · Recording"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Scene: Gameplay"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: REC or LIVE and the scene"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while recording or live"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Hideout only listens to OBS. It never starts, stops or switches anything."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Live and recording"
+    },
+    {
+      "panels": [
+        {
+          "icon": "video",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "OBS isn't open"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Shows here when you open it"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "video",
+          "id": "page",
+          "slot": "page",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "off",
+                      "value": "OBS isn't open"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Shows here when you open it"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: REC or LIVE and the scene"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while recording or live"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Hideout only listens to OBS. It never starts, stops or switches anything."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "OBS closed"
+    },
+    {
+      "panels": [
+        {
+          "icon": "video",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Can't reach OBS"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Turn on its WebSocket server"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "How to",
+                  "opens": "page#connect"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "video",
+          "id": "page",
+          "slot": "page",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Can't reach OBS"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Turn on its WebSocket server"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "label": "How to",
+                      "opens": "page#connect"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "connect-steps",
+                    "props": {
+                      "text": "1. In OBS, open Tools > WebSocket Server Settings.\n2. Tick Enable WebSocket server.\n3. Leave Server Port at 4455.\n4. If Enable Authentication is ticked, copy the password, then enter it in Settings below.\n\nHideout connects by itself."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "connect",
+                "props": {
+                  "title": "How to connect"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: REC or LIVE and the scene"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while recording or live"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Hideout only listens to OBS. It never starts, stops or switches anything."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Can't reach"
+    },
+    {
+      "panels": [
+        {
+          "icon": "video",
+          "id": "tile",
+          "slot": "tile",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Needs password"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "OBS asks for one"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Enter password",
+                  "opens": "settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "video",
+          "id": "page",
+          "slot": "page",
+          "title": "OBS",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Needs password"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "OBS asks for one"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "label": "Enter password",
+                      "opens": "settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "connect-steps",
+                    "props": {
+                      "text": "1. In OBS, open Tools > WebSocket Server Settings.\n2. Tick Enable WebSocket server.\n3. Leave Server Port at 4455.\n4. If Enable Authentication is ticked, copy the password, then enter it in Settings below.\n\nHideout connects by itself."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "connect",
+                "props": {
+                  "title": "How to connect"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-screen",
+                    "props": {
+                      "text": "Info screen: REC or LIVE and the scene"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-lights",
+                    "props": {
+                      "text": "Lights: red while recording or live"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "On your keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Hideout only listens to OBS. It never starts, stops or switches anything."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Needs password"
+    }
+  ]
+}
