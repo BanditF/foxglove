@@ -211,24 +211,20 @@ fn replace_word_ci(text: &str, from: &str, to: &str, in_paths: bool) -> String {
 }
 
 /// A path under `%USERPROFILE%` that isn't in the hub folder reads `%USERPROFILE%\…\<file>`:
-/// the folder and file names in it are the user's own. A path ends at a space or quote.
+/// the folder and file names in it are the user's own. Where the path ends: see [`path_end`].
 fn outside_hub(text: &str, hub: Option<&str>) -> String {
     const P: &str = "%USERPROFILE%";
     let hub = hub.map(|h| h.replace('/', "\\").to_ascii_lowercase());
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(k) = rest.find(P) {
+        let quote = rest[..k].chars().last().filter(|c| matches!(c, '"' | '\''));
         out.push_str(&rest[..k + P.len()]);
         rest = &rest[k + P.len()..];
         let Some(sep) = rest.chars().next().filter(|c| matches!(c, '\\' | '/')) else {
             continue;
         };
-        let end = rest
-            .find(|c: char| {
-                c.is_whitespace()
-                    || matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}' | '<' | '>')
-            })
-            .unwrap_or(rest.len());
+        let end = path_end(rest, quote);
         let norm = rest[1..end].replace('/', "\\").to_ascii_lowercase();
         if norm.is_empty() {
             continue;
@@ -243,6 +239,47 @@ fn outside_hub(text: &str, hub: Option<&str>) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Where a path at the start of `text` ends (#1033: paths with spaces). A quoted path ends at its
+/// closing quote (or the line's end). An unquoted one ends at a space, quote or `,;:)]}<>`, but
+/// goes on past a space when the next word holds a `\` or `/` (`My Modules\art.exe`), or when
+/// its last name has no dot and the next word reads as a file name (`secret plan.txt`).
+fn path_end(text: &str, quote: Option<char>) -> usize {
+    if let Some(q) = quote {
+        return text.find([q, '\n', '\r']).unwrap_or(text.len());
+    }
+    let stop = |c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '"' | '\'' | ',' | ';' | ':' | ')' | ']' | '}' | '<' | '>'
+            )
+    };
+    let word_end = |from: usize| text[from..].find(stop).map_or(text.len(), |e| from + e);
+    let mut end = word_end(0);
+    while text[end..].starts_with(' ') {
+        let next = word_end(end + 1);
+        let word = &text[end + 1..next];
+        if word.is_empty() {
+            break;
+        }
+        if word.contains(['\\', '/']) {
+            end = next;
+            continue;
+        }
+        let last = text[..end].rsplit(['\\', '/']).next().unwrap_or("");
+        let file_like = word.rsplit_once('.').is_some_and(|(name, ext)| {
+            !name.is_empty()
+                && (1..=5).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        });
+        if !last.contains('.') && file_like {
+            end = next;
+        }
+        break;
+    }
+    end
 }
 
 /// Words after which a value is a secret: `token=…`, `"token": "…"`, `Bearer …`.
@@ -596,5 +633,37 @@ mod tests {
             outside_hub("%USERPROFILE%/Desktop/plan.txt", None),
             "%USERPROFILE%/\u{2026}/<file>"
         );
+    }
+
+    /// #1033: a path with spaces hides whole, quoted or not; the words after it stay.
+    #[test]
+    fn paths_with_spaces_hide_whole() {
+        let hub = Some("AppData\\Local\\Hideout");
+        let hidden = "%USERPROFILE%\\\u{2026}\\<file>";
+        for (text, after) in [
+            (
+                "%USERPROFILE%\\My Modules\\Art Pack\\art.exe exited with code 1",
+                " exited with code 1",
+            ),
+            (
+                "%USERPROFILE%\\Desktop\\secret plan.txt: not found",
+                ": not found",
+            ),
+            ("\"%USERPROFILE%\\My Stuff\\a b c\" missing", "\" missing"),
+            ("'%USERPROFILE%\\x y\\z' and more", "' and more"),
+            ("%USERPROFILE%\\Desktop\\a.log ended", " ended"),
+        ] {
+            let t = outside_hub(text, hub);
+            let start = if text.starts_with(['"', '\'']) {
+                &text[..1]
+            } else {
+                ""
+            };
+            assert_eq!(t, format!("{start}{hidden}{after}"), "{text}");
+        }
+        // The hub folder with a space in it stays, logs and all.
+        let spaced = Some("AppData\\Local\\My Hub");
+        let text = "%USERPROFILE%\\AppData\\Local\\My Hub\\logs\\a.log ok";
+        assert_eq!(outside_hub(text, spaced), text);
     }
 }

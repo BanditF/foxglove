@@ -881,4 +881,20 @@ mod safe_mode_tests {
             .iter()
             .any(|(_, l)| l == "safe mode ended: started normally"));
     }
+
+    /// Turn on in safe mode (#1033): saved on, not started, no state id (the row reads "On ·
+    /// not started in safe mode"); Start normally then starts it.
+    #[test]
+    fn turn_on_in_safe_mode_waits_for_start_normally() {
+        let mut p = Policy::new();
+        p.safe_mode = true;
+        let t = Instant::now();
+        p.handle(known("m.oak", false, true), t);
+        assert_eq!(p.state("m.oak"), Some(State::Off));
+        let cmds = p.handle(Ev::Enable { id: "m.oak".into() }, t);
+        assert!(launches(&cmds).is_empty(), "safe mode started {cmds:?}");
+        assert_eq!(p.state("m.oak"), Some(State::Idle));
+        assert_eq!(State::Idle.id(), None);
+        assert_eq!(launches(&p.handle(Ev::StartNormally, t)), ["m.oak"]);
+    }
 }

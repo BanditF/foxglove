@@ -31,10 +31,22 @@ pub const UPDATE_HIDEOUT: &str = "Update Hideout";
 /// culprit"): title, line, main button, second action.
 pub const SAFE_MODE: &str = "Safe mode";
 pub const SAFE_MODE_LINE: &str = "Hideout closed 3 times in 5 minutes, so no modules were started.";
+/// The line when the flag was set by hand (`safe_mode = true` in hideout.toml), not by the
+/// closes: it doesn't claim a cause (#1033).
+pub const SAFE_MODE_LINE_SET: &str = "Safe mode is on, so no modules were started.";
 pub const START_NORMALLY: &str = "Start normally";
 pub const FIND_CULPRIT: &str = "Find the module that breaks Hideout";
 /// The tooltip of a step that isn't built yet (bisect).
 pub const COMES_LATER: &str = "Comes in a later Hideout.";
+/// The banner's line: the closes' cause only when they turned safe mode on.
+pub fn safe_mode_line(by_closes: bool) -> &'static str {
+    if by_closes {
+        SAFE_MODE_LINE
+    } else {
+        SAFE_MODE_LINE_SET
+    }
+}
+
 /// The tray tooltip in safe mode.
 pub const SAFE_MODE_TIP: &str = "Hideout \u{b7} safe mode";
 
@@ -291,6 +303,7 @@ pub fn every_string() -> Vec<String> {
         UPDATE_HIDEOUT,
         SAFE_MODE,
         SAFE_MODE_LINE,
+        SAFE_MODE_LINE_SET,
         START_NORMALLY,
         FIND_CULPRIT,
         COMES_LATER,

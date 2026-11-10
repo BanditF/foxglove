@@ -15,7 +15,7 @@ pub const TITLE: &str = "Modules";
 pub type Facts = Box<dyn Fn(&str) -> Option<serde_json::Value>>;
 
 /// What the page's buttons ask of the supervisor (Start normally, the ladder, Turn on); `None`
-/// on a hub without one. Turn on answers whether the module was turned on.
+/// on a hub without one. Turn on answers why a module wasn't turned on.
 #[cfg(windows)]
 pub trait Actions {
     fn start_normally(&self);
@@ -23,7 +23,7 @@ pub trait Actions {
     fn start_with_defaults(&self, id: &str);
     fn go_back(&self, id: &str);
     fn turn_off(&self, id: &str);
-    fn turn_on(&self, id: &str) -> bool;
+    fn turn_on(&self, id: &str) -> Result<(), String>;
 }
 
 #[cfg(windows)]
@@ -43,7 +43,7 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     fn turn_off(&self, id: &str) {
         hideout_supervisor::driver::Supervisor::turn_off(self, id)
     }
-    fn turn_on(&self, id: &str) -> bool {
+    fn turn_on(&self, id: &str) -> Result<(), String> {
         hideout_supervisor::driver::Supervisor::turn_on(self, id)
     }
 }
@@ -53,6 +53,9 @@ pub struct ModulesPage {
     pub installed: Vec<hideout_shell::modules_list::Installed>,
     pub facts: Option<Facts>,
     pub actions: Option<Box<dyn Actions>>,
+    /// The hub's closes turned safe mode on at this start (`run\hub-run.json`), so the banner
+    /// names that cause; a hand-set flag reads neutral.
+    pub safe_by_closes: bool,
     restarts: hideout_shell::modules_list::Restarts,
 }
 
@@ -108,13 +111,16 @@ impl ModulesPage {
                     self.set_enabled(&id, false);
                     false
                 }
-                (Does::TurnOn, Some(a)) => {
-                    let on = a.turn_on(&id);
-                    if on {
+                (Does::TurnOn, Some(a)) => match a.turn_on(&id) {
+                    Ok(()) => {
                         self.set_enabled(&id, true);
+                        false
                     }
-                    !on
-                }
+                    Err(why) => {
+                        log::warn!("Modules page: {id} not turned on ({why}); opening its page");
+                        true
+                    }
+                },
             },
         };
         if let (true, Some(id)) = (open, id) {
@@ -189,8 +195,10 @@ impl hideout_shell::Page for ModulesPage {
 
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
         let (rows, counting) = self.rows();
-        let safe = self.safe_mode();
-        if let Some(click) = hideout_shell::modules_list::page_ui(ui, t, &rows, safe) {
+        let banner = self
+            .safe_mode()
+            .then(|| hideout_supervisor::words::safe_mode_line(self.safe_by_closes));
+        if let Some(click) = hideout_shell::modules_list::page_ui(ui, t, &rows, banner) {
             self.on_click(click);
         }
         // Only while a row counts down and the page is drawn (no frames while hidden).
@@ -202,17 +210,19 @@ impl hideout_shell::Page for ModulesPage {
 }
 
 /// The hub's pages, in sidebar order: only Modules. `facts` and `actions` are `None` on a
-/// second hub.
+/// second hub; `safe_by_closes` is [`ModulesPage::safe_by_closes`].
 #[cfg(windows)]
 pub fn pages(
     installed: Vec<hideout_shell::modules_list::Installed>,
     facts: Option<Facts>,
     actions: Option<Box<dyn Actions>>,
+    safe_by_closes: bool,
 ) -> Vec<Box<dyn hideout_shell::Page>> {
     vec![Box::new(ModulesPage {
         installed,
         facts,
         actions,
+        safe_by_closes,
         restarts: Default::default(),
     })]
 }
@@ -225,7 +235,7 @@ mod tests {
 
     #[test]
     fn the_hub_starts_with_only_the_modules_page() {
-        let pages = pages(Vec::new(), None, None);
+        let pages = pages(Vec::new(), None, None, false);
         assert_eq!(pages.len(), 1);
         assert_eq!((pages[0].id(), pages[0].title()), (ID, TITLE));
         assert_eq!(
@@ -252,6 +262,7 @@ mod tests {
             installed: vec![inst("m.a", "Art"), inst("m.b", "Beat"), inst("m.c", "Chat")],
             facts: Some(facts),
             actions: None,
+            safe_by_closes: false,
             restarts: Default::default(),
         };
         let (rows, counting) = page.rows();
@@ -293,9 +304,9 @@ mod tests {
         fn turn_off(&self, id: &str) {
             self.0.borrow_mut().push(format!("turn-off {id}"));
         }
-        fn turn_on(&self, id: &str) -> bool {
+        fn turn_on(&self, id: &str) -> Result<(), String> {
             self.0.borrow_mut().push(format!("turn-on {id}"));
-            true
+            Ok(())
         }
     }
 
@@ -318,16 +329,25 @@ mod tests {
             installed: vec![inst("m.a", "Art", true), inst("m.o", "Oak", false)],
             facts: Some(facts),
             actions: Some(Box::new(log.clone())),
+            safe_by_closes: true,
             restarts: Default::default(),
         };
         assert!(page.safe_mode());
         let (rows, _) = page.rows();
         let words: Vec<_> = rows.iter().map(|r| r.state.as_str()).collect();
         assert_eq!(words, ["On \u{b7} not started in safe mode", "Off"]);
-        page.on_click(Click::StartNormally);
+        // Turn on in safe mode (#1033): saved on, the row reads as the others, nothing opens.
         page.on_click(Click::Primary("m.o".into(), Does::TurnOn));
-        assert_eq!(*log.0.borrow(), ["start-normally", "turn-on m.o"]);
         assert!(page.installed[1].enabled, "Turn on didn't stick to the row");
+        let (rows, _) = page.rows();
+        assert!(
+            rows.iter()
+                .all(|r| r.state == "On \u{b7} not started in safe mode"),
+            "{:?}",
+            rows.iter().map(|r| &r.state).collect::<Vec<_>>()
+        );
+        page.on_click(Click::StartNormally);
+        assert_eq!(*log.0.borrow(), ["turn-on m.o", "start-normally"]);
         safe.set(false);
         assert!(!page.safe_mode());
         let (rows, _) = page.rows();

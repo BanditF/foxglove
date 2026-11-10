@@ -178,6 +178,7 @@ The hub MUST NOT contain:
   cache\panels\<id>\      last panel trees and facts (§2.4)
   catalogs\<source>\      last accepted root, catalogs and signatures, per source (§12, §13)
   run\instances.json      live instance tokens, for taking modules back after a hub restart (§7.9)
+  run\hub-run.json        the running hub's mark and its last 3 unclean closes (§7.10)
   logs\                   hub and module logs (stderr captured per module)
 %APPDATA%\Hideout\modules\<id>\settings\   the module's settings folder, assigned by the hub
 ```
@@ -1191,7 +1192,10 @@ Rules:
 
 - After three hub restarts in five minutes the hub starts in **safe mode**: only the Modules page,
   no module started, a banner with **Start normally**. Safe mode is a flag the hub sets for itself
-  in `hideout.toml`, logged, cleared by **Start normally**.
+  in `hideout.toml`, logged, cleared by **Start normally**. A restart counts when the last run
+  ended without a clean exit: the running hub's mark in `run\hub-run.json` is still there.
+  Quit Hideout, `WM_ENDSESSION` and a console Ctrl+C or close clear it; a second hub on the same
+  folder never touches it (#1033).
 - **Find the module that breaks Hideout** (bisect, from safe mode): the hub turns off half the
   enabled modules for the session, asks "Still broken?", and halves again until one module is
   left. It then offers Turn off or Go back to <previous> for that module. The saved enabled set
