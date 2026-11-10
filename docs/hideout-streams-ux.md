@@ -247,13 +247,10 @@ Acceptance, in the lab hub with the sample room map (canvas, image and text stre
 
 ## Open questions for the user (via the Hub)
 
-All three images: `C:\Users\fuchs\splitkeeb\worktrees\_review\h29\ux-h29-proposed-states.png`
-(frozen frame looks), `C:\Users\fuchs\splitkeeb\worktrees\_review\h29\ux-h29-proposed-sizing.png`
-(reduced motion, pause).
-
 1. **Frozen frame when out of date:** **dimmed + "Last seen" chip** (matches the stale view) /
-   full colour + chip only. Image: `...\h29\ux-h29-proposed-states.png`.
+   full colour + chip only. Image:
+   `C:\Users\fuchs\splitkeeb\worktrees\_review\h29\ux-h29-proposed-states.png`.
 2. **Reduced motion:** **2 frames a second** / full rate (Pause is enough) / frozen until hover.
-   Image: `...\h29\ux-h29-proposed-sizing.png`.
+   Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h29\ux-h29-proposed-sizing.png`.
 3. **Live mark on a live stream:** **none** (the motion is the sign) / a small "Live" dot.
-   Image: `...\h29\ux-h29-proposed-states.png`.
+   Image: `C:\Users\fuchs\splitkeeb\worktrees\_review\h29\ux-h29-proposed-states.png`.
