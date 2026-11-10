@@ -1,0 +1,15 @@
+[package]
+name = "hideout-panels"
+version = "0.1.0"
+edition = "2021"
+description = "The Hideout hub's panel host: applies ui.register and ui.patch to panel trees, keeps view state by node id, maps input to ui.event, and draws the schema in egui. Clean-room MIT."
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
+hideout-contract = { path = "../hideout-contract" }
+log = "0.4"
+serde_json = "1"
+# No default fonts: egui's bundled fonts carry the OFL and Ubuntu font licences (contract §11).
+# The hub installs Windows' own fonts; the render tests load a system font.
+egui = { version = "0.33", default-features = false }

@@ -2027,6 +2027,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hideout-panels"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "egui",
+ "hideout-contract",
+ "log",
+ "serde_json",
+]
+
+[[package]]
 name = "hideout-registry"
 version = "0.1.0"
 dependencies = [
@@ -2054,6 +2065,7 @@ name = "hideout-shell"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "hideout-panels",
  "log",
  "raw-window-handle",
  "serde",

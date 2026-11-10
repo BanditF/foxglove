@@ -122,19 +122,22 @@ No internal ids anywhere (no panel ids, no `ui.limits`, no state ids like `crash
 
 ### #956 panel host (draft)
 
-- **Block:** the sidebar's selected label is `t.accent` on the accent selection fill
-  (`shell.rs`, the `entries` loop): the blank orange item from the first start. On rebase take
-  #957's `theme::nav_label`.
-- The greyed banner shows the raw state string ("Art is crash-looped."). It should show the §7.8
-  UI name and ways out, from `module.<id>.state`; "crash-looped" isn't a §7.8 state. The tab strip
-  needs the same mapping, so a small state enum in `hideout-panels` would serve both. Should-fix,
-  not a block.
-- The rejected banner shows the error id ("couldn't be shown (ui.limits)."). Keep the id for
-  Copy diagnostics; the user-facing line ends at "couldn't be shown."
-- Palette: an unavailable entry draws `text_muted` explicitly, so when it is the selected row its
-  label sits muted on the orange fill (1.1:1 dark, 1.4:1 light). Use the selection text colour when selected.
+Review items, all fixed in the PR:
+
+- **Block, fixed:** the sidebar's selected label is now `theme::nav_label` (`on_accent` on the
+  accent fill), from #957.
+- **Fixed:** the greyed banner reads the plain §7.8 words through `state_words`, for example
+  "Art: Stopped after repeated crashes." The state id is only in the tooltip (and
+  `PanelState::details`, for Copy diagnostics). The tab strip should reuse `state_words`.
+- **Fixed:** the rejected banner ends at "Art's page couldn't be shown."; the error id is in the
+  tooltip only.
+- **Fixed:** every palette label is at least 4.5:1 on its row. A selected row uses `on_accent`
+  whether or not the entry is available (`theme::palette_label`, with a test over light and dark).
+- **Done:** `ui.badge` is stored per page panel (`badge`, `badge_count`; a new instance resets it)
+  and `ui.visibility` is sent through `PanelFeed` when the content area changes (`visible` for the
+  shown panel, `hidden` for the others, `closed` after `close_panel`; on change only). No tab
+  strip yet.
 - The single page area keyed by `PanelKey` with title and icon is the right seam for the strip.
-  Add `ui.badge` / `ui.visibility` handling after this PR rebases on v1.3.
 
 ### #957 hub first-start fixes (fix/hub-first-start)
 

@@ -29,6 +29,8 @@ mod tray;
 #[cfg(windows)]
 pub use eframe::egui;
 #[cfg(windows)]
+pub use hideout_panels;
+#[cfg(windows)]
 pub use shell::{run, Page, ShellOptions};
 
 /// The hub's AppUserModelID: the hub window, its pop-outs and module windows group under it
