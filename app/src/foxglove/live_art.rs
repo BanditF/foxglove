@@ -135,13 +135,15 @@ pub enum Source {
         len: u16,
         crc: Option<u32>,
     },
+    /// A pushed set the right half plays that Foxglove can't name (#1044): no frames.
+    Pushed,
 }
 
 impl Source {
     /// The feed's `art.from`: where the piece lives.
     pub fn from(&self) -> &'static str {
         match self {
-            Source::File(..) => wire::FROM_FILE,
+            Source::File(..) | Source::Pushed => wire::FROM_FILE,
             Source::BuiltIn(..) => wire::FROM_BUILT_IN,
             Source::Slot { .. } => wire::FROM_KEPT,
         }
@@ -155,6 +157,9 @@ pub fn source(s: &Snapshot) -> Option<Source> {
     }
     if let (Some(p), Some((_, hash))) = (s.showing_file(), s.sent.as_ref()) {
         return Some(Source::File(p.clone(), *hash));
+    }
+    if s.status.map(|st| super::art_words::showing(&st)) == Some(super::art_words::Showing::Sent) {
+        return Some(Source::Pushed);
     }
     let set = s.showing_built_in()?;
     let count = s.status.map_or(0, |st| st.right_set_count);
@@ -180,6 +185,7 @@ fn stored(src: &Source) -> Result<Stored, &'static str> {
             .ok()
             .and_then(|b| Stored::from_blob(&b).ok())
             .ok_or(wire::MISSING_UNREADABLE),
+        Source::Pushed => Err(wire::MISSING_PUSHED_UNKNOWN),
         Source::BuiltIn(index, count) => {
             super::art_builtins::animation(*index, *count).ok_or(wire::MISSING_OTHER_FIRMWARE)
         }
@@ -308,6 +314,31 @@ pub fn encoded(s: &Stored) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1044: a pushed set Foxglove has no record of (set -1 after a restart) goes out as a
+    /// piece without frames and says why, instead of no art at all.
+    #[test]
+    fn an_unknown_pushed_set_says_pushed_unknown() {
+        let s = Snapshot {
+            connected: true,
+            status: Some(foxglove_link::protocol::ArtStatus {
+                link: 2,
+                right_state: foxglove_link::protocol::right_state::PLAYING,
+                right_set: -1,
+                right_set_count: 6,
+                ..Default::default()
+            }),
+            ..Snapshot::default()
+        };
+        let src = source(&s).expect("a piece");
+        assert_eq!(src, Source::Pushed);
+        let a = art(&src, super::super::art_pieces::showing_name(&s));
+        assert_eq!(
+            (a.from, a.nva, a.missing),
+            (wire::FROM_FILE, None, Some(wire::MISSING_PUSHED_UNKNOWN))
+        );
+        assert_eq!(a.name, "A piece from this PC");
+    }
 
     /// A 140x68 stored frame (the Corne's screen, a quarter turn) with ink at upright (x, y).
     fn stored_with(points: &[(usize, usize)], ink: bool) -> Vec<u8> {
