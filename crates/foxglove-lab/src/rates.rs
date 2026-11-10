@@ -727,7 +727,16 @@ mod tests {
             lines[0].starts_with("PASS rates      omen-tracer light: 20 writes in "),
             "{lines:#?}"
         );
-        assert!(lines[0].contains("-> interval 34 ms"), "{lines:#?}");
+        // The interval comes from wall-clock timing: on a loaded machine it is above the floor
+        // (#955), so assert the floor as a lower bound, not an exact value.
+        let floor = foxglove_devices::pc_lighting::rates::FLOOR_MS;
+        let shown: u32 = lines[0]
+            .split("-> interval ")
+            .nth(1)
+            .and_then(|r| r.split(" ms").next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no interval in {lines:#?}"));
+        assert!(shown >= floor, "{shown} ms under the {floor} ms floor");
         assert!(lines[1].starts_with("FAIL rates      keyboard light: 5 writes in "));
         assert!(lines[1].ends_with("last error: refused: too many failed to give a rate"));
         assert_eq!(
@@ -741,9 +750,10 @@ mod tests {
         // Into the rates file: the case board's default is replaced by its measurement.
         let mut rates = Rates::bundled();
         report.apply(&mut rates);
-        assert_eq!(
-            rates.interval("omen-tracer", Some("103c:84fd")),
-            Some(Duration::from_millis(34))
+        let applied = rates.interval("omen-tracer", Some("103c:84fd")).unwrap();
+        assert!(
+            applied >= Duration::from_millis(u64::from(floor)),
+            "{applied:?}"
         );
         let json = report.json();
         assert_eq!(json["result"], "fail");
