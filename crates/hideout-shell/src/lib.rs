@@ -17,6 +17,7 @@ pub mod marks;
 pub mod palette;
 pub mod paths;
 pub mod placement;
+pub mod popout;
 pub mod prefs;
 pub mod status;
 pub mod tabs;

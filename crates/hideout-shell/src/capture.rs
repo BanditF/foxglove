@@ -8,7 +8,7 @@
 //! How: `hideout.exe --capture <out.png>` (see [`request`]) connects to the lab hub's capture
 //! pipe and sends one line. The pipe thread hands a [`Job`] to the hub and wakes it; the next
 //! frame adds one paint callback on the topmost layer of the main window and, if it is open, of
-//! the tray flyout. The callback runs after everything else is drawn, reads the back buffer
+//! the tray flyout and (H2.11) of each pop-out window on screen. The callback runs after everything else is drawn, reads the back buffer
 //! (`Painter::read_screen_rgba`, what eframe's own `ViewportCommand::Screenshot` does), and
 //! sends the image to the pipe thread, which writes the PNGs ([`write_png`]) and answers.
 //! `ViewportCommand::Screenshot` itself isn't used: eframe 0.33's glow backend drops it for
@@ -61,15 +61,26 @@ pub fn pipe_name(paths: &HubPaths) -> String {
 pub enum Window {
     Main,
     Flyout,
+    /// The n-th pop-out window on screen (H2.11), from 1, in the strip's order.
+    Popout(u8),
 }
 
 impl Window {
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> String {
         match self {
-            Window::Main => "main",
-            Window::Flyout => "flyout",
+            Window::Main => "main".into(),
+            Window::Flyout => "flyout".into(),
+            Window::Popout(n) => format!("popout-{n}"),
         }
     }
+}
+
+/// What is on screen for a capture: the main window, the flyout, how many pop-outs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OnScreen {
+    pub main: bool,
+    pub flyout: bool,
+    pub popouts: u8,
 }
 
 /// One read-back frame.
@@ -84,6 +95,8 @@ pub struct Job {
     pub main: bool,
     /// Read the flyout back (it is open).
     pub flyout: bool,
+    /// Read this many pop-out windows back (H2.11).
+    pub popouts: u8,
     pub shots: Sender<Shot>,
 }
 
@@ -145,13 +158,13 @@ pub fn write_png(path: &Path, image: &egui::ColorImage) -> io::Result<()> {
 }
 
 /// The file each window goes to: the main window to `out`, the flyout beside it as
-/// `<stem>-flyout.png`.
+/// `<stem>-flyout.png`, pop-outs as `<stem>-popout-<n>.png`.
 pub fn out_path(out: &Path, window: Window) -> PathBuf {
     match window {
         Window::Main => out.to_path_buf(),
-        Window::Flyout => {
+        other => {
             let stem = out.file_stem().unwrap_or_default().to_string_lossy();
-            out.with_file_name(format!("{stem}-flyout.png"))
+            out.with_file_name(format!("{stem}-{}.png", other.name()))
         }
     }
 }
@@ -173,11 +186,11 @@ pub fn parse_request(line: &str) -> Result<PathBuf, String> {
 }
 
 /// Answers one capture request: queues the job, wakes the hub, writes what comes back. `on_screen`
-/// says (main window on screen, flyout open). Every line of the answer starts `ok` or `error`.
+/// says what is up. Every line of the answer starts `ok` or `error`.
 pub fn answer(
     line: &str,
     slot: &Slot,
-    on_screen: (bool, bool),
+    on_screen: OnScreen,
     wake: &dyn Fn(),
     timeout: Duration,
 ) -> String {
@@ -185,8 +198,12 @@ pub fn answer(
         Ok(p) => p,
         Err(e) => return format!("error {e}\n"),
     };
-    let (main, flyout) = on_screen;
-    if !main && !flyout {
+    let OnScreen {
+        main,
+        flyout,
+        popouts,
+    } = on_screen;
+    if !main && !flyout && popouts == 0 {
         return "error nothing on screen: the window is hidden or minimised and the flyout is \
                 closed (run hideout.exe on the same folder to show the window)\n"
             .into();
@@ -195,10 +212,19 @@ pub fn answer(
     slot.put(Job {
         main,
         flyout,
+        popouts,
         shots: tx,
     });
     wake();
-    let mut reply = collect(&rx, &out, main, flyout, timeout);
+    let mut want: Vec<Window> = Vec::new();
+    if main {
+        want.push(Window::Main);
+    }
+    if flyout {
+        want.push(Window::Flyout);
+    }
+    want.extend((1..=popouts).map(Window::Popout));
+    let mut reply = collect(&rx, &out, want, timeout);
     // A job no frame took (the window went away) must not linger for a later frame.
     drop(slot.take());
     if reply.is_empty() {
@@ -207,14 +233,7 @@ pub fn answer(
     reply
 }
 
-fn collect(rx: &Receiver<Shot>, out: &Path, main: bool, flyout: bool, timeout: Duration) -> String {
-    let mut want: Vec<Window> = Vec::new();
-    if main {
-        want.push(Window::Main);
-    }
-    if flyout {
-        want.push(Window::Flyout);
-    }
+fn collect(rx: &Receiver<Shot>, out: &Path, mut want: Vec<Window>, timeout: Duration) -> String {
     let deadline = Instant::now() + timeout;
     let mut reply = String::new();
     while !want.is_empty() {
@@ -250,7 +269,7 @@ fn collect(rx: &Receiver<Shot>, out: &Path, main: bool, flyout: bool, timeout: D
 pub fn serve(
     name: &str,
     slot: Arc<Slot>,
-    on_screen: impl Fn() -> (bool, bool) + Send + 'static,
+    on_screen: impl Fn() -> OnScreen + Send + 'static,
     wake: impl Fn() + Send + 'static,
 ) -> io::Result<()> {
     use foxglove_plugin::channel::ServerPipe;
@@ -348,6 +367,10 @@ mod tests {
             out_path(Path::new(r"C:\lab\hub.png"), Window::Flyout),
             PathBuf::from(r"C:\lab\hub-flyout.png")
         );
+        assert_eq!(
+            out_path(Path::new(r"C:\lab\hub.png"), Window::Popout(2)),
+            PathBuf::from(r"C:\lab\hub-popout-2.png")
+        );
     }
 
     #[test]
@@ -357,7 +380,7 @@ mod tests {
         let r = answer(
             "capture C:\\x\\a.png\n",
             &slot,
-            (false, false),
+            OnScreen::default(),
             &|| woke.set(true),
             FRAME_TIMEOUT,
         );
@@ -371,7 +394,10 @@ mod tests {
         let r = answer(
             "capture C:\\x\\a.png\n",
             &slot,
-            (true, false),
+            OnScreen {
+                main: true,
+                ..Default::default()
+            },
             &|| {},
             Duration::from_millis(50),
         );
@@ -393,7 +419,11 @@ mod tests {
         serve(
             &pipe,
             slot.clone(),
-            || (true, true),
+            || OnScreen {
+                main: true,
+                flyout: true,
+                popouts: 1,
+            },
             move || {
                 let _ = wake_tx.send(());
             },
@@ -404,8 +434,9 @@ mod tests {
         let frame = std::thread::spawn(move || {
             wake_rx.recv().unwrap();
             let job = frame_slot.take().expect("woken without a job");
-            assert!(job.main && job.flyout);
+            assert!(job.main && job.flyout && job.popouts == 1);
             for (window, size, colour) in [
+                (Window::Popout(1), [2, 2], egui::Color32::from_rgb(1, 2, 3)),
                 (
                     Window::Main,
                     [6, 4],
@@ -422,7 +453,9 @@ mod tests {
         frame.join().unwrap();
         assert!(answer_ok(&reply), "{reply}");
         assert!(
-            reply.contains("ok main 6x4") && reply.contains("ok flyout 3x5"),
+            reply.contains("ok main 6x4")
+                && reply.contains("ok flyout 3x5")
+                && reply.contains("ok popout-1 2x2"),
             "{reply}"
         );
         let main = image::open(&out).unwrap().to_rgba8();

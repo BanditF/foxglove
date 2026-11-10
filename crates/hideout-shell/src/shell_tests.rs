@@ -282,7 +282,17 @@ fn render(hub: &mut Hub, w: u32, h: u32, setup: impl Fn(&mut Hub)) -> Option<Vec
 }
 
 /// Draws a few frames of `draw` on the hub's dark theme and fonts and rasterises the last one.
-fn rasterise(w: u32, h: u32, mut draw: impl FnMut(&egui::Context)) -> Option<Vec<u8>> {
+fn rasterise(w: u32, h: u32, draw: impl FnMut(&egui::Context)) -> Option<Vec<u8>> {
+    rasterise_events(w, h, Vec::new(), draw)
+}
+
+/// [`rasterise`] with input: `events[k]` goes to frame `k` (of at least three).
+fn rasterise_events(
+    w: u32,
+    h: u32,
+    mut events: Vec<Vec<Event>>,
+    mut draw: impl FnMut(&egui::Context),
+) -> Option<Vec<u8>> {
     hideout_panels::render::test_fonts()?;
     let ctx = egui::Context::default();
     // The shell's own fonts (Segoe UI plus Segoe UI Symbol for the marks), as the hub draws.
@@ -290,8 +300,10 @@ fn rasterise(w: u32, h: u32, mut draw: impl FnMut(&egui::Context)) -> Option<Vec
     set_theme(&ctx, ThemeChoice::Dark);
     let mut textures: HashMap<TextureId, epaint::ColorImage> = HashMap::new();
     let mut last = None;
-    for _ in 0..3 {
-        let out = ctx.run(input(w as f32, h as f32, vec![]), &mut draw);
+    let n = events.len().max(3);
+    events.resize(n, Vec::new());
+    for ev in events {
+        let out = ctx.run(input(w as f32, h as f32, ev), &mut draw);
         for (id, delta) in &out.textures_delta.set {
             let epaint::ImageData::Color(img) = &delta.image;
             match delta.pos {
@@ -1700,6 +1712,7 @@ fn a_capture_adds_one_readback_only_to_the_frame_that_answers_it() {
     slot.put(Job {
         main: true,
         flyout: true,
+        popouts: 0,
         shots: tx,
     });
     assert_eq!(
@@ -1745,3 +1758,6 @@ fn a_rendered_frame_goes_through_the_capture_png_writer() {
     assert!(back.pixels().any(|p| p.0[..3] == [0xff, 0x8a, 0x2a]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[path = "popout_tests.rs"]
+mod popouts;
