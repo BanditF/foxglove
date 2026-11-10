@@ -182,7 +182,10 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
         }
         tray::Command::Quit => shared.quit(),
     }
-    ctx.request_repaint();
+    // A hidden or minimised window draws nothing: it repaints when Windows shows it again (#935).
+    if platform::main_window_on_screen() {
+        ctx.request_repaint();
+    }
 }
 
 fn set_theme(ctx: &egui::Context, choice: ThemeChoice) {
@@ -223,6 +226,9 @@ fn visuals(t: &Tokens) -> egui::Visuals {
 }
 
 /// Windows' own UI fonts: the hub ships none (egui's bundled fonts aren't MIT or Apache-2.0).
+/// The files are mapped read-only, not read: their pages are shared with every other process
+/// using them and never count as the hub's private memory. Owned bytes would count twice, as
+/// epaint copies an owned font when it parses it (#935).
 fn install_fonts(ctx: &egui::Context) {
     let dir = std::env::var_os("WINDIR")
         .map(std::path::PathBuf::from)
@@ -231,10 +237,11 @@ fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::empty();
     let mut add = |name: &str, files: &[&str], family: egui::FontFamily| {
         for f in files {
-            if let Ok(bytes) = std::fs::read(dir.join(f)) {
-                fonts
-                    .font_data
-                    .insert(name.to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
+            if let Some(bytes) = platform::map_file(&dir.join(f)) {
+                fonts.font_data.insert(
+                    name.to_owned(),
+                    Arc::new(egui::FontData::from_static(bytes)),
+                );
                 fonts
                     .families
                     .entry(family)
@@ -476,7 +483,6 @@ impl Hub {
 
 impl eframe::App for Hub {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let t = theme::tokens(ctx.theme() == egui::Theme::Dark);
         // Closing the window keeps the hub in the tray; Quit is in the tray menu.
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -493,6 +499,15 @@ impl eframe::App for Hub {
                 ctx.request_repaint_after(at.saturating_duration_since(now));
             }
         }
+        self.draw(ctx);
+    }
+}
+
+impl Hub {
+    /// One frame of the window's content. Kept apart from `update` so the idle test runs it on a
+    /// bare `egui::Context`, window-free.
+    fn draw(&mut self, ctx: &egui::Context) {
+        let t = theme::tokens(ctx.theme() == egui::Theme::Dark);
         self.sidebar(ctx, &t);
         self.status_strip(ctx, &t);
         egui::CentralPanel::default()
@@ -545,5 +560,78 @@ impl eframe::App for Hub {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Empty;
+    impl Page for Empty {
+        fn id(&self) -> &str {
+            "hub.modules"
+        }
+        fn title(&self) -> &str {
+            "Modules"
+        }
+        fn ui(&mut self, ui: &mut egui::Ui, _: &Tokens) {
+            ui.label("No modules yet");
+        }
+    }
+
+    fn hub() -> Hub {
+        let root = std::env::temp_dir().join(format!("hideout-idle-{}", std::process::id()));
+        let shared = Arc::new(Shared {
+            paths: HubPaths {
+                root,
+                overridden: true,
+            },
+            prefs: Mutex::new(Prefs::default()),
+            paused: AtomicBool::new(false),
+        });
+        Hub::new(shared, vec![Box::new(Empty)], None)
+    }
+
+    fn input() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                placement::DEFAULT_SIZE.into(),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// The idle hub draws once and then asks for nothing: no repaint, no repaint-after. A frame
+    /// that asked again would keep eframe out of `ControlFlow::Wait` (#935).
+    #[test]
+    fn an_idle_frame_requests_no_repaint() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        set_theme(&ctx, ThemeChoice::System);
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = asked.clone();
+        ctx.set_request_repaint_callback(move |info| log.lock().unwrap().push(info.delay));
+        let mut hub = hub();
+        // egui settles layout and fonts over the first passes.
+        for _ in 0..4 {
+            let _ = ctx.run(input(), |ctx| hub.draw(ctx));
+        }
+        asked.lock().unwrap().clear();
+        for pass in 0..3 {
+            let out = ctx.run(input(), |ctx| hub.draw(ctx));
+            let vp = &out.viewport_output[&egui::ViewportId::ROOT];
+            assert_eq!(
+                vp.repaint_delay,
+                std::time::Duration::MAX,
+                "idle pass {pass} asked for a repaint"
+            );
+        }
+        assert!(
+            asked.lock().unwrap().is_empty(),
+            "{:?}",
+            asked.lock().unwrap()
+        );
     }
 }
