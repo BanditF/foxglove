@@ -58,6 +58,9 @@ pub enum Out {
     ModuleGone(String),
     /// `module.idle` from a module (§7.6).
     Idle(String),
+    /// A module's channel broke the wire rules (a frame over 256 KiB, §8.1): one crash toward
+    /// the crash bar (§7.7). Also counted in [`Router::module_faults`].
+    ModuleFault(String),
     /// `hub.notify` from a module, already permission-checked.
     Notify { module: String, params: Value },
     /// Accepted panels from `ui.register`, for the panel host (§5.1).
@@ -247,6 +250,7 @@ pub struct Router {
     pending: HashMap<(ConnId, i64), Pending>,
     next_call: i64,
     queue: VecDeque<Queued>,
+    faults: HashMap<String, u32>,
 }
 
 fn error(id: &Value, code: i64, message: &str, reason: Option<&str>) -> Value {
@@ -282,6 +286,7 @@ impl Router {
             facts: BTreeMap::new(),
             subs: BTreeMap::new(),
             next_sub: 1,
+            faults: HashMap::new(),
             pending: HashMap::new(),
             next_call: 1,
             queue: VecDeque::new(),
@@ -341,6 +346,20 @@ impl Router {
         let mut out = Vec::new();
         self.set_fact(key, value, &mut out);
         out
+    }
+
+    /// How many wire faults (§8.1 frame-too-large) module `id` has caused; the supervisor counts
+    /// each as one crash (§7.7).
+    pub fn module_faults(&self, id: &str) -> u32 {
+        self.faults.get(id).copied().unwrap_or(0)
+    }
+
+    /// Whether `id` is a request of `conn` still waiting for its answer (§8.1).
+    fn in_flight(&self, conn: ConnId, id: &Value) -> bool {
+        self.pending.values().any(|p| {
+            matches!(&p.waiter, Waiter::Caller(c, i) | Waiter::Channel { caller: c, id: i, .. }
+                if *c == conn && i == id)
+        }) || self.queue.iter().any(|q| q.caller == conn && q.id == *id)
     }
 
     /// The earliest deadline of a pending call, for the driver's timer.
@@ -456,14 +475,20 @@ impl Router {
         if line.len() > MAX_MESSAGE {
             out.push(Out::Send(
                 conn,
-                error(
-                    &Value::Null,
-                    code::INVALID_REQUEST,
-                    "invalid request",
-                    Some("message over 256 KiB"),
-                ),
+                json!({"jsonrpc": "2.0", "id": null, "error": {
+                    "code": code::INVALID_REQUEST,
+                    "message": "Invalid Request",
+                    "data": {
+                        "id": "rpc.frame-too-large",
+                        "reason": "a message line is at most 256 KiB",
+                    },
+                }}),
             ));
             out.push(Out::Close(conn));
+            if let Who::Module { id, .. } = &self.conns[&conn].who {
+                *self.faults.entry(id.clone()).or_default() += 1;
+                out.push(Out::ModuleFault(id.clone()));
+            }
             return out;
         }
         let msg = match panel::parse_message(line) {
@@ -501,6 +526,21 @@ impl Router {
         out: &mut Vec<Out>,
     ) {
         let who = self.conns[&conn].who.clone();
+        if method != "initialize" && self.in_flight(conn, &id) {
+            // Not routed; id null, so the first call's answer isn't mistaken (§8.1, v1.2).
+            out.push(Out::Send(
+                conn,
+                json!({"jsonrpc": "2.0", "id": null, "error": {
+                    "code": code::INVALID_REQUEST,
+                    "message": "Invalid Request",
+                    "data": {
+                        "id": "rpc.duplicate-request-id",
+                        "reason": format!("request id {id} is already in flight on this connection"),
+                    },
+                }}),
+            ));
+            return;
+        }
         if method == "initialize" {
             if who != Who::New {
                 out.push(Out::Send(

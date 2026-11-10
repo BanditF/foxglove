@@ -376,7 +376,7 @@ fn setup(name: &str) -> Replay {
             r.module("module", ART, Some(json!({"methods":["example.art.*"],"facts":[],"channels":["previews"],"apis":{}})));
             r
         }
-        "call-timeout" => {
+        "duplicate-request-id" | "late-reply-after-timeout" | "call-timeout" => {
             let mut r = Replay::new(vec![]);
             r.module(
                 "provider",
@@ -385,6 +385,11 @@ fn setup(name: &str) -> Replay {
             );
             r.hidden.push("provider".into());
             r.tool("tool", "example-cli", &[]);
+            r
+        }
+        "oversized-line" => {
+            let mut r = Replay::new(vec![]);
+            r.module("peer", ART, None);
             r
         }
         "hub-state-facts" => {
@@ -488,8 +493,42 @@ fn event(r: &mut Replay, name: &str, text: &str) -> Result<(), String> {
             r.take(out);
             r.module("module", ART, None);
         }
+        ("duplicate-request-id", "module foxglove.example-art answers the first call") => {
+            answer_forwarded(r, json!({"status": "ok"}))?;
+        }
+        ("late-reply-after-timeout", t) if t.starts_with("the module sends its result") => {
+            answer_forwarded(r, json!({"status": "ok"}))?;
+        }
+        ("malformed-json", t) if t.starts_with("the tool sends the line ") => {
+            let line = &t["the tool sends the line ".len()..];
+            let c = r.conn("tool");
+            let out = r.router.receive(c, line, r.now);
+            r.take(out);
+        }
+        ("oversized-line", t) if t.starts_with("a peer on module") => {
+            let c = r.conn("peer");
+            let out = r.router.receive(c, &"x".repeat(300 * 1024), r.now);
+            r.take(out);
+        }
+        ("oversized-line", "hub closes the channel") if !r.closed.iter().any(|c| c == "peer") => {
+            return Err("the channel was not closed".into());
+        }
         _ => {}
     }
+    Ok(())
+}
+
+/// The provider answers the call the hub forwarded to it (the oldest one it still holds).
+fn answer_forwarded(r: &mut Replay, result: Value) -> Result<(), String> {
+    let req = r
+        .inbox
+        .get_mut("provider")
+        .and_then(VecDeque::pop_front)
+        .ok_or("nothing was forwarded to the provider")?;
+    r.send(
+        "provider",
+        json!({"jsonrpc":"2.0","id":req["id"],"result":result}),
+    );
     Ok(())
 }
 
@@ -500,6 +539,18 @@ fn replay(name: &str, doc: &Value) -> Result<usize, String> {
         let at = |e: String| format!("step {i}: {e}");
         if let Some(text) = step.get("event").and_then(Value::as_str) {
             event(&mut r, name, text).map_err(at)?;
+            continue;
+        }
+        if let Some(e) = step.get("expect") {
+            if let Some(n) = e["supervisor_crashes_counted"].as_u64() {
+                let got = r.router.module_faults(ART);
+                if u64::from(got) != n {
+                    return Err(at(format!("crashes counted: want {n}, got {got}")));
+                }
+                if !r.events.contains(&Out::ModuleFault(ART.into())) {
+                    return Err(at("no ModuleFault event".into()));
+                }
+            }
             continue;
         }
         let Some(msg) = step.get("msg") else { continue };
