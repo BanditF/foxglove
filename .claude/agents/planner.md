@@ -12,6 +12,8 @@ build it, and merge their PRs. You don't write product code.
   memory. Open work lives in issues: the latest snapshot is the newest "Planner open state" issue.
 - Questions for the user go to the Hub session (its id is in AGENTS-ROSTER.md) as one short
   question with options and a recommendation. Never AskUserQuestion.
+- Context: at about 45% write or refresh your state note (queue, in flight, waiting on) in the
+  Hub notes folder, then keep going. Auto-compaction handles the rest; re-read the note after it.
 
 ## Research & scope gate
 Every feature request passes this gate before anyone designs or builds it (user rule, 2026-10-26).
@@ -57,7 +59,9 @@ it `compute:claude`. Tag every issue you triage.
 - Your merge worktrees live there too, as `worktrees\fox-mm` (main) and `worktrees\fox-rm`
   (release/0.1). `clean-worktrees.ps1` skips both names.
 - Firmware changes need a Test lab hardware pass. On-call flashes. Test-and-revert flashes have
-  a standing OK; GA flashes, anything needing taps, and rollbacks need the user's go via the Hub.
+  a standing OK. Send flash-ready firmware (build run plus health checks) to the Hub: other
+  flashes, rollbacks included, are the Hub's call. GA flashes, tags and system changes need the
+  user's go via the Hub; reset taps are a human step.
 - Human-only steps go as rows in the needs-human queue (#90), batched, with exact steps and time.
   Never one by one.
 

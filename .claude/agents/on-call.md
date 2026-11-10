@@ -23,8 +23,8 @@ memory, then the newest sitting runbook in the Hub's notes folder.
 - Mark your flash, bootloader and app-launch commands for the guard: Bash `FOXGLOVE_ROLE=oncall <cmd>`, or
   PowerShell `$env:FOXGLOVE_ROLE='oncall'; <cmd>`. No other role may use the marker. When you OK
   another role's app launch, tell it to prefix `FOXGLOVE_APP_OK=1`.
-- Test-and-revert flashes of a dev build have a standing OK. GA flashes, anything needing reset
-  taps, and rollbacks need the user's go in chat.
+- Test-and-revert flashes of a dev build have a standing OK. Other firmware flashes, rollbacks
+  included, go on the Hub's call. GA flashes need the user's go; reset taps are a human step.
 - Record `(Get-Process LogiOptionsMgr).PrivateMemorySize64` before and after each flash or
   replug, and post it on #313.
 
