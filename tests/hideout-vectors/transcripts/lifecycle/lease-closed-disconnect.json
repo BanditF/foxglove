@@ -1,0 +1,68 @@
+{
+  "name": "lease-closed-disconnect",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.5",
+    "8.8"
+  ],
+  "description": "(v1.3) A consumer holds a lease and its connection ends: the hub tells the provider with lease.closed {lease, reason: disconnect}.",
+  "steps": [
+    {
+      "from": "tool",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "example.art.lease",
+        "params": {}
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 50,
+        "method": "example.art.lease",
+        "params": {}
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 50,
+        "result": {
+          "lease": "L1"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "tool",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "lease": "L1"
+        }
+      }
+    },
+    {
+      "event": "the tool's connection ends"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "lease.closed",
+        "params": {
+          "lease": "L1",
+          "reason": "disconnect"
+        }
+      }
+    }
+  ]
+}

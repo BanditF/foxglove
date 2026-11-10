@@ -392,6 +392,17 @@ fn setup(name: &str) -> Replay {
             r.tool("tool", "example-cli", &[]);
             r
         }
+        "lease-closed-disconnect" | "lease-closed-released" | "lease-addressed-event" => {
+            let mut r = Replay::new(vec![]);
+            r.module(
+                "module",
+                ART,
+                Some(json!({"methods":["example.art.*"],"facts":[],"channels":[],"apis":{}})),
+            );
+            r.tool("tool", "example-cli", &[]);
+            r.tool("other", "second-cli", &[]);
+            r
+        }
         "oversized-line" => {
             let mut r = Replay::new(vec![]);
             r.module("peer", ART, None);
@@ -460,6 +471,11 @@ fn event(r: &mut Replay, name: &str, text: &str) -> Result<(), String> {
             if r.closed.is_empty() {
                 return Err("the connection was not closed".into());
             }
+        }
+        (_, "the tool's connection ends") => {
+            let c = r.parties.remove("tool").unwrap();
+            let out = r.router.disconnect(c);
+            r.take(out);
         }
         (_, t) if t.starts_with("30 seconds pass") => {
             r.now += Duration::from_secs(30);

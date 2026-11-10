@@ -155,7 +155,8 @@ pub fn may_call(caps: &Caps, method: &str, params: &Value) -> bool {
 }
 
 /// Who may receive a provider's event: holders of this permission. `None` = not broadcast (an
-/// event aimed at one consumer has no address on the router, so it isn't forwarded).
+/// event carrying `to: <lease>` is not broadcast: the router delivers it to that lease's holder,
+/// §8.8).
 pub fn event_permission(method: &str) -> Option<Capability> {
     if method == "gpu.changed" {
         return Some(Capability::GpuStatus);

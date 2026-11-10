@@ -2231,6 +2231,39 @@
         "late_result": "dropped"
       }
     },
+    "transcripts/lifecycle/lease-addressed-event.json": {
+      "spec": [
+        "8.5",
+        "8.8"
+      ],
+      "note": "(v1.3) A provider event with params.to naming a lease goes only to that lease's holder; another consumer gets nothing; after release the address is dead and the event is dropped.",
+      "result": "valid",
+      "final": {
+        "delivered_to": "holder_only"
+      }
+    },
+    "transcripts/lifecycle/lease-closed-disconnect.json": {
+      "spec": [
+        "8.5",
+        "8.8"
+      ],
+      "note": "(v1.3) A consumer's connection ends while it holds a lease: the provider gets lease.closed {lease, reason: disconnect}.",
+      "result": "valid",
+      "final": {
+        "provider_notified": "disconnect"
+      }
+    },
+    "transcripts/lifecycle/lease-closed-released.json": {
+      "spec": [
+        "8.5",
+        "8.8"
+      ],
+      "note": "(v1.3) A consumer releases a lease: the hub forwards the release call, then sends the provider lease.closed {lease, reason: released}.",
+      "result": "valid",
+      "final": {
+        "provider_notified": "released"
+      }
+    },
     "transcripts/lifecycle/malformed-json.json": {
       "spec": [
         "8.1"
