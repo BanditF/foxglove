@@ -136,13 +136,15 @@ unsafe extern "system" fn hold_proc(
     wp: windows::Win32::Foundation::WPARAM,
     lp: LPARAM,
     _id: usize,
-    _data: usize,
+    held: usize,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::UI::Shell::DefSubclassProc;
     use windows::Win32::UI::WindowsAndMessaging::{
         SET_WINDOW_POS_FLAGS, WINDOWPOS, WM_WINDOWPOSCHANGING,
     };
-    if msg == WM_WINDOWPOSCHANGING && HELD_HIDDEN.load(Ordering::Acquire) == h.0 as isize {
+    // `held` is the `&'static AtomicIsize` given to `hold_in`.
+    let held = &*(held as *const AtomicIsize);
+    if msg == WM_WINDOWPOSCHANGING && held.load(Ordering::Acquire) == h.0 as isize {
         if let Some(pos) = (lp.0 as *mut WINDOWPOS).as_mut() {
             pos.flags = SET_WINDOW_POS_FLAGS(held_flags(pos.flags.0));
         }
@@ -153,10 +155,21 @@ unsafe extern "system" fn hold_proc(
 /// Keeps `h` hidden until [`let_go_hidden`] (a start in the tray). Call on its thread, before
 /// its first frame.
 pub fn hold_hidden(h: isize) {
+    hold_in(&HELD_HIDDEN, h);
+}
+
+/// Holds `h` hidden while `held` names it. Tests pass their own cell, so a parallel test's
+/// show (which lets go of [`HELD_HIDDEN`]) cannot end their hold (#1030).
+fn hold_in(held: &'static AtomicIsize, h: isize) {
     use windows::Win32::UI::Shell::SetWindowSubclass;
-    HELD_HIDDEN.store(h, Ordering::Release);
+    held.store(h, Ordering::Release);
     unsafe {
-        let _ = SetWindowSubclass(hwnd(h), Some(hold_proc), HOLD_SUBCLASS_ID, 0);
+        let _ = SetWindowSubclass(
+            hwnd(h),
+            Some(hold_proc),
+            HOLD_SUBCLASS_ID,
+            held as *const AtomicIsize as usize,
+        );
     }
 }
 
@@ -905,6 +918,8 @@ mod tests {
     /// A tray start never shows the main window (#1012): eframe's show after the first frame,
     /// and any other show, leave a held window hidden. The window is a tool window far off
     /// screen that never activates, so even a failing run puts nothing on the desktop.
+    /// It holds through its own cell: other tests call `show_main_window`, which lets go of
+    /// the process-wide hold at any moment (#1030).
     #[test]
     fn a_held_window_stays_hidden_when_shown() {
         use windows::core::w;
@@ -946,7 +961,8 @@ mod tests {
                 None,
             )
             .unwrap();
-            hold_hidden(h.0 as isize);
+            static HELD: AtomicIsize = AtomicIsize::new(0);
+            hold_in(&HELD, h.0 as isize);
             // winit's `set_visible(true)` and a plain show.
             let _ = ShowWindow(h, SW_SHOW);
             let _ = ShowWindow(h, SW_SHOWNORMAL);
@@ -960,6 +976,7 @@ mod tests {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
             );
             assert!(!IsWindowVisible(h).as_bool(), "held: never shown");
+            HELD.store(0, Ordering::Release);
             let_go_hidden();
             assert_eq!(
                 HELD_HIDDEN.load(Ordering::Acquire),
