@@ -5,12 +5,14 @@ runs it window-free anywhere.
 Metrics (all about the hub process, hideout.exe, while it idles):
   private_mb, working_set_mb  memory (MB)
   cpu_pct                     CPU time over the window / wall time, % of one core
-  wakeups_per_s               context switches per second
+  wakeups_per_s               context switches per second, None where no counter exists
   gdi_handles, user_handles   GetGuiResources counts
   vram_mb                     dedicated GPU memory, None where Windows has no counter for it
 """
 import json
 
+# Metrics that may legitimately have no reading on a Windows build: recorded as unavailable, never a failure.
+OPTIONAL = ('wakeups_per_s', 'vram_mb')
 METRICS = ('private_mb', 'working_set_mb', 'cpu_pct', 'wakeups_per_s', 'gdi_handles', 'user_handles', 'vram_mb')
 
 
@@ -35,17 +37,20 @@ def load_sets(text):
 
 def summarize(first, last, wall_s):
     """Two samples of the same process, `wall_s` seconds apart, -> the metrics. A sample is a dict:
-    private_b, working_set_b, cpu_100ns, ctx_switches, gdi, user, vram_b (None when unavailable).
+    private_b, working_set_b, cpu_100ns, ctx_switches, gdi, user, vram_b (ctx_switches and vram_b
+    are None when Windows has no counter for them).
     The memory and handle numbers are those at the end of the window."""
     if wall_s <= 0:
         raise ValueError('the window must be longer than zero')
     mb = 1024 * 1024
     vram = last.get('vram_b')
+    c0, c1 = first.get('ctx_switches'), last.get('ctx_switches')
+    wakeups = None if c0 is None or c1 is None else round((c1 - c0) / wall_s, 2)
     return {
         'private_mb': round(last['private_b'] / mb, 2),
         'working_set_mb': round(last['working_set_b'] / mb, 2),
         'cpu_pct': round((last['cpu_100ns'] - first['cpu_100ns']) / 1e7 / wall_s * 100, 3),
-        'wakeups_per_s': round((last['ctx_switches'] - first['ctx_switches']) / wall_s, 2),
+        'wakeups_per_s': wakeups,
         'gdi_handles': last['gdi'],
         'user_handles': last['user'],
         'vram_mb': None if vram is None else round(vram / mb, 2),
@@ -62,14 +67,14 @@ def limit(entry):
 def compare(measured, baseline):
     """Per metric: (name, measured, limit, status). Status is PASS, FAIL (past the limit), SKIP
     (no baseline for it, or no reading such as VRAM without a counter) or MISSING (a baselined
-    metric that should have a reading but has none, except vram_mb which may be absent)."""
+    metric that should have a reading but has none, except the OPTIONAL ones)."""
     rows = []
     for name in METRICS:
         got, entry = measured.get(name), baseline.get(name)
         if entry is None:
             rows.append((name, got, None, 'SKIP'))
         elif got is None:
-            rows.append((name, None, limit(entry), 'SKIP' if name == 'vram_mb' else 'MISSING'))
+            rows.append((name, None, limit(entry), 'SKIP' if name in OPTIONAL else 'MISSING'))
         else:
             cap = limit(entry)
             rows.append((name, got, cap, 'FAIL' if got > cap else 'PASS'))

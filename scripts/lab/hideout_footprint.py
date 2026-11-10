@@ -3,7 +3,9 @@ with no modules and once per named set in tests/hil/hideout-footprint-sets.json 
 "default", empty), and the case records its
 
   private and working-set RAM, CPU % (of one core), wakeups (context switches per second),
-  GDI and USER handles, and dedicated VRAM where Windows has a counter for it.
+  GDI and USER handles, and dedicated VRAM where Windows has a counter for it. Wakeups try the process counter, then
+  the per-thread "Context Switches/sec" summed for the process; with neither they are recorded as
+  unavailable (null) and never compared or failed.
 
 After --settle-s (30) the hub is sampled, left alone for --window-s (60), and sampled again; CPU and
 wakeups are the difference over the window, the rest are read at its end. The numbers go to
@@ -65,6 +67,9 @@ def sample(pid):
     out = ps(
         f'$c = (Get-CimInstance Win32_PerfRawData_PerfProc_Process -Filter "IDProcess={pid}" '
         f'-ErrorAction SilentlyContinue | Select-Object -First 1).ContextSwitchesPersec; '
+        f'if ($null -eq $c) {{ $t = Get-CimInstance Win32_PerfRawData_PerfProc_Thread -Filter "IDProcess={pid}" '
+        f'-ErrorAction SilentlyContinue | Measure-Object -Property ContextSwitchesPersec -Sum; '
+        f'if ($t.Count) {{ $c = $t.Sum }} }}; '
         f'$v = Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory -ErrorAction SilentlyContinue | '
         f'Where-Object {{ $_.Name -like "pid_{pid}_*" }} | Measure-Object -Property DedicatedUsage -Sum; '
         f'@{{ctx = $c; vram = $(if ($v.Count) {{ $v.Sum }} else {{ $null }})}} | ConvertTo-Json -Compress')
@@ -72,10 +77,11 @@ def sample(pid):
         extra = json.loads(out)
     except json.JSONDecodeError:
         extra = {}
-    if extra.get('ctx') is None:
-        raise RuntimeError(f'no context-switch counter for process {pid}: {out.strip()[:200]}')
+    if not isinstance(extra, dict):
+        extra = {}
+    ctx = extra.get('ctx')  # None: no process or thread counter here; wakeups are then unavailable
     return {'private_b': mem.PrivateUsage, 'working_set_b': mem.WorkingSetSize,
-            'cpu_100ns': ft(t[2]) + ft(t[3]), 'ctx_switches': int(extra['ctx']),
+            'cpu_100ns': ft(t[2]) + ft(t[3]), 'ctx_switches': None if ctx is None else int(ctx),
             'gdi': gdi, 'user': user, 'vram_b': extra.get('vram')}
 
 

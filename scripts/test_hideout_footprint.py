@@ -36,6 +36,22 @@ class Summary(unittest.TestCase):
             fc.summarize(FIRST, LAST, 0)
 
 
+class WakeupsUnavailable(unittest.TestCase):
+    def test_no_counter_gives_none_not_an_error(self):
+        m = fc.summarize({**FIRST, 'ctx_switches': None}, {**LAST, 'ctx_switches': None}, 60)
+        self.assertIsNone(m['wakeups_per_s'])
+        self.assertEqual(m['cpu_pct'], 0.5)
+
+    def test_a_baselined_wakeups_metric_without_a_reading_is_skipped(self):
+        rows = fc.compare({'wakeups_per_s': None}, {'wakeups_per_s': {'value': 30, 'pct': 50}})
+        self.assertEqual(rows[3][3], 'SKIP')
+        self.assertEqual(fc.verdict(rows), 'PASS')
+
+    def test_a_metric_missing_from_the_baseline_is_not_compared(self):
+        rows = dict((r[0], r[3]) for r in fc.compare({'wakeups_per_s': 9999}, {}))
+        self.assertEqual(rows['wakeups_per_s'], 'SKIP')
+
+
 class Thresholds(unittest.TestCase):
     def test_limit_is_pct_plus_slack(self):
         self.assertAlmostEqual(fc.limit({'value': 100, 'pct': 10, 'slack': 5}), 115)

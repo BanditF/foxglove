@@ -135,9 +135,8 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             install_fonts(&ctx);
             let tray_shared = shared.clone();
             let tray_ctx = ctx.clone();
-            if let Err(e) = tray::install(move |cmd| on_tray(cmd, &tray_shared, &tray_ctx)) {
-                log::error!("tray icon: {e}");
-            }
+            // tray::install logs "tray icon registered" or "tray icon failed: <err>".
+            let _ = tray::install(move |cmd| on_tray(cmd, &tray_shared, &tray_ctx));
             let show_ctx = ctx.clone();
             show.listen(move || {
                 platform::show_main_window();
@@ -322,7 +321,7 @@ impl Hub {
                     let selected = i == self.current;
                     let text = egui::RichText::new(page.title())
                         .size(15.0)
-                        .color(if selected { c(t.accent) } else { c(t.text) });
+                        .color(c(theme::nav_label(t, selected)));
                     let resp = ui.add_sized(
                         [ui.available_width(), 32.0],
                         egui::Button::selectable(selected, text),
