@@ -1,0 +1,13 @@
+id = "example.timer"
+name = "Example Timer"
+version = "0.1.0"
+api = "1.0"
+run = ["timer.exe"]
+
+[[settings]]
+name = "focus-minutes"
+label = "Focus minutes"
+kind = "int"
+default = 25
+min = 1
+max = 0
