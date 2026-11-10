@@ -15,6 +15,7 @@ use crate::{flyout, placement, platform, tray, window_title, AUMID, PRODUCT};
 use eframe::egui::{self, Color32, Key, Modifiers};
 use hideout_panels::Slot;
 use hideout_panels::{PanelFeed, PanelHost, PanelKey, PanelState, TrayAction, TrayLayout};
+use hideout_supervisor::words::{self, Recovery};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -48,6 +49,46 @@ pub trait TabHooks {
     fn dock_back(&mut self, _tab: &TabId) {}
     /// "Start again" on a stopped module (§7.8).
     fn start_again(&mut self, _module: &str) {}
+    /// "Start with default settings" (the recovery ladder's second step).
+    fn start_with_defaults(&mut self, _module: &str) {}
+    /// "Go back to <previous>" (the third step).
+    fn go_back(&mut self, _module: &str) {}
+    /// "Turn off <Module>" (the last step).
+    fn turn_off(&mut self, _module: &str) {}
+}
+
+/// Modules to open in the window, from "Open <Module>" on a notification (any thread).
+static OPEN_REQUESTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Wakes the window for them.
+static OPEN_WAKER: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+/// Shows the hub window with the module's page (a notification's "Open <Module>"). Any thread.
+pub fn open_module(module: &str) {
+    OPEN_REQUESTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(module.to_string());
+    platform::show_main_window();
+    if let Some(w) = OPEN_WAKER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
+        w();
+    }
+}
+
+/// Applies a pending tray change on the UI thread (`wake::Gate` runs it on every wake).
+fn tray_sync() {
+    if let Some((state, line, tip)) = crate::marks::take_change() {
+        tray::set_state(state, &line, &tip);
+    }
+}
+
+/// When the crash bar's countdown next needs a frame: once a second while it counts, never at
+/// "Restarting…".
+fn countdown_repaint(in_s: u64) -> Option<std::time::Duration> {
+    (in_s > 0).then_some(std::time::Duration::from_secs(1))
 }
 
 /// State the tray and the window both touch.
@@ -181,6 +222,13 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             let tray_ctx = ctx.clone();
             // tray::install logs "tray icon registered" or "tray icon failed: <err>".
             let _ = tray::install(move |cmd| on_tray(cmd, &tray_shared, &tray_ctx));
+            // Facts that change the tray wake the loop once; `tray_sync` applies them.
+            let marks_ctx = ctx.clone();
+            crate::marks::set_waker(Box::new(move || marks_ctx.request_repaint()));
+            tray_sync();
+            let open_ctx = ctx.clone();
+            *OPEN_WAKER.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Box::new(move || open_ctx.request_repaint()));
             let show_ctx = ctx.clone();
             let show_shared = shared.clone();
             show.listen(move || {
@@ -205,6 +253,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         platform::main_window_drawable,
         flyout::live,
         platform::main_window_id,
+        tray_sync,
     );
     let result = event_loop.run_app(&mut gate);
     log::info!("window closed: {result:?}");
@@ -231,12 +280,8 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
         tray::Command::Pause(on) => {
             shared.paused.store(on, Ordering::Release);
             log::info!("{}", if on { "paused" } else { "resumed" });
-            let (state, line) = if on {
-                (State::Paused, "Paused")
-            } else {
-                (State::Normal, "No modules yet")
-            };
-            tray::set_state(state, line);
+            crate::marks::note_paused(on);
+            tray_sync();
         }
         tray::Command::OpenLogs => {
             let dir = shared.paths.logs_dir();
@@ -386,6 +431,12 @@ struct Hub {
     flyout_closed_by_focus: Option<std::time::Instant>,
     /// The tray panel's tile layout, saved in `hideout.toml` `[tray]`.
     tray_layout: TrayLayout,
+    /// The stopped card whose main button has had the focus (module page, ladder step): the
+    /// button takes it once when the card appears.
+    card_focus: Option<(PanelKey, &'static str)>,
+    /// The page the focus rule last saw: opening another page (and coming back) focuses the
+    /// card's main button again.
+    card_target: Option<TabId>,
 }
 
 /// The open tray flyout.
@@ -521,6 +572,8 @@ impl Hub {
             entries: Vec::new(),
             flyout: None,
             flyout_closed_by_focus: None,
+            card_focus: None,
+            card_target: None,
         }
     }
 
@@ -688,7 +741,26 @@ impl Hub {
                 popped: tab.popped,
             },
             Some(Target::Panel(key)) => match self.panels.panel(&key) {
-                Some(p) => strip::panel_look(p, tab.popped),
+                Some(p) => {
+                    let mut look = strip::panel_look(p, tab.popped);
+                    // A failure from launching reads "Couldn't start <Module>" (#983).
+                    if self.launch_failed(&key.module) {
+                        look.state = TabState::Stopped(words::couldnt_start_title(&p.module_name));
+                    }
+                    // Restarting: "Restarting… (2 of 5)", which changes once per crash and so
+                    // needs no repaint (the live countdown is the crash bar's).
+                    if self.panels.module_state(&key.module) == Some("restarting") {
+                        let crash = self
+                            .panels
+                            .fact(&format!("module.{}.restart", key.module))
+                            .and_then(|f| f.get("crash"))
+                            .and_then(|v| v.as_u64());
+                        if let Some(k) = crash {
+                            look.state = TabState::Busy(words::restarting_row(0, k as usize));
+                        }
+                    }
+                    look
+                }
                 // Restored before its module registered again (§2.4): "Starting".
                 None => Look {
                     title: tab.title.clone(),
@@ -704,6 +776,193 @@ impl Hub {
                 popped: tab.popped,
             },
         }
+    }
+
+    /// `install-failed` that came from launching (`module.<id>.failed` is `launch`).
+    fn launch_failed(&self, module: &str) -> bool {
+        self.panels.module_state(module) == Some("install-failed")
+            && self
+                .panels
+                .fact(&format!("module.{module}.failed"))
+                .and_then(|v| v.as_str())
+                == Some("launch")
+    }
+
+    /// The module's log (`logs\<id>.log`), in the app Windows opens `.log` files with.
+    fn open_log(&self, module: &str) {
+        open_module_log(&self.shared.paths.root, module);
+    }
+
+    /// "Open <Module>" from a notification: the module's page as the active tab.
+    fn take_open_requests(&mut self) {
+        let asked = std::mem::take(&mut *OPEN_REQUESTS.lock().unwrap_or_else(|e| e.into_inner()));
+        for module in asked {
+            self.shared.hidden.store(false, Ordering::Release);
+            let page = self
+                .panels
+                .in_slot(Slot::Page)
+                .find(|p| p.key.module == module)
+                .map(|p| p.key.clone());
+            match page {
+                Some(k) => self.open(TabId::panel(&k.module, &k.panel)),
+                None => log::info!("open {module}: it has no page yet"),
+            }
+        }
+    }
+
+    /// The crash bar while the module restarts (docs/hideout-supervisor-ux.md): amber, two
+    /// lines, Open log. The countdown comes from `module.<id>.restart` and the moment it
+    /// arrived, repainted once a second only while the window shows it. The first line is a
+    /// polite live region whose name stays the same for the whole crash, so a screen reader says
+    /// it once and never reads the countdown.
+    fn crash_bar_ui(&mut self, ui: &mut egui::Ui, t: &Tokens, key: &PanelKey, name: &str) {
+        let now = std::time::Instant::now();
+        let Some(r) = self.panels.restart(&key.module, now) else {
+            return;
+        };
+        let (line1, line2) = words::crash_bar(name, r.in_s, r.crash as usize);
+        let mut open_log = false;
+        ui.push_id(("hideout.crash-bar", &key.module), |ui| {
+            egui::Frame::new()
+                .fill(c(theme::warn_fill(t)))
+                .stroke(egui::Stroke::new(1.0_f32, c(t.warn)))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let first = ui.label(egui::RichText::new(&line1).strong().color(c(t.text)));
+                    let said = words::crash_announcement(name);
+                    ui.ctx().accesskit_node_builder(first.id, |n| {
+                        n.set_live(egui::accesskit::Live::Polite);
+                        n.set_label(said);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&line2).color(c(t.text)));
+                        ui.label(egui::RichText::new("\u{b7}").color(c(t.text)));
+                        open_log = ui.link(words::OPEN_LOG).clicked();
+                    });
+                });
+        });
+        if open_log {
+            self.open_log(&key.module);
+        }
+        let minimised = ui.ctx().input(|i| i.viewport().minimized == Some(true));
+        if !minimised && !self.shared.hidden.load(Ordering::Acquire) {
+            if let Some(d) = countdown_repaint(r.in_s) {
+                ui.ctx().request_repaint_after(d);
+            }
+        }
+        ui.add_space(12.0);
+    }
+
+    /// Whether a card's main button takes the focus this frame: when the card appears (or its
+    /// page is opened again), and on Esc, which it consumes so Esc does nothing. Never while the
+    /// close dialog, the palette or the flyout is up: their own Esc and focus come first.
+    fn card_takes_focus(&mut self, ui: &egui::Ui, key: &PanelKey, card: &'static str) -> bool {
+        if self.asking.is_some() || self.palette.open || self.flyout.is_some() {
+            return false;
+        }
+        let fresh = self.card_focus.as_ref() != Some(&(key.clone(), card));
+        self.card_focus = Some((key.clone(), card));
+        let esc = ui
+            .ctx()
+            .input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        fresh || esc
+    }
+
+    /// The stopped card (crash-stopped): one main button for the ladder's step from
+    /// `module.<id>.recovery`, then Copy diagnostics, always last. The main button takes the
+    /// focus when the card appears; Esc does nothing.
+    fn stopped_card_ui(&mut self, ui: &mut egui::Ui, t: &Tokens, key: &PanelKey, name: &str) {
+        let module = &key.module;
+        let fact = |k: &str| {
+            self.panels
+                .fact(&format!("module.{module}.{k}"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        };
+        let step = Recovery::from_id(fact("recovery").as_deref());
+        let previous = fact("previous");
+        let main = step.button(name, previous.as_deref());
+        let line = step.line(name, previous.as_deref());
+        // Copied, never drawn: the ids belong here (Never shown).
+        let diagnostics = format!(
+            "Module: {module}\nState: {}\nRecovery: {}",
+            self.panels.module_state(module).unwrap_or("unknown"),
+            step.id()
+        );
+        let focus = self.card_takes_focus(ui, key, step.id());
+        let mut pressed = false;
+        card(ui, t, |ui| {
+            ui.label(
+                egui::RichText::new(format!("\u{26A0} {}", words::STOPPED))
+                    .size(16.0)
+                    .strong()
+                    .color(c(t.danger)),
+            );
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(words::stopped_body(name)).color(c(t.text)));
+            if let Some(l) = &line {
+                ui.label(egui::RichText::new(l).color(c(t.text_muted)));
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                pressed = main_button(ui, t, &main, focus).clicked();
+                if ui.button(words::COPY_DIAGNOSTICS).clicked() {
+                    ui.ctx().copy_text(diagnostics.clone());
+                }
+            });
+        });
+        if pressed {
+            if let Some(h) = self.hooks.as_mut() {
+                match (step, previous.is_some()) {
+                    (Recovery::StartAgain, _) => h.start_again(module),
+                    (Recovery::Defaults, _) => h.start_with_defaults(module),
+                    (Recovery::GoBack, true) => h.go_back(module),
+                    (Recovery::GoBack, false) | (Recovery::Last, _) => h.turn_off(module),
+                }
+            }
+        }
+        ui.add_space(12.0);
+    }
+
+    /// `install-failed` from launching: "Couldn't start <Module>", its reason, **Try again** (the
+    /// main button, with the stopped card's focus and Esc rule) · Open log.
+    fn couldnt_start_ui(&mut self, ui: &mut egui::Ui, t: &Tokens, key: &PanelKey, name: &str) {
+        let (title, files, buttons) = words::couldnt_start(name);
+        // The supervisor's reason is one of its own plain lines (words.rs).
+        let body = self
+            .panels
+            .fact(&format!("module.{}.reason", key.module))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or(files);
+        let focus = self.card_takes_focus(ui, key, "couldnt-start");
+        let (mut again, mut log) = (false, false);
+        card(ui, t, |ui| {
+            ui.label(
+                egui::RichText::new(format!("\u{26A0} {title}"))
+                    .size(16.0)
+                    .strong()
+                    .color(c(t.danger)),
+            );
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(body).color(c(t.text)));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                again = main_button(ui, t, &buttons[0], focus).clicked();
+                log = ui.button(&buttons[1]).clicked();
+            });
+        });
+        if again {
+            if let Some(h) = self.hooks.as_mut() {
+                h.start_again(&key.module);
+            }
+        }
+        if log {
+            self.open_log(&key.module);
+        }
+        ui.add_space(12.0);
     }
 
     fn dirty(&self, id: &TabId) -> bool {
@@ -860,20 +1119,27 @@ impl Hub {
                         .color(c(t.text)),
                 );
                 ui.add_space(14.0);
-                let mut entries: Vec<(TabId, String, bool)> = self
+                // (target, title, attention dot, the red mark's accessible name when stopped)
+                let mut entries: Vec<(TabId, String, bool, Option<String>)> = self
                     .pages
                     .iter()
-                    .map(|p| (TabId::page(p.id()), p.title().to_string(), false))
+                    .map(|p| (TabId::page(p.id()), p.title().to_string(), false, None))
                     .collect();
                 entries.extend(self.panels.in_slot(Slot::Page).map(|p| {
+                    let mut look = strip::panel_look(p, false);
+                    if self.launch_failed(&p.key.module) {
+                        look.state = TabState::Stopped(words::couldnt_start_title(&p.module_name));
+                    }
+                    let stopped = matches!(look.state, TabState::Stopped(_));
                     (
                         TabId::panel(&p.key.module, &p.key.panel),
                         p.title.clone(),
                         p.badge == hideout_panels::Badge::Attention,
+                        stopped.then(|| look.accessible_name()),
                     )
                 }));
                 let active = self.tabs.active_id().cloned();
-                for (target, title, attention) in entries {
+                for (target, title, attention, stopped) in entries {
                     let selected = active.as_ref() == Some(&target);
                     let text = egui::RichText::new(title)
                         .size(15.0)
@@ -882,7 +1148,20 @@ impl Hub {
                         [ui.available_width(), 32.0],
                         egui::Button::selectable(selected, text),
                     );
-                    if attention {
+                    if let Some(said) = stopped {
+                        // The red warning mark, as on its tab (docs/hideout-supervisor-ux.md, S
+                        // and T); its words are in the entry's accessible name.
+                        let at = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
+                        ui.painter().text(
+                            at,
+                            egui::Align2::CENTER_CENTER,
+                            "\u{26A0}",
+                            egui::FontId::proportional(14.0),
+                            c(theme::nav_mark(t, selected)),
+                        );
+                        ui.ctx()
+                            .accesskit_node_builder(resp.id, |n| n.set_label(said));
+                    } else if attention {
                         // The attention dot on the sidebar entry too; the tab's accessible name
                         // says "something new", so colour is not the only signal.
                         let at = egui::pos2(resp.rect.right() - 12.0, resp.rect.center().y);
@@ -967,6 +1246,10 @@ impl Hub {
         };
         let look = self.look(i);
         let id = self.tabs.tabs()[i].id.clone();
+        if self.card_target.as_ref() != Some(&id) {
+            self.card_target = Some(id.clone());
+            self.card_focus = None;
+        }
         // The page area is the tab panel, named by its tab.
         let name = look.accessible_name();
         ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
@@ -992,7 +1275,39 @@ impl Hub {
         match self.target(&id) {
             Some(Target::Page(p)) => self.pages[p].ui(ui, t),
             Some(Target::Panel(key)) => {
+                let name = self
+                    .panels
+                    .panel(&key)
+                    .map(|p| p.module_name.clone())
+                    .unwrap_or_else(|| look.title.clone());
+                let fact_state = self.panels.module_state(&key.module).map(String::from);
+                let stopped = matches!(
+                    fact_state.as_deref(),
+                    Some("crash-stopped" | "crash-looped")
+                );
+                // The supervisor's own surfaces (docs/hideout-supervisor-ux.md) replace the
+                // generic ones, and the greyed page below drops its state line.
+                let own = match fact_state.as_deref() {
+                    Some("restarting") => {
+                        self.crash_bar_ui(ui, t, &key, &name);
+                        true
+                    }
+                    _ if stopped => {
+                        self.stopped_card_ui(ui, t, &key, &name);
+                        true
+                    }
+                    Some("install-failed") if self.launch_failed(&key.module) => {
+                        self.couldnt_start_ui(ui, t, &key, &name);
+                        true
+                    }
+                    _ => false,
+                };
+                // A card that comes back focuses its main button again.
+                if !own || fact_state.as_deref() == Some("restarting") {
+                    self.card_focus = None;
+                }
                 match &look.state {
+                    _ if own => {}
                     TabState::Stopped(words) => {
                         let panel = self.panels.panel(&key);
                         let details = panel.and_then(|p| p.state.details()).unwrap_or_default();
@@ -1045,7 +1360,11 @@ impl Hub {
                     TabState::Off | TabState::Live => {}
                 }
                 if self.panels.panel(&key).is_some() {
-                    let report = hideout_panels::panel_ui(&mut self.panels, ui, &key);
+                    let report = if own {
+                        hideout_panels::panel_ui_quiet(&mut self.panels, ui, &key)
+                    } else {
+                        hideout_panels::panel_ui(&mut self.panels, ui, &key)
+                    };
                     // Keys and Settings, drawn by the hub after the module's tree (4.7).
                     hideout_panels::page_sections_ui(&mut self.panels, ui, &key);
                     self.go(report.go);
@@ -1210,6 +1529,7 @@ impl Hub {
                 ctx.request_repaint_after(at.saturating_duration_since(now));
             }
         }
+        self.take_open_requests();
         if self.asking.is_none() && !self.palette.open {
             for s in strip::shortcuts(ctx) {
                 self.shortcut(s);
@@ -1252,6 +1572,28 @@ impl Hub {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
         }
+    }
+}
+
+/// A card's main button: the accent fill; takes the focus when `focus`.
+fn main_button(ui: &mut egui::Ui, t: &Tokens, text: &str, focus: bool) -> egui::Response {
+    let b = ui
+        .add(egui::Button::new(egui::RichText::new(text).color(c(t.on_accent))).fill(c(t.accent)));
+    if focus {
+        b.request_focus();
+    }
+    b
+}
+
+/// Opens a module's log, `logs\<id>.log` under the hub folder, in the app Windows opens `.log`
+/// files with (the crash bar, Couldn't start and the rollback notification's Open log).
+pub fn open_module_log(home: &std::path::Path, module: &str) {
+    let file = home.join("logs").join(format!("{module}.log"));
+    if let Err(e) = std::process::Command::new("explorer.exe")
+        .arg(&file)
+        .spawn()
+    {
+        log::warn!("open {}: {e}", file.display());
     }
 }
 

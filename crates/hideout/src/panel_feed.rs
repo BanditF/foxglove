@@ -108,6 +108,8 @@ fn reason(e: &Value) -> String {
 impl RouterSide {
     /// Hands a module's manifest to the panel host.
     pub fn manifest(&self, m: hideout_contract::module::Module) {
+        // The tray names a stopped module by its name (docs/hideout-supervisor-ux.md).
+        hideout_shell::marks::note_name(&m.id, &m.name);
         self.0.push(Inbound::Manifest(Box::new(m)));
     }
 
@@ -165,10 +167,15 @@ impl RouterSide {
                     return;
                 }
             },
-            Out::Fact { key, value } => Inbound::Fact {
-                name: key.clone(),
-                value: value.clone(),
-            },
+            Out::Fact { key, value } => {
+                // The tray's dot follows module states and safe mode, even with the window
+                // hidden; it wakes the UI thread only when the dot changes.
+                hideout_shell::marks::note_fact(key, value);
+                Inbound::Fact {
+                    name: key.clone(),
+                    value: value.clone(),
+                }
+            }
             Out::HubResult { tag, result } => {
                 let Some(t) = self.0.tags.lock().unwrap().remove(tag) else {
                     return;

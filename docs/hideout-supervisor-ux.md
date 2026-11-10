@@ -47,7 +47,7 @@ Surfaces: **S** sidebar module list, **T** its tab (#953), **P** the page area (
 |---|---|---|---|---|---|
 | Running (`running`) | nothing | the page | "On" | nothing | — |
 | Starting (`starting`) | orange ring | cached page, header "Starting…" | "Starting…" | nothing | — |
-| Crashed, restarting (`restarting`) | orange ring; tooltip "Restarting in 4 s (2 of 5)" | **crash bar** (below) over the greyed last page | "Restarting in 4 s (2 of 5)" | nothing | — |
+| Crashed, restarting (`restarting`) | orange ring; tooltip "Restarting… (2 of 5)" (once per crash; the countdown is the bar's) | **crash bar** (below) over the greyed last page | "Restarting in 4 s (2 of 5)" | nothing | — |
 | Stopped after 5 crashes (`crash-stopped`) | red warning mark | **stopped card** (below) over the greyed last page | "Stopped after 5 crashes" + **Start again** | red dot on the icon; menu line "Art stopped" / "Open Art to start it again" | once per module per sign-in |
 | Updating (`updating`) | orange ring; tooltip "Updating…" | header line "Updating… Your place on this page is kept." | "Updating…" | nothing | — |
 | Off (`off`) | muted label, no mark | "Off" + **Turn on** | "Off" + Turn on | nothing | — |

@@ -122,6 +122,10 @@ pub enum Ev {
     StartDefaults {
         id: String,
     },
+    /// "Go back to <previous>" (the ladder's third step): roll back, then start.
+    GoBack {
+        id: String,
+    },
     /// An update from `previous` to `version` finished.
     Updated {
         id: String,
@@ -267,6 +271,10 @@ impl Policy {
         s.then_launch = false;
         let reset = std::mem::take(&mut s.reset_first);
         self.set_state(id, State::Starting, None, out);
+        // The stopped card's and the launch failure's facts end with the stop.
+        for k in ["recovery", "previous", "failed"] {
+            publish(out, format!("module.{id}.{k}"), Value::Null);
+        }
         if reset {
             out.push(Cmd::ResetSettings { id: id.into() });
         }
@@ -327,6 +335,8 @@ impl Policy {
                     s.ready_by = None;
                 }
                 self.set_state(&id, State::InstallFailed, Some(reason), &mut out);
+                // It came from launching: "Couldn't start <Module>" (UX plan, #983).
+                publish(&mut out, format!("module.{id}.failed"), json!("launch"));
             }
             Ev::Adopted { id, instance } => {
                 if let Some(s) = self.slots.get_mut(&id) {
@@ -403,6 +413,7 @@ impl Policy {
                         Some(words::FILES_DONT_MATCH.into()),
                         &mut out,
                     );
+                    publish(&mut out, format!("module.{id}.failed"), json!("launch"));
                 }
             }
             Ev::Activate { id } => {
@@ -417,6 +428,18 @@ impl Policy {
             }
             Ev::StartAgain { id } => self.start_by_hand(&id, false, &mut out),
             Ev::StartDefaults { id } => self.start_by_hand(&id, true, &mut out),
+            Ev::GoBack { id } => {
+                let stopped = self.slots.get(&id).is_some_and(|s| {
+                    s.state == State::CrashStopped && s.ended && s.previous.is_some()
+                });
+                if stopped {
+                    // The rolled-back-from version isn't offered again: the ladder ends at
+                    // its last step if this one stops too.
+                    self.slots.get_mut(&id).unwrap().previous = None;
+                    out.push(Cmd::RollBack { id: id.clone() });
+                    self.start_by_hand(&id, false, &mut out);
+                }
+            }
             Ev::Updated {
                 id,
                 version,
@@ -521,6 +544,7 @@ impl Policy {
                 return;
             }
             let stops = s.stops;
+            let previous = s.previous.clone();
             self.set_state(
                 id,
                 State::CrashStopped,
@@ -530,7 +554,13 @@ impl Policy {
             publish(
                 out,
                 format!("module.{id}.recovery"),
-                json!(words::Recovery::for_stops(stops, self.slots[id].previous.is_some()).id()),
+                json!(words::Recovery::for_stops(stops, previous.is_some()).id()),
+            );
+            // The version "Go back to <previous>" names.
+            publish(
+                out,
+                format!("module.{id}.previous"),
+                previous.map_or(Value::Null, Value::String),
             );
             if self.notified.insert(id.into()) {
                 let (title, body, actions) = words::stopped_notification(&name);

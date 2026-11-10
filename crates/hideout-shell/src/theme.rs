@@ -23,6 +23,8 @@ pub struct Tokens {
     /// Text on an accent fill.
     pub on_accent: Rgb,
     pub danger: Rgb,
+    /// The quiet warning (amber): the crash bar's edge and, blended, its fill.
+    pub warn: Rgb,
 }
 
 pub const LIGHT: Tokens = Tokens {
@@ -36,6 +38,7 @@ pub const LIGHT: Tokens = Tokens {
     accent: Rgb(0xb8, 0x4a, 0x00),
     on_accent: Rgb(0xff, 0xff, 0xff),
     danger: Rgb(0xb0, 0x1e, 0x1e),
+    warn: Rgb(0xb0, 0x78, 0x00),
 };
 
 pub const DARK: Tokens = Tokens {
@@ -49,6 +52,7 @@ pub const DARK: Tokens = Tokens {
     accent: Rgb(0xff, 0x8a, 0x2a),
     on_accent: Rgb(0x1a, 0x0e, 0x04),
     danger: Rgb(0xff, 0x6b, 0x6b),
+    warn: Rgb(0xf5, 0xc4, 0x51),
 };
 
 pub fn tokens(dark: bool) -> Tokens {
@@ -96,6 +100,16 @@ pub fn nav_label(t: &Tokens, selected: bool) -> Rgb {
     }
 }
 
+/// The sidebar's red warning mark: danger on the sidebar, `on_accent` on the selected entry's
+/// accent fill (where red would not read).
+pub fn nav_mark(t: &Tokens, selected: bool) -> Rgb {
+    if selected {
+        t.on_accent
+    } else {
+        t.danger
+    }
+}
+
 /// The label colour of a palette row. A selected row sits on the accent fill, so its label is
 /// `on_accent` whether or not the entry can run; an unavailable row that is not selected is muted.
 pub fn palette_label(t: &Tokens, selected: bool, unavailable: bool) -> Rgb {
@@ -127,6 +141,16 @@ pub fn tab_label(t: &Tokens, active: bool, muted: bool) -> Rgb {
     }
 }
 
+/// The crash bar's fill: the amber at a fifth over the page, so its text keeps full contrast.
+pub fn warn_fill(t: &Tokens) -> Rgb {
+    let mix = |w: u8, b: u8| ((w as u16 + 4 * b as u16) / 5) as u8;
+    Rgb(
+        mix(t.warn.0, t.bg.0),
+        mix(t.warn.1, t.bg.1),
+        mix(t.warn.2, t.bg.2),
+    )
+}
+
 /// Every foreground the strip draws on a tab fill, with a name, for the contrast test:
 /// label, close ×, dirty dot (label colour), count pill text on its pill, stopped mark.
 pub fn tab_pairs(t: &Tokens) -> Vec<(&'static str, Rgb, Rgb)> {
@@ -144,6 +168,12 @@ pub fn tab_pairs(t: &Tokens) -> Vec<(&'static str, Rgb, Rgb)> {
     v.push(("empty page hint", t.text_muted, t.bg));
     v.push(("dialog text", t.text, t.surface));
     v.push(("stopped card", t.text, t.surface));
+    v.push(("stopped card title", t.danger, t.surface));
+    v.push(("stopped card button", t.on_accent, t.accent));
+    v.push(("crash bar", t.text, warn_fill(t)));
+    for selected in [false, true] {
+        v.push(("sidebar mark", nav_mark(t, selected), nav_fill(t, selected)));
+    }
     v
 }
 

@@ -94,6 +94,9 @@ pub struct Gate<A> {
     side_live: fn() -> bool,
     /// The main window, to run its frame while it is hidden.
     root: fn() -> Option<WindowId>,
+    /// Applies a pending tray change (the icon is the UI thread's). Runs on every wake, so a
+    /// fact that changes the tray shows while the window is hidden, without a frame.
+    tray_sync: fn(),
 }
 
 impl<A> Gate<A> {
@@ -102,6 +105,7 @@ impl<A> Gate<A> {
         drawable: fn() -> bool,
         side_live: fn() -> bool,
         root: fn() -> Option<WindowId>,
+        tray_sync: fn(),
     ) -> Self {
         Self {
             app,
@@ -109,6 +113,7 @@ impl<A> Gate<A> {
             drawable,
             side_live,
             root,
+            tray_sync,
         }
     }
 }
@@ -138,6 +143,7 @@ impl<A: ApplicationHandler<UserEvent>> ApplicationHandler<UserEvent> for Gate<A>
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        (self.tray_sync)();
         self.app.about_to_wait(event_loop);
         let drawable = (self.drawable)();
         if hidden_pass(event_loop.control_flow(), drawable, (self.side_live)()) {

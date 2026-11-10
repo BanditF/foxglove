@@ -127,8 +127,8 @@ Review items, all fixed in the PR:
 - **Block, fixed:** the sidebar's selected label is now `theme::nav_label` (`on_accent` on the
   accent fill), from #957.
 - **Fixed:** the greyed banner reads the plain §7.8 words through `state_words`, for example
-  "Art: Stopped after 5 crashes." The state id is only in the tooltip (and
-  `PanelState::details`, for Copy diagnostics). The tab strip should reuse `state_words`.
+  "Art: Stopped after 5 crashes." The state id is never shown: it goes only to
+  `PanelState::details`, for Copy diagnostics. The tab strip should reuse `state_words`.
 - **Fixed:** the rejected banner ends at "Art's page couldn't be shown."; the error id is in the
   tooltip only.
 - **Fixed:** every palette label is at least 4.5:1 on its row. A selected row uses `on_accent`
