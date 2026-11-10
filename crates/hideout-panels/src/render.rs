@@ -33,6 +33,8 @@ pub struct DrawReport {
     /// The first `value` drawn (a tile's glance) and its `tone`: what the tray panel tells a
     /// state change by (docs/hideout-plugin-modules-ux.md, Keyboard and screen reader).
     pub glance: Option<Glance>,
+    /// The first `label`'s text (a tile's sub line).
+    pub sub: Option<String>,
 }
 
 /// A `value` node's text and `tone` as drawn.
@@ -118,6 +120,7 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, body: Body) -> 
             rects: &mut report.rects,
             texts: &mut report.texts,
             glance: &mut report.glance,
+            sub: &mut report.sub,
             press: body.press,
             streams,
             stream_acts: &mut acts,
@@ -190,6 +193,7 @@ struct Draw<'a> {
     rects: &'a mut HashMap<String, Rect>,
     texts: &'a mut Vec<String>,
     glance: &'a mut Option<Glance>,
+    sub: &'a mut Option<String>,
     /// Press the first enabled button drawn (Space on a focused tile).
     press: bool,
     streams: &'a Streams,
@@ -360,6 +364,9 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
         "label" => {
             let text = text_of(p.get("value").or(p.get("text")).unwrap_or(&Value::Null));
             d.texts.push(text.clone());
+            if d.sub.is_none() {
+                *d.sub = Some(text.clone());
+            }
             ui.label(toned(ui, &p, RichText::new(text)));
         }
         "value" => {

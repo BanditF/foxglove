@@ -250,6 +250,13 @@ busy port), "E1.31" outside the OpenRGB steps, "plugin" (the UI word is module, 
   The button's name includes its key: "Unmute, F13".
 - Value changes are announced politely, at most once per 5 s per tile; the timer's seconds are
   never announced (only phase changes: "Focus timer, rest").
+  - A phase is the frame's state, the glance's `tone`, and the glance's word when it has no
+    digit; the sub line and meter never count. The words are the title, then the glance's word,
+    or else the sub line's first part ("Rest · then round 3" gives "Rest").
+  - **For module authors:** send a phase change's glance and sub line in **one** `ui.patch`
+    (the SDK's `Panels::show` does). The hub speaks on the draw that shows the new tone, so a
+    sub line sent in a later patch would be missing from what is said.
+  - A change held back by the 5 s window is said when the window ends (one wake, no polling).
 - Contrast: every tone on the tile surface is at least 4.5:1 (the mockup script checks it; the
   shell's `theme.rs` contrast test should cover the tone tokens).
 

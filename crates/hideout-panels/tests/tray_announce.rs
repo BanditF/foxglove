@@ -42,9 +42,17 @@ impl Panel {
 
     /// Sets `node`'s props at `at` seconds.
     fn set(&mut self, at: f32, node: &str, props: Value) {
-        let patch: UiPatch = serde_json::from_value(json!({"panel": "tile", "ops": [
-            {"op": "set", "node": node, "props": props}]}))
-        .unwrap();
+        self.set_all(at, &[(node, props)]);
+    }
+
+    /// Sets several nodes' props in one `ui.patch` at `at` seconds (a phase change's glance and
+    /// sub line come together, docs/hideout-plugin-modules-ux.md).
+    fn set_all(&mut self, at: f32, nodes: &[(&str, Value)]) {
+        let ops: Vec<Value> = nodes
+            .iter()
+            .map(|(node, props)| json!({"op": "set", "node": node, "props": props}))
+            .collect();
+        let patch: UiPatch = serde_json::from_value(json!({"panel": "tile", "ops": ops})).unwrap();
         self.host
             .patch("m", &patch, self.t0 + Duration::from_secs_f32(at))
             .unwrap();
@@ -108,9 +116,14 @@ fn a_value_tick_is_never_said_and_a_tone_change_says_the_phase() {
         assert_eq!(p.pass(s as f32 + 0.5), None, "tick {s} was said");
     }
     // Focus to Rest: the tone changes (and the sub line, which only gives the words).
-    p.set(20.0, "glance", json!({"value": "5:00", "tone": "ok"}));
-    p.set(20.5, "sub", json!({"text": "Rest \u{00B7} then round 3"}));
-    assert_eq!(p.pass(20.5).as_deref(), Some("Timer, Rest"));
+    p.set_all(
+        20.0,
+        &[
+            ("glance", json!({"value": "5:00", "tone": "ok"})),
+            ("sub", json!({"text": "Rest \u{00B7} then round 3"})),
+        ],
+    );
+    assert_eq!(p.pass(20.0).as_deref(), Some("Timer, Rest"));
     // The sub line alone is no phase change.
     p.set(30.0, "sub", json!({"text": "Rest \u{00B7} then round 4"}));
     assert_eq!(p.pass(30.0), None);
@@ -131,12 +144,27 @@ fn two_changes_within_5_s_are_said_once_the_later_after_the_window() {
         json!({"value": "Mic on", "tone": "neutral"}),
     );
     assert_eq!(p.pass(12.0), None, "inside the 5 s window");
+    // One wake, for when the window ends (a quiet tile brings no other frame).
+    let wake = p
+        .announcer
+        .wake_in()
+        .expect("a held change asks for one wake");
+    assert!(
+        wake >= Duration::from_secs(3) && wake <= Duration::from_millis(3100),
+        "{wake:?}"
+    );
     assert_eq!(p.pass(14.9), None, "still inside");
-    let after = 10.0 + ANNOUNCE_EVERY.as_secs_f32() + 0.1;
+    assert_eq!(
+        p.announcer.wake_in(),
+        None,
+        "asked for once, not every draw"
+    );
+    let after = 12.0 + wake.as_secs_f32();
+    assert!(after >= 10.0 + ANNOUNCE_EVERY.as_secs_f32());
     assert_eq!(
         p.pass(after).as_deref(),
         Some("Timer, Mic on"),
-        "the later one"
+        "the wake's draw says it"
     );
     assert_eq!(p.pass(after + 0.1), None);
     // A change undone inside the window is never said.
@@ -166,4 +194,18 @@ fn a_tile_not_drawn_starts_again_from_its_next_sight() {
         None,
         "a hidden tile's change is not said when it shows"
     );
+}
+
+#[test]
+fn a_button_label_is_never_the_words() {
+    let Some(mut p) = Panel::new(json!([
+        {"type": "value", "id": "glance", "props": {"value": "42 %", "tone": "ok"}},
+        {"type": "button", "id": "go", "props": {"label": "Unmute"}}]))
+    else {
+        eprintln!("no system font; announcement test skipped");
+        return;
+    };
+    assert_eq!(p.pass(0.0), None);
+    p.set(1.0, "glance", json!({"value": "12 %", "tone": "attention"}));
+    assert_eq!(p.pass(1.0).as_deref(), Some("Timer, 12 %"));
 }

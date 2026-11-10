@@ -703,11 +703,29 @@ fn a_tile_phase_change_is_said_in_the_open_flyout_only() {
     // A meter's value is not a phase.
     set(&mut hub, serde_json::json!({"value": 7.0, "max": 10.0}));
     assert!(live_words(&main(&mut hub)).is_empty());
-    // The glance's word and tone: said once, in the frame the change brought.
+    // A pop-out's announcement not yet drawn in its window keeps its place: the tile's change
+    // waits, with one wake for when that one is stale.
+    hub.say(
+        "Art opened in its own window".into(),
+        Said::Popout(TabId::panel("mod.art", "art")),
+    );
     set(
         &mut hub,
         serde_json::json!({"value": "Mic on", "tone": "neutral"}),
     );
+    let out = main(&mut hub);
+    assert!(live_words(&out).is_empty());
+    assert_eq!(
+        hub.announce.as_ref().unwrap().text,
+        "Art opened in its own window"
+    );
+    assert!(
+        repaint_delay(&out) <= ANNOUNCE_FOR,
+        "{:?}",
+        repaint_delay(&out)
+    );
+    hub.announce.as_mut().unwrap().at -= ANNOUNCE_FOR;
+    // The glance's word and tone: said once, in the frame that comes.
     assert_eq!(live_words(&main(&mut hub)), ["Mic, Mic on"]);
     assert!(hub
         .announce
@@ -716,6 +734,19 @@ fn a_tile_phase_change_is_said_in_the_open_flyout_only() {
     hub.announce.as_mut().unwrap().at -= ANNOUNCE_FOR;
     assert!(live_words(&main(&mut hub)).is_empty(), "stale, it leaves");
     assert!(hub.announce.is_none());
+    // A change held back by the 5 s window asks for one wake, for when the window ends.
+    set(
+        &mut hub,
+        serde_json::json!({"value": "Muted", "tone": "live"}),
+    );
+    let out = main(&mut hub);
+    assert!(live_words(&out).is_empty(), "inside the window");
+    let d = repaint_delay(&out);
+    let every = hideout_panels::tray::ANNOUNCE_EVERY;
+    assert!(
+        d > every - Duration::from_secs(2) && d <= every + Duration::from_millis(50),
+        "{d:?}"
+    );
     // Closed again: nothing is said.
     hub.close_flyout(&hctx, false);
     set(

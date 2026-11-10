@@ -565,6 +565,8 @@ struct Announce {
     place: Said,
     n: u64,
     at: std::time::Instant,
+    /// Its node was in a frame of its window (so the screen reader has had it).
+    said: bool,
 }
 
 /// How long an announcement stays in the tree (it is said when it appears).
@@ -579,7 +581,17 @@ fn say_in(slot: &mut Option<Announce>, text: String, place: Said) {
         place,
         n,
         at: std::time::Instant::now(),
+        said: false,
     });
+}
+
+/// How long the announcement in `slot` still holds its place against one for `place`: it is
+/// for another window, not drawn there yet, and still fresh. A tile's change then waits.
+fn held_for_other(slot: &Option<Announce>, place: &Said) -> Option<std::time::Duration> {
+    slot.as_ref()
+        .filter(|a| &a.place != place && !a.said)
+        .and_then(|a| ANNOUNCE_FOR.checked_sub(a.at.elapsed()))
+        .filter(|left| !left.is_zero())
 }
 
 /// The announcement's live node in `place`'s window, while it is fresh. No frame is asked for:
@@ -593,6 +605,9 @@ fn announce_node(slot: &mut Option<Announce>, ctx: &egui::Context, place: &Said)
         return;
     }
     let (id, text) = (egui::Id::new(("hideout.announce", a.n)), a.text.clone());
+    if let Some(a) = slot.as_mut() {
+        a.said = true;
+    }
     ctx.accesskit_node_builder(id, |n| {
         n.set_role(egui::accesskit::Role::Status);
         n.set_live(egui::accesskit::Live::Polite);
@@ -663,6 +678,8 @@ fn prefs_from(l: &TrayLayout) -> crate::prefs::TrayPrefs {
 
 /// What one flyout frame saw.
 struct FlyoutFrame {
+    /// A tile's announcement waits: draw again in this long (once, #991).
+    wake: Option<std::time::Duration>,
     focused: Option<bool>,
     close: bool,
     report: hideout_panels::tray::TrayReport,
@@ -924,12 +941,21 @@ impl Hub {
                     .show(ctx, draw)
                     .inner
             };
-            // A tile's phase change, said politely in this frame (the change brought it).
-            if let Some(text) = announcer.see(&report.phases, std::time::Instant::now()) {
-                say_in(announce, text, Said::Flyout);
-            }
+            // A tile's phase change, said politely in this frame (the change brought it). A
+            // pop-out or dock announcement not yet drawn in its window keeps its place: the tile
+            // waits, with one wake for when that one is stale.
+            let wake = if let Some(left) = held_for_other(announce, &Said::Flyout) {
+                Some(left)
+            } else {
+                if let Some(text) = announcer.see(&report.phases, std::time::Instant::now()) {
+                    say_in(announce, text, Said::Flyout);
+                }
+                // A change held back by the 5 s window is said when the window ends.
+                announcer.wake_in()
+            };
             announce_node(announce, ctx, &Said::Flyout);
             FlyoutFrame {
+                wake,
                 focused,
                 close,
                 report,
@@ -958,6 +984,9 @@ impl Hub {
             }
         }
         if let Some(d) = frame.report.repaint_in {
+            ctx.request_repaint_after(d);
+        }
+        if let Some(d) = frame.wake {
             ctx.request_repaint_after(d);
         }
         let lost = fly.had_focus && frame.focused == Some(false);

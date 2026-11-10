@@ -158,10 +158,11 @@ impl TilePhase {
         let ticks = |t: &str| t.chars().any(|c| c.is_ascii_digit());
         let glance = draw.glance.clone().unwrap_or_default();
         let word = (!glance.text.is_empty() && !ticks(&glance.text)).then(|| glance.text.clone());
+        // The sub line is a `label`'s text only: never a button's or a key chip's.
         let sub = draw
-            .texts
-            .iter()
-            .find(|t| !t.is_empty() && **t != glance.text)
+            .sub
+            .as_ref()
+            .filter(|t| !t.is_empty())
             .map(|t| t.split(" \u{00B7} ").next().unwrap_or(t).to_string());
         let what = if !frame.is_empty() {
             frame.join(", ")
@@ -197,11 +198,29 @@ pub const ANNOUNCE_EVERY: Duration = Duration::from_secs(5);
 /// once, at most every [`ANNOUNCE_EVERY`] per tile; a change inside that window is said with the
 /// first draw after it, if the phase is still not the one last said. The shell keeps one per
 /// open flyout, so what changed while it was closed is never said: the first sight of a tile is
-/// only remembered. It asks for no frame of its own.
+/// only remembered. It asks for no frame of its own except one: a change held back by the
+/// window gives [`TileAnnouncer::wake_in`] once, so it is said when the window ends.
 #[derive(Debug, Default)]
 pub struct TileAnnouncer {
-    tiles: HashMap<PanelKey, (TilePhase, Option<Instant>)>,
+    tiles: HashMap<PanelKey, Seen>,
+    /// The wake a change held back in this draw asks for.
+    wake: Option<Duration>,
 }
+
+/// One tile's announcement state.
+#[derive(Debug)]
+struct Seen {
+    /// The phase last said (or first seen).
+    last: TilePhase,
+    /// When it was last said.
+    at: Option<Instant>,
+    /// A change is held back by the window (its wake was asked for).
+    held: bool,
+}
+
+/// A held-back change is drawn this long after its window ends, so the wake's frame is never a
+/// hair early.
+const WAKE_MARGIN: Duration = Duration::from_millis(50);
 
 impl TileAnnouncer {
     /// Takes this draw's tile phases at `now`; returns what to say, if anything (several tiles
@@ -209,23 +228,48 @@ impl TileAnnouncer {
     pub fn see(&mut self, phases: &[TilePhase], now: Instant) -> Option<String> {
         // A tile not drawn (hidden, or Edit tiles is open) starts again from its next sight.
         self.tiles.retain(|k, _| phases.iter().any(|p| p.key == *k));
+        self.wake = None;
         let mut say = Vec::new();
         for p in phases {
-            match self.tiles.get_mut(&p.key) {
+            let Some(t) = self.tiles.get_mut(&p.key) else {
+                self.tiles.insert(
+                    p.key.clone(),
+                    Seen {
+                        last: p.clone(),
+                        at: None,
+                        held: false,
+                    },
+                );
+                continue;
+            };
+            if t.last.same(p) {
+                // Back to what was said: nothing is owed.
+                t.held = false;
+                continue;
+            }
+            let since = t.at.map(|at| now.saturating_duration_since(at));
+            match since.filter(|s| *s < ANNOUNCE_EVERY) {
                 None => {
-                    self.tiles.insert(p.key.clone(), (p.clone(), None));
+                    t.last = p.clone();
+                    t.at = Some(now);
+                    t.held = false;
+                    say.push(p.words.clone());
                 }
-                Some((last, _)) if last.same(p) => {}
-                Some((last, at)) => {
-                    if at.is_none_or(|at| now.saturating_duration_since(at) >= ANNOUNCE_EVERY) {
-                        *last = p.clone();
-                        *at = Some(now);
-                        say.push(p.words.clone());
-                    }
+                Some(s) if !t.held => {
+                    t.held = true;
+                    let left = ANNOUNCE_EVERY - s + WAKE_MARGIN;
+                    self.wake = Some(self.wake.map_or(left, |w| w.min(left)));
                 }
+                Some(_) => {}
             }
         }
         (!say.is_empty()).then(|| say.join(". "))
+    }
+
+    /// After [`TileAnnouncer::see`]: draw again in this long, because a change was held back by
+    /// the 5 s window in that draw. Given once per held change (one bounded wake, not a poll).
+    pub fn wake_in(&self) -> Option<Duration> {
+        self.wake
     }
 }
 
