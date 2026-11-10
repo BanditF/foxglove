@@ -8,11 +8,13 @@ use crate::palette::{Entry, Palette};
 use crate::paths::HubPaths;
 use crate::prefs::{Prefs, ThemeChoice};
 use crate::status::{self, Item};
+use crate::strip::{self, Action, Shortcut, StripState};
+use crate::tabs::{Look, Mark, TabId, TabState, Tabs};
 use crate::theme::{self, Rgb, Tokens};
 use crate::{placement, platform, tray, window_title, AUMID, PRODUCT};
 use eframe::egui::{self, Color32, Key, Modifiers};
 use hideout_panels::Slot;
-use hideout_panels::{PanelFeed, PanelHost, PanelKey};
+use hideout_panels::{PanelFeed, PanelHost, PanelKey, PanelState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -33,6 +35,19 @@ pub struct ShellOptions {
     /// Where module panels come from (the router implements it, H2.3). `page` panels join the
     /// sidebar after `pages` and draw in the page area.
     pub panels: Option<Box<dyn PanelFeed>>,
+    /// Pop-out windows and module restarts (H2.11 and the supervisor). Without it, a popped-out
+    /// tab shows its placeholder in the page area with Dock back.
+    pub hooks: Option<Box<dyn TabHooks>>,
+}
+
+/// What the tab strip asks of the rest of the hub. Every method has a do-nothing default.
+pub trait TabHooks {
+    /// Open the tab's page in its own `Hideout · <title>` window (§2.5).
+    fn pop_out(&mut self, _tab: &TabId, _title: &str) {}
+    /// Close that window: the page is back in its tab.
+    fn dock_back(&mut self, _tab: &TabId) {}
+    /// "Start again" on a stopped module (§7.8).
+    fn start_again(&mut self, _module: &str) {}
 }
 
 /// State the tray and the window both touch.
@@ -40,6 +55,8 @@ struct Shared {
     paths: HubPaths,
     prefs: Mutex<Prefs>,
     paused: AtomicBool,
+    /// The window is closed to the tray: every tab reads `hidden` (§5.9).
+    hidden: AtomicBool,
 }
 
 impl Shared {
@@ -100,9 +117,11 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         paths,
         prefs: Mutex::new(prefs),
         paused: AtomicBool::new(false),
+        hidden: AtomicBool::new(false),
     });
     let pages = opts.pages;
     let feed = opts.panels;
+    let hooks = opts.hooks;
     let first_title = pages
         .first()
         .map(|p| p.title().to_string())
@@ -144,7 +163,9 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             // tray::install logs "tray icon registered" or "tray icon failed: <err>".
             let _ = tray::install(move |cmd| on_tray(cmd, &tray_shared, &tray_ctx));
             let show_ctx = ctx.clone();
+            let show_shared = shared.clone();
             show.listen(move || {
+                show_shared.hidden.store(false, Ordering::Release);
                 platform::show_main_window();
                 show_ctx.request_repaint();
             });
@@ -153,7 +174,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
                 let wake_ctx = ctx.clone();
                 f.set_waker(Box::new(move || wake_ctx.request_repaint()));
             }
-            Ok(Box::new(Hub::new(shared, pages, feed)))
+            Ok(Box::new(Hub::new(shared, pages, feed, hooks)))
         }),
     );
     log::info!("window closed: {result:?}");
@@ -163,7 +184,10 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
 
 fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
     match cmd {
-        tray::Command::Open => platform::show_main_window(),
+        tray::Command::Open => {
+            shared.hidden.store(false, Ordering::Release);
+            platform::show_main_window()
+        }
         tray::Command::Pause(on) => {
             shared.paused.store(on, Ordering::Release);
             log::info!("{}", if on { "paused" } else { "resumed" });
@@ -287,9 +311,8 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// What the page area shows: one of the hub's own pages, or any registered module panel.
-#[derive(Clone, PartialEq)]
-enum Current {
+/// What a tab shows in the page area.
+enum Target {
     Page(usize),
     Panel(PanelKey),
 }
@@ -297,13 +320,24 @@ enum Current {
 struct Hub {
     shared: Arc<Shared>,
     pages: Vec<Box<dyn Page>>,
-    current: Current,
+    tabs: Tabs,
+    strip: StripState,
+    /// "Close <Title>?" is open for these tabs.
+    asking: Option<Vec<TabId>>,
     panels: PanelHost,
     feed: Option<Box<dyn PanelFeed>>,
+    hooks: Option<Box<dyn TabHooks>>,
     title: String,
     palette: Palette,
     /// From manifests and the registry (H2.2); empty until modules exist.
     entries: Vec<Entry>,
+}
+
+fn key_of(id: &TabId) -> Option<PanelKey> {
+    match id {
+        TabId::Panel { module, panel } => Some(PanelKey::new(module, panel)),
+        TabId::Page { .. } => None,
+    }
 }
 
 impl Hub {
@@ -311,17 +345,198 @@ impl Hub {
         shared: Arc<Shared>,
         pages: Vec<Box<dyn Page>>,
         feed: Option<Box<dyn PanelFeed>>,
+        hooks: Option<Box<dyn TabHooks>>,
     ) -> Self {
-        let title = window_title(pages.first().map(|p| p.title()).unwrap_or_default());
+        let ids: Vec<String> = pages.iter().map(|p| p.id().to_string()).collect();
+        // Hub pages that are gone are dropped; module tabs wait for their module ("Starting").
+        let exists = |id: &TabId| match id {
+            TabId::Page { page } => ids.contains(page),
+            TabId::Panel { .. } => true,
+        };
+        let file = shared.paths.tabs_file();
+        let tabs = match Tabs::load(&file, exists) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                // First start: the first page is open.
+                let mut t = Tabs::default();
+                if let Some(first) = ids.first() {
+                    t.open(TabId::page(first));
+                }
+                t
+            }
+            Err(e) => {
+                log::warn!("tabs ignored (file kept as it is): {e}");
+                Tabs::default()
+            }
+        };
         Self {
             shared,
             pages,
-            current: Current::Page(0),
+            tabs,
+            strip: StripState::default(),
+            asking: None,
             panels: PanelHost::default(),
             feed,
-            title,
+            hooks,
+            title: String::new(),
             palette: Palette::default(),
             entries: Vec::new(),
+        }
+    }
+
+    fn target(&self, id: &TabId) -> Option<Target> {
+        match id {
+            TabId::Page { page } => self
+                .pages
+                .iter()
+                .position(|p| p.id() == page)
+                .map(Target::Page),
+            TabId::Panel { .. } => key_of(id).map(Target::Panel),
+        }
+    }
+
+    fn look(&self, i: usize) -> Look {
+        let tab = &self.tabs.tabs()[i];
+        match self.target(&tab.id) {
+            Some(Target::Page(p)) => Look {
+                title: self.pages[p].title().to_string(),
+                state: TabState::Live,
+                mark: Mark::None,
+                popped: tab.popped,
+            },
+            Some(Target::Panel(key)) => match self.panels.panel(&key) {
+                Some(p) => strip::panel_look(p, tab.popped),
+                // Restored before its module registered again (§2.4): "Starting".
+                None => Look {
+                    title: tab.title.clone(),
+                    state: TabState::Busy(hideout_panels::state_words("starting").into()),
+                    mark: Mark::None,
+                    popped: tab.popped,
+                },
+            },
+            None => Look {
+                title: tab.title.clone(),
+                state: TabState::Live,
+                mark: Mark::None,
+                popped: tab.popped,
+            },
+        }
+    }
+
+    fn dirty(&self, id: &TabId) -> bool {
+        key_of(id)
+            .and_then(|k| self.panels.panel(&k))
+            .is_some_and(|p| p.badge == hideout_panels::Badge::Dirty)
+    }
+
+    fn open(&mut self, id: TabId) {
+        if let Some(k) = key_of(&id) {
+            self.panels.reopen_panel(&k);
+        }
+        self.tabs.open(id);
+    }
+
+    fn closed(&mut self, ids: &[TabId]) {
+        for id in ids {
+            if let Some(k) = key_of(id) {
+                self.panels.close_panel(&k);
+            }
+            let popped = self
+                .tabs
+                .position(id)
+                .is_some_and(|i| self.tabs.tabs()[i].popped);
+            if popped {
+                if let Some(h) = self.hooks.as_mut() {
+                    h.dock_back(id);
+                }
+            }
+        }
+        self.tabs.close_now(ids);
+    }
+
+    fn apply(&mut self, a: Action) {
+        match a {
+            Action::Activate(i) => self.tabs.activate(i),
+            Action::Close(i) => {
+                let Some(id) = self.tabs.tabs().get(i).map(|t| t.id.clone()) else {
+                    return;
+                };
+                if self.dirty(&id) {
+                    self.asking = Some(vec![id]);
+                } else {
+                    self.closed(&[id]);
+                }
+            }
+            Action::CloseOthers(i) | Action::CloseRight(i) => {
+                let right = matches!(a, Action::CloseRight(_));
+                let ids: Vec<TabId> = self
+                    .tabs
+                    .tabs()
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| if right { *j > i } else { *j != i })
+                    .map(|(_, t)| t.id.clone())
+                    .collect();
+                self.tabs.activate(i);
+                if ids.iter().any(|id| self.dirty(id)) {
+                    self.asking = Some(ids);
+                } else {
+                    self.closed(&ids);
+                }
+            }
+            Action::Move { from, to } => self.tabs.move_tab(from, to),
+            Action::PopOut(i) => {
+                let title = self.look(i).title;
+                self.tabs.pop_out(i);
+                if let (Some(h), Some(t)) = (self.hooks.as_mut(), self.tabs.tabs().get(i)) {
+                    h.pop_out(&t.id, &title);
+                }
+            }
+            Action::DockBack(i) => {
+                if let (Some(h), Some(t)) = (self.hooks.as_mut(), self.tabs.tabs().get(i)) {
+                    if t.popped {
+                        h.dock_back(&t.id);
+                    }
+                }
+                self.tabs.dock_back(i);
+            }
+            Action::Reopen => {
+                let ids: Vec<String> = self.pages.iter().map(|p| p.id().to_string()).collect();
+                let panels = &self.panels;
+                let reopened = self.tabs.reopen_closed(|id| match id {
+                    TabId::Page { page } => ids.contains(page),
+                    TabId::Panel { .. } => key_of(id).is_some_and(|k| panels.panel(&k).is_some()),
+                });
+                if let Some(k) = reopened.as_ref().and_then(key_of) {
+                    self.panels.reopen_panel(&k);
+                }
+            }
+        }
+    }
+
+    fn shortcut(&mut self, s: Shortcut) {
+        match s {
+            Shortcut::Next => self.tabs.cycle(1),
+            Shortcut::Prev => self.tabs.cycle(-1),
+            Shortcut::Number(n) => self.tabs.select_number(n),
+            Shortcut::Close => {
+                if let Some(i) = self.tabs.active() {
+                    self.apply(Action::Close(i));
+                }
+            }
+            Shortcut::Reopen => self.apply(Action::Reopen),
+            Shortcut::MoveLeft | Shortcut::MoveRight => {
+                if let Some(i) = self.tabs.active() {
+                    let to = if s == Shortcut::MoveLeft {
+                        i.checked_sub(1)
+                    } else {
+                        Some(i + 1).filter(|&j| j < self.tabs.len())
+                    };
+                    if let Some(to) = to {
+                        self.tabs.move_tab(i, to);
+                    }
+                }
+            }
         }
     }
 
@@ -350,19 +565,21 @@ impl Hub {
                         .color(c(t.text)),
                 );
                 ui.add_space(14.0);
-                let mut entries: Vec<(Current, String)> = self
+                let mut entries: Vec<(TabId, String, bool)> = self
                     .pages
                     .iter()
-                    .enumerate()
-                    .map(|(i, p)| (Current::Page(i), p.title().to_string()))
+                    .map(|p| (TabId::page(p.id()), p.title().to_string(), false))
                     .collect();
-                entries.extend(
-                    self.panels
-                        .in_slot(Slot::Page)
-                        .map(|p| (Current::Panel(p.key.clone()), p.title.clone())),
-                );
-                for (target, title) in entries {
-                    let selected = target == self.current;
+                entries.extend(self.panels.in_slot(Slot::Page).map(|p| {
+                    (
+                        TabId::panel(&p.key.module, &p.key.panel),
+                        p.title.clone(),
+                        p.badge == hideout_panels::Badge::Attention,
+                    )
+                }));
+                let active = self.tabs.active_id().cloned();
+                for (target, title, attention) in entries {
+                    let selected = active.as_ref() == Some(&target);
                     let text = egui::RichText::new(title)
                         .size(15.0)
                         .color(c(theme::nav_label(t, selected)));
@@ -370,14 +587,37 @@ impl Hub {
                         [ui.available_width(), 32.0],
                         egui::Button::selectable(selected, text),
                     );
+                    if attention {
+                        // The attention dot on the sidebar entry too; the tab's accessible name
+                        // says "something new", so colour is not the only signal.
+                        let at = egui::pos2(resp.rect.right() - 12.0, resp.rect.center().y);
+                        let fill = if selected { t.on_accent } else { t.accent };
+                        ui.painter().circle_filled(at, 4.0, c(fill));
+                    }
                     if resp.clicked() {
-                        if let Current::Panel(key) = &target {
-                            self.panels.reopen_panel(key);
-                        }
-                        self.current = target;
+                        self.open(target);
                     }
                 }
             });
+    }
+
+    fn strip_bar(&mut self, ctx: &egui::Context, t: &Tokens) {
+        for i in 0..self.tabs.len() {
+            let title = self.look(i).title;
+            self.tabs.set_title(i, &title);
+        }
+        let looks: Vec<Look> = (0..self.tabs.len()).map(|i| self.look(i)).collect();
+        let mut actions = Vec::new();
+        egui::TopBottomPanel::top("hideout.strip")
+            .exact_height(strip::STRIP_H)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(c(t.chrome)))
+            .show(ctx, |ui| {
+                actions = strip::strip_ui(ui, &self.tabs, &looks, t, &mut self.strip);
+            });
+        for a in actions {
+            self.apply(a);
+        }
     }
 
     fn status_strip(&self, ctx: &egui::Context, t: &Tokens) {
@@ -409,6 +649,174 @@ impl Hub {
             });
     }
 
+    /// The page area: the active tab's page, its placeholder when popped out, the stopped card,
+    /// or "Nothing open".
+    fn page_area(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        let Some(i) = self.tabs.active() else {
+            ui.vertical_centered(|ui| {
+                ui.add_space(ui.available_height() / 3.0);
+                ui.label(
+                    egui::RichText::new("Nothing open")
+                        .size(20.0)
+                        .color(c(t.text)),
+                );
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Pick a page in the sidebar.").color(c(t.text_muted)));
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new("Ctrl+K  Commands     Ctrl+Shift+T  Reopen closed tab")
+                        .color(c(t.text_muted)),
+                );
+            });
+            return;
+        };
+        let look = self.look(i);
+        let id = self.tabs.tabs()[i].id.clone();
+        // The page area is the tab panel, named by its tab.
+        let name = look.accessible_name();
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
+            n.set_role(egui::accesskit::Role::TabPanel);
+            n.set_label(name);
+        });
+        if look.popped {
+            let mut dock = false;
+            card(ui, t, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} is in its own window", look.title))
+                        .size(16.0)
+                        .color(c(t.text)),
+                );
+                ui.add_space(8.0);
+                dock = ui.button("Dock back").clicked();
+            });
+            if dock {
+                self.apply(Action::DockBack(i));
+            }
+            return;
+        }
+        match self.target(&id) {
+            Some(Target::Page(p)) => self.pages[p].ui(ui, t),
+            Some(Target::Panel(key)) => {
+                match &look.state {
+                    TabState::Stopped(words) => {
+                        let panel = self.panels.panel(&key);
+                        let details = panel.and_then(|p| p.state.details()).unwrap_or_default();
+                        let module_name = panel
+                            .map(|p| p.module_name.clone())
+                            .unwrap_or_else(|| look.title.clone());
+                        let quarantined = panel.map(|p| &p.state) == Some(&PanelState::Quarantined);
+                        let mut again = false;
+                        card(ui, t, |ui| {
+                            // The panel host's banner below names the state; the card holds
+                            // the ways out.
+                            ui.label(
+                                egui::RichText::new(format!("{module_name} isn't running"))
+                                    .size(16.0)
+                                    .color(c(t.text)),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{words}. The last page it drew stays below."
+                                ))
+                                .color(c(t.text_muted)),
+                            );
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                again = ui.button("Start again").clicked();
+                                if ui.button("Copy diagnostics").clicked() {
+                                    ui.ctx().copy_text(details.clone());
+                                }
+                            });
+                        });
+                        if again {
+                            if quarantined {
+                                self.panels.release(&key.module);
+                            }
+                            if let Some(h) = self.hooks.as_mut() {
+                                h.start_again(&key.module);
+                            }
+                        }
+                        ui.add_space(12.0);
+                    }
+                    TabState::Busy(words) => {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{words}\u{2026} Your place on this page is kept."
+                            ))
+                            .color(c(t.text_muted)),
+                        );
+                        ui.add_space(8.0);
+                    }
+                    TabState::Off | TabState::Live => {}
+                }
+                if self.panels.panel(&key).is_some() {
+                    hideout_panels::panel_ui(&mut self.panels, ui, &key);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// "Close <Title>?" for unsaved tabs. Keep open is the default (Enter and Esc).
+    fn ask_ui(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let Some(ids) = self.asking.clone() else {
+            return;
+        };
+        let unsaved: Vec<String> = ids
+            .iter()
+            .filter(|id| self.dirty(id))
+            .filter_map(|id| self.tabs.position(id).map(|i| self.look(i).title))
+            .collect();
+        if unsaved.is_empty() {
+            self.asking = None;
+            self.closed(&ids);
+            return;
+        }
+        let (head, body) = if unsaved.len() == 1 && ids.len() == 1 {
+            (
+                format!("Close {}?", unsaved[0]),
+                format!("Your changes in {} aren't saved.", unsaved[0]),
+            )
+        } else {
+            (
+                format!("Close {} tabs?", ids.len()),
+                format!("Your changes in {} aren't saved.", unsaved.join(", ")),
+            )
+        };
+        let mut choice = None;
+        let modal = egui::Modal::new(egui::Id::new("hideout.ask")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.label(egui::RichText::new(head).size(16.0).color(c(t.text)));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(body).color(c(t.text)));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                let keep = ui.button("Keep open");
+                if !ui.ctx().memory(|m| m.focused().is_some()) {
+                    keep.request_focus();
+                }
+                if keep.clicked() {
+                    choice = Some(false);
+                }
+                if ui.button("Close anyway").clicked() {
+                    choice = Some(true);
+                }
+            });
+        });
+        let esc = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        if modal.should_close() || esc {
+            choice.get_or_insert(false);
+        }
+        match choice {
+            Some(true) => {
+                self.asking = None;
+                self.closed(&ids);
+            }
+            Some(false) => self.asking = None,
+            None => {}
+        }
+    }
+
     fn palette_ui(&mut self, ctx: &egui::Context, t: &Tokens) {
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::K)) {
             self.palette.toggle();
@@ -433,8 +841,8 @@ impl Hub {
         }
         if enter {
             if let Some(target) = self.palette.chosen(&self.entries).map(|e| e.target.clone()) {
-                if let Some(i) = self.pages.iter().position(|p| p.id() == target) {
-                    self.current = Current::Page(i);
+                if self.pages.iter().any(|p| p.id() == target) {
+                    self.open(TabId::page(target));
                 }
                 self.palette.close();
                 return;
@@ -479,17 +887,22 @@ impl Hub {
             self.palette.close();
         }
     }
-}
 
-impl eframe::App for Hub {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Closing the window keeps the hub in the tray; Quit is in the tray menu.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.shared.save_placement();
-            platform::hide_main_window();
-            log::info!("window closed to the tray");
-        }
+    /// The panels on screen now, for `ui.visibility`: none when the window is minimised or in
+    /// the tray, else the active tab, plus pop-outs that are shown.
+    fn on_screen(&self, ctx: &egui::Context) -> Vec<PanelKey> {
+        let minimised = ctx.input(|i| i.viewport().minimized == Some(true));
+        let shown = !minimised && !self.shared.hidden.load(Ordering::Acquire);
+        self.tabs
+            .on_screen(shown)
+            .into_iter()
+            .filter_map(key_of)
+            .collect()
+    }
+
+    /// One frame of the hub window, without the platform calls (tests draw it headless).
+    fn frame(&mut self, ctx: &egui::Context) {
+        let t = theme::tokens(ctx.theme() == egui::Theme::Dark);
         if let Some(feed) = self.feed.as_mut() {
             let now = std::time::Instant::now();
             // Event-driven: the feed's waker brought this frame; a held-back patch asks for one
@@ -499,63 +912,48 @@ impl eframe::App for Hub {
                 ctx.request_repaint_after(at.saturating_duration_since(now));
             }
         }
-        self.draw(ctx);
-    }
-}
-
-impl Hub {
-    /// One frame of the window's content. Kept apart from `update` so the idle test runs it on a
-    /// bare `egui::Context`, window-free.
-    fn draw(&mut self, ctx: &egui::Context) {
-        let t = theme::tokens(ctx.theme() == egui::Theme::Dark);
+        if self.asking.is_none() && !self.palette.open {
+            for s in strip::shortcuts(ctx) {
+                self.shortcut(s);
+            }
+        }
         self.sidebar(ctx, &t);
         self.status_strip(ctx, &t);
+        self.strip_bar(ctx, &t);
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(c(t.bg))
                     .inner_margin(egui::Margin::same(24)),
             )
-            .show(ctx, |ui| {
-                match &self.current {
-                    Current::Page(i) => {
-                        if let Some(page) = self.pages.get_mut(*i) {
-                            page.ui(ui, &t);
-                        }
-                    }
-                    Current::Panel(key) => {
-                        hideout_panels::panel_ui(&mut self.panels, ui, key);
-                    }
-                }
-                // Input from the panel goes out on this frame, not the next one.
-                // So does a change of what the content area shows (ui.visibility, 5.9).
-                let shown = match &self.current {
-                    Current::Panel(key) => Some(key),
-                    Current::Page(_) => None,
-                };
-                self.panels.set_shown(shown);
-                if let Some(feed) = self.feed.as_mut() {
-                    for e in self.panels.take_events() {
-                        feed.send(hideout_panels::Outbound::Event(e));
-                    }
-                    for (module, visibility) in self.panels.take_visibility() {
-                        feed.send(hideout_panels::Outbound::Visibility { module, visibility });
-                    }
-                }
-            });
+            .show(ctx, |ui| self.page_area(ui, &t));
+        self.ask_ui(ctx, &t);
         self.palette_ui(ctx, &t);
-        let title = window_title(&match &self.current {
-            Current::Page(i) => self
-                .pages
-                .get(*i)
-                .map(|p| p.title().to_string())
+        // Input from the panel and a change of what is on screen (ui.visibility, 5.9) go out on
+        // this frame, not the next one.
+        let shown = self.on_screen(ctx);
+        self.panels.set_visible(&shown);
+        if let Some(feed) = self.feed.as_mut() {
+            for e in self.panels.take_events() {
+                feed.send(hideout_panels::Outbound::Event(e));
+            }
+            for (module, visibility) in self.panels.take_visibility() {
+                feed.send(hideout_panels::Outbound::Visibility { module, visibility });
+            }
+        }
+        if self.tabs.take_changed() {
+            let f = self.shared.paths.tabs_file();
+            if let Err(e) = self.tabs.save(&f) {
+                log::warn!("saving {}: {e}", f.display());
+            }
+        }
+        let title = window_title(
+            &self
+                .tabs
+                .active()
+                .map(|i| self.look(i).title)
                 .unwrap_or_default(),
-            Current::Panel(key) => self
-                .panels
-                .panel(key)
-                .map(|p| p.title.clone())
-                .unwrap_or_default(),
-        });
+        );
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -563,75 +961,30 @@ impl Hub {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A card on the page: surface fill, border, padding.
+fn card(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(c(t.surface))
+        .stroke(egui::Stroke::new(1.0_f32, c(t.border)))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(16))
+        .show(ui, add);
+}
 
-    struct Empty;
-    impl Page for Empty {
-        fn id(&self) -> &str {
-            "hub.modules"
+impl eframe::App for Hub {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Closing the window keeps the hub in the tray; Quit is in the tray menu.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.shared.save_placement();
+            self.shared.hidden.store(true, Ordering::Release);
+            platform::hide_main_window();
+            log::info!("window closed to the tray");
         }
-        fn title(&self) -> &str {
-            "Modules"
-        }
-        fn ui(&mut self, ui: &mut egui::Ui, _: &Tokens) {
-            ui.label("No modules yet");
-        }
-    }
-
-    fn hub() -> Hub {
-        let root = std::env::temp_dir().join(format!("hideout-idle-{}", std::process::id()));
-        let shared = Arc::new(Shared {
-            paths: HubPaths {
-                root,
-                overridden: true,
-            },
-            prefs: Mutex::new(Prefs::default()),
-            paused: AtomicBool::new(false),
-        });
-        Hub::new(shared, vec![Box::new(Empty)], None)
-    }
-
-    fn input() -> egui::RawInput {
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                placement::DEFAULT_SIZE.into(),
-            )),
-            ..Default::default()
-        }
-    }
-
-    /// The idle hub draws once and then asks for nothing: no repaint, no repaint-after. A frame
-    /// that asked again would keep eframe out of `ControlFlow::Wait` (#935).
-    #[test]
-    fn an_idle_frame_requests_no_repaint() {
-        let ctx = egui::Context::default();
-        install_fonts(&ctx);
-        set_theme(&ctx, ThemeChoice::System);
-        let asked = Arc::new(Mutex::new(Vec::new()));
-        let log = asked.clone();
-        ctx.set_request_repaint_callback(move |info| log.lock().unwrap().push(info.delay));
-        let mut hub = hub();
-        // egui settles layout and fonts over the first passes.
-        for _ in 0..4 {
-            let _ = ctx.run(input(), |ctx| hub.draw(ctx));
-        }
-        asked.lock().unwrap().clear();
-        for pass in 0..3 {
-            let out = ctx.run(input(), |ctx| hub.draw(ctx));
-            let vp = &out.viewport_output[&egui::ViewportId::ROOT];
-            assert_eq!(
-                vp.repaint_delay,
-                std::time::Duration::MAX,
-                "idle pass {pass} asked for a repaint"
-            );
-        }
-        assert!(
-            asked.lock().unwrap().is_empty(),
-            "{:?}",
-            asked.lock().unwrap()
-        );
+        self.frame(ctx);
     }
 }
+
+#[cfg(test)]
+#[path = "shell_tests.rs"]
+mod tests;

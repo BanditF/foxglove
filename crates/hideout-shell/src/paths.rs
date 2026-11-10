@@ -41,6 +41,11 @@ impl HubPaths {
         self.root.join("hideout.toml")
     }
 
+    /// The open tabs, their order, the active one and pop-outs (§5.9), owned by the hub.
+    pub fn tabs_file(&self) -> PathBuf {
+        self.root.join("tabs.toml")
+    }
+
     /// Hub and module logs (§2.3).
     pub fn logs_dir(&self) -> PathBuf {
         self.root.join("logs")

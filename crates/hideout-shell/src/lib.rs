@@ -17,12 +17,15 @@ pub mod paths;
 pub mod placement;
 pub mod prefs;
 pub mod status;
+pub mod tabs;
 pub mod theme;
 
 #[cfg(windows)]
 mod platform;
 #[cfg(windows)]
 mod shell;
+#[cfg(windows)]
+pub mod strip;
 #[cfg(windows)]
 mod tray;
 
@@ -31,7 +34,7 @@ pub use eframe::egui;
 #[cfg(windows)]
 pub use hideout_panels;
 #[cfg(windows)]
-pub use shell::{run, Page, ShellOptions};
+pub use shell::{run, Page, ShellOptions, TabHooks};
 
 /// The hub's AppUserModelID: the hub window, its pop-outs and module windows group under it
 /// (contract §2.5).
