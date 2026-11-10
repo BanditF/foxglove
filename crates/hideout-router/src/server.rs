@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -21,14 +22,54 @@ pub fn user() -> String {
         .collect()
 }
 
-/// `\\.\pipe\hideout-<user>`.
+/// `\\.\pipe\hideout-<user>`: the default hub folder's router pipe (§8.2).
 pub fn router_pipe_name() -> String {
-    format!(r"\\.\pipe\hideout-{}", user())
+    router_pipe_name_for("")
 }
 
 /// `\\.\pipe\foxglove-<user>`, served as an alias once `foxglove.exe` no longer owns it.
 pub fn alias_pipe_name() -> String {
-    format!(r"\\.\pipe\foxglove-{}", user())
+    alias_pipe_name_for("")
+}
+
+/// `\\.\pipe\hideout-<user><suffix>`, `suffix` from [`folder_suffix`]; empty for the default
+/// hub folder, whose name stays `\\.\pipe\hideout-<user>`.
+pub fn router_pipe_name_for(suffix: &str) -> String {
+    format!(r"\\.\pipe\hideout-{}{suffix}", user())
+}
+
+/// `\\.\pipe\foxglove-<user><suffix>`: the alias of the hub on that folder.
+pub fn alias_pipe_name_for(suffix: &str) -> String {
+    format!(r"\\.\pipe\foxglove-{}{suffix}", user())
+}
+
+/// The folder part of a hub's names (§8.2, #1010) for any hub folder but the default: `.` and
+/// 16 lower-case hex digits, FNV-1a 64 of [`folder_key`]. The default folder has none.
+pub fn folder_suffix(root: &Path) -> String {
+    format!(".{:016x}", fnv1a(&folder_key(root)))
+}
+
+/// One spelling per folder: its canonical path when it exists (else the absolute path), without
+/// the `\\?\` prefix, lower case, `/` separators, no trailing `/`.
+pub fn folder_key(root: &Path) -> String {
+    let full = std::fs::canonicalize(root)
+        .or_else(|_| std::path::absolute(root))
+        .unwrap_or_else(|_| root.to_path_buf());
+    let s = full.to_string_lossy().replace('\\', "/");
+    let s = if let Some(unc) = s.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else if let Some(local) = s.strip_prefix("//?/") {
+        local.to_string()
+    } else {
+        s
+    };
+    s.to_lowercase().trim_end_matches('/').to_string()
+}
+
+fn fnv1a(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 struct Shared {
@@ -36,6 +77,8 @@ struct Shared {
     writers: Mutex<HashMap<ConnId, Sender<Option<String>>>>,
     events: Mutex<Sender<Out>>,
     nudge: Mutex<Sender<()>>,
+    /// The hub folder's [`folder_suffix`]; empty for the default folder.
+    suffix: Mutex<String>,
 }
 
 /// A router with its connections. Cheap to clone; clones share everything.
@@ -52,6 +95,7 @@ impl Hub {
             writers: Mutex::new(HashMap::new()),
             events: Mutex::new(events),
             nudge: Mutex::new(nudge),
+            suffix: Mutex::new(String::new()),
         }));
         let weak = Arc::downgrade(&hub.0);
         std::thread::Builder::new()
@@ -59,6 +103,27 @@ impl Hub {
             .spawn(move || timer(weak, wake))
             .expect("router timer thread");
         hub
+    }
+
+    /// Names this hub after its folder (#1010): `suffix` from [`folder_suffix`], empty (the
+    /// default) for the default folder. Set before serving the pipes and starting modules.
+    pub fn set_folder_suffix(&self, suffix: &str) {
+        *self.0.suffix.lock().unwrap() = suffix.to_string();
+    }
+
+    /// The suffix [`Hub::set_folder_suffix`] set.
+    pub fn folder_suffix(&self) -> String {
+        self.0.suffix.lock().unwrap().clone()
+    }
+
+    /// This hub's router pipe, the one its modules get in `HIDEOUT_PIPE` (§7.5).
+    pub fn router_pipe(&self) -> String {
+        router_pipe_name_for(&self.folder_suffix())
+    }
+
+    /// This hub's `foxglove-<user>` alias.
+    pub fn alias_pipe(&self) -> String {
+        alias_pipe_name_for(&self.folder_suffix())
     }
 
     /// Runs `f` on the router and carries out what it returns.
@@ -254,5 +319,62 @@ fn timer(hub: std::sync::Weak<Shared>, wake: Receiver<()>) {
                 Hub(shared).act(|r| r.tick(Instant::now()));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Settings;
+    use std::path::PathBuf;
+
+    fn hub() -> Hub {
+        let (events, _rx) = mpsc::channel();
+        Hub::new(
+            Router::new(Settings::default(), Box::new(|_, a| a.to_vec())),
+            events,
+        )
+    }
+
+    #[test]
+    fn the_default_folder_keeps_the_old_names() {
+        let user = user();
+        assert_eq!(router_pipe_name(), format!(r"\\.\pipe\hideout-{user}"));
+        assert_eq!(alias_pipe_name(), format!(r"\\.\pipe\foxglove-{user}"));
+        let h = hub();
+        assert_eq!(h.folder_suffix(), "");
+        assert_eq!(h.router_pipe(), router_pipe_name());
+        assert_eq!(h.alias_pipe(), alias_pipe_name());
+    }
+
+    #[test]
+    fn two_hubs_on_two_folders_get_two_pipe_names() {
+        let (a, b) = (hub(), hub());
+        a.set_folder_suffix(&folder_suffix(Path::new(r"C:\Lab\One")));
+        b.set_folder_suffix(&folder_suffix(Path::new(r"C:\Lab\Two")));
+        assert_ne!(a.router_pipe(), b.router_pipe());
+        assert_ne!(a.alias_pipe(), b.alias_pipe());
+        assert_ne!(a.router_pipe(), router_pipe_name());
+        assert!(a.router_pipe().starts_with(&router_pipe_name()));
+        let s = a.folder_suffix();
+        assert_eq!(s.len(), 17);
+        assert!(s.starts_with('.') && s[1..].bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn one_folder_one_suffix_however_it_is_spelled() {
+        assert_eq!(
+            folder_suffix(Path::new(r"C:\Lab\Cfg\")),
+            folder_suffix(Path::new("c:/lab/cfg"))
+        );
+        // An existing folder hashes by its canonical path, with or without `\\?\`.
+        let dir = std::env::temp_dir().join(format!("hideout-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let canon = std::fs::canonicalize(&dir).unwrap();
+        let upper = PathBuf::from(dir.to_string_lossy().to_uppercase() + "\\");
+        assert_eq!(folder_key(&canon), folder_key(&dir));
+        assert_eq!(folder_key(&upper), folder_key(&dir));
+        assert!(!folder_key(&dir).starts_with("//?/"));
+        let _ = std::fs::remove_dir(&dir);
     }
 }

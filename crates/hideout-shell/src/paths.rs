@@ -5,7 +5,7 @@
 //! folder and gets its own single-instance names (see `instance_suffix`). Otherwise
 //! `HIDEOUT_HOME` (the contract's test override), otherwise `%LOCALAPPDATA%\Hideout`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The hub's folders, all under one root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,14 +19,16 @@ impl HubPaths {
     /// Resolves the root from an environment lookup (`std::env::var_os` in the hub, a map in tests).
     pub fn resolve(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<Self> {
         let set = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let default = set("LOCALAPPDATA").map(|base| base.join("Hideout"));
         if let Some(root) = set("HIDEOUT_CONFIG_DIR").or_else(|| set("HIDEOUT_HOME")) {
-            return Some(Self {
-                root,
-                overridden: true,
+            // Naming the default folder is the default hub: same pipe and lock names (#1010).
+            let overridden = default.as_ref().is_none_or(|d| {
+                hideout_router::server::folder_key(d) != hideout_router::server::folder_key(&root)
             });
+            return Some(Self { root, overridden });
         }
-        set("LOCALAPPDATA").map(|base| Self {
-            root: base.join("Hideout"),
+        default.map(|root| Self {
+            root,
             overridden: false,
         })
     }
@@ -56,27 +58,17 @@ impl HubPaths {
         self.root.join("modules")
     }
 
-    /// A suffix for the hub's named kernel objects. Empty for the default folder; for any other
-    /// folder a stable hash of its normalised path, so a lab hub never meets the user's hub.
+    /// The suffix of the hub's named kernel objects and pipes (router, alias, capture, lab
+    /// control, lock, jobs; contract §8.2, #1010). Empty for the default folder, so its names
+    /// are the old ones; for any other folder a stable hash of its canonical path, so a lab hub
+    /// never meets the user's hub. See `hideout_router::server::folder_suffix`.
     pub fn instance_suffix(&self) -> String {
         if self.overridden {
-            format!(".{:016x}", fnv1a(&normalise(&self.root)))
+            hideout_router::server::folder_suffix(&self.root)
         } else {
             String::new()
         }
     }
-}
-
-/// Lower case, forward slashes, no trailing slash: one spelling per folder on Windows.
-fn normalise(p: &Path) -> String {
-    let s = p.to_string_lossy().replace('\\', "/").to_lowercase();
-    s.trim_end_matches('/').to_string()
-}
-
-fn fnv1a(s: &str) -> u64 {
-    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ b as u64).wrapping_mul(0x0100_0000_01b3)
-    })
 }
 
 #[cfg(test)]
@@ -84,6 +76,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::ffi::OsString;
+    use std::path::Path;
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
         let m: HashMap<String, OsString> = pairs
@@ -125,6 +118,17 @@ mod tests {
         ]))
         .unwrap();
         assert!(!p.overridden);
+    }
+
+    #[test]
+    fn an_override_naming_the_default_folder_is_the_default_hub() {
+        let p = HubPaths::resolve(env(&[
+            ("HIDEOUT_CONFIG_DIR", r"c:/l/HIDEOUT/"),
+            ("LOCALAPPDATA", r"C:\L"),
+        ]))
+        .unwrap();
+        assert!(!p.overridden);
+        assert_eq!(p.instance_suffix(), "");
     }
 
     #[test]

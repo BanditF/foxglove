@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 //! Starts the router (H2.3, contract §8) before the shell: the registry's modules and grants, the
-//! router pipe `\\.\pipe\hideout-<user>`, and the `foxglove-<user>` alias when `foxglove.exe`
-//! doesn't own it. Then the supervisor (H2.5, §7.7): it takes back what the last hub left
+//! router pipe `\\.\pipe\hideout-<user><suffix>`, and the `foxglove-<user><suffix>` alias when
+//! `foxglove.exe` doesn't own it; `<suffix>` names a hub folder other than the default (#1010). Then the supervisor (H2.5, §7.7): it takes back what the last hub left
 //! running and starts the enabled modules. No window.
 
 use std::path::Path;
 use std::sync::mpsc;
 
-use hideout_router::server::{alias_pipe_name, router_pipe_name, Hub};
+use hideout_router::server::Hub;
 use hideout_router::{Router, Settings};
 use hideout_supervisor::driver::Supervisor;
 
@@ -100,8 +100,9 @@ fn notifier(sup: Supervisor, home: &Path) -> hideout_supervisor::driver::Notifie
 
 /// Starts the router and the supervisor; the panel feed is for the shell (§5): every module's
 /// manifest is loaded into the router (`ui.register` checked against its panels and actions)
-/// and handed to the panel host (tiles, `when`, Keys and Settings).
-pub fn start(home: &Path) -> (Hub, Supervisor, HubFeed) {
+/// and handed to the panel host (tiles, `when`, Keys and Settings). `suffix` is the folder's
+/// (`HubPaths::instance_suffix`): the pipes and the modules' `HIDEOUT_PIPE` carry it.
+pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
     let mut router = Router::new(Settings::default(), approver());
     let mut manifests = Vec::new();
     // Lab mode (#1001, docs/hideout-lab.md): said once, refused with its reason.
@@ -136,6 +137,7 @@ pub fn start(home: &Path) -> (Hub, Supervisor, HubFeed) {
     let early = router.watch_facts(vec![String::new()]);
     let (events, rx) = mpsc::channel();
     let hub = Hub::new(router, events);
+    hub.set_folder_suffix(suffix);
     let (side, feed) = panel_feed::feed(hub.clone());
     for m in manifests {
         side.manifest(m);
@@ -145,13 +147,13 @@ pub fn start(home: &Path) -> (Hub, Supervisor, HubFeed) {
     }
     #[cfg(windows)]
     {
-        let name = router_pipe_name();
+        let name = hub.router_pipe();
         match hub.serve_pipe(&name) {
             Ok(_) => log::info!("router: serving {name}"),
             Err(e) => log::error!("router: {name}: {e}"),
         }
         // §8.2, §8.6: the alias only once foxglove.exe no longer owns the name.
-        let alias = alias_pipe_name();
+        let alias = hub.alias_pipe();
         match hub.serve_pipe(&alias) {
             Ok(_) => log::info!("router: serving the alias {alias}"),
             Err(e) => log::info!("router: alias {alias} not served (owned elsewhere): {e}"),

@@ -63,7 +63,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
             None
         }
     };
-    let (router, supervisor, feed) = router_start::start(&paths.root);
+    let (router, supervisor, feed) = router_start::start(&paths.root, &paths.instance_suffix());
     Started {
         _lock: lock,
         _router: Some(router),

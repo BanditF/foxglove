@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use hideout_registry::Registry;
-use hideout_router::server::{router_pipe_name, user, Hub};
+use hideout_router::server::{user, Hub};
 use hideout_router::{ModuleEntry, Out};
 use serde_json::Value;
 
@@ -346,6 +346,12 @@ impl Supervisor {
         self.feed(ev);
     }
 
+    /// `<user>` plus the hub's folder suffix for Job Object names (#1010), so a lab hub never
+    /// opens the user hub's jobs. The default folder keeps `<user>`.
+    fn job_user(&self) -> String {
+        format!("{}{}", user(), self.0.hub.folder_suffix())
+    }
+
     /// "Start again" (§7.8).
     pub fn start_again(&self, id: &str) {
         self.feed(Ev::StartAgain { id: id.into() });
@@ -457,7 +463,7 @@ impl Supervisor {
         let sha256 = sha256_file(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
         let job = Arc::new(
-            Job::create(&Job::name_for(&user(), id, instance), self.0.caps)
+            Job::create(&Job::name_for(&self.job_user(), id, instance), self.0.caps)
                 .map_err(|e| format!("job: {e}"))?,
         );
         let mut cmd = Command::new(&exe);
@@ -474,7 +480,7 @@ impl Supervisor {
                 token = r.issue_token(id);
                 Vec::new()
             });
-            cmd.env("HIDEOUT_PIPE", router_pipe_name())
+            cmd.env("HIDEOUT_PIPE", self.0.hub.router_pipe())
                 .env("HIDEOUT_TOKEN", &token)
                 .env("HIDEOUT_INSTANCE", instance.to_string())
                 .stdin(Stdio::null())
@@ -542,8 +548,11 @@ impl Supervisor {
     /// its original token for the reconnect.
     fn adopt(&self, id: &str, rec: &Record, p: Process) -> Result<(), String> {
         let p = Arc::new(p);
-        let job = Job::create(&Job::name_for(&user(), id, rec.instance), self.0.caps)
-            .and_then(|j| j.assign(&p).map(|()| j));
+        let job = Job::create(
+            &Job::name_for(&self.job_user(), id, rec.instance),
+            self.0.caps,
+        )
+        .and_then(|j| j.assign(&p).map(|()| j));
         let job = match job {
             Ok(j) => Some(Arc::new(j)),
             Err(e) => {

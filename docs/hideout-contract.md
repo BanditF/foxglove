@@ -1026,7 +1026,8 @@ approval; 4 busy (lock held); 5 the hub isn't running (for steps that need it).
 LSP-style: capabilities and versions are exchanged once.
 
 1. **Launch.** The hub shallow-verifies, then starts the exe in a Job Object (§7.7) with:
-   - `HIDEOUT_PIPE`: the router pipe name;
+   - `HIDEOUT_PIPE`: the router pipe name, the one this hub serves (§8.2: a hub on another
+     folder than the default serves a name of its own);
    - `HIDEOUT_TOKEN`: a one-time launch token;
    - `HIDEOUT_INSTANCE`: the instance id.
 2. **Connect.** The module sends `initialize {id, version, instance, token, hub, api}`. The hub
@@ -1213,6 +1214,18 @@ Rules:
 
 - **`\\.\pipe\hideout-<user>`**, `<user>` = `%USERNAME%` keeping ASCII letters, digits, `-`, `_`.
   Current-user ACL, `PIPE_REJECT_REMOTE_CLIENTS`.
+- **One name per hub folder (clarification, #1010).** The name above is the default hub
+  folder's (`%LOCALAPPDATA%\Hideout`), unchanged. A hub on any other folder (`HIDEOUT_CONFIG_DIR`
+  or `HIDEOUT_HOME`, a lab or test hub) appends `<suffix>` = `.` and 16 lower-case hex digits:
+  FNV-1a 64 of the folder's key, its canonical path when it exists (else its absolute path),
+  without `\\?\`, lower case, `/` separators, no trailing `/`. So a lab hub serves
+  `\\.\pipe\hideout-<user><suffix>` and never meets the user's hub. An override that names the
+  default folder is the default hub, with no suffix. The same `<user><suffix>` names the hub's
+  other per-user objects: the `foxglove-<user><suffix>` alias, the lab-only
+  `hideout-capture-<user><suffix>` (#1008) and `hideout-lab-<user><suffix>` (#1014) pipes, the
+  single-instance and supervisor locks, and the modules' Job Objects. A module never derives
+  the name: it opens `HIDEOUT_PIPE` (§7.5), which the hub sets to the pipe it serves. An
+  outside tool that wants a lab hub is given that hub's name.
 - **Modules** connect with their launch token.
 - **Outside tools** (`foxglove-cli`, the `hideout` CLI, `hideout mcp`, scripts) connect without a
   token and are approved once each.
