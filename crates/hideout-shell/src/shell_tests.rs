@@ -497,3 +497,44 @@ fn an_idle_frame_requests_no_repaint() {
         asked.lock().unwrap()
     );
 }
+
+/// Closed to the tray, a frame asks for nothing either: a hidden window gets no frame for it,
+/// and only `wake::Gate` would keep eframe's Poll from spinning (#935).
+#[test]
+fn a_hidden_frame_requests_no_repaint() {
+    let ctx = egui::Context::default();
+    install_fonts(&ctx);
+    set_theme(&ctx, ThemeChoice::System);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let log = asked.clone();
+    ctx.set_request_repaint_callback(move |info| log.lock().unwrap().push(info.delay));
+    let mut hub = hub_in(&temp_dir("hidden-idle"), None);
+    let input = || RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            placement::DEFAULT_SIZE.into(),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..4 {
+        let _ = ctx.run(input(), |ctx| hub.frame(ctx));
+    }
+    hub.shared.hidden.store(true, Ordering::Release);
+    // The first hidden pass sends the visibility change; after that nothing.
+    let _ = ctx.run(input(), |ctx| hub.frame(ctx));
+    asked.lock().unwrap().clear();
+    for pass in 0..3 {
+        let out = ctx.run(input(), |ctx| hub.frame(ctx));
+        let vp = &out.viewport_output[&egui::ViewportId::ROOT];
+        assert_eq!(
+            vp.repaint_delay,
+            std::time::Duration::MAX,
+            "hidden pass {pass} asked for a repaint"
+        );
+    }
+    assert!(
+        asked.lock().unwrap().is_empty(),
+        "{:?}",
+        asked.lock().unwrap()
+    );
+}

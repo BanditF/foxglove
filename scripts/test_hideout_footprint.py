@@ -13,9 +13,10 @@ sys.path.insert(0, str(LAB))
 import footprint_compare as fc  # noqa: E402
 
 MB = 1024 * 1024
-FIRST = {'private_b': 30 * MB, 'working_set_b': 50 * MB, 'cpu_100ns': 0, 'ctx_switches': 1000,
+FIRST = {'private_b': 30 * MB, 'working_set_b': 50 * MB, 'cpu_100ns': 0, 'threads': {1: 900, 2: 100},
          'gdi': 90, 'user': 40, 'vram_b': None}
-LAST = {**FIRST, 'cpu_100ns': 3_000_000, 'ctx_switches': 1600}  # 0.3 s CPU and 600 switches in 60 s
+# 0.3 s CPU; 600 switches in 60 s over three threads (thread 3 was born in the window).
+LAST = {**FIRST, 'cpu_100ns': 3_000_000, 'threads': {1: 1400, 2: 150, 3: 50}}
 BASE = {'private_mb': {'value': 30, 'pct': 10}, 'cpu_pct': {'value': 0.5, 'pct': 0, 'slack': 0.1},
         'gdi_handles': {'value': 90}, 'vram_mb': {'value': 20, 'pct': 10}}
 
@@ -36,9 +37,32 @@ class Summary(unittest.TestCase):
             fc.summarize(FIRST, LAST, 0)
 
 
+class Threads(unittest.TestCase):
+    def test_wakeups_sum_every_thread_not_the_process_counter(self):
+        # The Process-class counter read 0 for the hub; only the threads carry the switches.
+        first = {**FIRST, 'threads': {10: 0, 11: 0}}
+        last = {**LAST, 'threads': {10: 90_000, 11: 600}}
+        self.assertEqual(fc.summarize(first, last, 60)['wakeups_per_s'], 1510.0)
+
+    def test_a_reused_thread_id_counts_from_zero(self):
+        m = fc.summarize({**FIRST, 'threads': {1: 5000}}, {**LAST, 'threads': {1: 120}}, 60)
+        self.assertEqual(m['wakeups_per_s'], 2.0)
+
+    def test_top_three_threads_highest_first_with_names(self):
+        first = {1: 0, 2: 0, 3: 0, 4: 0}
+        last = {1: 60, 2: 90_000, 3: 600, 4: 6}
+        top = fc.top_threads(first, last, 60, {2: 'main', 3: ''})
+        self.assertEqual(top, [{'tid': 2, 'name': 'main', 'switches_per_s': 1500.0},
+                               {'tid': 3, 'name': '', 'switches_per_s': 10.0},
+                               {'tid': 1, 'name': '', 'switches_per_s': 1.0}])
+
+    def test_no_thread_counts_give_no_top_threads(self):
+        self.assertEqual(fc.top_threads(None, None, 60), [])
+
+
 class WakeupsUnavailable(unittest.TestCase):
     def test_no_counter_gives_none_not_an_error(self):
-        m = fc.summarize({**FIRST, 'ctx_switches': None}, {**LAST, 'ctx_switches': None}, 60)
+        m = fc.summarize({**FIRST, 'threads': None}, {**LAST, 'threads': None}, 60)
         self.assertIsNone(m['wakeups_per_s'])
         self.assertEqual(m['cpu_pct'], 0.5)
 

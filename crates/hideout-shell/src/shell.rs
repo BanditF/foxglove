@@ -140,7 +140,11 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         ..Default::default()
     };
     let (_instance, show) = instance;
-    let result = eframe::run_native(
+    // eframe's app on the hub's own loop: `wake::Gate` keeps a hidden window from polling.
+    let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let app = eframe::create_native(
         PRODUCT,
         options,
         Box::new(move |cc| {
@@ -176,7 +180,10 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             }
             Ok(Box::new(Hub::new(shared, pages, feed, hooks)))
         }),
+        &event_loop,
     );
+    let mut gate = crate::wake::Gate::new(app, platform::main_window_drawable);
+    let result = event_loop.run_app(&mut gate);
     log::info!("window closed: {result:?}");
     log::logger().flush();
     result.map_err(|e| e.to_string())

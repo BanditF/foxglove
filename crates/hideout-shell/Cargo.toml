@@ -17,6 +17,8 @@ hideout-panels = { path = "../hideout-panels" }
 eframe = { version = "0.33", default-features = false, features = ["glow", "accesskit"] }
 raw-window-handle = "0.6"
 tray-icon = "0.24"
+# eframe's own winit (no new crate): the hub runs eframe's app on its own loop (`wake`, #935).
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

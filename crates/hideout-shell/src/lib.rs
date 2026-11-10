@@ -28,6 +28,8 @@ mod shell;
 pub mod strip;
 #[cfg(windows)]
 mod tray;
+#[cfg(windows)]
+mod wake;
 
 #[cfg(windows)]
 pub use eframe::egui;
