@@ -10,6 +10,11 @@
 //! - The switch shows Windows' live state: on when the shortcut is there and Windows doesn't have
 //!   it disabled. It's read again whenever the Settings window gets the focus (the user may have
 //!   changed it in Windows meanwhile); nothing watches the registry.
+//! - The shortcut starts Foxglove in the tray ([`STARTUP_ARGS`], `--tray`; Hub decision
+//!   2026-11-09, #992): sign-in is quiet, and Settings stays closed until the tray opens it. A
+//!   shortcut made before that, starting this exe without it, is rewritten in place at startup
+//!   with it; its StartupApproved value is keyed by the file's name, so Windows' on/off state
+//!   stays. One disabled in Windows, or starting another exe, is left as it is.
 //! - Turning the switch on or off writes what Windows' own toggle writes: the StartupApproved
 //!   value enabled (02) or disabled (03 and the time). On also makes the shortcut when it's missing
 //!   or starts another exe (the user asked).
@@ -24,7 +29,8 @@
 //! - Test isolation runs (`FOXGLOVE_CONFIG_DIR` set) never touch the user's entry or registry.
 //!
 //! The Start menu entry (#856): a per-user shortcut `Foxglove.lnk` in the user's Start menu
-//! Programs folder, so Foxglove can be found and started again by hand. The MSI installs the same
+//! Programs folder, so Foxglove can be found and started again by hand. It has no arguments:
+//! started from it, Settings opens. The MSI installs the same
 //! file; a copy started outside the MSI (a portable folder) makes it at startup. Startup makes it
 //! when it's missing and repairs it when the file it starts no longer exists; one starting another
 //! exe that exists (a second install) is left alone. Dev builds and test runs never write it.
@@ -72,12 +78,18 @@ pub trait RunKey {
     fn remove(&self) -> std::io::Result<()>;
 }
 
-/// The Startup-folder shortcut.
+/// The Startup shortcut's arguments: it starts Foxglove in the tray, so sign-in is quiet (Hub
+/// decision 2026-11-09, #992). The Start menu shortcut has none: started by hand, Settings opens.
+pub const STARTUP_ARGS: &str = super::settings_open::TRAY_ARG;
+
+/// A shortcut: the Startup folder's or the Start menu's.
 pub trait Entry {
     /// The exe the shortcut starts; `None` when there is no shortcut.
     fn target(&self) -> std::io::Result<Option<PathBuf>>;
-    /// Makes (or replaces) the shortcut, starting `exe`.
-    fn create(&self, exe: &Path) -> std::io::Result<()>;
+    /// The arguments it starts the exe with (empty: none, or no shortcut).
+    fn args(&self) -> std::io::Result<String>;
+    /// Makes (or replaces) the shortcut, starting `exe` with `args` (empty: none).
+    fn create(&self, exe: &Path, args: &str) -> std::io::Result<()>;
     fn remove(&self) -> std::io::Result<()>;
 }
 
@@ -185,6 +197,9 @@ pub enum Startup {
     RemovedOutside,
     /// The shortcut already starts this exe.
     Unchanged,
+    /// The shortcut started this exe without [`STARTUP_ARGS`]: rewritten in place with them (its
+    /// on/off state, keyed by the file's name, kept).
+    TrayAdded,
     /// There was none and Foxglove never made one: it now starts this exe.
     Written,
     /// The shortcut started a file that no longer exists (shown); it now starts this exe.
@@ -221,7 +236,7 @@ pub fn reconcile(
                 return Ok(Startup::Skipped(why));
             }
             let off = p.run_approved.get()? == Some(false);
-            p.entry.create(exe)?;
+            p.entry.create(exe, STARTUP_ARGS)?;
             p.approved.set(!off)?;
             p.run.remove()?;
             p.run_approved.clear()?;
@@ -238,7 +253,16 @@ pub fn reconcile(
         Live::On(t) => {
             s.start_with_windows = true;
             if same_path(&t, exe) {
-                return Ok(Startup::Unchanged);
+                if p.entry.args()? == STARTUP_ARGS {
+                    return Ok(Startup::Unchanged);
+                }
+                if let Some(why) = dev {
+                    return Ok(Startup::Skipped(why));
+                }
+                // Made before #992, opening Settings at sign-in: the same file, now in the tray.
+                // StartupApproved is keyed by the file's name, so Windows' toggle stays as it is.
+                p.entry.create(exe, STARTUP_ARGS)?;
+                return Ok(Startup::TrayAdded);
             }
             if exists(&t) {
                 return Ok(Startup::KeptOther(t.display().to_string()));
@@ -246,7 +270,7 @@ pub fn reconcile(
             if let Some(why) = dev {
                 return Ok(Startup::Skipped(why));
             }
-            p.entry.create(exe)?;
+            p.entry.create(exe, STARTUP_ARGS)?;
             s.made = true;
             Ok(Startup::Replaced(t.display().to_string()))
         }
@@ -259,7 +283,7 @@ pub fn reconcile(
             if let Some(why) = dev {
                 return Ok(Startup::Skipped(why));
             }
-            p.entry.create(exe)?;
+            p.entry.create(exe, STARTUP_ARGS)?;
             p.approved.set(true)?;
             s.made = true;
             Ok(Startup::Written)
@@ -279,6 +303,10 @@ pub fn describe(result: &std::io::Result<Startup>, exe: &Path) -> String {
             "the Startup shortcut was removed; the switch shows off and it isn't made again".into()
         }
         Ok(Startup::Unchanged) => format!("the Startup shortcut starts {me}; nothing to do"),
+        Ok(Startup::TrayAdded) => format!(
+            "the Startup shortcut started {me} with Settings open; it now starts it in the tray \
+             ({STARTUP_ARGS})"
+        ),
         Ok(Startup::Written) => format!("made the Startup shortcut; it starts {me}"),
         Ok(Startup::Replaced(old)) => {
             format!(
@@ -310,8 +338,8 @@ pub fn describe(result: &std::io::Result<Startup>, exe: &Path) -> String {
 pub fn apply(on: bool, exe: &Path, p: &Places) -> std::io::Result<()> {
     if on {
         match p.entry.target()? {
-            Some(t) if same_path(&t, exe) => {}
-            _ => p.entry.create(exe)?,
+            Some(t) if same_path(&t, exe) && p.entry.args()? == STARTUP_ARGS => {}
+            _ => p.entry.create(exe, STARTUP_ARGS)?,
         }
     }
     p.approved.set(on)
@@ -348,7 +376,8 @@ pub fn reconcile_start_menu(
     if let Some(why) = dev {
         return Ok(StartMenu::Skipped(why));
     }
-    entry.create(exe)?;
+    // No arguments: started by hand, it opens Settings.
+    entry.create(exe, "")?;
     Ok(match old {
         Some(t) => StartMenu::Replaced(t.display().to_string()),
         None => StartMenu::Written,
@@ -557,7 +586,33 @@ mod windows_places {
             })
         }
 
-        fn create(&self, exe: &Path) -> std::io::Result<()> {
+        fn args(&self) -> std::io::Result<String> {
+            use windows::core::{Interface, HSTRING};
+            use windows::Win32::System::Com::{
+                CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER, STGM_READ,
+            };
+            use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+            let lnk = self.path();
+            if !lnk.is_file() {
+                return Ok(String::new());
+            }
+            with_com(|| {
+                // SAFETY: a ShellLink object loads the file and copies its arguments into our
+                // buffer.
+                unsafe {
+                    let link: IShellLinkW =
+                        CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+                    link.cast::<IPersistFile>()?
+                        .Load(&HSTRING::from(lnk.as_os_str()), STGM_READ)?;
+                    let mut buf = [0u16; 1024];
+                    link.GetArguments(&mut buf)?;
+                    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                    Ok(String::from_utf16_lossy(&buf[..n]).trim().to_string())
+                }
+            })
+        }
+
+        fn create(&self, exe: &Path, args: &str) -> std::io::Result<()> {
             use windows::core::{Interface, HSTRING};
             use windows::Win32::System::Com::{
                 CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER,
@@ -572,6 +627,7 @@ mod windows_places {
                     let link: IShellLinkW =
                         CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
                     link.SetPath(&HSTRING::from(exe.as_os_str()))?;
+                    link.SetArguments(&HSTRING::from(args))?;
                     if let Some(dir) = exe.parent() {
                         link.SetWorkingDirectory(&HSTRING::from(dir.as_os_str()))?;
                     }

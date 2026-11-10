@@ -17,10 +17,11 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 /// The start argument for a start in the tray: Settings stays closed until the tray (or a second
-/// launch) opens it, and a launch that finds Foxglove running leaves it as it is. Without it every
-/// start opens Settings, as KeyPeek did: a start by hand, the Startup-folder entry at sign-in.
-/// On-call's restarts use it (through a shortcut, since `explorer.exe <exe>` passes no
-/// arguments), and so do the app's own relaunches (#346, the identity package).
+/// launch) opens it, and a launch that finds Foxglove running leaves it as it is. Without it a
+/// start opens Settings, as KeyPeek did: a start by hand, the Start menu entry. The Startup-folder
+/// entry carries it, so sign-in is quiet (`autostart::STARTUP_ARGS`); so do On-call's restarts
+/// (through a shortcut, since `explorer.exe <exe>` passes no arguments) and the app's own
+/// relaunches (#346, the identity package).
 pub const TRAY_ARG: &str = "--tray";
 
 /// Whether these arguments (the program first, as `std::env::args_os`) ask for a start in the

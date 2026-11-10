@@ -42,10 +42,13 @@ updates -> Start with Windows** and is on by default.
 - The MSI writes no Run value. On uninstall (not on an upgrade), it runs
   `foxglove.exe --uninstall-cleanup` as the user, which removes the value if it starts that exe.
 
-Every start without arguments opens the Settings window, the Startup-folder entry's too.
+A start without arguments (by hand, the Start menu entry) opens the Settings window.
 `foxglove.exe --tray` starts in the tray instead: Settings stays closed until the tray opens it,
-and when Foxglove is already running that one is left as it is. On-call's restarts use it, and so
-do the app's own relaunches (after a GPU reset, after registering the identity package).
+and when Foxglove is already running that one is left as it is. The Startup-folder entry carries
+it, so sign-in is quiet; a Startup shortcut made before, starting this exe without it, is
+rewritten in place with it at startup (Windows' on/off toggle for it stays). On-call's restarts
+use it, and so do the app's own relaunches (after a GPU reset, after registering the identity
+package).
 
 Uninstall removes the installed files, the shortcut, the installer's registry values and the
 app's Run value. It never removes user settings or cached keymaps. Major upgrades replace the

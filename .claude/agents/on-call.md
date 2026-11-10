@@ -45,9 +45,10 @@ memory, then the newest sitting runbook in the Hub's notes folder.
   Claude app's private copy of `%APPDATA%`, not the user's settings (found 11/07). Start-Process
   doesn't escape it, and CIM `Win32_Process.Create` returns access denied for the identity exe;
   `explorer.exe <exe>` does escape it.
-- Restart it **in the tray** (`--tray`): with no arguments every start opens the Settings window
-  (a start by hand, sign-in), so a plain `explorer.exe <exe>` puts a full window in front of the
-  user. `explorer.exe` passes no arguments, so start it through a shortcut that carries them,
+- Restart it **in the tray** (`--tray`): with no arguments a start opens the Settings window (as
+  a start by hand should), so a plain `explorer.exe <exe>` puts a full window in front of the
+  user. (Sign-in is quiet on its own: the Startup shortcut carries `--tray` and the app adds it
+  to an old one; no change by hand.) `explorer.exe` passes no arguments, so start it through a shortcut that carries them,
   made once (it only makes the file, it starts nothing):
   `$s=(New-Object -ComObject WScript.Shell).CreateShortcut('C:\Users\fuchs\splitkeeb\app-main\Foxglove (tray).lnk'); $s.TargetPath='C:\Users\fuchs\splitkeeb\app-main\foxglove.exe'; $s.Arguments='--tray'; $s.WorkingDirectory='C:\Users\fuchs\splitkeeb\app-main'; $s.Save()`
   then restart with `explorer.exe "C:\Users\fuchs\splitkeeb\app-main\Foxglove (tray).lnk"`.
