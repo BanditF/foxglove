@@ -1,0 +1,59 @@
+{
+  "description": "The app watch's facts (4.6): apps.seen.<name> (v1.4) and apps.running.<name> (v1.7), published by hideout.appwatch for the apps manifests ask about. Each row: a fact key, a value, and whether a reader accepts it.",
+  "vectors": [
+    {
+      "fact": "apps.running.example-app",
+      "value": true,
+      "result": "valid",
+      "note": "A process example-app.exe runs."
+    },
+    {
+      "fact": "apps.running.example-app",
+      "value": false,
+      "result": "valid",
+      "note": "Watched, and no process example-app.exe runs: the app isn't open."
+    },
+    {
+      "fact": "apps.running.example-app",
+      "value": null,
+      "result": "valid",
+      "note": "Not set: no app watch, or nobody asks about the app (unknown, not 'closed')."
+    },
+    {
+      "fact": "apps.running.example-app",
+      "value": 1,
+      "result": "invalid",
+      "note": "A boolean, not a count."
+    },
+    {
+      "fact": "apps.seen.example-app",
+      "value": true,
+      "result": "valid",
+      "note": "The app has run on this PC; kept across restarts."
+    },
+    {
+      "fact": "apps.seen.example-app",
+      "value": false,
+      "result": "invalid",
+      "note": "apps.seen is true or not set."
+    },
+    {
+      "fact": "apps.running.example-app.exe",
+      "value": true,
+      "result": "invalid",
+      "note": "One label: the exe name without .exe."
+    },
+    {
+      "fact": "apps.running.Example",
+      "value": true,
+      "result": "invalid",
+      "note": "Labels are lowercase."
+    },
+    {
+      "fact": "apps.open.example-app",
+      "value": true,
+      "result": "invalid",
+      "note": "The app watch has only apps.seen and apps.running."
+    }
+  ]
+}

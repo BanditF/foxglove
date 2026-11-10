@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use follow::Follow;
 use foxglove_plugin::ui::Panels;
-use foxglove_plugin::{Hsb, Lease, LeasePriority, Plugin};
+use foxglove_plugin::{Fact, Hsb, Lease, LeasePriority, Plugin};
 use module_ui::Mirror;
 use sdk::{Icue, Notice, Sdk};
 
@@ -37,15 +37,24 @@ fn load(dll: &str, tx: &mpsc::Sender<Notice>) -> Option<Icue> {
         .ok()
 }
 
-/// What the tile and page show now.
-fn mirror(icue: Option<&Icue>, dll: &str, follow: &Follow) -> Mirror {
+/// Hideout's app watch fact for iCUE (contract §4.6, v1.7): `true` while iCUE runs, `false`
+/// while it doesn't; unset under Foxglove or a hub without the watch.
+const ICUE_RUNNING: &str = "apps.running.icue";
+
+/// What the tile and page show now. `running` is [`ICUE_RUNNING`] (`None`: unknown).
+fn mirror(icue: Option<&Icue>, dll: &str, follow: &Follow, running: Option<bool>) -> Mirror {
     let Some(sdk) = icue else {
         return Mirror::NeedsSetup {
             bad: !dll.is_empty(),
         };
     };
     if !follow.session() {
-        return Mirror::Closed;
+        // iCUE runs but gives no session: its SDK access is off. Unknown reads as closed.
+        return if running == Some(true) {
+            Mirror::Refused
+        } else {
+            Mirror::Closed
+        };
     }
     match follow.device() {
         Some(id) => Mirror::Following {
@@ -62,8 +71,17 @@ fn mirror(icue: Option<&Icue>, dll: &str, follow: &Follow) -> Mirror {
     }
 }
 
+fn as_bool(f: Option<Fact>) -> Option<bool> {
+    match f {
+        Some(Fact::Bool(b)) => Some(b),
+        _ => None,
+    }
+}
+
 enum In {
     Icue(Notice),
+    /// [`ICUE_RUNNING`] changed (`None`: removed).
+    Running(Option<bool>),
     Settings(serde_json::Map<String, serde_json::Value>),
 }
 
@@ -133,6 +151,21 @@ fn main() {
             }
         });
     }
+    // Hideout's app watch: whether iCUE runs, so "iCUE said no" and "iCUE isn't open" differ.
+    // Foxglove has no such fact; the calls fail there and the state stays unknown.
+    let mut running = as_bool(plugin.fact(ICUE_RUNNING).ok().flatten());
+    if plugin.subscribe(ICUE_RUNNING).is_ok() {
+        if let Some(events) = plugin.events() {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for e in events {
+                    if e.key == ICUE_RUNNING && tx.send(In::Running(as_bool(e.value))).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    }
     drop(tx);
 
     let mut follow = Follow::new(&text(&settings, "device"));
@@ -142,7 +175,12 @@ fn main() {
     let mut next_read = Instant::now();
     // Hideout's tile and page (Foxglove refuses them once and they stay off).
     let mut panels = Panels::new(plugin.clone());
-    panels.show(module_ui::panels(&mirror(icue.as_ref(), &dll, &follow)));
+    panels.show(module_ui::panels(&mirror(
+        icue.as_ref(),
+        &dll,
+        &follow,
+        running,
+    )));
     loop {
         if plugin.is_closed() {
             return;
@@ -164,6 +202,7 @@ fn main() {
         match (event, &icue) {
             (Some(In::Icue(n)), Some(sdk)) => follow.notice(&n, sdk as &dyn Sdk),
             (Some(In::Icue(_)), None) => {}
+            (Some(In::Running(r)), _) => running = r,
             (Some(In::Settings(values)), _) => {
                 every = period(&values);
                 let wanted = text(&values, "device");
@@ -204,7 +243,12 @@ fn main() {
             (None, None) => {}
         }
         if event_seen {
-            panels.show(module_ui::panels(&mirror(icue.as_ref(), &dll, &follow)));
+            panels.show(module_ui::panels(&mirror(
+                icue.as_ref(),
+                &dll,
+                &follow,
+                running,
+            )));
         }
         if !follow.following() && !leases.is_empty() {
             // Reading stopped: the lights go back.

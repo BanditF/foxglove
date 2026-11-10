@@ -10,6 +10,7 @@ name = "hideout"
 path = "src/main.rs"
 
 [dependencies]
+hideout-appwatch = { path = "../hideout-appwatch" }
 hideout-contract = { path = "../hideout-contract" }
 hideout-registry = { path = "../hideout-registry" }
 hideout-router = { path = "../hideout-router" }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! The router's side of the panel host's feed (§5, §8.2 v1.4): what modules register and patch,
-//! the facts the panels need (module states, `when` facts, bindings) and the answers to the
-//! hub's calls go to the shell; `ui.event`, `ui.visibility`, `action.invoke`, `settings.get`
+//! the facts the panels need (module states, `when` facts, bindings), `ui.asset.put` (whose
+//! answer goes back to the module) and the answers to the hub's calls go to the shell; `ui.event`, `ui.visibility`, `action.invoke`, `settings.get`
 //! and `settings.set` go to the module, bridged stdio plugins included. Event-driven: the
 //! router's events thread pushes and wakes the shell; nothing polls.
 
@@ -167,6 +167,23 @@ impl RouterSide {
                     return;
                 }
             },
+            // The router checked the params' shape; the panel host stores the image and its
+            // answer goes back through `Router::host_answer` (§5.3, v1.7).
+            Out::AssetPut {
+                module,
+                call,
+                params,
+            } => match serde_json::from_value(params.clone()) {
+                Ok(asset) => Inbound::AssetPut {
+                    call: *call,
+                    module: module.clone(),
+                    asset,
+                },
+                Err(e) => {
+                    log::warn!("panels: {module}: ui.asset.put not read: {e}");
+                    return;
+                }
+            },
             Out::Fact { key, value } => {
                 // The tray's dot follows module states and safe mode, even with the window
                 // hidden; it wakes the UI thread only when the dot changes.
@@ -250,8 +267,19 @@ impl PanelFeed for HubFeed {
     fn send(&mut self, out: Outbound) {
         let now = Instant::now();
         match out {
-            // The router answered `ui.register` itself; `ui.asset.put` isn't routed yet.
-            Outbound::Registered { .. } | Outbound::Asset { .. } => {}
+            // The router answered `ui.register` itself.
+            Outbound::Registered { .. } => {}
+            Outbound::Asset {
+                call,
+                module,
+                result,
+            } => {
+                if let Err(e) = &result {
+                    log::info!("panels: {module}: ui.asset.put refused: {e}");
+                }
+                self.hub
+                    .act(|r| r.host_answer(call, result.map(|()| json!({}))));
+            }
             Outbound::Event(e) => {
                 let tag = self.tag(Tag::Event(e.seq));
                 let params = serde_json::to_value(&e.event).unwrap_or_default();
@@ -324,5 +352,149 @@ impl PanelFeed for HubFeed {
                     .act(|r| r.open_host_channel(&module, &channel, now));
             }
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    //! `ui.asset.put` end to end over a real router pipe (§5.3, v1.7): the module's call reaches
+    //! the hub's panel host through this feed, the panel host's answer goes back to the module,
+    //! and the stored image is the one its panel's `image` node names. Window-free.
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::time::Duration;
+
+    use hideout_contract::capability::Holder;
+    use hideout_router::{ModuleEntry, Router, Settings};
+    use hideout_shell::hideout_panels::{PanelHost, PanelKey};
+
+    const ID: &str = "foxglove.example-art";
+    const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// The hub's feed, counting the panel host's `ui.asset.put` answers it sends on.
+    struct Spy {
+        feed: HubFeed,
+        answers: usize,
+    }
+
+    impl PanelFeed for Spy {
+        fn drain(&mut self) -> Vec<Inbound> {
+            self.feed.drain()
+        }
+
+        fn send(&mut self, out: Outbound) {
+            if matches!(out, Outbound::Asset { .. }) {
+                self.answers += 1;
+            }
+            self.feed.send(out);
+        }
+
+        fn set_waker(&mut self, waker: Waker) {
+            self.feed.set_waker(waker);
+        }
+    }
+
+    #[test]
+    fn a_module_puts_an_asset_over_the_router_pipe_and_its_panel_has_it() {
+        let mut router = Router::new(Settings::default(), Box::new(|_, _| Vec::new()));
+        router.add_module(ModuleEntry {
+            id: ID.into(),
+            name: "Example Art".into(),
+            holder: Holder::FirstParty,
+            granted: vec![],
+            catalog_provide: None,
+            channel_risk: Default::default(),
+            activate_on_call: false,
+            panels: None,
+            settings_dir: String::new(),
+            data_dir: String::new(),
+        });
+        router.set_token(ID, "tok-art");
+        let (events, rx) = mpsc::channel();
+        let hub = Hub::new(router, events);
+        let (side, feed) = feed(hub.clone());
+        let mut feed = Spy { feed, answers: 0 };
+        let (wake_tx, wake) = mpsc::channel::<()>();
+        let wake_tx = Mutex::new(wake_tx);
+        feed.set_waker(Box::new(move || {
+            let _ = wake_tx.lock().unwrap().send(());
+        }));
+        std::thread::spawn(move || {
+            for o in rx {
+                side.on_router(&o);
+            }
+        });
+        let name = format!(r"\\.\pipe\hideout-asset-put-test-{}", std::process::id());
+        hub.serve_pipe(&name).expect("serve the test pipe");
+
+        let pipe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .expect("router pipe");
+        // One synchronous pipe handle serialises its reads and writes, so the module side
+        // reads only once its answer was sent.
+        let mut from_hub = BufReader::new(pipe.try_clone().unwrap());
+        let mut read = move || {
+            let mut line = String::new();
+            from_hub.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        let mut to_hub = pipe;
+        let mut send = |v: Value| writeln!(to_hub, "{v}").unwrap();
+        // The panel host runs on the hub's frames: it pumps when the feed wakes it, until it
+        // has answered `n` asset calls in all.
+        let mut host = PanelHost::default();
+        let mut pump_until_answers = |host: &mut PanelHost, n: usize| {
+            let until = Instant::now() + Duration::from_secs(10);
+            while feed.answers < n {
+                let left = until.saturating_duration_since(Instant::now());
+                wake.recv_timeout(left)
+                    .expect("the panel host got nothing in 10 s");
+                host.pump(&mut feed, Instant::now());
+            }
+        };
+        let mut answer = |_: &mut PanelHost| read();
+
+        send(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "id": ID, "token": "tok-art", "instance": "i1", "version": "0.4.0", "hub": "1.0",
+            "api": {}, "client": {"name": "example-art", "version": "0.4.0"}}}),
+        );
+        assert!(answer(&mut host).get("result").is_some());
+        send(
+            json!({"jsonrpc": "2.0", "id": 2, "method": "ui.register", "params": {
+            "instance": "i1", "panels": [{"id": "art", "slot": "page", "title": "Art",
+            "icon": "image", "tree": {"type": "column", "id": "root", "children": [
+                {"type": "image", "id": "shot", "props": {"hash": HASH, "label": "Art"}}]}}]}}),
+        );
+        assert_eq!(answer(&mut host)["result"]["rejected"], json!([]));
+
+        // A non-image: the panel host refuses it, and the refusal reaches the module.
+        send(
+            json!({"jsonrpc": "2.0", "id": 3, "method": "ui.asset.put", "params": {
+            "hash": HASH, "mime": "text/plain", "data": "aGVsbG8="}}),
+        );
+        pump_until_answers(&mut host, 1);
+        let refused = answer(&mut host);
+        assert_eq!(refused["id"], 3);
+        assert_eq!(refused["error"]["code"], -32602);
+        assert_eq!(refused["error"]["data"]["id"], "ui.limits");
+        assert!(host.assets.get(HASH).is_none());
+
+        // An image: stored, answered `{}`, and it is the image the panel's node names.
+        send(
+            json!({"jsonrpc": "2.0", "id": 4, "method": "ui.asset.put", "params": {
+            "hash": HASH, "mime": "image/png", "data": "iVBORw0KGgo="}}),
+        );
+        pump_until_answers(&mut host, 2);
+        assert_eq!(
+            answer(&mut host),
+            json!({"jsonrpc": "2.0", "id": 4, "result": {}})
+        );
+        let key = PanelKey::new(ID, "art");
+        let tree = serde_json::to_value(&host.panel(&key).unwrap().tree).unwrap();
+        assert_eq!(tree["children"][0]["props"]["hash"], HASH);
+        assert_eq!(host.assets.get(HASH).unwrap().mime, "image/png");
     }
 }

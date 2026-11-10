@@ -34,7 +34,7 @@ pub const HUB_VERSION: Version = Version { major: 1, minor: 1 };
 
 /// The spec version this crate implements (docs/hideout-contract.md's status line, the test
 /// vectors' `index.json` and README). A drift test keeps them equal.
-pub const SPEC_VERSION: &str = "1.6";
+pub const SPEC_VERSION: &str = "1.7";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];

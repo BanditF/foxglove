@@ -1,6 +1,6 @@
 //! `module.toml` (spec §4), the legacy mapping (§4.10) and reading a module folder.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use serde::de::DeserializeOwned;
@@ -597,8 +597,77 @@ pub fn semver_ok(v: &str) -> bool {
         })
 }
 
+/// The fact prefixes of the app watch (§4.6): `apps.seen.<name>` (spec v1.4) and
+/// `apps.running.<name>` (spec v1.7). Each names one app by its [`app_label`].
+pub const APP_FACTS: [&str; 2] = ["apps.seen.", "apps.running."];
+
+/// An app's label in the app facts (§4.6): the exe name without `.exe`, lowercased, with any
+/// character outside `[a-z0-9_-]` turned into `-` (`Example-App.exe` is `example-app`,
+/// `tool64.exe` is `tool64`). `None` for an empty name.
+pub fn app_label(exe: &str) -> Option<String> {
+    let lower = exe.trim().to_ascii_lowercase();
+    let name = lower.strip_suffix(".exe").unwrap_or(&lower);
+    let label: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    (!label.is_empty()).then_some(label)
+}
+
+/// The app a fact key or `when` clause names, when it is an app fact (`apps.seen.example-app`,
+/// `!apps.running.tool64`): its label.
+pub fn app_fact_label(key: &str) -> Option<&str> {
+    let key = key.strip_prefix('!').unwrap_or(key);
+    APP_FACTS
+        .iter()
+        .find_map(|p| key.strip_prefix(p))
+        .filter(|l| !l.is_empty() && !l.contains('.'))
+}
+
+impl Module {
+    /// The apps this manifest asks the app watch about (§4.6, v1.7), by [`app_label`]: those
+    /// its `when` clauses name, its `enriches`, its `app:<name>.exe` activation events and its
+    /// `apps.watch:<name>.exe` permissions. The hub watches only these.
+    pub fn watched_apps(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let whens = self
+            .panels
+            .iter()
+            .map(|p| p.when.as_ref())
+            .chain(self.windows.iter().map(|w| w.when.as_ref()))
+            .chain(self.settings.iter().map(|s| s.when.as_ref()))
+            .chain(self.actions.iter().map(|a| a.when.as_ref()))
+            .flatten();
+        out.extend(whens.filter_map(|w| app_fact_label(w)).map(String::from));
+        let exes = self
+            .enriches
+            .iter()
+            .map(String::as_str)
+            .chain(
+                self.activation_on
+                    .iter()
+                    .filter_map(|e| e.strip_prefix("app:")),
+            )
+            .chain(self.permissions.iter().filter_map(|c| match c {
+                Capability::Kept(crate::permission::Permission::AppsWatch(exe)) => {
+                    Some(exe.as_str())
+                }
+                _ => None,
+            }));
+        out.extend(exes.filter_map(app_label));
+        out
+    }
+}
+
 /// One `when` clause: a fact name, optionally prefixed by `!` (§4.6). An `apps.seen.<name>`
-/// fact (spec v1.4) names one app: a single lowercase label, the exe name without `.exe`.
+/// fact (spec v1.4) or an `apps.running.<name>` fact (v1.7) names one app: a single lowercase
+/// label, the exe name without `.exe`.
 pub fn when_ok(w: &str) -> bool {
     let name = w.strip_prefix('!').unwrap_or(w);
     let grammar = !name.is_empty()
@@ -608,12 +677,15 @@ pub fn when_ok(w: &str) -> bool {
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         });
     grammar
-        && name.strip_prefix("apps.seen.").is_none_or(|app| {
-            !app.contains('.')
-                && app
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
-        })
+        && APP_FACTS
+            .iter()
+            .find_map(|p| name.strip_prefix(p))
+            .is_none_or(|app| {
+                !app.contains('.')
+                    && app.chars().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+                    })
+            })
 }
 
 /// `<name>.exe`
@@ -1182,4 +1254,49 @@ pub fn read_dir(
         }
     }
     Err(std::io::ErrorKind::NotFound.into())
+}
+
+#[cfg(test)]
+mod app_watch_tests {
+    use super::*;
+
+    #[test]
+    fn app_labels_and_the_apps_a_manifest_asks_about() {
+        assert_eq!(app_label("Example-App.exe").as_deref(), Some("example-app"));
+        assert_eq!(app_label("My Tool.EXE").as_deref(), Some("my-tool"));
+        assert_eq!(app_label(".exe"), None);
+        assert_eq!(app_fact_label("!apps.running.tool64"), Some("tool64"));
+        assert_eq!(app_fact_label("apps.seen.a.b"), None);
+        assert!(when_ok("apps.running.example-app"));
+        assert!(!when_ok("apps.running.example-app.exe"));
+        let m = Module::parse(
+            r#"
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.0"
+run = ["example-art.exe"]
+enriches = ["Example-App.exe"]
+permissions = ["apps.watch:other-app.exe"]
+
+[activation]
+on = ["enable", "app:third.exe"]
+
+[[ui.panels]]
+id = "tile"
+slot = "tile"
+title = "Example"
+icon = "mic"
+when = "!apps.seen.fourth"
+"#,
+            &Context::default(),
+        )
+        .unwrap();
+        let want: BTreeSet<String> = ["example-app", "fourth", "other-app", "third"]
+            .map(String::from)
+            .into();
+        assert_eq!(m.watched_apps(), want);
+    }
 }

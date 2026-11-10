@@ -1,14 +1,26 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.6** (v1.5 plus the pop-out window rules of H2.11, #998;
-additive, no breaking change; every v1.1 addition is marked "(v1.1)", every v1.2 one "(v1.2)",
-every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5 one "(v1.5)", every v1.6 one
-"(v1.6)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+Status: spec, contract version **1.7** (v1.6 plus the routed `ui.asset.put` answer and the app
+watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
+"(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
+one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.7** (#991): two router leftovers. `ui.asset.put` is answered by the hub's panel host: the
+  router hands the call over and sends the panel host's answer back to the module, `{}` or a
+  refusal as error -32602 with the §15 id in `data.id` (`ui.limits`) and the reason; an answer
+  that doesn't come in 30 s is error 4 (§5.3, §8.8). The app watch, `hideout.appwatch`, is the
+  hub's own and watches only the apps a manifest asks about (its `when` clauses, `enriches`,
+  `app:<name>.exe` activation and `apps.watch:<name>.exe` permissions); it publishes the new
+  optional fact `apps.running.<name>` (`true` while the app runs, `false` while it doesn't) and
+  `apps.seen.<name>`, now "has run on this PC", kept in `apps-seen.txt` (§2.3, §4.6). A module
+  holding `apps.watch:<name>.exe` may read both facts of that app; `apps.*` facts are the hub's,
+  never a module's (§4.6, §8.8). A `when` may name `apps.running.<name>` with the same one-label
+  rule. Vectors: `facts/app-facts.json`, `manifests/invalid/when-apps-running-with-exe.toml`,
+  `transcripts/ui/asset-put-refused.json`. No message, no manifest key: `hub` stays 1.1 (§8.7).
 - **1.6** (#998): the seven pop-out spec gaps of the pop-outs plan
   ([hideout-popouts-ux.md](hideout-popouts-ux.md)), for hub windows (§2.5). Closing a pop-out
   (×, Ctrl+W, Alt+F4) docks the page back quietly: it is never `closed` and never asks; only
@@ -179,6 +191,7 @@ The hub MUST NOT contain:
   catalogs\<source>\      last accepted root, catalogs and signatures, per source (§12, §13)
   run\instances.json      live instance tokens, for taking modules back after a hub restart (§7.9)
   run\hub-run.json        the running hub's mark and its last 3 unclean closes (§7.10)
+  apps-seen.txt           (v1.7) the apps the app watch has seen run, one label a line (§4.6)
   logs\                   hub and module logs (stderr captured per module)
 %APPDATA%\Hideout\modules\<id>\settings\   the module's settings folder, assigned by the hub
 ```
@@ -504,7 +517,20 @@ item shows:
   `manifest.activation`. The fact is **optional**: a hub without `hideout.appwatch` never sets it,
   so `when = "apps.seen.<name>"` is false there and the item stays hidden until the user shows it
   (an `enriches` app's tile is a typical use). A module MUST NOT depend on it for anything but
-  showing or hiding.
+  showing or hiding. (v1.7) `hideout.appwatch` sets it once a process `<name>.exe` has run.
+- **`apps.running.<name>` (v1.7, optional fact).** `true` while a process `<name>.exe` runs,
+  `false` while none does; same `<name>` rule as `apps.seen`. A module uses it to tell "the app
+  refused" from "the app isn't open": not set means no app watch, which is neither.
+- **The app watch (v1.7).** `hideout.appwatch` is part of the hub. It watches only the apps some
+  installed manifest asks about: an app fact in a `when`, an `enriches` entry, an
+  `app:<name>.exe` activation event or an `apps.watch:<name>.exe` permission. App names come
+  only from manifests. It is event-driven (a process snapshot at start, the watched processes'
+  exits, and new top-level windows), never a timer; an app counts as started once it creates a
+  window, a hidden one included. With nothing to watch it does not run.
+- (v1.7) `apps.*` facts are the hub's: a module can't register them (`permission.provider`) or
+  `facts.set` them (error 5). A module holding `apps.watch:<name>.exe` may `facts.get` and
+  `facts.subscribe` `apps.running.<name>` and `apps.seen.<name>` (exact keys); `facts.read`
+  covering them also works.
 
 ### 4.7 Contributions (data, VS Code-style)
 
@@ -692,7 +718,11 @@ Nodes are `{type, id, props, bind?, stream?, children}`.
 - `ui.event {panel, node, kind, value}` goes to the owning module only, checked like any call.
   An error result means "refused": the hub reverts optimistic input and shows `data.reason`.
 - `ui.asset.put {hash, mime, data}` uploads an image once, keyed by SHA-256, at most 256 KiB.
-  Nodes refer to it by hash.
+  Nodes refer to it by hash. (v1.7) The hub's panel host answers it: the router passes the call
+  on and sends its answer back, `{}` once stored, or error -32602 with `data.id` `ui.limits`
+  and `data.reason` (not an image, not 64 hex digits, over 256 KiB, bad base64). Params of the
+  wrong shape are -32602 from the router; no answer within 30 s is error 4. The whole message
+  is still at most 256 KiB (§8.1), so an asset sent over the pipe is at most about 190 KiB.
 
 ### 5.4 Live streams
 
@@ -1407,7 +1437,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `ui.register` | M → H | call | `{instance, panels: [{id, slot, title, icon, tree}]}` | `{rejected: [{panel, error}]}` | panels declared in `[[ui.panels]]` |
 | `ui.patch` | M → H | notification | `{panel, ops: [{op: "set" \| "insert" \| "remove", node, props?, index?, tree?}]}` | — | — |
 | `ui.event` | H → M | call | `{panel, node, kind, value}` | `{}`, or an error with `data.reason` (refused) | — |
-| `ui.asset.put` | M → H | call | `{hash, mime, data}` (base64, ≤ 256 KiB) | `{}` | — |
+| `ui.asset.put` | M → H | call | `{hash, mime, data}` (base64, ≤ 256 KiB) | `{}`; (v1.7) the panel host's refusal as -32602 with `data.id` (§5.3) | — |
 | `ui.window.open` | H → M | call | `{window}` | `{}` | `ui.window` |
 | `ui.badge` (v1.3) | M → H | notification | `{panel, badge: "none" \| "attention" \| "dirty" \| "count", count?}` (`count` ≥ 1 with `count`) | — | the panel is the module's |
 | `ui.visibility` (v1.3) | H → M | notification | `{panel, state: "visible" \| "hidden" \| "closed"}` (v1.4: `page` and `tile` panels) | — | — |
@@ -1420,7 +1450,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 
 | Message | From → to | Kind | Params | Result | Needs |
 |---|---|---|---|---|---|
-| `facts.get`, `facts.list`, `facts.subscribe`, `facts.unsubscribe` | C → H | call | as Foxglove API v1 | as v1 | `facts.read:<pattern>` |
+| `facts.get`, `facts.list`, `facts.subscribe`, `facts.unsubscribe` | C → H | call | as Foxglove API v1 | as v1 | `facts.read:<pattern>`; (v1.7) `apps.watch:<name>.exe` for that app's `apps.*` facts (§4.6) |
 | `facts.set` | M → H | call | as v1 | as v1 | `facts.write:<pattern>`, or `facts:` in `provides` |
 | `facts.changed` | H → C | notification | as v1 | — | the subscription |
 | `channel.open` | C → H | call | `{module, channel}` | `{pipe, nonce}` | `channel.open:<module>/<channel>` |
@@ -1841,7 +1871,8 @@ streams with the end each reaches and the pipe names a consumer may connect to, 
 `transcripts/stream/channel-create-bad-pipe.json`; v1.5: the stream props as panel vectors, valid
 and invalid one each, a stream in a tile, a whole and a split multibyte text frame in
 `frames/panel-frames.json`, `transcripts/stream/text-restore-on-visible.json` and
-`transcripts/stream/reopen-then-stopped.json`).
+`transcripts/stream/reopen-then-stopped.json`; v1.7: `facts/app-facts.json`,
+`manifests/invalid/when-apps-running-with-exe.toml` and `transcripts/ui/asset-put-refused.json`).
 A panel vector's index entry may carry `context.actions`, the module's `[[actions]]` ids. The
 spec version is kept in step by a drift test: this file's status line, `index.json`'s `contract`,
 the vectors README and the schema's `spec` (`SPEC_VERSION` in the Rust crate) must agree.

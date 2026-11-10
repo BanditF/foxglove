@@ -1,0 +1,64 @@
+{
+  "name": "asset-put-refused",
+  "module": "foxglove.example-art",
+  "spec": [
+    "5.3",
+    "8.8"
+  ],
+  "description": "ui.asset.put is answered by the hub's panel host (v1.7): the router hands the call to it and sends its answer back to the module. A good image is stored ({}); a non-image is refused with -32602 and data.id ui.limits, and nothing is stored.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "ui.asset.put",
+        "params": {
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "mime": "text/plain",
+          "data": "aGVsbG8="
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "error": {
+          "code": -32602,
+          "message": "invalid params",
+          "data": {
+            "id": "ui.limits",
+            "reason": "asset type text/plain is not an image"
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "ui.asset.put",
+        "params": {
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "mime": "image/png",
+          "data": "iVBORw0KGgo="
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "result": {}
+      }
+    }
+  ]
+}
