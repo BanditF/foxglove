@@ -483,3 +483,51 @@ fn the_words_never_name_the_plumbing_and_frames_never_change_the_name() {
     }
     assert_eq!(seen.len(), 1, "{seen:?}");
 }
+
+#[test]
+fn text_is_announced_once_after_a_run_ends_at_most_every_10_s() {
+    let (mut h, room) = host();
+    let t0 = Instant::now();
+    h.set_visible(std::slice::from_ref(&room));
+    h.sync_streams(t0);
+    let l = key(&room, "log");
+    let g = gen_of(&grant_all(&mut h), &l);
+    let said = |h: &PanelHost, t: Instant| {
+        h.streams
+            .get(&l)
+            .unwrap()
+            .announcing_until
+            .is_some_and(|u| t < u)
+    };
+    // A run of text: nothing while it arrives.
+    for i in 0..10u64 {
+        let t = t0 + Duration::from_millis(100 * i);
+        h.streams.frame(&l, g, &text("x\n"), t);
+        h.streams.present(t);
+        assert!(!said(&h, t), "announced while text arrives");
+    }
+    let quiet = t0 + Duration::from_millis(900 + 1500);
+    // The hub is woken for it (the other nodes' marks may come first).
+    assert!(h.streams.next_wake().is_some_and(|t| t <= quiet));
+    h.streams.present(quiet - Duration::from_millis(1));
+    assert!(
+        !said(&h, quiet - Duration::from_millis(1)),
+        "not before 1.5 s quiet"
+    );
+    h.streams.present(quiet);
+    assert!(said(&h, quiet), "one announcement after 1.5 s quiet");
+    // More text 3 s later: held until 10 s after the first.
+    let t = quiet + Duration::from_secs(3);
+    h.streams.frame(&l, g, &text("y\n"), t);
+    h.streams.present(t + Duration::from_secs(2));
+    assert!(!said(&h, t + Duration::from_secs(2)));
+    h.streams.present(quiet + Duration::from_secs(10));
+    assert!(said(&h, quiet + Duration::from_secs(10)));
+    // Not while focus is inside the node.
+    let t = quiet + Duration::from_secs(30);
+    h.streams.frame(&l, g, &text("z\n"), t);
+    let later = t + Duration::from_secs(2);
+    h.streams.act(&StreamAct::FocusInside(l.clone()), later);
+    h.streams.present(later);
+    assert!(!said(&h, later + Duration::from_secs(3)));
+}

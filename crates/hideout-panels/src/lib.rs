@@ -25,11 +25,11 @@ pub mod feed;
 pub mod model;
 pub mod render;
 pub mod sections;
-pub mod tray;
 #[cfg(windows)]
 pub mod stream_io;
 mod stream_view;
 pub mod streams;
+pub mod tray;
 pub mod tree;
 pub mod view;
 
@@ -43,6 +43,6 @@ pub use model::{
 };
 pub use render::{key_chip, panel_ui, DrawReport, Go};
 pub use sections::page_sections_ui;
-pub use tray::{tile_ui, tile_ui_at, tray_panel_ui, TileReport, TrayAction, TrayLayout};
 pub use streams::{Look, StreamAct, StreamCommand, StreamKey, Streams};
+pub use tray::{tile_ui, tile_ui_at, tray_panel_ui, TileReport, TrayAction, TrayLayout};
 pub use view::ViewState;

@@ -73,12 +73,33 @@ fn overlay(ui: &mut Ui, rect: Rect, label: &str, k: &StreamKey, d: &mut StreamDr
     if let Some(words) = look_words(look) {
         if look == Look::Refused {
             let c = rect.center();
+            let warn = ui.visuals().warn_fg_color;
+            let galley = ui
+                .painter()
+                .layout_no_wrap(words, FontId::proportional(14.0), warn);
+            // The warning mark is painted (a triangle with "!"), not a font glyph.
+            let mark = 16.0;
+            let total = mark + 6.0 + galley.size().x;
+            let left = c.x - total / 2.0;
+            let mid_y = c.y - 12.0;
+            let tri = vec![
+                Pos2::new(left + mark / 2.0, mid_y - mark / 2.0),
+                Pos2::new(left + mark, mid_y + mark / 2.0),
+                Pos2::new(left, mid_y + mark / 2.0),
+            ];
+            ui.painter()
+                .add(egui::Shape::convex_polygon(tri, warn, egui::Stroke::NONE));
             ui.painter().text(
-                c - Vec2::new(0.0, 12.0),
+                Pos2::new(left + mark / 2.0, mid_y + 2.0),
                 egui::Align2::CENTER_CENTER,
-                format!("\u{26A0} {words}"),
-                FontId::proportional(14.0),
-                ui.visuals().warn_fg_color,
+                "!",
+                FontId::proportional(11.0),
+                ui.visuals().extreme_bg_color,
+            );
+            ui.painter().galley(
+                Pos2::new(left + mark + 6.0, mid_y - galley.size().y / 2.0),
+                galley,
+                warn,
             );
             let b = Rect::from_center_size(c + Vec2::new(0.0, 16.0), Vec2::new(88.0, 24.0));
             if ui.put(b, egui::Button::new("Open log")).clicked() {
@@ -261,40 +282,46 @@ pub(crate) fn text(ui: &mut Ui, n: &Node, p: &Map<String, Value>, d: &mut Stream
     let muted = matches!(look, Look::LastSeen(_) | Look::Stopped);
     let trimmed = s.is_some_and(|s| s.trimmed);
     let frame = egui::Frame::group(ui.style()).inner_margin(8.0);
-    frame.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            if let Some(words) = look_words(look) {
-                ui.label(RichText::new(words).small().weak());
-            }
-            if look == Look::Stopped && ui.small_button("Try again").clicked() {
-                d.acts.push(StreamAct::TryAgain(k.clone()));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let copied_id = egui::Id::new(("hideout.stream.copied", &k.node));
-                let until: Option<f64> = ui.data(|m| m.get_temp(copied_id));
-                let t = ui.input(|i| i.time);
-                let word = if until.is_some_and(|u| t < u) {
-                    "Copied"
-                } else {
-                    "Copy"
-                };
-                if ui.small_button(word).clicked() {
-                    ui.ctx().copy_text(all.clone());
-                    ui.data_mut(|m| m.insert_temp(copied_id, t + 2.0));
+    let node = frame
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if let Some(words) = look_words(look) {
+                    ui.label(RichText::new(words).small().weak());
                 }
+                if look == Look::Stopped && ui.small_button("Try again").clicked() {
+                    d.acts.push(StreamAct::TryAgain(k.clone()));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let copied_id = egui::Id::new(("hideout.stream.copied", &k.node));
+                    let until: Option<f64> = ui.data(|m| m.get_temp(copied_id));
+                    let t = ui.input(|i| i.time);
+                    let word = if until.is_some_and(|u| t < u) {
+                        "Copied"
+                    } else {
+                        "Copy"
+                    };
+                    if ui.small_button(word).clicked() {
+                        ui.ctx().copy_text(all.clone());
+                        ui.data_mut(|m| m.insert_temp(copied_id, t + 2.0));
+                    }
+                });
             });
-        });
-        egui::ScrollArea::vertical()
-            .id_salt((
-                "hideout.stream.text",
-                &k.panel.module,
-                &k.panel.panel,
-                &k.node,
-            ))
-            .max_height(240.0)
-            .stick_to_bottom(true)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
+            let jump_id = egui::Id::new(("hideout.stream.jump", &k.panel.module, &k.node));
+            let jump: bool = ui.data_mut(|m| m.remove_temp(jump_id)).unwrap_or(false);
+            let mut area = egui::ScrollArea::vertical()
+                .id_salt((
+                    "hideout.stream.text",
+                    &k.panel.module,
+                    &k.panel.panel,
+                    &k.node,
+                ))
+                .max_height(240.0)
+                .stick_to_bottom(true)
+                .auto_shrink([false, true]);
+            if jump {
+                area = area.vertical_scroll_offset(f32::MAX / 4.0);
+            }
+            let out = area.show(ui, |ui| {
                 if trimmed {
                     ui.label(RichText::new(TRIMMED_LINE).italics().weak());
                 }
@@ -307,5 +334,40 @@ pub(crate) fn text(ui: &mut Ui, n: &Node, p: &Map<String, Value>, d: &mut Stream
                 }
                 ui.add(egui::Label::new(t).wrap());
             });
+            // Follow stops when the reader scrolls up; "Jump to latest" brings it back (UX17).
+            let bottom = out.state.offset.y + out.inner_rect.height();
+            if out.content_size.y - bottom > 4.0 && ui.small_button("Jump to latest").clicked() {
+                ui.data_mut(|m| m.insert_temp(jump_id, true));
+                ui.ctx().request_repaint();
+            }
+        })
+        .response;
+    // One polite "New text in <label>" after a run of text ends (at most every 10 s, never
+    // while focus is inside the node): a status node whose value changes, never the text.
+    let inside = ui
+        .ctx()
+        .memory(|m| m.focused())
+        .and_then(|f| ui.ctx().read_response(f))
+        .is_some_and(|r| node.rect.contains(r.rect.center()));
+    if inside {
+        d.acts.push(StreamAct::FocusInside(k.clone()));
+    }
+    let label = p
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or("this panel");
+    let saying = s
+        .and_then(|s| s.announcing_until)
+        .is_some_and(|t| d.now < t);
+    let status = ui.allocate_response(Vec2::ZERO, Sense::hover());
+    let value = if saying {
+        format!("New text in {label}")
+    } else {
+        String::new()
+    };
+    ui.ctx().accesskit_node_builder(status.id, |a| {
+        a.set_role(egui::accesskit::Role::Status);
+        a.set_live(egui::accesskit::Live::Polite);
+        a.set_value(value);
     });
 }

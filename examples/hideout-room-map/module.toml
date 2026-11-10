@@ -1,0 +1,17 @@
+# Hideout's manifest (contract §4): the sample room map, a page whose canvas streams its colours
+# over the `map` channel (§5.4, §8.4) while the page is on screen.
+id = "example.room-map"
+name = "Room map"
+version = "0.1.0"
+kind = "service"
+family = "third-party"
+hub = "1.0"
+run = ["hideout-room-map.exe"]
+provides = ["channel:map"]
+description = "A sample page: a floor plan whose lit room moves, streamed live while the page is on screen."
+
+[[ui.panels]]
+id = "map"
+slot = "page"
+title = "Room map"
+icon = "map"

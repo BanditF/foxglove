@@ -48,9 +48,15 @@ pub fn panels(instance: &str) -> Register {
             json!({"type": "key", "id": id, "props": {"x": x, "y": y, "w": w, "h": h}})
         })
         .collect();
+    // A dark chip behind each label, so it reads whatever colour the room is.
+    shapes.extend(ROOMS.iter().map(|(id, label, x, y, _, _)| {
+        let w = 12.0 + 7.5 * label.len() as f32;
+        json!({"type": "key", "id": format!("{id}-chip"),
+               "props": {"x": x + 4.0, "y": y + 4.0, "w": w, "h": 20}})
+    }));
     shapes.extend(ROOMS.iter().map(|(id, label, x, y, _, _)| {
         json!({"type": "text", "id": format!("{id}-label"),
-               "props": {"x": x + 8.0, "y": y + 6.0, "text": label, "size": 13}})
+               "props": {"x": x + 10.0, "y": y + 6.0, "text": label, "size": 13}})
     }));
     serde_json::from_value(json!({
         "instance": instance,
@@ -72,8 +78,32 @@ pub fn registration() -> ModuleRegister {
     }
 }
 
-/// The colours at `t` seconds: each room dim blue-grey, the lit room warm orange, fading in
-/// and out as the light walks on (2 s per room); labels stay light.
+/// The label colour, and the backing chip each label sits on so it reads on any room colour.
+pub const LABEL: [u8; 4] = [235, 235, 240, 255];
+pub const LABEL_BACKING: [u8; 4] = [22, 24, 32, 255];
+
+/// WCAG relative luminance of an sRGB colour.
+pub fn luminance(c: [u8; 4]) -> f32 {
+    let lin = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+}
+
+/// WCAG contrast ratio of two colours.
+pub fn contrast(a: [u8; 4], b: [u8; 4]) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// The colours at `t` seconds, in shape order: each room dim blue-grey, the lit room warm
+/// orange, fading in and out as the light walks on (2 s per room); then the labels' backing
+/// chips (dark) and the labels (light), which stay the same.
 pub fn colours(t: f32) -> Vec<[u8; 4]> {
     let n = ROOMS.len() as f32;
     let pos = (t / 2.0) % n;
@@ -85,7 +115,8 @@ pub fn colours(t: f32) -> Vec<[u8; 4]> {
             [mix(46.0, 255.0), mix(54.0, 140.0), mix(70.0, 60.0), 255]
         })
         .collect();
-    out.extend(std::iter::repeat_n([235, 235, 240, 255], ROOMS.len()));
+    out.extend(std::iter::repeat_n(LABEL_BACKING, ROOMS.len()));
+    out.extend(std::iter::repeat_n(LABEL, ROOMS.len()));
     out
 }
 
@@ -160,6 +191,35 @@ mod tests {
         assert_eq!(canvas.stream_name(), Some(CHANNEL));
         assert_eq!(canvas.children.len(), colours(0.0).len());
         validate(&page, &LIMITS).expect("a valid page");
+    }
+
+    #[test]
+    fn every_label_reads_on_its_room_at_every_moment() {
+        let n = ROOMS.len();
+        for step in 0..(n * 2 * 25) {
+            let c = colours(step as f32 / 25.0);
+            for i in 0..n {
+                // The label sits on its chip, never on the room itself.
+                let r = contrast(c[2 * n + i], c[n + i]);
+                assert!(r >= 4.5, "label {i} at {step}: {r:.2}:1");
+            }
+        }
+    }
+
+    #[test]
+    fn the_manifest_declares_the_page_and_offers_the_channel() {
+        use foxglove_plugin_api::hideout::module::{Context, Module};
+        let m = Module::parse(include_str!("../module.toml"), &Context::default()).unwrap();
+        assert_eq!(m.id, ID);
+        let declared: Vec<&str> = m.panels.iter().map(|p| p.id.as_str()).collect();
+        let registered: Vec<String> = panels("i1")
+            .panels
+            .iter()
+            .map(|p| p["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(declared, registered);
+        let text = include_str!("../module.toml");
+        assert!(text.contains(&format!("\"channel:{CHANNEL}\"")));
     }
 
     #[test]

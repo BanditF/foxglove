@@ -43,6 +43,12 @@ pub const REDUCED_MOTION_FPS: u32 = 2;
 pub const CONNECTING_AFTER: Duration = Duration::from_secs(1);
 /// Back on screen: the last frame stays undimmed this long while the stream reopens.
 pub const BACK_GRACE: Duration = Duration::from_secs(2);
+/// A run of streamed text has ended after this much quiet: the hub may announce it once.
+pub const TEXT_QUIET: Duration = Duration::from_millis(1500);
+/// At most one "New text in <label>" per text node this often.
+pub const ANNOUNCE_EVERY: Duration = Duration::from_secs(10);
+/// How long the announcement stays in the node's status (a change is what is read).
+pub const ANNOUNCE_HOLD: Duration = Duration::from_secs(2);
 /// The first line of a trimmed text node (UX wording).
 pub const TRIMMED_LINE: &str = "Earlier text was trimmed.";
 
@@ -155,6 +161,8 @@ pub enum StreamAct {
     TryAgain(StreamKey),
     /// "Open log" on a refused stream: the hub opens its log view.
     OpenLog(StreamKey),
+    /// Keyboard focus is inside the text node this frame: no announcement for it now.
+    FocusInside(StreamKey),
 }
 
 #[derive(Debug)]
@@ -187,6 +195,13 @@ pub struct Stream {
     reopen_at: Option<Instant>,
     stale_after: Option<Duration>,
     rate: (Option<Instant>, u32),
+    /// Text arrived since the last announcement.
+    unannounced: bool,
+    announced_at: Option<Instant>,
+    focus_at: Option<Instant>,
+    /// While set and in the future, the node's status says "New text in <label>" (one polite
+    /// announcement, never per frame).
+    pub announcing_until: Option<Instant>,
     /// Frames drawn, skipped by the cap, and dropped as malformed (developer mode, the log).
     pub drawn: u64,
     pub skipped: u64,
@@ -218,10 +233,27 @@ impl Stream {
             reopen_at: None,
             stale_after,
             rate: (None, 0),
+            unannounced: false,
+            announced_at: None,
+            focus_at: None,
+            announcing_until: None,
             drawn: 0,
             skipped: 0,
             dropped: 0,
         }
+    }
+
+    /// When a "New text in <label>" is due: the run has been quiet for [`TEXT_QUIET`] and the
+    /// last one was [`ANNOUNCE_EVERY`] ago.
+    fn announce_due(&self) -> Option<Instant> {
+        if self.kind != StreamKind::Text || !self.unannounced {
+            return None;
+        }
+        let quiet = self.last_frame? + TEXT_QUIET;
+        Some(
+            self.announced_at
+                .map_or(quiet, |t| quiet.max(t + ANNOUNCE_EVERY)),
+        )
     }
 
     fn is_open(&self) -> bool {
@@ -504,6 +536,7 @@ impl Streams {
             },
             (Ok(Frame::Text { append, .. }), StreamKind::Text) => {
                 s.append(&append, cap);
+                s.unannounced = true;
                 s.phase = Phase::Open;
                 s.last_frame = Some(now);
                 s.back_at = None;
@@ -582,6 +615,17 @@ impl Streams {
                 s.back_at = None;
                 changed = true;
             }
+            if let Some(due) = s.announce_due() {
+                let focused = s
+                    .focus_at
+                    .is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(500));
+                if due <= now && !focused {
+                    s.unannounced = false;
+                    s.announced_at = Some(now);
+                    s.announcing_until = Some(now + ANNOUNCE_HOLD);
+                    changed = true;
+                }
+            }
         }
         changed
     }
@@ -601,6 +645,8 @@ impl Streams {
                 want(Some(s.last_drawn.map_or_else(Instant::now, |t| t + every)));
             }
             want(s.reopen_at);
+            want(s.announce_due());
+            want(s.announcing_until);
             if s.phase == Phase::Connecting && s.picture.is_none() {
                 want(s.opened_at.map(|t| t + CONNECTING_AFTER));
             }
@@ -670,6 +716,11 @@ impl Streams {
                     .is_some_and(|s| matches!(s.phase, Phase::Stopped)) =>
             {
                 self.open(k, now)
+            }
+            StreamAct::FocusInside(k) => {
+                if let Some(s) = self.map.get_mut(k) {
+                    s.focus_at = Some(now);
+                }
             }
             _ => {}
         }
