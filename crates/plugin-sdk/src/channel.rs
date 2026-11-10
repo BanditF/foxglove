@@ -25,16 +25,9 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE,
-    INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
 };
-use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-};
-use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-    TOKEN_USER,
-};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile, FILE_FLAG_OVERLAPPED};
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::PIPE_UNLIMITED_INSTANCES;
@@ -43,7 +36,6 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::CreateEventW;
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 /// The most a channel frame may carry. A longer length prefix is a protocol error.
@@ -77,72 +69,8 @@ pub fn unique_pipe_name(module: &str, channel: &str) -> String {
     )
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(Some(0)).collect()
-}
-
-/// The current user's SID as a string (`S-1-5-21-...`), from the process token.
-pub fn current_user_sid() -> io::Result<String> {
-    unsafe {
-        let mut token: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let mut len = 0u32;
-        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
-        // u64 backing keeps the TOKEN_USER aligned.
-        let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
-        let ok = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
-        let result = if ok == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            let user = &*(buf.as_ptr() as *const TOKEN_USER);
-            let mut s: *mut u16 = std::ptr::null_mut();
-            if ConvertSidToStringSidW(user.User.Sid, &mut s) == 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                let mut n = 0;
-                while *s.add(n) != 0 {
-                    n += 1;
-                }
-                let out = String::from_utf16_lossy(std::slice::from_raw_parts(s, n));
-                LocalFree(s.cast());
-                Ok(out)
-            }
-        };
-        CloseHandle(token);
-        result
-    }
-}
-
-/// A security descriptor granting full access to the current user's SID only (protected, so
-/// nothing is inherited).
-struct Descriptor(PSECURITY_DESCRIPTOR);
-
-impl Descriptor {
-    fn current_user_only() -> io::Result<Descriptor> {
-        let sddl = wide(&format!("D:P(A;;GA;;;{})", current_user_sid()?));
-        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let ok = unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.as_ptr(),
-                1,
-                &mut sd,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Descriptor(sd))
-    }
-}
-
-impl Drop for Descriptor {
-    fn drop(&mut self) {
-        unsafe { LocalFree(self.0) };
-    }
-}
+pub use hideout_acl::current_user_sid;
+use hideout_acl::{wide, Descriptor};
 
 /// A one-time channel pipe, created and waiting for its consumer.
 pub struct ChannelPipe {
@@ -157,7 +85,7 @@ impl ChannelPipe {
         let sd = Descriptor::current_user_only()?;
         let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: sd.0,
+            lpSecurityDescriptor: sd.as_ptr(),
             bInheritHandle: 0,
         };
         let wname = wide(name);
@@ -337,7 +265,7 @@ impl ServerPipe {
         let sd = Descriptor::current_user_only()?;
         let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: sd.0,
+            lpSecurityDescriptor: sd.as_ptr(),
             bInheritHandle: 0,
         };
         let wname = wide(name);
@@ -416,13 +344,14 @@ impl Write for PipeConn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
         ConvertStringSidToSidW, GetSecurityInfo, SE_KERNEL_OBJECT,
     };
-    use windows_sys::Win32::Security::PSID;
     use windows_sys::Win32::Security::{
         EqualSid, GetAce, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION,
     };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, PSID};
 
     #[test]
     fn current_user_only_pipe_connects_and_closes() {

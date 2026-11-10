@@ -86,11 +86,23 @@ impl Shared {
 pub fn run(opts: ShellOptions) -> Result<(), String> {
     platform::init_process(AUMID);
     let paths = opts.paths;
+    // The hub folder is current-user-only (+ SYSTEM, Administrators), contract §2.3: made so on
+    // creation, fixed on start if an older run left it open. Logged once the log is open.
+    let acl = hideout_acl::create_private_dir_all(&paths.root)
+        .and_then(|()| hideout_acl::ensure_private_dir(&paths.root));
     match FileLog::open(&paths.logs_dir(), log::LevelFilter::Info) {
         Ok(l) => {
             let _ = l.install();
         }
         Err(e) => eprintln!("hideout: log {}: {e}", paths.logs_dir().display()),
+    }
+    match acl {
+        Ok(true) => log::info!(
+            "folder {} had open or inherited ACL entries; now current user, SYSTEM and Administrators only",
+            paths.root.display()
+        ),
+        Ok(false) => {}
+        Err(e) => log::warn!("folder {}: could not set the ACL: {e}", paths.root.display()),
     }
     let instance =
         match platform::claim_instance(&paths.instance_suffix()).map_err(|e| e.to_string())? {

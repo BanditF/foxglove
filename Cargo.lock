@@ -1445,6 +1445,7 @@ version = "0.3.0"
 dependencies = [
  "base64",
  "foxglove-plugin-api",
+ "hideout-acl",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
@@ -2008,6 +2009,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hideout-acl"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hideout-contract"
 version = "1.0.0"
 dependencies = [
@@ -2042,6 +2050,7 @@ name = "hideout-registry"
 version = "0.1.0"
 dependencies = [
  "foxglove-plugin-trust",
+ "hideout-acl",
  "hideout-contract",
  "serde",
  "serde_json",
@@ -2066,6 +2075,7 @@ name = "hideout-shell"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "hideout-acl",
  "hideout-contract",
  "hideout-panels",
  "image",

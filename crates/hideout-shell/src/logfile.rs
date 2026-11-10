@@ -21,7 +21,7 @@ pub struct FileLog {
 impl FileLog {
     /// Opens (or creates) the log in `dir`, rotating first if it is already full.
     pub fn open(dir: &Path, level: log::LevelFilter) -> std::io::Result<Self> {
-        std::fs::create_dir_all(dir)?;
+        hideout_acl::create_private_dir_all(dir)?;
         let path = dir.join(FILE_NAME);
         let (file, len) = open_rotating(&path)?;
         Ok(Self {
