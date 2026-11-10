@@ -405,3 +405,65 @@ mod tests {
         assert!(claim(&name).unwrap().is_some());
     }
 }
+
+/// A string or number under `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion`.
+fn current_version(name: &str) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    };
+    let key = wide(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+    let value = wide(name);
+    let mut buf = [0u16; 256];
+    let mut size = std::mem::size_of_val(&buf) as u32;
+    // SAFETY: the key and value names are NUL-terminated; the buffer and its size match.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ | RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    if name == "UBR" {
+        return Some((buf[0] as u32 | (buf[1] as u32) << 16).to_string());
+    }
+    let n = (size as usize / 2).min(buf.len());
+    let s = String::from_utf16_lossy(&buf[..n]);
+    Some(s.trim_end_matches('\0').to_string())
+}
+
+/// `Windows 11 Pro 25H2 (build 26300.1234)` for Copy diagnostics; `None` when the registry
+/// can't be read. Windows 11 still names itself "Windows 10" in `ProductName`: from build
+/// 22000 it reads 11.
+pub fn windows_version() -> Option<String> {
+    let build = current_version("CurrentBuildNumber")?;
+    let mut product = current_version("ProductName").unwrap_or_else(|| "Windows".into());
+    if build.parse::<u32>().is_ok_and(|b| b >= 22000) {
+        product = product.replace("Windows 10", "Windows 11");
+    }
+    let mut out = product;
+    if let Some(v) = current_version("DisplayVersion") {
+        out.push(' ');
+        out.push_str(&v);
+    }
+    match current_version("UBR") {
+        Some(u) => out.push_str(&format!(" (build {build}.{u})")),
+        None => out.push_str(&format!(" (build {build})")),
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod version_tests {
+    #[test]
+    fn the_windows_line_names_a_build() {
+        let v = super::windows_version().expect("registry");
+        assert!(v.starts_with("Windows") && v.contains("(build "), "{v}");
+    }
+}

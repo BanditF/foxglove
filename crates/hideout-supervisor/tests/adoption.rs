@@ -200,3 +200,46 @@ fn a_reused_pid_is_left_alone_and_the_module_starts_fresh() {
     let _ = stranger.wait();
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
+
+/// Safe mode (§7.10, #1029): a hub started with `hideout.toml`'s `safe_mode` starts nothing;
+/// **Start normally** clears the flag, turns `hub.safe_mode` off and starts the enabled module
+/// in the same hub, with no restart.
+#[test]
+fn start_normally_leaves_safe_mode_and_starts_the_module() {
+    const ID: &str = "example.lab.safe";
+    let (home, _) = home_with(ID);
+    let mut reaper = Reaper::default();
+    let mut reg = Registry::open(&home, true).unwrap();
+    reg.set_safe_mode(true).unwrap();
+    assert!(Registry::open(&home, true).unwrap().hub.safe_mode());
+
+    let settings = Settings {
+        safe_mode: true,
+        ..Settings::default()
+    };
+    let router = Router::new(settings, Box::new(|_, asked| asked.to_vec()));
+    let (events, _rx) = mpsc::channel();
+    let hub = Hub::new(router, events);
+    let sup = Supervisor::start(&home, hub.clone());
+    assert!(sup.safe_mode());
+    assert_eq!(sup.pid(ID), None, "safe mode started a module");
+    let safe = |h: &Hub| h.read(|r| r.fact("hub.safe_mode").and_then(|v| v.as_bool()));
+    assert_eq!(safe(&hub), Some(true));
+
+    sup.start_normally();
+    let pid = sup.pid(ID).expect("Start normally didn't start the module");
+    reaper.hold(pid);
+    assert!(!sup.safe_mode());
+    assert_eq!(safe(&hub), Some(false));
+    assert_eq!(state(&hub, ID).as_deref(), Some("starting"));
+    assert!(
+        !Registry::open(&home, true).unwrap().hub.safe_mode(),
+        "the flag is still in hideout.toml"
+    );
+    // A second press starts no second instance.
+    sup.start_normally();
+    assert_eq!(sup.pid(ID), Some(pid));
+    drop(sup);
+    drop(reaper);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}

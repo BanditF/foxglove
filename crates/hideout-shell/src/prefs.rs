@@ -51,6 +51,9 @@ impl TrayPrefs {
     }
 }
 
+/// Tables the shell writes into [`Prefs::rest`] itself (`popout::store`).
+const SHELL_TABLES: &[&str] = &["windows"];
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
@@ -88,13 +91,29 @@ impl Prefs {
         toml::to_string(self).unwrap_or_default()
     }
 
-    /// Writes atomically: a temp file next to `path`, then a rename over it.
+    /// Writes atomically: a temp file next to `path`, then a rename over it. The keys the
+    /// shell doesn't own come from the file as it is now, not as it was at load: the
+    /// supervisor writes `[modules]` and `safe_mode` while the window is open (#1029), and a
+    /// placement save must not put back what it changed.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
             hideout_acl::create_private_dir_all(dir)?;
         }
+        let mut out = self.clone();
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(now) = Self::parse(&text) {
+                out.rest = now.rest;
+                // Tables the shell keeps in `rest` itself stay as the shell has them.
+                for key in SHELL_TABLES {
+                    match self.rest.get(*key) {
+                        Some(v) => out.rest.insert((*key).into(), v.clone()),
+                        None => out.rest.remove(*key),
+                    };
+                }
+            }
+        }
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, self.to_toml())?;
+        std::fs::write(&tmp, out.to_toml())?;
         std::fs::rename(&tmp, path)
     }
 }
@@ -131,6 +150,31 @@ mod tests {
         assert_eq!(back.rest["autostart"].as_bool(), Some(true));
         assert!(back.rest["modules"]["x.y"]["enabled"].as_bool() == Some(false));
         assert_eq!(back.rest["sources"].as_array().map(|a| a.len()), Some(1));
+    }
+
+    /// A placement save keeps what the supervisor wrote after the shell loaded the file
+    /// (Start normally's cleared `safe_mode`, a module turned off).
+    #[test]
+    fn a_save_keeps_keys_written_since_the_load() {
+        let dir = std::env::temp_dir().join(format!("hideout-prefs-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hideout.toml");
+        std::fs::write(&path, "safe_mode = true\ntheme = \"dark\"\n").unwrap();
+        let (mut p, err) = Prefs::load(&path);
+        assert!(err.is_none());
+        let now = "theme = \"dark\"\n[modules.\"x.y\"]\nenabled = false\n";
+        std::fs::write(&path, now).unwrap();
+        p.window.last_monitor = Some("m".into());
+        p.save(&path).unwrap();
+        let back = Prefs::load(&path).0;
+        assert!(!back.rest.contains_key("safe_mode"), "safe mode came back");
+        assert_eq!(
+            back.rest["modules"]["x.y"]["enabled"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(back.window.last_monitor.as_deref(), Some("m"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

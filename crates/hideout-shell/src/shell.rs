@@ -48,7 +48,13 @@ pub struct ShellOptions {
     /// Started in the tray (sign-in): the main window hides after its first frame, and saved
     /// pop-outs wait for the first time the user opens Hideout (§2.5, spec v1.6).
     pub start_in_tray: bool,
+    /// **Start normally** from the tray menu in safe mode (§7.10): the supervisor's, any
+    /// thread. `None` on a hub without one; the item then does nothing.
+    pub start_normally: Option<StartNormally>,
 }
+
+/// What **Start normally** runs (the supervisor ends safe mode and starts the modules).
+pub type StartNormally = Arc<dyn Fn() + Send + Sync>;
 
 /// What the tab strip asks of the rest of the hub. Every method has a do-nothing default.
 pub trait TabHooks {
@@ -98,6 +104,9 @@ fn tray_sync() {
     if let Some((state, line, tip)) = crate::marks::take_change() {
         tray::set_state(state, &line, &tip);
     }
+    if let Some(on) = crate::marks::take_safe_change() {
+        tray::set_safe_mode(on);
+    }
 }
 
 /// When the crash bar's countdown next needs a frame: once a second while it counts, never at
@@ -115,6 +124,8 @@ struct Shared {
     hidden: AtomicBool,
     /// A left click on the tray icon (the icon's rectangle and when), for the next frame.
     flyout_click: Mutex<Option<(placement::Rect, std::time::Instant)>>,
+    /// The tray menu's Start normally.
+    start_normally: Option<StartNormally>,
 }
 
 impl Shared {
@@ -189,6 +200,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        start_normally: opts.start_normally.clone(),
     });
     let pages = opts.pages;
     let feed = opts.panels;
@@ -350,6 +362,13 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
             }
         }
         tray::Command::Quit => shared.quit(),
+        tray::Command::StartNormally => match &shared.start_normally {
+            Some(f) => {
+                log::info!("Start normally from the tray");
+                f();
+            }
+            None => log::warn!("Start normally from the tray: no supervisor in this hub"),
+        },
     }
     // A hidden or minimised window draws nothing: it repaints when Windows shows it again (#935).
     if platform::main_window_on_screen() {
@@ -576,6 +595,12 @@ pub(crate) fn flyout_id() -> egui::ViewportId {
 
 /// The page that Update Hideout opens: the hub has no updater of its own yet.
 pub const RELEASES_URL: &str = "https://github.com/BanditF/foxglove/releases";
+
+/// **Update Hideout** (a module needs a newer hub): opens [`RELEASES_URL`].
+pub fn open_update_page() {
+    log::info!("update hideout: opening {RELEASES_URL}");
+    platform::open_url(RELEASES_URL);
+}
 
 fn layout_from(p: &crate::prefs::TrayPrefs) -> TrayLayout {
     TrayLayout {

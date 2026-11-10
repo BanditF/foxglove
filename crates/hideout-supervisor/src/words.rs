@@ -20,6 +20,34 @@ pub const DIDNT_START: &str = "It didn't start. Open log to see why.";
 pub const DIDNT_HELP: &str = "Starting again didn't help last time.";
 /// `install-failed` after a failed pid or exe-hash check at `initialize` (#959).
 pub const FILES_DONT_MATCH: &str = "Its files don't match what was installed.";
+/// A Modules row's `install-failed` from launching: the row already has the name (#1029).
+pub const COULDNT_START: &str = "Couldn't start";
+/// A Modules row's buttons (#1029): Open is the secondary one on every row.
+pub const OPEN: &str = "Open";
+pub const TURN_ON: &str = "Turn on";
+pub const UPDATE_HIDEOUT: &str = "Update Hideout";
+
+/// The safe-mode banner on the Modules page (§7.10, UX plan "Safe mode and finding the
+/// culprit"): title, line, main button, second action.
+pub const SAFE_MODE: &str = "Safe mode";
+pub const SAFE_MODE_LINE: &str = "Hideout closed 3 times in 5 minutes, so no modules were started.";
+pub const START_NORMALLY: &str = "Start normally";
+pub const FIND_CULPRIT: &str = "Find the module that breaks Hideout";
+/// The tooltip of a step that isn't built yet (bisect).
+pub const COMES_LATER: &str = "Comes in a later Hideout.";
+/// The tray tooltip in safe mode.
+pub const SAFE_MODE_TIP: &str = "Hideout \u{b7} safe mode";
+
+/// A Modules row's accessible name: "<Module>, <state>" with the state's first letter
+/// lowered ("Art, stopped after 5 crashes", the red mark's words).
+pub fn row_label(module: &str, state: &str) -> String {
+    let mut c = state.chars();
+    let state = match c.next() {
+        Some(f) => f.to_lowercase().chain(c).collect(),
+        None => String::new(),
+    };
+    format!("{module}, {state}")
+}
 
 /// "Restarting in <n> s", or "Restarting…" once the countdown is at 0 (never "0 s", never past
 /// 60 s).
@@ -257,6 +285,16 @@ pub fn every_string() -> Vec<String> {
         DIDNT_HELP,
         OK,
         DIDNT_START,
+        COULDNT_START,
+        OPEN,
+        TURN_ON,
+        UPDATE_HIDEOUT,
+        SAFE_MODE,
+        SAFE_MODE_LINE,
+        START_NORMALLY,
+        FIND_CULPRIT,
+        COMES_LATER,
+        SAFE_MODE_TIP,
     ] {
         v.push(s.into());
     }
@@ -300,6 +338,17 @@ mod tests {
             vec!["Start again".to_string(), "Open Art".into()]
         );
         assert_eq!(tray_lines("Art").1, "Open Art to start it again");
+        assert_eq!(row_label("Art", STOPPED), stopped_mark("Art"));
+        assert_eq!(row_label("Dock", COULDNT_START), "Dock, couldn't start");
+        assert_eq!(
+            (SAFE_MODE, SAFE_MODE_LINE, START_NORMALLY, FIND_CULPRIT),
+            (
+                "Safe mode",
+                "Hideout closed 3 times in 5 minutes, so no modules were started.",
+                "Start normally",
+                "Find the module that breaks Hideout"
+            )
+        );
     }
 
     #[test]

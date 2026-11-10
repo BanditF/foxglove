@@ -580,6 +580,13 @@ impl Registry {
         Ok(refused)
     }
 
+    /// Sets or clears `hideout.toml`'s `safe_mode` flag (§7.10) and saves the file.
+    pub fn set_safe_mode(&mut self, on: bool) -> Result<(), Failure> {
+        self.hub.set_safe_mode(on);
+        self.save_hub()?;
+        Ok(())
+    }
+
     pub fn set_enabled(&mut self, id: &str, on: bool) -> Result<(), Failure> {
         if !self.inventory.modules.contains_key(id) {
             return Err(Failure::NotInstalled(id.into()));

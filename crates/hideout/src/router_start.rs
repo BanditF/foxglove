@@ -125,6 +125,11 @@ pub fn start(home: &Path, suffix: &str) -> (Hub, Supervisor, HubFeed) {
             for line in &reg.lab_report {
                 log::info!("lab: {line}");
             }
+            // §7.10: the flag in hideout.toml; Start normally clears it.
+            if reg.hub.safe_mode() {
+                log::warn!("router: safe mode (hideout.toml); no module starts by itself");
+                router.set_safe_mode(true);
+            }
             router.load_registry(&reg);
             manifests.extend(
                 reg.inventory

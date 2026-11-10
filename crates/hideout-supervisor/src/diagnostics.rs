@@ -3,7 +3,9 @@
 //! step 4): the module, its state and step ids, exit codes, crash times, the ladder steps tried,
 //! the hub's and the module's versions and the tail of `logs\<id>.log`. Plain text, at most
 //! [`MAX_BYTES`]. Never secrets or tokens, never another process's pid, and no user path outside
-//! the hub folder: the profile folder reads `%USERPROFILE%`, the user name `<user>`.
+//! the hub folder: the profile folder reads `%USERPROFILE%`, the user name `<user>`, the
+//! computer name `<computer>`, and a path under the profile outside the hub folder
+//! `%USERPROFILE%\…\<file>`.
 //!
 //! No I/O but [`log_tail`]; the driver gathers the rest ([`crate::driver::Supervisor::diagnostics`]).
 
@@ -40,6 +42,34 @@ pub struct Input {
     pub log_tail: Option<String>,
     /// What to hide: (text, what it reads instead), longest first is not needed.
     pub redact: Vec<(String, String)>,
+    /// Names hidden only as whole words (the computer name, a user name under 3 characters).
+    pub redact_words: Vec<Word>,
+    /// The hub folder under the profile (`AppData\Local\Hideout`); other paths under
+    /// `%USERPROFILE%` read `%USERPROFILE%\…\<file>`. `None`: the hub folder isn't under it.
+    pub hub_under_profile: Option<String>,
+    /// `Windows 11 Pro 25H2 (build 26300.1234)`.
+    pub windows: Option<String>,
+}
+
+/// A name hidden as a whole word: not inside a longer word. `in_paths` (a short user name):
+/// only right after `\`, `/` or `-` (a path, a pipe name), never as an ordinary word.
+#[derive(Clone, Debug, Default)]
+pub struct Word {
+    pub from: String,
+    pub to: String,
+    pub in_paths: bool,
+}
+
+/// What the step id `module.<id>.recovery` offers, in words (the step id stays in brackets).
+fn step_gloss(id: &str) -> String {
+    let words = match id {
+        "start-again" => "start again",
+        "defaults" => "start with default settings",
+        "go-back" => "go back to the previous version",
+        "last" => "turn it off (nothing else left to try)",
+        other => return other.to_string(),
+    };
+    format!("{words} ({id})")
 }
 
 /// The diagnostics text.
@@ -53,6 +83,11 @@ pub fn report(i: &Input) -> String {
     };
     line(&mut head, "Hideout diagnostics", &utc(SystemTime::now()));
     line(&mut head, "Hub version", &i.hub_version);
+    line(
+        &mut head,
+        "Windows",
+        i.windows.as_deref().unwrap_or("unknown"),
+    );
     line(&mut head, "Module", &format!("{} ({})", i.module, i.name));
     line(
         &mut head,
@@ -62,15 +97,15 @@ pub fn report(i: &Input) -> String {
     line(&mut head, "State", i.state.as_deref().unwrap_or("idle"));
     line(
         &mut head,
-        "Recovery",
-        i.recovery.as_deref().unwrap_or("none"),
+        "Next step offered",
+        &i.recovery.as_deref().map_or("none".into(), step_gloss),
     );
     if let Some(p) = &i.previous {
         line(&mut head, "Previous version", p);
     }
     line(
         &mut head,
-        "Crashes in the last 10 min",
+        "Crashes since the count last reset (10 min window)",
         &i.crashes_in_window.to_string(),
     );
     line(&mut head, "Crash stops this sign-in", &i.stops.to_string());
@@ -137,8 +172,77 @@ fn clean(text: &str, i: &Input) -> String {
             }
         }
     }
+    for w in &i.redact_words {
+        if !w.from.is_empty() {
+            t = replace_word_ci(&t, &w.from, &w.to, w.in_paths);
+        }
+    }
+    let t = outside_hub(&t, i.hub_under_profile.as_deref());
     let t = redact_secrets(&t);
     redact_pids(&t, i.pid)
+}
+
+/// Whole-word, case-insensitive (ASCII) replace; see [`Word`].
+fn replace_word_ci(text: &str, from: &str, to: &str, in_paths: bool) -> String {
+    let lt = text.to_ascii_lowercase();
+    let lf = from.to_ascii_lowercase();
+    let b = text.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = String::with_capacity(text.len());
+    let (mut last, mut at) = (0, 0);
+    while let Some(k) = lt[at..].find(&lf) {
+        let k = at + k;
+        let end = k + from.len();
+        let before_ok = if in_paths {
+            k > 0 && matches!(b[k - 1], b'\\' | b'/' | b'-')
+        } else {
+            k == 0 || !word(b[k - 1])
+        };
+        let after_ok = end == b.len() || !word(b[end]);
+        if before_ok && after_ok {
+            out.push_str(&text[last..k]);
+            out.push_str(to);
+            last = end;
+        }
+        at = end;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// A path under `%USERPROFILE%` that isn't in the hub folder reads `%USERPROFILE%\…\<file>`:
+/// the folder and file names in it are the user's own. A path ends at a space or quote.
+fn outside_hub(text: &str, hub: Option<&str>) -> String {
+    const P: &str = "%USERPROFILE%";
+    let hub = hub.map(|h| h.replace('/', "\\").to_ascii_lowercase());
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(k) = rest.find(P) {
+        out.push_str(&rest[..k + P.len()]);
+        rest = &rest[k + P.len()..];
+        let Some(sep) = rest.chars().next().filter(|c| matches!(c, '\\' | '/')) else {
+            continue;
+        };
+        let end = rest
+            .find(|c: char| {
+                c.is_whitespace()
+                    || matches!(c, '"' | '\'' | ',' | ';' | ')' | ']' | '}' | '<' | '>')
+            })
+            .unwrap_or(rest.len());
+        let norm = rest[1..end].replace('/', "\\").to_ascii_lowercase();
+        if norm.is_empty() {
+            continue;
+        }
+        let inside = hub
+            .as_deref()
+            .is_some_and(|h| norm == h || norm.starts_with(&format!("{h}\\")));
+        if !inside {
+            out.push_str(&format!("{sep}\u{2026}{sep}<file>"));
+            rest = &rest[end..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Words after which a value is a secret: `token=…`, `"token": "…"`, `Bearer …`.
@@ -201,7 +305,8 @@ pub fn redact_secrets(text: &str) -> String {
     out
 }
 
-/// `pid 1234` / `pid=1234` / `pid: 1234` for any pid but `own` reads `pid <other>`.
+/// `pid 1234` / `pid=1234` / `pid: 1234` / `process 1234` for any pid but `own` reads
+/// `<other>` in place of the number.
 fn redact_pids(text: &str, own: Option<u32>) -> String {
     let lower = text.to_ascii_lowercase();
     let b = text.as_bytes();
@@ -209,8 +314,11 @@ fn redact_pids(text: &str, own: Option<u32>) -> String {
     let mut i = 0;
     while i < b.len() {
         let word_start = i == 0 || !b[i - 1].is_ascii_alphanumeric();
-        if word_start && lower[i..].starts_with("pid") {
-            let mut j = i + 3;
+        let w = ["pid", "process"]
+            .into_iter()
+            .find(|w| word_start && lower[i..].starts_with(w));
+        if let Some(w) = w {
+            let mut j = i + w.len();
             while j < b.len() && matches!(b[j], b' ' | b'=' | b':') {
                 j += 1;
             }
@@ -338,13 +446,21 @@ mod tests {
                  {\"token\": \"s3cr3t\", \"n\": 1}\n\
                  Authorization: Bearer xyz.789\n\
                  pid 4242 runs; parent pid 999 gone; pid=123\n\
-                 read c:/users/fuchs/Documents/notes.txt\n"
+                 read c:/users/fuchs/Documents/notes.txt\n\
+                 share \\\\DESKTOP-AB12\\x on desktop-ab12; process 5678 ended\n"
                     .into(),
             ),
             redact: vec![
                 ("C:\\Users\\fuchs".into(), "%USERPROFILE%".into()),
                 ("fuchs".into(), "<user>".into()),
             ],
+            redact_words: vec![Word {
+                from: "DESKTOP-AB12".into(),
+                to: "<computer>".into(),
+                in_paths: false,
+            }],
+            hub_under_profile: Some("AppData\\Local\\Hideout".into()),
+            windows: Some("Windows 11 Pro 25H2 (build 26300.1)".into()),
         }
     }
 
@@ -356,7 +472,9 @@ mod tests {
             "Module: m.art (Art)",
             "Module version: 0.5.0",
             "State: crash-stopped",
-            "Recovery: defaults",
+            "Next step offered: start with default settings (defaults)",
+            "Windows: Windows 11 Pro 25H2 (build 26300.1)",
+            "Crashes since the count last reset (10 min window): 0",
             "Previous version: 0.4.2",
             "Crash stops this sign-in: 2",
             "2026-11-10T12:00:03Z  exited with code 3221225477 (0xC0000005)",
@@ -365,12 +483,24 @@ mod tests {
             "%USERPROFILE%\\AppData\\Local\\Hideout\\modules\\m.art",
             "hideout-<user>",
             "pid 4242 runs; parent pid <other> gone; pid=<other>",
-            "%USERPROFILE%/Documents/notes.txt",
+            "read %USERPROFILE%/\u{2026}/<file>\n",
+            "share \\\\<computer>\\x on <computer>; process <other> ended",
         ] {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }
         for never in [
-            "fuchs", "Fuchs", "abc123", "s3cr3t", "xyz.789", "999", "=123",
+            "fuchs",
+            "Fuchs",
+            "abc123",
+            "s3cr3t",
+            "xyz.789",
+            "999",
+            "=123",
+            "notes.txt",
+            "Documents",
+            "DESKTOP",
+            "5678",
+            "Recovery:",
         ] {
             assert!(!text.contains(never), "{never:?} leaked:\n{text}");
         }
@@ -425,6 +555,46 @@ mod tests {
         assert_eq!(
             utc(UNIX_EPOCH + Duration::from_secs(951_782_400)),
             "2000-02-29T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn short_user_names_hide_in_paths_only() {
+        let i = Input {
+            redact_words: vec![Word {
+                from: "al".into(),
+                to: "<user>".into(),
+                in_paths: true,
+            }],
+            ..Input::default()
+        };
+        let t = clean("C:\\Users\\al\\x and pipe hideout-al; al said: also al", &i);
+        assert_eq!(
+            t,
+            "C:\\Users\\<user>\\x and pipe hideout-<user>; al said: also al"
+        );
+    }
+
+    #[test]
+    fn hub_folder_paths_stay_and_others_hide() {
+        let hub = Some("AppData\\Local\\Hideout");
+        assert_eq!(
+            outside_hub(
+                "%USERPROFILE%\\AppData\\Local\\Hideout\\logs\\a.log ok",
+                hub
+            ),
+            "%USERPROFILE%\\AppData\\Local\\Hideout\\logs\\a.log ok"
+        );
+        assert_eq!(
+            outside_hub(
+                "\"%USERPROFILE%\\AppData\\Local\\HideoutX\\a\" and %USERPROFILE%",
+                hub
+            ),
+            "\"%USERPROFILE%\\\u{2026}\\<file>\" and %USERPROFILE%"
+        );
+        assert_eq!(
+            outside_hub("%USERPROFILE%/Desktop/plan.txt", None),
+            "%USERPROFILE%/\u{2026}/<file>"
         );
     }
 }

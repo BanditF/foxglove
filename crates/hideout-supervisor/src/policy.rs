@@ -140,6 +140,9 @@ pub enum Ev {
     Disable {
         id: String,
     },
+    /// **Start normally** (§7.10): safe mode ends and every enabled module that starts at
+    /// enable starts now, without a hub restart.
+    StartNormally,
 }
 
 /// What the driver must do.
@@ -512,6 +515,19 @@ impl Policy {
                     self.set_state(&id, State::Off, None, &mut out);
                 }
             }
+            Ev::StartNormally => {
+                self.safe_mode = false;
+                let waiting: Vec<String> = self
+                    .slots
+                    .iter()
+                    .filter(|(_, s)| s.enabled && s.at_enable && s.state == State::Idle)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in waiting {
+                    self.note(&id, now, "safe mode ended: started normally".into());
+                    self.launch(&id, &mut out);
+                }
+            }
         }
         out
     }
@@ -718,7 +734,7 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
             (id.clone(), "step tried: turn-off".into())
         }
         Ev::Disable { id } => (id.clone(), "disabled".into()),
-        Ev::Known { .. } | Ev::Activate { .. } => return None,
+        Ev::Known { .. } | Ev::Activate { .. } | Ev::StartNormally => return None,
     })
 }
 
@@ -793,5 +809,76 @@ mod history_tests {
         assert_eq!(p.stops(&id), 1);
         assert_eq!(exit_code(1), "1");
         assert_eq!(exit_code(-1), "4294967295 (0xFFFFFFFF)");
+    }
+}
+
+#[cfg(test)]
+mod safe_mode_tests {
+    use super::*;
+
+    fn known(id: &str, enabled: bool, at_enable: bool) -> Ev {
+        Ev::Known {
+            id: id.into(),
+            name: id.into(),
+            enabled,
+            at_enable,
+            previous: None,
+        }
+    }
+
+    fn launches(cmds: &[Cmd]) -> Vec<String> {
+        cmds.iter()
+            .filter_map(|c| match c {
+                Cmd::Launch { id } => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Safe mode starts nothing; Start normally starts each enabled module that starts at
+    /// enable, once, and nothing that is off or waits for a call.
+    #[test]
+    fn start_normally_starts_the_enabled_modules() {
+        let mut p = Policy::new();
+        p.safe_mode = true;
+        let t = Instant::now();
+        let mut cmds = Vec::new();
+        for ev in [
+            known("m.art", true, true),
+            known("m.beat", true, true),
+            known("m.call", true, false),
+            known("m.off", false, true),
+        ] {
+            cmds.extend(p.handle(ev, t));
+        }
+        assert!(launches(&cmds).is_empty(), "safe mode started {cmds:?}");
+        assert!(p
+            .handle(
+                Ev::Activate {
+                    id: "m.call".into()
+                },
+                t
+            )
+            .is_empty());
+        let cmds = p.handle(Ev::StartNormally, t);
+        assert_eq!(launches(&cmds), ["m.art", "m.beat"]);
+        assert!(!p.safe_mode);
+        assert_eq!(p.state("m.art"), Some(State::Starting));
+        // Pressed again (the tray and the banner): nothing starts twice.
+        assert!(launches(&p.handle(Ev::StartNormally, t)).is_empty());
+        // Activation works again outside safe mode.
+        assert_eq!(
+            launches(&p.handle(
+                Ev::Activate {
+                    id: "m.call".into()
+                },
+                t
+            )),
+            ["m.call"]
+        );
+        assert!(p
+            .history("m.art")
+            .iter()
+            .any(|(_, l)| l == "safe mode ended: started normally"));
     }
 }

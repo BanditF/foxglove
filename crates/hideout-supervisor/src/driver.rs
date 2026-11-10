@@ -140,6 +140,15 @@ fn unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// `path` relative to `base` when it is inside it (case-insensitive, either slash).
+fn under(path: &str, base: &str) -> Option<String> {
+    let (p, b) = (path.replace('/', "\\"), base.replace('/', "\\"));
+    let b = b.trim_end_matches('\\');
+    let head = p.get(..b.len())?;
+    let rest = p[b.len()..].strip_prefix('\\')?;
+    head.eq_ignore_ascii_case(b).then(|| rest.to_string())
+}
+
 /// The launch check the router runs at a module's `initialize` (§7.5, §8.2 v1.3).
 fn launch_check(
     expected: &Mutex<BTreeMap<String, Expected>>,
@@ -379,6 +388,64 @@ impl Supervisor {
         self.feed(Ev::Disable { id: id.into() });
     }
 
+    /// **Turn on** from the Modules page: saved as on, then started as `enable` does (§7.4).
+    /// A module with permissions still waiting for the permission dialog (§6.4) isn't turned
+    /// on here: that dialog isn't built, so it answers `false` and the caller opens the module.
+    pub fn turn_on(&self, id: &str) -> bool {
+        let saved = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|mut r| {
+                let pending = r
+                    .inventory
+                    .modules
+                    .get(id)
+                    .is_some_and(|m| !m.pending_permissions.is_empty());
+                if pending {
+                    return Err("permissions wait for the permission dialog".into());
+                }
+                r.set_enabled(id, true).map_err(|e| format!("{e:?}"))
+            });
+        if let Err(e) = saved {
+            log::warn!("supervisor: {id}: not turned on: {e}");
+            return false;
+        }
+        self.feed(Ev::Enable { id: id.into() });
+        true
+    }
+
+    /// **Start normally** (§7.10, the safe-mode banner and the tray menu): clears `hideout.toml`'s
+    /// `safe_mode` flag, turns `hub.safe_mode` off and starts the enabled modules, all in this
+    /// hub: no restart. Safe to press twice. The flag not being saved is logged; the modules
+    /// start anyway, and the next hub start would be in safe mode again.
+    pub fn start_normally(&self) {
+        let saved = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|mut r| r.set_safe_mode(false).map_err(|e| format!("{e:?}")));
+        if let Err(e) = saved {
+            log::warn!("supervisor: safe mode off not saved: {e}");
+        }
+        self.0.hub.act(|r| r.set_safe_mode(false));
+        let cmds = self
+            .0
+            .policy
+            .lock()
+            .unwrap()
+            .handle(Ev::StartNormally, Instant::now());
+        let starting = cmds
+            .iter()
+            .filter(|c| matches!(c, Cmd::Launch { .. }))
+            .count();
+        log::info!(
+            "supervisor: Start normally: safe mode off, {starting} module(s) starting (no hub restart)"
+        );
+        self.run(cmds);
+    }
+
+    /// Whether the supervisor is in safe mode (nothing starts by itself).
+    pub fn safe_mode(&self) -> bool {
+        self.0.policy.lock().unwrap().safe_mode
+    }
+
     /// The text of **Copy diagnostics** for a module (`crate::diagnostics`): ids, exit codes,
     /// crash times, the ladder steps tried, versions and the log tail; the profile folder and
     /// the user name redacted. `hub_version` is hideout.exe's.
@@ -419,14 +486,30 @@ impl Supervisor {
             }
         }
         i.log_tail = log_tail(&self.0.home.join("logs").join(format!("{id}.log")));
-        if let Some(home) = std::env::var_os("USERPROFILE") {
-            i.redact
-                .push((home.to_string_lossy().into_owned(), "%USERPROFILE%".into()));
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            let profile = profile.to_string_lossy().into_owned();
+            i.hub_under_profile = under(&self.0.home.to_string_lossy(), &profile);
+            i.redact.push((profile, "%USERPROFILE%".into()));
         }
         let name = user();
         if name.len() >= 3 {
             i.redact.push((name, "<user>".into()));
+        } else if !name.is_empty() {
+            // Short names only inside paths and pipe names, never as ordinary words.
+            i.redact_words.push(crate::diagnostics::Word {
+                from: name,
+                to: "<user>".into(),
+                in_paths: true,
+            });
         }
+        if let Some(pc) = std::env::var_os("COMPUTERNAME").filter(|c| !c.is_empty()) {
+            i.redact_words.push(crate::diagnostics::Word {
+                from: pc.to_string_lossy().into_owned(),
+                to: "<computer>".into(),
+                in_paths: false,
+            });
+        }
+        i.windows = win::windows_version();
         report(&i)
     }
 
