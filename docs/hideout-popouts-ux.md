@@ -215,7 +215,7 @@ From §5.9, with pop-outs spelt out (spec gap 1):
 | Quit with unsaved work | tabs plan's "Quit Hideout?" dialog |
 | Placeholder tooltip | "<page> · In its own window" |
 | Empty page area | "Nothing open" / "<page> is in its own window." / Show it · Dock back |
-| Removed module | "<Module> was removed; its window was closed." |
+| Removed module | "<Module> was removed; its window was closed." (more than one page out: "<Module> was removed; its windows were closed.") |
 | Close page with unsaved work | tabs plan's "Close <page>?" dialog |
 
 Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock", "float" or
@@ -275,7 +275,8 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
   can't bring them back), its pop-outs close and their saved places in `[windows]` are dropped.
   When a window closed, the status strip shows "<Module> was removed; its window was closed."
   ("its windows were closed." for more than one) for 10 s of the main window on screen, and it
-  is announced once, politely, in Hideout's main window. A removal with no window out closes its
+  is announced once, politely, in Hideout's main window when the line is first shown (a hub in
+  the tray says it when opened). A removal with no window out closes its
   tabs silently (the tabs plan). Nothing asks: the module is gone already.
 - **6. Re-snap as a Windows snap (not done; no public API).** A `snapped` place comes back at
   its snapped rectangle as a normal window. Windows has no public call that puts a window into

@@ -1759,7 +1759,8 @@ impl Hub {
     }
 
     /// The removal notice's time (#1012.4): it starts on the first frame the main window is on
-    /// screen and asks for one repaint at its end (no timer loop); then it goes.
+    /// screen, with its one polite announcement there, and asks for one repaint at its end (no
+    /// timer loop); then it goes.
     fn notice_tick(&mut self, ctx: &egui::Context) {
         let Some(n) = self.removed_notice.as_mut() else {
             return;
@@ -1771,6 +1772,10 @@ impl Hub {
             None if shown => {
                 n.until = Some(now + NOTICE_FOR);
                 ctx.request_repaint_after(NOTICE_FOR);
+                // Said when the line is first seen, so a hub opened from the tray later still
+                // says it (an announcement only lasts ANNOUNCE_FOR).
+                let text = n.text.clone();
+                self.say(text, Said::Main);
             }
             None => {}
             Some(u) if now >= u => self.removed_notice = None,
@@ -1817,12 +1822,11 @@ impl Hub {
         let tabs = self.tabs.drop_module(module);
         log::info!("{name} ({module}) was removed: {tabs} tab(s) and {windows} window(s) closed");
         if windows > 0 {
-            let text = removed_words(name, windows);
+            // Shown and said from the first frame the main window is on screen (notice_tick).
             self.removed_notice = Some(Notice {
-                text: text.clone(),
+                text: removed_words(name, windows),
                 until: None,
             });
-            self.say(text, Said::Main);
         }
     }
 

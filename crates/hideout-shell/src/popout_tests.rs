@@ -1346,9 +1346,10 @@ fn a_removed_modules_window_closes_and_the_status_strip_says_so() {
         hub.removed_notice.as_ref().map(|n| n.text.as_str()),
         Some(words)
     );
-    assert_eq!(
-        hub.announce.as_ref().map(|a| (a.text.as_str(), &a.place)),
-        Some((words, &Said::Main))
+    // In the tray nothing is said yet (it would be gone before Hideout is opened).
+    assert!(
+        hub.announce.as_ref().is_none_or(|a| a.text != words),
+        "said while in the tray"
     );
     // Reopen (Ctrl+Shift+T) can't bring it back.
     hub.apply(Action::Reopen);
@@ -1360,6 +1361,18 @@ fn a_removed_modules_window_closes_and_the_status_strip_says_so() {
     assert!(drawn(&out).iter().any(|t| t == words), "{:?}", drawn(&out));
     let until = hub.removed_notice.as_ref().unwrap().until.unwrap();
     assert!(until > std::time::Instant::now() + Duration::from_secs(9));
+    // Said once, politely, in the main window, with the line's first shown frame.
+    assert_eq!(
+        hub.announce.as_ref().map(|a| (a.text.as_str(), &a.place)),
+        Some((words, &Said::Main))
+    );
+    let n = hub.announce.as_ref().unwrap().n;
+    frame(&ctx, &mut hub, vec![]);
+    assert_eq!(
+        hub.announce.as_ref().map(|a| a.n),
+        Some(n),
+        "said only once"
+    );
     // Its time is up: gone with the next frame.
     hub.removed_notice.as_mut().unwrap().until = Some(std::time::Instant::now());
     let out = ctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c));
