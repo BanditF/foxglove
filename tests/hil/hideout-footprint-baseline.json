@@ -1,21 +1,79 @@
 {
-  "_comment": "Committed baseline for scripts/lab/hideout_footprint.py (#935). A metric fails when it reads past value * (1 + pct/100) + slack. These are INITIAL CEILINGS, not measurements (the case has not run yet): the first lab batch replaces them with its numbers via --update-baseline, reviewed in the PR. vram_mb is left out: it is recorded, not compared, until a baseline is measured.",
+  "_comment": "Measured baseline for scripts/lab/hideout_footprint.py (#935), from On-call's lab runs on main b6ce0081 (11/10, after #967): the max of the window-shown and window-hidden runs. A metric fails past value * (1 + pct/100) + slack. Wakeups: the hub's own main thread is ~8 per 10 min hidden; the ~11/s left is the NVIDIA OpenGL driver thread (see docs/hideout-footprint.md). Private memory ~75 MB is the glow/egui/GPU stack floor on this machine. The default set is empty for now, so it shares the numbers.",
   "sets": {
     "none": {
-      "private_mb":     { "value": 40,  "pct": 20, "slack": 4 },
-      "working_set_mb": { "value": 60,  "pct": 20, "slack": 4 },
-      "cpu_pct":        { "value": 0.3, "pct": 50, "slack": 0.2 },
-      "wakeups_per_s":  { "value": 30,  "pct": 50, "slack": 10 },
-      "gdi_handles":    { "value": 150, "pct": 20, "slack": 10 },
-      "user_handles":   { "value": 100, "pct": 20, "slack": 10 }
+      "private_mb": {
+        "value": 75.5,
+        "pct": 10,
+        "slack": 4
+      },
+      "working_set_mb": {
+        "value": 71.6,
+        "pct": 15,
+        "slack": 6
+      },
+      "cpu_pct": {
+        "value": 0.05,
+        "pct": 100,
+        "slack": 0.2
+      },
+      "wakeups_per_s": {
+        "value": 12,
+        "pct": 50,
+        "slack": 15
+      },
+      "gdi_handles": {
+        "value": 32,
+        "pct": 20,
+        "slack": 10
+      },
+      "user_handles": {
+        "value": 33,
+        "pct": 20,
+        "slack": 10
+      },
+      "vram_mb": {
+        "value": 20.7,
+        "pct": 20,
+        "slack": 4
+      }
     },
     "default": {
-      "private_mb":     { "value": 40,  "pct": 20, "slack": 4 },
-      "working_set_mb": { "value": 60,  "pct": 20, "slack": 4 },
-      "cpu_pct":        { "value": 0.3, "pct": 50, "slack": 0.2 },
-      "wakeups_per_s":  { "value": 30,  "pct": 50, "slack": 10 },
-      "gdi_handles":    { "value": 150, "pct": 20, "slack": 10 },
-      "user_handles":   { "value": 100, "pct": 20, "slack": 10 }
+      "private_mb": {
+        "value": 75.5,
+        "pct": 10,
+        "slack": 4
+      },
+      "working_set_mb": {
+        "value": 71.6,
+        "pct": 15,
+        "slack": 6
+      },
+      "cpu_pct": {
+        "value": 0.05,
+        "pct": 100,
+        "slack": 0.2
+      },
+      "wakeups_per_s": {
+        "value": 12,
+        "pct": 50,
+        "slack": 15
+      },
+      "gdi_handles": {
+        "value": 32,
+        "pct": 20,
+        "slack": 10
+      },
+      "user_handles": {
+        "value": 33,
+        "pct": 20,
+        "slack": 10
+      },
+      "vram_mb": {
+        "value": 20.7,
+        "pct": 20,
+        "slack": 4
+      }
     }
   }
 }
