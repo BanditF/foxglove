@@ -26,6 +26,10 @@ commit, push, or merge. The only file you write is your memory file. The Planner
   KeyPeek files and preserve subtree synchronization. Keep modules cohesive.
 - `crates/foxglove-link` owns protocol builders/parsers and transport; avoid duplicate
   wire formats in the UI or hostpanel and keep UI/OS providers out of Foxglove link.
+- Restart parity (`docs/agents.md`): for each in-memory field a published fact depends on, check
+  the PR's "State lost on restart/reconnect" line (persisted / derived / n/a) holds. Reject a test
+  that hand-builds the state its own restart loses (a snapshot or store section written by hand,
+  then the published fact checked) as restart coverage; ask for a `restart_parity` case.
 - Require unit tests for pure logic, especially report parsing/building, bounds,
   state transitions, and malformed data. Identify missing regression coverage.
 - Run `powershell -ExecutionPolicy Bypass -File scripts/check.ps1` when feasible:

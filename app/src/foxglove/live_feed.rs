@@ -457,13 +457,16 @@ static CONNECTED: AtomicUsize = AtomicUsize::new(0);
 static REFUSALS: Mutex<wire::Refusals> = Mutex::new(wire::Refusals::new());
 
 /// The health view's rows (registered with `health::register` as "live_feed"): a warning while
-/// a wallpaper keeps presenting an old pairing token; nothing otherwise.
+/// a wallpaper keeps presenting an old pairing token; and while the feed runs and the keyboard
+/// shows a piece, the art the feed has for it (`live_parity`, #1053).
 pub fn health_rows() -> Vec<super::health::HealthRow> {
     let warns = REFUSALS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .warns(Instant::now());
-    refusal_rows(warns)
+    let mut rows = refusal_rows(warns);
+    rows.extend(super::live_parity::rows_now());
+    rows
 }
 
 fn refusal_rows(warns: bool) -> Vec<super::health::HealthRow> {
@@ -850,6 +853,9 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
     hub.quiet = wire::quiet(super::pause::paused(), super::away::away(), fullscreen);
     let mut art = ArtWatch::default();
     hub.art = art.read().unwrap_or_default();
+    // The art published against the keyboard's (#1053): one log line per step into a gap.
+    let mut gap = super::live_parity::Gap::default();
+    gap.note(hub.art.as_ref(), art.keyboard.as_deref());
     hub.panel = PANEL.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let mut panel = PanelPace::default();
     let mut batch_started: Option<Instant> = None;
@@ -996,6 +1002,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
             }
         }
         keys.want(hub.wants_keys(), tx);
+        gap.note(hub.art.as_ref(), art.keyboard.as_deref());
         // A kept piece this PC has no file for, on screen while a wallpaper watches: its bytes
         // are read back once (#878); the feed hears when they land (`art_changed`).
         let watched = clients.iter().any(|c| !c.paused) && !super::pause::paused();
@@ -1165,6 +1172,9 @@ struct ArtWatch {
     not_on_pc: Option<u32>,
     /// The CRCs whose bytes were asked of the keyboard this run: once each.
     asked: std::collections::HashSet<u32>,
+    /// What the right screen showed at the last read, by the keyboard's report
+    /// (`live_parity::keyboard_shows`); `None` with no piece on it.
+    keyboard: Option<String>,
 }
 
 /// What the frames were read for: the source, the name the state gives it (the wallpaper
@@ -1185,6 +1195,10 @@ impl ArtWatch {
         let snap = super::art_service::handle().map(|h| h.snapshot());
         let source = snap.as_ref().and_then(super::live_art::source);
         let name = snap.as_ref().and_then(showing_name);
+        // The keyboard's side for the art parity (#1053), at the same read.
+        self.keyboard = snap
+            .as_ref()
+            .and_then(|s| super::live_parity::keyboard_shows(s.connected, s.status));
         // Only a kept place reads the library; the others don't wait on its scans.
         let (library, kept) = match source {
             Some(super::live_art::Source::Slot { .. }) => (

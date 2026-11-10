@@ -503,18 +503,32 @@ class App:
                            "$p | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue").split()
         for p in self.plugins:
             kill(p)
+        self._launch()
+        return self
+
+    def _launch(self):
+        """Starts the test app and its restore guard."""
         try:
             self.proc = subprocess.Popen([str(self.exe)], env=self.env)
         except OSError:
             self.restore()  # no test app: the user's comes straight back
             raise
+        self.stopped = False
         # A run killed before __exit__ (a timeout, an abort) leaves this to the guard: it stops
         # the test app and starts the user's again once this process is gone (restore_guard.py).
         guard = Path(__file__).with_name('restore_guard.py')
-        subprocess.Popen([sys.executable, '-I', str(guard), str(os.getpid()), str(self.proc.pid), *self.previous],
-                         creationflags=0x00000008 | 0x00000200,  # detached, its own group
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return self
+        self.guard = subprocess.Popen([sys.executable, '-I', str(guard), str(os.getpid()), str(self.proc.pid), *self.previous],
+                                      creationflags=0x00000008 | 0x00000200,  # detached, its own group
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def restart(self):
+        """Stops the test app and starts a fresh one on the same config folder and env (restart
+        parity, #1053); the user's Foxglove stays stopped in between. The old guard is stopped by
+        its own handle first: one guard per test app, so an abort restores the user's app once."""
+        self.stop()
+        self.guard.terminate()
+        self.guard.wait(10)
+        self._launch()
 
     def exited(self):
         """The test app's exit code once it has ended, else None."""
@@ -559,6 +573,149 @@ class App:
         alive = [p for p in previous if p.lower() in ps("(Get-Process -Name foxglove -ErrorAction SilentlyContinue).Path").lower()]
         print('restored:', alive if alive == previous else f'{alive} of {previous} (check!)', flush=True)
         return alive
+
+
+def feed_messages(port, token, seconds, alive=None):
+    """Yields the live feed's JSON text messages for at most `seconds` (a minimal websocket client:
+    handshake, then frames). The feed pushes each message: reading waits on the socket, no polling.
+    A refused connect (the feed not listening yet, just after a start) is tried again every 0.5 s
+    while `alive()` holds (the test app runs), within the same `seconds`: bounded and gated."""
+    import base64, socket, struct
+    end = time.time() + seconds
+    while True:
+        try:
+            s = socket.create_connection(('127.0.0.1', port), timeout=5)
+            break
+        except OSError:
+            if time.time() > end or (alive is not None and not alive()):
+                return
+            time.sleep(0.5)
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((f'GET /live?token={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\n'
+               f'Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
+    buf = b''
+    while b'\r\n\r\n' not in buf:
+        chunk = s.recv(4096)
+        if not chunk:
+            return
+        buf += chunk
+    buf = bytearray(buf.split(b'\r\n\r\n', 1)[1])
+    s.settimeout(1)
+
+    def fill(want):
+        # In place, so a timeout mid-frame keeps what came. The feed closed the connection (recv
+        # gives b''): the generator ends, it never spins.
+        while len(buf) < want:
+            chunk = s.recv(65536)
+            if not chunk:
+                raise ConnectionError('the feed closed the connection')
+            buf.extend(chunk)
+    try:
+        while time.time() < end:
+            try:
+                fill(2)
+                n = buf[1] & 0x7f
+                at = 2
+                if n == 126:
+                    fill(4)
+                    n, at = struct.unpack('>H', buf[2:4])[0], 4
+                elif n == 127:
+                    fill(10)
+                    n, at = struct.unpack('>Q', buf[2:10])[0], 10
+                fill(at + n)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            payload = bytes(buf[at:at + n])
+            del buf[:at + n]
+            if not payload:
+                continue
+            try:
+                yield json.loads(payload)
+            except ValueError:
+                continue
+    finally:
+        s.close()
+
+
+def feed_art_facts(messages, until):
+    """Folds the feed's messages into its art facts, {'state_art': state.art (the name),
+    'art': {'from', 'name', 'frames', 'missing'} or None}, after each message; returns the first
+    facts `until(facts)` accepts, else the last ones (None when no message came)."""
+    facts = None
+    for m in messages:
+        t = m.get('t')
+        if t in ('hello', 'state'):
+            state = m.get('state') or {}
+            facts = {'art': None, **(facts or {}), 'state_art': state.get('art')}
+        elif t == 'art':
+            a = m.get('art')
+            facts = {'state_art': None, **(facts or {}),
+                     'art': a and {'from': a.get('from'), 'name': a.get('name'), 'frames': bool(a.get('nva')),
+                                   'missing': a.get('missing')}}
+        else:
+            continue
+        if until(facts):
+            return facts
+    return facts
+
+
+def wait_fact(name, key, pred, seconds):
+    """Waits for fact `key` to satisfy `pred` (its value, None while unset): its value now, then its
+    `facts.changed` events, on an API connection of its own (a read that never ends holds only that
+    one). Bounded by `seconds`. Returns the value `pred` accepted, else None. No polling."""
+    import threading
+    api = connect(name, [f'facts.read:{key}'], seconds)
+    got = []
+
+    def follow():
+        try:
+            api.call('facts.subscribe', {'pattern': key})
+            now = api.call('facts.get', {'key': key}).get('value')
+            if pred(now):
+                got.append(now)
+                return
+            buf = b''
+            while True:
+                c = api.pipe.read(1)
+                if not c:
+                    return
+                buf += c
+                if c == b'\n':
+                    msg, buf = json.loads(buf), b''
+                    p = msg.get('params') or {}
+                    if msg.get('method') == 'facts.changed' and p.get('key') == key and pred(p.get('value')):
+                        got.append(p.get('value'))
+                        return
+        except (OSError, RuntimeError, ValueError):
+            return
+
+    t = threading.Thread(target=follow, daemon=True)
+    t.start()
+    t.join(seconds)
+    if not t.is_alive():
+        api.close()
+    return got[0] if got else None
+
+
+def restart_parity(app, check, name, establish, read):
+    """One restart-parity case (#1053, docs/agents.md "Restart parity"): a fact a feature
+    publishes must come back the same after Foxglove restarts while the keyboard keeps going.
+
+    `establish()` makes the state through the app's real interfaces (the local API, the UI flow),
+    never by writing the store by hand; `read(want)` reads the published facts and returns as soon
+    as they equal `want` (`want` None: as soon as the state is there), else what it last saw at its
+    bound (None for nothing). The test app is then stopped and started fresh on the same config
+    folder (`App.restart`), and the facts must be the same. Returns (before, after)."""
+    establish()
+    before = read(None)
+    if not check(f'{name}: published before the restart', before is not None, before):
+        return before, None
+    app.restart()
+    after = read(before)
+    check(f'{name}: the same after a restart', after == before, f'before {before}; after {after}')
+    return before, after
 
 
 # Windows' NTSTATUS codes a crashed process exits with, as unsigned 32-bit.
