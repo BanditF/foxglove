@@ -183,6 +183,9 @@ foxglove-devices = { path = "../crates/devices", features = ["hid", "mock"] }
 resvg = { version = "0.45", default-features = false }
 # Foxglove: a fake keyboard for the art tests answers foxglove-link's Transport, whose results are anyhow's.
 anyhow = "1"
+# Foxglove: a port that refuses connections and stays ours (bound, never listening), for the
+# OpenRGB retry test (#1006). Already in the tree (through tokio).
+socket2 = "0.6"
 
 # Foxglove: smaller dev/test builds (same as the root workspace; see its Cargo.toml).
 [profile.dev]
