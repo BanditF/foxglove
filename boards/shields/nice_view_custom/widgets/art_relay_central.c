@@ -130,12 +130,15 @@ static void discovery_failed(int8_t result) {
 
 static atomic_t discovering; // discover_params belong to Zephyr until the procedure ends
 
+static void answered_now(void);
+
 static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           struct bt_gatt_discover_params *params) {
     if (conn != peer) { // the end of a discovery on a link that has gone
         atomic_clear(&discovering);
         return BT_GATT_ITER_STOP;
     }
+    answered_now(); // #943: the link-up burst waits REQ_GAP_MS after the discovery's last answer
     if (attr == NULL) {
         atomic_clear(&discovering);
     }
@@ -196,6 +199,7 @@ static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *at
     if (conn != peer) {
         return BT_GATT_ITER_STOP;
     }
+    answered_now(); // #943, as in chrc_found
     if (attr == NULL) {
         dbg.ends++;
         LOG_INF("art relay: right half has no relay service");
@@ -1738,6 +1742,7 @@ void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]) {
 
 static struct bt_gatt_subscribe_params doorbell;
 static uint8_t doorbell_waits;
+static K_SEM_DEFINE(doorbell_done, 0, 1);
 
 static uint8_t doorbell_rang(struct bt_conn *conn, struct bt_gatt_subscribe_params *params,
                              const void *data, uint16_t length) {
@@ -1787,6 +1792,8 @@ static uint8_t doorbell_rang(struct bt_conn *conn, struct bt_gatt_subscribe_para
 static void doorbell_subscribed(struct bt_conn *conn, uint8_t err,
                                 struct bt_gatt_subscribe_params *params) {
     dbg.att_err = err; // older right firmware has no CCC there: an ATT error, nothing else
+    answered_now();
+    k_sem_give(&doorbell_done);
 }
 
 static void doorbell_cb(struct k_work *work) {
@@ -1808,8 +1815,16 @@ static void doorbell_cb(struct k_work *work) {
             .value = BT_GATT_CCC_NOTIFY,
         };
         atomic_set_bit(doorbell.flags, BT_GATT_SUBSCRIBE_FLAG_VOLATILE);
+        k_sem_reset(&doorbell_done);
         if (bt_gatt_subscribe(conn, &doorbell) != 0) {
             atomic_clear(&doorbell_live);
+        } else {
+            // #943: the subscribe is a CCC write request outside the request slots. relay_q's
+            // next request queued behind it in Zephyr went out the moment its answer came, with
+            // no REQ_GAP_MS, and a right still holding that response's buffer never answered it
+            // (a timeout on every link-up, sometimes the unstick's drop). Wait for the answer
+            // (doorbell_subscribed, which also restarts the gap); GATT_TIMEOUT_MS is only the cap.
+            k_sem_take(&doorbell_done, K_MSEC(GATT_TIMEOUT_MS));
         }
     }
     bt_conn_unref(conn);
