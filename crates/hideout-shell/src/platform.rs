@@ -133,6 +133,12 @@ pub fn hide_main_window() {
     }
 }
 
+/// False only while the main window exists and is hidden. Windows sends no `WM_PAINT` to a
+/// hidden window, so winit's `request_redraw` brings no frame then (#935, see `wake`).
+pub fn main_window_drawable() -> bool {
+    main_window().is_none_or(|h| unsafe { IsWindowVisible(h).as_bool() })
+}
+
 /// True while the main window is shown and not minimised; false before it exists.
 pub fn main_window_on_screen() -> bool {
     main_window().is_some_and(|h| unsafe { IsWindowVisible(h).as_bool() && !IsIconic(h).as_bool() })

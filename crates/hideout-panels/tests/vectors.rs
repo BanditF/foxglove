@@ -154,7 +154,10 @@ fn patch_rate_transcript_coalesces_without_errors() {
             {"op": "set", "node": "title", "props": {"text": format!("Art {i}")}}]}))
         .unwrap();
         host.patch(module, &patch, now).unwrap();
-        host.flush(now);
+        // A deadline already past would make the shell repaint at once, every frame (#935).
+        if let Some(at) = host.flush(now) {
+            assert!(at > now, "flush returned a past deadline");
+        }
         let text = host
             .panel(&PanelKey::new(module, "art"))
             .unwrap()

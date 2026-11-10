@@ -5,7 +5,9 @@ runs it window-free anywhere.
 Metrics (all about the hub process, hideout.exe, while it idles):
   private_mb, working_set_mb  memory (MB)
   cpu_pct                     CPU time over the window / wall time, % of one core
-  wakeups_per_s               context switches per second, None where no counter exists
+  wakeups_per_s               context switches per second summed over all the process's threads
+                              (the Thread counter class: the Process class reads 0 for the hub),
+                              None where no counter exists
   gdi_handles, user_handles   GetGuiResources counts
   vram_mb                     dedicated GPU memory, None where Windows has no counter for it
 """
@@ -35,17 +37,28 @@ def load_sets(text):
     return out
 
 
+def _switches(first, last):
+    """{tid: switches in the window} from two {tid: cumulative switches} maps. A thread born in the
+    window counts from zero, and so does a reused id whose count went down."""
+    out = {}
+    for tid, cs in last.items():
+        before = first.get(tid, 0)
+        out[tid] = cs if cs < before else cs - before
+    return out
+
+
 def summarize(first, last, wall_s):
     """Two samples of the same process, `wall_s` seconds apart, -> the metrics. A sample is a dict:
-    private_b, working_set_b, cpu_100ns, ctx_switches, gdi, user, vram_b (ctx_switches and vram_b
-    are None when Windows has no counter for them).
+    private_b, working_set_b, cpu_100ns, threads ({thread id: cumulative context switches}), gdi,
+    user, vram_b (threads and vram_b are None when Windows has no counter for them).
+    Wakeups are the switches of all the process's threads over the window, per second.
     The memory and handle numbers are those at the end of the window."""
     if wall_s <= 0:
         raise ValueError('the window must be longer than zero')
     mb = 1024 * 1024
     vram = last.get('vram_b')
-    c0, c1 = first.get('ctx_switches'), last.get('ctx_switches')
-    wakeups = None if c0 is None or c1 is None else round((c1 - c0) / wall_s, 2)
+    t0, t1 = first.get('threads'), last.get('threads')
+    wakeups = None if t0 is None or t1 is None else round(sum(_switches(t0, t1).values()) / wall_s, 2)
     return {
         'private_mb': round(last['private_b'] / mb, 2),
         'working_set_mb': round(last['working_set_b'] / mb, 2),
@@ -55,6 +68,18 @@ def summarize(first, last, wall_s):
         'user_handles': last['user'],
         'vram_mb': None if vram is None else round(vram / mb, 2),
     }
+
+
+def top_threads(first, last, wall_s, names=None, n=3):
+    """The `n` threads with the most context switches per second over the window, highest first:
+    [{tid, name, switches_per_s}] (name from `names`, {tid: description}, '' if unnamed). Empty
+    without per-thread counts. Kept out of the metrics: it explains a wakeups reading."""
+    if first is None or last is None or wall_s <= 0:
+        return []
+    names = names or {}
+    rows = sorted(_switches(first, last).items(), key=lambda r: (-r[1], r[0]))[:n]
+    return [{'tid': tid, 'name': names.get(tid, ''), 'switches_per_s': round(cs / wall_s, 2)}
+            for tid, cs in rows]
 
 
 def limit(entry):

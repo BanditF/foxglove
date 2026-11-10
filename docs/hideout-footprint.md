@@ -10,7 +10,7 @@ about 80 MB private, 77 MB working set, 0.0 % CPU, 9 to 11 wakeups/s, 20.7 MB de
 
 | Source | Before | Now |
 |---|---|---|
-| eframe event loop | `ControlFlow::Wait` whenever no viewport asked for a repaint (eframe 0.33 `run.rs`); `WaitUntil` only for a `request_repaint_after`. | Unchanged. The test `shell::tests::an_idle_frame_requests_no_repaint` runs the hub's frame on a bare `egui::Context` and fails if a settled frame asks for any repaint, so a widget that animates or keeps moving can't slip in. |
+| eframe event loop | `ControlFlow::Wait` whenever no viewport asked for a repaint (eframe 0.33 `run.rs`); `WaitUntil` only for a `request_repaint_after`. **Hidden to the tray it span in `ControlFlow::Poll`** (see "Hidden hub spinning" below). | The hub runs eframe's app on its own winit loop (`wake::Gate`): with the window hidden, a `Poll` left at `about_to_wait` becomes a wait. The test `shell::tests::an_idle_frame_requests_no_repaint` runs the hub's frame on a bare `egui::Context` and fails if a settled frame asks for any repaint, so a widget that animates or keeps moving can't slip in; `a_hidden_frame_requests_no_repaint` does the same with the hidden flag set, and `wake::tests` pin the control-flow rule. |
 | Hub frame (`Hub::update`) | No `request_repaint*` of its own. The palette's text box asks for focus and a blinking caret only while Ctrl+K is open. | Unchanged; the frame body moved to `Hub::draw` so the test above runs it window-free. |
 | Tray commands (`on_tray`) | `request_repaint` after every command, so Pause or Open log folder with the window hidden drew a full GL frame into a hidden window. | Repaints only when the window is on screen (`platform::main_window_on_screen`). A hidden window repaints when Windows shows it again (WM_PAINT). |
 | tray-icon leave timer | tray-icon 0.24 arms a 15 ms timer (`WM_USER_LEAVE_TIMER_ID`, 6007) on each mouse move over the icon and kills it only on a tick that still holds a fresh cursor position. When the cursor leaves without another move over the icon (always after the tray menu opens: the cursor leaves through the menu) the timer ticks at 64 Hz until the hub exits. | The hub uses no Enter/Leave events, so the Move handler kills the timer as soon as tray-icon arms it (`tray::stop_leave_timer`). A test pins tray-icon to 0.24.x in Cargo.lock, so a bump re-checks the private id. |
@@ -24,6 +24,47 @@ about 80 MB private, 77 MB working set, 0.0 % CPU, 9 to 11 wakeups/s, 20.7 MB de
 No `ControlFlow::Poll`, `sleep` loop or file-watcher poll exists in these crates. eframe's own
 `sleep(10 ms)` after a frame on a minimised window only runs when a frame runs, and the idle hub
 runs none.
+
+### Hidden hub spinning (main 41c59d38)
+
+On-call measured per thread with the window closed to the tray: the main thread (winit loop and
+tray) at 1100 to 1600 context switches/s, the NVIDIA GL driver thread at about 11/s, every
+`hideout-*` thread at 0. The Process-class counter read 0 for the process, so the footprint
+case's wakeups had missed it.
+
+Cause, from the eframe 0.33.3 and winit 0.30.13 sources:
+
+1. Closing the window runs one frame that sends `ViewportCommand::CancelClose` and hides the
+   window (`ShowWindow(SW_HIDE)`). egui's `send_viewport_cmd_to` always calls
+   `request_repaint_of`, so that frame ends with a repaint due now.
+2. eframe's `check_redraw_requests` (`native/run.rs`) handles a due repaint by setting
+   `ControlFlow::Poll`, calling `window.request_redraw()` and dropping the entry. Only a later
+   event whose result is `EventResult::Wait` (normally the `RedrawRequested` frame) sets
+   `ControlFlow::Wait` again.
+3. winit's `request_redraw` is `RedrawWindow(RDW_INTERNALPAINT)`. Windows sends no `WM_PAINT`
+   to a hidden window, so `RedrawRequested` never comes.
+4. Nothing answers `Wait`, so the loop stays in `Poll`, and winit's `wait_for_messages_impl`
+   returns at once for `Poll` (zero timeout, no `MsgWaitForMultipleObjectsEx`): the main thread
+   spins through `PeekMessageW` until the window is shown again.
+
+Not the cause, checked: no `timeBeginPeriod`, `SetTimer` or `PeekMessage` loop in the hub
+crates; the tray-icon leave timer is killed on arm (above) and a Win32 timer can't tick past
+about 100 Hz anyway; tray events come by callback, not a receiver polled from `update`; the
+measured `hideout.exe` has no panel feed (`panels: None`), and the panel pump never returns a
+deadline in the past (`flush` sets `last = now` for every panel it flushes; asserted in
+`hideout-panels/tests/vectors.rs`).
+
+Fix: `hideout_shell::run` builds the winit loop itself and runs `eframe::create_native`'s app
+inside `wake::Gate`, which forwards every callback and, at `about_to_wait`, turns a `Poll` into a
+wait while the window is hidden (`platform::main_window_drawable`, `IsWindowVisible`). A shown
+window keeps eframe's `Poll` (its frame comes and answers `Wait`). Showing the window from the
+tray or a second instance repaints it as before (Windows sends `WM_PAINT` on show, plus the
+existing `request_repaint`).
+
+Health signal: the gate counts loop wakes (`new_events`) and logs
+`event loop: N wakes in M min` every 10 minutes; every wait ends by the next report, so an idle
+hub logs the line on time (one wake per 10 minutes is its cost). A hidden, idle hub should log a
+few wakes per report, not hundreds of thousands.
 
 ### What is left, and why it may not reach < 1/s
 
@@ -75,3 +116,10 @@ standby list, not lower private bytes, so it isn't done.
 2. Window closed to the tray (click X) before the window: wakeups and CPU, the target case.
 3. After opening and closing the tray menu once: wakeups must not jump by about 64/s (the
    tray-icon timer fix).
+
+Wakeups are the Thread-class `Context Switches/sec` summed over all the hub's threads (the
+Process-class counter reads 0 for it), and each result records `top_threads`: the three
+threads that switch most, with id, description and switches/s.
+
+After the hidden-hub fix: window closed to the tray, main thread under 1 switch/s (was 1100 to
+1600), and the log shows `event loop: N wakes in 10 min` with N in the tens at most.

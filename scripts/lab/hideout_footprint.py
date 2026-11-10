@@ -3,9 +3,11 @@ with no modules and once per named set in tests/hil/hideout-footprint-sets.json 
 "default", empty), and the case records its
 
   private and working-set RAM, CPU % (of one core), wakeups (context switches per second),
-  GDI and USER handles, and dedicated VRAM where Windows has a counter for it. Wakeups try the process counter, then
-  the per-thread "Context Switches/sec" summed for the process; with neither they are recorded as
-  unavailable (null) and never compared or failed.
+  GDI and USER handles, and dedicated VRAM where Windows has a counter for it. Wakeups are always
+  the Thread-class "Context Switches/sec" summed over all the process's threads (the Process-class
+  counter reads 0 for the hub); without thread counters they are recorded as unavailable (null)
+  and never compared or failed. The result also names the three threads that switch most
+  (top_threads: id, description, switches/s), so a wakeups reading says where it comes from.
 
 After --settle-s (30) the hub is sampled, left alone for --window-s (60), and sampled again; CPU and
 wakeups are the difference over the window, the rest are read at its end. The numbers go to
@@ -62,32 +64,53 @@ def sample(pid):
         gdi, user = u.GetGuiResources(h, 0), u.GetGuiResources(h, 1)
     finally:
         k.CloseHandle(h)
-    # Cumulative context switches (raw perf data, so two samples make a rate) and the process's
-    # dedicated GPU memory; the GPU class is absent on a machine without WDDM counters.
+    # Cumulative context switches per thread (raw perf data, so two samples make a rate) and the
+    # process's dedicated GPU memory; the GPU class is absent on a machine without WDDM counters.
     out = ps(
-        f'$c = (Get-CimInstance Win32_PerfRawData_PerfProc_Process -Filter "IDProcess={pid}" '
-        f'-ErrorAction SilentlyContinue | Select-Object -First 1).ContextSwitchesPersec; '
-        f'if ($null -eq $c) {{ $t = Get-CimInstance Win32_PerfRawData_PerfProc_Thread -Filter "IDProcess={pid}" '
-        f'-ErrorAction SilentlyContinue | Measure-Object -Property ContextSwitchesPersec -Sum; '
-        f'if ($t.Count) {{ $c = $t.Sum }} }}; '
+        f'$t = @(Get-CimInstance Win32_PerfRawData_PerfProc_Thread -Filter "IDProcess={pid}" '
+        f'-ErrorAction SilentlyContinue | ForEach-Object {{ @{{tid = [int]$_.IDThread; cs = [int64]$_.ContextSwitchesPersec}} }}); '
         f'$v = Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory -ErrorAction SilentlyContinue | '
         f'Where-Object {{ $_.Name -like "pid_{pid}_*" }} | Measure-Object -Property DedicatedUsage -Sum; '
-        f'@{{ctx = $c; vram = $(if ($v.Count) {{ $v.Sum }} else {{ $null }})}} | ConvertTo-Json -Compress')
+        f'@{{threads = $t; vram = $(if ($v.Count) {{ $v.Sum }} else {{ $null }})}} | ConvertTo-Json -Compress -Depth 3')
     try:
         extra = json.loads(out)
     except json.JSONDecodeError:
         extra = {}
     if not isinstance(extra, dict):
         extra = {}
-    ctx = extra.get('ctx')  # None: no process or thread counter here; wakeups are then unavailable
+    rows = extra.get('threads') or []
+    if isinstance(rows, dict):  # one thread: ConvertTo-Json drops the array
+        rows = [rows]
+    # None: no thread counters here; wakeups are then unavailable.
+    threads = {int(r['tid']): int(r['cs']) for r in rows if isinstance(r, dict) and 'tid' in r} or None
     return {'private_b': mem.PrivateUsage, 'working_set_b': mem.WorkingSetSize,
-            'cpu_100ns': ft(t[2]) + ft(t[3]), 'ctx_switches': None if ctx is None else int(ctx),
+            'cpu_100ns': ft(t[2]) + ft(t[3]), 'threads': threads,
             'gdi': gdi, 'user': user, 'vram_b': extra.get('vram')}
+
+
+def thread_names(tids):
+    """{tid: description} from GetThreadDescription; '' for unnamed or gone threads."""
+    k = ctypes.windll.kernel32
+    k.OpenThread.restype = wintypes.HANDLE
+    k.GetThreadDescription.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_void_p)]
+    k.LocalFree.argtypes = [ctypes.c_void_p]
+    names = {}
+    for tid in tids:
+        name = ''
+        h = k.OpenThread(0x0800, False, tid)  # THREAD_QUERY_LIMITED_INFORMATION
+        if h:
+            p = ctypes.c_void_p()
+            if k.GetThreadDescription(h, ctypes.byref(p)) >= 0 and p.value:
+                name = ctypes.wstring_at(p.value)
+                k.LocalFree(p)
+            k.CloseHandle(h)
+        names[tid] = name
+    return names
 
 
 def measure(exe, folders, settle_s, window_s):
     """Runs the hub on a temp HIDEOUT_CONFIG_DIR with `folders` installed as modules; returns
-    (metrics, config folder). Raises RuntimeError if the hub is gone before the end of the window."""
+    (metrics, top threads, config folder). Raises RuntimeError if the hub is gone before the end of the window."""
     cfg = Path(tempfile.mkdtemp(prefix='hideout-footprint-')) / 'config'
     cfg.mkdir()
     for f in folders:
@@ -102,7 +125,9 @@ def measure(exe, folders, settle_s, window_s):
         last = sample(proc.pid)
         if proc.poll() is not None:
             raise RuntimeError(f'the hub exited ({proc.returncode}) during the window')
-        return fc.summarize(first, last, time.monotonic() - t0), cfg
+        wall = time.monotonic() - t0
+        top = fc.top_threads(first['threads'], last['threads'], wall, thread_names(last['threads'] or {}))
+        return fc.summarize(first, last, wall), top, cfg
     finally:
         proc.terminate()  # by its own handle, never by name
         try:
@@ -136,12 +161,13 @@ def main():
     check, results = Checks(), {}
     for name, folders in sets.items():
         try:
-            metrics, cfg = measure(args.app, folders, args.settle_s, args.window_s)
+            metrics, top, cfg = measure(args.app, folders, args.settle_s, args.window_s)
         except (RuntimeError, OSError) as e:
             check(f'{name}: measured', False, e, blocked=True)
             continue
         rows = fc.compare(metrics, baseline.get('sets', {}).get(name, {}))
         results[name] = {'metrics': metrics, 'verdict': fc.verdict(rows), 'modules': folders,
+                         'top_threads': top,
                          'rows': [{'metric': m, 'measured': g, 'limit': c, 'status': s} for m, g, c, s in rows]}
         for m, g, c, s in rows:
             check(f'{name}: {m}', s in ('PASS', 'SKIP'), f'{g} (limit {c})', blocked=s == 'MISSING')
