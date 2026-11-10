@@ -21,11 +21,11 @@ manifest:
     # nonblocking includes the USB reply recovery (zmk-raw-hid#1, foxglove #434): Raw HID replies
     # come back after a PC restart, and the per-transport counters (zmk-raw-hid#3, raw_hid/stats.h
     # version 2: a Bluetooth report nobody listens for is skipped, not failed).
-    # #942: pinned to zmk-raw-hid#5 (BLE reports skipped, counted ble_early, while the ATT MTU is
-    # below a report); back to nonblocking once that PR merges.
+    # #942: zmk-raw-hid#5 (BLE reports skipped, counted ble_early, while the ATT MTU is below a
+    # report).
     - name: zmk-raw-hid
       url: https://github.com/BanditF/zmk-raw-hid
-      revision: 09a35114d4af1b29b00ffebbf2c121916ca23291
+      revision: nonblocking
     - name: zmk-keypeek-layer-notifier
       remote: srwi
       revision: master
