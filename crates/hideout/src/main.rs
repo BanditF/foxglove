@@ -43,6 +43,8 @@ struct Started {
     safe_by_closes: bool,
     /// Finding the module that breaks Hideout (#1033): the search's driver.
     finder: Option<hideout_supervisor::finder::Finder>,
+    /// The Modules page's list as the inventory watch reads it (#1054).
+    fresh: Option<modules_page::Fresh>,
 }
 
 /// How the last run ended (§7.10, #1033), in the hub that holds the supervisor lock, before the
@@ -232,6 +234,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
                 owner: false,
                 safe_by_closes: false,
                 finder: None,
+                fresh: None,
             };
         }
         Err(e) => {
@@ -240,7 +243,9 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
         }
     };
     let (safe_by_closes, exit) = closes_and_exit(&paths.root, unix_ms());
-    let (router, supervisor, feed) = router_start::start(&paths.root, &paths.instance_suffix());
+    let fresh = modules_page::Fresh::default();
+    let (router, supervisor, feed) =
+        router_start::start(&paths.root, &paths.instance_suffix(), fresh.clone());
     // A search in progress picks up after the supervisor started nothing (safe mode, #1033).
     let finder = hideout_supervisor::finder::Finder::start(
         &paths.root,
@@ -265,6 +270,7 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
         owner: true,
         safe_by_closes,
         finder: Some(finder),
+        fresh: Some(fresh),
     }
 }
 
@@ -308,6 +314,7 @@ fn main() {
         started.actions.take(),
         started.safe_by_closes,
         started.finder.clone(),
+        started.fresh.take(),
     );
     let opts = hideout_shell::ShellOptions {
         paths,

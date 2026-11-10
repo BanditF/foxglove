@@ -879,6 +879,46 @@ impl Router {
         out
     }
 
+    /// `id` left the inventory (#1054): the router drops what it knew of it, as if the hub had
+    /// started without it. Its entry, launch token, fault count, declared actions, settings,
+    /// secrets and channels go, and every `module.<id>.*` fact is removed (watchers are told).
+    /// The registry refuses to remove a running module; a module still connected anyway is
+    /// left alone (logged), and the next start forgets it. Saved secrets stay in the store.
+    pub fn forget_module(&mut self, id: &str) -> Vec<Out> {
+        let mut out = Vec::new();
+        if self.module_conn(id).is_some() {
+            log::warn!("router: {id} left the inventory but is still connected; kept");
+            return out;
+        }
+        self.modules.remove(id);
+        self.tokens.remove(id);
+        self.faults.remove(id);
+        self.actions.remove(id);
+        self.settings_decl.remove(id);
+        self.secrets_decl.remove(id);
+        self.channels_decl.remove(id);
+        self.routes.retain(|r| r.module != id);
+        self.fact_owners.retain(|r| r.module != id);
+        self.channels.remove(id);
+        self.leases.retain(|k, _| k.0 != id);
+        let prefix = format!("module.{id}.");
+        let keys: Vec<String> = self
+            .facts
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for k in keys {
+            self.set_fact(&k, Value::Null, &mut out);
+        }
+        out
+    }
+
+    /// Whether the router knows module `id` (from the registry or [`Router::add_module`]).
+    pub fn knows_module(&self, id: &str) -> bool {
+        self.modules.contains_key(id)
+    }
+
     /// Tells `provider` a lease it handed out has ended (§8.5, v1.3).
     fn lease_closed(&self, provider: &str, lease: &str, reason: &str, out: &mut Vec<Out>) {
         if let Some(p) = self.ready_conn(provider) {

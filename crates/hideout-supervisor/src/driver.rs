@@ -546,6 +546,35 @@ impl Supervisor {
         }
     }
 
+    /// `id` left the inventory (#1054): the supervisor drops its records (policy slot,
+    /// expected launch, `run\instances.json` entry, withdrawal note). The registry refuses to
+    /// remove a running module; one still live anyway is kept (logged) until it ends, and the
+    /// next start settles it. Answers whether anything was dropped.
+    pub fn forget(&self, id: &str) -> bool {
+        if self.0.live.lock().unwrap().contains_key(id) {
+            log::warn!("supervisor: {id} left the inventory but still runs; kept");
+            return false;
+        }
+        let known = self.0.policy.lock().unwrap().forget(id);
+        self.0.expected.lock().unwrap().remove(id);
+        self.0.withdrawals.lock().unwrap().remove(id);
+        let recorded = self.0.records.lock().unwrap().modules.remove(id).is_some();
+        if recorded {
+            self.save_records();
+        }
+        if known || recorded {
+            log::info!("supervisor: {id} left the inventory; forgotten");
+        }
+        // The timer's next deadline may have been this module's restart.
+        let _ = self.0.nudge.lock().unwrap().send(());
+        known || recorded
+    }
+
+    /// Whether the policy knows `id` (an installed module it could start).
+    pub fn knows(&self, id: &str) -> bool {
+        self.0.policy.lock().unwrap().state(id).is_some()
+    }
+
     /// The pid of the module's live instance (started or taken back), if any.
     pub fn pid(&self, id: &str) -> Option<u32> {
         self.0.live.lock().unwrap().get(id).map(|l| l.pid)

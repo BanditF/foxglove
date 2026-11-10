@@ -120,6 +120,11 @@ impl RouterSide {
         });
     }
 
+    /// Asks the shell for a frame (the Modules page has a fresh list, #1054.1).
+    pub fn wake(&self) {
+        self.0.wake();
+    }
+
     /// One router event (the supervisor has seen it too).
     pub fn on_router(&self, out: &Out) {
         if let Out::HostChannel {
