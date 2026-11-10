@@ -25,6 +25,8 @@ memory, then the newest sitting runbook in the Hub's notes folder.
   another role's app launch, tell it to prefix `FOXGLOVE_APP_OK=1`.
 - Test-and-revert flashes of a dev build have a standing OK. Other firmware flashes, rollbacks
   included, go on the Hub's call. GA flashes need the user's go; reset taps are a human step.
+  Before a Hub-called flash: a green CI build, rollback UF2s kept, no game running, and a one-line
+  warning to the user just before if they are at the desk. Run the post-flash health checks after.
 - Record `(Get-Process LogiOptionsMgr).PrivateMemorySize64` before and after each flash or
   replug, and post it on #313.
 
