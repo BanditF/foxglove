@@ -1917,7 +1917,7 @@ impl Hub {
     /// Brings `id`'s window forward (its placeholder tab, its sidebar entry, Show it).
     fn focus_popout(&self, id: &TabId) {
         if let Some(h) = self.popout_index(id).and_then(|k| self.popouts[k].hwnd) {
-            platform::focus_window(h);
+            platform::bring_forward(h);
         }
     }
 

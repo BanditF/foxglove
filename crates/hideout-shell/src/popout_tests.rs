@@ -527,3 +527,34 @@ fn renders_the_pop_outs_for_review() {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+#[test]
+fn an_idle_pop_out_asks_for_no_frame_and_held_ones_cost_nothing() {
+    let dir = temp_dir("pop-idle");
+    let (mut hub, _router, hctx) = chat_hub(&dir);
+    hub.apply(Action::PopOut(1));
+    let pctx = ctx();
+    let t = theme::tokens(true);
+    let mut last = None;
+    for _ in 0..3 {
+        last = Some(pctx.run(input(640.0, 420.0, vec![]), |c| {
+            let _ = hub.popout_window_ui(c, &t, 1);
+        }));
+    }
+    assert_eq!(
+        repaint_delay(last.as_ref().unwrap()),
+        Duration::MAX,
+        "a still page draws no frame (no polling)"
+    );
+    // Hidden in the tray with its pop-out waiting: the hub's frames ask for nothing either.
+    let mut hub = hub_in(&dir, None);
+    hub.popouts_held = true;
+    hub.shared.hidden.store(true, Ordering::Release);
+    let mut out = None;
+    for _ in 0..3 {
+        out = Some(hctx.run(input(1100.0, 640.0, vec![]), |c| hub.frame(c)));
+    }
+    assert!(hub.popouts.is_empty());
+    assert_eq!(repaint_delay(out.as_ref().unwrap()), Duration::MAX);
+    let _ = std::fs::remove_dir_all(&dir);
+}

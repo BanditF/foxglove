@@ -643,7 +643,7 @@ pub fn set_topmost(h: isize, on: bool) {
 }
 
 /// Brings `h` forward (restoring it when minimised): a click on its placeholder tab.
-pub fn focus_window(h: isize) {
+pub fn bring_forward(h: isize) {
     let h = hwnd(h);
     unsafe {
         if IsIconic(h).as_bool() {
