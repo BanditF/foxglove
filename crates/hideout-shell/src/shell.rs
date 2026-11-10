@@ -64,6 +64,11 @@ pub trait TabHooks {
     fn go_back(&mut self, _module: &str) {}
     /// "Turn off <Module>" (the last step).
     fn turn_off(&mut self, _module: &str) {}
+    /// The text **Copy diagnostics** copies (the supervisor's: exit codes, crash times, steps
+    /// tried, versions, log tail). `None`: the shell copies the module, state and step only.
+    fn diagnostics(&mut self, _module: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Modules to open in the window, from "Open <Module>" on a notification (any thread).
@@ -1102,7 +1107,7 @@ impl Hub {
             step.id()
         );
         let focus = self.card_takes_focus(ui, key, step.id());
-        let mut pressed = false;
+        let (mut pressed, mut copy) = (false, false);
         card(ui, t, |ui| {
             ui.label(
                 egui::RichText::new(format!("\u{26A0} {}", words::STOPPED))
@@ -1118,11 +1123,17 @@ impl Hub {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 pressed = main_button(ui, t, &main, focus).clicked();
-                if ui.button(words::COPY_DIAGNOSTICS).clicked() {
-                    ui.ctx().copy_text(diagnostics.clone());
-                }
+                copy = ui.button(words::COPY_DIAGNOSTICS).clicked();
             });
         });
+        if copy {
+            let text = self
+                .hooks
+                .as_mut()
+                .and_then(|h| h.diagnostics(module))
+                .unwrap_or(diagnostics);
+            ui.ctx().copy_text(text);
+        }
         if pressed {
             if let Some(h) = self.hooks.as_mut() {
                 match (step, previous.is_some()) {

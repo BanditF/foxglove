@@ -28,6 +28,8 @@ pub mod capture;
 #[cfg(windows)]
 pub mod lab_control;
 #[cfg(windows)]
+pub mod modules_list;
+#[cfg(windows)]
 pub mod notify;
 #[cfg(windows)]
 mod platform;

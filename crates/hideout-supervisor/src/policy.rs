@@ -25,6 +25,8 @@ pub const GRACE: Duration = Duration::from_secs(30);
 /// crash and is ended (a clean exit closes the pipe first). Fallback only: the exit event ends
 /// the wait.
 pub const EXIT_AFTER_PIPE: Duration = Duration::from_secs(5);
+/// Lines of history kept per module for Copy diagnostics (oldest dropped first).
+pub const HISTORY: usize = 32;
 
 /// The delay before restart number `n` (1-based) in a run.
 pub fn backoff(n: u32) -> Duration {
@@ -202,6 +204,9 @@ pub struct Policy {
     notified: BTreeSet<String>,
     /// Safe mode (§7.10): nothing starts by itself.
     pub safe_mode: bool,
+    /// What happened to each module, for Copy diagnostics only (exit codes, crashes, the
+    /// ladder steps tried). Never drawn: it holds ids and codes ("Never shown").
+    history: BTreeMap<String, VecDeque<(Instant, String)>>,
 }
 
 fn publish(out: &mut Vec<Cmd>, key: String, value: Value) {
@@ -211,6 +216,31 @@ fn publish(out: &mut Vec<Cmd>, key: String, value: Value) {
 impl Policy {
     pub fn new() -> Policy {
         Policy::default()
+    }
+
+    /// One line of a module's history (known modules only), [`HISTORY`] kept.
+    fn note(&mut self, id: &str, now: Instant, line: String) {
+        if !self.slots.contains_key(id) {
+            return;
+        }
+        let h = self.history.entry(id.into()).or_default();
+        if h.len() == HISTORY {
+            h.pop_front();
+        }
+        h.push_back((now, line));
+    }
+
+    /// The module's history, oldest first: when, and what (state ids, exit codes, steps).
+    pub fn history(&self, id: &str) -> Vec<(Instant, String)> {
+        self.history
+            .get(id)
+            .map(|h| h.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Crash stops this sign-in (the recovery ladder's count).
+    pub fn stops(&self, id: &str) -> u32 {
+        self.slots.get(id).map_or(0, |s| s.stops)
     }
 
     pub fn state(&self, id: &str) -> Option<State> {
@@ -284,6 +314,9 @@ impl Policy {
     /// One event; returns what to do.
     pub fn handle(&mut self, ev: Ev, now: Instant) -> Vec<Cmd> {
         let mut out = Vec::new();
+        if let Some((id, line)) = history_line(&ev, self) {
+            self.note(&id, now, line);
+        }
         match ev {
             Ev::Known {
                 id,
@@ -520,6 +553,10 @@ impl Policy {
         s.crashes.push_back(now);
         let k = s.crashes.len();
         let name = s.name.clone();
+        self.note(id, now, format!("crash {k} of {CRASH_LIMIT} in 10 min"));
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
         if k >= CRASH_LIMIT {
             s.restart_at = None;
             s.stops += 1;
@@ -529,10 +566,16 @@ impl Policy {
             if rollback {
                 // §7.8: back to the previous version by itself, and say so.
                 let new_prev = s.previous.take().unwrap();
+                let line =
+                    format!("rolled back to {new_prev} by itself (crashed after the update)");
                 s.updated_at = None;
                 s.crashes.clear();
                 s.run_restarts = 0;
                 out.push(Cmd::RollBack { id: id.into() });
+                self.note(id, now, line);
+                let Some(s) = self.slots.get_mut(id) else {
+                    return;
+                };
                 let (title, body) = words::rollback(&name, &new_prev, &s.updated_to);
                 out.push(Cmd::Notify {
                     id: id.into(),
@@ -545,6 +588,12 @@ impl Policy {
             }
             let stops = s.stops;
             let previous = s.previous.clone();
+            let step = words::Recovery::for_stops(stops, previous.is_some()).id();
+            self.note(
+                id,
+                now,
+                format!("crash-stopped (stop {stops}); next step {step}"),
+            );
             self.set_state(
                 id,
                 State::CrashStopped,
@@ -605,6 +654,13 @@ impl Policy {
             }
             if s.ready_by.is_some_and(|t| t <= now) || s.exit_by.is_some_and(|t| t <= now) {
                 // No module.ready in 30 s (§7.5), or the pipe closed and it didn't exit: a crash.
+                let line = if s.ready_by.is_some_and(|t| t <= now) {
+                    "no module.ready within 30 s"
+                } else {
+                    "pipe closed; the process didn't exit within 5 s"
+                };
+                self.note(&id, now, line.into());
+                let s = self.slots.get_mut(&id).unwrap();
                 s.ready_by = None;
                 s.exit_by = None;
                 out.push(Cmd::Kill { id: id.clone() });
@@ -622,5 +678,120 @@ impl Policy {
             }
         }
         out
+    }
+}
+
+/// The history line an event leaves, for the events worth one (Copy diagnostics).
+fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
+    let state = |id: &str| p.slots.get(id).map(|s| s.state);
+    Some(match ev {
+        Ev::Started { id, instance } => (id.clone(), format!("started instance {instance}")),
+        Ev::LaunchFailed { id, reason } => (id.clone(), format!("launch failed: {reason}")),
+        Ev::Adopted { id, instance } => (
+            id.clone(),
+            format!("taken back instance {instance} after a hub restart"),
+        ),
+        Ev::Ready { id } => (id.clone(), "module.ready".into()),
+        Ev::Exited { id, instance, code } => {
+            let current = p.slots.get(id).is_some_and(|s| s.instance == *instance);
+            if !current {
+                return None;
+            }
+            (id.clone(), format!("exited with code {}", exit_code(*code)))
+        }
+        Ev::PipeGone { id } => (id.clone(), "router connection closed".into()),
+        Ev::Fault { id } => (id.clone(), "channel closed: rpc.frame-too-large".into()),
+        Ev::Refused { id } => (
+            id.clone(),
+            "initialize refused: pid or exe hash check".into(),
+        ),
+        Ev::StartAgain { id } => (id.clone(), "step tried: start-again".into()),
+        Ev::StartDefaults { id } => (id.clone(), "step tried: defaults".into()),
+        Ev::GoBack { id } => (id.clone(), "step tried: go-back".into()),
+        Ev::Updated {
+            id,
+            version,
+            previous,
+        } => (id.clone(), format!("updated {previous} -> {version}")),
+        Ev::Enable { id } => (id.clone(), "enabled".into()),
+        Ev::Disable { id } if state(id) == Some(State::CrashStopped) => {
+            (id.clone(), "step tried: turn-off".into())
+        }
+        Ev::Disable { id } => (id.clone(), "disabled".into()),
+        Ev::Known { .. } | Ev::Activate { .. } => return None,
+    })
+}
+
+/// An exit code as decimal and, for Windows NTSTATUS-style codes, hex (`3221225477 (0xC0000005)`).
+pub fn exit_code(code: i64) -> String {
+    let u = code as u32;
+    if code < 0 || u >= 0x8000_0000 {
+        format!("{u} (0x{u:08X})")
+    } else {
+        code.to_string()
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    /// Copy diagnostics' history: exit codes (hex for NTSTATUS), crash numbers, the stop and
+    /// the ladder steps tried, in order.
+    #[test]
+    fn the_history_has_exit_codes_crashes_and_steps() {
+        let mut p = Policy::new();
+        let t0 = Instant::now();
+        let id = "m.art".to_string();
+        p.handle(
+            Ev::Known {
+                id: id.clone(),
+                name: "Art".into(),
+                enabled: true,
+                at_enable: true,
+                previous: None,
+            },
+            t0,
+        );
+        for n in 1..=5u64 {
+            let t = t0 + Duration::from_secs(n);
+            p.handle(
+                Ev::Started {
+                    id: id.clone(),
+                    instance: n,
+                },
+                t,
+            );
+            p.handle(
+                Ev::Exited {
+                    id: id.clone(),
+                    instance: n,
+                    code: 0xC000_0005,
+                },
+                t,
+            );
+        }
+        p.handle(
+            Ev::StartAgain { id: id.clone() },
+            t0 + Duration::from_secs(9),
+        );
+        let h: Vec<String> = p.history(&id).into_iter().map(|(_, l)| l).collect();
+        assert!(
+            h.contains(&"exited with code 3221225477 (0xC0000005)".to_string()),
+            "{h:?}"
+        );
+        assert!(h.contains(&"crash 5 of 5 in 10 min".to_string()), "{h:?}");
+        assert!(
+            h.iter()
+                .any(|l| l.starts_with("crash-stopped (stop 1); next step start-again")),
+            "{h:?}"
+        );
+        assert_eq!(
+            h.last().map(String::as_str),
+            Some("step tried: start-again")
+        );
+        assert_eq!(p.stops(&id), 1);
+        assert_eq!(exit_code(1), "1");
+        assert_eq!(exit_code(-1), "4294967295 (0xFFFFFFFF)");
     }
 }

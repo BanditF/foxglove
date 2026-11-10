@@ -379,6 +379,57 @@ impl Supervisor {
         self.feed(Ev::Disable { id: id.into() });
     }
 
+    /// The text of **Copy diagnostics** for a module (`crate::diagnostics`): ids, exit codes,
+    /// crash times, the ladder steps tried, versions and the log tail; the profile folder and
+    /// the user name redacted. `hub_version` is hideout.exe's.
+    pub fn diagnostics(&self, id: &str, hub_version: &str) -> String {
+        use crate::diagnostics::{log_tail, report, Input};
+        let (now, wall) = (Instant::now(), SystemTime::now());
+        let mut i = Input {
+            module: id.into(),
+            name: id.into(),
+            hub_version: hub_version.into(),
+            pid: self.pid(id),
+            ..Input::default()
+        };
+        {
+            let p = self.0.policy.lock().unwrap();
+            i.state = p.state(id).and_then(|s| s.id()).map(String::from);
+            i.crashes_in_window = p.crashes(id, now);
+            i.stops = p.stops(id);
+            i.history = p
+                .history(id)
+                .into_iter()
+                .map(|(at, what)| (wall - now.saturating_duration_since(at), what))
+                .collect();
+        }
+        let fact = |k: &str| {
+            self.0.hub.read(|r| {
+                r.fact(&format!("module.{id}.{k}"))
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            })
+        };
+        i.recovery = fact("recovery");
+        i.previous = fact("previous");
+        if let Ok(reg) = Registry::open_from_env(&self.0.home) {
+            i.version = reg.inventory.modules.get(id).map(|m| m.version.clone());
+            if let Some(m) = reg.manifest(id) {
+                i.name = m.name;
+            }
+        }
+        i.log_tail = log_tail(&self.0.home.join("logs").join(format!("{id}.log")));
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            i.redact
+                .push((home.to_string_lossy().into_owned(), "%USERPROFILE%".into()));
+        }
+        let name = user();
+        if name.len() >= 3 {
+            i.redact.push((name, "<user>".into()));
+        }
+        report(&i)
+    }
+
     /// One event into the policy; carries out what it returns.
     pub fn feed(&self, ev: Ev) {
         let cmds = self.0.policy.lock().unwrap().handle(ev, Instant::now());
