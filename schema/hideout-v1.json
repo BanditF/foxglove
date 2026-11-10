@@ -35,11 +35,22 @@
     "video",
     "wifi"
   ],
+  "limits": {
+    "canvas_shapes": 1000,
+    "depth": 32,
+    "frame_bytes": 4194304,
+    "frames_per_s": 60,
+    "message_nesting": 128,
+    "nodes": 2000,
+    "streams": 8,
+    "table_rows": 10000,
+    "text_bytes": 16384
+  },
   "scalings": [
     "smooth",
     "pixel"
   ],
-  "spec": "1.7",
+  "spec": "1.8",
   "streams": {
     "nodes": [
       "canvas",

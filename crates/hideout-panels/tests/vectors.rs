@@ -73,7 +73,7 @@ fn every_panel_vector_matches_the_index() {
             other => panic!("{key}: result {other}"),
         }
     }
-    assert_eq!(checked, 40, "panel vectors in the index");
+    assert_eq!(checked, 52, "panel vectors in the index");
 }
 
 fn steps(key: &str) -> Vec<Value> {

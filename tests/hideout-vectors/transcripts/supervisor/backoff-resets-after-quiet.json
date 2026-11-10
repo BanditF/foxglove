@@ -1,0 +1,48 @@
+{
+  "name": "backoff-resets-after-quiet",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.7"
+  ],
+  "description": "(v1.8) A run of restarts ends when the ten-minute crash window empties: a crash with no other crash in the ten minutes before it restarts after 1 s again. Crashes at t=0, 30 and 90 s restart after 1, 2 and 4 s; the crash at t=720 s comes after a quiet ten minutes and restarts after 1 s, not 8 s.",
+  "steps": [
+    {
+      "event": "crash at t=0, 30, 90 s; restarts after 1, 2, 4 s, each ready at once"
+    },
+    {
+      "event": "no crash for ten minutes: the window is empty"
+    },
+    {
+      "event": "crash at t=720 s"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.restart",
+          "value": {
+            "delay_s": 1,
+            "crash": 1,
+            "of": 5
+          }
+        }
+      },
+      "why": "a new run: step 1, crash 1 of the new window"
+    },
+    {
+      "expect": {
+        "restart_delays_s": [
+          1,
+          2,
+          4,
+          1
+        ],
+        "crash_in_window": 1
+      }
+    }
+  ]
+}
