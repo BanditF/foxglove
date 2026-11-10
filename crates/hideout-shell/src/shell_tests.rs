@@ -612,6 +612,55 @@ fn a_hidden_hub_with_a_restarting_module_requests_no_repaint() {
     }
 }
 
+/// The footprint gate's case (#1000), window-free: a hidden hub with no flyout and a mock feed.
+/// Each loop wake eframe would get is egui's repaint callback (its `RequestRepaint` user event).
+/// A burst of feed events while hidden is one wake, and the hidden frames that follow ask for no
+/// repaint: the loop then waits until the next event, so it stays under 1 wake/s.
+#[test]
+fn a_hidden_hub_with_a_busy_feed_wakes_the_loop_once_per_burst() {
+    let ctx = ctx();
+    let loop_wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let lw = loop_wakes.clone();
+    ctx.set_request_repaint_callback(move |_| {
+        lw.fetch_add(1, Ordering::Relaxed);
+    });
+    let (router, mut feed) = channel();
+    let wake_ctx = ctx.clone();
+    feed.set_waker(Box::new(move || wake_ctx.request_repaint()));
+    let mut hub = hub_in(&temp_dir("hidden-burst"), Some(Box::new(feed)));
+    router.push(register("mod.chat", "Chat", "chat", "Chat"));
+    for _ in 0..4 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    hub.shared.hidden.store(true, Ordering::Release);
+    for _ in 0..3 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+    }
+    assert!(hub.flyout.is_none(), "no flyout in this case");
+    for round in 0..3 {
+        let before = loop_wakes.load(Ordering::Relaxed);
+        for i in 0..20 {
+            router.push(Inbound::Fact {
+                name: format!("apps.seen.tool{i}"),
+                value: serde_json::json!(round),
+            });
+        }
+        assert_eq!(
+            loop_wakes.load(Ordering::Relaxed),
+            before + 1,
+            "round {round}: 20 feed events while hidden are one loop wake"
+        );
+        // The frame the wake brings drains the feed; the hidden hub then asks for nothing.
+        quiet_frame(&ctx, &mut hub, vec![]);
+        for pass in 0..3 {
+            assert!(
+                !quiet_frame(&ctx, &mut hub, vec![]),
+                "round {round}: hidden pass {pass} asked for a repaint"
+            );
+        }
+    }
+}
+
 /// The tray panel's tiles for the review (H2.8): every module in tests/hideout-vectors/modules,
 /// each state as a tile, plus the first module stopped after its crashes and restarting, and the
 /// first state's page of the module whose vector file sorts first. The hub names no module: it
