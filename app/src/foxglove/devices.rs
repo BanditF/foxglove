@@ -481,6 +481,8 @@ pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>, build: Op
     // Once the device has the id: a write that waited on it goes out now (#633).
     if news {
         super::reassert::fire(super::reassert::Trigger::LightingKnown);
+        // A running scene waited for it before sending its colour (#946).
+        super::scene_run::lighting_known();
     }
 }
 

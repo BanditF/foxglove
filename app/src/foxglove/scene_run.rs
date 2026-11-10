@@ -189,6 +189,22 @@ pub fn keyboard_connected() {
     }
 }
 
+/// The keymap's lighting command (`&rgb_ug`) became known (#946): a running scene that waited
+/// for it sends the keyboard its colour now.
+pub fn lighting_known() {
+    if running().is_some() {
+        ARRIVED.store(true, Ordering::Relaxed);
+        tell(Ctl::KeyboardArrived);
+    }
+}
+
+/// Whether the keyboard can be sent a colour yet: not before the keymap's lighting command is
+/// learned (#946), when every colour would fail as "unsupported operation". The scene waits and
+/// is told by [`lighting_known`].
+fn can_take_colour(u: super::devices::Underglow) -> bool {
+    u != super::devices::Underglow::Unknown
+}
+
 /// Set by [`keyboard_connected`], taken by the keyboard writer: look for the keyboard now.
 static ARRIVED: AtomicBool = AtomicBool::new(false);
 
@@ -1351,6 +1367,9 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 
 impl KeyboardLights for AppKeyboard {
     fn show(&mut self, f: &KeyboardFrame) {
+        if !can_take_colour(super::devices::underglow()) {
+            return;
+        }
         let Some((kb, device)) = self.keyboard() else {
             return;
         };
@@ -1376,6 +1395,9 @@ impl KeyboardLights for AppKeyboard {
     }
 
     fn effect(&mut self, e: &KeyboardEffect) {
+        if !can_take_colour(super::devices::underglow()) {
+            return;
+        }
         let Some((kb, device)) = self.keyboard() else {
             return;
         };
@@ -1799,6 +1821,15 @@ mod tests {
         kb.take_arrival();
         assert_eq!((kb.next_look, kb.effects_failed), (None, false));
         assert!(!ARRIVED.load(Ordering::Relaxed));
+    }
+
+    /// No colour goes to the keyboard before its lighting command is known (#946).
+    #[test]
+    fn no_colour_before_the_lighting_command_is_known() {
+        use super::super::devices::Underglow;
+        assert!(!can_take_colour(Underglow::Unknown));
+        assert!(can_take_colour(Underglow::Absent));
+        assert!(can_take_colour(Underglow::Known(7)));
     }
 
     /// Quitting with "Keep running on the keyboard" leaves the effect: the arbiter forgets it,
