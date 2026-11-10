@@ -64,7 +64,7 @@ fn is_full_path(path: &str) -> bool {
     (b.len() > 2 && b[1] == b':' && matches!(b[2], b'\\' | b'/')) || path.starts_with(r"\\")
 }
 
-/// Draws the icon of `path`, or an empty frame of the same size (so names line up).
+/// Draws the icon of `path`, or a plain tile of the same size (so names line up).
 pub fn show(ui: &mut egui::Ui, path: Option<&str>) {
     let tex = path.and_then(|p| get(ui.ctx(), p));
     let size = egui::vec2(SIZE, SIZE);
@@ -75,12 +75,8 @@ pub fn show(ui: &mut egui::Ui, path: Option<&str>) {
         None => {
             let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
             let p = super::theme::palette(ui);
-            ui.painter().rect_stroke(
-                rect.shrink(3.0),
-                4.0,
-                egui::Stroke::new(1.0, p.line),
-                egui::StrokeKind::Inside,
-            );
+            // A filled tile, no outline (an outline reads as a checkbox): the generic app icon.
+            ui.painter().rect_filled(rect.shrink(3.0), 4.0, p.line);
         }
     }
 }
