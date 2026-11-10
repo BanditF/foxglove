@@ -1,6 +1,6 @@
 build/
 zmk/
-modules/
+/modules/
 # tools/ (west's and others); only the dev-tooling example is tracked.
 **/tools/*
 !/tools/local.example.toml
