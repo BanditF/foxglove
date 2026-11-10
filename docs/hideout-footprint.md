@@ -108,6 +108,21 @@ memory for CPU on every frame and is not available through eframe's glow path on
 Trimming the working set while hidden (`EmptyWorkingSet`) would only move pages to the
 standby list, not lower private bytes, so it isn't done.
 
+### The tray flyout (#991)
+
+A tray click opens the flyout: an egui immediate viewport, so its frames run inside the main
+window's frame, and eframe asks the main window for a frame whenever the flyout needs one. A
+hidden main window gets no `WM_PAINT`, so while the flyout is up `wake::Gate` runs that due frame
+itself (`wake::hidden_pass`: eframe left `Poll`, the main window is hidden, and `flyout::live()`).
+The flag goes up on the tray click and down on the first frame after the flyout closed (that
+frame drops its window). With the flyout closed nothing changes: the hidden hub waits as above.
+Tests: `wake::tests::a_hidden_window_runs_frames_only_while_the_flyout_is_up` pins the rule, and
+`shell::tests::the_flyout_opens_settles_and_closes_while_the_hub_is_hidden` runs the hidden hub's
+frame with the flyout open and checks it settles (no repaint asked) and that the closed flyout
+leaves a hidden frame that asks for nothing. Hover and clicks in the flyout cost a frame of the
+hidden main window each, as a shown window's would; a restart countdown on a tile asks for one
+frame a second only while it is on screen.
+
 ## What On-call re-measures
 
 `scripts/lab/hideout_footprint.py` on the PR build, sets "none" and "default":
@@ -120,6 +135,9 @@ standby list, not lower private bytes, so it isn't done.
 Wakeups are the Thread-class `Context Switches/sec` summed over all the hub's threads (the
 Process-class counter reads 0 for it), and each result records `top_threads`: the three
 threads that switch most, with id, description and switches/s.
+
+4. Window closed to the tray, then the flyout opened and closed (click the icon, then Esc):
+   wakeups and CPU must come back to case 2 within a few seconds of closing it.
 
 After the hidden-hub fix: window closed to the tray, main thread under 1 switch/s (was 1100 to
 1600), and the log shows `event loop: N wakes in 10 min` with N in the tens at most.

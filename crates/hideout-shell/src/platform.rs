@@ -216,6 +216,146 @@ pub fn monitors() -> Vec<Monitor> {
     out
 }
 
+/// The main window as winit names it (its HWND), for `wake::Gate`.
+pub fn main_window_id() -> Option<winit::window::WindowId> {
+    main_window().map(|h| winit::window::WindowId::from(h.0 as usize as u64))
+}
+
+/// The tray flyout's window, once found by its title (eframe gives an immediate viewport no
+/// handle); 0 while none.
+static FLYOUT_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// Finds this thread's window titled `title` (not the main window).
+fn find_own_window(title: &str) -> Option<HWND> {
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, GetWindowTextW};
+    struct Find {
+        title: Vec<u16>,
+        main: isize,
+        found: isize,
+    }
+    unsafe extern "system" fn each(h: HWND, data: LPARAM) -> BOOL {
+        let f = &mut *(data.0 as *mut Find);
+        let mut buf = [0u16; 128];
+        let n = GetWindowTextW(h, &mut buf) as usize;
+        if h.0 as isize != f.main && buf[..n] == f.title[..] {
+            f.found = h.0 as isize;
+            return false.into();
+        }
+        true.into()
+    }
+    let mut f = Find {
+        title: title.encode_utf16().collect(),
+        main: MAIN_HWND.load(Ordering::Acquire),
+        found: 0,
+    };
+    unsafe {
+        let _ = EnumThreadWindows(
+            GetCurrentThreadId(),
+            Some(each),
+            LPARAM(&mut f as *mut _ as isize),
+        );
+    }
+    (f.found != 0).then_some(HWND(f.found as *mut _))
+}
+
+/// The flyout window closed: forget its handle.
+pub fn forget_flyout() {
+    FLYOUT_HWND.store(0, Ordering::Release);
+}
+
+/// Places the flyout titled `title` for the tray icon at `icon` (physical pixels), `size` in
+/// points on the icon's monitor, against the taskbar (`flyout::place`). `first` also rounds its
+/// corners, shows it and brings it to the front, so focus loss can close it. False while the
+/// window isn't there yet.
+pub fn place_flyout(title: &str, icon: Rect, size: (f32, f32), first: bool) -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::WindowsAndMessaging::{IsWindow, HWND_TOPMOST};
+    let cached = match FLYOUT_HWND.load(Ordering::Acquire) {
+        0 => None,
+        h => Some(HWND(h as *mut _)).filter(|&h| unsafe { IsWindow(Some(h)).as_bool() }),
+    };
+    let Some(h) = cached.or_else(|| find_own_window(title)) else {
+        return false;
+    };
+    FLYOUT_HWND.store(h.0 as isize, Ordering::Release);
+    let (cx, cy) = icon.center();
+    let mon = unsafe { MonitorFromPoint(POINT { x: cx, y: cy }, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(mon, &mut info) }.as_bool() {
+        return false;
+    }
+    let (mut dx, mut dy) = (96u32, 96u32);
+    let _ = unsafe { GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) };
+    let scale = dx as f32 / 96.0;
+    let rect = |r: RECT| Rect {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
+    };
+    let px = |v: f32| (v * scale).round() as i32;
+    let r = crate::flyout::place(
+        icon,
+        rect(info.rcMonitor),
+        rect(info.rcWork),
+        (px(size.0), px(size.1)),
+        px(crate::flyout::GAP),
+    );
+    unsafe {
+        // Onto the icon's monitor first (Windows rescales it for that DPI), then the exact rect.
+        let _ = SetWindowPos(
+            h,
+            Some(HWND_TOPMOST),
+            r.x,
+            r.y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        let _ = SetWindowPos(h, Some(HWND_TOPMOST), r.x, r.y, r.w, r.h, SWP_NOACTIVATE);
+        if first {
+            let round = DWMWCP_ROUND;
+            let _ = DwmSetWindowAttribute(
+                h,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &round as *const _ as *const _,
+                std::mem::size_of_val(&round) as u32,
+            );
+            let _ = ShowWindow(h, SW_SHOW);
+            let _ = SetForegroundWindow(h);
+        }
+    }
+    true
+}
+
+/// Opens `url` in the user's browser (ShellExecute "open").
+pub fn open_url(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let r = unsafe {
+        ShellExecuteW(
+            None,
+            &HSTRING::from("open"),
+            &HSTRING::from(url),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecute returns a value above 32 on success.
+    if r.0 as isize <= 32 {
+        log::warn!("open {url}: ShellExecute {}", r.0 as isize);
+    }
+}
+
 /// Maps `path` read-only for the life of the process (fonts, which egui keeps for good). The
 /// view stays valid after both handles close. `None` if the file can't be opened or is empty.
 pub fn map_file(path: &std::path::Path) -> Option<&'static [u8]> {

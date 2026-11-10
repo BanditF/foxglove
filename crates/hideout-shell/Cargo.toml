@@ -22,6 +22,7 @@ tray-icon = "0.24"
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Storage_FileSystem",

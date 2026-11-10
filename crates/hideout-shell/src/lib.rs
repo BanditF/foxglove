@@ -10,6 +10,7 @@
 //! glyph, instance names) build and test on every platform; the window, the tray and the Win32
 //! calls are Windows-only.
 
+pub mod flyout;
 pub mod icon;
 pub mod logfile;
 pub mod palette;

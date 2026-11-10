@@ -30,11 +30,35 @@ pub struct WindowPrefs {
     pub monitors: BTreeMap<String, SavedRect>,
 }
 
+/// The tray panel's tile layout (Edit tiles, the ··· menu), tiles named `<module>/<panel>`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrayPrefs {
+    /// The user's tile order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<String>,
+    /// Tiles the user hid.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<String>,
+    /// Tiles the user showed although their app wasn't seen yet.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shown: Vec<String>,
+}
+
+impl TrayPrefs {
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty() && self.hidden.is_empty() && self.shown.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     pub theme: ThemeChoice,
     pub window: WindowPrefs,
+    /// `[tray]`: the tray panel's tile layout.
+    #[serde(skip_serializing_if = "TrayPrefs::is_empty")]
+    pub tray: TrayPrefs,
     /// Keys the shell doesn't own, kept verbatim.
     #[serde(flatten)]
     pub rest: toml::Table,
@@ -107,6 +131,25 @@ mod tests {
         assert_eq!(back.rest["autostart"].as_bool(), Some(true));
         assert!(back.rest["modules"]["x.y"]["enabled"].as_bool() == Some(false));
         assert_eq!(back.rest["sources"].as_array().map(|a| a.len()), Some(1));
+    }
+
+    #[test]
+    fn the_tray_layout_round_trips_and_an_empty_one_writes_nothing() {
+        let p = Prefs::default();
+        assert!(!p.to_toml().contains("[tray]"));
+        let mut p = Prefs::parse(
+            "theme = \"dark\"
+other = 1
+",
+        )
+        .unwrap();
+        p.tray.order = vec!["b.x/tile".into(), "a.x/tile".into()];
+        p.tray.hidden = vec!["c.x/tile".into()];
+        let text = p.to_toml();
+        assert!(text.contains("[tray]"), "{text}");
+        let back = Prefs::parse(&text).unwrap();
+        assert_eq!(back.tray, p.tray);
+        assert_eq!(back.rest["other"].as_integer(), Some(1));
     }
 
     #[test]

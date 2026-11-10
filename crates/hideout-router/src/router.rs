@@ -80,6 +80,8 @@ pub enum Out {
     Fact { key: String, value: Value },
     /// `ui.patch` from a module, for the panel host (§5.3).
     Patch { module: String, params: Value },
+    /// `ui.badge` from a module (v1.3, §5.9), for the panel host: its tab's badge.
+    Badge { module: String, params: Value },
     /// The answer to [`Router::open_host_channel`]: `Ok({pipe, nonce})` or the error.
     HostChannel {
         module: String,
@@ -1317,6 +1319,7 @@ impl Router {
             }
             "module.idle" => out.push(Out::Idle(module)),
             "ui.patch" => out.push(Out::Patch { module, params }),
+            "ui.badge" => out.push(Out::Badge { module, params }),
             m => {
                 // An event for one lease's holder only (§8.8, v1.3).
                 if let Some(lease) = params.get("to").and_then(Value::as_str) {

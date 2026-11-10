@@ -155,6 +155,16 @@ impl RouterSide {
                     return;
                 }
             },
+            Out::Badge { module, params } => match serde_json::from_value(params.clone()) {
+                Ok(badge) => Inbound::Badge {
+                    module: module.clone(),
+                    badge,
+                },
+                Err(e) => {
+                    log::warn!("panels: {module}: ui.badge not read: {e}");
+                    return;
+                }
+            },
             Out::Fact { key, value } => Inbound::Fact {
                 name: key.clone(),
                 value: value.clone(),
