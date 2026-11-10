@@ -736,7 +736,7 @@ fn renders_the_module_tiles_for_review() {
         )
         .unwrap();
         let mut extra = Vec::new();
-        for state in ["restarting", "crash-stopped"] {
+        for state in ["restarting", "crash-stopped", "revoked"] {
             let id = format!("{}#{state}", first.module);
             host.register(&id, doc["name"].as_str().unwrap(), None, &params);
             host.module_gone(&id, state);
@@ -1272,6 +1272,9 @@ impl TabHooks for Asked {
     fn turn_off(&mut self, m: &str) {
         self.0.lock().unwrap().push(format!("turn-off {m}"));
     }
+    fn check_for_updates(&mut self, m: &str) {
+        self.0.lock().unwrap().push(format!("check {m}"));
+    }
 }
 
 const SUP: &str = "mod.art";
@@ -1339,6 +1342,48 @@ fn stopped(dir: &std::path::Path, step: &str, previous: Option<&str>) -> (Hub, A
                 serde_json::json!("Art crashed 5 times in 10 minutes."),
             ),
             ("recovery", serde_json::json!(step)),
+            (
+                "previous",
+                previous.map_or(serde_json::Value::Null, |v| serde_json::json!(v)),
+            ),
+        ],
+    )
+}
+
+/// A note in a publisher's own words, 300 characters with a bidi override, a newline and a
+/// zero-width character (the cleaning rule's test input, #1026).
+fn long_note() -> String {
+    let mut n = String::from(
+        "This build can send your screen\u{202e}captures\u{202c} to a test server.\n\n\
+         Please update to 0.5.1.\u{200b} https://example.test/notes ",
+    );
+    while n.chars().count() < 300 {
+        n.push_str("More words from the publisher. ");
+    }
+    n
+}
+
+/// Art 0.5.0 withdrawn (state `revoked`), with the router's fact, a check status and the Go
+/// back version.
+fn withdrawn(
+    dir: &std::path::Path,
+    reason: &str,
+    check: Option<&str>,
+    previous: Option<&str>,
+) -> (Hub, Asked) {
+    supervised(
+        dir,
+        &[
+            ("state", serde_json::json!("revoked")),
+            ("reason", serde_json::json!(words::WITHDRAWN_LINE)),
+            (
+                "revoked",
+                serde_json::json!({"version": "0.5.0", "reason": reason}),
+            ),
+            (
+                "check",
+                check.map_or(serde_json::Value::Null, |v| serde_json::json!(v)),
+            ),
             (
                 "previous",
                 previous.map_or(serde_json::Value::Null, |v| serde_json::json!(v)),
@@ -1598,10 +1643,15 @@ fn no_drawn_string_shows_an_id() {
         "install-failed",
         "off",
         "running",
+        "revoked",
     ] {
         all.push(hideout_panels::state_words(s).into());
     }
     let mut hubs = vec![
+        withdrawn(&dir, "", None, Some("0.4.2")).0,
+        withdrawn(&dir, "", Some("checking"), None).0,
+        withdrawn(&dir, "", Some("none"), None).0,
+        withdrawn(&dir, "", Some("failed"), None).0,
         restarting(&dir, 8, 2, Duration::from_secs(1)).0,
         restarting(&dir, 1, 4, Duration::from_secs(9)).0,
         launch_failed(&dir, words::FILES_DONT_MATCH).0,
@@ -1631,6 +1681,182 @@ fn no_drawn_string_shows_an_id() {
                 "{s:?} shows {n:?}"
             );
         }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The withdrawn card (#1026, docs/hideout-revoked-ux.md): title with the version, Hideout's
+/// line, the publisher's note cleaned and capped, Check for updates focused (Enter presses
+/// it), Go back only with a version, Turn off, Copy diagnostics last.
+#[test]
+fn the_withdrawn_card_offers_its_ways_out() {
+    let ctx = ctx();
+    let dir = temp_dir("withdrawn");
+    let note = long_note();
+    let (mut hub, rec) = withdrawn(&dir, &note, None, Some("0.4.2"));
+    let out = frames(&ctx, &mut hub, vec![]);
+    let t = drawn(&out);
+    assert!(
+        t.iter().any(|s| s == "\u{26A0} Art 0.5.0 was withdrawn"),
+        "{t:?}"
+    );
+    assert!(t.iter().any(|s| s == words::WITHDRAWN_LINE));
+    assert!(t.iter().any(|s| s == words::PUBLISHERS_NOTE));
+    let shown = t
+        .iter()
+        .find(|s| s.starts_with('\u{201C}'))
+        .expect("the note is drawn");
+    let inner = shown
+        .trim_start_matches('\u{201C}')
+        .trim_end_matches('\u{201D}');
+    assert_eq!(inner, words::clean_note(&note));
+    assert!(inner.chars().count() <= words::NOTE_MAX && inner.ends_with('\u{2026}'));
+    assert!(!inner.contains('\u{202e}') && !inner.contains('\n') && !inner.contains('\u{200b}'));
+    for b in [
+        "Check for updates",
+        "Go back to 0.4.2",
+        "Turn off Art",
+        "Copy diagnostics",
+    ] {
+        assert!(t.iter().any(|s| s == b), "{b}: {t:?}");
+    }
+    // Never Start again or Turn on.
+    assert!(
+        !t.iter().any(|s| s == "Start again" || s == "Turn on"),
+        "{t:?}"
+    );
+    let x = |s| text_x(&out, s).unwrap();
+    assert!(x("Check for updates") < x("Go back to 0.4.2"));
+    assert!(x("Go back to 0.4.2") < x("Turn off Art"));
+    // The tab: the red mark and "withdrawn by its publisher".
+    let art = hub.tabs.position(&TabId::panel(SUP, "art")).unwrap();
+    assert!(hub.look(art).tooltip().contains(words::WITHDRAWN_TAB));
+    assert_eq!(hub.look(art).shown(), crate::tabs::Shown::Stopped);
+    // Esc does nothing; Enter presses the focused Check for updates.
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
+    assert!(rec.0.lock().unwrap().is_empty());
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Enter, Modifiers::NONE)]);
+    assert_eq!(*rec.0.lock().unwrap(), [format!("check {SUP}")]);
+
+    // No note: the note lines are left out. No previous version: no Go back.
+    let (mut hub, _) = withdrawn(&dir, " \u{200b}\n ", None, None);
+    let t = drawn(&frames(&ctx, &mut hub, vec![]));
+    assert!(!t.iter().any(|s| s == words::PUBLISHERS_NOTE), "{t:?}");
+    assert!(!t.iter().any(|s| s.starts_with("Go back")), "{t:?}");
+
+    // Checking: the button reads Checking… and the status line names the source.
+    let (mut hub, rec) = withdrawn(&dir, "", Some("checking"), None);
+    let t = drawn(&frames(
+        &ctx,
+        &mut hub,
+        vec![key(Key::Enter, Modifiers::NONE)],
+    ));
+    assert!(t.iter().any(|s| s == words::CHECKING), "{t:?}");
+    assert!(
+        t.iter().any(|s| s == "Checking Art's source\u{2026}"),
+        "{t:?}"
+    );
+    assert!(!t.iter().any(|s| s == "Check for updates"));
+    assert!(rec.0.lock().unwrap().is_empty(), "pressed while checking");
+    for (check, line) in [
+        ("none", words::NOTHING_NEWER),
+        ("failed", words::COULDNT_CHECK),
+    ] {
+        let (mut hub, _) = withdrawn(&dir, "", Some(check), None);
+        let t = drawn(&frames(&ctx, &mut hub, vec![]));
+        assert!(t.iter().any(|s| s == line), "{check}: {t:?}");
+    }
+
+    // Turned off: "Off · 0.5.0 was withdrawn" and Check for updates, never Turn on.
+    let (mut hub, rec) = withdrawn(&dir, &note, None, None);
+    hub.panels
+        .set_fact(&format!("module.{SUP}.state"), serde_json::json!("off"));
+    let t = drawn(&frames(&ctx, &mut hub, vec![]));
+    assert!(
+        t.iter().any(|s| s == "Off \u{b7} 0.5.0 was withdrawn"),
+        "{t:?}"
+    );
+    assert!(t.iter().any(|s| s == "Check for updates"));
+    assert!(
+        !t.iter()
+            .any(|s| s == "Turn on" || s == words::PUBLISHERS_NOTE),
+        "{t:?}"
+    );
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Enter, Modifiers::NONE)]);
+    assert_eq!(*rec.0.lock().unwrap(), [format!("check {SUP}")]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The note is on the card only: never in the tab's tooltip or accessible name, and never in
+/// the live announcement.
+#[test]
+fn the_publishers_note_stays_on_the_card() {
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let dir = temp_dir("withdrawn-note");
+    let (mut hub, _) = withdrawn(&dir, "Secret words", None, None);
+    let out = frames(&ctx, &mut hub, vec![]);
+    let art = hub.tabs.position(&TabId::panel(SUP, "art")).unwrap();
+    let l = hub.look(art);
+    assert!(!l.tooltip().contains("Secret") && !l.accessible_name().contains("Secret"));
+    let live: Vec<String> = out
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|u| u.nodes.iter())
+        .filter(|(_, n)| n.live().is_some_and(|l| l != egui::accesskit::Live::Off))
+        .filter_map(|(_, n)| n.label().map(String::from))
+        .collect();
+    assert!(
+        live.iter()
+            .any(|s| s == "Art 0.5.0 was withdrawn by its publisher and stopped"),
+        "{live:?}"
+    );
+    assert!(live.iter().all(|s| !s.contains("Secret")), "{live:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review renders (#1026): the withdrawn card with a long note, with none and no previous
+/// version, while checking, after nothing newer, and turned off.
+#[test]
+fn renders_the_withdrawn_states_for_review() {
+    let dir = temp_dir("png-withdrawn");
+    let note = long_note();
+    type Make<'a> = Box<dyn Fn() -> Hub + 'a>;
+    let shots: Vec<(&str, Make)> = vec![
+        (
+            "built-withdrawn-card.png",
+            Box::new(|| withdrawn(&dir, &note, None, Some("0.4.2")).0),
+        ),
+        (
+            "built-withdrawn-no-note-no-previous.png",
+            Box::new(|| withdrawn(&dir, "", None, None).0),
+        ),
+        (
+            "built-withdrawn-checking.png",
+            Box::new(|| withdrawn(&dir, &note, Some("checking"), Some("0.4.2")).0),
+        ),
+        (
+            "built-withdrawn-nothing-newer.png",
+            Box::new(|| withdrawn(&dir, &note, Some("none"), Some("0.4.2")).0),
+        ),
+        (
+            "built-withdrawn-off.png",
+            Box::new(|| {
+                let (mut hub, _) = withdrawn(&dir, &note, None, None);
+                hub.panels
+                    .set_fact(&format!("module.{SUP}.state"), serde_json::json!("off"));
+                hub
+            }),
+        ),
+    ];
+    for (name, make) in shots {
+        let mut hub = make();
+        let Some(rgba) = render(&mut hub, 1100, 520, |_| {}) else {
+            eprintln!("no system font; withdrawn review skipped");
+            return;
+        };
+        save_png(name, 1100, 520, rgba);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

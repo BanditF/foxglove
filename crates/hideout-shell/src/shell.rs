@@ -70,6 +70,8 @@ pub trait TabHooks {
     fn go_back(&mut self, _module: &str) {}
     /// "Turn off <Module>" (the last step).
     fn turn_off(&mut self, _module: &str) {}
+    /// **Check for updates** on a withdrawn module's card (#1026): its source's catalog now.
+    fn check_for_updates(&mut self, _module: &str) {}
     /// The text **Copy diagnostics** copies (the supervisor's: exit codes, crash times, steps
     /// tried, versions, log tail). `None`: the shell copies the module, state and step only.
     fn diagnostics(&mut self, _module: &str) -> Option<String> {
@@ -1106,6 +1108,10 @@ impl Hub {
                     if self.launch_failed(&key.module) {
                         look.state = TabState::Stopped(words::couldnt_start_title(&p.module_name));
                     }
+                    // A withdrawn version (#1026): "Art, withdrawn by its publisher".
+                    if self.panels.module_state(&key.module) == Some("revoked") {
+                        look.state = TabState::Stopped(words::WITHDRAWN_TAB.into());
+                    }
                     // Restarting: "Restarting… (2 of 5)", which changes once per crash and so
                     // needs no repaint (the live countdown is the crash bar's).
                     if self.panels.module_state(&key.module) == Some("restarting") {
@@ -1296,6 +1302,172 @@ impl Hub {
                     (Recovery::GoBack, true) => h.go_back(module),
                     (Recovery::GoBack, false) | (Recovery::Last, _) => h.turn_off(module),
                 }
+            }
+        }
+        ui.add_space(12.0);
+    }
+
+    /// The withdrawn version, its publisher's note as written, while `module.<id>.revoked` says
+    /// so (the router's fact, v1.6).
+    fn withdrawn_fact(&self, module: &str) -> Option<(String, String)> {
+        let f = self.panels.fact(&format!("module.{module}.revoked"))?;
+        let version = f.get("version")?.as_str()?.to_string();
+        let reason = f
+            .get("reason")
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string();
+        Some((version, reason))
+    }
+
+    /// The status line under a withdrawn card's reason (`module.<id>.check`), a polite live
+    /// region: Checking…, nothing newer, couldn't check.
+    fn check_status_ui(&self, ui: &mut egui::Ui, t: &Tokens, module: &str, name: &str) -> bool {
+        let check = self
+            .panels
+            .fact(&format!("module.{module}.check"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let line = match check.as_deref() {
+            Some("checking") => Some(words::checking_source(name)),
+            Some("none") => Some(words::NOTHING_NEWER.to_string()),
+            Some("failed") => Some(words::COULDNT_CHECK.to_string()),
+            _ => None,
+        };
+        if let Some(line) = line {
+            let r = ui.label(egui::RichText::new(&line).color(c(t.text_muted)));
+            ui.ctx().accesskit_node_builder(r.id, |n| {
+                n.set_live(egui::accesskit::Live::Polite);
+                n.set_label(line.clone());
+            });
+        }
+        check.as_deref() == Some("checking")
+    }
+
+    /// Check for updates: the main button, "Checking…" and disabled while the check runs.
+    fn check_button(ui: &mut egui::Ui, t: &Tokens, checking: bool, focus: bool) -> bool {
+        if checking {
+            ui.add_enabled(false, egui::Button::new(words::CHECKING));
+            false
+        } else {
+            main_button(ui, t, words::CHECK_FOR_UPDATES, focus).clicked()
+        }
+    }
+
+    /// The withdrawn card (state `revoked`, docs/hideout-revoked-ux.md, decided 11/10): the title
+    /// with the version, Hideout's own line, the publisher's note (plain text, cleaned, at most
+    /// 160 characters, labelled as theirs; left out when empty), the check's status line, then
+    /// **Check for updates** (focused) · Go back to <previous> (only when one is kept and isn't
+    /// withdrawn) · Turn off <Module>, and Copy diagnostics. Esc does nothing. The first line
+    /// is a polite live region named once, so a screen reader says it once, without the note.
+    fn withdrawn_card_ui(&mut self, ui: &mut egui::Ui, t: &Tokens, key: &PanelKey, name: &str) {
+        let module = &key.module;
+        let (version, reason) = self.withdrawn_fact(module).unwrap_or_default();
+        let title = if version.is_empty() {
+            format!("{name} was withdrawn")
+        } else {
+            words::withdrawn_title(name, &version)
+        };
+        let note = words::clean_note(&reason);
+        let previous = self
+            .panels
+            .fact(&format!("module.{module}.previous"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let focus = self.card_takes_focus(ui, key, "withdrawn");
+        let (mut check, mut back, mut off, mut copy) = (false, false, false, false);
+        let mut checking = false;
+        ui.push_id(("hideout.withdrawn-card", module), |ui| {
+            card(ui, t, |ui| {
+                let head = ui.label(
+                    egui::RichText::new(format!("\u{26A0} {title}"))
+                        .size(16.0)
+                        .strong()
+                        .color(c(t.danger)),
+                );
+                let said = words::withdrawn_announcement(name, &version);
+                ui.ctx().accesskit_node_builder(head.id, |n| {
+                    n.set_live(egui::accesskit::Live::Polite);
+                    n.set_label(said);
+                });
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(words::WITHDRAWN_LINE).color(c(t.text)));
+                if !note.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(words::PUBLISHERS_NOTE).color(c(t.text_muted)));
+                    // Plain text: never markup, a URL is never a link.
+                    let r = ui.label(
+                        egui::RichText::new(format!("\u{201C}{note}\u{201D}")).color(c(t.text)),
+                    );
+                    let spoken = format!("{} {note}", words::PUBLISHERS_NOTE);
+                    ui.ctx()
+                        .accesskit_node_builder(r.id, |n| n.set_label(spoken));
+                }
+                ui.add_space(4.0);
+                checking = self.check_status_ui(ui, t, module, name);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    check = Self::check_button(ui, t, checking, focus);
+                    if let Some(p) = &previous {
+                        back = ui.button(words::go_back(p)).clicked();
+                    }
+                    off = ui.button(words::turn_off(name)).clicked();
+                });
+                ui.add_space(4.0);
+                copy = ui.link(words::COPY_DIAGNOSTICS).clicked();
+            });
+        });
+        if copy {
+            // Copied, never drawn: the ids and the note as written belong here.
+            let fallback = format!(
+                "state: revoked\nmodule: {module}\nwithdrawn version: {version}\nprevious version: {}\npublisher's reason: \"{}\"",
+                previous.as_deref().unwrap_or("none kept"),
+                words::escape_note(&reason)
+            );
+            let text = self
+                .hooks
+                .as_mut()
+                .and_then(|h| h.diagnostics(module))
+                .unwrap_or(fallback);
+            ui.ctx().copy_text(text);
+        }
+        if let Some(h) = self.hooks.as_mut() {
+            if check {
+                h.check_for_updates(module);
+            }
+            if back {
+                h.go_back(module);
+            }
+            if off {
+                h.turn_off(module);
+            }
+        }
+        ui.add_space(12.0);
+    }
+
+    /// A withdrawn module turned off: "Off · 0.5.0 was withdrawn" and **Check for updates**,
+    /// never Turn on (#1026).
+    fn off_withdrawn_card_ui(&mut self, ui: &mut egui::Ui, t: &Tokens, key: &PanelKey, name: &str) {
+        let module = &key.module;
+        let (version, _) = self.withdrawn_fact(module).unwrap_or_default();
+        let focus = self.card_takes_focus(ui, key, "off-withdrawn");
+        let mut check = false;
+        ui.push_id(("hideout.off-withdrawn-card", module), |ui| {
+            card(ui, t, |ui| {
+                ui.label(
+                    egui::RichText::new(words::off_withdrawn(&version))
+                        .size(16.0)
+                        .color(c(t.text)),
+                );
+                ui.add_space(4.0);
+                let checking = self.check_status_ui(ui, t, module, name);
+                ui.add_space(10.0);
+                check = Self::check_button(ui, t, checking, focus);
+            });
+        });
+        if check {
+            if let Some(h) = self.hooks.as_mut() {
+                h.check_for_updates(module);
             }
         }
         ui.add_space(12.0);
@@ -1754,6 +1926,14 @@ impl Hub {
                     }
                     Some("install-failed") if self.launch_failed(&key.module) => {
                         self.couldnt_start_ui(ui, t, &key, &name);
+                        true
+                    }
+                    Some("revoked") => {
+                        self.withdrawn_card_ui(ui, t, &key, &name);
+                        true
+                    }
+                    Some("off") if self.withdrawn_fact(&key.module).is_some() => {
+                        self.off_withdrawn_card_ui(ui, t, &key, &name);
                         true
                     }
                     _ => false,

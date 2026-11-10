@@ -1,5 +1,5 @@
 {
-  "description": "The facts the supervisor publishes besides module.<id>.state and .reason (.restart, .recovery, .previous, .failed) (7.8, v1.4). Each row: a fact key, a value, and whether a reader accepts it.",
+  "description": "The facts the supervisor publishes besides module.<id>.state and .reason (.restart, .recovery, .previous, .failed) (7.8, v1.4), .revoked (v1.6) and .check (v1.9). Each row: a fact key, a value, and whether a reader accepts it.",
   "vectors": [
     {
       "fact": "module.foxglove.example-art.restart",
@@ -134,6 +134,68 @@
       "value": "install",
       "result": "invalid",
       "note": "Only launch is published."
+    },
+    {
+      "fact": "module.foxglove.example-art.check",
+      "value": "checking",
+      "result": "valid",
+      "note": "Check for updates is fetching the source's catalog (v1.9)."
+    },
+    {
+      "fact": "module.foxglove.example-art.check",
+      "value": "none",
+      "result": "valid",
+      "note": "The source had nothing newer: 'No new version yet. Checked just now.'"
+    },
+    {
+      "fact": "module.foxglove.example-art.check",
+      "value": "failed",
+      "result": "valid",
+      "note": "The source couldn't be reached: 'Couldn't check. Try again later.'"
+    },
+    {
+      "fact": "module.foxglove.example-art.check",
+      "value": null,
+      "result": "valid",
+      "note": "No check yet, or no longer withdrawn."
+    },
+    {
+      "fact": "module.foxglove.example-art.check",
+      "value": "found",
+      "result": "invalid",
+      "note": "A newer version takes the update path (updating), not a check value."
+    },
+    {
+      "fact": "module.foxglove.example-art.revoked",
+      "value": {
+        "version": "0.5.0",
+        "reason": ""
+      },
+      "result": "valid",
+      "note": "An empty reason: the card leaves the publisher's note out (v1.6, v1.9)."
+    },
+    {
+      "fact": "module.foxglove.example-art.revoked",
+      "value": {
+        "version": "0.5.0",
+        "reason": "placeholder reason"
+      },
+      "result": "valid",
+      "note": "The catalog's reason as its publisher wrote it."
+    },
+    {
+      "fact": "module.foxglove.example-art.revoked",
+      "value": null,
+      "result": "valid",
+      "note": "Another version connected, or the version is no longer withdrawn."
+    },
+    {
+      "fact": "module.foxglove.example-art.revoked",
+      "value": {
+        "version": "0.5.0"
+      },
+      "result": "invalid",
+      "note": "reason is always there (it may be empty)."
     }
   ]
 }

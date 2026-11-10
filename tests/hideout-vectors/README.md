@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.8. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.9. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -48,7 +48,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `transcripts/ui/` | `ui.patch`, `ui.event` refusal, `ui.asset.put`, `ui.window.open`, `action.invoke`, `settings.get`/`set`, `hub.notify`, `ui.badge`, `ui.visibility` (v1.3; tiles too, v1.4) | 5.3, 5.9, 8.8 |
 | `transcripts/stream/` | a live panel stream grant, `channel.open`/`channel.create`, denial, offer rejected, a provider's bad pipe (v1.4); (v1.5) text restored on visible, reopens then "Stopped updating" | 5.4, 8.4 |
 | `transcripts/facts/`, `modules/`, `mcp/`, `gpu/` | facts, `modules.*`, required-by, MCP and private modules, GPU methods | 8.8, 9, 8.9, 13.5 |
-| `transcripts/supervisor/` | each of the 12 states (`state-<id>.json`), crash backoff and stop, exit 0, rollback, root-cause-once, update waiting, an outside problem that is not a crash (v1.4), the backoff run resetting after a quiet ten minutes (v1.8) | 7.7, 7.8 |
+| `transcripts/supervisor/` | each of the 13 states (`state-<id>.json`; (v1.9) `state-revoked.json`), crash backoff and stop, exit 0, rollback, root-cause-once, update waiting, an outside problem that is not a crash (v1.4), the backoff run resetting after a quiet ten minutes (v1.8) | 7.7, 7.8 |
 | `transcripts/hub/` | hub restart takes modules back, 30 s grace, safe mode, quarantine, bisect | 7.9, 7.10, 5.5 |
 
 A transcript is `{name, spec, description, steps}`. A step is a wire message `{from, to, msg}` (one JSON-RPC 2.0

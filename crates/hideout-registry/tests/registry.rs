@@ -249,3 +249,44 @@ fn a_revoked_running_version_carries_its_reason() {
     assert!(reg.revoked().is_empty());
     let _ = std::fs::remove_dir_all(home);
 }
+
+#[test]
+fn an_installed_revoked_version_is_withdrawn_running_or_not() {
+    // #1026: the supervisor asks about the installed version, not only a running one.
+    let home = home("withdrawn");
+    let mut reg = signed(&home);
+    let id_ = "foxglove.example-art";
+    reg.install(&vectors().join("folders/foxglove.example-art-0.4.0"), NOW)
+        .unwrap();
+    assert_eq!(reg.revocation_of(id_), None);
+    assert_eq!(reg.go_back_version(id_), None);
+    // The catalog revokes 0.2.0 and yanks 0.1.0.
+    let dir = home.join("modules").join(id_);
+    std::fs::create_dir_all(dir.join("0.1.0")).unwrap();
+    std::fs::create_dir_all(dir.join("0.2.0")).unwrap();
+    {
+        let m = reg.inventory.modules.get_mut(id_).unwrap();
+        m.version = "0.2.0".into();
+        m.previous = Some("0.1.0".into());
+    }
+    let r = reg.revocation_of(id_).unwrap();
+    assert_eq!(
+        (r.version.as_str(), r.reason.as_str()),
+        ("0.2.0", "placeholder reason")
+    );
+    // A yanked previous version still runs, so Go back offers it.
+    assert_eq!(reg.go_back_version(id_).as_deref(), Some("0.1.0"));
+    // A revoked previous version is never offered, and a rollback to it is refused (§7.4).
+    {
+        let m = reg.inventory.modules.get_mut(id_).unwrap();
+        m.version = "0.4.0".into();
+        m.previous = Some("0.2.0".into());
+    }
+    assert_eq!(reg.revocation_of(id_), None);
+    assert_eq!(reg.go_back_version(id_), None);
+    assert_eq!(id(reg.roll_back(id_)), "trust.revoked");
+    // No previous folder: nothing to offer.
+    reg.inventory.modules.get_mut(id_).unwrap().previous = Some("0.3.0".into());
+    assert_eq!(reg.go_back_version(id_), None);
+    let _ = std::fs::remove_dir_all(home);
+}

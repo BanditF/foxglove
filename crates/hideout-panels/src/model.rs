@@ -74,6 +74,7 @@ pub fn state_words(state: &str) -> &'static str {
         "waiting" => "Waiting for another module",
         "needs-hub" => "Needs a newer Hideout",
         "install-failed" => "Couldn't install or update",
+        "revoked" => "Withdrawn",
         "off" => "Off",
         _ => "Not running",
     }

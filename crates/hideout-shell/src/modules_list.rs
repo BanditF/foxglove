@@ -42,6 +42,8 @@ pub enum Does {
     UpdateHub,
     /// Couldn't start: Try again.
     TryAgain,
+    /// Withdrawn by its publisher (#1026), on or off: Check for updates.
+    CheckUpdates,
 }
 
 /// A row's one main button (never two on a row).
@@ -114,6 +116,9 @@ pub fn row(
     let get =
         |k: &str| fact(&format!("module.{}.{k}", m.id)).and_then(|v| v.as_str().map(String::from));
     let state = get("state");
+    // The version its publisher withdrew, while the router's fact says so (#1026).
+    let withdrawn = fact(&format!("module.{}.revoked", m.id))
+        .and_then(|v| v.get("version").and_then(Value::as_str).map(String::from));
     let safe_mode = fact("hub.safe_mode").and_then(|v| v.as_bool()) == Some(true);
     let primary = |label: &str, does| {
         Some(Primary {
@@ -122,6 +127,17 @@ pub fn row(
         })
     };
     let (words, stopped, main) = match state.as_deref() {
+        Some("revoked") => (
+            words::withdrawn_row(withdrawn.as_deref().unwrap_or(&m.version)),
+            true,
+            primary(words::CHECK_FOR_UPDATES, Does::CheckUpdates),
+        ),
+        // Turned off after the withdrawal: no Turn on, Check for updates instead.
+        None | Some("off") if !m.enabled && withdrawn.is_some() => (
+            words::off_withdrawn(withdrawn.as_deref().unwrap_or(&m.version)),
+            false,
+            primary(words::CHECK_FOR_UPDATES, Does::CheckUpdates),
+        ),
         None | Some("running") | Some("off") if !m.enabled => (
             "Off".to_string(),
             false,
@@ -166,7 +182,7 @@ pub fn row(
         name: m.name.clone(),
         version: m.version.clone(),
         label: words::row_label(&m.name, &words),
-        off: words == "Off",
+        off: words == "Off" || words.starts_with("Off \u{b7}"),
         state: words,
         stopped,
         primary: main,

@@ -24,6 +24,8 @@ pub trait Actions {
     fn go_back(&self, id: &str);
     fn turn_off(&self, id: &str);
     fn turn_on(&self, id: &str) -> Result<(), String>;
+    /// A withdrawn module's Check for updates (#1026).
+    fn check_for_updates(&self, id: &str);
 }
 
 #[cfg(windows)]
@@ -45,6 +47,9 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     }
     fn turn_on(&self, id: &str) -> Result<(), String> {
         hideout_supervisor::driver::Supervisor::turn_on(self, id)
+    }
+    fn check_for_updates(&self, id: &str) {
+        hideout_supervisor::driver::Supervisor::check_for_updates(self, id)
     }
 }
 
@@ -97,6 +102,11 @@ impl ModulesPage {
                 (Does::StartAgain | Does::TryAgain, Some(a)) => {
                     a.start_again(&id);
                     false
+                }
+                // The result shows on the module's page (the status line), so it opens.
+                (Does::CheckUpdates, Some(a)) => {
+                    a.check_for_updates(&id);
+                    true
                 }
                 (Does::StartDefaults, Some(a)) => {
                     a.start_with_defaults(&id);
@@ -313,6 +323,52 @@ mod tests {
             self.0.borrow_mut().push(format!("turn-on {id}"));
             Ok(())
         }
+        fn check_for_updates(&self, id: &str) {
+            self.0.borrow_mut().push(format!("check {id}"));
+        }
+    }
+
+    /// A withdrawn module's row (#1026): "Withdrawn · 0.5.0" with Check for updates, which
+    /// reaches the supervisor; turned off, "Off · 0.5.0 was withdrawn", still no Turn on.
+    #[test]
+    fn a_withdrawn_row_checks_for_updates() {
+        use hideout_shell::modules_list::{Click, Does};
+        let off = std::rc::Rc::new(std::cell::Cell::new(false));
+        let o = off.clone();
+        let facts: Facts = Box::new(move |k| match k {
+            "module.m.a.state" => Some(json!(if o.get() { "off" } else { "revoked" })),
+            "module.m.a.revoked" => Some(json!({"version": "0.5.0", "reason": "x"})),
+            _ => None,
+        });
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![Installed {
+                id: "m.a".into(),
+                name: "Art".into(),
+                version: "0.5.0".into(),
+                enabled: true,
+            }],
+            facts: Some(facts),
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+        };
+        let (rows, _) = page.rows();
+        assert_eq!(rows[0].state, "Withdrawn \u{b7} 0.5.0");
+        assert!(rows[0].stopped);
+        let p = rows[0].primary.clone().unwrap();
+        assert_eq!(
+            (p.label.as_str(), p.does),
+            ("Check for updates", Does::CheckUpdates)
+        );
+        page.on_click(Click::Primary("m.a".into(), Does::CheckUpdates));
+        assert_eq!(*log.0.borrow(), ["check m.a"]);
+        off.set(true);
+        page.installed[0].enabled = false;
+        let (rows, _) = page.rows();
+        assert_eq!(rows[0].state, "Off \u{b7} 0.5.0 was withdrawn");
+        assert!(rows[0].off && !rows[0].stopped);
+        assert_eq!(rows[0].primary.as_ref().unwrap().does, Does::CheckUpdates);
     }
 
     /// Safe mode: the banner shows, every enabled row reads "On · not started in safe mode", and

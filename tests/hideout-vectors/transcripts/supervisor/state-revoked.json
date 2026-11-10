@@ -1,0 +1,93 @@
+{
+  "name": "state-revoked",
+  "module": "foxglove.example-art",
+  "spec": [
+    "7.8",
+    "8.5",
+    "12.4"
+  ],
+  "description": "State revoked (v1.9): an accepted catalog revoked the running version, so the hub ended its leases, published module.<id>.revoked and stopped it. The fact module.<id>.state is 'revoked' until another version is installed or gone back to; nothing starts it before then.",
+  "steps": [
+    {
+      "event": "trigger: an accepted catalog revokes 0.5.0, the running version (reason: a placeholder note)"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.revoked",
+          "value": {
+            "version": "0.5.0",
+            "reason": "placeholder reason"
+          }
+        }
+      },
+      "why": "the router's fact (v1.6), published before the stop"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.state",
+          "value": "revoked"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.reason",
+          "value": "Its publisher withdrew this version, so Hideout stopped it."
+        }
+      },
+      "why": "reason text is plain words and free; only the state id is the contract"
+    },
+    {
+      "from": "hub",
+      "to": "subscribers",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "facts.changed",
+        "params": {
+          "subscription": 1,
+          "key": "module.foxglove.example-art.previous",
+          "value": "0.4.2"
+        }
+      },
+      "why": "Go back to <previous> only when a kept version isn't itself withdrawn"
+    },
+    {
+      "event": "trigger: Start again, an activation and Turn on: none starts it (Turn on is refused with trust.revoked)"
+    },
+    {
+      "expect": {
+        "ui_name": "Withdrawn (\"<Module> <version> was withdrawn\")",
+        "ways_out": [
+          "Check for updates",
+          "Go back to <previous>",
+          "Turn off <Module>",
+          "Copy diagnostics"
+        ],
+        "notified": "once per withdrawn version",
+        "shown_in": [
+          "panel header",
+          "Modules page",
+          "tray status line"
+        ]
+      }
+    }
+  ]
+}

@@ -153,3 +153,45 @@ fn removing_a_lab_entry_leaves_its_folder() {
         .join("module.toml")
         .exists());
 }
+
+#[test]
+fn lab_withdrawn_json_withdraws_a_lab_module_in_lab_mode_only() {
+    // #1026: the lab's stand-in for a catalog revocation.
+    let home = home("withdrawn");
+    lab_folder(&home, ID);
+    std::fs::write(
+        home.join(hideout_registry::lab::LAB_WITHDRAWN_FILE),
+        format!(r#"{{"{ID}": {{"version": "1.0.0", "reason": "Please update."}}}}"#),
+    )
+    .unwrap();
+    let mut reg = Registry::open(&home, false).unwrap();
+    assert_eq!(reg.revocation_of(ID), None, "not a lab hub: no lab module");
+    reg.load_lab();
+    let r = reg.revocation_of(ID).expect("withdrawn in the lab");
+    assert_eq!(
+        (r.version.as_str(), r.reason.as_str()),
+        ("1.0.0", "Please update.")
+    );
+    assert!(
+        reg.lab_report
+            .iter()
+            .any(|l| l.contains("reads as withdrawn")),
+        "{:?}",
+        reg.lab_report
+    );
+    // Another version named: not this one.
+    std::fs::write(
+        home.join(hideout_registry::lab::LAB_WITHDRAWN_FILE),
+        format!(r#"{{"{ID}": {{"version": "0.9.0"}}}}"#),
+    )
+    .unwrap();
+    let mut reg = Registry::open(&home, false).unwrap();
+    reg.load_lab();
+    assert_eq!(reg.revocation_of(ID), None);
+    assert_eq!(
+        reg.go_back_version(ID),
+        None,
+        "a lab module never rolls back"
+    );
+    let _ = std::fs::remove_dir_all(home);
+}

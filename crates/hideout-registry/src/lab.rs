@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 pub const LAB_ENV: &str = "HIDEOUT_LAB";
 /// The folder under the lab hub's config dir that holds one folder per lab module.
 pub const LAB_MODULES_DIR: &str = "lab-modules";
+/// The lab's stand-in for a catalog revocation (#1026): `<config>\lab-withdrawn.json`, read
+/// in lab mode only, `{"<id>": {"version": "<v>", "reason": "<text>"}}`. A lab module whose
+/// loaded version it names reads as withdrawn by its publisher, so the withdrawn card, the
+/// tray and the notification can be tried without a catalog. Never read outside lab mode.
+pub const LAB_WITHDRAWN_FILE: &str = "lab-withdrawn.json";
 
 /// Whether this hub runs in lab mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +42,27 @@ impl LabMode {
     /// `<home>\lab-modules`.
     pub fn modules_dir(home: &Path) -> PathBuf {
         home.join(LAB_MODULES_DIR)
+    }
+}
+
+/// One entry of [`LAB_WITHDRAWN_FILE`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct LabWithdrawn {
+    pub version: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// [`LAB_WITHDRAWN_FILE`]'s entries; none when it is missing or unreadable (logged by the
+/// caller through `lab_report`).
+pub fn load_withdrawn(
+    home: &Path,
+) -> Result<std::collections::BTreeMap<String, LabWithdrawn>, String> {
+    let path = home.join(LAB_WITHDRAWN_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(t) => serde_json::from_str(&t).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
     }
 }
 

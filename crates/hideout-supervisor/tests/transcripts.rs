@@ -423,6 +423,51 @@ fn play(file: &str, doc: &Value) -> Result<(), String> {
                 "state fact (launch check)",
             )
         }
+        "supervisor/state-revoked.json" => {
+            // v1.9 (#1026): the router's fact comes from Router::revoke (its own test); here the
+            // stop, the state and the ways out that start nothing.
+            s.ev(Ev::Known {
+                id: ART.into(),
+                name: NAME.into(),
+                enabled: true,
+                at_enable: true,
+                previous: Some("0.4.2".into()),
+            });
+            s.ev(Ev::Ready { id: ART.into() });
+            let launched = s.launches().len();
+            s.ev(Ev::Revoked {
+                id: ART.into(),
+                version: "0.5.0".into(),
+                go_back: Some("0.4.2".into()),
+            });
+            check(
+                s.cmds.iter().any(|(_, c)| matches!(c, Cmd::Kill { .. })),
+                "not stopped",
+            )?;
+            let states: Vec<String> = published_states(doc);
+            check(
+                states == vec![s.state().unwrap_or_default().to_string()],
+                "state fact",
+            )?;
+            check(
+                s.facts.get(&format!("module.{ART}.previous")) == Some(&Value::from("0.4.2")),
+                "previous fact",
+            )?;
+            check(s.notifies().len() == 1, "not notified once")?;
+            for ev in [
+                Ev::StartAgain { id: ART.into() },
+                Ev::Activate { id: ART.into() },
+                Ev::Enable { id: ART.into() },
+            ] {
+                s.ev(ev);
+            }
+            check(s.launches().len() == launched, "started again")?;
+            check(s.state() == Some("revoked"), "left revoked")?;
+            check(
+                ex["ways_out"][0] == "Check for updates",
+                "Check for updates is the first way out",
+            )
+        }
         "lifecycle/register-not-ready-in-30s.json" => {
             s.ev(Ev::Known {
                 id: ART.into(),

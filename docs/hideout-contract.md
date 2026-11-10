@@ -1,16 +1,33 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.8** (v1.7 plus the last spec items of #918: the canvas-shape
+Status: spec, contract version **1.9** (v1.8 plus the state `revoked` and its card's fact
+`module.<id>.check`, #1026; v1.8 was v1.7 plus the last spec items of #918: the canvas-shape
 and table-row caps, which stream overs are refused and which closed, when the backoff run resets,
 and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` answer and the app
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
-one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
+v1.9 one "(v1.9)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.9** (#1026): a version its publisher withdrew. When an accepted catalog revokes the
+  installed version of a module (§12.4), the supervisor stops it and publishes the new state id
+  `revoked` (§7.8): at hub start (the shallow verify refuses the launch, §12.5), when a catalog
+  is accepted, and at any launch. It reads "Withdrawn" in the UI, with "Its publisher withdrew
+  this version, so Hideout stopped it." (not "for safety": Hideout doesn't know why) and the
+  version in the card's title. Nothing starts it until another version is installed or gone back
+  to; a Turn on is refused with `trust.revoked`; it stays enabled, so a fixed version starts by
+  itself. The publisher's `reason` is drawn on the card only, as plain text, cleaned and capped
+  at 160 characters (the full text in Copy diagnostics). One notification per withdrawn
+  version, ever. New fact `module.<id>.check` (`checking`, `none`, `failed` or `null`): the
+  card's **Check for updates**. `module.<id>.previous` names Go back's version for this state
+  too, and `module.<id>.revoked` also clears when the installed version is no longer withdrawn.
+  Vectors: `transcripts/supervisor/state-revoked.json`, `facts/supervisor-facts.json`. A new
+  state id and one fact, no message, no manifest key: `hub` stays 1.1 (§8.7); a reader that
+  doesn't know `revoked` shows it as a module that doesn't run.
 - **1.8** (#918): the spec items #918 still held. Canvas shapes and table rows get numbers: at
   most 1,000 shapes in one `canvas` and 10,000 rows in one `table` (§5.2, §5.5; the numbers the
   crate already enforced, so no shipped panel changes result). The page caps are published in the
@@ -1200,8 +1217,16 @@ supervisor beside the state:
 - **`module.<id>.revoked` (v1.6):** `{version, reason}` once an accepted catalog revoked the
   version that was running (§12.4): `reason` is the catalog's `reason` text, as its publisher
   wrote it (it may be empty). The hub stops the module and ends the leases it held (§8.5).
-  `null` once another version of the module connects. The module's own words never reach it:
-  `module.*` facts are the hub's.
+  `null` once another version of the module connects, or (v1.9) once the installed version is
+  no longer withdrawn. The module's own words never reach it: `module.*` facts are the hub's.
+  (v1.9) Also published for an installed version that isn't running (turned off, waiting for a
+  call, or found at hub start), so its Modules row can say so.
+- **`module.<id>.check` (v1.9):** while the module is `revoked` (or off with a withdrawn
+  version), the card's **Check for updates**: `checking` while one fetch of its source's catalog
+  runs, `none` when the source had nothing newer, `failed` when it couldn't be reached. `null`
+  before the first check and once the version is no longer withdrawn. One fetch per press, no
+  retry loop; a newer version that isn't withdrawn takes the normal update path (`updating`,
+  `update-waiting`).
 Both are read like any fact (`facts.read:module.*`); a reader that doesn't know them ignores them.
 Values outside these shapes are a hub bug, not a module's.
 
@@ -1218,9 +1243,24 @@ Values outside these shapes are a hub bug, not a module's.
 | `needs-hub` | Needs a newer Hideout | — | **Update Hideout**, Go back to <previous> |
 | `install-failed` | Couldn't install / update | plain cause | **Try again**, Open log |
 | `quarantined` | <Module>'s page couldn't be shown | §5.5 | **Start again**, Go back to <previous> |
+| `revoked` (v1.9) | Withdrawn ("<Module> <version> was withdrawn") | "Its publisher withdrew this version, so Hideout stopped it." + the publisher's note | **Check for updates**, Go back to <previous>, Turn off <Module>, Copy diagnostics |
 | `off` | Off | — | Turn on |
 
 Rules:
+- **Withdrawn (`revoked`, v1.9):** the module is stopped (drain and stop, §7.6) and its files,
+  data, settings, secrets and grants are kept, as for **disable** (§7.4); it stays enabled.
+  Nothing starts it (no Start again, no Turn on; a Turn on from a file, MCP or the CLI is refused
+  with `trust.revoked`) until another version is installed or **Go back to <previous>** runs.
+  Go back is offered only when a previous version is kept and isn't revoked itself (a yanked
+  one still runs, §12.4), and is always the user's click. **Turn off** disables it: the state is
+  `off`, and the row reads "Off · <version> was withdrawn" with **Check for updates** instead of
+  Turn on. The publisher's `reason` is drawn on the card only, as plain text (never markup, a URL
+  never a link), labelled "Publisher's note:", with C0/C1 controls, bidi marks, overrides and
+  isolates and zero-width characters dropped, whitespace runs as one space, and at most 160
+  characters (cut on a whole character, "…"); never in the notification, tray, tile, tooltip or
+  Modules row. Copy diagnostics has it in full, those characters escaped (`\u{202e}`). The
+  notification comes once per withdrawn version (remembered in the hub's own state), not per
+  sign-in; later sign-ins show the card and the tray's red dot only.
 - **Start with default settings** renames the settings folder to `settings.bad-<time>` and starts
   the module. The hub needs no knowledge of the values.
 - **Automatic rollback:** a module that reaches `crash-stopped` within 10 minutes of an update goes
