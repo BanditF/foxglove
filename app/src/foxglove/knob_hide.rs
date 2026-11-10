@@ -50,6 +50,10 @@ pub struct Choice {
 pub struct SeedApp {
     pub file: String,
     pub name: String,
+    /// Where the program usually is (`%ProgramFiles%\Vendor\app.exe`), for its icon when it
+    /// neither plays sound nor runs (#981). Only the icon uses it; matching stays by file name.
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -289,14 +293,78 @@ pub fn row_hover(row: &Row) -> String {
 }
 
 /// Where a row's icon is read from: its full path, else (a shipped list's bare file name) the
-/// path of the same program among the apps with sound right now.
-pub fn icon_path(row: &Row, apps: &[(String, String)]) -> String {
+/// path of the same program among the apps with sound right now, else among `known` (running
+/// programs, then the shipped list's path hints: [`known_paths`]).
+pub fn icon_path(row: &Row, apps: &[(String, String)], known: &[String]) -> String {
     if file_name(&row.path) != row.path {
         return row.path.clone();
     }
     apps.iter()
-        .find(|(_, path)| same_program(path, &row.path))
-        .map_or_else(|| row.path.clone(), |(_, path)| path.clone())
+        .map(|(_, path)| path)
+        .chain(known)
+        .find(|path| same_program(path, &row.path))
+        .map_or_else(|| row.path.clone(), Clone::clone)
+}
+
+/// `text` with each `%NAME%` replaced by `var(NAME)`; `None` when one isn't set or a `%` is
+/// left open.
+pub fn expand_vars(text: &str, var: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let end = after.find('%')?;
+        out.push_str(&var(&after[..end])?);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
+/// Running programs' paths by lower-case file name (`None`: not running), looked up once per
+/// visit to the page: the Knob card's first frame fills it, [`page_left`] empties it.
+type Running = std::collections::HashMap<String, Option<String>>;
+static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
+
+/// Full paths for the shipped list's bare file names that no app with sound gives (#981): the
+/// running programs with those names (one process snapshot on the card's first frame, kept until
+/// the page changes; no timer), then the shipped list's path hints.
+fn known_paths(rows: &[Row], apps: &[(String, String)]) -> Vec<String> {
+    let bare: Vec<&str> = rows
+        .iter()
+        .map(|r| r.path.as_str())
+        .filter(|p| file_name(p) == *p && !apps.iter().any(|(_, a)| same_program(a, p)))
+        .collect();
+    if bare.is_empty() {
+        return Vec::new();
+    }
+    let mut guard = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    let kept = guard.get_or_insert_with(Default::default);
+    let missing: Vec<&str> = bare
+        .iter()
+        .copied()
+        .filter(|n| !kept.contains_key(&n.to_lowercase()))
+        .collect();
+    if !missing.is_empty() {
+        let found = super::app_icon::running_paths(&missing);
+        for n in missing {
+            let path = found.iter().find(|p| same_program(p, n)).cloned();
+            kept.insert(n.to_lowercase(), path);
+        }
+    }
+    let mut out: Vec<String> = bare
+        .iter()
+        .filter_map(|n| kept.get(&n.to_lowercase()).cloned().flatten())
+        .collect();
+    out.extend(
+        seed()
+            .iter()
+            .filter(|s| bare.iter().any(|n| same_program(n, &s.file)))
+            .filter_map(|s| s.path.as_deref())
+            .filter_map(|p| expand_vars(p, |v| std::env::var(v).ok())),
+    );
+    out
 }
 
 /// What a click on the card asks for.
@@ -308,12 +376,14 @@ pub enum CardIntent {
 }
 
 /// Draws the card's body: the intro, the list (or its empty line), Add an app…, and the line
-/// after Show again. `apps`: the apps with sound right now (name, program path).
+/// after Show again. `apps`: the apps with sound right now (name, program path); `known`: more
+/// program paths for the rows' icons ([`icon_path`]).
 pub fn card_body(
     ui: &mut egui::Ui,
     rows: &[Row],
     undo_line: Option<&str>,
     apps: &[(String, String)],
+    known: &[String],
 ) -> Option<CardIntent> {
     let p = theme::palette(ui);
     let mut out = None;
@@ -337,7 +407,7 @@ pub fn card_body(
     }
     for row in rows {
         ui.horizontal(|ui| {
-            super::app_icon::show(ui, Some(&icon_path(row, apps)));
+            super::app_icon::show(ui, Some(&icon_path(row, apps, known)));
             ui.vertical(|ui| {
                 ui.label(RichText::new(&row.name).color(p.text_strong))
                     .on_hover_text(row_hover(row));
@@ -389,8 +459,9 @@ pub fn card(ui: &mut egui::Ui) {
         .as_ref()
         .map(|u| u.line.clone());
     let apps = super::knob::apps();
+    let known = known_paths(&rows, &apps);
     let intent = super::settings_ui::card(ui, TITLE, |ui| {
-        card_body(ui, &rows, undo_line.as_deref(), &apps)
+        card_body(ui, &rows, undo_line.as_deref(), &apps, &known)
     });
     let mut undo = UNDO.lock().unwrap_or_else(|e| e.into_inner());
     match intent {
@@ -419,6 +490,8 @@ pub fn card(ui: &mut egui::Ui) {
 /// The page changed: the line after Show again goes (UX plan: "until the page changes").
 pub fn page_left() {
     *UNDO.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // The next visit looks for running programs again (#981).
+    *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 #[cfg(test)]
@@ -446,6 +519,7 @@ mod tests {
             .map(|f| SeedApp {
                 file: f.to_string(),
                 name: f.to_string(),
+                path: None,
             })
             .collect()
     }
@@ -582,9 +656,24 @@ mod tests {
         assert_eq!(back_line("Chat"), "Chat is back in the knob's cycle.");
         // Icons: a full path is used; a bare shipped name borrows a live app's path.
         let live = vec![("Center".to_string(), r"C:\Vendor\CenterMgr.exe".to_string())];
-        assert_eq!(icon_path(&rows[0], &live), r"C:\Apps\Chat\Chat.exe");
-        assert_eq!(icon_path(&rows[1], &live), r"C:\Vendor\CenterMgr.exe");
-        assert_eq!(icon_path(&rows[1], &[]), "CenterMgr.exe");
+        assert_eq!(icon_path(&rows[0], &live, &[]), r"C:\Apps\Chat\Chat.exe");
+        assert_eq!(icon_path(&rows[1], &live, &[]), r"C:\Vendor\CenterMgr.exe");
+        assert_eq!(icon_path(&rows[1], &[], &[]), "CenterMgr.exe");
+        // No sound now: a running program's path (or a path hint) gives the icon; sound wins.
+        let known = vec![
+            r"C:\Other\Chat.exe".to_string(),
+            r"C:\Running\centermgr.exe".to_string(),
+            r"C:\Hint\CenterMgr.exe".to_string(),
+        ];
+        assert_eq!(
+            icon_path(&rows[1], &[], &known),
+            r"C:\Running\centermgr.exe"
+        );
+        assert_eq!(
+            icon_path(&rows[1], &live, &known),
+            r"C:\Vendor\CenterMgr.exe"
+        );
+        assert_eq!(icon_path(&rows[0], &[], &known), r"C:\Apps\Chat\Chat.exe");
         // UX plan: "Hide", never "exclude" or "block"; no "session" in the UI.
         for s in INTRO.iter().chain([&CAPTION, &EMPTY]) {
             let l = s.to_lowercase();
@@ -599,6 +688,37 @@ mod tests {
             .iter()
             .all(|s| s.file.ends_with(".exe") && !s.name.is_empty()));
         assert!(parse_seed("not = [toml").is_empty());
+        let hinted = parse_seed(
+            "[[app]]\nfile = \"a.exe\"\nname = \"A\"\npath = '%ProgramFiles%\\A\\a.exe'\n",
+        );
+        assert_eq!(hinted[0].path.as_deref(), Some(r"%ProgramFiles%\A\a.exe"));
+    }
+
+    #[test]
+    fn path_hints_expand_their_variables() {
+        let var = |v: &str| (v == "ProgramFiles").then(|| r"C:\Program Files".to_string());
+        assert_eq!(
+            expand_vars(r"%ProgramFiles%\A\a.exe", var).as_deref(),
+            Some(r"C:\Program Files\A\a.exe")
+        );
+        assert_eq!(
+            expand_vars(r"C:\A\a.exe", var).as_deref(),
+            Some(r"C:\A\a.exe")
+        );
+        assert_eq!(expand_vars(r"%Unset%\a.exe", var), None);
+        assert_eq!(expand_vars(r"%ProgramFiles\a.exe", var), None);
+    }
+
+    #[test]
+    fn a_running_program_is_found_by_its_file_name() {
+        // This test binary runs, so its own file name finds its own path (one snapshot).
+        let me = std::env::current_exe().unwrap();
+        let name = me.file_name().unwrap().to_string_lossy().to_string();
+        let found = super::super::app_icon::running_paths(&[name.as_str()]);
+        if cfg!(windows) {
+            assert!(found.iter().any(|p| same_program(p, &name)), "{found:?}");
+        }
+        assert!(super::super::app_icon::running_paths(&["no-such-program-981.exe"]).is_empty());
     }
 
     #[test]

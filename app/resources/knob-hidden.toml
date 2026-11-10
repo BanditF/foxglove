@@ -4,6 +4,10 @@
 #
 # Add an entry only for a program that holds a sound stream open in the background and that
 # people never want to turn up or down with the knob.
+#
+# Optional `path`: where the program usually is (`%ProgramFiles%\Vendor\app.exe`), only for
+# its icon in the Knob card when it neither plays sound nor runs. A running program's own path
+# comes first, so add one only when it's known for that program.
 
 [[app]]
 file = "LogiOptionsMgr.exe"

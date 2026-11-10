@@ -1924,11 +1924,15 @@ fn knob_hide_renders() {
         },
     ];
     let apps = vec![("Spotify".to_string(), r"C:\Apps\Spotify.exe".to_string())];
+    // #981: Logi Options+ has no sound now; its icon comes from the running program's path.
+    let known = vec![r"C:\Program Files\LogiOptionsPlus\LogiOptionsMgr.exe".to_string()];
     let ctx = preview_ctx();
     seed_icons(&ctx);
     let img = render_ui(&ctx, egui::vec2(1040.0, 540.0), DARK.ground, |ui| {
         egui::Frame::new().inner_margin(16).show(ui, |ui| {
-            crate::foxglove::settings_ui::card(ui, "Knob", |ui| card_body(ui, &rows, None, &apps));
+            crate::foxglove::settings_ui::card(ui, "Knob", |ui| {
+                card_body(ui, &rows, None, &apps, &known)
+            });
             ui.add_space(10.0);
             ui.columns(2, |cols| {
                 crate::foxglove::settings_ui::card(&mut cols[0], "Knob", |ui| {
@@ -1937,10 +1941,11 @@ fn knob_hide_renders() {
                         &rows[1..],
                         Some("Discord is back in the knob's cycle."),
                         &apps,
+                        &known,
                     )
                 });
                 crate::foxglove::settings_ui::card(&mut cols[1], "Knob", |ui| {
-                    card_body(ui, &[], None, &apps)
+                    card_body(ui, &[], None, &apps, &known)
                 });
             });
         });

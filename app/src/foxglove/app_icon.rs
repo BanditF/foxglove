@@ -189,6 +189,79 @@ pub fn read(_path: &str) -> Option<ColorImage> {
     None
 }
 
+/// The full paths of the running processes whose file name is one of `names` (any case): one
+/// process snapshot, taken when a caller asks (the Knob card's first frame, #981), never on a
+/// timer. One path per program; a process whose path can't be read is left out.
+#[cfg(windows)]
+pub fn running_paths(names: &[&str]) -> Vec<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let mut out: Vec<String> = Vec::new();
+    if names.is_empty() {
+        return out;
+    }
+    // SAFETY: a process snapshot handle, closed below on every path.
+    let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return out;
+    };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `entry` is a valid PROCESSENTRY32W with dwSize set; `snap` is open.
+    let mut more = unsafe { Process32FirstW(snap, &mut entry) }.is_ok();
+    while more {
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+        let wanted = names.iter().any(|n| n.eq_ignore_ascii_case(&name));
+        if wanted && !out.iter().any(|p| super::knob_hide::same_program(p, &name)) {
+            // SAFETY: a query-only handle, closed right after its one read.
+            unsafe {
+                if let Ok(h) = OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                    false,
+                    entry.th32ProcessID,
+                ) {
+                    let mut buf = [0u16; 1024];
+                    let mut len = buf.len() as u32;
+                    let got = QueryFullProcessImageNameW(
+                        h,
+                        PROCESS_NAME_WIN32,
+                        PWSTR(buf.as_mut_ptr()),
+                        &mut len,
+                    );
+                    let _ = CloseHandle(h);
+                    if got.is_ok() {
+                        out.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    }
+                }
+            }
+        }
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snap, &mut entry) }.is_ok();
+    }
+    // SAFETY: closes the snapshot opened above, once.
+    let _ = unsafe { CloseHandle(snap) };
+    out
+}
+
+#[cfg(not(windows))]
+pub fn running_paths(_names: &[&str]) -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
