@@ -90,14 +90,14 @@ pub fn enabled(paths: &HubPaths) -> bool {
     paths.overridden && ALLOWED.load(Ordering::Acquire)
 }
 
-/// `\\.\pipe\hideout-lab-<user><suffix>`: one per user and lab folder.
+/// `\\.\pipe\hideout-lab-<user><suffix>`: one per user and lab folder, the router pipe's rule
+/// (contract §8.2, #1010).
 pub fn pipe_name(paths: &HubPaths) -> String {
-    let user: String = std::env::var("USERNAME")
-        .unwrap_or_default()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    format!(r"\\.\pipe\hideout-lab-{user}{}", paths.instance_suffix())
+    format!(
+        r"\\.\pipe\hideout-lab-{}{}",
+        hideout_router::server::user(),
+        paths.instance_suffix()
+    )
 }
 
 /// A window of the hub, as the verbs name it.
