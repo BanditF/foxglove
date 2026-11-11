@@ -361,6 +361,52 @@ impl Recovery {
     }
 }
 
+/// `waiting` (§7.8): the UI name, its way out and the reason line, naming the root once.
+pub fn waiting_for(root: &str) -> String {
+    format!("Waiting for {root}")
+}
+pub fn go_to(root: &str) -> String {
+    format!("Go to {root}")
+}
+pub fn waiting_reason(root: &str) -> String {
+    format!("{root} is not running.")
+}
+
+/// `needs-hub` (§7.8).
+pub const NEEDS_HUB: &str = "Needs a newer Hideout";
+
+/// `quarantined` (§5.5): the UI name and `module.<id>.reason`.
+pub fn quarantined_title(module: &str) -> String {
+    format!("{module}'s page couldn't be shown")
+}
+pub const QUARANTINED_LINE: &str = "Hideout stopped twice while drawing it.";
+
+/// The hot swap's states (§7.6, §7.8).
+pub const UPDATING: &str = "Updating\u{2026}";
+pub const UPDATE_READY: &str = "Update ready";
+pub const UPDATE_WAITING: &str = "Update waiting for you";
+pub const FORCE: &str = "Force";
+pub const NOT_NOW: &str = "Not now";
+pub const REVIEW: &str = "Review";
+/// `module.<id>.reason` for `update-busy`; `reason` is the module's own drain reason ("a flash
+/// running").
+pub fn update_busy(reason: &str) -> String {
+    format!(
+        "Waits until you finish {}",
+        reason.trim().trim_end_matches('.')
+    )
+}
+/// `module.<id>.reason` for `update-waiting`: the first new permission in plain words (a
+/// [`hideout_contract::permission::Permission::describe`] line, "see every key you press"),
+/// and whether more come with it. `None`: no plain words for it.
+pub fn update_asks(first: Option<&str>, more: bool) -> String {
+    match (first, more) {
+        (Some(p), false) => format!("The new version wants to {p}."),
+        (Some(p), true) => format!("The new version wants to {p}, and more."),
+        (None, _) => "The new version asks for more permissions.".into(),
+    }
+}
+
 /// "Never shown" (UX plan): none of these may reach a drawn string.
 pub const NEVER_SHOWN: &[&str] = &[
     "crash-stopped",
@@ -427,6 +473,28 @@ pub fn every_string() -> Vec<String> {
     v.extend(na);
     v.extend(ca);
     v.extend(wna);
+    v.extend([
+        waiting_for("Link"),
+        go_to("Link"),
+        waiting_reason("Link"),
+        quarantined_title("Art"),
+        update_busy("a flash running"),
+        update_asks(Some("see every key you press"), false),
+        update_asks(Some("see every key you press"), true),
+        update_asks(None, false),
+    ]);
+    for s in [
+        NEEDS_HUB,
+        QUARANTINED_LINE,
+        UPDATING,
+        UPDATE_READY,
+        UPDATE_WAITING,
+        FORCE,
+        NOT_NOW,
+        REVIEW,
+    ] {
+        v.push(s.into());
+    }
     for r in [
         Recovery::StartAgain,
         Recovery::Defaults,
