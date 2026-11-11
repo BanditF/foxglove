@@ -120,3 +120,110 @@ No session ids, pids or "session" in the UI. "Hide", never "exclude" or "block".
    over the card for its 2–3 s, like the tray panel's hit region) / Settings only.
 2. The "background, no window" filter: **ship it, but count hidden windows** (tray apps stay) /
    skip it and rely on "never played" plus the hidden list.
+
+## Addendum (11/10): sound mirrors (#1060) and one row per app (#1061)
+
+Quick designer pass, docs only, built on the 11/10 research pass (session dump, meter reads and
+logs on the user's PC). Nothing new is drawn and no mockups this round: the tray Knob row and the
+Settings card keep their layout, and only the words below change.
+
+### Research
+
+- **#1060's cause:** LightStudio-background (audio-reactive lighting) and Wallpaper Engine's
+  `wallpaper32.exe` (audio-reactive wallpaper) hold a **loopback** session: they listen to the
+  speaker mix. Their session meter equals the device's mix on every read, so `Heard` counts them
+  the first time any real app plays. Both own hidden windows, so the window test passes too.
+- **#1061's cause:** on this occurrence Vivaldi had one session, in its audio-service child. The
+  knob targeted it and the 8 % level was measured in the mix, so the turn worked. One row per app
+  is still worth doing as hardening (several sessions of one app would be several rows today).
+- **Emulate:** **EarTrumpet** (MIT) shows one row per app, keyed by the exe path or the package.
+  A change goes to every session of the app, and the row shows the loudest. Its name comes from the
+  session's display name, then the app's name, then the exe. **Windows' Volume Mixer** shows
+  "active or recently active" apps by name and icon. Its grouping parameter is no use: every
+  session here had a different one. Nobody filters mirrors. EarTrumpet and the mixer show
+  everything because they are lists, but the knob is a cycle, so the mirror rule is Foxglove's own.
+- **Reuse:** `program_name` (#1045) for the friendly name, `display_name`'s fallbacks, the hidden
+  list's match by file name, and the peak read the knob already does per click (plus one read of
+  the device's own meter).
+
+### 1. Who is in the cycle (the rule as the user sees it)
+
+**One sentence:** a click goes to the apps that have played sound, not to apps that only listen to
+it.
+
+- **Unchanged:** an app is in the cycle once it has played sound this run, as #854 does. The
+  window test stays as built (hidden windows count), so a music player minimised to the tray stays.
+  The earlier provisional "visible window only" pick is dropped: it would drop tray players.
+- **New, a mirror:** an app whose sound level only follows what the speakers already play
+  (lighting or wallpaper that reacts to music, a visualiser, a recorder) **never counts as
+  played**, so it never joins the cycle. Foxglove tells it apart on the reads it already does: its
+  level equals the device's mix while another app accounts for that sound.
+- **What the user sees of a mirror: nothing. It is left out silently.** There is no "Not in the
+  knob cycle" list, no card and no tray line. The research's optional tray line ("listens to the
+  mix") is not taken, for three reasons. A mirror is never the knob's target, so the tray Knob row
+  never shows it. A list of left-out helpers would change by the second and name things nobody
+  asked to see. And Settings' **Add an app…** already lists every app with a session now, mirrors
+  included, so the user can still hide one by hand if the rule ever misses it.
+- **When a left-out app starts playing for real** (its level stops following the mix, say a
+  visualiser that also plays its own sound), it counts as played on that read. It joins at the end
+  of the cycle, and the next click reaches it. Nothing pops up when it joins.
+- **The tie:** when a tray player and a mirror are the only things with sound, Foxglove can't tell
+  them apart, so both stay offered. That's no worse than today, and Hide from knob handles it.
+- **The hidden list wins:** an app the user hid never joins, playing or not.
+- **A muted app or one at 0 %** still counts as played: its own meter isn't the mix.
+
+### 2. One row per app
+
+- **What a row is:** every session of one app is one row. An app is its package (Store apps), else
+  its program's full path (any case). If Foxglove can't read the path (a protected game), the path
+  comes from the session's own identifier. This covers Chromium browsers, Electron apps and
+  Firefox, whose sound comes from a child of the same program.
+- **A helper with a different program** (a WebView2 host under an app) joins its parent's row
+  only when it has no app window of its own and the parent has one. **A child with its own
+  window stays its own row:** a game started by Steam is the game, not Steam.
+- **Row name and icon:** taken from the app's windowed (or top-most) process, **never the
+  helper's**. The name is that session's display name if it set one, else the program's
+  FileDescription, then ProductName (`program_name`, #1045), else the file name without `.exe`.
+  For example "Vivaldi", never "vivaldi" or "Vivaldi (2 sessions)". **No count of sessions
+  anywhere, and "session" stays out of the UI.**
+- **Same name twice:** only if two rows in the cycle get one name (two installs, say Vivaldi and
+  a Vivaldi snapshot in different folders), each adds its program's folder name:
+  "Vivaldi · Vivaldi Snapshot".
+- **The level it shows:** the loudest of its sessions at the last read (the one playing), else
+  the first. **Muted** shows when the row's shown session is muted. The double-click mutes or
+  unmutes all of them together.
+- **A turn** moves **every** session of the row by the same 2 % detent, each from its own level,
+  so the app's own balance is kept (EarTrumpet's way). The row reads the loudest, so what the user
+  sees is what they hear.
+- **Hide from knob on a grouped row** stores the app's windowed program file (vivaldi.exe), never
+  a helper's: hiding msedgewebview2.exe would hide every app that uses it. A protected game whose
+  path came from the session identifier can be hidden by that file name too.
+- **The row lives** while any of its sessions lives, so the knob's target is the app, not one
+  session. "n of m" counts rows (apps).
+
+### 3. Wording (exact)
+
+| Where | Text |
+|---|---|
+| Settings card, intro | "A click on the knob goes to the next app that's playing sound." / "It skips apps that haven't played anything, apps that only listen to the speakers, and apps on this list." |
+| Row name, same name twice | "<app> · <folder>" |
+| Tray row tooltip | "<app> · <file> · matched by this file" |
+
+Everything else in the earlier Wording table is unchanged: "<n> of <m> · <level> %", "<app>
+hidden", Undo, Show again and the empty state. No "session", "loopback", "mirror", "helper" or
+counts in any drawn string. "Mirror" is a word for this doc and the code only.
+
+### Hand-off acceptance (adds to the list above)
+
+- Captured fixture from 11/10 (window-free; per-read peaks plus the device's peak): LightStudio-
+  background and wallpaper32 are never played; Vivaldi and the game are; the cycle is Vivaldi,
+  then the game.
+- A muted or 0 % app playing while another app makes the mix is played. A tray player alone with
+  a mirror: both offered.
+- One app with a silent parent session and a playing child session gives one row. A step changes
+  both and keeps their offset, and the row shows the playing one's level. The row lives on when
+  one of the sessions ends.
+- A windowless helper with a different program under a windowed parent joins it. A game under a
+  launcher keeps its own row. Hide from knob stores the windowed program's file name.
+- Strings test: no "session", "mirror" or "(2" in any drawn string; a same-name pair gets
+  "· <folder>".
