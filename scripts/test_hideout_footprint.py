@@ -188,8 +188,12 @@ class Files(unittest.TestCase):
         for name in ('none', 'default'):
             self.assertIn(name, base['sets'])
             self.assertTrue(set(base['sets'][name]) <= set(fc.BASELINE_KEYS))
-            for e in base['sets'][name].values():
-                self.assertGreater(e['value'], 0)
+            for key, e in base['sets'][name].items():
+                # An idle hub can measure 0.0 % CPU (case 7 on 1aa0393); the rest must be real.
+                if key == 'cpu_pct':
+                    self.assertGreaterEqual(e['value'], 0)
+                else:
+                    self.assertGreater(e['value'], 0)
             # The gate's wake limits (#1000, Hub 11/10): at most 2 loop wakes/s hidden (no
             # flyout) and 5/s shown.
             self.assertEqual(fc.limit(base['sets'][name]['loop_wakes_per_s']), 2)
