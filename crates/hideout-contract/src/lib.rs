@@ -212,6 +212,7 @@ pub fn schema() -> serde_json::Value {
             "read_chunk": services::NET_READ_CHUNK,
             "datagram": services::NET_DATAGRAM,
             "timeout_s": services::NET_TIMEOUT_S,
+            "open_deadline_s": services::NET_OPEN_DEADLINE_S,
             "backlog_bytes": services::NET_BACKLOG_BYTES,
         },
         "types": types,

@@ -1587,6 +1587,12 @@ impl Router {
             "module.idle" => out.push(Out::Idle(module)),
             "ui.patch" => out.push(Out::Patch { module, params }),
             "ui.badge" => out.push(Out::Badge { module, params }),
+            // A hub-owned name (§8.3: `net.*`, `audio.inputs.*`, `facts.*`, `channel.*` …) is the
+            // hub's to send, never a module's: a module can't forge another stream's
+            // `net.data`, nor a `facts.changed` for `mic.*` (v1.12, #1107 review).
+            m if HUB_OWNED.iter().any(|p| covers(p, m)) => {
+                log::warn!("router: {module} sent {m}, a hub-owned name; dropped");
+            }
             m => {
                 // An event for one lease's holder only (§8.8, v1.3).
                 if let Some(lease) = params.get("to").and_then(Value::as_str) {

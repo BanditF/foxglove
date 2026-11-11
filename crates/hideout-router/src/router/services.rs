@@ -236,6 +236,12 @@ impl Router {
         vec![Out::Send(h.caller, reply)]
     }
 
+    /// Whether the caller of host-service call `call` still waits for its answer (it hasn't
+    /// timed out or gone).
+    pub fn waits_for(&self, call: u64) -> bool {
+        self.host_calls.contains_key(&call)
+    }
+
     /// Sends a host service's event (`net.data`, `net.closed`, `net.accepted`) to `conn` alone,
     /// if it is still connected.
     pub fn service_event(&self, conn: ConnId, method: &str, params: Value) -> Vec<Out> {

@@ -56,12 +56,19 @@ impl Services for HostServices {
                     call.caller,
                     if muted { "mute" } else { "unmute" }
                 );
-                mic.set_mute(muted, Box::new(move |r| sink.answer(n, r)));
+                mic.set_mute(
+                    muted,
+                    Box::new(move |r| {
+                        sink.answer(n, r);
+                    }),
+                );
             }
-            (m, _, _) => sink.answer(
-                call.call,
-                Err(ServiceError::new(-32601, "", format!("{m}: not served"))),
-            ),
+            (m, _, _) => {
+                sink.answer(
+                    call.call,
+                    Err(ServiceError::new(-32601, "", format!("{m}: not served"))),
+                );
+            }
         }
     }
 

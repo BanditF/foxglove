@@ -124,11 +124,18 @@ pub enum Delivery {
 }
 
 impl Sink {
-    /// Answers [`Out::Service`] call `call`.
-    pub fn answer(&self, call: u64, result: Result<Value, ServiceError>) {
-        if let Some(shared) = self.0.upgrade() {
-            Hub(shared).act(|r| r.service_answer(call, result));
-        }
+    /// Answers [`Out::Service`] call `call`. False when nobody waited for it any more (the
+    /// call timed out, or its connection ended): whatever it opened should be undone.
+    pub fn answer(&self, call: u64, result: Result<Value, ServiceError>) -> bool {
+        let Some(shared) = self.0.upgrade() else {
+            return false;
+        };
+        let mut waited = false;
+        Hub(shared).act(|r| {
+            waited = r.waits_for(call);
+            r.service_answer(call, result)
+        });
+        waited
     }
 
     /// Sends notification `method` to connection `conn` alone, unless more than `backlog`

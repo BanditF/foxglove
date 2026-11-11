@@ -17,9 +17,7 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
 };
 
-use super::mic::{Backend, Endpoint, Event, MuteError, OWN_CONTEXT};
-
-const OWN: GUID = GUID::from_u128(OWN_CONTEXT);
+use super::mic::{Backend, Endpoint, Event, MuteError};
 
 #[implement(IAudioEndpointVolumeCallback)]
 struct Volume(Sender<Event>);
@@ -30,7 +28,7 @@ impl IAudioEndpointVolumeCallback_Impl for Volume_Impl {
         if let Some(d) = unsafe { data.as_ref() } {
             let _ = self.0.send(Event::Volume {
                 muted: d.bMuted.as_bool(),
-                own: d.guidEventContext == OWN,
+                context: d.guidEventContext.to_u128(),
             });
         }
         Ok(())
@@ -176,11 +174,12 @@ impl Backend for CoreAudio {
         }
     }
 
-    fn set_mute(&mut self, muted: bool) -> std::result::Result<(), MuteError> {
+    fn set_mute(&mut self, muted: bool, context: u128) -> std::result::Result<(), MuteError> {
+        let context = GUID::from_u128(context);
         let v = self.bound.as_ref().ok_or(MuteError::Unavailable)?;
         // SAFETY: a live endpoint volume; the context GUID outlives the call.
         unsafe {
-            v.SetMute(muted, &OWN)
+            v.SetMute(muted, &context)
                 .map_err(|e| MuteError::Backend(e.to_string()))
         }
     }

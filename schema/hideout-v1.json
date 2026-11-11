@@ -49,6 +49,7 @@
   "net": {
     "backlog_bytes": 8388608,
     "datagram": 65536,
+    "open_deadline_s": 20,
     "read_chunk": 16384,
     "streams_per_connection": 16,
     "streams_per_hub": 256,

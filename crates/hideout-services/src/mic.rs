@@ -6,7 +6,8 @@
 //! [`Mic`] is the logic, over a [`Backend`] (Core Audio on Windows, a fake in tests). It runs on
 //! one thread of its own that sleeps on a channel: Core Audio's callbacks
 //! (`IMMNotificationClient`, `IAudioEndpointVolumeCallback::OnNotify`) and the calls put
-//! [`Event`]s on it. Never polled. The hub's own `SetMute` carries [`OWN_CONTEXT`]; its
+//! [`Event`]s on it. Never polled. The hub's own `SetMute` carries its event context, a GUID drawn fresh for each run
+//! (#1107 review: a fixed one would let any process hide its change); its
 //! `OnNotify` echo is skipped, since the hub published the new state when the call succeeded.
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -16,8 +17,11 @@ use hideout_contract::services::{error_id, MicState};
 use hideout_router::ServiceError;
 use serde_json::{json, Value};
 
-/// The event context the hub passes to `SetMute`, to know its own change in `OnNotify`.
-pub const OWN_CONTEXT: u128 = 0x6869_6465_6f75_7400_8000_0000_0000_1102;
+/// A fresh event context for this run: 128 random bits (the hub's own `SetMute` carries it,
+/// so its `OnNotify` echo is known; nobody else can guess it).
+pub fn fresh_context() -> u128 {
+    u128::from_str_radix(&hideout_router::fresh_secret(), 16).unwrap_or(1)
+}
 
 /// The default communications microphone, as the backend found it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,8 +46,8 @@ pub trait Backend {
     fn bind_default(&mut self) -> Result<Option<Endpoint>, String>;
     /// The bound endpoint's mute.
     fn muted(&mut self) -> Result<bool, String>;
-    /// Sets the bound endpoint's mute, with [`OWN_CONTEXT`] as the event context.
-    fn set_mute(&mut self, muted: bool) -> Result<(), MuteError>;
+    /// Sets the bound endpoint's mute, with `context` as the event context.
+    fn set_mute(&mut self, muted: bool, context: u128) -> Result<(), MuteError>;
 }
 
 /// The answer to a `set_mute`, run on the microphone's thread.
@@ -54,8 +58,8 @@ pub enum Event {
     /// A device was added, removed or changed state, or the default capture endpoint for
     /// `eCommunications` changed.
     Devices,
-    /// `OnNotify` on the bound endpoint: its mute now, and whether the change was the hub's own.
-    Volume { muted: bool, own: bool },
+    /// `OnNotify` on the bound endpoint: its mute now, and the change's event context.
+    Volume { muted: bool, context: u128 },
     /// `audio.inputs.set_mute`, already permitted.
     SetMute { muted: bool, reply: Reply },
 }
@@ -92,14 +96,17 @@ pub struct Mic<B: Backend> {
     backend: B,
     publish: Publish,
     shown: Facts,
+    /// This run's event context (see [`fresh_context`]).
+    context: u128,
 }
 
 impl<B: Backend> Mic<B> {
-    pub fn new(backend: B, publish: Publish) -> Mic<B> {
+    pub fn new(backend: B, publish: Publish, context: u128) -> Mic<B> {
         Mic {
             backend,
             publish,
             shown: Facts::default(),
+            context,
         }
     }
 
@@ -160,10 +167,10 @@ impl<B: Backend> Mic<B> {
         match event {
             Event::Devices => self.refresh(),
             // The hub's own change: published when `SetMute` succeeded.
-            Event::Volume { own: true, .. } => {}
-            Event::Volume { muted, own: false } => self.set_state(muted),
+            Event::Volume { context, .. } if context == self.context => {}
+            Event::Volume { muted, .. } => self.set_state(muted),
             Event::SetMute { muted, reply } => {
-                let result = match self.backend.set_mute(muted) {
+                let result = match self.backend.set_mute(muted, self.context) {
                     Ok(()) => {
                         self.set_state(muted);
                         Ok(json!({}))
@@ -209,9 +216,15 @@ impl<B: Backend> Mic<B> {
 #[derive(Clone)]
 pub struct MicService {
     events: Sender<Event>,
+    context: u128,
 }
 
 impl MicService {
+    /// This run's event context: the hub's own changes carry it.
+    pub fn context(&self) -> u128 {
+        self.context
+    }
+
     /// Asks for a mute change; `reply` runs on the microphone's thread.
     pub fn set_mute(&self, muted: bool, reply: Reply) {
         if let Err(mpsc::SendError(Event::SetMute { reply, .. })) =
@@ -234,6 +247,7 @@ impl MicService {
         B: Backend,
         F: FnOnce(Sender<Event>) -> Result<B, String> + Send + 'static,
     {
+        let context = fresh_context();
         let (tx, rx) = mpsc::channel();
         let (ready_tx, ready) = mpsc::channel::<()>();
         let callbacks = tx.clone();
@@ -260,7 +274,7 @@ impl MicService {
                         return;
                     }
                 };
-                let mut mic = Mic::new(backend, publish);
+                let mut mic = Mic::new(backend, publish, context);
                 mic.refresh();
                 let _ = ready_tx.send(());
                 mic.run(rx);
@@ -273,7 +287,10 @@ impl MicService {
             }
             Err(e) => log::warn!("mic: no thread: {e}"),
         }
-        MicService { events: tx }
+        MicService {
+            events: tx,
+            context,
+        }
     }
 }
 
@@ -313,7 +330,8 @@ mod tests {
                 .map(|d| d.1.clone())
                 .unwrap_or(Err("none bound".into()))
         }
-        fn set_mute(&mut self, muted: bool) -> Result<(), MuteError> {
+        fn set_mute(&mut self, muted: bool, context: u128) -> Result<(), MuteError> {
+            assert_ne!(context, 0, "an event context");
             let mut f = self.0.lock().unwrap();
             f.set_calls.push(muted);
             if let Some(e) = &f.refuse {
@@ -328,6 +346,8 @@ mod tests {
             }
         }
     }
+
+    const CTX: u128 = 0x1234;
 
     fn ep(id: &str) -> Endpoint {
         Endpoint {
@@ -345,6 +365,7 @@ mod tests {
         let m = Mic::new(
             shared.clone(),
             Box::new(move |k, v| l.lock().unwrap().push((k.to_string(), v))),
+            CTX,
         );
         (m, shared, log)
     }
@@ -449,7 +470,7 @@ mod tests {
         // Windows' own mute (another context).
         m.handle(Event::Volume {
             muted: true,
-            own: false,
+            context: 7,
         });
         assert_eq!(take(&log), [("mic.state".into(), json!("muted"))]);
         // The hub's set_mute: published at once, the echo skipped.
@@ -462,7 +483,7 @@ mod tests {
         assert_eq!(take(&log), [("mic.state".into(), json!("unmuted"))]);
         m.handle(Event::Volume {
             muted: false,
-            own: true,
+            context: CTX,
         });
         assert!(take(&log).is_empty());
         assert_eq!(fake.0.lock().unwrap().set_calls, [false]);

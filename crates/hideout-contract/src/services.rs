@@ -27,6 +27,10 @@ pub const NET_DATAGRAM: usize = 64 * 1024;
 /// How long one connect attempt and one write may take, as fallbacks only (§8.10).
 pub const NET_TIMEOUT_S: u64 = 10;
 
+/// The most one `net.open` may take, name lookup and every connect attempt included: well
+/// under the call's 30 s (§8.1), so the caller always gets the answer (§8.10, #1107 review).
+pub const NET_OPEN_DEADLINE_S: u64 = 20;
+
 /// When more than this many bytes wait to be written to a connection, a stream whose event
 /// can't be queued ends (§8.10).
 pub const NET_BACKLOG_BYTES: usize = 8 * 1024 * 1024;

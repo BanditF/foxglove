@@ -586,3 +586,176 @@ fn the_stream_refused_vector_passes() {
     }
     assert_eq!(checked, 5);
 }
+
+/// A hub with its own router settings (a short call timeout) and broker (a test resolver).
+fn hub_with(modules: &[(&str, Vec<String>)], settings: Settings, broker: Broker) -> Hub {
+    let mut router = Router::new(settings, Box::new(|_, asked| asked.to_vec()));
+    for (id, granted) in modules {
+        router.add_module(entry(id, granted));
+    }
+    let (events, rx) = mpsc::channel();
+    std::mem::forget(rx);
+    let hub = Hub::new(router, events);
+    hub.set_services(Arc::new(HostServices {
+        net: Some(broker),
+        mic: None,
+    }));
+    hub
+}
+
+/// A resolver that answers `addr` for every name once `release` lets it (or at once if
+/// `release` is `None`).
+fn resolver(
+    addr: std::net::SocketAddr,
+    release: Option<Receiver<()>>,
+) -> hideout_services::net::Resolver {
+    let release = Mutex::new(release);
+    Arc::new(move |_, _| {
+        if let Some(r) = release.lock().unwrap().take() {
+            let _ = r.recv();
+        }
+        Ok(vec![addr])
+    })
+}
+
+#[test]
+fn a_slow_name_lookup_ends_within_the_open_deadline() {
+    let (_hold, release) = mpsc::channel::<()>();
+    let caps = Caps {
+        open_deadline: Duration::from_millis(300),
+        ..Caps::default()
+    };
+    let broker =
+        Broker::with_resolver(caps, resolver("1.2.3.4:80".parse().unwrap(), Some(release)));
+    let hub = hub_with(
+        &[(
+            "example.status",
+            vec!["net.connect:slow.example.com:80".into()],
+        )],
+        Settings::default(),
+        broker.clone(),
+    );
+    let mut m = Raw::attach(&hub, "example.status");
+    let started = std::time::Instant::now();
+    let r = open(&mut m, 1, "tcp", "slow.example.com", 80);
+    assert_eq!(data_id(&r), (6, "net.io"), "{r}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "answered before the call timeout"
+    );
+    assert_eq!(broker.open_streams(), 0);
+}
+
+#[test]
+fn an_open_whose_caller_stopped_waiting_is_closed_and_never_announced() {
+    let (port, ended) = echo_server();
+    let (release_tx, release) = mpsc::channel::<()>();
+    // The lookup waits until the call has timed out; then the connect succeeds.
+    let broker = Broker::with_resolver(
+        Caps::default(),
+        resolver(
+            std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            Some(release),
+        ),
+    );
+    let settings = Settings {
+        call_timeout: Duration::from_millis(200),
+        ..Settings::default()
+    };
+    let hub = hub_with(
+        &[(
+            "example.status",
+            vec![format!("net.connect:127.0.0.1:{port}")],
+        )],
+        settings,
+        broker.clone(),
+    );
+    let mut m = Raw::attach(&hub, "example.status");
+    let r = open(&mut m, 1, "tcp", "127.0.0.1", port);
+    assert_eq!(r["error"]["code"], 4, "the caller's timeout: {r}");
+    release_tx.send(()).unwrap();
+    // The late connect reaches the echo server, and the hub closes it at once.
+    ended
+        .recv_timeout(WAIT)
+        .expect("the orphaned stream was closed");
+    assert_eq!(broker.open_streams(), 0);
+    // Nothing for the unknown stream reached the module, and its next stream is 2.
+    let r = open(&mut m, 2, "tcp", "127.0.0.1", port);
+    assert_eq!(r["result"], json!({"stream": 2}), "{r}");
+    assert!(m
+        .events
+        .iter()
+        .all(|e| e["method"] != "net.data" && e["method"] != "net.closed"));
+}
+
+#[test]
+fn a_granted_name_rebound_to_this_pc_is_refused() {
+    let (port, _) = echo_server();
+    let broker = Broker::with_resolver(
+        Caps::default(),
+        resolver(
+            std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            None,
+        ),
+    );
+    let hub = hub_with(
+        &[(
+            "example.status",
+            vec![
+                format!("net.connect:api.example.com:{port}"),
+                format!("net.connect:127.0.0.1:{port}"),
+            ],
+        )],
+        Settings::default(),
+        broker.clone(),
+    );
+    let mut m = Raw::attach(&hub, "example.status");
+    let r = open(&mut m, 1, "tcp", "api.example.com", port);
+    assert_eq!(data_id(&r), (5, "net.denied"), "{r}");
+    // The address the grant names itself still works (ids are never reused: this is 2).
+    let r = open(&mut m, 2, "tcp", "127.0.0.1", port);
+    assert_eq!(r["result"], json!({"stream": 2}), "{r}");
+}
+
+/// A listener the broker opened can't be shared: a second bind with `SO_REUSEADDR` fails.
+#[cfg(windows)]
+#[test]
+fn a_listen_is_exclusive() {
+    use windows_sys::Win32::Networking::WinSock::*;
+    let listen = free_port();
+    let (hub, _broker, _rx) = hub(
+        &[(
+            "example.status",
+            vec![format!("net.listen:tcp:127.0.0.1:{listen}")],
+        )],
+        Caps::default(),
+    );
+    let mut m = Raw::attach(&hub, "example.status");
+    assert!(open(&mut m, 1, "tcp-listen", "127.0.0.1", listen)
+        .get("result")
+        .is_some());
+    // SAFETY: a test socket, closed below.
+    unsafe {
+        let s = socket(AF_INET as i32, SOCK_STREAM, IPPROTO_TCP);
+        assert_ne!(s, INVALID_SOCKET);
+        let on: i32 = 1;
+        setsockopt(
+            s,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &on as *const i32 as *const u8,
+            4,
+        );
+        let mut addr: SOCKADDR_IN = std::mem::zeroed();
+        addr.sin_family = AF_INET;
+        addr.sin_port = listen.to_be();
+        addr.sin_addr.S_un.S_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
+        let r = bind(
+            s,
+            &addr as *const SOCKADDR_IN as *const SOCKADDR,
+            std::mem::size_of::<SOCKADDR_IN>() as i32,
+        );
+        closesocket(s);
+        assert_ne!(r, 0, "a second bind took the module's port");
+    }
+}

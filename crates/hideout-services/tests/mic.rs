@@ -36,7 +36,7 @@ impl Backend for Backend_ {
     fn muted(&mut self) -> Result<bool, String> {
         Ok(self.0.lock().unwrap().muted)
     }
-    fn set_mute(&mut self, muted: bool) -> Result<(), MuteError> {
+    fn set_mute(&mut self, muted: bool, _context: u128) -> Result<(), MuteError> {
         let mut f = self.0.lock().unwrap();
         f.set_calls.push(muted);
         f.muted = muted;
@@ -158,6 +158,7 @@ fn mic_state_and_set_mute_through_the_hub() {
     );
     // Where Core Audio's callbacks would send their events.
     let callbacks = cb_rx.recv_timeout(WAIT).unwrap();
+    let own = mic.context();
     hub.set_services(Arc::new(HostServices {
         net: None,
         mic: Some(mic),
@@ -195,13 +196,13 @@ fn mic_state_and_set_mute_through_the_hub() {
     callbacks
         .send(Event::Volume {
             muted: true,
-            own: true,
+            context: own,
         })
         .unwrap();
     callbacks
         .send(Event::Volume {
             muted: false,
-            own: false,
+            context: own ^ 1,
         })
         .unwrap();
     assert_eq!(reader.changed("mic.state"), "unmuted");

@@ -194,6 +194,18 @@
       "note": "Needs host:port|*."
     },
     {
+      "permission": "net.connect:*.0.0.1:*",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "A wildcard names a domain, not an address: this would cover 127.0.0.1 (v1.12)."
+    },
+    {
+      "permission": "net.connect:*.1:80",
+      "result": "invalid",
+      "id": "permission.argument",
+      "note": "A wildcard over a numeric last label would cover every x.x.x.1 (v1.12)."
+    },
+    {
       "permission": "net.listen:udp:0.0.0.0:9000",
       "result": "invalid",
       "id": "permission.argument",

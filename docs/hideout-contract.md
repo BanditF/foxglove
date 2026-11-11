@@ -24,7 +24,11 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   the SDK use. The hub opens what the caller's grant names (`net.connect:<host>:<port|*>`,
   `net.listen:udp|tcp:127.0.0.1:<port>`, or `net`), so a contained module (§7.7) reaches exactly
   that; at most 16 streams a connection and 256 in the hub; every stream ends with its
-  connection. **Microphone** (§8.11): the hub follows the default communications microphone
+  connection. Security review (#1107): a whole open takes at most 20 s and an open nobody
+  waits for is closed; a granted name never reaches loopback or the LAN after it resolves
+  (only a grant naming the address does); listens are exclusive; a wildcard over a numeric
+  label is no permission (vectors in `permissions/permissions.json`); modules can't send
+  hub-owned notifications; the microphone's event context is random per run. **Microphone** (§8.11): the hub follows the default communications microphone
   through Core Audio's callbacks and publishes `mic.state`, `mic.endpoint_id`,
   `mic.endpoint_name` and `mic.error` (hub facts, read with `audio.inputs.read`);
   `audio.inputs.set_mute {muted}` needs `audio.inputs.mute`. `net.*` and `audio.inputs.*` join
@@ -1651,7 +1655,11 @@ Rules:
 - **Host services (v1.12)** are methods the hub answers itself: the network broker `net.*`
   (§8.10) and the microphone `audio.inputs.*` (§8.11). No module may provide them (§6.3: they are
   rejected at `module.register` with `permission.provider`), and a hub without one answers
-  −32601. `mic.*` facts are the hub's: `facts.set` on one is refused (error 5).
+  −32601. `mic.*` facts are the hub's: `facts.set` on one is refused (error 5). A module's
+  notification whose name is hub-owned (`net.*`, `audio.inputs.*`, `facts.*`, `channel.*`,
+  `ui.*` beyond `ui.patch` and `ui.badge`, `module.*` beyond `module.ready` and
+  `module.idle` …) is dropped, never forwarded to a lease holder (§8.5) or broadcast: a module
+  can't forge another stream's `net.data` or a `mic.*` change.
 
 ### 8.4 Direct channels (data plane)
 
@@ -1905,13 +1913,25 @@ an outside tool); the grant decides.
     `net.connect:<host>:*` that covers it. `host` is matched as written, ASCII case ignored,
     never after resolving it: `127.0.0.1` and `localhost` are two hosts. `*.example.com`
     covers every name ending in `.example.com`, not `example.com` itself; a bare `*` host is
-    not a permission (`permission.argument`, §6.1). The hub resolves `host` and tries each
-    address in turn, at most 10 s for each connect.
+    not a permission (`permission.argument`, §6.1), and neither is a wildcard over a numeric
+    label (`*.0.0.1`, `*.1`: a wildcard names a domain, never addresses). The hub resolves
+    `host` and tries each address in turn, at most 10 s for each connect and **20 s for the
+    whole open, name lookup included**, so the answer always comes before the caller's 30 s
+    (§8.1).
+  - **Resolved addresses.** A `host` written as an address (`127.0.0.1`, `192.168.1.5`) may
+    reach that address. `localhost` reaches loopback only. Any other name reaches only
+    addresses off this PC and its local networks: a resolved address that is loopback, private
+    (RFC 1918, ULA `fc00::/7`), link-local, shared (`100.64.0.0/10`), unspecified or broadcast
+    (IPv4-mapped forms included) is skipped, and a name that resolves to nothing else answers
+    error 5 `net.denied`. So a granted name can't be pointed (rebound) at the hub's loopback
+    neighbours or the LAN; reaching those takes a grant that names the address.
   - `udp`: datagrams sent to `127.0.0.1`:`port`, received only. `host` MUST be `127.0.0.1`.
     Needs `net.listen:udp:127.0.0.1:<port>`.
   - `tcp-listen`: accepts TCP connections on `127.0.0.1`:`port`. `host` MUST be `127.0.0.1`.
     Needs `net.listen:tcp:127.0.0.1:<port>`. Each connection arrives as `net.accepted` with a
     stream of its own, then flows as any `tcp` stream.
+  - Listens (`udp`, `tcp-listen`) are bound for exclusive use (`SO_EXCLUSIVEADDRUSE` on
+    Windows): no other process can share the port and take the module's connections.
   - `net` (unrestricted network, §6.1) covers each of the three.
   - Port 0, another `kind`, a missing field, or a listen on any host but `127.0.0.1` answers
     −32602 with `data.id` `net.argument`. A grant that doesn't cover it answers error 5
@@ -1935,7 +1955,9 @@ an outside tool); the grant decides.
     closed it, an error, or a cap below. Once per stream; `reason` is plain words for the log.
 
   An event MAY arrive before the `net.open` answer that names its stream; a client keeps it
-  until it knows the stream (the SDK does).
+  until it knows the stream (the SDK does). An open whose caller no longer waits (its call
+  timed out, error 4) is closed at once, and nothing is ever sent for it. Only the hub sends
+  these events: a module's notification with a hub-owned name is dropped (§8.3).
 - **Stream ids** are per connection: whole numbers from 1 upward, never reused on that
   connection. Another connection's ids mean nothing on this one (`net.stream`).
 - **Limits.** At most 16 open streams per connection (listeners, accepted connections and opens
@@ -1975,7 +1997,8 @@ bypass it.
   publishes the facts. `OnNotify` on the current endpoint: its mute sets `mic.state`.
 - **`audio.inputs.set_mute {muted}`** (needs `audio.inputs.mute`) mutes or unmutes the current
   default endpoint and answers `{}` once Windows took it. The hub passes its own event-context
-  GUID to `SetMute`, publishes the new `mic.state` itself, and skips the `OnNotify` echo that
+  GUID to `SetMute`, drawn at random for each run (a fixed one would let any process hide its
+  change), publishes the new `mic.state` itself, and skips the `OnNotify` echo that
   carries its GUID; a change made by anyone else (Windows' own mute, another app) arrives
   through `OnNotify`. No endpoint: error 6 `audio.unavailable`; Windows refused, or Core Audio
   can't be reached: error 6 `audio.backend`; without the permission: error 5 `audio.denied`. A

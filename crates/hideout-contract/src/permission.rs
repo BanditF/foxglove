@@ -222,6 +222,16 @@ impl TryFrom<String> for Permission {
                 if !ok || host == "*" {
                     return Err(format!("{text:?}: name one host"));
                 }
+                // A wildcard covers names, never addresses: `*.0.0.1` or `*.1` would cover
+                // 127.0.0.1 and every x.x.x.1 (contract §6.1, §8.10, #1107 review).
+                let numeric = |l: &str| l.chars().all(|c| c.is_ascii_digit());
+                if let Some(rest) = host.strip_prefix("*.") {
+                    if rest.rsplit('.').next().is_some_and(numeric) {
+                        return Err(format!(
+                            "{text:?}: a wildcard names a domain, not an address"
+                        ));
+                    }
+                }
                 Permission::NetConnect {
                     host: host.to_ascii_lowercase(),
                     port,
@@ -531,6 +541,9 @@ mod tests {
             "net.connect:example.com",
             "net.connect:a b:1",
             "net.connect:*:*",
+            "net.connect:*.0.0.1:*",
+            "net.connect:*.1:80",
+            "net.connect:*.example.1:443",
             "net.listen:udp:0.0.0.0:5568",
             "net.listen:tcp:0.0.0.0:1",
             "net.listen:tcp:127.0.0.1:0",

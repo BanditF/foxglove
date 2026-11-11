@@ -15,7 +15,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{
+    IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,8 +26,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use hideout_contract::services::{
     error_id, NetAccepted, NetClosed, NetData, NetKind, NetOpen, NetSend, NetStream,
-    NET_BACKLOG_BYTES, NET_DATAGRAM, NET_READ_CHUNK, NET_STREAMS_PER_CONNECTION,
-    NET_STREAMS_PER_HUB, NET_TIMEOUT_S,
+    NET_BACKLOG_BYTES, NET_DATAGRAM, NET_OPEN_DEADLINE_S, NET_READ_CHUNK,
+    NET_STREAMS_PER_CONNECTION, NET_STREAMS_PER_HUB, NET_TIMEOUT_S,
 };
 use hideout_router::server::{Delivery, Sink};
 use hideout_router::{ConnId, ServiceCall, ServiceError};
@@ -39,6 +41,8 @@ pub struct Caps {
     pub per_connection: usize,
     pub per_hub: usize,
     pub backlog_bytes: usize,
+    /// The most one open may take, name lookup included (§8.10).
+    pub open_deadline: Duration,
 }
 
 impl Default for Caps {
@@ -47,6 +51,7 @@ impl Default for Caps {
             per_connection: NET_STREAMS_PER_CONNECTION,
             per_hub: NET_STREAMS_PER_HUB,
             backlog_bytes: NET_BACKLOG_BYTES,
+            open_deadline: Duration::from_secs(NET_OPEN_DEADLINE_S),
         }
     }
 }
@@ -149,11 +154,25 @@ fn close_slot(slot: Slot) {
     }
 }
 
+/// Looks a host name up (the OS's resolver; tests give their own).
+pub type Resolver = Arc<dyn Fn(&str, u16) -> std::io::Result<Vec<SocketAddr>> + Send + Sync>;
+
+fn os_resolver() -> Resolver {
+    Arc::new(|host, port| (host, port).to_socket_addrs().map(|a| a.collect()))
+}
+
 /// The network broker. Cheap to clone; clones share everything.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Broker {
     state: Arc<Mutex<State>>,
     caps: Caps,
+    resolve: Resolver,
+}
+
+impl Default for Broker {
+    fn default() -> Broker {
+        Broker::new(Caps::default())
+    }
 }
 
 fn io(e: impl std::fmt::Display) -> ServiceError {
@@ -162,9 +181,15 @@ fn io(e: impl std::fmt::Display) -> ServiceError {
 
 impl Broker {
     pub fn new(caps: Caps) -> Broker {
+        Broker::with_resolver(caps, os_resolver())
+    }
+
+    /// A broker that looks names up with `resolve` (tests: a slow or rebinding resolver).
+    pub fn with_resolver(caps: Caps, resolve: Resolver) -> Broker {
         Broker {
             state: Arc::default(),
             caps,
+            resolve,
         }
     }
 
@@ -241,13 +266,16 @@ impl Broker {
     fn open(&self, conn: ConnId, call: u64, p: NetOpen, sink: Sink) {
         let id = match self.lock().reserve(conn, &self.caps) {
             Ok(id) => id,
-            Err(e) => return sink.answer(call, Err(e)),
+            Err(e) => {
+                sink.answer(call, Err(e));
+                return;
+            }
         };
         let broker = self.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("hideout-net-open-{conn}-{id}"))
             .spawn(move || {
-                let opened = connect(&p);
+                let opened = connect(&p, &broker.resolve, broker.caps.open_deadline);
                 broker.opened(conn, id, call, opened, sink);
             });
         if let Err(e) = spawned {
@@ -269,7 +297,8 @@ impl Broker {
             Ok(o) => o,
             Err(e) => {
                 self.lock().remove(conn, id);
-                return sink.answer(call, Err(e));
+                sink.answer(call, Err(e));
+                return;
             }
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -316,7 +345,13 @@ impl Broker {
             }
         }
         // The answer goes first, then what arrives (a client keeps early events anyway).
-        sink.answer(call, Ok(json!(NetStream { stream: id })));
+        if !sink.answer(call, Ok(json!(NetStream { stream: id }))) {
+            // Its caller stopped waiting (the call timed out): nobody knows this stream's id, so
+            // it closes at once and nothing is sent for it (§8.10).
+            log::info!("net: connection {conn}: stream {id} opened after its call ended; closed");
+            self.close(conn, id);
+            return;
+        }
         let spawned = std::thread::Builder::new()
             .name(format!("hideout-net-{conn}-{id}"))
             .spawn(run);
@@ -564,15 +599,107 @@ enum Opened {
     Listener(TcpListener, SocketAddr),
 }
 
-/// Connects or binds what `p` asks for (already permitted and checked by the router).
-fn connect(p: &NetOpen) -> Result<Opened, ServiceError> {
+/// Whether `ip` is on this PC or a local network: loopback, private (RFC 1918, ULA),
+/// link-local, shared (100.64/10), unspecified or broadcast, IPv4-mapped ones included.
+pub fn is_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => {
+            let o = v.octets();
+            v.is_loopback()
+                || v.is_private()
+                || v.is_link_local()
+                || v.is_unspecified()
+                || v.is_broadcast()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v) => {
+            if let Some(m) = v.to_ipv4_mapped() {
+                return is_local(IpAddr::V4(m));
+            }
+            let s = v.segments();
+            v.is_loopback()
+                || v.is_unspecified()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// The resolved addresses a `tcp` open may use (§8.10): a host written as an address may use
+/// it; `localhost` only loopback; any other name only addresses off this PC and the local
+/// networks, so a granted name can't be pointed (rebound) at the PC or the LAN.
+fn reachable(host: &str, addrs: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, ServiceError> {
+    let literal = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<IpAddr>()
+        .is_ok();
+    if literal {
+        return Ok(addrs);
+    }
+    let localhost = host.eq_ignore_ascii_case("localhost");
+    let found = addrs.len();
+    let kept: Vec<SocketAddr> = addrs
+        .into_iter()
+        .filter(|a| {
+            if localhost {
+                a.ip().is_loopback()
+            } else {
+                !is_local(a.ip())
+            }
+        })
+        .collect();
+    if kept.is_empty() && found > 0 {
+        return Err(ServiceError::new(
+            5,
+            error_id::NET_DENIED,
+            format!(
+                "{host} points at this PC or the local network, which a name can't reach through Hideout; grant the address itself"
+            ),
+        ));
+    }
+    Ok(kept)
+}
+
+/// Looks `host` up within `deadline` (the lookup itself has no time limit, so it runs on a
+/// thread of its own; one that answers late is ignored).
+fn lookup(
+    resolve: &Resolver,
+    host: &str,
+    port: u16,
+    deadline: std::time::Instant,
+) -> Result<Vec<SocketAddr>, ServiceError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (r, h) = (resolve.clone(), host.to_string());
+    std::thread::Builder::new()
+        .name("hideout-net-lookup".into())
+        .spawn(move || {
+            let _ = tx.send(r(&h, port));
+        })
+        .map_err(io)?;
+    match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+        Ok(found) => found.map_err(|e| io(format!("{host}:{port}: {e}"))),
+        Err(_) => Err(io(format!("{host}:{port}: the name lookup took too long"))),
+    }
+}
+
+/// Connects or binds what `p` asks for (already permitted and checked by the router), all of
+/// it within `limit`.
+fn connect(p: &NetOpen, resolve: &Resolver, limit: Duration) -> Result<Opened, ServiceError> {
     let at = |e: std::io::Error| io(format!("{}:{}: {e}", p.host, p.port));
     match p.kind {
         NetKind::Tcp => {
-            let addrs = (p.host.as_str(), p.port).to_socket_addrs().map_err(at)?;
+            let deadline = std::time::Instant::now() + limit;
+            let addrs = reachable(&p.host, lookup(resolve, &p.host, p.port, deadline)?)?;
             let mut last = std::io::Error::other("no address");
             for a in addrs {
-                match TcpStream::connect_timeout(&a, TIMEOUT) {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    last = std::io::Error::from(std::io::ErrorKind::TimedOut);
+                    break;
+                }
+                match TcpStream::connect_timeout(&a, left.min(TIMEOUT)) {
                     Ok(s) => {
                         let _ = s.set_write_timeout(Some(TIMEOUT));
                         let _ = s.set_nodelay(true);
@@ -584,14 +711,181 @@ fn connect(p: &NetOpen) -> Result<Opened, ServiceError> {
             Err(at(last))
         }
         NetKind::Udp => {
-            let s = UdpSocket::bind((Ipv4Addr::LOCALHOST, p.port)).map_err(at)?;
+            let s = exclusive::udp(p.port).map_err(at)?;
             let local = s.local_addr().map_err(at)?;
             Ok(Opened::Udp(s, local))
         }
         NetKind::TcpListen => {
-            let l = TcpListener::bind((Ipv4Addr::LOCALHOST, p.port)).map_err(at)?;
+            let l = exclusive::tcp(p.port).map_err(at)?;
             let local = l.local_addr().map_err(at)?;
             Ok(Opened::Listener(l, local))
         }
+    }
+}
+
+/// Loopback binds no other process can share (`SO_EXCLUSIVEADDRUSE` on Windows, #1107 review):
+/// a second bind with `SO_REUSEADDR` can't take a module's connections or datagrams.
+mod exclusive {
+    use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+
+    #[cfg(windows)]
+    fn bind(port: u16, stream: bool) -> std::io::Result<std::os::windows::io::RawSocket> {
+        use std::sync::Once;
+        use windows_sys::Win32::Networking::WinSock::*;
+        static START: Once = Once::new();
+        // SAFETY: plain WinSock calls on a socket this function owns until it returns it; on
+        // any failure the socket is closed before the error goes back.
+        unsafe {
+            START.call_once(|| {
+                let mut data: WSADATA = std::mem::zeroed();
+                WSAStartup(0x0202, &mut data);
+            });
+            let (kind, proto) = if stream {
+                (SOCK_STREAM, IPPROTO_TCP)
+            } else {
+                (SOCK_DGRAM, IPPROTO_UDP)
+            };
+            let s = WSASocketW(
+                AF_INET as i32,
+                kind,
+                proto,
+                std::ptr::null(),
+                0,
+                WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT,
+            );
+            if s == INVALID_SOCKET {
+                return Err(std::io::Error::from_raw_os_error(WSAGetLastError()));
+            }
+            let fail = |s| {
+                let e = std::io::Error::from_raw_os_error(WSAGetLastError());
+                closesocket(s);
+                Err(e)
+            };
+            let on: i32 = 1;
+            if setsockopt(
+                s,
+                SOL_SOCKET,
+                SO_EXCLUSIVEADDRUSE,
+                &on as *const i32 as *const u8,
+                std::mem::size_of::<i32>() as i32,
+            ) != 0
+            {
+                return fail(s);
+            }
+            let mut addr: SOCKADDR_IN = std::mem::zeroed();
+            addr.sin_family = AF_INET;
+            addr.sin_port = port.to_be();
+            addr.sin_addr.S_un.S_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
+            if windows_sys::Win32::Networking::WinSock::bind(
+                s,
+                &addr as *const SOCKADDR_IN as *const SOCKADDR,
+                std::mem::size_of::<SOCKADDR_IN>() as i32,
+            ) != 0
+            {
+                return fail(s);
+            }
+            if stream && listen(s, SOMAXCONN as i32) != 0 {
+                return fail(s);
+            }
+            Ok(s as std::os::windows::io::RawSocket)
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn tcp(port: u16) -> std::io::Result<TcpListener> {
+        use std::os::windows::io::FromRawSocket;
+        // SAFETY: a fresh, bound, listening socket nothing else owns.
+        bind(port, true).map(|s| unsafe { TcpListener::from_raw_socket(s) })
+    }
+
+    #[cfg(windows)]
+    pub fn udp(port: u16) -> std::io::Result<UdpSocket> {
+        use std::os::windows::io::FromRawSocket;
+        // SAFETY: a fresh, bound socket nothing else owns.
+        bind(port, false).map(|s| unsafe { UdpSocket::from_raw_socket(s) })
+    }
+
+    #[cfg(not(windows))]
+    pub fn tcp(port: u16) -> std::io::Result<TcpListener> {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+    }
+
+    #[cfg(not(windows))]
+    pub fn udp(port: u16) -> std::io::Result<UdpSocket> {
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, port))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_addresses_are_known() {
+        for a in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.1",
+            "192.168.1.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "::ffff:192.168.0.1",
+        ] {
+            assert!(is_local(a.parse().unwrap()), "{a}");
+        }
+        for a in [
+            "8.8.8.8",
+            "172.32.0.1",
+            "100.128.0.1",
+            "2606:4700::1111",
+            "::ffff:1.1.1.1",
+        ] {
+            assert!(!is_local(a.parse().unwrap()), "{a}");
+        }
+    }
+
+    #[test]
+    fn a_name_is_never_rebound_to_this_pc_or_the_lan() {
+        let at = |s: &str| -> SocketAddr { s.parse().unwrap() };
+        // A name pointed at loopback or the LAN: refused, net.denied.
+        let e = reachable(
+            "api.example.com",
+            vec![at("127.0.0.1:80"), at("192.168.1.5:80")],
+        )
+        .unwrap_err();
+        assert_eq!((e.code, e.id), (5, error_id::NET_DENIED));
+        // Mixed: only the public address is tried.
+        assert_eq!(
+            reachable("api.example.com", vec![at("10.0.0.1:80"), at("1.2.3.4:80")]).unwrap(),
+            [at("1.2.3.4:80")]
+        );
+        // The address written in the grant itself, and localhost to loopback, still work.
+        assert_eq!(
+            reachable("127.0.0.1", vec![at("127.0.0.1:4455")])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            reachable("192.168.1.5", vec![at("192.168.1.5:80")])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            reachable("localhost", vec![at("127.0.0.1:1"), at("[::1]:1")])
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(reachable("localhost", vec![at("10.0.0.1:1")]).is_err());
     }
 }

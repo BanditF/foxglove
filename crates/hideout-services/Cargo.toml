@@ -27,6 +27,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
 ] }
 
+# SO_EXCLUSIVEADDRUSE on the broker's loopback listens (#1107 review); windows-sys is already in
+# the tree (MIT/Apache-2.0).
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
+
 [dev-dependencies]
 # The plugins' own code path: the SDK's net client (connect_tcp, listen_tcp, listen_udp) over an
 # in-process hub.
