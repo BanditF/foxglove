@@ -365,16 +365,39 @@ impl Registry {
             self.inventory.seen.get(ROOT_ANCHOR),
         )?;
         self.hub.validate(&root.scopes())?;
+        // Stored beside every root-anchored catalog, so it must be text before it is used.
+        let text = std::str::from_utf8(json)
+            .map_err(|_| Error::new(ErrorId::ManifestSyntax, "root.json: not UTF-8"))?;
+        let mut next = self
+            .inventory
+            .seen
+            .get(ROOT_ANCHOR)
+            .cloned()
+            .unwrap_or_default();
+        next.record_root(&root);
+        // The other root-anchored sources' saved catalogs move to this root (checked against
+        // it, saved with it) before `seen` is raised, so no saved file keeps a root that the
+        // raised `seen` refuses at the next open. One that doesn't verify under it is dropped.
+        let kept = self.rebase_root_catalogs(&root, text, signature, &next, now);
         self.raise_seen(|seen| {
             seen.entry(ROOT_ANCHOR.into())
                 .or_default()
                 .record_root(&root)
         })?;
+        let dropped: Vec<String> = self
+            .trust
+            .catalogs
+            .iter()
+            .filter(|a| a.anchor == ROOT_ANCHOR && !kept.iter().any(|k| k.source == a.source))
+            .map(|a| a.source.clone())
+            .collect();
+        for s in &dropped {
+            self.accepted_info.remove(s);
+        }
         self.trust.catalogs.retain(|a| a.anchor != ROOT_ANCHOR);
+        self.trust.catalogs.extend(kept);
         self.trust.root = Some(root);
-        self.root_file = std::str::from_utf8(json)
-            .ok()
-            .map(|t| (t.to_string(), signature.to_string()));
+        self.root_file = Some((text.to_string(), signature.to_string()));
         Ok(())
     }
 

@@ -235,6 +235,14 @@ The hub MUST NOT contain:
   layout) is `hideout.toml`'s `[windows]` table (§2.5, §7.3); the main window's is the hub's own
   part of the same file. A module window's placement is the module's, under its `data\`
   (§2.5).
+- **`catalogs\<source>\` (clarification, #1049).** One file per source,
+  `catalogs\<source>\accepted.json`: the last catalog accepted from that source, byte for byte,
+  with its signature, its family, epoch, sequence and expiry, and when this hub accepted it (UTC).
+  For a root-anchored source it also holds the `root.json` (and signature) that catalog was
+  verified against, never another one: when a newer root is accepted, every saved root-anchored
+  catalog is verified again under it and saved with it, or no longer used. The file is replaced
+  in one atomic rename, written before `seen` is raised (§12.4), and verified again in full at
+  every hub start. Its sequence and accepted time go to Copy diagnostics only once verified.
 - `HIDEOUT_HOME`, when set, replaces `%LOCALAPPDATA%\Hideout` and `%APPDATA%\Hideout` (tests).
 - Every file and pipe here MUST have a current-user-only ACL.
 - A module's files outside `data\` and `settings\` are written only by `hideout-core`.
@@ -1814,6 +1822,11 @@ anchor = "<trust anchor id>"      # §13.6; absent only for a developer-mode fol
   `public` (`trust.visibility`).
 - Sources are fetched on the user's action or at the hub's update, never on a timer. A `folder`
   source is noticed by a directory-change notification.
+- **Where a source's root is (clarification, #1049).** A source anchored to the Hideout root has
+  its `root.json` beside its `catalog.json`: the same URL path with the last segment replaced
+  (`https://…/c/catalog.json` → `https://…/c/root.json`, query and fragment dropped), or the same
+  folder. Each file's signature is the file's name plus `.minisig`. A source with a user anchor
+  (§13.6) has no `root.json`.
 - Adding or removing a source is a user action in the Modules page or the CLI. A source is never
   added by a module or an outside tool.
 - Removing a source leaves its installed modules installed; their updates stop.

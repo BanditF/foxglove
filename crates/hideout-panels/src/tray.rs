@@ -16,6 +16,10 @@ use std::time::{Duration, Instant};
 
 /// Width of a tile in the tray panel.
 pub const TILE_WIDTH: f32 = 228.0;
+/// A withdrawn module's tile, two lines (#1026). The same words as the supervisor's
+/// `words::TILE_WITHDRAWN`: this crate can't depend on the supervisor, so a test in
+/// hideout-shell keeps the two equal.
+pub const TILE_WITHDRAWN: (&str, &str) = ("Version withdrawn", "by its publisher");
 /// Tiles per row.
 pub const COLUMNS: usize = 2;
 
@@ -546,7 +550,7 @@ fn tile_ui_keyed(
             });
             if withdrawn {
                 // The tile never carries the publisher's note (too small for its label).
-                let (a, b) = ("Version withdrawn", "by its publisher");
+                let (a, b) = TILE_WITHDRAWN;
                 spoken.push(format!("{a} {b}"));
                 ui.label(RichText::new(a).color(danger));
                 ui.label(RichText::new(b).color(danger));

@@ -389,6 +389,53 @@ impl Registry {
         Ok(Some(st))
     }
 
+    /// The root-anchored catalogs in use, each checked again against a new `root` (with `seen`
+    /// as it will be once the root is accepted) and saved again with that root's file, so a
+    /// saved catalog always sits with the root it was verified against (#1049). The ones that
+    /// verify are returned; the others (and any that can't be saved) are left out.
+    pub(crate) fn rebase_root_catalogs(
+        &self,
+        root: &Root,
+        json: &str,
+        sig: &str,
+        seen: &crate::trust::SeenAnchor,
+        now: &str,
+    ) -> Vec<Accepted> {
+        let mut kept = Vec::new();
+        for a in self
+            .trust
+            .catalogs
+            .iter()
+            .filter(|a| a.anchor == ROOT_ANCHOR)
+        {
+            let Ok(Some(mut st)) = read_stored(&self.home, &a.source) else {
+                continue;
+            };
+            let Ok(catalog) = verify_catalog(
+                st.catalog.as_bytes(),
+                &st.signature,
+                Signer::Root(root),
+                &a.source,
+                now,
+                Some(seen),
+            ) else {
+                continue;
+            };
+            st.root = Some(json.into());
+            st.root_signature = Some(sig.into());
+            if write_stored(&self.home, &st).is_err() {
+                continue;
+            }
+            kept.push(Accepted {
+                anchor: a.anchor.clone(),
+                source: a.source.clone(),
+                visibility: a.visibility,
+                catalog,
+            });
+        }
+        kept
+    }
+
     /// Keeps the newest verified root (by version, then epoch) and its file.
     fn keep_root(&mut self, root: Root, json: &str, sig: &str) {
         let newer = self
