@@ -554,6 +554,41 @@ impl PillGroup {
     }
 }
 
+// Pills that toggle (#1097). A pill on its own, or in a row where several can be on at once
+// (Art > Rotation), is an AccessKit toggle button: a button with a pressed state, so a screen
+// reader says "Every 30 min, toggle button, pressed". It is not a radio group. Space or Enter
+// toggles (egui's click on a focused button) and each pill is an ordinary Tab stop.
+
+/// A pill that toggles: a button with a pressed state, `on` when lit. Its response is the
+/// pill's own, so the caller reacts to `clicked()` as it did for a bare [`pill`].
+pub fn toggle_pill(ui: &mut egui::Ui, on: bool, text: &str) -> egui::Response {
+    toggle_pill_enabled(ui, true, on, text)
+}
+
+/// [`toggle_pill`], greyed out and not toggleable unless `enabled` (#388).
+pub fn toggle_pill_enabled(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    on: bool,
+    text: &str,
+) -> egui::Response {
+    let r = ui.add_enabled(enabled, pill_button(ui, on, text));
+    mark_toggle(ui.ctx(), r.id, on);
+    r
+}
+
+/// Gives the widget `id` a pressed state, as a toggle button's (the role stays Button).
+fn mark_toggle(ctx: &egui::Context, id: egui::Id, on: bool) {
+    ctx.accesskit_node_builder(id, |n| {
+        n.set_role(egui::accesskit::Role::Button);
+        n.set_toggled(if on {
+            egui::accesskit::Toggled::True
+        } else {
+            egui::accesskit::Toggled::False
+        });
+    });
+}
+
 /// Moves `child`'s node from `from`'s children to `to`'s. Only a node that was there moves, so
 /// a node never ends up with two parents. True when it moved.
 fn adopt(ctx: &egui::Context, from: egui::Id, to: egui::Id, child: egui::Id) -> bool {

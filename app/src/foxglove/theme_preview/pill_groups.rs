@@ -303,20 +303,11 @@ fn the_tray_panel_rows_are_radio_groups() {
 /// they say; `pill_button` stays inside the theme.
 #[test]
 fn no_pill_row_is_drawn_outside_a_group() {
-    const LONE: [(&str, &str); 5] = [
+    const LONE: [(&str, &str); 2] = [
         // Pause / Resume: one toggle.
         ("tray_panel.rs", "theme::pill(ui, v.paused, label)"),
-        // Opens a plugin's options.
-        ("plugins_ui.rs", "theme::pill(ui, open, \"Options\")"),
-        // Opens the hue and saturation sliders beside the swatches.
-        (
-            "lights_page.rs",
-            "theme::pill(ui, custom || *custom_open, \"Custom\")",
-        ),
         // The theme review's sample of a pill beside a chip.
         ("theme_preview.rs", "theme::pill(ui, true, \"Solid\")"),
-        // Art rotation: steps that toggle one by one (several can be on), not one choice.
-        ("art_ui.rs", "theme::pill(ui, lit["),
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/foxglove");
     let mut bad = Vec::new();
@@ -348,10 +339,7 @@ fn no_pill_row_is_drawn_outside_a_group() {
                         None => bad.push(format!("{name}:{}: {line}", n + 1)),
                     }
                 }
-                if name != "theme.rs"
-                    && line.contains("pill_button(")
-                    && !(name == "art_ui.rs" && line.contains("pill_button(ui, lit["))
-                {
+                if name != "theme.rs" && line.contains("pill_button(") {
                     bad.push(format!("{name}:{}: {line}", n + 1));
                 }
             }

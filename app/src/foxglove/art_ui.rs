@@ -898,19 +898,19 @@ fn draw_rotation(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
     ui.horizontal_wrapped(|ui| {
         // A pill that doesn't fit moves to the next row rather than wrapping its words.
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-        if theme::pill(ui, lit[0], "Off").clicked() && !lit[0] {
+        if theme::toggle_pill(ui, lit[0], "Off").clicked() && !lit[0] {
             for step in [Step::Minutes, Step::LightsWake] {
                 cycle.set_step(step, false);
             }
             cycle.follow = Follow::Nothing;
             changed = true;
         }
-        if theme::pill(ui, lit[1], &format!("Every {} min", cycle.minutes)).clicked() {
+        if theme::toggle_pill(ui, lit[1], &format!("Every {} min", cycle.minutes)).clicked() {
             cycle.set_step(Step::Minutes, !lit[1]);
             changed = true;
         }
         if !epaper {
-            let wake = ui.add_enabled(s.wake_events, theme::pill_button(ui, lit[2], "Lights wake"));
+            let wake = theme::toggle_pill_enabled(ui, s.wake_events, lit[2], "Lights wake");
             if wake
                 .on_hover_text("Steps when the keyboard's lights come back on.")
                 .on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.")
@@ -926,7 +926,7 @@ fn draw_rotation(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
         } else {
             "Shows the art that goes with your Windows desktop wallpaper, when its file is named after a wallpaper in the art folder's wallpapers.json. Works best with Wallpaper Engine."
         };
-        if theme::pill(ui, lit[3], "Wallpaper").on_hover_text(hover).clicked() {
+        if theme::toggle_pill(ui, lit[3], "Wallpaper").on_hover_text(hover).clicked() {
             cycle.follow = if lit[3] { Follow::Nothing } else { Follow::Wallpaper };
             changed = true;
         }
@@ -2149,6 +2149,165 @@ pub mod tests {
         let pace = Pace::current_with(|| panic!("the Corne's page reads the e-paper switch"));
         crate::foxglove::art_encode::TEST_SCREENS.set(None);
         assert!(!pace.refresh.is_epaper());
+    }
+
+    /// Rotation's row drawn window-free with AccessKit on (#1097): the accessibility tree it
+    /// gives and the changes it asked for, frame by frame.
+    struct RotationRow {
+        ctx: egui::Context,
+        art: Art,
+        tree: Option<egui::accesskit::TreeUpdate>,
+        acts: Vec<Act>,
+    }
+
+    impl RotationRow {
+        fn new(cycle: Cycle) -> RotationRow {
+            use crate::foxglove::fixtures::users_desk;
+            use crate::foxglove::screen_roles::of_board;
+            crate::foxglove::art_encode::TEST_SCREENS.set(Some(of_board(&users_desk::board())));
+            let (mut s, lib) = sample();
+            s.cycle = cycle;
+            let ctx = crate::foxglove::theme::headless::ctx(crate::foxglove::theme::Choice::Dark);
+            ctx.enable_accesskit();
+            let mut r = RotationRow {
+                ctx,
+                art: Art::new(s, lib),
+                tree: None,
+                acts: Vec::new(),
+            };
+            r.frame(Vec::new());
+            r
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 400.0),
+                )),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            let (art, acts) = (&self.art, &mut self.acts);
+            let mut out = self.ctx.run_ui(raw, |ui| draw_rotation(ui, art, acts));
+            out.textures_delta.clear();
+            self.tree = out.platform_output.accesskit_update;
+        }
+
+        fn key(&mut self, key: egui::Key) {
+            self.frame(vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]);
+            self.frame(Vec::new());
+        }
+
+        /// The row's pills as the tree has them: name and pressed state, in tree order.
+        fn pills(&self) -> Vec<(String, Option<bool>)> {
+            let t = self.tree.as_ref().expect("a tree");
+            t.nodes
+                .iter()
+                .filter(|(_, n)| n.toggled().is_some())
+                .map(|(_, n)| {
+                    (
+                        n.label().unwrap_or_default().to_owned(),
+                        Some(n.toggled() == Some(egui::accesskit::Toggled::True)),
+                    )
+                })
+                .collect()
+        }
+
+        fn focus(&self) -> String {
+            let t = self.tree.as_ref().expect("a tree");
+            t.nodes
+                .iter()
+                .find(|(i, _)| *i == t.focus)
+                .and_then(|(_, n)| n.label().map(str::to_owned))
+                .unwrap_or_default()
+        }
+    }
+
+    /// #1097: Rotation's pills are toggle buttons, not a radio group: Every n min and Lights
+    /// wake can both be on and the tree says so; each says its name and pressed state.
+    #[test]
+    fn rotation_pills_are_toggle_buttons_with_a_pressed_state() {
+        let mut cycle = Cycle::default();
+        cycle.set_step(Step::Minutes, true);
+        cycle.set_step(Step::LightsWake, true);
+        let minutes = cycle.minutes;
+        let row = RotationRow::new(cycle);
+        let every = format!("Every {minutes} min");
+        let mut got = row.pills();
+        got.sort();
+        let mut want = vec![
+            ("Off".to_owned(), Some(false)),
+            (every, Some(true)),
+            ("Lights wake".to_owned(), Some(true)),
+            ("Wallpaper".to_owned(), Some(false)),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+        for (_, n) in &row.tree.as_ref().unwrap().nodes {
+            assert!(
+                !matches!(
+                    n.role(),
+                    egui::accesskit::Role::RadioGroup | egui::accesskit::Role::RadioButton
+                ),
+                "Rotation isn't a radio group: {:?}",
+                n.label()
+            );
+            if n.toggled().is_some() {
+                assert_eq!(n.role(), egui::accesskit::Role::Button);
+            }
+        }
+        crate::foxglove::art_encode::TEST_SCREENS.set(None);
+    }
+
+    /// #1097: Tab walks the pills in order, and Space (or Enter) toggles the focused one.
+    #[test]
+    fn rotation_pills_tab_in_order_and_space_or_enter_toggles() {
+        let mut cycle = Cycle::default();
+        cycle.set_step(Step::LightsWake, true);
+        let mut row = RotationRow::new(cycle);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            row.key(egui::Key::Tab);
+            seen.push(row.focus());
+        }
+        assert_eq!(seen[0], "Off");
+        assert!(seen[1].starts_with("Every "), "{seen:?}");
+        assert_eq!(&seen[2..], ["Lights wake", "Wallpaper"]);
+        // Lights wake has focus after the third Tab, and it is on: Space turns it off.
+        let mut row = RotationRow::new({
+            let mut c = Cycle::default();
+            c.set_step(Step::LightsWake, true);
+            c
+        });
+        for _ in 0..3 {
+            row.key(egui::Key::Tab);
+        }
+        assert_eq!(row.focus(), "Lights wake");
+        row.key(egui::Key::Space);
+        match row.acts.last() {
+            Some(Act::Cycle(c)) => assert!(!c.steps_on(Step::LightsWake)),
+            _ => panic!("Space asks for a change"),
+        }
+        // Enter on Every n min turns it on, beside whatever else is on.
+        let mut row = RotationRow::new(Cycle::default());
+        for _ in 0..2 {
+            row.key(egui::Key::Tab);
+        }
+        assert!(row.focus().starts_with("Every "));
+        row.key(egui::Key::Enter);
+        match row.acts.last() {
+            Some(Act::Cycle(c)) => assert!(c.steps_on(Step::Minutes)),
+            _ => panic!("Enter asks for a change"),
+        }
+        crate::foxglove::art_encode::TEST_SCREENS.set(None);
     }
 
     /// The pictures' textures live in the context they were made in, keyed by content: a new

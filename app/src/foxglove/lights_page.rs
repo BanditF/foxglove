@@ -1183,7 +1183,7 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 }
                 // Any other colour: hue and saturation sliders behind a pill.
                 let custom = !swatches.iter().any(|(_, rgb)| is_swatch((*hue, *sat), *rgb));
-                if theme::pill(ui, custom || *custom_open, "Custom").clicked() {
+                if theme::toggle_pill(ui, custom || *custom_open, "Custom").clicked() {
                     *custom_open = !*custom_open;
                 }
             });
