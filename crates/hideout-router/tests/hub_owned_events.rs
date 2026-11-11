@@ -98,6 +98,12 @@ fn a_module_cannot_send_hub_owned_events_to_a_lease_holder() {
             "facts.changed",
             json!({"subscription":1,"key":"mic.state","value":"unmuted"}),
         ),
+        // The app watch's events (§8.12, v1.13, #1108).
+        (
+            "app.window.appeared",
+            json!({"to":"L1","exe":"obs64.exe","open":1}),
+        ),
+        ("app.window.closed", json!({"exe":"obs64.exe","open":0})),
     ] {
         let msg = json!({"jsonrpc":"2.0","method":m,"params":p});
         let out = r.receive(a, &msg.to_string(), now);

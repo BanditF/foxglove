@@ -255,7 +255,7 @@ impl Router {
     }
 }
 
-fn refusal(id: &Value, e: &ServiceError) -> Value {
+pub(super) fn refusal(id: &Value, e: &ServiceError) -> Value {
     let mut err = e.to_value();
     if e.id.is_empty() {
         err["data"] = json!({ "reason": e.reason });

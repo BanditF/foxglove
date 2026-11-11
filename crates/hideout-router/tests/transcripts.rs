@@ -525,6 +525,17 @@ fn setup(name: &str) -> Replay {
             r.module("module", ART, None);
             r
         }
+        // The app watch's call (§8.12, v1.13): the router answers it from the app facts.
+        "apps-watch" => {
+            let mut r = Replay::new(vec![]);
+            let mut a = art();
+            a.granted.push("apps.watch:example-app.exe".into());
+            r.router.add_module(a);
+            let out = r.router.publish("apps.running.example-app", json!(false));
+            r.take(out);
+            r.module("module", ART, None);
+            r
+        }
         "channel-open-denied" => {
             let mut r = Replay::new(vec![]);
             r.router.add_module(other(
@@ -708,6 +719,14 @@ fn event(r: &mut Replay, name: &str, text: &str) -> Result<(), String> {
         ("lease-closed-revoked", "the consumer's connection ends") => {
             let c = r.parties.remove("consumer").unwrap();
             let out = r.router.disconnect(c);
+            r.take(out);
+        }
+        ("apps-watch", t) if t.starts_with("the app watch publishes ") => {
+            let (key, value) = t["the app watch publishes ".len()..]
+                .split_once(" = ")
+                .ok_or("key = value")?;
+            let value: Value = serde_json::from_str(value).map_err(|e| e.to_string())?;
+            let out = r.router.publish(key, value);
             r.take(out);
         }
         (_, t) if t.starts_with("30 seconds pass") => {

@@ -135,8 +135,35 @@ pub const MIC_FACTS: &[&str] = &[
     "mic.error",
 ];
 
+/// The app watch's call (§8.12, v1.13): a module asks to be told when an app opens and closes.
+pub const APPS_WATCH: &str = "apps.watch";
+
+/// The app watch's events (§8.12): the app opened, and the app closed.
+pub const APP_WINDOW_APPEARED: &str = "app.window.appeared";
+pub const APP_WINDOW_CLOSED: &str = "app.window.closed";
+
+/// `apps.watch` (M → H, §8.12): the app's exe file name, such as `obs64.exe`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AppsWatch {
+    pub exe: String,
+}
+
+/// `apps.watch`'s result and the `app.window.appeared` and `app.window.closed` events
+/// (§8.12): `exe` as asked (ASCII lower case) and `open`, 1 while the app runs and 0 while it
+/// doesn't. Foxglove API 1.3's shape, where `open` counts windows; the hub's watch follows
+/// processes, so 0 means the same in both: the app isn't open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct AppWindows {
+    pub exe: String,
+    pub open: u32,
+}
+
 /// The `data.id`s a host service's refusal carries (§15).
 pub mod error_id {
+    /// (v1.13) `apps.watch` without `apps.watch:<name>.exe` for that app.
+    pub const APPS_DENIED: &str = "apps.denied";
+    /// (v1.13) `apps.watch` with an `exe` that isn't `<name>.exe`.
+    pub const APPS_ARGUMENT: &str = "apps.argument";
     pub const NET_DENIED: &str = "net.denied";
     pub const NET_ARGUMENT: &str = "net.argument";
     pub const NET_STREAM: &str = "net.stream";

@@ -1,0 +1,122 @@
+{
+  "name": "apps-watch",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.12",
+    "4.6",
+    "15"
+  ],
+  "description": "apps.watch on the hub (v1.13, #1108): the module holds apps.watch:example-app.exe. The answer is {exe, open} from apps.running.example-app (0: not running); each flip of that fact sends app.window.appeared (open 1) or app.window.closed (open 0) to the watcher alone. Another app is error 5 apps.denied; an exe that isn't a program's file name is -32602 apps.argument.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "apps.watch",
+        "params": {
+          "exe": "Example-App.exe"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "exe": "example-app.exe",
+          "open": 0
+        }
+      }
+    },
+    {
+      "event": "the app watch publishes apps.running.example-app = true"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "app.window.appeared",
+        "params": {
+          "exe": "example-app.exe",
+          "open": 1
+        }
+      }
+    },
+    {
+      "event": "the app watch publishes apps.running.example-app = false"
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "method": "app.window.closed",
+        "params": {
+          "exe": "example-app.exe",
+          "open": 0
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "apps.watch",
+        "params": {
+          "exe": "other-app.exe"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "id": "apps.denied",
+            "reason": "Example Art needs permission apps.watch:other-app.exe to know when other-app.exe opens. Allow it in Hideout's permissions for Example Art."
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "apps.watch",
+        "params": {
+          "exe": "example-app"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32602,
+          "message": "invalid params",
+          "data": {
+            "id": "apps.argument",
+            "reason": "apps.watch: \"example-app\" is not a program's file name such as obs64.exe"
+          }
+        }
+      }
+    }
+  ]
+}

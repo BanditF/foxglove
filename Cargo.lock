@@ -2099,6 +2099,7 @@ dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-api",
  "hideout-acl",
+ "hideout-appwatch",
  "hideout-contract",
  "hideout-panels",
  "hideout-registry",

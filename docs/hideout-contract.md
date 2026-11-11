@@ -1,6 +1,7 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.12** (v1.11 plus the hub's host services: the network broker
+Status: spec, contract version **1.13** (v1.12 plus the hub's `apps.watch`, the SDK's wait for an
+app, answered on top of the app watch's facts, #1108; v1.12 was v1.11 plus the hub's host services: the network broker
 `net.*` and the microphone, `mic.*` and `audio.inputs.set_mute`, #1102; v1.11 was v1.10 plus a
 catalog entry's optional `min_hub_release`, the Hideout release Update Hideout links, #991; v1.10
 was v1.9 plus the manifest's `[limits]` and the rules of
@@ -11,12 +12,24 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.13** (#1108): the hub answers `apps.watch {exe}` (§8.12), the call the SDK's `watch_app`
+  makes (Foxglove API 1.3), which the hub answered −32601, so Broadcast Status couldn't tell
+  when OBS opens. It is served on top of the app watch (§4.6), with the facts' permission
+  `apps.watch:<name>.exe`: the answer is Foxglove's `{exe, open}`, `open` 1 while
+  `apps.running.<name>` is true and 0 otherwise, and each flip of that fact sends
+  `app.window.appeared` (`open` 1) or `app.window.closed` (`open` 0) to the connections that
+  watch the app, nobody else. Event-driven: the events ride the fact's change, nothing waits on
+  a timer. Modules only; a watch ends with its connection. `apps.*` and `app.window.*` join the
+  hub-owned names (§8.3). New error ids (§15): `apps.denied` and `apps.argument`. `hub` stays
+  1.3 (§8.7): an older hub answers −32601, which the SDK's callers already take as "can't say"
+  (Broadcast Status then connects only at start), so nothing has to be negotiated. Vector:
+  `transcripts/apps/watch.json`.
 - **1.12** (#1102): the hub's host services: the calls the first-party plugins already make
   through Foxglove's API (1.2, 1.3), which the hub answered −32601. **Network** (§8.10):
   `net.open {kind, host, port}` → `{stream}`, `net.send {stream, data}`, `net.close {stream}`
@@ -697,6 +710,9 @@ item shows:
   `facts.set` them (error 5). A module holding `apps.watch:<name>.exe` may `facts.get` and
   `facts.subscribe` `apps.running.<name>` and `apps.seen.<name>` (exact keys); `facts.read`
   covering them also works.
+- (v1.13) The same permission lets a module call `apps.watch {exe}` (§8.12): the app's
+  `apps.running.<name>` as Foxglove API 1.3's answer and events, `app.window.appeared` and
+  `app.window.closed`.
 
 ### 4.7 Contributions (data, VS Code-style)
 
@@ -1653,10 +1669,12 @@ Rules:
   get `facts.changed`.
 - The hub carries control and status only. Fast data uses channels.
 - **Host services (v1.12)** are methods the hub answers itself: the network broker `net.*`
-  (§8.10) and the microphone `audio.inputs.*` (§8.11). No module may provide them (§6.3: they are
+  (§8.10) and the microphone `audio.inputs.*` (§8.11); (v1.13) also the app watch's
+  `apps.watch` (§8.12). No module may provide them (§6.3: they are
   rejected at `module.register` with `permission.provider`), and a hub without one answers
   −32601. `mic.*` facts are the hub's: `facts.set` on one is refused (error 5). A module's
-  notification whose name is hub-owned (`net.*`, `audio.inputs.*`, `facts.*`, `channel.*`,
+  notification whose name is hub-owned (`net.*`, `audio.inputs.*`, (v1.13) `apps.*` and
+  `app.window.*`, `facts.*`, `channel.*`,
   `ui.*` beyond `ui.patch` and `ui.badge`, `module.*` beyond `module.ready` and
   `module.idle` …) is dropped, never forwarded to a lease holder (§8.5) or broadcast: a module
   can't forge another stream's `net.data` or a `mic.*` change.
@@ -1797,7 +1815,9 @@ and a hub-owned `hideout.toml` table, no message or manifest key). The hub answe
   1.11 stays `hub` 1.2: its one addition is an optional catalog entry field, which a reader
   that doesn't know it ignores (catalog entries ignore unknown fields, §12.4). (v1.12) Spec
   1.12 is `hub` 1.3 (the host services' messages, §8.10, §8.11). A hub 1.3 reader accepts `1.0`
-  to `1.3`.
+  to `1.3`. (v1.13) Spec 1.13 stays `hub` 1.3: `apps.watch` is Foxglove API 1.3's call, which
+  modules already make, and a hub without it answers −32601, which its callers take as "can't
+  say" (§8.12); no manifest key.
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
 - A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
@@ -1864,6 +1884,14 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `net.accepted` | H → C | notification | `{listener, stream, from}` | — | the listener's holder only |
 | `net.closed` | H → C | notification | `{stream, reason}` | — | the stream's holder only |
 | `audio.inputs.set_mute` | C → H | call | `{muted}` | `{}` | `audio.inputs.mute` |
+
+**App watch (v1.13)**
+
+| Message | From → to | Kind | Params | Result | Needs |
+|---|---|---|---|---|---|
+| `apps.watch` | M → H | call | `{exe}` (`<name>.exe`) | `{exe, open}` (`open` 1 or 0) | `apps.watch:<name>.exe` |
+| `app.window.appeared` | H → M | notification | `{exe, open: 1}` | — | the watch |
+| `app.window.closed` | H → M | notification | `{exe, open: 0}` | — | the watch |
 
 **Module management**
 
@@ -2004,6 +2032,41 @@ bypass it.
   can't be reached: error 6 `audio.backend`; without the permission: error 5 `audio.denied`. A
   `muted` that isn't a boolean: −32602.
 - A hub that can't reach Core Audio publishes `mic.state` `"unknown"` with `mic.error`.
+
+### 8.12 The app watch's call (v1.13, #1108)
+
+`apps.watch` is how a module waits for an outside app instead of polling for it: Foxglove API
+1.3's call, which the SDK makes (`watch_app`, then `app_windows`). The hub answers it itself, on
+top of the app watch (§4.6) and its fact `apps.running.<name>`; no module may provide it (§8.3).
+
+- **`apps.watch {exe}`** (M → H) answers `{exe, open}`. `exe` is a program's file name,
+  `<name>.exe` (`obs64.exe`), matched with ASCII case ignored and answered in lower case; its
+  label is `apps.running`'s (§4.6). `open` is 1 while `apps.running.<name>` is `true` and 0
+  otherwise, unset included. Calling it again for the same app is the same watch and answers
+  the same way.
+  - Needs `apps.watch:<name>.exe` for that app, the permission that lets a module read the
+    app's facts (§4.6); without it: error 5 with `data.id` `apps.denied`, naming the
+    permission. An `exe` that is missing, a path, or not `<name>.exe`: −32602 `apps.argument`.
+  - Modules only (their own connection or the stdio bridge): the app watch follows the apps
+    manifests name, so a tool's watch could never hear anything; a tool gets `apps.denied`.
+- **Events** go only to the connections that watch that app, never broadcast, with `exe` as
+  the watch's answer spelled it:
+  - `app.window.appeared {exe, open: 1}`: `apps.running.<name>` turned `true`.
+  - `app.window.closed {exe, open: 0}`: it turned `false` (or was removed) after being `true`.
+    `open` 0 is the SDK's "the app has quit".
+
+  One event per change of the fact. Unset to `false` says nothing (the app didn't close).
+- **`open` counts the app, not its windows.** Foxglove's own host counts visible top-level
+  windows (local-api.md); the hub's app watch follows processes (§4.6), so `open` is 1 or 0.
+  The meaning callers rely on is the same in both: 0 is "not open", and a change from 0 is
+  "it opened". An app counts as started once it makes a window, a hidden one included (§4.6).
+- **Clean-up.** A connection's watches end with it (the module exits, crashes, is stopped or
+  swapped); nothing is kept for its next run, which asks again. A watch for an app no manifest
+  installed at hub start names isn't followed until the hub restarts (the app watch reads the
+  manifests at start, §4.6); it answers `open` 0 meanwhile.
+- **No polling.** The events ride the fact's change, which the app watch publishes from process
+  exits and window creation (§4.6); nothing in the call or its events runs on a timer.
+- Only the hub sends `app.window.*`: a module's notification with that name is dropped (§8.3).
 
 ## 9. The MCP bridge
 
@@ -2394,6 +2457,8 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `audio.denied` | (v1.12) `audio.inputs.set_mute` without `audio.inputs.mute`: error 5 (§8.11) |
 | `audio.unavailable` | (v1.12) `audio.inputs.set_mute` with no default communications microphone: error 6 (§8.11) |
 | `audio.backend` | (v1.12) Core Audio refused the change or can't be reached: error 6 (§8.11) |
+| `apps.denied` | (v1.13) `apps.watch` without `apps.watch:<name>.exe` for that app, or from a tool: error 5 (§8.12) |
+| `apps.argument` | (v1.13) `apps.watch` with an `exe` that isn't a program's file name `<name>.exe`: −32602 (§8.12) |
 | `channel.pipe` | (v1.4, #977) a provider answered `channel.create` with no pipe or one that is not `\\.\pipe\hideout-ch-<rest>`: the consumer gets error 6 with this `data.id` (§8.4) |
 | `rpc.*` | JSON-RPC transcripts use the numeric codes of §8.1; the two ids above travel in the error's `data.id` |
 
@@ -2416,7 +2481,7 @@ v1.8: `panels/valid/at-cap-*.json` and `panels/invalid/over-cap-*.json`, each pa
 and one over, and `transcripts/supervisor/backoff-resets-after-quiet.json`; v1.11:
 `trust/hub-release.json`, a catalog entry's `min_hub_release` and the page Update Hideout opens; v1.12:
 `transcripts/net/open-refused.json`, `transcripts/net/stream-refused.json` and
-`transcripts/audio/set-mute-refused.json`). The vectors are
+`transcripts/audio/set-mute-refused.json`; v1.13: `transcripts/apps/watch.json`). The vectors are
 edited by hand, each in the PR that changes its result: the generator #914 used was never
 committed (`**/tools/*` is git-ignored) and no copy survives. A future generator lives at a tracked
 path (`scripts/`).
