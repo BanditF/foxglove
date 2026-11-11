@@ -216,11 +216,12 @@ fn needs_hub_shows_its_card_with_update_hideout() {
     let _ = frames(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
     assert!(asked(&rec).is_empty());
     let _ = frames(&ctx, &mut hub, vec![key(Key::Enter, Modifiers::NONE)]);
-    assert_eq!(asked(&rec), ["update-hub"]);
+    // The card names its module, so the hub can open the release that module needs (#991).
+    assert_eq!(asked(&rec), [format!("update-hub {SUP}")]);
     click(&ctx, &mut hub, "Go back to 0.4.2");
     assert_eq!(
         asked(&rec),
-        ["update-hub".to_string(), format!("go-back {SUP}")]
+        [format!("update-hub {SUP}"), format!("go-back {SUP}")]
     );
     let (mut hub, _) = needs_hub(&dir, None);
     let t = drawn(&frames(&ctx, &mut hub, vec![]));

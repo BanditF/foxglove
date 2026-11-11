@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.10",
+  "contract": "1.11",
   "reader_hub": "1.2",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -4829,6 +4829,14 @@
       "result": "invalid",
       "id": "manifest.unknown-key",
       "note": "[limits] has memory_mb and cpu_percent only. (v1.10)"
+    },
+    "trust/hub-release.json": {
+      "spec": [
+        "7.8",
+        "12.4"
+      ],
+      "result": "table",
+      "note": "A catalog entry's min_hub_release {version, url} and the page Update Hideout opens: the url only on https://github.com/BanditF/foxglove/releases and below, else that releases page; a field that can't be read is ignored, never a catalog error. (v1.11)"
     }
   }
 }

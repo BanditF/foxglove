@@ -254,8 +254,37 @@ fn config_vector(home: &Home, key: &str, exp: &Value) -> Result<(), String> {
     registry(home, ctx).map(|_| ()).map_err(|f| id_of(&f))
 }
 
+/// (v1.11) `trust/hub-release.json`: each row's `min_hub_release` in a catalog entry (absent
+/// when null) reads, and Update Hideout opens the row's page. A bad field never fails the entry.
+fn hub_release_vector(key: &str) -> Result<(), String> {
+    let doc: Value = serde_json::from_slice(&read(key)).unwrap();
+    let mut wrong = Vec::new();
+    for row in doc["vectors"].as_array().unwrap() {
+        let mut entry = serde_json::json!({
+            "id": "foxglove.example-art", "version": "0.5.0", "sha256": "00", "files": {},
+        });
+        if !row["min_hub_release"].is_null() {
+            entry["min_hub_release"] = row["min_hub_release"].clone();
+        }
+        let got = match serde_json::from_value::<hideout_registry::trust::Entry>(entry) {
+            Ok(e) => hideout_contract::release::update_url(e.min_hub_release.as_ref()).to_string(),
+            Err(e) => format!("entry refused: {e}"),
+        };
+        if got != row["opens"].as_str().unwrap() {
+            wrong.push(format!("{}: opens {got}", row["name"]));
+        }
+    }
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(wrong.join("; "))
+    }
+}
+
 fn outcome(exp: &Value, got: Result<(), String>) -> Result<(), String> {
     match (exp["result"].as_str(), got) {
+        // A table's rows carry their own results (the reader says which failed).
+        (Some("table"), got) => got,
         (Some("valid"), Ok(())) => Ok(()),
         (Some("valid"), Err(e)) => Err(format!("want valid, got {e}")),
         (_, Ok(())) => Err(format!("want {}, got valid", exp["id"])),
@@ -283,6 +312,7 @@ fn trust_and_config_vectors_match_the_index() {
             "root" => root_vector(&home, key, exp),
             "catalogs" => catalog_vector(&home, key, exp),
             "install" => install_vector(&home, exp),
+            "hub-release.json" => hub_release_vector(key),
             _ if group == "config" => config_vector(&home, key, exp),
             other => Err(format!("no reader for trust/{other}")),
         };
@@ -298,6 +328,6 @@ fn trust_and_config_vectors_match_the_index() {
         failed.len(),
         failed.join("\n")
     );
-    assert_eq!(passed.get("trust"), Some(&42), "every trust vector runs");
+    assert_eq!(passed.get("trust"), Some(&43), "every trust vector runs");
     assert_eq!(passed.get("config"), Some(&8), "every config vector runs");
 }

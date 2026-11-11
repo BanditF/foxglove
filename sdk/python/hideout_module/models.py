@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.2'
-SPEC = '1.10'
+SPEC = '1.11'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -841,6 +841,20 @@ class Rejected(Model):
         'panel': ('panel', 'str'),
     }
 
+
+@dataclass(kw_only=True)
+class HubRelease(Model):
+    """A catalog entry's `min_hub_release` (v1.11): the first Hideout release that serves this
+module version, and the page it is on."""
+
+    url: str
+    version: str
+
+    FIELDS: ClassVar[dict] = {
+        'url': ('url', 'str'),
+        'version': ('version', 'str'),
+    }
+
 # The schema's top-level types by their schema key.
 TYPES = {
     'config.Config': Config,
@@ -882,4 +896,5 @@ TYPES = {
     'panel.Panel': Panel,
     'panel.Register': Register,
     'panel.Rejected': Rejected,
+    'release.HubRelease': HubRelease,
 }

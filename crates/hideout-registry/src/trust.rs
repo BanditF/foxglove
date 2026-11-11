@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use foxglove_plugin_trust::{parse_utc, verify_signature, Action, Revocation};
 use hideout_contract::module::{Kind, Module, Visibility};
+use hideout_contract::release::HubRelease;
 use hideout_contract::{scope_covers, scopes_overlap, Error, ErrorId, LEGACY_ROOT_SCOPE};
 use serde::{Deserialize, Serialize};
 
@@ -254,6 +255,23 @@ pub struct Entry {
     pub provide: Vec<String>,
     #[serde(default)]
     pub channels: BTreeMap<String, ChannelOffer>,
+    /// (v1.11) The first Hideout release that serves this version, for Update Hideout. Read
+    /// leniently: one that can't be read is `None`, never a catalog error.
+    #[serde(
+        default,
+        deserialize_with = "lenient_hub_release",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_hub_release: Option<HubRelease>,
+}
+
+/// Reads `min_hub_release` without ever failing the entry (§12.4, v1.11).
+fn lenient_hub_release<'de, D>(d: D) -> Result<Option<HubRelease>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(HubRelease::read(&v))
 }
 
 impl Entry {
@@ -512,6 +530,18 @@ impl TrustSet {
                     format!("{id}@{version} is in no accepted catalog"),
                 )
             })
+    }
+
+    /// (v1.11) The `min_hub_release` of `id@version` in the accepted catalog of `source`
+    /// (the module's own source only), if its entry has a readable one.
+    pub fn hub_release(&self, source: &str, id: &str, version: &str) -> Option<&HubRelease> {
+        self.catalogs
+            .iter()
+            .filter(|a| a.source == source)
+            .flat_map(|a| a.catalog.modules.iter())
+            .find(|e| e.id == id && e.version == version)?
+            .min_hub_release
+            .as_ref()
     }
 
     fn find(&self, pred: impl Fn(&Entry) -> bool) -> Option<(&Accepted, &Entry)> {

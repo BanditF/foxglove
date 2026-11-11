@@ -1,6 +1,7 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.10** (v1.9 plus the manifest's `[limits]` and the rules of
+Status: spec, contract version **1.11** (v1.10 plus a catalog entry's optional `min_hub_release`,
+the Hideout release Update Hideout links, #991; v1.10 was v1.9 plus the manifest's `[limits]` and the rules of
 the activation events `open`, `fact:`, `app:` and `device:`, #983; v1.9 was v1.8 plus the state
 `revoked` and its card's fact `module.<id>.check`, #1026; v1.8 was v1.7 plus the last spec items of #918: the canvas-shape
 and table-row caps, which stream overs are refused and which closed, when the backoff run resets,
@@ -8,12 +9,24 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.11** (#991): the Hideout release a module version needs. A catalog entry may carry the
+  optional `min_hub_release` `{version, url}`: the first Hideout release that serves this
+  module version, and that release's page (§12.4). **Update Hideout** on a Needs a newer
+  Hideout card and Modules row opens that page when the installed version's entry in its own
+  source's accepted catalog has one and its `url` is on the allow-list (`https`, host
+  `github.com`, path `/BanditF/foxglove/releases` or below; no query, fragment, escape or `..`);
+  anything else opens the releases page, as before (§7.8). A field that can't be read is
+  ignored, never a catalog error, so it can't cost a catalog its revocations. The manifest gets
+  no key: the hub a module needs a newer one than reads only its head (`id`, `name`,
+  `version`, `hub`, §4.1), never a key added later, so only the catalog can say which release. Vectors: `trust/hub-release.json`; schema
+  type `release.HubRelease`. One optional catalog field, which an older reader ignores, no
+  message and no manifest key: `hub` stays 1.2 (§8.7).
 - **1.10, clarifications** (#983): the supervisor's last states, made exact. **Waiting** (§4.4, §7.8): a running
   module whose `requires` or `channel.open:` provider is down reads `waiting` and names the
   root of the chain in the new fact `module.<id>.waiting` (an id); nothing is restarted or
@@ -1476,6 +1489,13 @@ Rules:
   `hub` isn't served is still refused at install step (6) (`manifest.hub`, §7.4) before
   anything changes, so the version that runs stays; that is why `needs-hub` arises only at hub
   start or a launch, and why no "update that caused it" notification exists.
+- (v1.11) **Update Hideout** opens the page of the release the module needs: the
+  `min_hub_release.url` of the installed version's entry in its own source's accepted catalog
+  (§12.4), only when that `url` is allowed (`https://github.com/BanditF/foxglove/releases`, or a
+  path below it made of `/` and `A–Z a–z 0–9 . _ ~ + -`, no empty segment and no `..`, at most
+  512 bytes). Otherwise, and for a sideload or lab module, it opens
+  `https://github.com/BanditF/foxglove/releases`. The hub never opens any other link from a
+  catalog. The tray's Update Hideout names no module and opens the releases page.
 
 ### 7.9 When the hub goes
 
@@ -1738,7 +1758,9 @@ Rules:
   optional panel props and stream rules, no manifest key), and so is spec 1.6 (hub window rules
 and a hub-owned `hideout.toml` table, no message or manifest key). The hub answers `initialize`
   with its own `hub`. (v1.10) Spec 1.7 to 1.9 stay `hub` 1.1; spec 1.10 is `hub` 1.2 (the
-  manifest key `[limits]`). A hub 1.2 reader accepts `1.0`, `1.1` and `1.2`.
+  manifest key `[limits]`). A hub 1.2 reader accepts `1.0`, `1.1` and `1.2`. (v1.11) Spec
+  1.11 stays `hub` 1.2: its one addition is an optional catalog entry field, which a reader
+  that doesn't know it ignores (catalog entries ignore unknown fields, §12.4).
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
 - A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
@@ -1958,7 +1980,11 @@ as family `user`.
       "size": 2048,
       "files": { "module.toml": "<sha256>" },
       "provide": ["art.*"],
-      "channels": { "<name>": { "capability": "<plain words>", "risk": "normal" } }
+      "channels": { "<name>": { "capability": "<plain words>", "risk": "normal" } },
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0"
+      }
     }
   ],
   "revocations": [ { "id": "<id>", "versions": ["0.1.0"], "action": "yank", "reason": "<why>" } ]
@@ -1976,6 +2002,13 @@ Entries:
 - `kind` and `visibility` MUST equal the manifest's (`trust.mismatch`).
 - `provide` is the method patterns the module may register (§6.3).
 - `channels` gives each offered channel its capability line and risk class (§6.2).
+- (v1.11) `min_hub_release` (optional) names the first Hideout release that serves this
+  version: `version` (`MAJOR.MINOR` or `MAJOR.MINOR.PATCH`, an optional `-` suffix of
+  `A–Z a–z 0–9 .`, at most 32 bytes) and `url`, that release's page. It is what **Update
+  Hideout** opens (§7.8), and only when the `url` is allowed there. A publisher sets it when the
+  entry's `hub` is newer than some released Hideout serves. A value that isn't an object with both, or a bad
+  `version`, is ignored (as if absent); it never rejects the entry or the catalog. Unknown
+  fields in an entry are ignored, so an older reader skips it.
 - `plugins` and `kits` are read as aliases of `modules`.
 - yank: no new installs; revoke: also stops running.
 
@@ -2218,7 +2251,8 @@ and invalid one each, a stream in a tile, a whole and a split multibyte text fra
 `transcripts/stream/reopen-then-stopped.json`; v1.7: `facts/app-facts.json`,
 `manifests/invalid/when-apps-running-with-exe.toml` and `transcripts/ui/asset-put-refused.json`;
 v1.8: `panels/valid/at-cap-*.json` and `panels/invalid/over-cap-*.json`, each page cap at the cap
-and one over, and `transcripts/supervisor/backoff-resets-after-quiet.json`). The vectors are
+and one over, and `transcripts/supervisor/backoff-resets-after-quiet.json`; v1.11:
+`trust/hub-release.json`, a catalog entry's `min_hub_release` and the page Update Hideout opens). The vectors are
 edited by hand, each in the PR that changes its result: the generator #914 used was never
 committed (`**/tools/*` is git-ignored) and no copy survives. A future generator lives at a tracked
 path (`scripts/`).

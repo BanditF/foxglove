@@ -11,6 +11,8 @@
 //! - [`messages`]: registration and channel handshake messages (§8.8)
 //! - [`config`]: `hideout.toml` sources and trust anchors (§13.4, §13.6), and pop-out placement
 //!   (`[windows]`, §2.5)
+//! - [`release`]: a catalog entry's `min_hub_release` and the page Update Hideout opens (§12.4,
+//!   v1.11)
 //! - [`error`]: the §15 error ids
 //!
 //! `foxglove-plugin-api` re-exports this crate, so plugins built against it are unchanged.
@@ -25,6 +27,7 @@ pub mod messages;
 pub mod module;
 pub mod panel;
 pub mod permission;
+pub mod release;
 
 pub use error::{Error, ErrorId};
 
@@ -34,7 +37,7 @@ pub const HUB_VERSION: Version = Version { major: 1, minor: 2 };
 
 /// The spec version this crate implements (docs/hideout-contract.md's status line, the test
 /// vectors' `index.json` and README). A drift test keeps them equal.
-pub const SPEC_VERSION: &str = "1.10";
+pub const SPEC_VERSION: &str = "1.11";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];
@@ -158,6 +161,7 @@ pub fn schema() -> serde_json::Value {
         messages::Recovery,
         config::Config,
         config::Windows,
+        release::HubRelease,
     );
     serde_json::json!({
         "hub": HUB_VERSION.to_string(),

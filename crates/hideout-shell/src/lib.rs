@@ -57,8 +57,8 @@ pub use eframe::egui;
 pub use hideout_panels;
 #[cfg(windows)]
 pub use shell::{
-    hub_on_screen, open_module, open_module_log, open_update_page, run, show_hub, Finder,
-    FinderHost, Page, ShellOptions, StartNormally, TabHooks,
+    hub_on_screen, open_module, open_module_log, open_update_page, open_update_page_at, run,
+    show_hub, Finder, FinderHost, Page, ShellOptions, StartNormally, TabHooks,
 };
 
 /// The hub's AppUserModelID: the hub window, its pop-outs and module windows group under it
@@ -77,6 +77,17 @@ pub fn window_title(page: &str) -> String {
     }
 }
 
+/// The page **Update Hideout** opens for a release link from a catalog (#991, contract §7.8
+/// v1.11): `url` when it is on the releases page's allow-list, else the releases page. Nothing
+/// else from a catalog is ever opened.
+pub fn update_page(url: &str) -> &str {
+    if hideout_contract::release::link_allowed(url) {
+        url
+    } else {
+        hideout_contract::release::RELEASES_URL
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +96,22 @@ mod tests {
     fn titles_use_the_contract_form() {
         assert_eq!(window_title("Modules"), "Hideout \u{b7} Modules");
         assert_eq!(window_title(""), "Hideout");
+    }
+
+    /// Update Hideout opens a release page only on the allow-list (#991).
+    #[test]
+    fn update_hideout_opens_only_allowed_release_pages() {
+        let tag = "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0";
+        assert_eq!(update_page(tag), tag);
+        let releases = "https://github.com/BanditF/foxglove/releases";
+        for bad in [
+            "https://example.invalid/hideout-v0.4.0",
+            "http://github.com/BanditF/foxglove/releases",
+            "https://github.com@example.invalid/BanditF/foxglove/releases",
+            "file:///C:/Windows/System32/calc.exe",
+            "",
+        ] {
+            assert_eq!(update_page(bad), releases, "{bad:?}");
+        }
     }
 }

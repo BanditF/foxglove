@@ -1,0 +1,206 @@
+{
+  "description": "A catalog entry's min_hub_release (12.4, v1.11) and the page Update Hideout opens (7.8). Each row: the field's value in an entry (absent when null), and the page opened. A field that can't be read is ignored and never rejects the entry or the catalog; a url off the allow-list (https://github.com/BanditF/foxglove/releases and below) opens the releases page.",
+  "vectors": [
+    {
+      "name": "tag-page",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0",
+      "note": "A release's own page on the allow-listed host."
+    },
+    {
+      "name": "releases-page",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "The releases page itself."
+    },
+    {
+      "name": "latest",
+      "min_hub_release": {
+        "version": "0.4",
+        "url": "https://github.com/BanditF/foxglove/releases/latest"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases/latest",
+      "note": "MAJOR.MINOR is a version too."
+    },
+    {
+      "name": "pre-release",
+      "min_hub_release": {
+        "version": "0.4.0-rc.1",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/v0.4.0-rc.1"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases/tag/v0.4.0-rc.1",
+      "note": "A pre-release suffix."
+    },
+    {
+      "name": "unknown-key",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0",
+        "notes": "later"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0",
+      "note": "Unknown keys inside the field are ignored, as in any catalog entry."
+    },
+    {
+      "name": "absent",
+      "min_hub_release": null,
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "No field: the releases page."
+    },
+    {
+      "name": "http",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "http://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "Not https."
+    },
+    {
+      "name": "other-host",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://example.invalid/hideout-v0.4.0"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "Another host."
+    },
+    {
+      "name": "lookalike-host",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com.example.invalid/BanditF/foxglove/releases"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A host that starts with github.com."
+    },
+    {
+      "name": "user-part",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com@example.invalid/BanditF/foxglove/releases"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A user part before another host."
+    },
+    {
+      "name": "port",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com:8443/BanditF/foxglove/releases"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A port."
+    },
+    {
+      "name": "other-repo",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/other/releases/tag/v1"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "Another repository on the host."
+    },
+    {
+      "name": "prefix-only",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releasesx"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A path that only starts with the releases path."
+    },
+    {
+      "name": "dot-dot",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases/../../other/releases"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "Leaves the releases path."
+    },
+    {
+      "name": "query",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases?q=1"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A query."
+    },
+    {
+      "name": "fragment",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0#assets"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A fragment."
+    },
+    {
+      "name": "escape",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/v%2e1"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A percent escape."
+    },
+    {
+      "name": "bidi",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/\u202ev1"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A bidi override."
+    },
+    {
+      "name": "not-object",
+      "min_hub_release": "0.4.0",
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "Not an object: ignored, the catalog is still accepted."
+    },
+    {
+      "name": "no-url",
+      "min_hub_release": {
+        "version": "0.4.0"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "No url."
+    },
+    {
+      "name": "url-not-string",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": 7
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "url is not a string."
+    },
+    {
+      "name": "bad-version",
+      "min_hub_release": {
+        "version": "four",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "A version that isn't digits and dots: the whole field is ignored."
+    },
+    {
+      "name": "long-url",
+      "min_hub_release": {
+        "version": "0.4.0",
+        "url": "https://github.com/BanditF/foxglove/releases/tag/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "opens": "https://github.com/BanditF/foxglove/releases",
+      "note": "Over 512 bytes."
+    }
+  ]
+}

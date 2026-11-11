@@ -30,6 +30,11 @@ pub trait Actions {
     fn check_for_updates(&self, id: &str);
     /// Update ready's Force (§7.6).
     fn force_update(&self, id: &str);
+    /// The page Update Hideout opens for `id` (#991): its catalog's release page, else the
+    /// releases page. `None`: the releases page.
+    fn update_hideout_url(&self, _id: &str) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(windows)]
@@ -57,6 +62,11 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     }
     fn force_update(&self, id: &str) {
         hideout_supervisor::driver::Supervisor::force_update(self, id)
+    }
+    fn update_hideout_url(&self, id: &str) -> Option<String> {
+        Some(hideout_supervisor::driver::Supervisor::update_hideout_url(
+            self, id,
+        ))
     }
 }
 
@@ -124,6 +134,16 @@ impl ModulesPage {
             == Some(true)
     }
 
+    /// The page Update Hideout opens for `id` (#991, §7.8 v1.11): the release its catalog names
+    /// when that page is allowed, else the releases page.
+    fn update_page(&self, id: &str) -> String {
+        let url = self
+            .actions
+            .as_deref()
+            .and_then(|a| a.update_hideout_url(id));
+        hideout_shell::update_page(url.as_deref().unwrap_or("")).to_string()
+    }
+
     /// Carries out a click. Open, Update Hideout and a Turn on that waits for the permission
     /// dialog leave the page (the module's page, the releases page).
     fn on_click(&mut self, click: hideout_shell::modules_list::Click) {
@@ -153,7 +173,7 @@ impl ModulesPage {
             Click::CopyDiagnostics => false,
             Click::Primary(id, does) => match (does, a) {
                 (Does::UpdateHub, _) => {
-                    hideout_shell::open_update_page();
+                    hideout_shell::open_update_page_at(&self.update_page(&id));
                     false
                 }
                 // Go to <module>: the root's page (root cause once, §7.8).
@@ -519,6 +539,60 @@ mod tests {
         fn force_update(&self, id: &str) {
             self.0.borrow_mut().push(format!("force {id}"));
         }
+        fn update_hideout_url(&self, id: &str) -> Option<String> {
+            match id {
+                "m.tag" => Some(TAG.into()),
+                "m.off" => Some("https://example.invalid/hideout-v0.4.0".into()),
+                _ => None,
+            }
+        }
+    }
+
+    const TAG: &str = "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0";
+
+    /// Needs a newer Hideout rows (#991): Update Hideout opens the release the catalog names
+    /// when it is on the allow-list, else the releases page; no supervisor, the releases page.
+    /// (The click itself opens a browser, so the page it would open is checked instead.)
+    #[test]
+    fn update_hideout_on_a_row_opens_the_release_it_needs() {
+        use hideout_shell::modules_list::Does;
+        let facts: Facts = Box::new(|k| match k {
+            "module.m.tag.state" | "module.m.off.state" | "module.m.none.state" => {
+                Some(json!("needs-hub"))
+            }
+            _ => None,
+        });
+        let inst = |id: &str| Installed {
+            id: id.into(),
+            name: id.into(),
+            version: "1.0.0".into(),
+            enabled: true,
+        };
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![inst("m.tag"), inst("m.off"), inst("m.none")],
+            facts: Some(facts),
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            finder: None,
+            fresh: None,
+        };
+        let (rows, _) = page.rows();
+        for r in &rows {
+            let p = r.primary.as_ref().unwrap();
+            assert_eq!(
+                (p.label.as_str(), p.does),
+                ("Update Hideout", Does::UpdateHub)
+            );
+        }
+        let releases = hideout_contract::release::RELEASES_URL;
+        assert_eq!(page.update_page("m.tag"), TAG);
+        assert_eq!(page.update_page("m.off"), releases);
+        assert_eq!(page.update_page("m.none"), releases);
+        page.actions = None;
+        assert_eq!(page.update_page("m.tag"), releases);
+        assert!(log.0.borrow().is_empty());
     }
 
     /// The states #1086 publishes (#983): Waiting names the root by its name with Go to it;

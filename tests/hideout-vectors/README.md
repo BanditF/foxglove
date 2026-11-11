@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.10. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.11. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -35,6 +35,7 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 | `trust/root/` | good root, legacy `foxglove-plugin-root`, expired, rollback, bad signature, scope overlap, key reuse | 12.2, 12.3 |
 | `trust/catalogs/` | one signed catalog per family, third-party in a family catalog, `plugins`/`kits` aliases, revocations, legacy v2 catalog, a user-anchored private catalog | 12.4, 13.4, 13.6 |
 | `trust/catalogs/invalid/` | bad signature, unlisted key, wrong family key, out-of-scope entry or revocation, epoch, expired, rollback, kind or visibility mismatch, private in a public source, user scope breaches | 12.4, 13 |
+| `trust/hub-release.json` | (v1.11) a catalog entry's `min_hub_release`: read or ignored, and the page Update Hideout opens (the allow-listed release page, else the releases page) | 7.8, 12.4 |
 | `trust/install/` (index only) | unknown archive, yanked, revoked, exact folder, extra or changed file, sideload scope | 12.5, 12.6 |
 | `trust/archives/`, `trust/folders/` | the signed archives and unpacked folders the catalogs pin | 12.4 |
 | `trust/keys/` | TEST-ONLY public keys | 12 |

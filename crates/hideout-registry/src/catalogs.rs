@@ -261,6 +261,15 @@ impl Registry {
         self.trust.catalogs.iter().any(|a| a.source == source)
     }
 
+    /// (v1.11) The Hideout release the installed version of `id` needs: the `min_hub_release`
+    /// of its entry in its own source's accepted catalog. `None` for a sideload or lab module,
+    /// a source with no catalog accepted, or an entry without a readable one; Update Hideout
+    /// then opens the releases page.
+    pub fn hub_release(&self, id: &str) -> Option<&hideout_contract::release::HubRelease> {
+        let m = self.inventory.modules.get(id)?;
+        self.trust.hub_release(&m.source, id, &m.version)
+    }
+
     /// Saves the accepted catalog of `source` (called by [`Registry::accept_catalog`] before
     /// `seen` is raised).
     pub(crate) fn store_catalog(

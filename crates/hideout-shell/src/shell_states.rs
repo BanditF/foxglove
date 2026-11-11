@@ -173,7 +173,7 @@ impl Hub {
         });
         if let Some(h) = self.hooks.as_mut() {
             if update {
-                h.update_hub();
+                h.update_hub_for(&key.module);
             }
             if back {
                 h.go_back(&key.module);
