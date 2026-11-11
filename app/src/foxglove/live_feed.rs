@@ -1379,9 +1379,19 @@ fn lights(facts: &Facts) -> Option<wire::Lights> {
 }
 
 /// The `art` message's body for what plays (`live_art::source`) under the name `state.art`
-/// gives it: `None` (`art: null`) with nothing Foxglove can name.
+/// gives it: `None` (`art: null`) with nothing Foxglove can name. A pushed set Foxglove has no
+/// record of has no `state.art` name; its art goes out as "A piece from this PC" (#1051's
+/// promise, the tray panel's words), not `""` (#1075).
 fn art_body(source: Option<&super::live_art::Source>, name: Option<String>) -> Option<wire::Art> {
-    source.map(|s| super::live_art::art(s, name.unwrap_or_default()))
+    use super::live_art::Source;
+    source.map(|s| {
+        let name = match (s, name) {
+            (_, Some(n)) => n,
+            (Source::Pushed, None) => super::art_pieces::UNKNOWN_PUSHED.into(),
+            (_, None) => String::new(),
+        };
+        super::live_art::art(s, name)
+    })
 }
 
 /// The feed's two art facts for one snapshot, as the hub sends them (#1075): the `state`

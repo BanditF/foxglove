@@ -686,6 +686,9 @@ pub fn showing_picture(s: &Snapshot, pcs: &[PcPiece]) -> Option<(u64, Arc<egui::
     }
 }
 
+/// A pushed set Foxglove has no record of (#1044), in the tray panel's and the live feed's words.
+pub const UNKNOWN_PUSHED: &str = "A piece from this PC";
+
 /// The name of what the right screen shows now, and its badge.
 pub fn showing_name(s: &Snapshot) -> String {
     let Some(st) = s.status else {
@@ -695,7 +698,7 @@ pub fn showing_name(s: &Snapshot) -> String {
         Showing::Kept(n) => super::art_service::name_of(&Choice::Slot(n), s),
         Showing::BuiltIn(n) => super::art_service::name_of(&Choice::BuiltIn(n), s),
         Showing::Sent => s.showing_file().map_or_else(
-            || "A piece from this PC".into(),
+            || UNKNOWN_PUSHED.into(),
             |p| super::art_service::file_name(p),
         ),
         Showing::Other(_) => "…".into(),

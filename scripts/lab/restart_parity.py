@@ -6,7 +6,9 @@ a fresh one on the same temp config folder, and asserts the same facts.
 Cases (--case, default all):
   pushed_set  push tests/art/ink-fixture.bin (art.select file); the live feed's art (from, name,
               frames, missing) and the `feed_art` health row (#1053, not Warn) are the same after a
-              restart (#1044: NO FRAMES). The right is put back on the built-in it showed at the end.
+              restart (#1044: NO FRAMES). The right is put back on what it showed at the start (a
+              built-in, a kept place, or a pushed set re-pushed from the user's [art_pushed] record);
+              when that can't be done the case is BLOCKED before it changes anything (#1075).
 
 To add a case for a feature that publishes state: write `establish()` (an API call or UI flow,
 never a store write by hand) and `read(want)` (event-driven: the feed's pushed messages, an API
@@ -52,6 +54,16 @@ def pushed_set(app, check, within):
         return
     start = api.call('art.status', {'device': dev})
     print('art.status before:', start, flush=True)
+    try:
+        store = REAL_STORE.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        store = ''
+    back, words = art_put_back(start, store)
+    if back is None:
+        check('the right half can be put back afterwards', False,
+              f'it shows {words}; put it on a built-in (tray Next, or the art picker) and run again', blocked=True)
+        return
+    print('afterwards the right goes back to', words, flush=True)
 
     def establish():
         print('push:', api.call('art.select', {'device': dev, 'target': {'file': str(FIXTURE)}}), flush=True)
@@ -75,9 +87,12 @@ def pushed_set(app, check, within):
             print('app log:', line, flush=True)
         api = fresh
     finally:
-        if start and start.get('built_in'):
-            print('back to', start['built_in'],
-                  api.call('art.select', {'device': dev, 'target': {'built_in': start['built_in']}}), flush=True)
+        try:
+            reply = api.call('art.select', {'device': dev, 'target': back})
+            print('back to', words, reply, flush=True)
+            check('the right half put back', True, words)
+        except (OSError, RuntimeError, ValueError) as e:
+            check('the right half put back', False, f'{words}: {e}')
 
 
 CASES = {'pushed_set': pushed_set}

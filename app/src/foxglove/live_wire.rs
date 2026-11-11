@@ -975,7 +975,7 @@ mod tests {
             },
             Message::Art {
                 art: Some(Art {
-                    name: String::new(),
+                    name: "A piece from this PC".into(),
                     from: FROM_FILE,
                     nva: None,
                     missing: Some(MISSING_PUSHED_UNKNOWN),

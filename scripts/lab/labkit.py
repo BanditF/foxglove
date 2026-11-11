@@ -639,6 +639,33 @@ def feed_messages(port, token, seconds, alive=None):
         s.close()
 
 
+def art_put_back(start, store_text):
+    """The `art.select` target that puts the right half back on what it showed before a case
+    (`start`: art.status then), and its words; (None, why) when it can't be (#1075: a case left
+    the user's right half on ink-fixture). A built-in by name, a kept place by number, a pushed
+    set from the `[art_pushed]` record in `store_text` (the user's own store, read only), while
+    its file is still there. A case calls it before it changes anything and stops if it's None."""
+    import tomllib
+    if not start:
+        return None, 'no art status from the keyboard before the case'
+    if start.get('built_in'):
+        return {'built_in': start['built_in']}, f"the built-in {start['built_in']}"
+    if start.get('slot') is not None:
+        return {'slot': start['slot']}, f"kept place {start['slot']}"
+    if not start.get('pushed'):
+        return None, f"a piece Foxglove can't name ({start.get('name')})"
+    try:
+        record = tomllib.loads(store_text or '').get('art_pushed') or {}
+    except tomllib.TOMLDecodeError:
+        record = {}
+    path = record.get('path')
+    if not path:
+        return None, "a pushed set the user's Foxglove has no record of"
+    if not Path(path).is_file():
+        return None, f'a pushed set whose recorded file is gone ({path})'
+    return {'file': path}, f'the pushed set again, from {path}'
+
+
 def feed_art_facts(messages, until):
     """Folds the feed's messages into its art facts, {'state_art': state.art (the name),
     'art': {'from', 'name', 'frames', 'missing'} or None}, after each message; returns the first

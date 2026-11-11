@@ -71,6 +71,35 @@ class FeedArtFacts(unittest.TestCase):
         self.assertIsNone(labkit.feed_art_facts(iter([]), lambda f: True))
 
 
+class ArtPutBack(unittest.TestCase):
+    """#1075: the case puts the right half back on what it showed at the start, or doesn't start."""
+
+    def test_a_built_in_and_a_kept_place_go_back_as_they_were(self):
+        self.assertEqual(labkit.art_put_back({'built_in': 'Bandit emblem', 'slot': None, 'pushed': False}, '')[0],
+                         {'built_in': 'Bandit emblem'})
+        self.assertEqual(labkit.art_put_back({'built_in': None, 'slot': 0, 'pushed': False}, '')[0], {'slot': 0})
+
+    def test_a_pushed_set_is_pushed_again_from_the_users_record(self):
+        piece = Path(__file__).resolve().parent.parent / 'tests' / 'art' / 'ink-fixture.bin'
+        store = f"schema = 1\n\n[art_pushed]\nhash = \"e077df59e69fa309\"\npath = '{piece}'\n"
+        target, words = labkit.art_put_back({'built_in': None, 'slot': None, 'pushed': True}, store)
+        self.assertEqual(target, {'file': str(piece)})
+        self.assertIn(str(piece), words)
+
+    def test_what_cant_be_put_back_says_why(self):
+        pushed = {'built_in': None, 'slot': None, 'pushed': True}
+        for start, store, why in [
+            (pushed, 'schema = 1\n[art.pinned]\nBuiltIn = 0\n', 'no record'),
+            (pushed, "[art_pushed]\nhash = \"00\"\npath = 'C:/nowhere/gone.bin'\n", 'gone'),
+            (pushed, 'not toml [', 'no record'),
+            (None, '', 'no art status'),
+            ({'built_in': None, 'slot': None, 'pushed': False, 'name': '…'}, '', "can't name"),
+        ]:
+            target, words = labkit.art_put_back(start, store)
+            self.assertIsNone(target, words)
+            self.assertIn(why, words)
+
+
 class FakeApp:
     def __init__(self):
         self.restarts = 0
