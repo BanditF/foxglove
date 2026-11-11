@@ -6,14 +6,19 @@
 //! - No scene, or any gate closed: no thread, no timer, no wake-ups.
 //! - A scene running: one thread waits the frame interval between frames (the shortest device
 //!   interval, never faster than 30 fps) and stops at once when a gate closes.
+//! - A scene that knows when it has nothing new ([`Scheduler::paced`]: Screen glow on a still
+//!   screen, #1085) says so after each frame ([`Pace`]). The thread then sleeps until a
+//!   [`Waker`] wakes it (a new picture, a control event) or until the time it named, with no
+//!   wake-ups at the frame interval meanwhile.
 //!
 //! Scene time comes from the clock, not from counting frames, so a late or skipped frame never
 //! puts the lights out of step with a wallpaper on the same epoch.
 
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::clock::{Clock, SceneTime};
 
@@ -52,6 +57,15 @@ impl Pacing {
             .iter()
             .map(|(_, i, _)| *i)
             .min()
+            .unwrap_or(MIN_INTERVAL)
+    }
+
+    /// The slowest device's interval: within it every device has had a frame.
+    pub fn longest(&self) -> Duration {
+        self.devices
+            .iter()
+            .map(|(_, i, _)| *i)
+            .max()
             .unwrap_or(MIN_INTERVAL)
     }
 
@@ -111,11 +125,64 @@ impl Gates {
     }
 }
 
-type Render = Arc<Mutex<Box<dyn FnMut(SceneTime) + Send>>>;
+/// What the frame thread does after a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pace {
+    /// The next frame after the tick (the frame interval); a wake doesn't bring it sooner.
+    Tick,
+    /// The next frame after this long, or sooner when woken.
+    After(Duration),
+    /// Nothing new: no frame until woken.
+    Idle,
+}
+
+type Render = Arc<Mutex<Box<dyn FnMut(SceneTime) -> Pace + Send>>>;
+
+enum Msg {
+    Wake,
+    Stop,
+}
 
 struct Run {
-    stop: mpsc::Sender<()>,
+    stop: mpsc::Sender<Msg>,
     thread: JoinHandle<()>,
+}
+
+/// What the frame thread shares with its [`Waker`]s.
+#[derive(Default)]
+struct Shared {
+    /// The running frame thread's channel; `None` while there is none.
+    tx: Mutex<Option<mpsc::Sender<Msg>>>,
+    /// Frames drawn so far (each is one wake of the frame thread).
+    frames: AtomicU64,
+}
+
+impl Shared {
+    fn tx(&self) -> std::sync::MutexGuard<'_, Option<mpsc::Sender<Msg>>> {
+        self.tx.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Wakes a paced scene's frame thread for a frame now, from any thread: a new picture, an
+/// output that wants its next frame in full. Does nothing while no frame thread runs, or once
+/// the scheduler is gone.
+#[derive(Clone, Default)]
+pub struct Waker(Weak<Shared>);
+
+impl std::fmt::Debug for Waker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Waker")
+    }
+}
+
+impl Waker {
+    pub fn wake(&self) {
+        if let Some(shared) = self.0.upgrade() {
+            if let Some(tx) = shared.tx().as_ref() {
+                let _ = tx.send(Msg::Wake);
+            }
+        }
+    }
 }
 
 struct State {
@@ -129,6 +196,7 @@ pub struct Scheduler {
     tick: Duration,
     render: Render,
     state: Mutex<State>,
+    shared: Arc<Shared>,
 }
 
 impl Scheduler {
@@ -137,7 +205,20 @@ impl Scheduler {
     pub fn new(
         clock: Clock,
         tick: Duration,
-        render: impl FnMut(SceneTime) + Send + 'static,
+        mut render: impl FnMut(SceneTime) + Send + 'static,
+    ) -> Self {
+        Self::paced(clock, tick, move |t| {
+            render(t);
+            Pace::Tick
+        })
+    }
+
+    /// As [`Scheduler::new`], but `render` says after each frame when the next is due
+    /// ([`Pace`]); [`Scheduler::waker`] brings one sooner.
+    pub fn paced(
+        clock: Clock,
+        tick: Duration,
+        render: impl FnMut(SceneTime) -> Pace + Send + 'static,
     ) -> Self {
         Scheduler {
             clock,
@@ -147,7 +228,18 @@ impl Scheduler {
                 gates: Gates::default(),
                 run: None,
             }),
+            shared: Arc::default(),
         }
+    }
+
+    /// Wakes the frame thread for a frame now (see [`Waker`]).
+    pub fn waker(&self) -> Waker {
+        Waker(Arc::downgrade(&self.shared))
+    }
+
+    /// Frames drawn so far: each is one wake of the frame thread.
+    pub fn frames(&self) -> u64 {
+        self.shared.frames.load(Ordering::Relaxed)
     }
 
     pub fn clock(&self) -> Clock {
@@ -174,7 +266,7 @@ impl Scheduler {
             (true, false) => state.run = self.spawn(),
             (false, true) => {
                 if let Some(run) = state.run.take() {
-                    stop(run);
+                    self.stop(run);
                 }
             }
             _ => {}
@@ -186,37 +278,73 @@ impl Scheduler {
     }
 
     fn spawn(&self) -> Option<Run> {
-        let (stop, wait) = mpsc::channel::<()>();
+        let (stop, wait) = mpsc::channel::<Msg>();
         let (clock, tick, render) = (self.clock, self.tick, self.render.clone());
+        let shared = self.shared.clone();
+        // Wakes go to this thread from now on (one before its first frame changes nothing:
+        // that frame comes at once).
+        *self.shared.tx() = Some(stop.clone());
         let thread = std::thread::Builder::new()
             .name("scene-frames".into())
             .spawn(move || loop {
-                (render.lock().unwrap_or_else(|e| e.into_inner()))(clock.now());
-                match wait.recv_timeout(tick) {
-                    Err(RecvTimeoutError::Timeout) => {}
-                    // Stopped, or the scheduler is gone.
-                    _ => break,
+                shared.frames.fetch_add(1, Ordering::Relaxed);
+                let pace = (render.lock().unwrap_or_else(|e| e.into_inner()))(clock.now());
+                if !wait_for_next(&wait, pace, tick) {
+                    break;
                 }
             });
         match thread {
             Ok(thread) => Some(Run { stop, thread }),
             Err(e) => {
+                *self.shared.tx() = None;
                 eprintln!("Foxglove: no thread for scene frames: {e}");
                 None
             }
         }
     }
+
+    fn stop(&self, run: Run) {
+        *self.shared.tx() = None;
+        let _ = run.stop.send(Msg::Stop);
+        let _ = run.thread.join();
+    }
 }
 
-fn stop(run: Run) {
-    let _ = run.stop.send(());
-    let _ = run.thread.join();
+/// Waits for the next frame as `pace` says; false when the thread should end (stopped, or the
+/// scheduler is gone). Wakes that queued up meanwhile count as one.
+fn wait_for_next(rx: &mpsc::Receiver<Msg>, pace: Pace, tick: Duration) -> bool {
+    let (deadline, early) = match pace {
+        Pace::Tick => (Some(Instant::now() + tick), false),
+        Pace::After(d) => (Some(Instant::now() + d), true),
+        Pace::Idle => (None, true),
+    };
+    loop {
+        let got = match deadline {
+            Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match got {
+            Ok(Msg::Wake) if early => break,
+            // Ticking anyway: the frame comes at the tick.
+            Ok(Msg::Wake) => {}
+            Err(RecvTimeoutError::Timeout) => break,
+            Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => return false,
+        }
+    }
+    loop {
+        match rx.try_recv() {
+            Ok(Msg::Wake) => {}
+            Ok(Msg::Stop) | Err(TryRecvError::Disconnected) => return false,
+            Err(TryRecvError::Empty) => return true,
+        }
+    }
 }
 
 impl Drop for Scheduler {
     fn drop(&mut self) {
-        if let Some(run) = self.lock().run.take() {
-            stop(run);
+        let run = self.lock().run.take();
+        if let Some(run) = run {
+            self.stop(run);
         }
     }
 }
@@ -291,6 +419,62 @@ mod tests {
         s.set(Gate::Paused, false);
         assert!(s.running());
         drop(s);
+    }
+
+    /// #1085: a paced scene with nothing new sleeps (no frame at the interval) until woken, and
+    /// one wake is one frame however many queue up.
+    #[test]
+    fn an_idle_scene_sleeps_until_woken() {
+        let (tx, rx) = mpsc::channel();
+        let s = Scheduler::paced(Clock::starting_now(), MIN_INTERVAL, move |t| {
+            let _ = tx.send(t);
+            Pace::Idle
+        });
+        let waker = s.waker();
+        waker.wake(); // no frame thread yet: nothing
+        s.set(Gate::Scene, true);
+        frames_arrive(&rx, 1);
+        std::thread::sleep(MIN_INTERVAL * 6);
+        assert!(rx.try_recv().is_err(), "no frame while idle");
+        assert_eq!(s.frames(), 1, "one wake: the first frame");
+        waker.wake();
+        frames_arrive(&rx, 1);
+        std::thread::sleep(MIN_INTERVAL * 3);
+        assert_eq!(s.frames(), 2);
+        // Closed and reopened: the new thread is woken the same way.
+        s.set(Gate::Held, true);
+        waker.wake();
+        s.set(Gate::Held, false);
+        frames_arrive(&rx, 1);
+        waker.wake();
+        frames_arrive(&rx, 1);
+        drop(s);
+        waker.wake(); // the scheduler is gone: nothing
+    }
+
+    #[test]
+    fn a_paced_scene_names_its_next_frame() {
+        let (tx, rx) = mpsc::channel();
+        let mut n = 0;
+        let s = Scheduler::paced(Clock::starting_now(), MIN_INTERVAL, move |_| {
+            n += 1;
+            let _ = tx.send(Instant::now());
+            if n == 1 {
+                Pace::After(Duration::from_millis(150))
+            } else {
+                Pace::Idle
+            }
+        });
+        s.set(Gate::Scene, true);
+        let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let second = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            second - first >= Duration::from_millis(140),
+            "{:?}",
+            second - first
+        );
+        std::thread::sleep(MIN_INTERVAL * 3);
+        assert_eq!(s.frames(), 2);
     }
 
     #[test]

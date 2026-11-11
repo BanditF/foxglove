@@ -73,6 +73,8 @@ pub struct Ambient {
     last: Option<SceneTime>,
     /// Each ambient light's colour now, in Oklab, by (device, light).
     now: BTreeMap<(String, String), [f32; 3]>,
+    /// The last frame left a light short of its target.
+    moving: bool,
 }
 
 impl Ambient {
@@ -80,7 +82,14 @@ impl Ambient {
         Ambient {
             last: None,
             now: BTreeMap::new(),
+            moving: false,
         }
+    }
+
+    /// Every ambient light showed its target in the last frame: more frames of the same
+    /// targets change nothing (#1085: a scene with nothing new may sleep).
+    pub fn settled(&self) -> bool {
+        !self.moving
     }
 
     /// Replaces each ambient light's target in `frame` with its eased colour. The first
@@ -91,6 +100,7 @@ impl Ambient {
             .map(|l| frame.t.ms() - l.ms())
             .filter(|dt| (0..=GAP_MS).contains(dt));
         self.last = Some(frame.t);
+        self.moving = false;
         let mut kept = BTreeMap::new();
         for l in frame.lights.iter_mut() {
             let ambient = room.device(&l.device).is_some_and(|d| {
@@ -103,10 +113,16 @@ impl Ambient {
             }
             let key = (l.device.clone(), l.light.clone());
             let target = l.colour.lab();
-            let now = match (dt, self.now.get(&key)) {
+            let mut now = match (dt, self.now.get(&key)) {
                 (Some(dt), Some(&from)) => ease(from, target, dt as f32),
                 _ => target,
             };
+            // Close enough to show the target's own bytes: there.
+            if Rgb::from_lab(now) == Rgb::from_lab(target) {
+                now = target;
+            } else {
+                self.moving = true;
+            }
             l.colour = Rgb::from_lab(now);
             kept.insert(key, now);
         }

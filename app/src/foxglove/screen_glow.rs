@@ -18,7 +18,10 @@
 //!   DXGI's `AcquireNextFrame` (`screen_capture`), which returns when the screen changes. After a
 //!   frame it waits out the rest of [`MIN_GAP`] (stop-aware), so at most 20 pictures a second are
 //!   read, and the scene sends at most 20 updates a second (`Glow::due`). The 1 s wait limit is
-//!   only the fallback that lets a stop through on a still screen.
+//!   only the fallback that lets a stop through on a still screen. Each picture wakes the
+//!   scene's frame thread ([`Feed::wake_with`]), which sleeps on a still screen (#1085).
+//! - **HDR** (#1085): an HDR desktop is read as FP16 and tone-mapped to sRGB
+//!   (`screen_capture::tone_map`), so SDR windows on it read as on an SDR desktop.
 //! - **Privacy:** a picture is downscaled on the GPU, turned into edge colours here and dropped.
 //!   Only those colours go anywhere (to the lights); no frame leaves the process and nothing is
 //!   stored or logged.
@@ -31,6 +34,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use foxglove_scene::scheduler::Waker;
 use foxglove_scene::screen::{Edges, ScreenImage, Smoothing, MIN_UPDATE_MS};
 use serde::{Deserialize, Serialize};
 
@@ -276,8 +280,9 @@ impl Gates {
     }
 
     /// The scene itself stops drawing (the scheduler's Held gate): a game full screen or capture
-    /// failing. The lights get their own colours back meanwhile. The other holds are the
-    /// scene's own gates already (pause, away, the lights owner).
+    /// failing. The lights fade to their own colours and go back to them meanwhile (#1085,
+    /// `scene_run`). The other holds are the scene's own gates already (pause, away, the lights
+    /// owner).
     pub fn scene_held(&self) -> bool {
         self.on && (self.game || self.presenting || self.failed)
     }
@@ -323,15 +328,26 @@ pub const WAIT: Duration = Duration::from_secs(1);
 pub struct Feed {
     edges: Mutex<BTreeMap<String, Edges>>,
     pictures: AtomicU64,
+    /// Wakes the scene's frame thread for each new picture (#1085: it sleeps on a still
+    /// screen).
+    wake: Mutex<Option<Waker>>,
 }
 
 impl Feed {
     pub fn put(&self, e: Edges) {
-        self.pictures.fetch_add(1, Ordering::Relaxed);
         self.edges
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(e.monitor.clone(), e);
+        self.pictures.fetch_add(1, Ordering::Relaxed);
+        if let Some(w) = self.wake.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            w.wake();
+        }
+    }
+
+    /// Who to wake for each new picture: the scene's frame thread.
+    pub fn wake_with(&self, w: Waker) {
+        *self.wake.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
     }
 
     /// Every screen's newest edges.

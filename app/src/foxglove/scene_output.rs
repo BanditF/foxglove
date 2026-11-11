@@ -39,7 +39,7 @@ use foxglove_devices::pc_lighting::rates::{self, Rates};
 
 use foxglove_link::lamps::LampParts;
 use foxglove_link::protocol::MmRect;
-use foxglove_scene::scheduler::Pacing;
+use foxglove_scene::scheduler::{Pace, Pacing};
 use foxglove_scene::{Ambient, Burst, Bursts, Effect, LightRole, Rgb, RoomMap, SceneTime};
 
 /// The keyboard's output id in [`Pacing`].
@@ -599,6 +599,23 @@ pub struct Outputs {
     glow: Option<foxglove_scene::Glow>,
     /// The screens' newest edge colours, from the scene's reader.
     screen_feed: Option<Arc<super::screen_glow::Feed>>,
+    /// Screen glow's frame pacing (#1085): the pictures drawn so far, ...
+    seen_pictures: u64,
+    /// ... something changed outside the frames (a look, the room, a hand-back) ...
+    kick: bool,
+    /// ... the keyboard's held flag as the last frame saw it ...
+    held_seen: bool,
+    /// ... and until when (scene ms) frames still come at the tick after a change, so every
+    /// device gets the settled colours.
+    busy_until: i64,
+    /// Screen glow's hand-backs so far (each a generation), when the current one reached its
+    /// own colours, and whether that was reported.
+    hand_backs: u64,
+    handed_at: Option<i64>,
+    hand_back_reported: bool,
+    /// Each area light's colour as the last frame showed it (after its easing): a hand-back
+    /// fades it on from there.
+    areas_shown: BTreeMap<(String, String), Rgb>,
 }
 
 /// A Screen glow look's own state, kept across a smoothing change.
@@ -639,9 +656,117 @@ impl Outputs {
             ambient: Ambient::new(),
             glow,
             screen_feed: None,
+            seen_pictures: 0,
+            kick: true,
+            held_seen: false,
+            busy_until: 0,
+            hand_backs: 0,
+            handed_at: None,
+            hand_back_reported: false,
+            areas_shown: BTreeMap::new(),
         };
         o.set_room(room, cases);
         o
+    }
+
+    /// How long frames keep coming at the tick after a change: every device's interval, and
+    /// one Screen glow update.
+    fn linger_ms(&self) -> i64 {
+        self.pacing.longest().as_millis() as i64 + foxglove_scene::screen::MIN_UPDATE_MS
+    }
+
+    /// When the scene's next frame is due (#1085). Effects that move with time tick. Screen
+    /// glow ticks only while there is something to draw: a picture not drawn yet, the
+    /// smoothing, the ambient easing or the flash limit still settling, a burst, a change that
+    /// every device must get, or a fade. While capture failing holds the colours it waits for
+    /// the fade; otherwise it sleeps until woken (a new picture, a control event).
+    pub fn pace(&self, t: SceneTime) -> Pace {
+        let Some(g) = &self.glow else {
+            return Pace::Tick;
+        };
+        let picture = self
+            .screen_feed
+            .as_ref()
+            .is_some_and(|f| f.pictures() != self.seen_pictures);
+        let fading = g.handing_back() && g.fade_starts(t).is_none() && !self.hand_back_reported;
+        if picture
+            || fading
+            || t.ms() < self.busy_until
+            || !self.bursts.is_empty()
+            || !self.ambient.settled()
+        {
+            return Pace::Tick;
+        }
+        match g.fade_starts(t) {
+            Some(at) => Pace::After(Duration::from_millis((at.ms() - t.ms()).max(1) as u64)),
+            None => Pace::Idle,
+        }
+    }
+
+    /// Screen glow hands the lights back from `t` (#1085: a full-screen game, capture failing):
+    /// each light fades to what it shows once the scene lets it go. The case's boards to
+    /// `case_own` (by key: their colours from before the scene, `pc_lights`), the keyboard's
+    /// halves to the mix they show now (its lease's colour, which it shows once its frames go
+    /// back). Dynamic Lighting devices go back to Windows' own lights, which Foxglove can't
+    /// read: they keep their colour until the fade ends. Returns the hand-back's generation,
+    /// for [`Outputs::take_handed_back`]; none without Screen glow.
+    pub fn hand_back(
+        &mut self,
+        why: foxglove_scene::screen::HandBack,
+        case_own: &super::pc_lights::BoardColours,
+        t: SceneTime,
+    ) -> Option<u64> {
+        let g = self.glow.as_mut()?;
+        let mut own = BTreeMap::new();
+        for c in &self.cases {
+            for &(i, colour) in case_own.get(&c.key).into_iter().flatten() {
+                if let Some(zone) = c.zone_ids.get(i) {
+                    own.insert((c.room_id(), zone.to_string()), Rgb(colour));
+                }
+            }
+        }
+        if self.keyboard && !self.keyboard_held.load(Ordering::Relaxed) {
+            let halves: Vec<_> = g
+                .shown()
+                .into_iter()
+                .filter(|((d, _), _)| d.starts_with(KEYBOARD))
+                .collect();
+            let colours: Vec<Rgb> = halves.iter().map(|(_, c)| *c).collect();
+            if let Some(mix) = mixed(&colours) {
+                own.extend(halves.into_iter().map(|(k, _)| (k, mix)));
+            }
+        }
+        g.hand_back(why, own, self.areas_shown.clone(), t);
+        self.hand_backs += 1;
+        self.handed_at = None;
+        self.hand_back_reported = false;
+        self.kick = true;
+        Some(self.hand_backs)
+    }
+
+    /// The hold ended: Screen glow eases back to the screen from where the fade left the lights.
+    pub fn resume(&mut self) {
+        if let Some(g) = self.glow.as_mut() {
+            g.resume();
+        }
+        self.handed_at = None;
+        self.hand_back_reported = false;
+        self.kick = true;
+    }
+
+    /// Once per hand-back, after the frame at `t`: every light reached its own colour and every
+    /// device has had that frame, so the scene may let them go. The hand-back's generation.
+    pub fn take_handed_back(&mut self, t: SceneTime) -> Option<u64> {
+        let g = self.glow.as_ref()?;
+        if self.hand_back_reported || !g.handed_back(t) {
+            return None;
+        }
+        let at = *self.handed_at.get_or_insert(t.ms());
+        if t.ms() < at + self.linger_ms() {
+            return None;
+        }
+        self.hand_back_reported = true;
+        Some(self.hand_backs)
     }
 
     /// Where Screen glow finds the screens' newest edge colours (#496).
@@ -652,6 +777,7 @@ impl Outputs {
     /// A ring or sweep over the scene from its next frame on (at most four at once).
     pub fn burst(&mut self, b: Burst) {
         self.bursts.add(b);
+        self.kick = true;
     }
 
     /// The room the scene is placed in now.
@@ -701,6 +827,7 @@ impl Outputs {
         // Placed again: a drag or a monitor change moves the effect too.
         self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
         self.effect_sent = false;
+        self.kick = true;
     }
 
     /// The keyboard's LEDs by part (the board profile's, `boards::lamp_parts`): its frames and
@@ -713,6 +840,7 @@ impl Outputs {
         self.sent_keyboard = None;
         self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
         self.effect_sent = false;
+        self.kick = true;
     }
 
     /// The Dynamic Lighting devices found now (#503). Each one in the room gets its next frame
@@ -737,6 +865,7 @@ impl Outputs {
     /// and show Windows' own lights until then.
     pub fn redraw_lamps(&mut self) {
         self.sent_lamps.clear();
+        self.kick = true;
     }
 
     /// Each output's pacing from the room and the targets; every device's next frame in full.
@@ -762,6 +891,7 @@ impl Outputs {
         self.sent_case.clear();
         self.sent_lamps.clear();
         self.sent_keyboard = None;
+        self.kick = true;
     }
 
     /// Another look while the scene runs (the Scenes page, #487): every device gets the next
@@ -775,6 +905,7 @@ impl Outputs {
         self.sent_keyboard = None;
         self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
         self.effect_sent = false;
+        self.kick = true;
     }
 
     /// The writes for scene time `t`: each due device whose colours changed.
@@ -782,6 +913,15 @@ impl Outputs {
         if self.keyboard_again.swap(false, Ordering::Relaxed) {
             self.sent_keyboard = None;
             self.effect_sent = false;
+            self.kick = true;
+        }
+        let held = self.keyboard_held.load(Ordering::Relaxed);
+        if held != self.held_seen {
+            self.held_seen = held;
+            self.kick = true;
+        }
+        if std::mem::take(&mut self.kick) {
+            self.busy_until = self.busy_until.max(t.ms() + self.linger_ms());
         }
         // Screen glow: at most 20 updates a second reach the lights (#496).
         if self.glow.as_ref().is_some_and(|g| !g.due(t)) {
@@ -829,10 +969,23 @@ impl Outputs {
             self.effect_sent = false;
         }
         let mut frame = match (self.glow.as_mut(), &self.screen_feed) {
-            (Some(g), Some(feed)) => g.render(&self.room, &feed.latest(), t),
+            (Some(g), Some(feed)) => {
+                // Counted before the read: a picture arriving meanwhile is drawn next time.
+                self.seen_pictures = feed.pictures();
+                g.render(&self.room, &feed.latest(), t)
+            }
             (Some(g), None) => g.render(&self.room, &[], t),
             (None, _) => self.effect.render(&self.room, t),
         };
+        let handing_back = self.glow.as_ref().is_some_and(|g| g.handing_back());
+        // Still settling (a fade paces itself: [`Outputs::pace`]).
+        if self
+            .glow
+            .as_ref()
+            .is_some_and(|g| !g.handing_back() && !g.settled())
+        {
+            self.busy_until = self.busy_until.max(t.ms() + self.linger_ms());
+        }
         if bursting {
             // `render` lists the lights device by device, in the room's order.
             let places = self.room.devices.iter().flat_map(|d| d.lights.iter());
@@ -844,7 +997,22 @@ impl Outputs {
             // An area light follows the burst on its neighbours rather than being hit itself.
             foxglove_scene::ambient::group(&mut frame, &self.room);
         }
-        self.ambient.apply(&mut frame, &self.room);
+        if handing_back {
+            // The fade eases the area lights itself; after it they start again from there.
+            self.ambient.reset();
+        } else {
+            self.ambient.apply(&mut frame, &self.room);
+            if self.glow.is_some() {
+                let places = self.room.devices.iter().flat_map(|d| d.lights.iter());
+                self.areas_shown = frame
+                    .lights
+                    .iter()
+                    .zip(places)
+                    .filter(|(_, p)| p.role == LightRole::Ambient)
+                    .map(|(l, _)| ((l.device.clone(), l.light.clone()), l.colour))
+                    .collect();
+            }
+        }
         for id in due {
             if id == KEYBOARD_LAMPS {
                 let Some((key, colors)) = self.keyboard_lamp_colours(&frame, t, bursting) else {
@@ -1031,6 +1199,250 @@ mod tests {
         // Another look: Screen glow's state goes with it.
         o.set_effect(crate::foxglove::scene_run::demo_effect());
         assert!(o.glow.is_none());
+    }
+
+    fn screen_of(c: [u8; 3]) -> foxglove_scene::screen::Edges {
+        use foxglove_scene::screen::{Edges, ScreenImage};
+        Edges::of(&ScreenImage::filled(r"\\.\DISPLAY1", 256, 144, c))
+    }
+
+    /// A Screen glow on the desk, lit by a red screen for a second at 30 frames a second; the
+    /// next frame's time.
+    fn glowing_red(
+        smoothing: foxglove_scene::Smoothing,
+    ) -> (Outputs, Arc<crate::foxglove::screen_glow::Feed>, i64) {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(Effect::Screen { smoothing }, room, cases);
+        let feed = Arc::new(crate::foxglove::screen_glow::Feed::default());
+        o.set_screen_feed(feed.clone());
+        feed.put(screen_of([230, 20, 20]));
+        let mut t = 0;
+        while t < 1000 {
+            o.frame(SceneTime(t));
+            t += 1000 / 30;
+        }
+        (o, feed, t)
+    }
+
+    /// Every case write in `outs`, by zone index.
+    fn case_of(outs: &[Out]) -> Option<Vec<(usize, [u8; 3])>> {
+        outs.iter().find_map(|o| match o {
+            Out::Case { colors, .. } => Some(colors.clone()),
+            _ => None,
+        })
+    }
+
+    /// #1085: a full-screen game. The case fades over 1 s to its own colours (its area light
+    /// too), the keyboard's halves to the mix they show (the lease's colour it shows once its
+    /// frames go back), and only then is the hand-back reported, once, so the scene lets them
+    /// go. The hold's end eases back to the screen.
+    #[test]
+    fn a_game_fades_the_lights_to_their_own_colours_then_hands_them_back() {
+        use foxglove_scene::screen::{HandBack, GAME_FADE_MS};
+        let (mut o, feed, t0) = glowing_red(foxglove_scene::Smoothing::Even);
+        let blue = [20, 40, 230];
+        let own = BTreeMap::from([("103c:84fd".to_string(), (0..5).map(|i| (i, blue)).collect())]);
+        let generation = o.hand_back(HandBack::Game, &own, SceneTime(t0)).unwrap();
+        let mut case = None;
+        let mut mid = None;
+        let mut reported = None;
+        let mut t = t0;
+        while t < t0 + 3000 {
+            let outs = o.frame(SceneTime(t));
+            if let Some(c) = case_of(&outs) {
+                if t - t0 >= 450 && mid.is_none() {
+                    mid = Some(c.clone());
+                }
+                case = Some(c);
+            }
+            if let Some(g) = o.take_handed_back(SceneTime(t)) {
+                assert!(reported.is_none(), "reported once");
+                reported = Some((g, t));
+            }
+            if reported.is_none() {
+                assert_eq!(
+                    o.pace(SceneTime(t)),
+                    Pace::Tick,
+                    "the fade draws at the tick"
+                );
+            }
+            t += 1000 / 30;
+        }
+        let (g, at) = reported.expect("handed back");
+        assert_eq!(g, generation);
+        assert!(
+            at >= t0 + GAME_FADE_MS && at < t0 + GAME_FADE_MS + 500,
+            "{at}"
+        );
+        let case = case.unwrap();
+        assert!(
+            case.iter().all(|(_, c)| *c == blue),
+            "the case's own colours: {case:?}"
+        );
+        let mid = mid.unwrap();
+        assert!(
+            mid.iter().all(|(_, [r, _, b])| *r > 40 && *b > 60),
+            "half way, red to blue: {mid:?}"
+        );
+        // The keyboard's halves: both at the mix they showed, red.
+        let shown = o.glow.as_ref().unwrap().shown();
+        for half in ["keyboard:left", "keyboard:right"] {
+            let c = shown[&(half.to_string(), "all".to_string())];
+            assert!(c.0[0] > 150 && c.0[2] < 80, "{half}: {c:?}");
+        }
+        // Handed back, nothing more to draw: it sleeps until the hold ends.
+        assert_eq!(o.pace(SceneTime(t)), Pace::Idle);
+        // The game ends: the screen is green, the case eases back from blue.
+        o.resume();
+        feed.put(screen_of([20, 210, 40]));
+        let first = loop {
+            if let Some(c) = case_of(&o.frame(SceneTime(t))) {
+                break c;
+            }
+            t += 1000 / 30;
+        };
+        assert!(
+            first.iter().all(|(_, [_, g, b])| *g < 200 && *b > 30),
+            "no jump to the screen: {first:?}"
+        );
+    }
+
+    /// #1085 review: the case's area light (zone 2) eases behind its neighbours; a hand-back
+    /// fades it on from the colour it showed, not from its neighbours' peak.
+    #[test]
+    fn an_area_light_fades_on_from_what_it_showed() {
+        use foxglove_scene::screen::HandBack;
+        let (mut o, feed, mut t) = glowing_red(foxglove_scene::Smoothing::Quick);
+        // The screen turns blue: the zones follow at once, the area light lags behind.
+        feed.put(screen_of([20, 40, 230]));
+        let mut last = None;
+        for _ in 0..6 {
+            if let Some(c) = case_of(&o.frame(SceneTime(t))) {
+                last = Some(c);
+            }
+            t += 1000 / 30;
+        }
+        let last = last.unwrap();
+        let area = last[1].1;
+        let zone1 = last[0].1;
+        let gap = |a: [u8; 3], b: [u8; 3]| (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap();
+        assert!(gap(area, zone1) > 40, "the area light lags: {last:?}");
+        let blue = [20, 40, 230];
+        let own = BTreeMap::from([("103c:84fd".to_string(), (0..5).map(|i| (i, blue)).collect())]);
+        o.hand_back(HandBack::Game, &own, SceneTime(t)).unwrap();
+        let first = loop {
+            if let Some(c) = case_of(&o.frame(SceneTime(t))) {
+                break c;
+            }
+            t += 1000 / 30;
+        };
+        assert!(
+            gap(first[1].1, area) <= 12,
+            "no jump: {area:?} -> {:?}",
+            first[1].1
+        );
+    }
+
+    /// #1085: capture failing holds the last colours for 2 s with no frame meanwhile (the
+    /// thread waits for the fade's start), then fades over 3 s.
+    #[test]
+    fn a_failure_waits_out_the_hold_then_fades() {
+        use foxglove_scene::screen::{HandBack, FAIL_FADE_MS, FAIL_HOLD_MS};
+        let (mut o, _feed, t0) = glowing_red(foxglove_scene::Smoothing::Even);
+        let own = BTreeMap::from([(
+            "103c:84fd".to_string(),
+            (0..5).map(|i| (i, [255, 255, 255])).collect(),
+        )]);
+        o.hand_back(HandBack::Failed, &own, SceneTime(t0)).unwrap();
+        // The change is drawn to every device first, then it waits.
+        let mut t = t0;
+        while o.pace(SceneTime(t)) == Pace::Tick {
+            o.frame(SceneTime(t));
+            t += 1000 / 30;
+            assert!(t < t0 + 1000, "the change settles");
+        }
+        match o.pace(SceneTime(t)) {
+            Pace::After(d) => {
+                let left = (t0 + FAIL_HOLD_MS - t) as u128;
+                assert!(d.as_millis().abs_diff(left) <= 1, "{d:?} vs {left} ms");
+            }
+            p => panic!("waits for the fade: {p:?}"),
+        }
+        let held = case_of(&o.frame(SceneTime(t0 + FAIL_HOLD_MS - 1)));
+        assert!(held.is_none(), "nothing changes while held: {held:?}");
+        let mut end = None;
+        let mut t = t0 + FAIL_HOLD_MS;
+        while end.is_none() {
+            o.frame(SceneTime(t));
+            end = o.take_handed_back(SceneTime(t)).map(|_| t);
+            t += 1000 / 30;
+            assert!(t < t0 + 10_000);
+        }
+        assert!(end.unwrap() >= t0 + FAIL_HOLD_MS + FAIL_FADE_MS);
+    }
+
+    /// #1085: on a still screen the scene's frame thread sleeps. Measured on a real scheduler
+    /// with recorded pictures: after a picture it wakes only while the lights settle, then not
+    /// at all; the next picture wakes it again.
+    #[test]
+    fn a_still_screen_lets_the_frame_thread_sleep() {
+        use foxglove_scene::scheduler::{Gate, Scheduler, MIN_INTERVAL};
+        use std::sync::Mutex;
+        let (mut room, cases) = desk();
+        // Point lights only: an area light's slow easing would keep it ticking for seconds.
+        for d in &mut room.devices {
+            for l in &mut d.lights {
+                l.role = LightRole::Point;
+            }
+        }
+        let o = Arc::new(Mutex::new(Outputs::new(
+            Effect::Screen {
+                smoothing: foxglove_scene::Smoothing::Quick,
+            },
+            room,
+            cases,
+        )));
+        let feed = Arc::new(crate::foxglove::screen_glow::Feed::default());
+        o.lock().unwrap().set_screen_feed(feed.clone());
+        let frames = o.clone();
+        let sched = Scheduler::paced(
+            foxglove_scene::Clock::starting_now(),
+            MIN_INTERVAL,
+            move |t| {
+                let mut o = frames.lock().unwrap();
+                o.frame(t);
+                o.pace(t)
+            },
+        );
+        feed.wake_with(sched.waker());
+        feed.put(screen_of([230, 20, 20]));
+        sched.set(Gate::Scene, true);
+        // The wake count once it stops growing (bounded).
+        let settled = || {
+            let mut last = sched.frames();
+            for _ in 0..40 {
+                std::thread::sleep(Duration::from_millis(150));
+                let now = sched.frames();
+                if now == last {
+                    return now;
+                }
+                last = now;
+            }
+            panic!("the frame thread never slept: {last} frames");
+        };
+        let first = settled();
+        std::thread::sleep(Duration::from_millis(800));
+        assert_eq!(sched.frames(), first, "no wake-up on a still screen");
+        feed.put(screen_of([20, 40, 230]));
+        let second = settled();
+        let woke = second - first;
+        assert!(
+            (1..=30).contains(&woke),
+            "{woke} frames for one new picture"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(sched.frames(), second, "asleep again");
+        eprintln!("still screen: {first} frames to settle the first picture, {woke} for the next, 0 while still");
     }
 
     /// The user's desk: one 1440p monitor, the Corne's halves and the 45L with its catalog

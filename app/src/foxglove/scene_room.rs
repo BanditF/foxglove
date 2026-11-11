@@ -571,7 +571,7 @@ mod imp {
     use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI, MDT_RAW_DPI};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW, MSG,
-        WINDOW_STYLE, WM_DISPLAYCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW,
+        WINDOW_STYLE, WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW,
     };
 
     const MONITORINFOF_PRIMARY: u32 = 1;
@@ -648,6 +648,11 @@ mod imp {
             // A panic must not unwind into Windows.
             let _ = std::panic::catch_unwind(super::display_changed);
             return LRESULT(0);
+        }
+        if message == WM_SETTINGCHANGE {
+            // Screen glow reads an HDR screen's SDR white level again (#1085). Only a count:
+            // nothing runs here.
+            super::super::screen_capture::settings_changed();
         }
         // SAFETY: the default handling for this window's other messages.
         unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }

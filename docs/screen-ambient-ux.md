@@ -157,6 +157,14 @@ panel's row stays with the gate's words.
 | Another app or Windows has the lights | as scenes today (#491) | Paused for {who} (unchanged) |
 | Capture fails (remote desktop, GPU or driver change) | hold, then fade in 3 s to their own colours | Can't read the screen right now. Foxglove tries again when the display changes. |
 
+The fades (#1085): "their own colours" are what each light shows once the scene lets it go: the
+case's colours from before the scene, the keyboard's lease colour (the mix of its halves). The
+capture failure holds the last colours for 2 s first, since a short break (a UAC prompt, a mode
+change) often ends meanwhile. Windows' own lights on a Dynamic Lighting device can't be read, so
+such a device keeps its colour until the fade ends and then goes back to Windows. The fade eases
+in and out and keeps the flash limit. When the gate lifts, Screen glow eases back from there at
+its smoothing's pace.
+
 - **Full screen** means a full-screen game (Direct3D exclusive full screen, or Windows reporting
   "busy"/presentation mode). Full-screen video in a browser or player keeps glowing, because
   that is the point of an ambient light. If Windows can't tell the two apart, the app-engineer

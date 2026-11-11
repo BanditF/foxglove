@@ -305,3 +305,354 @@ fn the_effect_is_a_still_grey_before_anything_is_read() {
     );
     assert_eq!(serde_json::from_str::<crate::Effect>(&text).unwrap(), e);
 }
+
+// ------------------------------------------------------------------ handing back (#1085)
+
+fn filled(c: [u8; 3]) -> [Edges; 1] {
+    [Edges::of(&ScreenImage::filled(r"\\.\DISPLAY1", 64, 36, c))]
+}
+
+fn key(device: &str, light: &str) -> LightKey {
+    (device.into(), light.into())
+}
+
+/// Linear-light distance between two colours (the largest channel's).
+fn apart(a: Rgb, b: Rgb) -> f32 {
+    let (a, b) = (a.linear(), b.linear());
+    (0..3).map(|i| (a[i] - b[i]).abs()).fold(0.0, f32::max)
+}
+
+/// A glow settled on a red screen by `t` ms.
+fn settled_on_red(smoothing: Smoothing, t: i64) -> (RoomMap, Glow) {
+    let room = room();
+    let mut glow = Glow::new(smoothing);
+    let mut at = 0;
+    while at <= t {
+        glow.render(&room, &filled(RED), SceneTime(at));
+        at += MIN_UPDATE_MS;
+    }
+    (room, glow)
+}
+
+#[test]
+fn the_fade_curve_eases_in_and_out() {
+    assert_eq!(fade_curve(0.0), 0.0);
+    assert_eq!(fade_curve(1.0), 1.0);
+    assert!((fade_curve(0.5) - 0.5).abs() < 1e-6);
+    assert_eq!(fade_curve(-1.0), 0.0);
+    assert_eq!(fade_curve(7.0), 1.0);
+    assert_eq!(fade_curve(f32::NAN), 1.0);
+    let steps: Vec<f32> = (0..=20).map(|i| fade_curve(i as f32 / 20.0)).collect();
+    assert!(steps.windows(2).all(|w| w[1] >= w[0]), "never turns back");
+    // Slow at both ends, quickest in the middle.
+    let first = steps[1] - steps[0];
+    let middle = steps[11] - steps[10];
+    let last = steps[20] - steps[19];
+    assert!(first < middle / 4.0 && last < middle / 4.0, "{steps:?}");
+}
+
+/// A full-screen game: each light fades over 1 s from its screen colour to its own, along the
+/// curve, ignoring the screen meanwhile; a light whose own colour isn't known keeps its colour.
+#[test]
+fn a_game_fades_the_lights_to_their_own_colours_in_one_second() {
+    let (room, mut glow) = settled_on_red(Smoothing::Even, 3000);
+    let t0 = 3050;
+    let own = BTreeMap::from([
+        (key("keyboard:left", "all"), Rgb(BLUE)),
+        (key("case", "top"), Rgb(GREEN)),
+        (key("case", "bottom"), Rgb(GREEN)),
+    ]);
+    glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(t0));
+    assert!(glow.handing_back() && !glow.settled());
+    assert_eq!(
+        glow.fade_starts(SceneTime(t0)),
+        None,
+        "a game doesn't hold first"
+    );
+    let at = |glow: &mut Glow, ms: i64| {
+        // The screen turns yellow meanwhile: ignored while handing back.
+        glow.render(&room, &filled(YELLOW), SceneTime(t0 + ms))
+    };
+    let f = at(&mut glow, 0);
+    assert!(
+        close(light(&f, "keyboard:left", "all"), RED),
+        "starts where it was"
+    );
+    let f = at(&mut glow, 500);
+    let mid = light(&f, "keyboard:left", "all").linear();
+    let (r, b) = (Rgb(RED).linear(), Rgb(BLUE).linear());
+    for i in 0..3 {
+        let half = (r[i] + b[i]) / 2.0;
+        assert!(
+            (mid[i] - half).abs() < 0.03,
+            "half way in linear light at 0.5 s: {mid:?}"
+        );
+    }
+    assert!(!glow.handed_back(SceneTime(t0 + 500)));
+    let f = at(&mut glow, 1000);
+    assert_eq!(light(&f, "keyboard:left", "all"), Rgb(BLUE));
+    assert_eq!(light(&f, "case", "top"), Rgb(GREEN));
+    assert!(
+        close(light(&f, "keyboard:right", "all"), RED),
+        "no own colour: kept"
+    );
+    assert!(glow.handed_back(SceneTime(t0 + 1000)));
+    // A second hand-back while handing back changes nothing.
+    glow.hand_back(
+        HandBack::Failed,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        SceneTime(t0 + 1000),
+    );
+    assert_eq!(glow.fade_starts(SceneTime(t0 + 1000)), None);
+}
+
+/// Capture failing: the last colours hold for [`FAIL_HOLD_MS`], then fade over 3 s.
+#[test]
+fn a_failure_holds_then_fades_in_three_seconds() {
+    let (room, mut glow) = settled_on_red(Smoothing::Calm, 4000);
+    let t0 = 4050;
+    let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb(BLUE))]);
+    glow.hand_back(HandBack::Failed, own, BTreeMap::new(), SceneTime(t0));
+    let before = light(
+        &glow.render(&room, &[], SceneTime(t0)),
+        "keyboard:left",
+        "all",
+    );
+    assert_eq!(
+        glow.fade_starts(SceneTime(t0 + 10)),
+        Some(SceneTime(t0 + FAIL_HOLD_MS))
+    );
+    for ms in [500, 1000, 1999] {
+        let f = glow.render(&room, &[], SceneTime(t0 + ms));
+        assert_eq!(light(&f, "keyboard:left", "all"), before, "held at {ms} ms");
+    }
+    let start = t0 + FAIL_HOLD_MS;
+    assert_eq!(glow.fade_starts(SceneTime(start)), None);
+    let f = glow.render(&room, &[], SceneTime(start + 1500));
+    let mid = light(&f, "keyboard:left", "all");
+    assert!(
+        apart(mid, before) > 0.2 && apart(mid, Rgb(BLUE)) > 0.2,
+        "{mid:?}"
+    );
+    assert!(!glow.handed_back(SceneTime(start + 2999)));
+    let f = glow.render(&room, &[], SceneTime(start + FAIL_FADE_MS));
+    assert_eq!(light(&f, "keyboard:left", "all"), Rgb(BLUE));
+    assert!(glow.handed_back(SceneTime(start + FAIL_FADE_MS)));
+}
+
+/// The hold ends: the lights ease back to the screen from their own colours at the
+/// smoothing's pace, never in one jump, however long the hold was.
+#[test]
+fn after_a_hold_the_lights_ease_back_to_the_screen() {
+    for smoothing in Smoothing::ALL {
+        let (room, mut glow) = settled_on_red(smoothing, 3000);
+        let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb(BLUE))]);
+        glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(3050));
+        glow.render(&room, &[], SceneTime(4050));
+        assert!(glow.handed_back(SceneTime(4050)));
+        // A minute later the game ends and the screen is green.
+        glow.resume();
+        assert!(!glow.handing_back());
+        let mut t = 64_050;
+        let f = glow.render(&room, &filled(GREEN), SceneTime(t));
+        let first = light(&f, "keyboard:left", "all");
+        assert!(
+            apart(first, Rgb(BLUE)) <= apart(Rgb(BLUE), Rgb(GREEN)) * 0.97,
+            "{smoothing:?}: one step at most from its own colour: {first:?}"
+        );
+        if smoothing != Smoothing::Quick {
+            assert!(
+                apart(first, Rgb(GREEN)) > 0.1,
+                "{smoothing:?}: no jump to the screen: {first:?}"
+            );
+        }
+        let mut c = first;
+        while apart(c, Rgb(GREEN)) > 0.01 {
+            t += MIN_UPDATE_MS;
+            c = light(
+                &glow.render(&room, &filled(GREEN), SceneTime(t)),
+                "keyboard:left",
+                "all",
+            );
+            assert!(t < 64_050 + 10_000, "{smoothing:?} never got back");
+        }
+    }
+}
+
+/// The flash limit holds during a fade too: a fade right after a strobe waits for it.
+#[test]
+fn a_fade_keeps_the_flash_limit() {
+    let room = room();
+    let mut glow = Glow::new(Smoothing::Quick);
+    let mut shown = Vec::new();
+    // A 10 Hz strobe for a second, ending dark ...
+    let mut t = 0;
+    while t < 1000 {
+        let edges = if (t / 50) % 2 == 0 {
+            filled([255; 3])
+        } else {
+            filled([0; 3])
+        };
+        let f = glow.render(&room, &edges, SceneTime(t));
+        shown.push((t, light(&f, "keyboard:left", "all")));
+        t += MIN_UPDATE_MS;
+    }
+    // ... then a game: the own colour is white, the other way.
+    let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb([255; 3]))]);
+    glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(t));
+    let end = t + GAME_FADE_MS;
+    loop {
+        let f = glow.render(&room, &[], SceneTime(t));
+        shown.push((t, light(&f, "keyboard:left", "all")));
+        if glow.handed_back(SceneTime(t)) {
+            break;
+        }
+        t += MIN_UPDATE_MS;
+        assert!(t < end + 2000, "the fade ends once the limit lets it");
+    }
+    let s = swings(&shown);
+    for (i, &at) in s.iter().enumerate() {
+        let in_second = s[i..].iter().take_while(|&&b| b - at < 1000).count();
+        assert!(
+            in_second <= MAX_SWINGS,
+            "{in_second} swings from {at} ms ({s:?})"
+        );
+    }
+    assert_eq!(shown.last().unwrap().1, Rgb([255; 3]));
+}
+
+/// #1085: a still picture settles (nothing more to send, the frame thread may sleep); a new
+/// one doesn't until the lights reach it. A step after a long gap is one ordinary step.
+#[test]
+fn a_still_screen_settles() {
+    let room = room();
+    let mut glow = Glow::new(Smoothing::Even);
+    let red = filled(RED);
+    glow.render(&room, &red, SceneTime(0));
+    assert!(glow.settled(), "the first picture shows at once");
+    let mut t = 0;
+    for _ in 0..3 {
+        t += MIN_UPDATE_MS;
+        glow.render(&room, &red, SceneTime(t));
+        assert!(glow.settled());
+    }
+    // Ten seconds still, then blue: one step of Even, not the whole way.
+    t += 10_000;
+    let f = glow.render(&room, &filled(BLUE), SceneTime(t));
+    assert!(!glow.settled());
+    let k = 1.0 - (-(MAX_STEP_MS as f32) / (Smoothing::Even.settle_ms() / 3.0)).exp();
+    let c = light(&f, "keyboard:left", "all").linear();
+    let (r, b) = (Rgb(RED).linear(), Rgb(BLUE).linear());
+    for i in 0..3 {
+        let want = r[i] + (b[i] - r[i]) * k;
+        assert!((c[i] - want).abs() < 0.01, "{c:?} vs {want}");
+    }
+    let mut n = 0;
+    while !glow.settled() {
+        t += MIN_UPDATE_MS;
+        glow.render(&room, &filled(BLUE), SceneTime(t));
+        n += 1;
+        assert!(n < 100, "Even settles in a few seconds");
+    }
+    assert_eq!(glow.shown()[&key("keyboard:left", "all")], Rgb(BLUE));
+}
+
+/// The room without one device (unplugged, or gone from the scan).
+fn without(room: &RoomMap, device: &str) -> RoomMap {
+    let mut r = room.clone();
+    r.devices.retain(|d| d.id != device);
+    r
+}
+
+/// #1085 review: a device that leaves the room mid-ease doesn't keep the glow unsettled (the
+/// frame thread would tick forever).
+#[test]
+fn a_device_gone_mid_ease_lets_the_glow_settle() {
+    let room = room();
+    let mut glow = Glow::new(Smoothing::Calm);
+    glow.render(&room, &filled(RED), SceneTime(0));
+    glow.render(&room, &filled(BLUE), SceneTime(50));
+    assert!(!glow.settled());
+    // Every light that is left in the room is still easing too, so take them all out but one
+    // and let that one settle.
+    let mut fewer = without(&without(&room, "keyboard:right"), "case");
+    let mut t = 50;
+    while !glow.settled() {
+        t += MIN_UPDATE_MS;
+        glow.render(&fewer, &filled(BLUE), SceneTime(t));
+        assert!(t < 10_000, "settles with the device gone");
+    }
+    assert!(!glow.shown().contains_key(&key("keyboard:right", "all")));
+    // A light that turns into an area light is dropped the same way.
+    fewer = room.clone();
+    for d in &mut fewer.devices {
+        for l in &mut d.lights {
+            l.role = LightRole::Ambient;
+        }
+    }
+    glow.render(&room, &filled(RED), SceneTime(t + 50));
+    assert!(!glow.settled());
+    glow.render(&fewer, &filled(RED), SceneTime(t + 100));
+    assert!(glow.settled(), "no point light is left to settle");
+}
+
+/// #1085 review: a device that leaves the room while the flash limit holds it back doesn't keep
+/// the fade from finishing (the lights would never be handed back during a game).
+#[test]
+fn a_device_gone_while_held_back_lets_the_fade_finish() {
+    let room = room();
+    let mut glow = Glow::new(Smoothing::Quick);
+    let left = key("keyboard:left", "all");
+    // A 10 Hz strobe until the limit holds the left half back.
+    let mut t = 0;
+    loop {
+        let edges = if (t / 50) % 2 == 0 {
+            filled([255; 3])
+        } else {
+            filled([0; 3])
+        };
+        glow.render(&room, &edges, SceneTime(t));
+        if glow.lights[&left].held_back {
+            break;
+        }
+        t += MIN_UPDATE_MS;
+        assert!(t < 5000, "a strobe meets the limit");
+    }
+    // A game starts as the left half is unplugged.
+    glow.hand_back(
+        HandBack::Game,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        SceneTime(t),
+    );
+    let gone = without(&room, "keyboard:left");
+    let end = t + GAME_FADE_MS;
+    while t < end {
+        t += MIN_UPDATE_MS;
+        glow.render(&gone, &[], SceneTime(t));
+    }
+    assert!(!glow.lights.contains_key(&left));
+    assert!(
+        glow.handed_back(SceneTime(t)),
+        "handed back without the gone device"
+    );
+}
+
+/// #1085 review: a device found during a game starts at its own colour, not from black.
+#[test]
+fn a_device_found_during_a_hand_back_starts_at_its_own_colour() {
+    let room = room();
+    let fewer = without(&room, "case");
+    let (_, mut glow) = (room.clone(), Glow::new(Smoothing::Even));
+    glow.render(&fewer, &filled(RED), SceneTime(0));
+    let own = BTreeMap::from([(key("case", "top"), Rgb(GREEN))]);
+    glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(50));
+    let f = glow.render(&room, &[], SceneTime(300));
+    assert_eq!(light(&f, "case", "top"), Rgb(GREEN));
+    assert_eq!(
+        light(&f, "case", "bottom"),
+        Rgb::BLACK,
+        "no own colour known: dark"
+    );
+}
