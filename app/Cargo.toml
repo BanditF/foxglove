@@ -138,6 +138,8 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    # Foxglove (#1085): a screen's SDR white level, for Screen glow on an HDR desktop.
+    "Win32_Devices_Display",
 ] }
 winreg = "0.56.0"
 

@@ -8,6 +8,11 @@
 //!   copied to a staging texture and read back. The full-size picture never reaches the CPU.
 //! - Errors (access lost on a mode change, a remote desktop, a driver reset) end the capture; the
 //!   reader reports "capture failed" and opens a new one on the next display change.
+//! - HDR desktops (#1085): the duplication asks for FP16 as well as 8-bit BGRA
+//!   (`IDXGIOutput5::DuplicateOutput1`; Windows before 1703, or a refusal, falls back to plain
+//!   `DuplicateOutput`). An FP16 picture is scRGB, linear light, so the GPU's mip average is an
+//!   average of light; the small level is then tone-mapped to sRGB on the CPU ([`tone_map`],
+//!   with the screen's SDR white level read once when it opens), with no shader.
 //!
 //! Under `cfg(test)` [`open`] always fails: tests never read the real screen.
 
@@ -72,6 +77,45 @@ pub fn rotated(
     }
 }
 
+/// An IEEE 754 half-precision float (an FP16 desktop's channel) as an `f32`.
+pub fn half(bits: u16) -> f32 {
+    let sign = if bits & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = i32::from((bits >> 10) & 0x1f);
+    let frac = f32::from(bits & 0x3ff);
+    match exp {
+        0 => sign * frac * 2f32.powi(-24),
+        0x1f if frac == 0.0 => sign * f32::INFINITY,
+        0x1f => f32::NAN,
+        _ => sign * (1.0 + frac / 1024.0) * 2f32.powi(exp - 15),
+    }
+}
+
+/// One pixel of an HDR desktop (scRGB: linear light on sRGB's primaries, 1.0 = 80 nits) as
+/// sRGB bytes. `white` is Windows' SDR white level in the same units (its "SDR content
+/// brightness": SDR white shows at `white`), so an SDR window on an HDR desktop reads exactly
+/// as it would on an SDR one. A highlight brighter than SDR white is scaled down to it as a
+/// whole (its brightest channel to full, the others with it), so it keeps its hue rather than
+/// washing out to white: the lights can't go brighter than full anyway. Colours outside sRGB's
+/// gamut (negative scRGB) and broken values clip to dark. An unknown white level counts as
+/// 80 nits (1.0).
+pub fn tone_map(px: [f32; 3], white: f32) -> [u8; 3] {
+    let white = if white.is_finite() && white > 0.05 {
+        white
+    } else {
+        1.0
+    };
+    let c = px.map(|v| {
+        if v.is_nan() {
+            0.0
+        } else {
+            (v / white).clamp(0.0, 1.0e6)
+        }
+    });
+    let m = c[0].max(c[1]).max(c[2]);
+    let c = if m > 1.0 { c.map(|v| v / m) } else { c };
+    foxglove_scene::Rgb::from_linear(c).0
+}
+
 /// The screens that opened, each failure logged and left out (a VR headset, an indirect or
 /// virtual display, DisplayLink, a hybrid-GPU output). An error only when none opened.
 pub fn readable<T>(opened: Vec<(String, Result<T, String>)>) -> Result<Vec<T>, String> {
@@ -111,14 +155,15 @@ mod imp {
     use std::time::Duration;
 
     use windows::core::Interface;
-    use windows::Win32::Foundation::HMODULE;
+    use windows::Win32::Devices::Display::*;
+    use windows::Win32::Foundation::{ERROR_SUCCESS, HMODULE};
     use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
     use windows::Win32::Graphics::Direct3D11::*;
     use windows::Win32::Graphics::Dxgi::Common::*;
     use windows::Win32::Graphics::Dxgi::*;
 
     use super::super::screen_glow::Got;
-    use super::{level_for, readable, rotated, Capture, ScreenImage};
+    use super::{half, level_for, readable, rotated, tone_map, Capture, ScreenImage};
 
     /// A screen's name and how opening it went.
     type Opened = (String, Result<Box<dyn Capture>, String>);
@@ -129,9 +174,82 @@ mod imp {
         ctx: ID3D11DeviceContext,
         dup: IDXGIOutputDuplication,
         rotation: u8,
-        /// The full-size copy with its mip chain, and its view for `GenerateMips`.
-        mips: Option<(ID3D11Texture2D, ID3D11ShaderResourceView, u32, u32, u32)>,
+        /// The screen's SDR white level (scRGB, 1.0 = 80 nits), for an HDR desktop's pictures.
+        white: f32,
+        /// The full-size copy with its mip chain, its view for `GenerateMips`, its size, the
+        /// level read back and its format.
+        mips: Option<(
+            ID3D11Texture2D,
+            ID3D11ShaderResourceView,
+            u32,
+            u32,
+            u32,
+            DXGI_FORMAT,
+        )>,
         staging: Option<ID3D11Texture2D>,
+    }
+
+    /// The desktop formats Screen glow reads: an HDR desktop's FP16, else 8-bit BGRA.
+    const FORMATS: [DXGI_FORMAT; 2] = [DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM];
+
+    /// The SDR white level of the display Windows names `gdi` (`\\.\DISPLAY1`), in scRGB
+    /// (1.0 = 80 nits): where SDR white shows on its HDR desktop. `None` when Windows doesn't
+    /// say (the tone map then takes 80 nits).
+    ///
+    /// # Safety
+    /// Plain display-config queries into buffers sized by `GetDisplayConfigBufferSizes`; each
+    /// request packet is a complete struct whose header names its own size.
+    unsafe fn sdr_white(gdi: &str) -> Option<f32> {
+        let (mut np, mut nm) = (0u32, 0u32);
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm) != ERROR_SUCCESS {
+            return None;
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+        if QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            &mut np,
+            paths.as_mut_ptr(),
+            &mut nm,
+            modes.as_mut_ptr(),
+            None,
+        ) != ERROR_SUCCESS
+        {
+            return None;
+        }
+        paths.truncate(np as usize);
+        for p in &paths {
+            let mut name = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                    size: std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                    adapterId: p.sourceInfo.adapterId,
+                    id: p.sourceInfo.id,
+                },
+                viewGdiDeviceName: [0; 32],
+            };
+            if DisplayConfigGetDeviceInfo(&mut name.header) != 0 {
+                continue;
+            }
+            let named = String::from_utf16_lossy(&name.viewGdiDeviceName);
+            if named.trim_end_matches('\0') != gdi {
+                continue;
+            }
+            let mut white = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                    size: std::mem::size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
+                    adapterId: p.targetInfo.adapterId,
+                    id: p.targetInfo.id,
+                },
+                SDRWhiteLevel: 0,
+            };
+            if DisplayConfigGetDeviceInfo(&mut white.header) != 0 || white.SDRWhiteLevel == 0 {
+                return None;
+            }
+            return Some(white.SDRWhiteLevel as f32 / 1000.0);
+        }
+        None
     }
 
     // SAFETY: each Screen (its device, context and duplication) is used by one capture thread
@@ -192,7 +310,19 @@ mod imp {
         )?;
         let device = device.ok_or_else(windows::core::Error::empty)?;
         let ctx = ctx.ok_or_else(windows::core::Error::empty)?;
-        let dup = output.cast::<IDXGIOutput1>()?.DuplicateOutput(&device)?;
+        // HDR desktops need DuplicateOutput1 with FP16 among the formats; anything that refuses
+        // it (older Windows, a driver) still reads 8-bit desktops as before.
+        let dup = match output
+            .cast::<IDXGIOutput5>()
+            .and_then(|o| o.DuplicateOutput1(&device, 0, &FORMATS))
+        {
+            Ok(dup) => dup,
+            Err(e) => {
+                eprintln!("Foxglove: screen glow reads {name} without HDR ({e})");
+                output.cast::<IDXGIOutput1>()?.DuplicateOutput(&device)?
+            }
+        };
+        let white = sdr_white(&name).unwrap_or(1.0);
         let rotation = match dup.GetDesc().Rotation {
             DXGI_MODE_ROTATION_ROTATE90 => 1,
             DXGI_MODE_ROTATION_ROTATE180 => 2,
@@ -205,6 +335,7 @@ mod imp {
             ctx,
             dup,
             rotation,
+            white,
             mips: None,
             staging: None,
         })
@@ -221,9 +352,15 @@ mod imp {
             if self
                 .mips
                 .as_ref()
-                .is_some_and(|m| (m.2, m.3) == (d.Width, d.Height))
+                .is_some_and(|m| (m.2, m.3, m.5) == (d.Width, d.Height, d.Format))
             {
                 return Ok(());
+            }
+            if d.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
+                eprintln!(
+                    "Foxglove: screen glow: {} is HDR (SDR white {:.2} x 80 nits)",
+                    self.name, self.white
+                );
             }
             let level = level_for(d.Width);
             let desc = D3D11_TEXTURE2D_DESC {
@@ -263,7 +400,7 @@ mod imp {
             self.device
                 .CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
             self.staging = staging;
-            self.mips = Some((mips, view, d.Width, d.Height, level));
+            self.mips = Some((mips, view, d.Width, d.Height, level, d.Format));
             Ok(())
         }
 
@@ -272,19 +409,23 @@ mod imp {
         /// # Safety
         /// Called on this screen's capture thread only, after `targets` made the staging texture
         /// for this size. The pixels are read only between a successful `Map` and its `Unmap`,
-        /// and only when the mapped rows hold the level's width (`RowPitch >= width * 4`, checked
-        /// below): each row slice then lies inside the mapped memory (`RowPitch * height` bytes).
+        /// and only when the mapped rows hold the level's width (`RowPitch >= width * bytes per
+        /// pixel`, checked below): each row slice then lies inside the mapped memory
+        /// (`RowPitch * height` bytes).
         unsafe fn read(&mut self) -> windows::core::Result<ScreenImage> {
-            let (Some((mips, _, w, h, level)), Some(staging)) = (&self.mips, &self.staging) else {
+            let (Some((mips, _, w, h, level, format)), Some(staging)) = (&self.mips, &self.staging)
+            else {
                 return Err(windows::core::Error::empty());
             };
+            let hdr = *format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+            let bytes = if hdr { 8 } else { 4 };
             let (sw, sh) = ((w >> level).max(1) as usize, (h >> level).max(1) as usize);
             self.ctx
                 .CopySubresourceRegion(staging, 0, 0, 0, 0, mips, *level, None);
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.ctx
                 .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-            if mapped.pData.is_null() || (mapped.RowPitch as usize) < sw * 4 {
+            if mapped.pData.is_null() || (mapped.RowPitch as usize) < sw * bytes {
                 self.ctx.Unmap(staging, 0);
                 return Err(windows::core::Error::new(
                     windows::core::HRESULT(0x887A_0004_u32 as i32),
@@ -296,10 +437,19 @@ mod imp {
                 // SAFETY: inside the mapped memory (see above), read before `Unmap`.
                 let row = std::slice::from_raw_parts(
                     mapped.pData.cast::<u8>().add(y * mapped.RowPitch as usize),
-                    sw * 4,
+                    sw * bytes,
                 );
-                // The desktop is BGRA.
-                pixels.extend(row.as_chunks::<4>().0.iter().map(|p| [p[2], p[1], p[0]]));
+                if hdr {
+                    // RGBA halves, scRGB.
+                    let white = self.white;
+                    pixels.extend(row.as_chunks::<8>().0.iter().map(|p| {
+                        let c = |i: usize| half(u16::from_le_bytes([p[i], p[i + 1]]));
+                        tone_map([c(0), c(2), c(4)], white)
+                    }));
+                } else {
+                    // An 8-bit desktop is BGRA.
+                    pixels.extend(row.as_chunks::<4>().0.iter().map(|p| [p[2], p[1], p[0]]));
+                }
             }
             self.ctx.Unmap(staging, 0);
             Ok(rotated(&self.name, sw, sh, pixels, self.rotation))
@@ -331,10 +481,10 @@ mod imp {
                         .cast()?;
                     let mut d = D3D11_TEXTURE2D_DESC::default();
                     texture.GetDesc(&mut d);
-                    if d.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
+                    if !FORMATS.contains(&d.Format) {
                         return Err(windows::core::Error::new(
                             windows::core::HRESULT(0x887A_0004_u32 as i32),
-                            "the desktop isn't 8-bit BGRA",
+                            "the desktop is neither 8-bit BGRA nor FP16",
                         ));
                     }
                     self.targets(&d)?;
@@ -400,6 +550,56 @@ mod tests {
             readable(vec![("VR".into(), Err("unsupported".into()))]);
         assert!(none.unwrap_err().contains("VR: unsupported"));
         assert_eq!(readable::<u8>(Vec::new()), Ok(Vec::new()));
+    }
+
+    /// #1085: FP16 halves as an HDR desktop gives them.
+    #[test]
+    fn halves_decode() {
+        assert_eq!(half(0x0000), 0.0);
+        assert_eq!(half(0x3c00), 1.0);
+        assert_eq!(half(0x3800), 0.5);
+        assert_eq!(half(0x4000), 2.0);
+        assert_eq!(half(0x4900), 10.0);
+        assert_eq!(half(0xbc00), -1.0);
+        assert_eq!(half(0x7bff), 65504.0, "the largest");
+        assert_eq!(half(0x0001), 2f32.powi(-24), "the smallest subnormal");
+        assert_eq!(half(0x7c00), f32::INFINITY);
+        assert!(half(0x7e00).is_nan());
+    }
+
+    /// #1085: the tone map on synthetic scRGB pixels. SDR content on an HDR desktop reads as it
+    /// would on an SDR one, highlights come down to full brightness at their own hue, and
+    /// out-of-gamut or broken values never light up.
+    #[test]
+    fn the_tone_map_brings_hdr_down_to_srgb() {
+        let white = 2.5; // "SDR content brightness" at 200 nits
+        assert_eq!(
+            tone_map([white; 3], white),
+            [255, 255, 255],
+            "SDR white is white"
+        );
+        assert_eq!(tone_map([0.0; 3], white), [0, 0, 0]);
+        // Every SDR colour comes through as itself (Bandit orange, a mid grey).
+        for srgb in [[0xf0, 0x8a, 0x3c], [128, 128, 128], [20, 40, 230]] {
+            let scrgb = foxglove_scene::Rgb(srgb).linear().map(|v| v * white);
+            assert_eq!(tone_map(scrgb, white), srgb);
+        }
+        // Highlights: full brightness, the hue kept (an orange glare stays orange).
+        let glare = tone_map([40.0 * white, 20.0 * white, 0.0], white);
+        assert_eq!(glare, foxglove_scene::Rgb::from_linear([1.0, 0.5, 0.0]).0);
+        assert_eq!(tone_map([4.0 * white; 3], white), [255; 3]);
+        let ramp: Vec<u8> = (0..40)
+            .map(|i| tone_map([i as f32 * 0.1 * white; 3], white)[0])
+            .collect();
+        assert!(ramp.windows(2).all(|w| w[1] >= w[0]), "{ramp:?}");
+        // Wide-gamut (negative scRGB) and broken values.
+        assert_eq!(tone_map([-0.5, 0.0, 0.0], white), [0, 0, 0]);
+        assert_eq!(tone_map([f32::NAN, f32::INFINITY, 0.0], white), [0, 255, 0]);
+        // An unknown white level reads as 80 nits.
+        assert_eq!(tone_map([0.5; 3], 0.0), tone_map([0.5; 3], 1.0));
+        // The same picture at two SDR brightness settings reads the same.
+        let at = |w: f32| tone_map([0.3 * w, 0.6 * w, 0.1 * w], w);
+        assert_eq!(at(1.0), at(5.0));
     }
 
     #[test]

@@ -44,6 +44,55 @@ pub const DEPTH: f32 = 0.10;
 pub const BLACK: u8 = 16;
 /// The edge segments along a screen's longer side; the shorter side gets as many per mm.
 pub const SEGMENTS: usize = 16;
+/// The longest step the smoothing takes in one update. After a still screen (the frame thread
+/// slept, #1085) or a hold, the next picture eases in from where the lights are rather than
+/// jumping there.
+pub const MAX_STEP_MS: i64 = 2 * MIN_UPDATE_MS;
+/// A full-screen game holds Screen glow: the lights fade to their own colours over this long.
+pub const GAME_FADE_MS: i64 = 1000;
+/// Capture fails: the lights hold their last colours this long (a short break, such as a mode
+/// change or a UAC prompt, often ends meanwhile) ...
+pub const FAIL_HOLD_MS: i64 = 2000;
+/// ... then fade to their own colours over this long.
+pub const FAIL_FADE_MS: i64 = 3000;
+
+/// Why Screen glow hands the lights back (`docs/screen-ambient-ux.md`, "Gates the user sees").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandBack {
+    /// A full-screen game (or a presentation): fade at once over [`GAME_FADE_MS`].
+    Game,
+    /// Capture failed: hold [`FAIL_HOLD_MS`], then fade over [`FAIL_FADE_MS`].
+    Failed,
+}
+
+impl HandBack {
+    /// How long the colours hold before they fade, in milliseconds.
+    pub fn hold_ms(self) -> i64 {
+        match self {
+            HandBack::Game => 0,
+            HandBack::Failed => FAIL_HOLD_MS,
+        }
+    }
+
+    /// How long the fade takes, in milliseconds.
+    pub fn fade_ms(self) -> i64 {
+        match self {
+            HandBack::Game => GAME_FADE_MS,
+            HandBack::Failed => FAIL_FADE_MS,
+        }
+    }
+}
+
+/// The fade's curve: `p` (0..=1, the share of the fade's time gone) to the share of the way
+/// gone. It eases in and out (smoothstep), so the lights neither jump off nor land with a stop.
+pub fn fade_curve(p: f32) -> f32 {
+    let p = if p.is_finite() {
+        p.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    p * p * (3.0 - 2.0 * p)
+}
 
 /// How quickly a light follows the screen: Quick follows every cut, Calm drifts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -415,15 +464,48 @@ impl FlashLimit {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Light {
     linear: Option<[f32; 3]>,
+    /// The screen's colour it eases towards (none while it fades, or with its screen unread).
+    want: Option<[f32; 3]>,
+    /// The flash limit kept it from its colour in the last update.
+    held_back: bool,
     limit: FlashLimit,
+}
+
+/// A light: (device, light) as the room map names them.
+pub type LightKey = (String, String);
+
+/// Screen glow handing the lights back: their colours hold, then fade to their own.
+#[derive(Clone, Debug, PartialEq)]
+struct Fade {
+    /// When the colours start to move (ms).
+    start: i64,
+    /// How long they take (ms).
+    ms: i64,
+    /// Each light's own colour, in linear light. A light without one keeps its colour.
+    to: BTreeMap<LightKey, [f32; 3]>,
+    /// Each point light's colour as the fade began (taken at its first update).
+    from: BTreeMap<LightKey, [f32; 3]>,
+}
+
+impl Fade {
+    /// How far along it is at `t`: `None` while the colours still hold.
+    fn at(&self, t: SceneTime) -> Option<f32> {
+        (t.ms() >= self.start)
+            .then(|| fade_curve((t.ms() - self.start) as f32 / self.ms.max(1) as f32))
+    }
+
+    fn end(&self) -> i64 {
+        self.start + self.ms
+    }
 }
 
 /// A running Screen glow: each light's eased, flash-limited colour from the screens' edges.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Glow {
     pub smoothing: Smoothing,
-    lights: BTreeMap<(String, String), Light>,
+    lights: BTreeMap<LightKey, Light>,
     last: Option<SceneTime>,
+    fade: Option<Fade>,
 }
 
 impl Glow {
@@ -444,10 +526,14 @@ impl Glow {
     /// nearest edge's colour, then flash-limited; ambient lights as the scene's other effects
     /// make them (the peak of their device's points). A light whose screen wasn't read keeps
     /// its colour (black at first).
+    ///
+    /// While the lights are handed back ([`Glow::hand_back`]) the screen is ignored: each light
+    /// holds, then fades to its own colour.
     pub fn render(&mut self, room: &RoomMap, edges: &[Edges], t: SceneTime) -> Frame {
-        let dt = self
-            .last
-            .map_or(f32::INFINITY, |l| (t.ms() - l.ms()).max(0) as f32);
+        // A step after a long gap (a still screen, a hold) is one ordinary step.
+        let dt = self.last.map_or(f32::INFINITY, |l| {
+            (t.ms() - l.ms()).clamp(0, MAX_STEP_MS) as f32
+        });
         self.last = Some(t);
         // The share of the way to go this step (all of it the first time).
         let k = if dt.is_finite() {
@@ -459,22 +545,52 @@ impl Glow {
             t,
             lights: Vec::new(),
         };
+        let fading = self.fade.as_ref().map(|f| f.at(t));
         for d in &room.devices {
             for l in &d.lights {
                 let key = (d.id.clone(), l.id.clone());
-                let state = self.lights.entry(key).or_default();
+                let state = self.lights.entry(key.clone()).or_default();
                 let colour = match l.role {
                     LightRole::Ambient => Rgb::BLACK,
                     LightRole::Point => {
-                        let target = colour_at(room, edges, l.at).map(Rgb::linear);
-                        let now = match (state.linear, target) {
-                            (Some(c), Some(want)) => [0, 1, 2].map(|i| c[i] + (want[i] - c[i]) * k),
-                            (None, Some(want)) => want,
-                            (Some(c), None) => c,
-                            (None, None) => [0.0; 3],
+                        let mut now = match (&mut self.fade, fading) {
+                            // Handing back: hold, then fade to the light's own colour.
+                            (Some(fade), Some(along)) => {
+                                state.want = None;
+                                let held = state.linear.unwrap_or([0.0; 3]);
+                                match along {
+                                    None => held,
+                                    Some(e) => {
+                                        let from = *fade.from.entry(key.clone()).or_insert(held);
+                                        match fade.to.get(&key) {
+                                            Some(to) => mix(from, *to, e),
+                                            None => from,
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                let target = colour_at(room, edges, l.at).map(Rgb::linear);
+                                state.want = target;
+                                match (state.linear, target) {
+                                    (Some(c), Some(want)) => mix(c, want, k),
+                                    (None, Some(want)) => want,
+                                    (Some(c), None) => c,
+                                    (None, None) => [0.0; 3],
+                                }
+                            }
                         };
+                        // Close enough to show the screen's own bytes: there.
+                        if let Some(want) = state.want {
+                            if Rgb::from_linear(now) == Rgb::from_linear(want) {
+                                now = want;
+                            }
+                        }
                         state.linear = Some(now);
-                        state.limit.apply(Rgb::from_linear(now), t.ms())
+                        let wanted = Rgb::from_linear(now);
+                        let shown = state.limit.apply(wanted, t.ms());
+                        state.held_back = shown != wanted;
+                        shown
                     }
                 };
                 frame.lights.push(FrameLight {
@@ -485,8 +601,85 @@ impl Glow {
             }
         }
         crate::ambient::group(&mut frame, room);
+        // An area light fades from its neighbours' colour to its own.
+        if let (Some(fade), Some(Some(e))) = (&self.fade, fading) {
+            let places = room.devices.iter().flat_map(|d| d.lights.iter());
+            for (l, place) in frame.lights.iter_mut().zip(places) {
+                let key = (l.device.clone(), l.light.clone());
+                if let (LightRole::Ambient, Some(to)) = (place.role, fade.to.get(&key)) {
+                    l.colour = Rgb::from_linear(mix(l.colour.linear(), *to, e));
+                }
+            }
+        }
         frame
     }
+
+    /// Hands the lights back from `t` (a full-screen game, capture failing): each light holds
+    /// its colour for `why`'s hold, then fades to `own` (its own colour: what it shows once the
+    /// scene lets it go) over `why`'s fade, flash-limited as ever. A light missing from `own`
+    /// (its own colour isn't known, such as Windows' own lights) keeps its colour. A second
+    /// call while handing back changes nothing.
+    pub fn hand_back(&mut self, why: HandBack, own: BTreeMap<LightKey, Rgb>, t: SceneTime) {
+        if self.fade.is_some() {
+            return;
+        }
+        self.fade = Some(Fade {
+            start: t.ms() + why.hold_ms(),
+            ms: why.fade_ms(),
+            to: own.into_iter().map(|(k, c)| (k, c.linear())).collect(),
+            from: BTreeMap::new(),
+        });
+    }
+
+    /// The hold ended: the lights ease back to the screen from wherever the fade left them, at
+    /// the smoothing's pace (the first step no bigger than [`MAX_STEP_MS`]'s).
+    pub fn resume(&mut self) {
+        self.fade = None;
+    }
+
+    /// The lights are being handed back ([`Glow::hand_back`]).
+    pub fn handing_back(&self) -> bool {
+        self.fade.is_some()
+    }
+
+    /// When the colours start to fade, while they still hold.
+    pub fn fade_starts(&self, t: SceneTime) -> Option<SceneTime> {
+        self.fade
+            .as_ref()
+            .filter(|f| t.ms() < f.start)
+            .map(|f| SceneTime(f.start))
+    }
+
+    /// The fade has reached every light's own colour by `t` (the flash limit held none back in
+    /// the last update).
+    pub fn handed_back(&self, t: SceneTime) -> bool {
+        self.fade.as_ref().is_some_and(|f| t.ms() >= f.end())
+            && self.lights.values().all(|l| !l.held_back)
+    }
+
+    /// Every light showed its screen colour in the last update (or has none to go to) and the
+    /// flash limit held none back: more updates of the same pictures change nothing. Not while
+    /// handing back.
+    pub fn settled(&self) -> bool {
+        self.fade.is_none()
+            && self
+                .lights
+                .values()
+                .all(|l| !l.held_back && l.want.is_none_or(|w| l.linear.is_some_and(|c| c == w)))
+    }
+
+    /// Each point light's colour as it shows now (after the flash limit).
+    pub fn shown(&self) -> BTreeMap<LightKey, Rgb> {
+        self.lights
+            .iter()
+            .filter_map(|(k, l)| Some((k.clone(), l.limit.shown?)))
+            .collect()
+    }
+}
+
+/// `a` moved the share `k` of the way to `b`, in linear light.
+fn mix(a: [f32; 3], b: [f32; 3], k: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * k)
 }
 
 #[cfg(test)]

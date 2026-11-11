@@ -58,11 +58,18 @@
 //! The gates come from this thread's events: pause, away (lock, display off), the program in
 //! front ([`foreground_changed`]: a full-screen game), the lights owner ([`owner_changed`]), a
 //! display change ([`display_changed`]: capture tries again) and capture failing. A game or a
-//! failure also closes the scheduler's `Held` gate, so the lights get their own colours back.
+//! failure hands the lights back (#1085): the frames fade each light to its own colour (a game
+//! at once over 1 s; a failure holds the last colours 2 s, then fades over 3 s; flash-limited
+//! as ever), and once they are there the scheduler's `Held` gate closes and the lights go back
+//! to them. When the hold lifts, Screen glow eases back from those colours at its smoothing's
+//! pace. A hold that comes while nothing draws (paused, away) closes the gate at once.
 //!
 //! Threads: one control thread per scene (it owns the scheduler and takes the gate events),
 //! the scheduler's frame thread while the gates are open, and one keyboard writer that sleeps
-//! on a condition variable until a colour is due. None exists without a scene.
+//! on a condition variable until a colour is due. None exists without a scene. Screen glow's
+//! frame thread is paced (#1085, `Outputs::pace`): it sleeps while nothing is new and is woken
+//! by a new picture, every control event, and [`nudge`] (the keyboard handing its frames back,
+//! the lights owner freeing the lights), never by a timer.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -246,7 +253,22 @@ enum Ctl {
     Owner,
     /// The user's yes for Screen glow was given or taken back.
     Allowed,
+    /// Screen glow's hand-back (its generation) reached the lights' own colours (#1085): they
+    /// may go.
+    HandedBack(u64),
     Stop,
+}
+
+/// The running scene's frame thread, woken by [`nudge`].
+static FRAMES: Mutex<Option<foxglove_scene::scheduler::Waker>> = Mutex::new(None);
+
+/// Something an output reads changed outside the scene's own events (the keyboard handed its
+/// frames back, the lights owner freed the lights): a scene whose frame thread sleeps on a
+/// still screen (#1085) draws again now. Cheap, from any thread; a no-op without a scene.
+pub fn nudge() {
+    if let Some(w) = FRAMES.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        w.wake();
+    }
 }
 
 /// Whether a look may run: Screen glow only with the user's yes (#496).
@@ -256,6 +278,17 @@ pub fn may_run(effect: &Effect, allowed: bool) -> bool {
 
 fn is_screen(effect: &Effect) -> bool {
     matches!(effect, Effect::Screen { .. })
+}
+
+/// How Screen glow hands the lights back for what holds it: a game or a presentation at once,
+/// capture failing after a hold (`docs/screen-ambient-ux.md`, "Gates the user sees").
+fn hand_back_for(g: super::screen_glow::Gates) -> foxglove_scene::screen::HandBack {
+    use foxglove_scene::screen::HandBack;
+    if g.game || g.presenting {
+        HandBack::Game
+    } else {
+        HandBack::Failed
+    }
 }
 
 /// The program in front changed (the foreground watch): a running Screen glow looks for a
@@ -681,10 +714,25 @@ fn control(
     }));
     let frames = outputs.clone();
     let mailbox = keyboard.mailbox.clone();
-    let scheduler = Scheduler::new(clock, MIN_INTERVAL, move |t| {
-        let outs = frames.lock().unwrap_or_else(|e| e.into_inner()).frame(t);
+    let handed_tx = own.clone();
+    // Paced (#1085): Screen glow's frame thread sleeps while it has nothing new, and wakes for
+    // a new picture, a control event or a [`nudge`].
+    let scheduler = Scheduler::paced(clock, MIN_INTERVAL, move |t| {
+        let (outs, handed, pace) = {
+            let mut o = frames.lock().unwrap_or_else(|e| e.into_inner());
+            let outs = o.frame(t);
+            let handed = o.take_handed_back(t);
+            (outs, handed, o.pace(t))
+        };
         send(outs, &mailbox, &lamp_poster);
+        if let Some(generation) = handed {
+            let _ = handed_tx.send(Ctl::HandedBack(generation));
+        }
+        pace
     });
+    let waker = scheduler.waker();
+    screen_feed.wake_with(waker.clone());
+    *FRAMES.lock().unwrap_or_else(|e| e.into_inner()) = Some(waker.clone());
     let away_tx = own.clone();
     let away = super::away::subscribe(move |a| {
         let _ = away_tx.send(Ctl::Away(a));
@@ -694,7 +742,7 @@ fn control(
     let fail_tx = own.clone();
     let mut reader = super::screen_glow::Reader::new(
         super::screen_glow::opener(),
-        screen_feed,
+        screen_feed.clone(),
         Arc::new(move |generation| {
             let _ = fail_tx.send(Ctl::CaptureFailed(generation));
         }),
@@ -727,6 +775,8 @@ fn control(
     };
     let mut watch = watch_for(screen);
     let mut scene_held = reader.gates().scene_held();
+    // The hand-back whose fade runs now (#1085): the Held gate closes when it is done.
+    let mut fading: Option<u64> = None;
     scheduler.set(Gate::Held, scene_held);
     scheduler.set(Gate::Away, super::away::away());
     scheduler.set(Gate::Paused, super::pause::paused());
@@ -849,24 +899,58 @@ fn control(
             Ctl::CaptureFailed(generation) => reader.event(Event::Failed(generation)),
             Ctl::Owner => reader.set(|g| g.yielded = held.load(Ordering::Relaxed)),
             Ctl::Allowed => reader.set(|g| g.allowed = super::screen_glow::allowed()),
+            Ctl::HandedBack(generation) => {
+                // The fade reached the lights' own colours: they go now, as a hold always
+                // did (only this hand-back's, not an older one's).
+                if scene_held && fading == Some(generation) {
+                    fading = None;
+                    scheduler.set(Gate::Held, true);
+                    keyboard.mailbox.release();
+                    lamp_writer.release();
+                }
+            }
             Ctl::Stop => {}
         }
-        // A full-screen game, or capture failing, holds the scene itself: the lights get their
-        // own colours back meanwhile, and the next frame after draws them in full.
+        // A full-screen game, or capture failing, holds the scene itself: the lights fade to
+        // their own colours (#1085) and then go back to them; the hold's end eases back.
         let now_held = reader.gates().scene_held();
         if now_held != scene_held {
             scene_held = now_held;
+            let gates = scheduler.gates();
+            if now_held && gates.scene && !gates.away && !gates.paused {
+                let why = hand_back_for(reader.gates());
+                let own = super::pc_lights::scene_own_colours();
+                fading = outputs.lock().unwrap_or_else(|e| e.into_inner()).hand_back(
+                    why,
+                    &own,
+                    clock.now(),
+                );
+                eprintln!(
+                    "Foxglove: screen glow hands the lights back ({why:?}: {} ms, then {} ms)",
+                    why.hold_ms(),
+                    why.fade_ms()
+                );
+            } else {
+                fading = None;
+            }
             if !now_held {
+                outputs.lock().unwrap_or_else(|e| e.into_inner()).resume();
                 again.store(true, Ordering::Relaxed);
                 redraw_lamps(&outputs);
             }
-            scheduler.set(Gate::Held, now_held);
-            if now_held {
+            // Nothing to fade (no Screen glow, or not drawing now): the lights go at once.
+            if !(now_held && fading.is_some()) {
+                scheduler.set(Gate::Held, now_held);
+            }
+            if now_held && fading.is_none() {
                 keyboard.mailbox.release();
                 lamp_writer.release();
             }
         }
+        // Whatever changed, a sleeping frame thread looks again.
+        waker.wake();
     });
+    *FRAMES.lock().unwrap_or_else(|e| e.into_inner()) = None;
     give_back.ended = ended;
     drop(watch);
     // Stops the capture first: no picture is handed on after this (its threads end within 1 s).
@@ -1333,7 +1417,10 @@ impl KeyboardLease {
         self.sent_mix = Some(c);
         if draws {
             let again = again.clone();
-            a.draws_frames(id, move || again.store(true, Ordering::Relaxed));
+            a.draws_frames(id, move || {
+                again.store(true, Ordering::Relaxed);
+                nudge();
+            });
         }
         Ok(a.shows(id))
     }
@@ -1405,6 +1492,7 @@ fn hand_back_tap(again: Arc<AtomicBool>) -> impl Fn(u64, &foxglove_link::link::R
         if foxglove_link::protocol::is_frame_event(r) {
             again.store(true, Ordering::Relaxed);
             status().hand_backs += 1;
+            nudge();
         }
     }
 }

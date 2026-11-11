@@ -197,6 +197,8 @@ impl State {
         if held && !self.holds.is_empty() {
             self.step_aside();
         }
+        // A scene sleeping on a still screen reads the flags now (#1085).
+        super::scene_run::nudge();
     }
 
     /// A scene's output stepping aside: counted once per stretch.
@@ -233,6 +235,7 @@ impl State {
         for flag in self.waiting.iter().filter_map(Weak::upgrade) {
             flag.store(true, Ordering::Relaxed);
         }
+        super::scene_run::nudge();
         true
     }
 
@@ -254,6 +257,7 @@ impl State {
             for flag in self.waiting.drain(..).filter_map(|w| w.upgrade()) {
                 flag.store(true, Ordering::Relaxed);
             }
+            super::scene_run::nudge();
         }
         if let Some(w) = &self.wake {
             w.request_repaint();

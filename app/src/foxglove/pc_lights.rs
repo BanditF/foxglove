@@ -318,6 +318,21 @@ pub enum Msg {
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
+/// A board's colours back after a scene: its key, its name and (zone index, colour) pairs.
+type Restore = (String, String, Vec<(usize, Rgb)>);
+
+/// Each board's colours by key: (zone index, colour) pairs.
+pub type BoardColours = BTreeMap<String, Vec<(usize, [u8; 3])>>;
+
+/// Each board a scene holds, by key: the colours it gets back at the scene's end. Empty
+/// without a scene.
+static SCENE_OWN: Mutex<BoardColours> = Mutex::new(BTreeMap::new());
+
+/// What each board a running scene holds gets back at its end: its own colours, which Screen
+/// glow fades the case to while a full-screen game holds it (#1085).
+pub fn scene_own_colours() -> BoardColours {
+    SCENE_OWN.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
 static QUEUE: OnceLock<Mutex<mpsc::Sender<Msg>>> = OnceLock::new();
 static LAST_FRAME: Mutex<Option<u64>> = Mutex::new(None);
 /// The settings window's context, to repaint it when the worker has news.
@@ -1397,20 +1412,21 @@ impl Worker {
         }
     }
 
-    /// The scene ended: each board it held gets its colours back.
-    fn scene_end(&mut self) {
-        let Some(before) = self.scene.take() else {
-            return;
+    /// What each board a scene holds gets back at its end: (key, the board's name, colours).
+    fn scene_restore(&self) -> Vec<Restore> {
+        let Some(scene) = &self.scene else {
+            return Vec::new();
         };
-        for (key, before) in before {
-            let Some(f) = self.found.iter().find(|f| f.key == key).cloned() else {
+        let mut out = Vec::new();
+        for (key, before) in scene {
+            let Some(f) = self.found.iter().find(|f| f.key == *key) else {
                 continue;
             };
-            let saved = self.saved_colors(&f);
+            let saved = self.saved_colors(f);
             let follows = self
                 .settings
                 .devices
-                .get(&key)
+                .get(key)
                 .is_some_and(|s| s.match_keyboard)
                 && self
                     .follow
@@ -1420,11 +1436,44 @@ impl Worker {
             let colors = if follows {
                 pcl::restore_colors(&saved, &[])
             } else {
-                pcl::restore_colors(&before, &saved)
+                pcl::restore_colors(before, &saved)
             };
+            out.push((key.clone(), f.name.clone(), colors));
+        }
+        out
+    }
+
+    /// Publishes [`scene_own_colours`]: what the boards a scene holds get back at its end.
+    fn publish_scene_own(&self) {
+        let own: BoardColours = self
+            .scene_restore()
+            .into_iter()
+            .map(|(key, _, colors)| {
+                let colors = colors
+                    .into_iter()
+                    .map(|(i, c)| (i, [c.r, c.g, c.b]))
+                    .collect();
+                (key, colors)
+            })
+            .collect();
+        *SCENE_OWN.lock().unwrap_or_else(|e| e.into_inner()) = own;
+    }
+
+    /// Boards a scene holds now.
+    fn scene_boards(&self) -> usize {
+        self.scene.as_ref().map_or(0, BTreeMap::len)
+    }
+
+    /// The scene ended: each board it held gets its colours back.
+    fn scene_end(&mut self) {
+        let restore = self.scene_restore();
+        if self.scene.take().is_none() {
+            return;
+        }
+        for (key, name, colors) in restore {
             if let Some(d) = self.drivers.get_mut(&key) {
                 if let Err(e) = d.set_zones(&colors) {
-                    eprintln!("Foxglove: {}: colours back after the scene: {e}", f.name);
+                    eprintln!("Foxglove: {name}: colours back after the scene: {e}");
                 }
             }
         }
@@ -1853,6 +1902,9 @@ pub fn start() {
             // Counted when this round ends, also by a panic (the supervisor restarts it).
             let _handled = Handled(batch.len() as u64);
             let batch = latest_shows(batch);
+            // Scene frames alone change no board's own colours, unless one arrived meanwhile.
+            let own_may_change = batch.iter().any(|m| !matches!(m, Msg::SceneFrame { .. }));
+            let boards = worker.scene_boards();
             let mut scanned = false;
             for msg in batch {
                 if msg == Msg::Scan {
@@ -1863,6 +1915,9 @@ pub fn start() {
                     continue;
                 }
                 worker.handle(msg, super::pause::paused(), &mut std::thread::sleep);
+            }
+            if own_may_change || worker.scene_boards() != boards {
+                worker.publish_scene_own();
             }
             if std::mem::take(&mut worker.rescan) {
                 scan(&mut worker, false);
