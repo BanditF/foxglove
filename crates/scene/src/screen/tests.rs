@@ -362,7 +362,7 @@ fn a_game_fades_the_lights_to_their_own_colours_in_one_second() {
         (key("case", "top"), Rgb(GREEN)),
         (key("case", "bottom"), Rgb(GREEN)),
     ]);
-    glow.hand_back(HandBack::Game, own, SceneTime(t0));
+    glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(t0));
     assert!(glow.handing_back() && !glow.settled());
     assert_eq!(
         glow.fade_starts(SceneTime(t0)),
@@ -398,7 +398,12 @@ fn a_game_fades_the_lights_to_their_own_colours_in_one_second() {
     );
     assert!(glow.handed_back(SceneTime(t0 + 1000)));
     // A second hand-back while handing back changes nothing.
-    glow.hand_back(HandBack::Failed, BTreeMap::new(), SceneTime(t0 + 1000));
+    glow.hand_back(
+        HandBack::Failed,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        SceneTime(t0 + 1000),
+    );
     assert_eq!(glow.fade_starts(SceneTime(t0 + 1000)), None);
 }
 
@@ -408,7 +413,7 @@ fn a_failure_holds_then_fades_in_three_seconds() {
     let (room, mut glow) = settled_on_red(Smoothing::Calm, 4000);
     let t0 = 4050;
     let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb(BLUE))]);
-    glow.hand_back(HandBack::Failed, own, SceneTime(t0));
+    glow.hand_back(HandBack::Failed, own, BTreeMap::new(), SceneTime(t0));
     let before = light(
         &glow.render(&room, &[], SceneTime(t0)),
         "keyboard:left",
@@ -443,7 +448,7 @@ fn after_a_hold_the_lights_ease_back_to_the_screen() {
     for smoothing in Smoothing::ALL {
         let (room, mut glow) = settled_on_red(smoothing, 3000);
         let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb(BLUE))]);
-        glow.hand_back(HandBack::Game, own, SceneTime(3050));
+        glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(3050));
         glow.render(&room, &[], SceneTime(4050));
         assert!(glow.handed_back(SceneTime(4050)));
         // A minute later the game ends and the screen is green.
@@ -495,7 +500,7 @@ fn a_fade_keeps_the_flash_limit() {
     }
     // ... then a game: the own colour is white, the other way.
     let own = BTreeMap::from([(key("keyboard:left", "all"), Rgb([255; 3]))]);
-    glow.hand_back(HandBack::Game, own, SceneTime(t));
+    glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(t));
     let end = t + GAME_FADE_MS;
     loop {
         let f = glow.render(&room, &[], SceneTime(t));
@@ -551,4 +556,103 @@ fn a_still_screen_settles() {
         assert!(n < 100, "Even settles in a few seconds");
     }
     assert_eq!(glow.shown()[&key("keyboard:left", "all")], Rgb(BLUE));
+}
+
+/// The room without one device (unplugged, or gone from the scan).
+fn without(room: &RoomMap, device: &str) -> RoomMap {
+    let mut r = room.clone();
+    r.devices.retain(|d| d.id != device);
+    r
+}
+
+/// #1085 review: a device that leaves the room mid-ease doesn't keep the glow unsettled (the
+/// frame thread would tick forever).
+#[test]
+fn a_device_gone_mid_ease_lets_the_glow_settle() {
+    let room = room();
+    let mut glow = Glow::new(Smoothing::Calm);
+    glow.render(&room, &filled(RED), SceneTime(0));
+    glow.render(&room, &filled(BLUE), SceneTime(50));
+    assert!(!glow.settled());
+    // Every light that is left in the room is still easing too, so take them all out but one
+    // and let that one settle.
+    let mut fewer = without(&without(&room, "keyboard:right"), "case");
+    let mut t = 50;
+    while !glow.settled() {
+        t += MIN_UPDATE_MS;
+        glow.render(&fewer, &filled(BLUE), SceneTime(t));
+        assert!(t < 10_000, "settles with the device gone");
+    }
+    assert!(!glow.shown().contains_key(&key("keyboard:right", "all")));
+    // A light that turns into an area light is dropped the same way.
+    fewer = room.clone();
+    for d in &mut fewer.devices {
+        for l in &mut d.lights {
+            l.role = LightRole::Ambient;
+        }
+    }
+    glow.render(&room, &filled(RED), SceneTime(t + 50));
+    assert!(!glow.settled());
+    glow.render(&fewer, &filled(RED), SceneTime(t + 100));
+    assert!(glow.settled(), "no point light is left to settle");
+}
+
+/// #1085 review: a device that leaves the room while the flash limit holds it back doesn't keep
+/// the fade from finishing (the lights would never be handed back during a game).
+#[test]
+fn a_device_gone_while_held_back_lets_the_fade_finish() {
+    let room = room();
+    let mut glow = Glow::new(Smoothing::Quick);
+    let left = key("keyboard:left", "all");
+    // A 10 Hz strobe until the limit holds the left half back.
+    let mut t = 0;
+    loop {
+        let edges = if (t / 50) % 2 == 0 {
+            filled([255; 3])
+        } else {
+            filled([0; 3])
+        };
+        glow.render(&room, &edges, SceneTime(t));
+        if glow.lights[&left].held_back {
+            break;
+        }
+        t += MIN_UPDATE_MS;
+        assert!(t < 5000, "a strobe meets the limit");
+    }
+    // A game starts as the left half is unplugged.
+    glow.hand_back(
+        HandBack::Game,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        SceneTime(t),
+    );
+    let gone = without(&room, "keyboard:left");
+    let end = t + GAME_FADE_MS;
+    while t < end {
+        t += MIN_UPDATE_MS;
+        glow.render(&gone, &[], SceneTime(t));
+    }
+    assert!(!glow.lights.contains_key(&left));
+    assert!(
+        glow.handed_back(SceneTime(t)),
+        "handed back without the gone device"
+    );
+}
+
+/// #1085 review: a device found during a game starts at its own colour, not from black.
+#[test]
+fn a_device_found_during_a_hand_back_starts_at_its_own_colour() {
+    let room = room();
+    let fewer = without(&room, "case");
+    let (_, mut glow) = (room.clone(), Glow::new(Smoothing::Even));
+    glow.render(&fewer, &filled(RED), SceneTime(0));
+    let own = BTreeMap::from([(key("case", "top"), Rgb(GREEN))]);
+    glow.hand_back(HandBack::Game, own, BTreeMap::new(), SceneTime(50));
+    let f = glow.render(&room, &[], SceneTime(300));
+    assert_eq!(light(&f, "case", "top"), Rgb(GREEN));
+    assert_eq!(
+        light(&f, "case", "bottom"),
+        Rgb::BLACK,
+        "no own colour known: dark"
+    );
 }

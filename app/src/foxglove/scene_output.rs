@@ -613,6 +613,9 @@ pub struct Outputs {
     hand_backs: u64,
     handed_at: Option<i64>,
     hand_back_reported: bool,
+    /// Each area light's colour as the last frame showed it (after its easing): a hand-back
+    /// fades it on from there.
+    areas_shown: BTreeMap<(String, String), Rgb>,
 }
 
 /// A Screen glow look's own state, kept across a smoothing change.
@@ -660,6 +663,7 @@ impl Outputs {
             hand_backs: 0,
             handed_at: None,
             hand_back_reported: false,
+            areas_shown: BTreeMap::new(),
         };
         o.set_room(room, cases);
         o
@@ -732,7 +736,7 @@ impl Outputs {
                 own.extend(halves.into_iter().map(|(k, _)| (k, mix)));
             }
         }
-        g.hand_back(why, own, t);
+        g.hand_back(why, own, self.areas_shown.clone(), t);
         self.hand_backs += 1;
         self.handed_at = None;
         self.hand_back_reported = false;
@@ -998,6 +1002,16 @@ impl Outputs {
             self.ambient.reset();
         } else {
             self.ambient.apply(&mut frame, &self.room);
+            if self.glow.is_some() {
+                let places = self.room.devices.iter().flat_map(|d| d.lights.iter());
+                self.areas_shown = frame
+                    .lights
+                    .iter()
+                    .zip(places)
+                    .filter(|(_, p)| p.role == LightRole::Ambient)
+                    .map(|(l, _)| ((l.device.clone(), l.light.clone()), l.colour))
+                    .collect();
+            }
         }
         for id in due {
             if id == KEYBOARD_LAMPS {
@@ -1290,6 +1304,42 @@ mod tests {
         assert!(
             first.iter().all(|(_, [_, g, b])| *g < 200 && *b > 30),
             "no jump to the screen: {first:?}"
+        );
+    }
+
+    /// #1085 review: the case's area light (zone 2) eases behind its neighbours; a hand-back
+    /// fades it on from the colour it showed, not from its neighbours' peak.
+    #[test]
+    fn an_area_light_fades_on_from_what_it_showed() {
+        use foxglove_scene::screen::HandBack;
+        let (mut o, feed, mut t) = glowing_red(foxglove_scene::Smoothing::Quick);
+        // The screen turns blue: the zones follow at once, the area light lags behind.
+        feed.put(screen_of([20, 40, 230]));
+        let mut last = None;
+        for _ in 0..6 {
+            if let Some(c) = case_of(&o.frame(SceneTime(t))) {
+                last = Some(c);
+            }
+            t += 1000 / 30;
+        }
+        let last = last.unwrap();
+        let area = last[1].1;
+        let zone1 = last[0].1;
+        let gap = |a: [u8; 3], b: [u8; 3]| (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap();
+        assert!(gap(area, zone1) > 40, "the area light lags: {last:?}");
+        let blue = [20, 40, 230];
+        let own = BTreeMap::from([("103c:84fd".to_string(), (0..5).map(|i| (i, blue)).collect())]);
+        o.hand_back(HandBack::Game, &own, SceneTime(t)).unwrap();
+        let first = loop {
+            if let Some(c) = case_of(&o.frame(SceneTime(t))) {
+                break c;
+            }
+            t += 1000 / 30;
+        };
+        assert!(
+            gap(first[1].1, area) <= 12,
+            "no jump: {area:?} -> {:?}",
+            first[1].1
         );
     }
 

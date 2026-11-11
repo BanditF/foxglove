@@ -485,6 +485,9 @@ struct Fade {
     to: BTreeMap<LightKey, [f32; 3]>,
     /// Each point light's colour as the fade began (taken at its first update).
     from: BTreeMap<LightKey, [f32; 3]>,
+    /// Each area light's colour as it showed when the hand-back began (after its own easing),
+    /// so it fades on from there rather than jumping to its neighbours' peak.
+    areas: BTreeMap<LightKey, [f32; 3]>,
 }
 
 impl Fade {
@@ -546,18 +549,26 @@ impl Glow {
             lights: Vec::new(),
         };
         let fading = self.fade.as_ref().map(|f| f.at(t));
+        // The point lights in the room now: any other light's state goes (a device unplugged,
+        // or a light that became an area light), so it can't keep the glow unsettled.
+        let mut present = std::collections::BTreeSet::new();
         for d in &room.devices {
             for l in &d.lights {
                 let key = (d.id.clone(), l.id.clone());
-                let state = self.lights.entry(key.clone()).or_default();
                 let colour = match l.role {
                     LightRole::Ambient => Rgb::BLACK,
                     LightRole::Point => {
+                        present.insert(key.clone());
+                        let state = self.lights.entry(key.clone()).or_default();
                         let mut now = match (&mut self.fade, fading) {
-                            // Handing back: hold, then fade to the light's own colour.
+                            // Handing back: hold, then fade to the light's own colour. A light
+                            // found meanwhile starts at its own colour (black when unknown).
                             (Some(fade), Some(along)) => {
                                 state.want = None;
-                                let held = state.linear.unwrap_or([0.0; 3]);
+                                let held = state
+                                    .linear
+                                    .or_else(|| fade.to.get(&key).copied())
+                                    .unwrap_or([0.0; 3]);
                                 match along {
                                     None => held,
                                     Some(e) => {
@@ -600,15 +611,25 @@ impl Glow {
                 });
             }
         }
+        self.lights.retain(|k, _| present.contains(k));
         crate::ambient::group(&mut frame, room);
-        // An area light fades from its neighbours' colour to its own.
-        if let (Some(fade), Some(Some(e))) = (&self.fade, fading) {
+        // Handing back, an area light holds the colour it showed, then fades to its own (or
+        // keeps it, unknown).
+        if let (Some(fade), Some(along)) = (&self.fade, fading) {
+            let e = along.unwrap_or(0.0);
             let places = room.devices.iter().flat_map(|d| d.lights.iter());
             for (l, place) in frame.lights.iter_mut().zip(places) {
-                let key = (l.device.clone(), l.light.clone());
-                if let (LightRole::Ambient, Some(to)) = (place.role, fade.to.get(&key)) {
-                    l.colour = Rgb::from_linear(mix(l.colour.linear(), *to, e));
+                if place.role != LightRole::Ambient {
+                    continue;
                 }
+                let key = (l.device.clone(), l.light.clone());
+                let from = fade
+                    .areas
+                    .get(&key)
+                    .copied()
+                    .unwrap_or_else(|| l.colour.linear());
+                let to = fade.to.get(&key).copied().unwrap_or(from);
+                l.colour = Rgb::from_linear(mix(from, to, e));
             }
         }
         frame
@@ -617,17 +638,27 @@ impl Glow {
     /// Hands the lights back from `t` (a full-screen game, capture failing): each light holds
     /// its colour for `why`'s hold, then fades to `own` (its own colour: what it shows once the
     /// scene lets it go) over `why`'s fade, flash-limited as ever. A light missing from `own`
-    /// (its own colour isn't known, such as Windows' own lights) keeps its colour. A second
-    /// call while handing back changes nothing.
-    pub fn hand_back(&mut self, why: HandBack, own: BTreeMap<LightKey, Rgb>, t: SceneTime) {
+    /// (its own colour isn't known, such as Windows' own lights) keeps its colour. `areas` is
+    /// each area light's colour as it shows now (the scene eases area lights after this), so
+    /// they fade on from there. A second call while handing back changes nothing.
+    pub fn hand_back(
+        &mut self,
+        why: HandBack,
+        own: BTreeMap<LightKey, Rgb>,
+        areas: BTreeMap<LightKey, Rgb>,
+        t: SceneTime,
+    ) {
         if self.fade.is_some() {
             return;
         }
+        let linear =
+            |m: BTreeMap<LightKey, Rgb>| m.into_iter().map(|(k, c)| (k, c.linear())).collect();
         self.fade = Some(Fade {
             start: t.ms() + why.hold_ms(),
             ms: why.fade_ms(),
-            to: own.into_iter().map(|(k, c)| (k, c.linear())).collect(),
+            to: linear(own),
             from: BTreeMap::new(),
+            areas: linear(areas),
         });
     }
 

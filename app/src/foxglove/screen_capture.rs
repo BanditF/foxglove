@@ -150,6 +150,23 @@ pub fn open() -> Result<Vec<Box<dyn Capture>>, String> {
 #[cfg(all(windows, not(test)))]
 pub use imp::open;
 
+/// Windows settings changed (`WM_SETTINGCHANGE`), counted: an HDR screen's capture reads its
+/// SDR white level again at its next picture (#1085). A display change opens the screens
+/// again, which reads it anyway.
+static SETTINGS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `WM_SETTINGCHANGE` (from `scene_room`'s display window): the "SDR content brightness"
+/// slider may have moved.
+pub fn settings_changed() {
+    SETTINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The settings changes counted so far.
+#[cfg_attr(any(not(windows), test), allow(dead_code))]
+fn settings_seen() -> u64 {
+    SETTINGS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(all(windows, not(test)))]
 mod imp {
     use std::time::Duration;
@@ -163,7 +180,9 @@ mod imp {
     use windows::Win32::Graphics::Dxgi::*;
 
     use super::super::screen_glow::Got;
-    use super::{half, level_for, readable, rotated, tone_map, Capture, ScreenImage};
+    use super::{
+        half, level_for, readable, rotated, settings_seen, tone_map, Capture, ScreenImage,
+    };
 
     /// A screen's name and how opening it went.
     type Opened = (String, Result<Box<dyn Capture>, String>);
@@ -174,8 +193,10 @@ mod imp {
         ctx: ID3D11DeviceContext,
         dup: IDXGIOutputDuplication,
         rotation: u8,
-        /// The screen's SDR white level (scRGB, 1.0 = 80 nits), for an HDR desktop's pictures.
+        /// The screen's SDR white level (scRGB, 1.0 = 80 nits), for an HDR desktop's pictures,
+        /// and the settings change it was read after ([`settings_seen`]).
         white: f32,
+        white_read: u64,
         /// The full-size copy with its mip chain, its view for `GenerateMips`, its size, the
         /// level read back and its format.
         mips: Option<(
@@ -322,6 +343,9 @@ mod imp {
                 output.cast::<IDXGIOutput1>()?.DuplicateOutput(&device)?
             }
         };
+        let white_read = settings_seen();
+        // SAFETY: `sdr_white` only queries the display configuration into its own buffers (see
+        // its Safety section); `name` is the output's own GDI name, copied above.
         let white = sdr_white(&name).unwrap_or(1.0);
         let rotation = match dup.GetDesc().Rotation {
             DXGI_MODE_ROTATION_ROTATE90 => 1,
@@ -336,6 +360,7 @@ mod imp {
             dup,
             rotation,
             white,
+            white_read,
             mips: None,
             staging: None,
         })
@@ -413,11 +438,27 @@ mod imp {
         /// pixel`, checked below): each row slice then lies inside the mapped memory
         /// (`RowPitch * height` bytes).
         unsafe fn read(&mut self) -> windows::core::Result<ScreenImage> {
-            let (Some((mips, _, w, h, level, format)), Some(staging)) = (&self.mips, &self.staging)
+            let hdr = self
+                .mips
+                .as_ref()
+                .is_some_and(|m| m.5 == DXGI_FORMAT_R16G16B16A16_FLOAT);
+            // Settings changed since the white level was read: read it again, once.
+            let seen = settings_seen();
+            if hdr && seen != self.white_read {
+                self.white_read = seen;
+                // SAFETY: as at the screen's opening: display-config queries into
+                // `sdr_white`'s own buffers, for this screen's GDI name.
+                if let Some(w) = unsafe { sdr_white(&self.name) } {
+                    if (w - self.white).abs() > 0.001 {
+                        eprintln!("Foxglove: screen glow: {} SDR white now {w:.2}", self.name);
+                    }
+                    self.white = w;
+                }
+            }
+            let (Some((mips, _, w, h, level, _)), Some(staging)) = (&self.mips, &self.staging)
             else {
                 return Err(windows::core::Error::empty());
             };
-            let hdr = *format == DXGI_FORMAT_R16G16B16A16_FLOAT;
             let bytes = if hdr { 8 } else { 4 };
             let (sw, sh) = ((w >> level).max(1) as usize, (h >> level).max(1) as usize);
             self.ctx
