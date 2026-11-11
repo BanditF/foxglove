@@ -416,6 +416,22 @@ pub fn keyboard_effect(
             0.0,
             [0, 0],
         ),
+        // Key rings (#490): the ring's colour then the background, a ring's time as the period;
+        // each half starts its own rings from its own keys. Only on firmware with KEY_RINGS:
+        // [`Outputs::frame`] sends it only while the keyboard's rings flag is set.
+        Effect::KeyRings {
+            colour,
+            background,
+            width_mm,
+            period_ms,
+        } => (
+            EffectKind::KeyRings,
+            vec![c(colour), c(background)],
+            *period_ms,
+            0.0,
+            *width_mm,
+            [0, 0],
+        ),
         // Tide's per-key wave has no firmware effect, and Screen glow's colours come from the
         // screen (#496): frames.
         Effect::Gradient { .. }
@@ -582,6 +598,9 @@ pub struct Outputs {
     /// The keyboard takes SET_EFFECT (HELLO bit 19): set by the scene from the keyboard found,
     /// cleared by the writer when it refuses one.
     keyboard_effects: Arc<AtomicBool>,
+    /// The keyboard draws key rings (#490, HELLO v2 KEY_RINGS): set by the writer from the
+    /// keyboard found. Without it a key-rings look goes to the keyboard as frames.
+    keyboard_rings: Arc<AtomicBool>,
     /// Set from elsewhere (the keyboard handed its frames back): send the keyboard's next frame
     /// in full even though nothing changed.
     keyboard_again: Arc<AtomicBool>,
@@ -649,6 +668,7 @@ impl Outputs {
             keyboard_effect: None,
             effect_sent: false,
             keyboard_effects: Arc::default(),
+            keyboard_rings: Arc::default(),
             keyboard_again: Arc::default(),
             keyboard_held: Arc::default(),
             keyboard_lamps: None,
@@ -810,6 +830,13 @@ impl Outputs {
         self.keyboard_effects.clone()
     }
 
+    /// A flag saying the keyboard draws key rings itself (#490), shared with the keyboard's
+    /// writer: while set (with [`Self::keyboard_effects`]), a key-rings look goes to the
+    /// keyboard as one SET_EFFECT kind 5 and its rings never become frames.
+    pub fn keyboard_rings(&self) -> Arc<AtomicBool> {
+        self.keyboard_rings.clone()
+    }
+
     /// The devices changed (one arrived, went or was found again): the new room. Every device
     /// gets its next frame in full, since one that came back shows its saved colours again.
     pub fn set_room(&mut self, room: RoomMap, cases: Vec<CaseTarget>) {
@@ -949,9 +976,18 @@ impl Outputs {
         let mut out = Vec::new();
         // The keyboard draws the scene itself: sent once, then nothing per frame. A burst over
         // the scene is drawn by frames (they take over from the effect on the keyboard), and
-        // the effect goes again once it is gone.
+        // the effect goes again once it is gone. Key rings (#490) are the exception: the
+        // keyboard draws its own rings, so it keeps the effect while Foxglove's rings from the
+        // same presses cross the rest of the room; without KEY_RINGS they are frames.
+        let rings = matches!(self.effect, Effect::KeyRings { .. });
         let effect = self.keyboard_effect.as_ref().filter(|_| {
-            self.keyboard && !bursting && self.keyboard_effects.load(Ordering::Relaxed)
+            self.keyboard
+                && self.keyboard_effects.load(Ordering::Relaxed)
+                && if rings {
+                    self.keyboard_rings.load(Ordering::Relaxed)
+                } else {
+                    !bursting
+                }
         });
         if let Some(e) = effect {
             if let Some(i) = due.iter().position(|id| id == KEYBOARD) {
@@ -2570,6 +2606,179 @@ mod tests {
             "the ring is gone"
         );
         assert!(kinds(o.frame(SceneTime(1200))).is_empty());
+    }
+
+    /// Key rings (#490): the look as the scene effect, ring orange over night, 1.6 s, 60 mm.
+    fn key_rings() -> Effect {
+        Effect::KeyRings {
+            colour: ORANGE,
+            background: Rgb([6, 8, 14]),
+            width_mm: 60.0,
+            period_ms: 1600,
+        }
+    }
+
+    /// What reaches the keyboard each frame, by kind.
+    fn keyboard_kinds(outs: &[Out]) -> Vec<&'static str> {
+        outs.iter()
+            .filter_map(|o| match o {
+                Out::Keyboard(_) => Some("frame"),
+                Out::KeyboardEffect(_) => Some("effect"),
+                Out::Case { .. } | Out::Lamps { .. } => None,
+            })
+            .collect()
+    }
+
+    /// #490, state A: a keyboard with KEY_RINGS gets the look once as SET_EFFECT kind 5, the
+    /// bytes foxglove-link's encoder makes for it, and nothing per frame after.
+    #[test]
+    fn key_rings_go_to_a_keyboard_with_key_rings_once_as_kind_5() {
+        use foxglove_link::protocol::{self as wire, EffectKind};
+        let (room, cases) = desk();
+        let mut o = Outputs::new(key_rings(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        o.keyboard_rings().store(true, Ordering::Relaxed);
+        let mut effects = Vec::new();
+        let mut frames = 0;
+        for ms in (0..2000).step_by(33) {
+            for out in o.frame(SceneTime(ms)) {
+                match out {
+                    Out::KeyboardEffect(e) => effects.push(e),
+                    Out::Keyboard(_) => frames += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!((effects.len(), frames), (1, 0), "sent once, no frames");
+        let e = &effects[0];
+        assert_eq!(
+            e.effect,
+            wire::Effect {
+                kind: EffectKind::KeyRings,
+                colours: vec![ORANGE.0, [6, 8, 14]],
+                clock_ms: 0,
+                period_ms: 1600,
+                angle_deg: 0.0,
+                width_mm: 60.0,
+                origin_mm: [0, 0],
+            }
+        );
+        // As the writer sends it at scene time 1700: the clock modulo the ring's time (100).
+        let bytes = wire::effect(&e.at(SceneTime(1700))).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                0xD7, 0x0F, 2, 5, 2, // EFFECT, kind 5 (key rings), 2 colours
+                100, 0, 0, // clock (ms)
+                0x40, 0x06, 0, // period: 1600 ms, a ring's time (speed 8)
+                0, 0, // angle: unused
+                0x58, 0x02, // width: 600 tenths of a mm (60 mm)
+                0, 0, 0, 0, // origin: unused
+                ORANGE.0[0], ORANGE.0[1], ORANGE.0[2], // the ring
+                6, 8, 14, // the background
+            ]
+        );
+        // A control change (another speed) goes again, once.
+        o.set_effect(Effect::KeyRings {
+            colour: ORANGE,
+            background: Rgb([6, 8, 14]),
+            width_mm: 60.0,
+            period_ms: 1000,
+        });
+        assert_eq!(keyboard_kinds(&o.frame(SceneTime(2100))), ["effect"]);
+        assert!(keyboard_kinds(&o.frame(SceneTime(2200))).is_empty());
+    }
+
+    /// #490: while the keyboard draws its own rings, a press's app-drawn ring (pick a) crosses
+    /// the rest of the room by frames and the keyboard keeps its effect: no frames take over.
+    #[test]
+    fn with_key_rings_a_press_rings_the_room_and_the_keyboard_keeps_its_effect() {
+        use foxglove_scene::burst::Shape;
+        let (room, cases) = desk();
+        let key = room
+            .devices
+            .iter()
+            .find(|d| d.id == "keyboard:left")
+            .unwrap()
+            .rect
+            .centre();
+        // Two scenes alike, a press on one of them only.
+        let mut pressed = Outputs::new(key_rings(), room.clone(), cases.clone());
+        let mut quiet = Outputs::new(key_rings(), room, cases);
+        for o in [&mut pressed, &mut quiet] {
+            o.keyboard_effects().store(true, Ordering::Relaxed);
+            o.keyboard_rings().store(true, Ordering::Relaxed);
+            assert_eq!(keyboard_kinds(&o.frame(SceneTime(0))), ["effect"]);
+        }
+        pressed.burst(Burst {
+            shape: Shape::Ring { origin: key },
+            colour: ORANGE,
+            start: SceneTime(200),
+            duration_ms: 1600,
+            width_mm: 60.0,
+        });
+        let case = |outs: &[Out]| -> Vec<Out> {
+            outs.iter()
+                .filter(|o| matches!(o, Out::Case { .. }))
+                .cloned()
+                .collect()
+        };
+        let mut differs = false;
+        for ms in (200..1900).step_by(33) {
+            let p = pressed.frame(SceneTime(ms));
+            let q = quiet.frame(SceneTime(ms));
+            assert!(keyboard_kinds(&p).is_empty(), "{ms}: {p:?}");
+            differs |= case(&p) != case(&q);
+        }
+        assert!(differs, "the ring reaches the case");
+    }
+
+    /// #490, state B: without KEY_RINGS (every GA build, older firmware, another keyboard) the
+    /// keyboard gets the still background as frames, and the ring over it as frames too.
+    #[test]
+    fn without_key_rings_the_keyboard_gets_frames_and_the_ring_over_them() {
+        use foxglove_scene::burst::Shape;
+        let (room, cases) = desk();
+        let key = room
+            .devices
+            .iter()
+            .find(|d| d.id == "keyboard:left")
+            .unwrap()
+            .rect
+            .centre();
+        for effects in [false, true] {
+            let mut o = Outputs::new(key_rings(), room.clone(), cases.clone());
+            o.keyboard_effects().store(effects, Ordering::Relaxed);
+            o.keyboard_rings().store(false, Ordering::Relaxed);
+            let first = o.frame(SceneTime(0));
+            assert_eq!(keyboard_kinds(&first), ["frame"], "effects {effects}");
+            let Some(Out::Keyboard(f)) = first.iter().find(|o| matches!(o, Out::Keyboard(_)))
+            else {
+                unreachable!()
+            };
+            assert!(
+                f.lamps.iter().all(|c| *c == Rgb([6, 8, 14])),
+                "the still background"
+            );
+            o.burst(Burst {
+                shape: Shape::Ring { origin: key },
+                colour: ORANGE,
+                start: SceneTime(100),
+                duration_ms: 1600,
+                width_mm: 60.0,
+            });
+            let mut ringed = false;
+            for ms in (100..1800).step_by(33) {
+                for out in o.frame(SceneTime(ms)) {
+                    match out {
+                        Out::KeyboardEffect(_) => panic!("no kind 5 without KEY_RINGS"),
+                        Out::Keyboard(f) => ringed |= f.lamps.iter().any(|c| *c != Rgb([6, 8, 14])),
+                        _ => {}
+                    }
+                }
+            }
+            assert!(ringed, "the ring shows on the keyboard's frames");
+        }
     }
 
     #[test]

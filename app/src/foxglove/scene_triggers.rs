@@ -23,6 +23,8 @@ use foxglove_scene::{Burst, DeviceKind, Effect, Point, Rect, Rgb, RoomMap, Scene
 use super::scene_looks::Chosen;
 
 static RIPPLE: AtomicBool = AtomicBool::new(false);
+/// The look is Ripple on each key press (#490): every press rings, whatever the box says.
+static LOOK_RINGS: AtomicBool = AtomicBool::new(false);
 static SWEEP: AtomicBool = AtomicBool::new(false);
 /// The ripples' colour when the look's palette has a second accent (#871).
 static RIPPLE_COLOUR: Mutex<Option<Rgb>> = Mutex::new(None);
@@ -30,6 +32,7 @@ static RIPPLE_COLOUR: Mutex<Option<Rgb>> = Mutex::new(None);
 /// The active profile's trigger boxes (the Scenes page and profile switches keep it current).
 pub fn set_flags(c: &Chosen) {
     RIPPLE.store(c.ripple_keys, Ordering::Relaxed);
+    LOOK_RINGS.store(c.look.key_rings(), Ordering::Relaxed);
     SWEEP.store(c.sweep_layers, Ordering::Relaxed);
     *RIPPLE_COLOUR.lock().unwrap_or_else(|e| e.into_inner()) =
         super::scene_looks::ripple_colour(&c.look);
@@ -130,6 +133,17 @@ pub fn key_point(keys: &[KeyPlace], row: usize, col: usize, room: &RoomMap) -> O
     Some(place(&target, fit(key.x, kx0, kx1), fit(key.y, ky0, ky1)))
 }
 
+/// Where the Scenes page's map starts its demo ring for key rings (#490, docs/key-rings-ux.md):
+/// the left index finger's home-row key, as it sits on a split's left half (the fourth of six
+/// columns, the second of four rows) or on a one-piece board. `None` without a keyboard.
+pub fn demo_key_point(room: &RoomMap) -> Option<Point> {
+    let rect = |kind: DeviceKind| room.devices.iter().find(|d| d.kind == kind).map(|d| d.rect);
+    if let Some(left) = rect(DeviceKind::KeyboardLeft) {
+        return Some(place(&left, 0.75, 0.4));
+    }
+    rect(DeviceKind::Keyboard).map(|k| place(&k, 0.3, 0.45))
+}
+
 /// A point inside `r`, `fx` and `fy` from 0 to 1, kept off the very edge.
 fn place(r: &Rect, fx: f32, fy: f32) -> Point {
     let inset = |f: f32| 0.08 + 0.84 * f.clamp(0.0, 1.0);
@@ -144,7 +158,8 @@ pub const SWEEP_MS: u32 = 900;
 pub const SWEEP_WIDTH_MM: f32 = 150.0;
 
 /// The ring a key press sends at scene time `now`, in the scene's colour; `None` for a key the
-/// room has no place for.
+/// room has no place for. A key-rings look (#490) gives the ring its own colour, width and time;
+/// it crosses the whole room, keyboard included, as #489's does (docs/key-rings-ux.md, pick a).
 pub fn ripple(
     keys: &[KeyPlace],
     row: usize,
@@ -153,10 +168,24 @@ pub fn ripple(
     effect: &Effect,
     now: SceneTime,
 ) -> Option<Burst> {
+    let origin = key_point(keys, row, col, room)?;
+    if let Effect::KeyRings {
+        colour,
+        width_mm,
+        period_ms,
+        ..
+    } = effect
+    {
+        return Some(Burst {
+            shape: Shape::Ring { origin },
+            colour: *colour,
+            start: now,
+            duration_ms: *period_ms,
+            width_mm: *width_mm,
+        });
+    }
     Some(Burst {
-        shape: Shape::Ring {
-            origin: key_point(keys, row, col, room)?,
-        },
+        shape: Shape::Ring { origin },
         colour: RIPPLE_COLOUR
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -165,6 +194,12 @@ pub fn ripple(
         duration_ms: RIPPLE_MS,
         width_mm: RIPPLE_WIDTH_MM,
     })
+}
+
+/// Whether a key press draws a ring: "Ripple on key press" is ticked, or the look starts its
+/// rings on each key press (#490), which covers the box.
+pub fn rings_on_press(box_ticked: bool, look_rings: bool) -> bool {
+    box_ticked || look_rings
 }
 
 /// The sweep a layer change sends at `now`: left to right across the room.
@@ -199,6 +234,7 @@ pub fn effect_colour(e: &Effect) -> Rgb {
         | Effect::Noise { stops, .. } => stops.first().copied().unwrap_or(Rgb([255, 255, 255])),
         // Screen glow has no colour of its own: white rings over the screen's colours.
         Effect::Screen { .. } => Rgb([255, 255, 255]),
+        Effect::KeyRings { colour, .. } => *colour,
     }
 }
 
@@ -217,7 +253,12 @@ pub fn bright(r: u8, g: u8, b: u8) -> Rgb {
 /// A key report from the keyboard (KeyPeek's reader thread): a press sends a ripple when the
 /// box is on and a scene runs. Row and column only.
 pub fn key(row: usize, col: usize, pressed: bool) {
-    if pressed && RIPPLE.load(Ordering::Relaxed) {
+    if pressed
+        && rings_on_press(
+            RIPPLE.load(Ordering::Relaxed),
+            LOOK_RINGS.load(Ordering::Relaxed),
+        )
+    {
         super::scene_run::key_ripple(row, col);
     }
 }
@@ -404,6 +445,68 @@ mod tests {
         assert!(ripple(&corne(), 7, 7, &room, &effect, SceneTime(0)).is_none());
         let s = sweep(Rgb([0, 255, 0]), SceneTime(0));
         assert_eq!(s.shape, Shape::Sweep { angle_deg: 0.0 });
+    }
+
+    /// #490: under a key-rings look, a press's ring is the look's own (colour, width, a ring's
+    /// time), and Foxglove's ring crosses the whole room: a left key's ring reaches the right
+    /// half too (docs/key-rings-ux.md, decided pick a).
+    #[test]
+    fn a_key_rings_look_rings_in_its_own_colour_width_and_time_across_the_room() {
+        let room = halves();
+        let effect = Effect::KeyRings {
+            colour: Rgb([0xF0, 0x8A, 0x3C]),
+            background: Rgb([6, 8, 14]),
+            width_mm: 60.0,
+            period_ms: 1600,
+        };
+        let ring = ripple(&corne(), 1, 1, &room, &effect, SceneTime(0)).unwrap();
+        assert_eq!(ring.colour, Rgb([0xF0, 0x8A, 0x3C]));
+        assert_eq!((ring.duration_ms, ring.width_mm), (1600, 60.0));
+        assert_eq!(effect_colour(&effect), Rgb([0xF0, 0x8A, 0x3C]));
+        let right = room.devices[1].rect.centre();
+        let reaches = (0..1600)
+            .step_by(20)
+            .any(|ms| ring.level(right, SceneTime(ms), &room.bounds) > 0.2);
+        assert!(reaches, "the left key's ring crosses to the right half");
+        // The press rings with the box ticked, or with the look covering it.
+        assert!(rings_on_press(true, false));
+        assert!(rings_on_press(false, true));
+        assert!(rings_on_press(true, true));
+        assert!(!rings_on_press(false, false));
+        set_flags(&Chosen {
+            look: crate::foxglove::scene_looks::Look {
+                kind: crate::foxglove::scene_looks::Kind::Ripple,
+                starts: crate::foxglove::scene_looks::Starts::KeyPress,
+                ..Default::default()
+            },
+            ..Chosen::default()
+        });
+        assert!(LOOK_RINGS.load(Ordering::Relaxed));
+        assert!(!RIPPLE.load(Ordering::Relaxed), "the saved box is untouched");
+        set_flags(&Chosen::default());
+        assert!(!LOOK_RINGS.load(Ordering::Relaxed));
+    }
+
+    /// The map's demo ring starts at the left index finger's home-row key: on the left half of
+    /// a split, on a one-piece board's left side; none without a keyboard.
+    #[test]
+    fn the_demo_ring_starts_at_the_left_index_fingers_key() {
+        let inside =
+            |r: Rect, p: Point| p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+        let room = halves();
+        let left = room.devices[0].rect;
+        let p = demo_key_point(&room).unwrap();
+        assert!(inside(left, p), "{p:?} in {left:?}");
+        assert!(p.x > left.centre().x, "towards the inner keys");
+        let one = RoomMap::build(
+            &[],
+            &[DeviceInfo::whole("keyboard", "K", DeviceKind::Keyboard)],
+            &Layout::default(),
+        );
+        let whole = one.devices[0].rect;
+        let p = demo_key_point(&one).unwrap();
+        assert!(inside(whole, p) && p.x < whole.centre().x);
+        assert_eq!(demo_key_point(&RoomMap::default()), None);
     }
 
     /// Quick switches A (start on), B (off), A while B's stop still ends A's scene: the stop

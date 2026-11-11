@@ -118,6 +118,10 @@ fn shape(effect: &Effect) -> (&'static str, u32, f32, f32, Rgb, Rgb) {
             crate::effects::SCREEN_IDLE,
             crate::effects::SCREEN_IDLE,
         ),
+        // A wallpaper has no keys: the still background (the keyboard's rings are its own).
+        Effect::KeyRings { background, .. } => {
+            ("gradient", 0, 0.0, 0.0, *background, *background)
+        }
     }
 }
 

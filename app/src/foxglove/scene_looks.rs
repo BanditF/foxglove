@@ -88,7 +88,9 @@ impl Kind {
         match self {
             Kind::Scanline => "A band of colour crosses the room",
             Kind::Sweep => "A palette scrolls across the room",
-            Kind::Ripple => "Rings of colour grow from the keyboard",
+            Kind::Ripple => {
+                "Rings of colour grow from the keyboard, on a loop or from each key you press"
+            }
             Kind::Breathe => "Every light fades in and out together",
             Kind::Gradient => "A still palette across the room",
             Kind::Drift => "Soft patches of a palette drift through the room",
@@ -141,6 +143,45 @@ impl Kind {
         } else {
             "Width"
         }
+    }
+}
+
+/// When Ripple's rings start (#490, docs/key-rings-ux.md): one after another from the keyboard's
+/// middle, or one from each key pressed. The keyboard draws key-press rings itself when its
+/// firmware reports KEY_RINGS; otherwise Foxglove draws them from the key report (#489).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Starts {
+    #[default]
+    Loop,
+    KeyPress,
+}
+
+impl Starts {
+    pub const ALL: [Starts; 2] = [Starts::Loop, Starts::KeyPress];
+
+    /// The "Rings start" row's caption, which also names its radio group.
+    pub const CAPTION: &'static str = "Rings start";
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Starts::Loop => "On a loop",
+            Starts::KeyPress => "On each key press",
+        }
+    }
+
+    /// The pill's hover, which is also the radio button's description.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Starts::Loop => "One ring after another from the keyboard's middle",
+            Starts::KeyPress => {
+                "A ring grows from each key you press. Foxglove never sees what you type."
+            }
+        }
+    }
+
+    fn is_loop(&self) -> bool {
+        *self == Starts::Loop
     }
 }
 
@@ -431,6 +472,10 @@ pub struct Look {
     /// Windows' animation effects are off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smoothing: Option<foxglove_scene::Smoothing>,
+    /// Ripple's "Rings start" (#490); every look saved before it is `Loop`, and `Loop` isn't
+    /// written, so those files stay as they were.
+    #[serde(skip_serializing_if = "Starts::is_loop")]
+    pub starts: Starts,
 }
 
 impl Default for Look {
@@ -446,6 +491,7 @@ impl Default for Look {
             direction: Direction::Down,
             width_mm: 80,
             smoothing: None,
+            starts: Starts::Loop,
         }
     }
 }
@@ -481,6 +527,12 @@ impl Look {
         self.kind.uses_palette() && self.palette == WALLPAPER
     }
 
+    /// Ripple with its rings starting on each key press (#490): a ring from every key, so the
+    /// Triggers card's "Ripple on key press" is covered.
+    pub fn key_rings(&self) -> bool {
+        self.kind == Kind::Ripple && self.starts == Starts::KeyPress
+    }
+
     /// The effect this look runs, over `room` (a ripple starts at its keyboard).
     pub fn effect(&self, room: &RoomMap) -> Effect {
         let l = self.clone().clamped();
@@ -501,6 +553,13 @@ impl Look {
             Kind::Sweep => Effect::Sweep {
                 stops,
                 angle_deg,
+                period_ms,
+            },
+            // Speed is a ring's time (`period_ms`), as it is for the loop (docs/key-rings-ux.md).
+            Kind::Ripple if l.starts == Starts::KeyPress => Effect::KeyRings {
+                colour,
+                background,
+                width_mm,
                 period_ms,
             },
             Kind::Ripple => Effect::Ripple {
@@ -634,11 +693,13 @@ pub fn effect_presets() -> Vec<Preset> {
         ),
         preset("Ember sweep", slow_sweep("Bandit Ember")),
         preset("Ember Bold sweep", slow_sweep("Bandit Ember Bold")),
+        // A ring from each key pressed (#490): 1.6 s a ring, 60 mm wide, orange on night.
         preset(
             "Ripple from the keys",
             Look {
                 kind: Kind::Ripple,
-                speed: 6,
+                starts: Starts::KeyPress,
+                speed: 8,
                 width_mm: 60,
                 ..Look::default()
             },
@@ -799,6 +860,8 @@ pub struct FileLook {
     pub speed: Option<u8>,
     pub direction: Option<Direction>,
     pub width_mm: Option<u16>,
+    /// A ripple's "Rings start" (#490); a loop when left out.
+    pub starts: Option<Starts>,
 }
 
 pub fn hex(s: &str) -> Result<[u8; 3], String> {
@@ -828,6 +891,7 @@ impl FileLook {
             direction: self.direction.unwrap_or(d.direction),
             width_mm: self.width_mm.unwrap_or(d.width_mm),
             smoothing: None,
+            starts: self.starts.unwrap_or_default(),
         };
         if !SPEEDS.contains(&look.speed) || !WIDTHS.contains(&look.width_mm) {
             return Err("speed or width out of range".into());
@@ -1289,6 +1353,104 @@ mod tests {
             Effect::Ripple { origin, .. } => assert_eq!(origin, keys),
             e => panic!("{e:?}"),
         }
+    }
+
+    /// #490: "Rings start" is saved as `starts`; every look saved before it loads as a loop,
+    /// and a loop isn't written, so those files and presets stay as they were.
+    #[test]
+    fn rings_start_on_a_loop_unless_saved_otherwise() {
+        let old: Look = toml::from_str("kind = \"ripple\"\nspeed = 6\nwidth_mm = 60").unwrap();
+        assert_eq!(old.starts, Starts::Loop);
+        assert!(!old.key_rings());
+        let written = toml::to_string(&Look {
+            kind: Kind::Ripple,
+            ..Look::default()
+        })
+        .unwrap();
+        assert!(!written.contains("starts"), "{written}");
+        let keys = Look {
+            kind: Kind::Ripple,
+            starts: Starts::KeyPress,
+            ..Look::default()
+        };
+        let written = toml::to_string(&keys).unwrap();
+        assert!(written.contains("starts = \"key-press\""), "{written}");
+        assert_eq!(toml::from_str::<Look>(&written).unwrap(), keys);
+        assert!(keys.key_rings());
+        // Only Ripple starts rings: another effect keeps the field for when Ripple is back.
+        assert!(!Look {
+            kind: Kind::Scanline,
+            ..keys.clone()
+        }
+        .key_rings());
+        // A wallpaper's manifest may say it too.
+        let f: FileLook = serde_json::from_str(r#"{"kind":"ripple","starts":"key-press"}"#).unwrap();
+        assert!(f.look().unwrap().key_rings());
+        let f: FileLook = serde_json::from_str(r#"{"kind":"ripple"}"#).unwrap();
+        assert_eq!(f.look().unwrap().starts, Starts::Loop);
+        // The page's words (docs/key-rings-ux.md, Strings).
+        assert_eq!(Starts::CAPTION, "Rings start");
+        assert_eq!(
+            Starts::ALL.map(Starts::label),
+            ["On a loop", "On each key press"]
+        );
+        assert_eq!(
+            Starts::Loop.hint(),
+            "One ring after another from the keyboard's middle"
+        );
+        assert_eq!(
+            Starts::KeyPress.hint(),
+            "A ring grows from each key you press. Foxglove never sees what you type."
+        );
+        assert_eq!(
+            Kind::Ripple.hint(),
+            "Rings of colour grow from the keyboard, on a loop or from each key you press"
+        );
+    }
+
+    /// #490: on each key press, Ripple's controls are the ring's: colour, background, speed as
+    /// a ring's time and width. The built-in "Ripple from the keys" is that mode at speed 8
+    /// (1.6 s) and 60 mm, Bandit orange on night.
+    #[test]
+    fn key_press_ripple_is_key_rings_with_ripples_controls() {
+        let room = RoomMap::default();
+        let look = Look {
+            kind: Kind::Ripple,
+            starts: Starts::KeyPress,
+            colour: [1, 2, 3],
+            background: Background::Off,
+            speed: 10,
+            width_mm: 120,
+            ..Look::default()
+        };
+        assert_eq!(
+            look.effect(&room),
+            Effect::KeyRings {
+                colour: Rgb([1, 2, 3]),
+                background: Rgb::BLACK,
+                width_mm: 120.0,
+                period_ms: 1_000,
+            }
+        );
+        let keys = effect_presets()
+            .into_iter()
+            .find(|p| p.name == "Ripple from the keys")
+            .unwrap()
+            .look;
+        assert!(keys.key_rings());
+        assert_eq!((keys.speed, keys.width_mm), (8, 60));
+        assert_eq!(period_ms(keys.speed), 1_600);
+        assert_eq!(keys.colour, palette_file::bandit().roles.accent.0);
+        assert_eq!(keys.background, Background::Night);
+        // The loop is today's Ripple, unchanged.
+        assert!(matches!(
+            Look {
+                kind: Kind::Ripple,
+                ..Look::default()
+            }
+            .effect(&room),
+            Effect::Ripple { .. }
+        ));
     }
 
     #[test]
