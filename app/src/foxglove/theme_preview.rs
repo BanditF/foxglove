@@ -1862,6 +1862,7 @@ fn knob_hide_renders() {
             name: "Logi Options+".into(),
             line: "1 of 3 · 40 %".into(),
             exe: Some(r"C:\Program Files\LogiOptionsPlus\LogiOptionsMgr.exe".into()),
+            volume: None,
         }),
         ..base.clone()
     };

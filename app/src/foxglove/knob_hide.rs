@@ -481,7 +481,10 @@ pub fn card(ui: &mut egui::Ui) {
     let apps = super::knob::apps();
     let known = known_paths(&rows, &apps);
     let intent = super::settings_ui::card(ui, TITLE, |ui| {
-        card_body(ui, &rows, undo_line.as_deref(), &apps, &known)
+        let intent = card_body(ui, &rows, undo_line.as_deref(), &apps, &known);
+        // Master volume on a device that ignores Windows volume (#1064).
+        super::knob_master::part(ui);
+        intent
     });
     let mut undo = UNDO.lock().unwrap_or_else(|e| e.into_inner());
     match intent {
@@ -510,6 +513,7 @@ pub fn card(ui: &mut egui::Ui) {
 /// The page changed: the line after Show again goes (UX plan: "until the page changes").
 pub fn page_left() {
     *UNDO.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    super::knob_master::page_left();
     // The next visit looks for running programs again (#981).
     *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }

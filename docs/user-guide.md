@@ -607,6 +607,21 @@ sluggish after sleep:
 2. If it's still slow, restart the PC. Restarting Foxglove alone doesn't fix it, since the
    problem is outside the app.
 
+### The volume number moves but the sound stays the same
+
+Some headsets and USB dongles take Windows' volume into their own hardware and sometimes don't
+apply it: the knob, the volume keys and Windows' slider all move the number, and the sound stays
+as loud. For those, Foxglove can set the volume itself: **Settings > Keyboard > Knob > MASTER
+VOLUME > Foxglove sets this device's volume**. It is on by default for devices Foxglove knows do
+this, and you can turn it on for any device whose volume Windows hands to the hardware. While it
+is on, Foxglove holds the device itself near the top and turns each app down by master's amount
+instead, so the knob, Windows' slider and the volume keys all change the sound. Windows' slider
+goes back to the top after you let go of it; Foxglove's card above it shows the level you chose.
+Windows' Volume mixer shows the lower app levels, and the knob shows each app's own. Apps that
+take exclusive control of the device play at full volume. If Foxglove ever stops without putting
+the levels back, it puts them back when it starts again; Windows' **Settings > System > Sound >
+Volume mixer > Reset** also puts every app back at full volume.
+
 ### Reporting a problem
 
 1. Open Foxglove's settings and click **Copy diagnostics** at the top right. It copies the app

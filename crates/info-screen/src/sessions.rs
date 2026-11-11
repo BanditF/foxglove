@@ -101,6 +101,9 @@ pub enum Change {
     Gone(String),
     /// Master's level or mute changed (the volume keys, the knob on master; #719's tab).
     Master,
+    /// On a device Foxglove sets the volume of (#1064, `master`): Windows' flyout or the volume
+    /// keys changed master, and Foxglove took it as master's new level (its card shows it).
+    Adopted,
 }
 
 /// What the knob asks of Windows' sessions. Implemented by [`start`]'s handle and by tests.
@@ -122,6 +125,11 @@ pub trait Sessions: Send + Sync {
     fn step_master(&self, steps: i32) -> Result<u8, String>;
     /// Mutes or unmutes master (#855); whether it is muted now.
     fn toggle_master_mute(&self) -> Result<bool, String>;
+    /// On a device Foxglove sets the volume of (#1064): what session `id`'s own level, Windows'
+    /// level for it and master are, or that the app sets its own volume. `None` elsewhere.
+    fn app_volume(&self, _id: &str) -> Option<crate::master::AppVolume> {
+        None
+    }
 }
 
 /// One detent: 2 %, the step Windows' own volume keys take.
@@ -548,10 +556,11 @@ mod imp {
         display_name, dos_path, exe_key, has_app_window, has_window, id_path, package_key,
         step_level, Change, Meter, Owner, Peaks, Session, Sessions,
     };
+    use crate::master::{self, AppVolume, Audio, Device, Live, Soft};
     use std::collections::HashMap;
-    use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use windows::core::{implement, Interface, Ref, Result, BOOL, GUID, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{
@@ -599,13 +608,21 @@ mod imp {
         MasterLevel(SyncSender<std::result::Result<(u8, bool), String>>),
         MasterStep(i32, SyncSender<std::result::Result<u8, String>>),
         MasterMute(SyncSender<std::result::Result<bool, String>>),
-        Master,
+        /// The device's level and mute changed, not by Foxglove.
+        Master(f32, bool),
         Created(Control),
         State(String, AudioSessionState),
-        /// A session's level and mute, from its own event (#1060: the mirror test's input).
-        Volume(String, f32, bool),
+        /// A session's level and mute, from its own event (#1060: the mirror test's input), and
+        /// whether Foxglove made the change.
+        Volume(String, f32, bool, bool),
         Disconnected(String),
         Device,
+        /// What the tray row says of an app on a device Foxglove sets the volume of (#1064).
+        AppVolume(String, SyncSender<Option<AppVolume>>),
+        /// The per-device setting changed, or the Knob card asks for the device's facts again.
+        Recheck,
+        /// Foxglove quits: the device and the apps back to Windows' own levels.
+        Stop(SyncSender<()>),
     }
 
     #[implement(IAudioSessionNotification)]
@@ -631,10 +648,17 @@ mod imp {
         fn OnIconPathChanged(&self, _: &PCWSTR, _: *const GUID) -> Result<()> {
             Ok(())
         }
-        fn OnSimpleVolumeChanged(&self, level: f32, muted: BOOL, _: *const GUID) -> Result<()> {
+        fn OnSimpleVolumeChanged(
+            &self,
+            level: f32,
+            muted: BOOL,
+            context: *const GUID,
+        ) -> Result<()> {
+            // SAFETY: Windows passes the change's context, valid for this call (or null).
+            let own = unsafe { context.as_ref() }.is_some_and(|c| *c == OWN_CHANGES);
             let _ = self
                 .tx
-                .send(Req::Volume(self.id.clone(), level, muted.as_bool()));
+                .send(Req::Volume(self.id.clone(), level, muted.as_bool(), own));
             Ok(())
         }
         fn OnChannelVolumeChanged(
@@ -664,10 +688,15 @@ mod imp {
     impl IAudioEndpointVolumeCallback_Impl for MasterChanged_Impl {
         fn OnNotify(&self, data: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> Result<()> {
             // SAFETY: Windows passes the notification's data, valid for this call (or null).
-            let own = unsafe { data.as_ref() }.is_some_and(|d| d.guidEventContext == OWN_CHANGES);
-            // Foxglove's own master steps (#855) show its own card: no tab over it.
-            if !own {
-                let _ = self.0.send(Req::Master);
+            let Some(d) = (unsafe { data.as_ref() }) else {
+                return Ok(());
+            };
+            // Foxglove's own master steps (#855) show its own card: no tab over it; and its own
+            // holds of a device it sets the volume of (#1064) are no change.
+            if d.guidEventContext != OWN_CHANGES {
+                let _ = self
+                    .0
+                    .send(Req::Master(d.fMasterVolume, d.bMuted.as_bool()));
             }
             Ok(())
         }
@@ -995,6 +1024,9 @@ mod imp {
 
     struct Tracked {
         id: String,
+        /// The session identifier: one per app and device, the same after the app restarts
+        /// (#1064: its own level is kept by it).
+        sid: String,
         control: IAudioSessionControl,
         events: IAudioSessionEvents,
         state: AudioSessionState,
@@ -1063,6 +1095,181 @@ mod imp {
         }
     }
 
+    /// Windows' device and sessions for the software master (#1064). Every write is marked as
+    /// Foxglove's own, so its notification is ignored.
+    struct Com<'a> {
+        endpoint: Option<&'a IAudioEndpointVolume>,
+        sessions: &'a mut Vec<Tracked>,
+    }
+
+    impl Audio for Com<'_> {
+        fn endpoint(&self) -> std::result::Result<(f32, bool), String> {
+            let e = self.endpoint.ok_or("no output device")?;
+            // SAFETY: COM calls on the sessions' MTA thread.
+            unsafe {
+                Ok((
+                    e.GetMasterVolumeLevelScalar().map_err(|e| e.to_string())?,
+                    e.GetMute().map_err(|e| e.to_string())?.as_bool(),
+                ))
+            }
+        }
+        fn set_endpoint(&mut self, level: f32) -> std::result::Result<(), String> {
+            let e = self.endpoint.ok_or("no output device")?;
+            // SAFETY: as above.
+            unsafe { e.SetMasterVolumeLevelScalar(level, &OWN_CHANGES) }.map_err(|e| e.to_string())
+        }
+        fn set_endpoint_mute(&mut self, muted: bool) -> std::result::Result<(), String> {
+            let e = self.endpoint.ok_or("no output device")?;
+            // SAFETY: as above.
+            unsafe { e.SetMute(muted, &OWN_CHANGES) }.map_err(|e| e.to_string())
+        }
+        fn sessions(&self) -> Vec<Live> {
+            self.sessions
+                .iter()
+                .map(|t| Live {
+                    id: t.id.clone(),
+                    sid: t.sid.clone(),
+                    level: t.level,
+                    muted: t.muted,
+                })
+                .collect()
+        }
+        fn set_level(&mut self, id: &str, level: f32) -> std::result::Result<(), String> {
+            let t = self
+                .sessions
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("the app's sound ended")?;
+            let v = t.volume()?;
+            // SAFETY: as above.
+            unsafe { v.SetMasterVolume(level, &OWN_CHANGES) }.map_err(|e| e.to_string())?;
+            t.level = level;
+            Ok(())
+        }
+        fn set_mute(&mut self, id: &str, muted: bool) -> std::result::Result<(), String> {
+            let t = self
+                .sessions
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or("the app's sound ended")?;
+            let v = t.volume()?;
+            // SAFETY: as above.
+            unsafe { v.SetMute(muted, &OWN_CHANGES) }.map_err(|e| e.to_string())?;
+            t.muted = muted;
+            Ok(())
+        }
+    }
+
+    /// Windows' "Allow applications to take exclusive control of this device", in the
+    /// endpoint's property store ({b3f8fa53-0004-438e-9003-51a46e139bfc},3).
+    const EXCLUSIVE: PROPERTYKEY = PROPERTYKEY {
+        fmtid: GUID::from_u128(0xb3f8fa53_0004_438e_9003_51a46e139bfc),
+        pid: 3,
+    };
+
+    /// The device instance ids up the endpoint's device tree (its audio function's, the USB
+    /// device's ...) and their hardware ids, for the data list (#1064).
+    fn hardware_ids(endpoint_id: &str) -> Vec<String> {
+        use windows::Win32::Devices::DeviceAndDriverInstallation::{
+            CM_Get_DevNode_Registry_PropertyW, CM_Get_Device_IDW, CM_Get_Parent,
+            CM_Locate_DevNodeW, CM_DRP_HARDWAREID, CM_LOCATE_DEVNODE_NORMAL, CR_SUCCESS,
+        };
+        let mut out = Vec::new();
+        let instance: Vec<u16> = format!("SWD\\MMDEVAPI\\{endpoint_id}")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut node = 0u32;
+        // SAFETY: a NUL-terminated id and an out value.
+        let found = unsafe {
+            CM_Locate_DevNodeW(
+                &mut node,
+                PCWSTR(instance.as_ptr()),
+                CM_LOCATE_DEVNODE_NORMAL,
+            )
+        };
+        if found != CR_SUCCESS {
+            return out;
+        }
+        for _ in 0..4 {
+            let mut parent = 0u32;
+            // SAFETY: a devnode Windows gave us, and an out value.
+            if unsafe { CM_Get_Parent(&mut parent, node, 0) } != CR_SUCCESS {
+                break;
+            }
+            node = parent;
+            let mut id = [0u16; 512];
+            // SAFETY: a devnode and a buffer of its length.
+            if unsafe { CM_Get_Device_IDW(node, &mut id, 0) } == CR_SUCCESS {
+                let end = id.iter().position(|u| *u == 0).unwrap_or(id.len());
+                out.push(String::from_utf16_lossy(&id[..end]));
+            }
+            let mut buf = [0u16; 2048];
+            let mut len = (buf.len() * 2) as u32;
+            // SAFETY: a devnode and a buffer of `len` bytes.
+            let r = unsafe {
+                CM_Get_DevNode_Registry_PropertyW(
+                    node,
+                    CM_DRP_HARDWAREID,
+                    None,
+                    Some(buf.as_mut_ptr().cast()),
+                    &mut len,
+                    0,
+                )
+            };
+            if r == CR_SUCCESS {
+                let units = &buf[..(len as usize / 2).min(buf.len())];
+                out.extend(
+                    units
+                        .split(|u| *u == 0)
+                        .filter(|w| !w.is_empty())
+                        .map(String::from_utf16_lossy),
+                );
+            }
+        }
+        out
+    }
+
+    /// The default output device's facts for the software master (#1064).
+    fn device_facts(d: &IMMDevice, e: &IAudioEndpointVolume) -> Option<Device> {
+        use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+        use windows::Win32::System::Com::STGM_READ;
+        // SAFETY: COM calls on the sessions' MTA thread.
+        unsafe {
+            let endpoint = take(d.GetId());
+            if endpoint.is_empty() {
+                return None;
+            }
+            let props = d.OpenPropertyStore(STGM_READ).ok();
+            let name = props
+                .as_ref()
+                .and_then(|p| p.GetValue(&PKEY_Device_FriendlyName).ok())
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let exclusive = props
+                .as_ref()
+                .and_then(|p| p.GetValue(&EXCLUSIVE).ok())
+                .and_then(|v| {
+                    u32::try_from(&v)
+                        .map(|n| n != 0)
+                        .or_else(|_| bool::try_from(&v))
+                        .ok()
+                });
+            let support = e.QueryHardwareSupport().unwrap_or(0);
+            let (mut step, mut count) = (0u32, 0u32);
+            let _ = e.GetVolumeStepInfo(&mut step, &mut count);
+            Some(Device {
+                ids: hardware_ids(&endpoint),
+                endpoint,
+                name,
+                eligible: master::eligible(support),
+                exclusive,
+                step: master::step_for(count),
+                ..Device::default()
+            })
+        }
+    }
+
     struct Worker {
         tx: Sender<Req>,
         notify: Arc<dyn Fn(Change) + Send + Sync>,
@@ -1079,6 +1286,10 @@ mod imp {
         drives: Option<Vec<(String, String)>>,
         /// Owners' descriptions by path, read once each.
         descriptions: HashMap<String, Option<String>>,
+        /// The software master (#1064): `None` without a host (no settings folder).
+        soft: Option<Soft>,
+        /// The default output device's facts (#1064).
+        device: Option<Device>,
     }
 
     impl Worker {
@@ -1097,6 +1308,7 @@ mod imp {
                 unsafe {
                     if let Ok(e) = d.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) {
                         let _ = e.RegisterControlChangeNotify(&self.master_changed);
+                        self.device = device_facts(d, &e);
                         self.endpoint = Some(e);
                     }
                     self.endpoint_meter =
@@ -1128,10 +1340,59 @@ mod imp {
                 }
             }
             self.manager = Some(manager);
+            self.evaluate();
+        }
+
+        /// Whether Foxglove sets the default device's volume now (#1064): on, it starts (or
+        /// recovers from the last run's journal); off, it stops, or puts back what a crash left.
+        fn evaluate(&mut self) {
+            let (Some(soft), Some(dev)) = (self.soft.as_mut(), self.device.as_mut()) else {
+                master::publish_device(self.device.clone());
+                return;
+            };
+            dev.listed = soft.host().listed(&dev.ids);
+            dev.choice = soft.host().choice(&dev.endpoint);
+            dev.on = master::turned_on(dev.eligible, dev.listed, dev.choice);
+            let mut audio = Com {
+                endpoint: self.endpoint.as_ref(),
+                sessions: &mut self.sessions,
+            };
+            if soft.engaged().is_some_and(|e| e != dev.endpoint) {
+                soft.abandon();
+            }
+            if dev.on {
+                if let Err(e) = soft.engage(&mut audio, &dev.endpoint, &dev.name, dev.step) {
+                    eprintln!("Foxglove: master volume: {e}");
+                }
+            } else if soft.engaged().is_some() {
+                if let Err(e) = soft.disengage(&mut audio) {
+                    eprintln!("Foxglove: master volume: {e}");
+                }
+            } else {
+                soft.recover_off(&mut audio, &dev.endpoint);
+            }
+            master::publish_device(self.device.clone());
+        }
+
+        /// Stops setting the device's volume (it changes, or Foxglove quits): the device and the
+        /// apps back to their own levels, with the objects of the device that was default.
+        fn release(&mut self) {
+            let Some(soft) = self.soft.as_mut() else {
+                return;
+            };
+            let mut audio = Com {
+                endpoint: self.endpoint.as_ref(),
+                sessions: &mut self.sessions,
+            };
+            if let Err(e) = soft.disengage(&mut audio) {
+                eprintln!("Foxglove: master volume: {e}; kept in the journal");
+                soft.abandon();
+            }
         }
 
         fn close(&mut self) {
             self.endpoint_meter = None;
+            self.device = None;
             if let Some(e) = self.endpoint.take() {
                 // SAFETY: COM call on this MTA thread, with the object registered in `open`.
                 unsafe {
@@ -1181,12 +1442,12 @@ mod imp {
                     eprintln!("Foxglove: audio sessions: no events for a session: {e}");
                 }
                 let pid = c2.GetProcessId().unwrap_or(0);
+                let sid = take(c2.GetSessionIdentifier());
                 let system = c2.IsSystemSoundsSession() == S_OK;
                 let (mut key, mut exe) = if system { (None, None) } else { program(pid) };
                 if exe.is_none() && !system {
                     // A protected process (#1061): its path is in the session's identifier.
-                    let ident = take(c2.GetSessionIdentifier());
-                    if let Some(nt) = id_path(&ident) {
+                    if let Some(nt) = id_path(&sid) {
                         let drives = self.drives.get_or_insert_with(drives);
                         let path = dos_path(nt, drives);
                         key = key.or_else(|| Some(exe_key(&path)));
@@ -1205,6 +1466,7 @@ mod imp {
                     .unwrap_or((1.0, false));
                 self.sessions.push(Tracked {
                     id,
+                    sid,
                     meter: control.cast::<IAudioMeterInformation>().ok(),
                     system,
                     description: exe.as_deref().and_then(file_description),
@@ -1281,6 +1543,16 @@ mod imp {
                     let _ = reply.send(Ok(Peaks { endpoint, sessions }));
                 }
                 Req::Step(id, steps, reply) => {
+                    if let Some(soft) = self.soft.as_mut() {
+                        let mut audio = Com {
+                            endpoint: self.endpoint.as_ref(),
+                            sessions: &mut self.sessions,
+                        };
+                        if let Some(r) = soft.step_app(&mut audio, &id, steps, Instant::now()) {
+                            let _ = reply.send(r);
+                            return;
+                        }
+                    }
                     let r = self.find(&id).and_then(|t| t.volume()).and_then(|v| {
                         // SAFETY: COM calls on this MTA thread.
                         unsafe {
@@ -1306,26 +1578,73 @@ mod imp {
                     if let (Ok(_), Some(t)) = (&r, self.sessions.iter_mut().find(|t| t.id == id)) {
                         t.muted = muted;
                     }
+                    if r.is_ok() {
+                        if let Some(soft) = self.soft.as_mut() {
+                            soft.app_muted(&id, muted);
+                        }
+                    }
                     let _ = reply.send(r);
                 }
-                Req::Volume(id, level, muted) => {
+                Req::Volume(id, level, muted, own) => {
                     if let Some(t) = self.sessions.iter_mut().find(|t| t.id == id) {
                         t.level = level;
                         t.muted = muted;
                     }
+                    if let (false, Some(soft)) = (own, self.soft.as_mut()) {
+                        let mut audio = Com {
+                            endpoint: self.endpoint.as_ref(),
+                            sessions: &mut self.sessions,
+                        };
+                        soft.volume_event(&mut audio, &id, level, muted, Instant::now());
+                    }
+                }
+                Req::AppVolume(id, reply) => {
+                    let _ = reply.send(self.soft.as_ref().and_then(|s| s.app_volume(&id)));
+                }
+                Req::Recheck => {
+                    if let Some(soft) = self.soft.as_mut() {
+                        soft.set_today(today());
+                    }
+                    // The facts again (the exclusive-control setting may have changed).
+                    if let (Some(e), Some(devices)) = (&self.endpoint, &self.devices) {
+                        // SAFETY: COM call on this MTA thread.
+                        if let Ok(d) = unsafe { devices.GetDefaultAudioEndpoint(eRender, eConsole) }
+                        {
+                            if let Some(facts) = device_facts(&d, e) {
+                                if self
+                                    .device
+                                    .as_ref()
+                                    .is_some_and(|o| o.endpoint == facts.endpoint)
+                                {
+                                    self.device = Some(facts);
+                                }
+                            }
+                        }
+                    }
+                    self.evaluate();
+                }
+                Req::Stop(reply) => {
+                    self.release();
+                    let _ = reply.send(());
                 }
                 Req::Level(id, reply) => {
+                    // An app's own level on a device Foxglove sets the volume of (#1064).
+                    let own = self.soft.as_ref().and_then(|s| s.own(&id));
                     let r = self.find(&id).and_then(|t| t.volume()).and_then(|v| {
                         // SAFETY: COM calls on this MTA thread.
                         unsafe {
                             let level = v.GetMasterVolume().map_err(|e| e.to_string())?;
                             let muted = v.GetMute().map_err(|e| e.to_string())?.as_bool();
-                            Ok(((level * 100.0).round() as u8, muted))
+                            Ok(((own.unwrap_or(level) * 100.0).round() as u8, muted))
                         }
                     });
                     let _ = reply.send(r);
                 }
                 Req::MasterLevel(reply) => {
+                    if let Some(m) = self.soft.as_ref().and_then(Soft::master) {
+                        let _ = reply.send(Ok(m));
+                        return;
+                    }
                     let r = match &self.endpoint {
                         None => Err("no output device".to_string()),
                         Some(e) => master_level(e).map_err(|e| e.to_string()),
@@ -1333,6 +1652,14 @@ mod imp {
                     let _ = reply.send(r);
                 }
                 Req::MasterStep(steps, reply) => {
+                    if let Some(soft) = self.soft.as_mut().filter(|s| s.engaged().is_some()) {
+                        let mut audio = Com {
+                            endpoint: self.endpoint.as_ref(),
+                            sessions: &mut self.sessions,
+                        };
+                        let _ = reply.send(soft.step_master(&mut audio, steps));
+                        return;
+                    }
                     let r = match &self.endpoint {
                         None => Err("no output device".to_string()),
                         Some(e) => master_step(e, steps).map_err(|e| e.to_string()),
@@ -1340,15 +1667,49 @@ mod imp {
                     let _ = reply.send(r);
                 }
                 Req::MasterMute(reply) => {
+                    if let Some(soft) = self.soft.as_mut().filter(|s| s.engaged().is_some()) {
+                        let mut audio = Com {
+                            endpoint: self.endpoint.as_ref(),
+                            sessions: &mut self.sessions,
+                        };
+                        let _ = reply.send(soft.toggle_mute(&mut audio));
+                        return;
+                    }
                     let r = match &self.endpoint {
                         None => Err("no output device".to_string()),
                         Some(e) => master_mute(e).map_err(|e| e.to_string()),
                     };
                     let _ = reply.send(r);
                 }
-                Req::Master => (self.notify)(Change::Master),
+                Req::Master(level, muted) => {
+                    // On a device Foxglove sets the volume of (#1064): master's new level, and
+                    // the device held again, here in this notification's handling.
+                    if let Some(soft) = self.soft.as_mut().filter(|s| s.engaged().is_some()) {
+                        let mut audio = Com {
+                            endpoint: self.endpoint.as_ref(),
+                            sessions: &mut self.sessions,
+                        };
+                        if soft.endpoint_event(&mut audio, level, muted) {
+                            (self.notify)(Change::Adopted);
+                        }
+                        return;
+                    }
+                    (self.notify)(Change::Master)
+                }
                 Req::Created(Control(c)) => {
+                    let before = self.sessions.len();
                     self.track(c);
+                    if self.sessions.len() > before {
+                        if let Some(soft) = self.soft.as_mut() {
+                            let mut audio = Com {
+                                endpoint: self.endpoint.as_ref(),
+                                sessions: &mut self.sessions,
+                            };
+                            if let Some(new) = audio.sessions().pop() {
+                                soft.created(&mut audio, &new);
+                            }
+                        }
+                    }
                     (self.notify)(Change::Changed);
                 }
                 Req::State(id, state) => {
@@ -1360,7 +1721,21 @@ mod imp {
                     }
                 }
                 Req::Disconnected(id) => self.drop_session(&id),
-                Req::Device => self.open(),
+                Req::Device => {
+                    self.release();
+                    self.open();
+                }
+            }
+        }
+
+        /// Re-applies an app's coalesced level when its deadline comes (#1064).
+        fn run_due(&mut self) {
+            if let Some(soft) = self.soft.as_mut() {
+                let mut audio = Com {
+                    endpoint: self.endpoint.as_ref(),
+                    sessions: &mut self.sessions,
+                };
+                soft.run_due(&mut audio, Instant::now());
             }
         }
 
@@ -1414,6 +1789,9 @@ mod imp {
         }
 
         fn drop_session(&mut self, id: &str) {
+            if let Some(soft) = self.soft.as_mut() {
+                soft.gone(id);
+            }
             if let Some(i) = self.sessions.iter().position(|t| t.id == id) {
                 let t = self.sessions.remove(i);
                 self.forget(&t);
@@ -1465,13 +1843,52 @@ mod imp {
         fn toggle_master_mute(&self) -> std::result::Result<bool, String> {
             self.ask(Req::MasterMute)
         }
+        fn app_volume(&self, id: &str) -> Option<AppVolume> {
+            let (reply, answer) = sync_channel(1);
+            self.0.send(Req::AppVolume(id.to_string(), reply)).ok()?;
+            answer.recv_timeout(REPLY).ok().flatten()
+        }
+    }
+
+    /// The sessions' thread, for [`recheck`] and [`stop`].
+    static CONTROL: Mutex<Option<Sender<Req>>> = Mutex::new(None);
+
+    /// Days since 1970 (the journal's records' age).
+    fn today() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| (d.as_secs() / 86_400) as i64)
+    }
+
+    /// The per-device setting changed, or the Knob card is drawn: the device's facts are read
+    /// again and the software master follows the setting (#1064).
+    pub fn recheck() {
+        if let Some(tx) = CONTROL.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let _ = tx.send(Req::Recheck);
+        }
+    }
+
+    /// Foxglove quits: the device and every app back to Windows' own levels (#1064), waiting at
+    /// most `within` for the sessions' thread.
+    pub fn stop(within: Duration) {
+        let tx = CONTROL.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(tx) = tx {
+            let (reply, answer) = sync_channel(1);
+            if tx.send(Req::Stop(reply)).is_ok() {
+                let _ = answer.recv_timeout(within);
+            }
+        }
     }
 
     /// Starts following Windows' sessions; `notify` hears each change (on the sessions' thread:
     /// only enqueue). `None` when the thread can't start.
-    pub fn start(notify: impl Fn(Change) + Send + Sync + 'static) -> Option<Box<dyn Sessions>> {
+    pub fn start(
+        notify: impl Fn(Change) + Send + Sync + 'static,
+        host: Option<Box<dyn master::Host>>,
+    ) -> Option<Box<dyn Sessions>> {
         let (tx, rx): (Sender<Req>, Receiver<Req>) = channel();
         let worker_tx = tx.clone();
+        *CONTROL.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
         let notify: Arc<dyn Fn(Change) + Send + Sync> = Arc::new(notify);
         std::thread::Builder::new()
             .name("audio-sessions".into())
@@ -1502,9 +1919,30 @@ mod imp {
                     sessions: Vec::new(),
                     drives: None,
                     descriptions: HashMap::new(),
+                    soft: host.map(|h| Soft::new(h, today())),
+                    device: None,
                 };
                 w.open();
-                for req in rx {
+                loop {
+                    master::publish_master(w.soft.as_ref().and_then(Soft::master));
+                    // The only wait besides the channel: an app's coalesced re-apply (#1064).
+                    let due = w.soft.as_ref().and_then(Soft::next_due);
+                    let req = match due {
+                        Some(at) => {
+                            match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                                Ok(req) => req,
+                                Err(RecvTimeoutError::Timeout) => {
+                                    w.run_due();
+                                    continue;
+                                }
+                                Err(RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
+                        None => match rx.recv() {
+                            Ok(req) => req,
+                            Err(_) => break,
+                        },
+                    };
                     w.handle(req);
                 }
                 let _ = &w.devices_client;
@@ -1515,13 +1953,22 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::start;
+pub use imp::{recheck, start, stop};
 
 /// Off Windows there are no sessions.
 #[cfg(not(windows))]
-pub fn start(_notify: impl Fn(Change) + Send + Sync + 'static) -> Option<Box<dyn Sessions>> {
+pub fn start(
+    _notify: impl Fn(Change) + Send + Sync + 'static,
+    _host: Option<Box<dyn crate::master::Host>>,
+) -> Option<Box<dyn Sessions>> {
     None
 }
+
+#[cfg(not(windows))]
+pub fn recheck() {}
+
+#[cfg(not(windows))]
+pub fn stop(_within: std::time::Duration) {}
 
 #[cfg(test)]
 mod tests {

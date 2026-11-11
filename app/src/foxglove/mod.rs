@@ -75,6 +75,7 @@ pub mod layout_files;
 pub mod knob;
 pub mod knob_health;
 pub mod knob_hide;
+pub mod knob_master;
 pub mod knob_popup;
 pub mod lamp_health;
 pub mod lamp_hold;

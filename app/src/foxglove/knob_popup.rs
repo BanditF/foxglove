@@ -48,6 +48,15 @@ pub enum Card {
     Hidden { name: String, note: String },
     /// On master while Foxglove holds the knob: the tab over Windows' own flyout.
     MasterTab,
+    /// On a device Foxglove sets the volume of (#1064): Windows' flyout or the volume keys moved
+    /// master. Master's card, directly above Windows' flyout; on the first such change of a run
+    /// a third row says why Windows' slider goes back ("Windows' slider goes back to 100 % on
+    /// this device.").
+    Outside {
+        level: Option<u8>,
+        muted: bool,
+        first: bool,
+    },
 }
 
 impl Card {
@@ -81,6 +90,12 @@ impl Card {
             Card::Stopped { name } => format!("{name} stopped · knob: master"),
             Card::Hidden { name, note } => format!("{name} hidden · {note}"),
             Card::MasterTab => "Knob · Master tab".into(),
+            Card::Outside { muted: true, .. } => "Master volume muted (above the flyout)".into(),
+            Card::Outside { level, first, .. } => format!(
+                "Master volume {} % (above the flyout{})",
+                level.unwrap_or(0),
+                if *first { ", with the slider row" } else { "" }
+            ),
         }
     }
 }
@@ -152,6 +167,10 @@ pub fn show(card: Card, time: Duration) {
 
 /// Size of Windows 11's volume flyout, in points.
 pub const SIZE: egui::Vec2 = vec2(236.0, 48.0);
+/// The master card above the flyout with its third row (#1064): 16 pt taller, grown upwards.
+pub const TALL: f32 = 64.0;
+/// The third row's room: the card less its 12 pt margins (the plan's limit).
+pub const ROW_WIDTH: f32 = 212.0;
 /// Its gap above the taskbar (the work area's bottom), in points.
 pub const GAP: f32 = 12.0;
 
@@ -162,6 +181,24 @@ pub fn spot(work: Rect) -> Rect {
         pos2(work.center().x - SIZE.x / 2.0, work.bottom() - GAP - SIZE.y),
         SIZE,
     )
+}
+
+/// Where the master card goes above Windows' flyout (#1064), where the "Knob · Master" tab
+/// sits: its bottom 8 pt above the flyout's top; 64 pt tall with the third row, else 48.
+pub fn above(work: Rect, first: bool) -> Rect {
+    let flyout = spot(work);
+    let h = if first { TALL } else { SIZE.y };
+    Rect::from_min_size(pos2(flyout.left(), flyout.top() - 8.0 - h), vec2(SIZE.x, h))
+}
+
+/// The third row's type size: 10 pt, or smaller when the words at 10 pt (`width_at_10`) are
+/// wider than [`ROW_WIDTH`], so they never run past the card.
+pub fn row_size(width_at_10: f32) -> f32 {
+    if width_at_10 <= ROW_WIDTH {
+        10.0
+    } else {
+        10.0 * ROW_WIDTH / width_at_10
+    }
 }
 
 const CARD: Color32 = Color32::from_rgb(0x2c, 0x2c, 0x2e);
@@ -220,8 +257,26 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
         );
         return;
     }
+    let s = match card {
+        Card::Outside { first, .. } => above(work, *first),
+        _ => s,
+    };
     p.rect_filled(s.expand(1.0), 9.0, EDGE);
     p.rect_filled(s, 8.0, CARD);
+    if let Card::Outside { first: true, .. } = card {
+        let row = super::knob_master::SLIDER_ROW;
+        let at_10 = p
+            .layout_no_wrap(row.to_string(), FontId::proportional(10.0), DIM)
+            .size()
+            .x;
+        p.text(
+            pos2(s.left() + 12.0, s.bottom() - 12.0),
+            Align2::LEFT_CENTER,
+            row,
+            FontId::proportional(row_size(at_10)),
+            DIM,
+        );
+    }
     let (glyph, fill, title, note, level, muted) = match card {
         Card::App {
             name,
@@ -246,6 +301,23 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
                 place
                     .map(|(i, n)| format!("{i} of {n}"))
                     .unwrap_or_default()
+            },
+            *level,
+            *muted,
+        ),
+        Card::Outside { level, muted, .. } => (
+            if *muted {
+                icon::SPEAKER_SLASH
+            } else {
+                icon::SPEAKER_HIGH
+            }
+            .to_string(),
+            GREY,
+            "Master volume".to_string(),
+            if *muted {
+                "muted".to_string()
+            } else {
+                String::new()
             },
             *level,
             *muted,
@@ -413,6 +485,37 @@ mod tests {
         slot.put(Card::MasterTab, now + Duration::from_millis(10));
         assert_eq!(slot.current(now).unwrap().0, Card::MasterTab);
         assert!(slot.current(now + Duration::from_millis(10)).is_none());
+    }
+
+    #[test]
+    fn the_outside_card_sits_above_the_flyout_and_its_row_fits() {
+        let work = Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1032.0));
+        let flyout = spot(work);
+        let plain = above(work, false);
+        let tall = above(work, true);
+        assert_eq!(plain.size(), SIZE);
+        assert_eq!(tall.height(), TALL);
+        assert_eq!(tall.bottom(), plain.bottom(), "grows upwards");
+        assert!(plain.bottom() < flyout.top(), "above Windows' flyout");
+        assert_eq!(plain.center().x, flyout.center().x);
+        // The row fits 212 pt: at 10 pt, or at the size that fits (the plan's words are about
+        // 223 pt at 10 pt in Foxglove's font).
+        let row = super::super::knob_master::SLIDER_ROW;
+        let ctx = super::super::pc_lights_ui::tests::test_ctx();
+        let mut width = 0.0;
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let at = |size: f32| {
+                ui.painter()
+                    .layout_no_wrap(row.to_string(), FontId::proportional(size), DIM)
+                    .size()
+                    .x
+            };
+            width = at(row_size(at(10.0)));
+        });
+        frame.textures_delta.clear();
+        assert!(width <= ROW_WIDTH + 0.5, "{width} pt");
+        assert_eq!(row_size(200.0), 10.0);
+        assert!((row_size(224.0) - 10.0 * 212.0 / 224.0).abs() < 1e-4);
     }
 
     #[test]

@@ -300,6 +300,8 @@ pub enum KnobRow {
         name: String,
         line: String,
         exe: Option<String>,
+        /// On a device Foxglove sets the volume of (#1064): the line's tooltip.
+        volume: Option<String>,
     },
     /// "<app> is hidden from the knob." with Undo and Change in Settings.
     Hidden { name: String },
@@ -345,6 +347,10 @@ pub fn knob_row(target: Option<&super::knob::TrayLine>, hidden: Option<&str>) ->
         name: t.name.clone(),
         line: knob_line(t),
         exe: t.exe.clone(),
+        volume: t
+            .volume
+            .as_ref()
+            .map(|v| super::knob_master::tray_hover(&t.name, v)),
     })
 }
 
@@ -906,7 +912,12 @@ fn knob(ui: &mut egui::Ui, row: &KnobRow, out: &mut Vec<Intent>) {
         "Knob",
         |_| {},
         |ui| match row {
-            KnobRow::On { name, line, exe } => {
+            KnobRow::On {
+                name,
+                line,
+                exe,
+                volume,
+            } => {
                 ui.horizontal(|ui| {
                     super::app_icon::show(ui, exe.as_deref());
                     ui.vertical(|ui| {
@@ -914,7 +925,10 @@ fn knob(ui: &mut egui::Ui, row: &KnobRow, out: &mut Vec<Intent>) {
                         if let Some(hover) = knob_hover(name, exe.as_deref()) {
                             label.on_hover_text(hover);
                         }
-                        ui.label(RichText::new(line).small().color(p.muted));
+                        let line = ui.label(RichText::new(line).small().color(p.muted));
+                        if let Some(hover) = volume {
+                            line.on_hover_text(hover);
+                        }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let hide = ui
@@ -1422,6 +1436,7 @@ pub mod tests {
             place: Some((1, 3)),
             level: Some(40),
             muted: false,
+            volume: None,
         };
         // On master: no row.
         assert_eq!(knob_row(None, None), None);
@@ -1431,8 +1446,23 @@ pub mod tests {
                 name: "Player".into(),
                 line: "1 of 3 · 40 %".into(),
                 exe: t.exe.clone(),
+                volume: None,
             })
         );
+        // On a device Foxglove sets the volume of (#1064): the line's tooltip.
+        let handled = TrayLine {
+            volume: Some(foxglove_panel::master::AppVolume::Scaled {
+                own: 84,
+                applied: 29,
+                master: 35,
+            }),
+            ..t.clone()
+        };
+        assert!(matches!(
+            knob_row(Some(&handled), None),
+            Some(KnobRow::On { volume: Some(v), .. })
+                if v == "Player 84 % · Volume mixer shows 29 % with master at 35 %."
+        ));
         assert_eq!(
             knob_line(&TrayLine {
                 muted: true,
