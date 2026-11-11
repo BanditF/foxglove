@@ -248,6 +248,51 @@ pub fn restore(
     })
 }
 
+/// How far (device-independent) right of the window's left edge the pointer sits when a torn-off
+/// page opens under it: on the title row's page title, not on its buttons.
+pub const GRAB_X: f64 = 120.0;
+
+/// A rectangle's size in device-independent units, on the screen holding its centre.
+pub fn dip_size(r: Rect, monitors: &[Monitor]) -> (f64, f64) {
+    let scale = monitor_for(r, monitors).map_or(1.0, |m| m.scale);
+    (dip(r.w, scale), dip(r.h, scale))
+}
+
+/// Where a page dragged off the strip opens (#1054.4; the plan: "Letting go outside Hideout
+/// opens the window there, its title row under the pointer"): `size` (device-independent, at
+/// least [`MIN`]) on the screen under `pointer`, the pointer [`GRAB_X`] in (at most half the
+/// width) and halfway down the title row, which sits `client_top` units below the window's top
+/// (Windows' caption). Pulled fully into that screen's work area when it would hang off it.
+pub fn at_pointer(
+    size: (f64, f64),
+    pointer: (i32, i32),
+    client_top: f64,
+    monitors: &[Monitor],
+) -> Option<Rect> {
+    let dot = Rect {
+        x: pointer.0,
+        y: pointer.1,
+        w: 1,
+        h: 1,
+    };
+    let m = monitor_for(dot, monitors)
+        .or_else(|| monitors.iter().find(|m| m.primary))
+        .or(monitors.first())?;
+    let w = px(size.0.max(MIN.0), m.scale);
+    let h = px(size.1.max(MIN.1), m.scale);
+    let grab_x = px(GRAB_X, m.scale).min(w / 2);
+    let grab_y = px(client_top.max(0.0) + TITLE_ROW / 2.0, m.scale);
+    Some(fit(
+        Rect {
+            x: pointer.0 - grab_x,
+            y: pointer.1 - grab_y,
+            w,
+            h,
+        },
+        m,
+    ))
+}
+
 /// Records where the window is for the layout `layout` (§2.5): `normal` is its restored
 /// rectangle (the snapped one when snapped), on the screen holding its centre. One place per
 /// layout; a fifth layout drops the place saved longest ago. `now` is `YYYY-MM-DDTHH:MM:SSZ`.
@@ -638,6 +683,46 @@ mod tests {
         // At least 360 × 240, inside A's work area.
         assert_eq!((got.rect.x, got.rect.w, got.rect.h), (0, 360, 240));
         assert!(got.rect.y + got.rect.h <= ms[0].work.h);
+    }
+
+    #[test]
+    fn a_torn_off_page_opens_with_its_title_row_under_the_pointer() {
+        let ms = two();
+        // On A (100 %): 640 × 480, the pointer 120 in and halfway down the title row below a
+        // 31-unit caption.
+        let r = at_pointer((640.0, 480.0), (1000, 400), 31.0, &ms).unwrap();
+        assert_eq!(
+            r,
+            Rect {
+                x: 880,
+                y: 351,
+                w: 640,
+                h: 480
+            }
+        );
+        // On B (150 %): the same units, in B's pixels.
+        let r = at_pointer((640.0, 480.0), (4000, 600), 31.0, &ms).unwrap();
+        assert_eq!((r.x, r.y, r.w, r.h), (4000 - 180, 600 - 74, 960, 720));
+        // Small: at least the minimum, and the pointer at most half the width in.
+        let r = at_pointer((100.0, 100.0), (1000, 400), 0.0, &ms).unwrap();
+        assert_eq!((r.x, r.w, r.h), (1000 - 120, 360, 240));
+        // Near a screen's corner: pulled fully onto that screen's work area.
+        let r = at_pointer((640.0, 480.0), (2550, 1390), 31.0, &ms).unwrap();
+        assert_eq!((r.x + r.w, r.y + r.h), (2560, ms[0].work.h));
+        assert!(at_pointer((640.0, 480.0), (0, 0), 31.0, &[]).is_none());
+        // A size read back from a window on B is in units again.
+        assert_eq!(
+            dip_size(
+                Rect {
+                    x: 3000,
+                    y: 100,
+                    w: 960,
+                    h: 720
+                },
+                &ms
+            ),
+            (640.0, 480.0)
+        );
     }
 
     #[test]

@@ -111,8 +111,8 @@ tabs plan's close rule). If no other tab is open, the page area shows "Nothing o
 - Closing a pop-out loses nothing: the page goes back to its tab with its view state. So **closing
   never asks**, even with unsaved work. Only **Close page** asks, with the tabs plan's dialog
   ("Close Chat?" / "Your changes in Chat aren't saved." / **Keep open** · Close anyway).
-- Dropping a dragged window on another pop-out does nothing (no tab groups); the pointer shows
-  "no drop" and the window stays where it was let go.
+- Dropping a dragged window on another pop-out does nothing (no tab groups); the window stays
+  where it was let go (Windows' move cursor stays; Windows owns it during a move).
 
 ## The hub while a page is out
 
@@ -207,7 +207,7 @@ From §5.9, with pop-outs spelt out (spec gap 1):
 |---|---|
 | Tab menu, palette | "Pop out" (palette: "Pop out <page>") |
 | Strip button tooltip | "Pop out (Ctrl+Shift+O)" |
-| Drag ghost | "Let go to open in its own window" / "Esc cancels" |
+| Drag ghost | Outside Hideout: "Let go to open in its own window" / "Esc cancels"; over Hideout (plain border): "Drag outside Hideout to pop out" / "Esc cancels" |
 | Window title | "Hideout · <page>" |
 | Title row | Keep on top (tooltip "Keep on top" / "Keep on top: on"), "Dock back", More |
 | More menu | Dock back, Keep on top, Show Hideout, Close page |
@@ -287,8 +287,57 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
   saved zone) or undocumented shell interfaces; neither is clean. So a restored snapped window
   keeps its size when first dragged away and isn't in a snap group. A place also keeps one
   rectangle (§2.5), so the size before the snap isn't saved; a public setter would need it too.
-- **7. Drag a tab out, drag a window onto the strip (MAY; skipped, egui 0.33 doesn't allow it).**
-  Checked against egui 0.33.3, egui-winit 0.33.3 and winit 0.30.13:
+- **7. Drag a tab out, drag a window onto the strip (built with Win32 help, #1054 item 4;
+  needs a lab sitting to tune).** egui alone can't (below), so the platform code fills the gaps;
+  `crates/hideout-shell/src/drag.rs` is the pure part (zones, the drop, slots, the screen
+  mapping, the z-order test), `shell_drag.rs` the hub's side, the pop-out subclass in
+  `platform.rs` the window side.
+  - **Tear-off.** A tab dragged more than 24 points from the strip (the strip row grown by 24
+    on every side) shows the ghost card in an extra borderless, always-on-top viewport without
+    focus (a tool window: not in Alt+Tab or the taskbar), moved to the pointer with
+    `SetWindowPos` on each frame of the drag. The pointer sits on the page's icon. The card
+    reads the plan's words. Over Hideout's own window (its caption and frame included) the card
+    loses its orange edge and its line reads "Drag outside Hideout to pop out" (dimmed), because
+    letting go there does nothing.
+    Letting go outside Hideout pops the page out with its title row under the pointer
+    (`popout::at_pointer`: its usual size, the pointer 120 units in and halfway down the title
+    row below Windows' caption, pulled fully onto the screen under the pointer) and gives it the
+    focus. On the strip it reorders; on the page area, with Esc, or when the button comes up
+    unseen (focus or capture lost) it does nothing. A placeholder tab only reorders (its page is
+    out already), so it gets no card.
+  - **Dock by drag.** The pop-out's subclass reads `WM_MOVING` (moves only, never a resize) and
+    the pointer, and wakes the hub's frame only while the pointer is over the main window and
+    once as it leaves; nothing elsewhere on the screen costs a frame. The frame maps the pointer
+    onto the main window's client points and asks whether the main window is what the user sees
+    there: the first shown, uncloaked top-level window in the z order at that point, leaving out
+    the dragged window and the ghost (`drag::top_at` over `EnumWindows`). Over the strip (its
+    tab area, 12 points above and below) the strip draws the orange insertion bar before the
+    tab under the pointer's half, or after the last. The dragged window hangs from the pointer
+    and covers the strip there, so the same bar shows again, 3 points wide, in an always-on-top
+    window of its own above it (another focusless tool window, like the ghost; never a drop
+    target itself). `WM_EXITSIZEMOVE` is the drop: on the strip
+    the page docks at the bar as the active tab, its window closes, and its saved place stays
+    the one from before the drag. Anywhere else the window stays where Windows put it and its
+    place is saved as for any move. **Esc** in the move loop puts the window back and still ends
+    the loop with the pointer where it is, maybe over the strip; so the subclass notes the
+    window's rectangle at `WM_ENTERSIZEMOVE`, and a window back at it on `WM_EXITSIZEMOVE` is a
+    cancelled move: no drop, the bar goes (`drag::end_move`).
+  - **The title row moves the window too.** The empty part of Hideout's own title row starts
+    Windows' move loop (`ViewportCommand::StartDrag`), so a pop-out can be dragged by either
+    row; its buttons keep their clicks.
+  - **Not done:** the "no drop" pointer over another pop-out. Windows' move loop owns the cursor,
+    and a drop on a pop-out already does nothing (the window stays where it was let go), so the
+    cursor stays the move cursor. The dragged tab isn't lifted out of the strip while its ghost
+    shows (mockup B); it stays in its place as it was.
+  - **To tune in a lab sitting:** that the main window repaints its bar during the pop-out's
+    move loop (winit runs eframe's frames from the loop's messages; a frame that doesn't come
+    leaves the bar a step behind, the drop still lands), that winit keeps reporting the pointer
+    outside the window while a tab drag holds the mouse capture (the card follows the pointer
+    only on those frames), the card's offset on a 150 % screen and across screens of different
+    scaling, the 24/12-point reaches, that Esc while a pop-out is dragged over the strip puts
+    it back and docks nothing, and that the focus lands on the page in Hideout after a dock by
+    drag.
+  Checked against egui 0.33.3, egui-winit 0.33.3 and winit 0.30.13, what egui can't do itself:
   - What works: a press on a tab keeps its drag outside the window (winit captures the mouse on
     the press and goes on reporting positions outside; egui keeps a drag through `PointerGone`),
     so a release outside Hideout could be seen.
@@ -300,7 +349,6 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
     pointer).
   - Missing for the dock by drag: a pop-out dragged by its title row moves in Windows' move loop,
     during which egui gets no pointer input in either window, so the strip can't draw the orange
-    insertion bar or see the drop. It would need the pop-out's window subclass (which already
-    sees `WM_EXITSIZEMOVE` for placement) to read `WM_MOVING` and the cursor, map it onto the
-    main window's strip, and drive the main window's insertion bar from that: platform code, not
-    egui. Spec gap 6's fallback stands: Dock back, Ctrl+Shift+O, ×, Ctrl+W and the window menu.
+    insertion bar or see the drop. Hence the subclass's `WM_MOVING` above: platform code, not
+    egui. Spec gap 6's other ways stay as they were: Dock back, Ctrl+Shift+O, ×, Ctrl+W and the
+    window menu.

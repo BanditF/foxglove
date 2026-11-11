@@ -3,6 +3,7 @@
 //! [`Tabs`] from each tab's [`Look`] and returns what the user did as [`Action`]s, so the window
 //! applies them and tests can drive the strip without a window.
 
+use crate::drag;
 use crate::tabs::{Look, Shown, TabState, Tabs};
 use crate::theme::{self, Rgb, Tokens};
 use eframe::egui::{
@@ -29,8 +30,14 @@ pub enum Action {
     Close(usize),
     CloseOthers(usize),
     CloseRight(usize),
-    Move { from: usize, to: usize },
+    Move {
+        from: usize,
+        to: usize,
+    },
     PopOut(usize),
+    /// The tab was dragged out of Hideout's window and let go there (#1054.4): pop it out at
+    /// the pointer.
+    TearOff(usize),
     DockBack(usize),
     Reopen,
 }
@@ -43,7 +50,55 @@ pub struct StripState {
     pub follow: bool,
     /// A tab is being dragged: its position.
     drag: Option<usize>,
+    /// Where the dragged tab is (strip, over Hideout, outside).
+    zone: drag::Zone,
+    /// The drag's last known pointer (egui forgets it while the pointer is outside the window).
+    pointer: Option<Pos2>,
+    /// A pop-out dragged over the strip by its title row lands in this slot (0..=n): the window
+    /// code sets it, the strip draws the bar.
+    pub dock_slot: Option<usize>,
+    /// The tabs' area and each tab's span as last drawn, for the window code's drop test.
+    layout: Option<(drag::Area, Vec<drag::Span>)>,
     last_active: Option<usize>,
+}
+
+impl StripState {
+    /// The ghost card to show: the dragged tab and whether Hideout is under the pointer (letting
+    /// go there does nothing). `None` while no tab is dragged past [`drag::TEAR_OFF`].
+    pub fn ghost(&self) -> Option<(usize, bool)> {
+        let from = self.drag?;
+        match self.zone {
+            drag::Zone::Strip => None,
+            drag::Zone::Hub => Some((from, true)),
+            drag::Zone::Outside => Some((from, false)),
+        }
+    }
+
+    /// The tabs' area and spans as last drawn (main window client points).
+    pub fn layout(&self) -> Option<(drag::Area, &[drag::Span])> {
+        self.layout.as_ref().map(|(a, s)| (*a, s.as_slice()))
+    }
+}
+
+fn area(r: Rect) -> drag::Area {
+    drag::Area {
+        left: r.left(),
+        top: r.top(),
+        right: r.right(),
+        bottom: r.bottom(),
+    }
+}
+
+/// Hideout's whole window (its frame and caption too) in its client points; the client area
+/// when egui doesn't know the frame (tests).
+fn window_area(ctx: &egui::Context) -> drag::Area {
+    ctx.input(|i| {
+        let v = i.viewport();
+        match (v.outer_rect, v.inner_rect) {
+            (Some(o), Some(inner)) => area(o.translate(-inner.min.to_vec2())),
+            _ => area(i.viewport_rect()),
+        }
+    })
 }
 
 fn c(rgb: Rgb) -> Color32 {
@@ -255,31 +310,24 @@ pub fn strip_ui(
             &mut actions,
         );
     }
-    // The drag: a 2 px orange bar where the tab will land.
-    if let Some(from) = state.drag {
-        let pointer = ui.ctx().pointer_latest_pos();
-        if let Some(p) = pointer {
-            let to = drop_index(&rects, p.x, from);
-            let bar_x = if to <= from {
-                rects.get(to).map(|r| r.left())
-            } else {
-                rects.get(to).map(|r| r.right())
-            };
-            if let Some(bx) = bar_x {
-                child.painter().rect_filled(
-                    Rect::from_x_y_ranges(bx - 1.0..=bx + 1.0, full.y_range()),
-                    0.0,
-                    c(t.accent),
-                );
-            }
-            if ui.ctx().input(|i| i.pointer.any_released()) {
-                if to != from {
-                    actions.push(Action::Move { from, to });
-                }
-                state.drag = None;
-            }
-        }
+    let spans: Vec<drag::Span> = rects
+        .iter()
+        .map(|r| drag::Span {
+            left: r.left(),
+            right: r.right(),
+        })
+        .collect();
+    drag_ui(&child, whole, tabs, &rects, t, state, &mut actions);
+    // A pop-out dragged over the strip by its title row: the bar where it will land.
+    if let Some(bx) = state
+        .dock_slot
+        .and_then(|s| drag::bar_x(&spans, s, (tabs_rect.left(), tabs_rect.right())))
+    {
+        insertion_bar(&child, bx, full, t);
+    } else if state.dock_slot.is_some() && n == 0 {
+        insertion_bar(&child, tabs_rect.left() + 1.0, full, t);
     }
+    state.layout = Some((area(tabs_rect), spans));
     if overflow {
         overflow_ui(ui, full, tabs, looks, t, state, max_scroll, &mut actions);
     }
@@ -321,6 +369,72 @@ fn popout_button_ui(ui: &mut Ui, whole: Rect, tabs: &Tabs, t: &Tokens, actions: 
     if resp.on_hover_text(POPOUT_TIP).clicked() {
         actions.push(Action::PopOut(i));
     }
+}
+
+/// The 2 px orange bar where a dragged tab or window will land.
+fn insertion_bar(ui: &Ui, x: f32, full: Rect, t: &Tokens) {
+    ui.painter().rect_filled(
+        Rect::from_x_y_ranges(x - 1.0..=x + 1.0, full.y_range()),
+        0.0,
+        c(t.accent),
+    );
+}
+
+/// A tab drag in progress: the bar while it reorders; past [`drag::TEAR_OFF`] the window code
+/// shows the ghost card ([`StripState::ghost`]). Letting go reorders on the strip and pops the
+/// page out outside Hideout; anywhere else, Esc, or a button that came up unseen (focus lost)
+/// cancels.
+fn drag_ui(
+    ui: &Ui,
+    whole: Rect,
+    tabs: &Tabs,
+    rects: &[Rect],
+    t: &Tokens,
+    state: &mut StripState,
+    actions: &mut Vec<Action>,
+) {
+    let Some(from) = state.drag else {
+        return;
+    };
+    let ctx = ui.ctx().clone();
+    if let Some(p) = ctx.pointer_latest_pos() {
+        state.pointer = Some(p);
+    }
+    if let Some(p) = state.pointer {
+        state.zone = drag::zone(area(whole), window_area(&ctx), (p.x, p.y));
+    }
+    let to = state.pointer.map_or(from, |p| drop_index(rects, p.x, from));
+    if state.zone == drag::Zone::Strip && state.pointer.is_some() {
+        let bar = if to <= from {
+            rects.get(to).map(|r| r.left())
+        } else {
+            rects.get(to).map(|r| r.right())
+        };
+        if let Some(bx) = bar {
+            insertion_bar(ui, bx, whole, t);
+        }
+    }
+    let (released, down, esc) = ctx.input_mut(|i| {
+        (
+            i.pointer.any_released(),
+            i.pointer.any_down(),
+            i.consume_key(Modifiers::NONE, Key::Escape),
+        )
+    });
+    if !(released || esc || !down) {
+        return;
+    }
+    let popped = tabs.tabs().get(from).is_some_and(|tab| tab.popped);
+    match drag::drop(from, state.zone, to, esc || !released, popped) {
+        drag::Drop::Move { from, to } => actions.push(Action::Move { from, to }),
+        drag::Drop::PopOut(i) => actions.push(Action::TearOff(i)),
+        drag::Drop::Nothing => {}
+    }
+    state.drag = None;
+    state.zone = drag::Zone::Strip;
+    state.pointer = None;
+    // One more frame takes the ghost away.
+    ctx.request_repaint();
 }
 
 /// Where a tab dragged from `from` lands for a pointer at `x`.

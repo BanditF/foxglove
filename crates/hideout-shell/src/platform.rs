@@ -690,6 +690,26 @@ struct PopoutHooks {
     ended: Vec<isize>,
     menu: Vec<(isize, MenuCommand)>,
     waker: Option<Box<dyn Fn()>>,
+    /// A pop-out moved by its title row (#1054.4): from its first `WM_MOVING` until the frame
+    /// code takes the drop after `WM_EXITSIZEMOVE`.
+    drag: Option<crate::drag::WindowDrag>,
+    /// The last `WM_MOVING` had the pointer over the main window: the next one wakes the frame
+    /// even when it leaves, so the bar goes away.
+    drag_near: bool,
+    /// Each moving pop-out's rectangle at `WM_ENTERSIZEMOVE`.
+    move_start: Vec<(isize, Rect)>,
+}
+
+/// A window's rectangle on screen.
+fn window_rect(h: isize) -> Option<Rect> {
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd(h), &mut r).ok()? };
+    Some(Rect {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
+    })
 }
 
 thread_local! {
@@ -841,7 +861,7 @@ unsafe extern "system" fn popout_proc(
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::UI::Shell::DefSubclassProc;
     use windows::Win32::UI::WindowsAndMessaging::{
-        WM_CONTEXTMENU, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_SYSCOMMAND,
+        WM_CONTEXTMENU, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVING, WM_NCDESTROY, WM_SYSCOMMAND,
     };
     let id = h.0 as isize;
     let mut wake = false;
@@ -849,11 +869,42 @@ unsafe extern "system" fn popout_proc(
     HOOKS.with(|k| {
         let mut k = k.borrow_mut();
         match msg {
-            WM_ENTERSIZEMOVE => k.moving.push(id),
+            WM_ENTERSIZEMOVE => {
+                k.moving.push(id);
+                // Where it starts from: a move that ends back here was cancelled (Esc).
+                k.move_start.retain(|(m, _)| *m != id);
+                if let Some(r) = window_rect(id) {
+                    k.move_start.push((id, r));
+                }
+            }
             WM_EXITSIZEMOVE => {
                 k.moving.retain(|&m| m != id);
                 k.ended.push(id);
+                let start = k.move_start.iter().find(|(m, _)| *m == id).map(|(_, r)| *r);
+                k.move_start.retain(|(m, _)| *m != id);
+                if let Some(d) = k.drag.filter(|d| d.hwnd == id) {
+                    // The drop at the pointer now, or none when Esc put the window back (the
+                    // frame still wakes and takes the bar away).
+                    k.drag = crate::drag::end_move(d, start, window_rect(id), cursor_pos());
+                }
+                k.drag_near = false;
                 wake = true;
+            }
+            // Only a pop-out's own move (the main window has the same subclass); a move, not
+            // a resize (`WM_SIZING`). One frame per pointer step while it is over Hideout, and
+            // one more as it leaves, nothing elsewhere on the screen.
+            WM_MOVING if id != main_hwnd() => {
+                if let Some(p) = cursor_pos() {
+                    let near = main_window_on_screen()
+                        && main_window_any_rect().is_some_and(|r| r.contains(p));
+                    wake = near || k.drag_near;
+                    k.drag_near = near;
+                    k.drag = Some(crate::drag::WindowDrag {
+                        hwnd: id,
+                        cursor: p,
+                        ended: false,
+                    });
+                }
             }
             WM_SYSCOMMAND => {
                 let cmd = match wp.0 & 0xFFF0 {
@@ -876,6 +927,10 @@ unsafe extern "system" fn popout_proc(
             WM_NCDESTROY => {
                 k.moving.retain(|&m| m != id);
                 k.ended.retain(|&m| m != id);
+                k.move_start.retain(|(m, _)| *m != id);
+                if k.drag.is_some_and(|d| d.hwnd == id) {
+                    k.drag = None;
+                }
             }
             _ => {}
         }
@@ -997,6 +1052,175 @@ pub fn take_size_move_ended(h: isize) -> bool {
 /// The window menu's picks since the last call.
 pub fn take_menu_commands() -> Vec<(isize, MenuCommand)> {
     HOOKS.with(|k| std::mem::take(&mut k.borrow_mut().menu))
+}
+
+// ---- Drags between windows (#1054.4) ---------------------------------------------------------
+//
+// egui 0.33 can't see a drag cross its windows (docs/hideout-popouts-ux.md, "Follow-ups as
+// built"), so: a pop-out's subclass notes `WM_MOVING` and the pointer while Windows moves it,
+// the main frame maps that onto the strip; a tab dragged out of the main window gets a ghost card
+// in an extra always-on-top viewport moved with `SetWindowPos`. All of it runs on window
+// messages and the frames a pointer move brings; nothing polls.
+
+/// A pop-out being moved by its title row now, or its drop once the move ended (taken then).
+pub fn take_window_drag() -> Option<crate::drag::WindowDrag> {
+    HOOKS.with(|k| {
+        let mut k = k.borrow_mut();
+        let d = k.drag?;
+        if d.ended {
+            k.drag = None;
+        }
+        Some(d)
+    })
+}
+
+/// The pointer on screen, physical pixels.
+pub fn cursor_pos() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut p = POINT::default();
+    unsafe { GetCursorPos(&mut p).ok()? };
+    Some((p.x, p.y))
+}
+
+/// The main window's client corner on screen, while it shows (visible, not minimised).
+pub fn main_client_origin() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    let h = main_window()?;
+    unsafe {
+        if !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+            return None;
+        }
+        let mut p = POINT::default();
+        if !ClientToScreen(h, &mut p).as_bool() {
+            return None;
+        }
+        Some((p.x, p.y))
+    }
+}
+
+/// Every top-level window on screen, top of the z order first, for [`crate::drag::top_at`]:
+/// shown means visible, not minimised and not cloaked (another virtual desktop, a suspended
+/// app). Read once per step of a pop-out drag over Hideout, never on a timer.
+pub fn window_layers() -> Vec<crate::drag::Layer> {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
+    unsafe extern "system" fn each(h: HWND, data: LPARAM) -> BOOL {
+        let out = &mut *(data.0 as *mut Vec<crate::drag::Layer>);
+        let mut r = RECT::default();
+        if GetWindowRect(h, &mut r).is_err() {
+            return true.into();
+        }
+        let mut cloaked = 0u32;
+        let _ = DwmGetWindowAttribute(
+            h,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut _,
+            std::mem::size_of::<u32>() as u32,
+        );
+        let shown = IsWindowVisible(h).as_bool() && !IsIconic(h).as_bool() && cloaked == 0;
+        out.push(crate::drag::Layer {
+            id: h.0 as isize,
+            rect: Rect {
+                x: r.left,
+                y: r.top,
+                w: r.right - r.left,
+                h: r.bottom - r.top,
+            },
+            shown,
+        });
+        true.into()
+    }
+    let mut out: Vec<crate::drag::Layer> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut out as *mut _ as isize));
+    }
+    out
+}
+
+/// How far below the window's top its client area starts (Windows' caption), in
+/// device-independent units at the window's own DPI.
+pub fn client_top_dip(h: isize) -> f64 {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    let h = hwnd(h);
+    let mut r = RECT::default();
+    let mut p = POINT::default();
+    unsafe {
+        if GetWindowRect(h, &mut r).is_err() || !ClientToScreen(h, &mut p).as_bool() {
+            return 0.0;
+        }
+        let dpi = GetDpiForWindow(h).max(96) as f64;
+        f64::from(p.y - r.top) * 96.0 / dpi
+    }
+}
+
+/// The drag's always-on-top windows (#1054.4): the ghost card of a tab drag, the insertion bar
+/// shown above a pop-out dragged over the strip (the window itself covers the strip's own bar).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlay {
+    Ghost = 0,
+    Bar = 1,
+}
+
+/// Each overlay's window once found by its title; 0 while none.
+static OVERLAYS: [AtomicIsize; 2] = [AtomicIsize::new(0), AtomicIsize::new(0)];
+
+/// Finds an overlay's window and makes it a tool window that never takes the focus (out of
+/// Alt+Tab, no activation on show). Returns it.
+pub fn find_overlay(which: Overlay, title: &str, skip: &[isize]) -> Option<isize> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    };
+    let h = find_own_window(title, skip)?;
+    unsafe {
+        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+        let _ = SetWindowLongPtrW(
+            h,
+            GWL_EXSTYLE,
+            ex | (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) as isize,
+        );
+    }
+    OVERLAYS[which as usize].store(h.0 as isize, Ordering::Release);
+    Some(h.0 as isize)
+}
+
+/// The overlays' windows that are up (0 for none): never a drop target.
+pub fn overlay_hwnds() -> [isize; 2] {
+    [
+        OVERLAYS[0].load(Ordering::Acquire),
+        OVERLAYS[1].load(Ordering::Acquire),
+    ]
+}
+
+/// The overlay is done: its window goes with egui's next frame.
+pub fn forget_overlay(which: Overlay) {
+    OVERLAYS[which as usize].store(0, Ordering::Release);
+}
+
+/// Moves an overlay's corner to `at` (physical pixels), sized `size` when given, above every
+/// window, shown without taking the focus.
+pub fn place_overlay(h: isize, at: (i32, i32), size: Option<(i32, i32)>) {
+    use windows::Win32::UI::WindowsAndMessaging::{HWND_TOPMOST, SWP_SHOWWINDOW};
+    let (w, ht) = size.unwrap_or((0, 0));
+    let keep = if size.is_none() {
+        SWP_NOSIZE
+    } else {
+        Default::default()
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd(h),
+            Some(HWND_TOPMOST),
+            at.0,
+            at.1,
+            w,
+            ht,
+            keep | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
 }
 
 // ---- Wake messages (#1018) -------------------------------------------------------------------
