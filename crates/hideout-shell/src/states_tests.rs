@@ -176,9 +176,12 @@ fn waiting_names_the_root_once_and_goes_to_it() {
         PanelState::Live
     );
     let l = art_tab(&hub);
-    assert_eq!(l.state, TabState::Busy("Waiting for Link".into()));
+    assert_eq!(l.state, TabState::Waiting("Waiting for Link".into()));
     assert_ne!(l.shown(), crate::tabs::Shown::Stopped);
-    assert!(l.tooltip().contains("Waiting for Link"));
+    // A fact, not something in progress: no "…" (designer review of #1093). The ring stays.
+    assert_eq!(l.tooltip(), "Art\nWaiting for Link");
+    assert_eq!(l.accessible_name(), "Art, waiting for Link");
+    assert!(l.busy(), "the ring went");
     click(&ctx, &mut hub, "Go to Link");
     assert_eq!(
         hub.tabs.active_id(),
@@ -536,6 +539,56 @@ fn the_modules_rows_say_each_state() {
     let r = crate::modules_list::row(&installed()[0], &fact, None);
     assert_eq!(r.state, "Waiting for another module");
     assert!(r.primary.is_none());
+}
+
+/// The Modules row's Review is greyed with "Comes in a later Hideout." as on the page, and a
+/// click on it asks nothing (designer review of #1093).
+#[test]
+fn the_modules_rows_review_is_greyed() {
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let rows = state_rows();
+    let t = theme::tokens(true);
+    let mut clicks = Vec::new();
+    let mut out = None;
+    let mut at = None;
+    for k in 0..5 {
+        let ev = match (k, at) {
+            (2, Some(p)) => vec![Event::PointerMoved(p)],
+            (3, Some(p)) => vec![Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+            (4, Some(p)) => vec![Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+            _ => vec![],
+        };
+        let o = ctx.run(input(1000.0, 700.0, ev), |c| {
+            egui::CentralPanel::default().show(c, |ui| {
+                clicks.extend(page_ui(ui, &t, &rows, None));
+            });
+        });
+        at = text_rect(&o, "Review").map(|r| r.center());
+        out = Some(o);
+    }
+    let out = out.unwrap();
+    let review = out
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|u| u.nodes.iter())
+        .find(|(_, n)| n.label() == Some("Review"))
+        .map(|(_, n)| n.clone())
+        .expect("Review in the tree");
+    assert!(review.is_disabled());
+    assert_eq!(review.description(), Some(words::COMES_LATER));
+    assert!(clicks.is_empty(), "a greyed Review clicked: {clicks:?}");
 }
 
 fn tray_for(states: &[(&str, &str)]) -> Marks {

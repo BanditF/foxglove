@@ -2411,7 +2411,8 @@ impl Hub {
                         );
                         ui.add_space(8.0);
                     }
-                    TabState::Off | TabState::Live => {}
+                    // Waiting draws its own line (shell_states.rs).
+                    TabState::Off | TabState::Live | TabState::Waiting(_) => {}
                 }
                 if self.panels.panel(&key).is_some() {
                     let report = if own {

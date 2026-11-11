@@ -52,7 +52,7 @@ impl Hub {
     /// tabs plan's one mark: stopped mark > ring > nothing).
     pub(super) fn state_look(&self, module: &str) -> Option<TabState> {
         Some(match self.panels.module_state(module)? {
-            "waiting" => TabState::Busy(match self.waiting_root(module) {
+            "waiting" => TabState::Waiting(match self.waiting_root(module) {
                 Some((_, root)) => words::waiting_for(&root),
                 None => hideout_panels::state_words("waiting").into(),
             }),
