@@ -170,3 +170,5 @@ or "SET_EFFECT" outside Diagnostics.
    and the keyboard path is dev-only today; the difference shows only on a split keyboard with
    KEY_RINGS); (b) yes, clip the app's ring on the keyboard to the pressed half.
    Image: `C:\Users\fuchs\splitkeeb\review\key-rings\ux-key-rings-proposed-effect-card.png`.
+
+**Decided 11/11 (designer's pick, standing rule): (a)** — fallback rings keep #489's ring across the room.
