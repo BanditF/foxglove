@@ -77,7 +77,8 @@ class Handler:
 
     def channel_create(self, create: models.ChannelCreate):
         """`channel.create` (§8.4): make a one-time pipe for the consumer and answer {pipe}:
-        `{"pipe": channel.serve(module_id, create.channel, create.nonce, stream)}`."""
+        `{"pipe": channel.serve_create(module_id, create, stream)}`, which admits only the
+        consumer the hub named (v1.10, #1092)."""
         raise RpcError(UNSUPPORTED, "no channels")
 
     def exit(self):
@@ -114,12 +115,43 @@ def launch_from_env(env=os.environ):
     return tuple(values) if all(values) else None
 
 
+def hub_pid_from_env(env=os.environ):
+    """`HIDEOUT_HUB_PID` (§7.5, v1.10, #983): the hub's process id, or None (an older hub)."""
+    try:
+        return int(env.get("HIDEOUT_HUB_PID", "").strip())
+    except ValueError:
+        return None
+
+
+def open_router_pipe(name, hub_pid=None):
+    """Opens the router pipe `name` as a binary file. On Windows with client rights only (what
+    a module in an AppContainer is let in with, §7.7) and identification-level impersonation;
+    with `hub_pid`, nothing can be sent before the pipe's server is known to be that process
+    (PermissionError otherwise, §7.5): another process may have made an instance of the name."""
+    if os.name != "nt":
+        return open(name, "r+b", buffering=0)
+    import msvcrt
+
+    from . import channel
+
+    h = channel.open_pipe(name)
+    try:
+        if hub_pid is not None:
+            channel.check_server(h, hub_pid)
+        fd = msvcrt.open_osfhandle(h, os.O_RDWR | os.O_BINARY)
+    except BaseException:
+        channel.close_handle(h)
+        raise
+    return open(fd, "r+b", buffering=0)
+
+
 def connect_env():
-    """Opens the router pipe the hub named; returns (Session, (pipe, token, instance))."""
+    """Opens the router pipe the hub named; returns (Session, (pipe, token, instance)). Nothing
+    is sent, the token least of all, unless the pipe's server is `HIDEOUT_HUB_PID`."""
     launch = launch_from_env()
     if launch is None:
         raise RuntimeError("HIDEOUT_PIPE, HIDEOUT_TOKEN and HIDEOUT_INSTANCE are not set: the hub starts modules")
-    pipe = open(launch[0], "r+b", buffering=0)
+    pipe = open_router_pipe(launch[0], hub_pid_from_env())
     return Session(pipe, pipe), launch
 
 
