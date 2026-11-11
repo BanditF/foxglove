@@ -195,3 +195,112 @@ fn lab_withdrawn_json_withdraws_a_lab_module_in_lab_mode_only() {
     );
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// A manifest for a newer hub, with a key this hub doesn't know (#1096).
+const NEWER_TOML: &str = r#"
+id = "org.foxglove.example-lab"
+name = "Example lab plugin"
+version = "2.0.0"
+kind = "service"
+family = "foxglove"
+hub = "1.9"
+run = ["example.exe"]
+permissions = ["devices.read"]
+a_key_from_hub_1_9 = true
+"#;
+
+/// #1096: a lab module whose manifest asks for a newer hub is listed from its head only (id,
+/// name, version), with nothing granted, and never passes the launch check: the supervisor
+/// reads it as needs-hub (§7.8). Not dropped at load.
+#[test]
+fn a_newer_hub_lab_module_is_listed_from_its_head_and_never_launches() {
+    let home = home("needs-hub");
+    let dir = lab_folder(&home, ID);
+    std::fs::write(dir.join("module.toml"), NEWER_TOML).unwrap();
+    let mut reg = Registry::open(&home, false).unwrap();
+    reg.load_lab();
+    assert_eq!(reg.lab_report.len(), 1, "{:?}", reg.lab_report);
+    assert!(
+        reg.lab_report[0].contains("needs hub 1.9") && reg.lab_report[0].contains("not started"),
+        "{:?}",
+        reg.lab_report
+    );
+    let m = &reg.inventory.modules[ID];
+    assert_eq!((m.source.as_str(), m.version.as_str()), (LAB, "2.0.0"));
+    assert!(m.granted.is_empty() && m.pending_permissions.is_empty());
+    assert!(reg.is_lab(ID) && reg.hub.enabled(ID));
+    assert!(reg.manifest(ID).is_none());
+    let head = reg.manifest_head(ID).expect("its head");
+    assert_eq!(
+        (head.name.as_str(), head.version.as_str()),
+        ("Example lab plugin", "2.0.0")
+    );
+    assert_eq!(reg.module_name(ID), "Example lab plugin");
+    // What the supervisor reads: manifest.hub, at hub start and at a launch.
+    let e = reg.manifest_checked(ID).unwrap_err();
+    assert_eq!(e.id(), Some("manifest.hub"), "{e}");
+    let e = reg.pre_launch(ID).unwrap_err();
+    assert_eq!(e.id(), Some("manifest.hub"), "{e}");
+
+    // An older major isn't "needs a newer hub": still not loaded, as before.
+    std::fs::write(
+        dir.join("module.toml"),
+        NEWER_TOML.replace("\"1.9\"", "\"0.9\""),
+    )
+    .unwrap();
+    let mut reg = Registry::open(&home, false).unwrap();
+    reg.load_lab();
+    assert!(!reg.inventory.modules.contains_key(ID));
+    assert!(
+        reg.lab_report[0].contains("not loaded"),
+        "{:?}",
+        reg.lab_report
+    );
+}
+
+/// #1096, the normal path: an installed (sideloaded or catalog) version whose manifest asks for
+/// a newer hub (the hub went back a version) stays in the inventory and is named from its head;
+/// installing one is still refused at step 6 (`manifest.hub`, §7.4), keeping what runs.
+#[test]
+fn an_installed_newer_hub_manifest_is_named_from_its_head_and_its_install_refused() {
+    let home = home("needs-hub-installed");
+    let src = home.join("src").join("kiln");
+    std::fs::create_dir_all(&src).unwrap();
+    let served = NEWER_TOML
+        .replace(ID, "org.example.kiln")
+        .replace("\"foxglove\"", "\"third-party\"")
+        .replace("\"1.9\"", "\"1.0\"")
+        .replace("a_key_from_hub_1_9 = true\n", "");
+    std::fs::write(src.join("module.toml"), &served).unwrap();
+    std::fs::write(src.join("example.exe"), b"stand-in").unwrap();
+    let mut reg = Registry::open(&home, true).unwrap();
+    reg.install(&src, NOW).unwrap();
+    // The hub went back a version: the installed manifest now asks for a newer one.
+    let installed = reg.module_dir("org.example.kiln", "2.0.0");
+    std::fs::write(
+        installed.join("module.toml"),
+        served.replace("\"1.0\"", "\"1.9\"") + "a_key_from_hub_1_9 = true\n",
+    )
+    .unwrap();
+    let reg = Registry::open(&home, true).unwrap();
+    assert!(reg.inventory.modules.contains_key("org.example.kiln"));
+    assert_eq!(reg.module_name("org.example.kiln"), "Example lab plugin");
+    assert_eq!(
+        reg.manifest_checked("org.example.kiln").unwrap_err().id(),
+        Some("manifest.hub")
+    );
+    // Installing a newer-hub version is refused before anything changes.
+    let newer = home.join("src").join("kiln-2");
+    std::fs::create_dir_all(&newer).unwrap();
+    std::fs::write(
+        newer.join("module.toml"),
+        served
+            .replace("\"1.0\"", "\"1.9\"")
+            .replace("2.0.0", "2.1.0"),
+    )
+    .unwrap();
+    let mut reg = Registry::open(&home, true).unwrap();
+    let e = reg.install(&newer, NOW).unwrap_err();
+    assert_eq!(e.id(), Some("manifest.hub"), "{e}");
+    assert_eq!(reg.inventory.modules["org.example.kiln"].version, "2.0.0");
+}

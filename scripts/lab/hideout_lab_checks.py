@@ -1,5 +1,6 @@
-"""Hideout lab checks (#1003): the #997 tray flyout steps, the #995 module page steps and the
-#1004 supervisor steps, run against a lab hub through its lab control pipe
+"""Hideout lab checks (#1003): the #997 tray flyout steps, the #995 module page steps, the
+#1004 supervisor steps and #1093's state steps 2-4 (#1096), run against a lab hub through its lab
+control pipe
 (`hideout.exe --lab-do <verb>`, crates/hideout-shell/src/lab_control.rs) with `hideout.exe
 --capture` PNGs as proofs. Prints PASS/FAIL/BLOCKED per step and RESULT at the end (exit 0 PASS,
 1 FAIL, 2 BLOCKED). What still needs hands is listed in docs/hideout-lab.md.
@@ -11,7 +12,7 @@ hub must already run on --lab. It shows windows, the tray flyout and the tray me
 with FOXGLOVE_APP_OK=1 (On-call, in a lab sitting), never on the user's desktop otherwise.
 
     FOXGLOVE_APP_OK=1 python scripts/lab/hideout_lab_checks.py --app <hideout.exe> --lab <folder> [--start]
-        [--only flyout,pages,supervisor] [--shots <folder>]
+        [--only flyout,pages,supervisor,states] [--shots <folder>]
 
 Waits: every lab control action answers after the frame that shows its result. The few waits on
 the hub's own timing (a module restarting, a crash landing) read `state` every 0.25 s for a
@@ -153,6 +154,38 @@ def tray_status(state):
     """The tray menu's status line (its first item), when the menu is open."""
     items = (state.get('tray') or {}).get('menu') or []
     return items[0]['text'] if items else None
+
+
+# The `hub` this Hideout serves (hideout_contract::HUB_VERSION); a lab module asking for more
+# reads "Needs a newer Hideout" (#1096).
+SERVED_HUB = (1, 2)
+
+
+def hub_newer(hub, served=SERVED_HUB):
+    """Whether a manifest's `hub` ("1.9") asks for a newer hub than `served` serves."""
+    try:
+        major, minor = (int(x) for x in str(hub).split('.'))
+    except ValueError:
+        return False
+    return (major, minor) > served and not (major == served[0] and minor <= served[1])
+
+
+def needs_hub_modules(lab, served=SERVED_HUB):
+    """{id: name} of the lab modules whose module.toml asks for a newer hub (#1093 step 2)."""
+    out = {}
+    for d in sorted((Path(lab) / 'lab-modules').glob('*')):
+        p = d / 'module.toml'
+        if p.is_file() and tomllib:
+            m = tomllib.loads(p.read_text(encoding='utf-8'))
+            if hub_newer(m.get('hub', ''), served):
+                out[m.get('id', d.name)] = m.get('name', d.name)
+    return out
+
+
+def node(state, text, window='main'):
+    """The first node that says `text` exactly, or None."""
+    return next((n for n in state.get(window, {}).get('nodes', [])
+                 if (n.get('name') or n.get('value')) == text), None)
 
 
 # ---- the lab hub ---------------------------------------------------------------------------------
@@ -602,12 +635,134 @@ def supervisor_steps(hub, check):
         step(check, n, fn)
 
 
+# ---- #1093 steps 2-4: needs a newer Hideout, the update states, a quarantine (#1096) -------------
+
+# The module the update steps drive (it runs and has a page), and the one quarantined (another,
+# so the updates' "Go back" version never shows on the quarantine card).
+UPDATE_MODULE = CRASH_MODULE
+QUARANTINE_MODULES = ('org.foxglove.broadcast-status', 'org.foxglove.icue', 'org.foxglove.mic-mute')
+UPDATE_HIDEOUT = 'Update Hideout'
+NEEDS_HUB = 'Needs a newer Hideout'
+UPDATE_READY, UPDATE_WAITING, UPDATING = 'Update ready', 'Update waiting for you', 'Updating…'
+PLACE_KEPT = 'Your place on this page is kept.'
+QUARANTINED_LINE = 'Hideout stopped twice while drawing it.'
+
+
+def state_steps(hub, check):
+    names = manifest_names(hub.lab)
+
+    def tray_line():
+        hub.do('tray-menu')
+        ok, s = hub.wait(lambda s: s['tray'].get('menu') is not None, 5)
+        hub.do('menu-key', 'esc')
+        return tray_status(s) if ok else None
+
+    def s2_needs_hub():
+        newer = needs_hub_modules(hub.lab)
+        if not newer:
+            return check('1093.2 needs a newer Hideout', False,
+                         'no lab module asks for a newer hub: set hub = "1.9" in one module.toml '
+                         'before the hub starts', blocked=True)
+        mid, name = next(iter(newer.items()))
+        line = next((l for l in hub.log().splitlines() if f'lab: {mid}: listed from' in l), '')
+        check('1093.2 the lab hub lists it (not "not loaded")', 'needs hub' in line, line.strip()[-90:])
+        exe = module_exe(hub.lab, mid)
+        check('1093.2 it never runs', not (exe and hub.pids(exe)), f'{exe.name if exe else "no run"} not running')
+        hub.show_main()
+        hub.do('focus', 'Modules')
+        s = hub.state()
+        check('1093.2 its Modules row reads Needs a newer Hideout', has(s, name, prefix=True) and contains(s, NEEDS_HUB),
+              f'{name}: {[t for t in texts(s) if name in t or NEEDS_HUB in t][:4]}')
+        check('1093.2 the row offers Update Hideout', has(s, UPDATE_HIDEOUT), 'Update Hideout button')
+        hub.capture('1093-2-needs-hub-modules-row')
+        line = tray_line() or ''
+        check('1093.2 the tray menu names it (red, root cause once)',
+              line == f'{name} needs a newer Hideout' or 'needs a newer Hideout' in line, repr(line))
+
+    def s3_updates():
+        name = names.get(UPDATE_MODULE)
+        if not name:
+            return check('1093.3 update states', False, f'no {UPDATE_MODULE} lab module', blocked=True)
+        hub.show_main()
+        hub.do('focus', name)
+        # Update ready: the drain answers busy.
+        r = hub.do('update-ready', UPDATE_MODULE, 'a lab check', timeout=60)
+        check('1093.3 update-ready reaches update-busy', r.get('state') == 'update-busy', str(r))
+        hub.do('focus', name)
+        s = hub.state()
+        check('1093.3 the page says Update ready / Waits until you finish a lab check, Force, Not now',
+              has(s, UPDATE_READY) and contains(s, 'Waits until you finish a lab check')
+              and has(s, 'Force') and has(s, 'Not now'), f'{texts(s)[:30]}')
+        hub.capture('1093-3-update-ready')
+        hub.do('click', 'Not now')
+        ok, _ = hub.wait(lambda s: not has(s, UPDATE_READY), 5)
+        check('1093.3 Not now keeps the old version running', ok, 'Update ready line gone')
+        # Force: Update ready, then Force swaps (Updating…, then live again).
+        hub.do('update-ready', UPDATE_MODULE, 'a lab check', timeout=60)
+        hub.do('focus', name)
+        hub.do('click', 'Force')
+        ok, s = hub.wait(lambda s: contains(s, UPDATING) or not has(s, UPDATE_READY), 40)
+        check('1093.3 Force swaps', ok, 'Update ready gone after Force')
+        ok, _ = hub.wait(lambda s: not contains(s, UPDATING), 40)
+        check('1093.3 the page is live again after Force', ok, 'Updating… gone')
+        # Update waiting for you: an update that adds a permission.
+        r = hub.do('update-waiting', UPDATE_MODULE, 'devices.read', timeout=60)
+        check('1093.3 update-waiting reaches update-waiting', r.get('state') == 'update-waiting', str(r))
+        hub.do('focus', name)
+        s = hub.state()
+        review = node(s, 'Review')
+        check('1093.3 the page says Update waiting for you, the permission, Review greyed, Not now',
+              has(s, UPDATE_WAITING) and contains(s, 'The new version wants to') and review is not None
+              and review.get('disabled') and has(s, 'Not now'), f'Review {review}')
+        hub.capture('1093-3-update-waiting')
+        hub.do('click', 'Not now')
+        ok, _ = hub.wait(lambda s: not has(s, UPDATE_WAITING), 5)
+        check('1093.3 Not now on Update waiting for you', ok, 'line gone')
+        # Updating…: the drain answers done; the module starts again.
+        r = hub.do('updating', UPDATE_MODULE, timeout=60)
+        check('1093.3 updating reaches updating', r.get('state') == 'updating', str(r))
+        hub.do('focus', name)
+        s = hub.state()
+        check('1093.3 the page says Updating… Your place on this page is kept.',
+              contains(s, UPDATING) and contains(s, PLACE_KEPT), f'{[t for t in texts(s) if "Updating" in t]}')
+        hub.capture('1093-3-updating')
+        ok, _ = hub.wait(lambda s: not contains(s, UPDATING), 40)
+        check('1093.3 the new instance runs and the page is live again', ok, 'Updating… gone')
+
+    def s4_quarantine():
+        mid = next((m for m in QUARANTINE_MODULES if m in names), None)
+        if not mid:
+            return check('1093.4 quarantine', False, f'none of {QUARANTINE_MODULES} in the lab', blocked=True)
+        name = names[mid]
+        hub.show_main()
+        hub.do('focus', name)
+        quiet = tray_line()
+        r = hub.do('quarantine', mid)
+        check('1093.4 quarantine reaches quarantined', r.get('state') == 'quarantined', str(r))
+        hub.do('focus', name)
+        s = hub.state()
+        check(f"1093.4 the card says {name}'s page couldn't be shown / Hideout stopped twice",
+              has(s, f"{name}'s page couldn't be shown") and contains(s, QUARANTINED_LINE),
+              f'{texts(s)[:20]}')
+        check('1093.4 Start again is focused', s['main'].get('focus') == 'Start again', f'focus {s["main"].get("focus")!r}')
+        hub.capture('1093-4-quarantined')
+        check('1093.4 the tray stays quiet', tray_line() == quiet, f'menu status {quiet!r}')
+        exe = module_exe(hub.lab, mid)
+        hub.do('key', 'enter', 'main')
+        ok, _ = hub.wait(lambda s: not contains(s, QUARANTINED_LINE), 20)
+        running = not exe or hub.wait(lambda _: bool(hub.pids(exe)), 20, read=lambda: None)[0]
+        check('1093.4 Start again runs it and releases the page', ok and running, f'running: {running}')
+
+    for n, fn in [('1093.2', s2_needs_hub), ('1093.3', s3_updates), ('1093.4', s4_quarantine)]:
+        step(check, n, fn)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the hideout.exe under test')
     ap.add_argument('--lab', required=True, type=tool_arg('--lab', kind='dir'), help="the lab hub's HIDEOUT_CONFIG_DIR")
     ap.add_argument('--start', action='store_true', help='start the lab hub (and stop it at the end)')
-    ap.add_argument('--only', default='flyout,pages,supervisor', help='which groups to run')
+    ap.add_argument('--only', default='flyout,pages,supervisor,states', help='which groups to run')
     ap.add_argument('--shots', default=None, help='where capture PNGs go (default <lab>\\lab-shots)')
     args = ap.parse_args()
     require_app_ok()
@@ -632,6 +787,8 @@ def main():
             page_steps(hub, check)
         if 'supervisor' in groups:
             supervisor_steps(hub, check)
+        if 'states' in groups:
+            state_steps(hub, check)
     finally:
         hub.stop()
     check.finish()

@@ -862,6 +862,17 @@ impl Module {
     /// Reads `module.toml` text and makes every §4 check.
     pub fn parse(text: &str, ctx: &Context) -> Result<Module, Error> {
         let table = parse_table(text)?;
+        // A manifest for a hub this reader doesn't serve may use keys it doesn't know (§4.1): its
+        // `hub` is read first, so it fails as `manifest.hub` (needs-hub, §7.8, #1096), never as
+        // `manifest.unknown-key`.
+        if let Some(toml::Value::String(hub)) = table.get("hub") {
+            if Version::parse(hub).is_some_and(|v| !v.served_by(HUB_VERSION)) {
+                return fail(
+                    ErrorId::ManifestHub,
+                    format!("hub {hub:?}: this reader serves {HUB_VERSION}"),
+                );
+            }
+        }
         check_keys(&table, "", SCHEMA)?;
         for key in ["id", "name", "version", "kind", "family", "hub"] {
             if !table.contains_key(key) {
@@ -1200,8 +1211,8 @@ impl Module {
             );
         }
         Ok(Module {
+            name: display_name(&raw.name, &id),
             id: write_vulpes(&id),
-            name: raw.name,
             version: raw.version,
             kind,
             family,
@@ -1291,8 +1302,8 @@ impl Module {
             pin: vec![],
             edition: None,
             legacy: true,
+            name: display_name(&m.name, &m.id),
             id: m.id,
-            name: m.name,
             version: m.version,
         }
     }
@@ -1348,6 +1359,106 @@ impl ManifestFile {
             ManifestFile::Kit => "kit.toml",
         }
     }
+}
+
+/// The longest name a [`Head`] keeps (characters); a longer one is cut.
+pub const HEAD_NAME_MAX: usize = 64;
+
+/// The safe minimum of a `module.toml` written for a newer hub than this reader serves (§7.8
+/// needs-hub, #1096): its `id`, `name`, `version` and `hub`, read without checking anything
+/// else, so the hub can list the module and show it as Needs a newer Hideout. Never enough to
+/// run it: nothing else of the file (permissions, `run`, panels) is read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Head {
+    pub id: String,
+    /// The name for people: control, bidi and zero-width characters dropped, whitespace runs as
+    /// one space, at most [`HEAD_NAME_MAX`] characters; the id when nothing is left.
+    pub name: String,
+    pub version: String,
+    pub hub: Version,
+}
+
+/// A character a drawn name never shows: C0/C1 controls, bidi marks, embeddings, overrides and
+/// isolates (U+061C, U+200E/F, U+202A–202E, U+2066–2069), zero-width and invisible characters
+/// (U+00AD, U+180E, U+200B–200D, U+2060–2064, U+FEFF), interlinear annotation marks
+/// (U+FFF9–FFFB) and the tag characters (U+E0000–E007F).
+fn hidden_in_name(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E007F}')
+}
+
+/// A module's `name` made safe to draw (§4.1, #1096): the hidden characters of
+/// [`hidden_in_name`] dropped, whitespace runs as one space, trimmed; the id when nothing is
+/// left. Every reader names modules through it: the full manifest, a legacy one and a [`Head`].
+pub fn display_name(raw: &str, id: &str) -> String {
+    let name = raw
+        .split(char::is_whitespace)
+        .map(|w| {
+            w.chars()
+                .filter(|c| !hidden_in_name(*c))
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if name.is_empty() {
+        id.to_string()
+    } else {
+        name
+    }
+}
+
+/// A [`Head`]'s name: [`display_name`], at most [`HEAD_NAME_MAX`] characters (nothing else in
+/// that file was checked).
+fn head_name(raw: &str, id: &str) -> String {
+    display_name(raw, id).chars().take(HEAD_NAME_MAX).collect()
+}
+
+impl Head {
+    /// Reads the four keys from `module.toml` text: the file must be TOML, `id` must follow §4.3,
+    /// `version` must be SemVer and `hub` `MAJOR.MINOR`. Other keys are not looked at.
+    pub fn parse(text: &str) -> Result<Head, Error> {
+        use ErrorId::*;
+        let table = parse_table(text)?;
+        let s = |k: &str| match table.get(k) {
+            Some(toml::Value::String(s)) => Ok(s.clone()),
+            Some(_) => fail(ManifestSyntax, format!("{k} must be a string")),
+            None => fail(ManifestMissingKey, format!("missing key {k}")),
+        };
+        let id = s("id")?;
+        if !id_grammar_ok(&id) {
+            return fail(ManifestId, format!("id {id:?} breaks §4.3"));
+        }
+        let version = s("version")?;
+        if !semver_ok(&version) {
+            return fail(ManifestVersion, format!("version {version:?} isn't SemVer"));
+        }
+        let raw_hub = s("hub")?;
+        let hub = Version::parse(&raw_hub)
+            .ok_or_else(|| Error::new(ManifestHub, format!("hub {raw_hub:?} isn't MAJOR.MINOR")))?;
+        let name = head_name(&s("name")?, &id);
+        Ok(Head {
+            id,
+            name,
+            version,
+            hub,
+        })
+    }
+
+    /// Whether it asks for a newer hub than this reader serves (a newer minor or major): the
+    /// needs-hub case. An older major isn't one (that module is simply not served).
+    pub fn needs_newer_hub(&self) -> bool {
+        self.hub > HUB_VERSION && !self.hub.served_by(HUB_VERSION)
+    }
+}
+
+/// Reads a folder's `module.toml` as a [`Head`] only (a legacy manifest has no `hub`).
+pub fn read_head(dir: &Path) -> std::io::Result<Result<Head, Error>> {
+    let text = std::fs::read_to_string(dir.join(ManifestFile::Module.name()))?;
+    Ok(Head::parse(&text))
 }
 
 /// Reads a module folder: `module.toml`, else `plugin.toml`, else `kit.toml` (§4.10).
@@ -1441,5 +1552,147 @@ when = "!apps.seen.fourth"
             m.describe_permission_named(&watch("example-app.exe"), named),
             "see whether Example-App is running"
         );
+    }
+}
+
+#[cfg(test)]
+mod head_tests {
+    use super::*;
+
+    const NEWER: &str = r#"
+id = "org.example.kiln"
+name = "Kiln"
+version = "2.0.0"
+kind = "service"
+family = "third-party"
+hub = "1.9"
+run = ["kiln.exe"]
+glaze = { colour = "blue" }
+
+[future_table]
+anything = true
+"#;
+
+    /// A manifest for a newer hub that uses keys this reader doesn't know reads `manifest.hub`
+    /// (needs-hub, #1096), not `manifest.unknown-key`; its head is the safe minimum.
+    #[test]
+    fn a_newer_hub_manifest_fails_as_hub_and_its_head_reads() {
+        let e = Module::parse(NEWER, &Context::default()).unwrap_err();
+        assert_eq!(e.id, ErrorId::ManifestHub, "{e}");
+        let h = Head::parse(NEWER).unwrap();
+        assert_eq!(h.id, "org.example.kiln");
+        assert_eq!(h.name, "Kiln");
+        assert_eq!(h.version, "2.0.0");
+        assert_eq!(h.hub, Version { major: 1, minor: 9 });
+        assert!(h.needs_newer_hub());
+        // A newer major needs a newer hub too; an older major or a served hub doesn't.
+        let with = |hub: &str| Head::parse(&NEWER.replace("\"1.9\"", hub)).unwrap();
+        assert!(with("\"2.0\"").needs_newer_hub());
+        assert!(!with("\"0.9\"").needs_newer_hub());
+        assert!(!with(&format!("\"{HUB_VERSION}\"")).needs_newer_hub());
+        // An unknown key in a manifest this reader serves is still refused as one.
+        let served = NEWER.replace("\"1.9\"", &format!("\"{HUB_VERSION}\""));
+        assert_eq!(
+            Module::parse(&served, &Context::default()).unwrap_err().id,
+            ErrorId::ManifestUnknownKey
+        );
+    }
+
+    /// Only the four keys are checked; each must still be well formed. The name is made safe to
+    /// draw (no controls, bidi or zero-width characters, one space, at most 64 characters).
+    #[test]
+    fn the_head_checks_its_four_keys_and_cleans_the_name() {
+        let bad = |from: &str, to: &str| Head::parse(&NEWER.replace(from, to)).unwrap_err().id;
+        assert_eq!(
+            bad("\"org.example.kiln\"", "\"Org..Kiln\""),
+            ErrorId::ManifestId
+        );
+        assert_eq!(bad("\"2.0.0\"", "\"2.0\""), ErrorId::ManifestVersion);
+        assert_eq!(bad("\"1.9\"", "\"1.9.1\""), ErrorId::ManifestHub);
+        assert_eq!(bad("name = \"Kiln\"", "name = 3"), ErrorId::ManifestSyntax);
+        assert_eq!(bad("name = \"Kiln\"\n", ""), ErrorId::ManifestMissingKey);
+        assert_eq!(
+            Head::parse("id = [").unwrap_err().id,
+            ErrorId::ManifestSyntax
+        );
+        // A TOML basic string, every character outside printable ASCII as `\uXXXX`.
+        let named = |n: &str| {
+            let quoted: String = n
+                .chars()
+                .map(|c| match c {
+                    ' '..='~' if c != '"' && c != '\\' => c.to_string(),
+                    _ => format!("\\u{:04X}", c as u32),
+                })
+                .collect();
+            Head::parse(&NEWER.replace("name = \"Kiln\"", &format!("name = \"{quoted}\"")))
+                .unwrap()
+                .name
+        };
+        assert_eq!(named("K\u{202e}iln\u{200b}  \t Glaze\u{7}"), "Kiln Glaze");
+        assert_eq!(named("\u{202e}\u{200b} "), "org.example.kiln");
+        assert_eq!(named(&"x".repeat(200)).chars().count(), HEAD_NAME_MAX);
+    }
+
+    /// #1096 review: one cleaner names modules for every reader, and it drops the Arabic letter
+    /// mark, the soft hyphen, the Mongolian vowel separator, interlinear annotation marks and
+    /// tag characters too.
+    #[test]
+    fn one_cleaner_names_modules_for_every_reader() {
+        let hidden = [
+            '\u{061C}',
+            '\u{00AD}',
+            '\u{180E}',
+            '\u{FFF9}',
+            '\u{FFFA}',
+            '\u{FFFB}',
+            '\u{E0000}',
+            '\u{E0041}',
+            '\u{E007F}',
+            '\u{202E}',
+            '\u{200B}',
+            '\u{2066}',
+            '\u{FEFF}',
+            '\u{7}',
+        ];
+        let raw: String = hidden.iter().fold(String::from("K"), |mut s, c| {
+            s.push(*c);
+            s
+        }) + "iln  Glaze";
+        assert_eq!(display_name(&raw, "org.example.kiln"), "Kiln Glaze");
+        assert_eq!(
+            display_name("\u{E0041}\u{00AD} ", "org.example.kiln"),
+            "org.example.kiln"
+        );
+        // Visible text stays as written, accents and other scripts too.
+        assert_eq!(display_name("Café Ünïcode 字", "x"), "Café Ünïcode 字");
+        let escaped: String = raw
+            .chars()
+            .map(|c| match c {
+                ' '..='~' => c.to_string(),
+                c if (c as u32) > 0xFFFF => format!("\\U{:08X}", c as u32),
+                c => format!("\\u{:04X}", c as u32),
+            })
+            .collect();
+        // The head and the full reader (a served manifest) name it the same.
+        let newer = NEWER.replace("name = \"Kiln\"", &format!("name = \"{escaped}\""));
+        assert_eq!(Head::parse(&newer).unwrap().name, "Kiln Glaze");
+        let served = newer
+            .replace("\"1.9\"", &format!("\"{HUB_VERSION}\""))
+            .replace("glaze = { colour = \"blue\" }\n", "")
+            .replace("\n[future_table]\nanything = true\n", "");
+        assert_eq!(
+            Module::parse(&served, &Context::default()).unwrap().name,
+            "Kiln Glaze"
+        );
+    }
+
+    #[test]
+    fn read_head_reads_module_toml_only() {
+        let dir = std::env::temp_dir().join(format!("hideout-head-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_head(&dir).is_err());
+        std::fs::write(dir.join("module.toml"), NEWER).unwrap();
+        assert_eq!(read_head(&dir).unwrap().unwrap().name, "Kiln");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

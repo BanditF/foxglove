@@ -23,6 +23,37 @@ STATE = {'main': {'nodes': [
 ]}, 'tray': {'menu': [{'text': 'Hideout', 'enabled': False}, {'text': 'Open Hideout', 'enabled': True}]}}
 
 
+class NeedsHub(unittest.TestCase):
+    """#1096: which lab modules ask for a newer hub (#1093 step 2), and finding a drawn node."""
+
+    def test_hub_newer_than_served(self):
+        self.assertTrue(hl.hub_newer('1.9'))
+        self.assertTrue(hl.hub_newer('2.0'))
+        self.assertFalse(hl.hub_newer('1.2'))
+        self.assertFalse(hl.hub_newer('1.0'))
+        self.assertFalse(hl.hub_newer('0.9'))
+        self.assertFalse(hl.hub_newer('1.9.1'))
+        self.assertFalse(hl.hub_newer(''))
+
+    @unittest.skipIf(hl.tomllib is None, 'tomllib needs Python 3.11')
+    def test_needs_hub_modules_reads_module_toml(self):
+        with tempfile.TemporaryDirectory() as lab:
+            for mid, hub in (('org.example.new', '1.9'), ('org.example.ok', '1.0')):
+                d = Path(lab) / 'lab-modules' / mid
+                d.mkdir(parents=True)
+                (d / 'module.toml').write_text(
+                    f'id = "{mid}"\nname = "{mid[12:].title()}"\nhub = "{hub}"\nfuture_key = 1\n',
+                    encoding='utf-8')
+            self.assertEqual(hl.needs_hub_modules(lab), {'org.example.new': 'New'})
+
+    def test_node_finds_an_exact_text(self):
+        s = {'main': {'nodes': [{'role': 'Button', 'name': 'Review', 'disabled': True},
+                                {'role': 'Label', 'value': 'Update waiting for you'}]}}
+        self.assertTrue(hl.node(s, 'Review')['disabled'])
+        self.assertIsNotNone(hl.node(s, 'Update waiting for you'))
+        self.assertIsNone(hl.node(s, 'Revie'))
+
+
 class Verdicts(unittest.TestCase):
     def test_flicker_needs_no_visible_flyout_frame_and_the_main_window(self):
         quiet = {'rows': [{'t': 10, 'w': 'main', 'flyout_visible': False}], 'counts': {'flyout': 2}}

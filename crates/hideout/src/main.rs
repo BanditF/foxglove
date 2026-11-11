@@ -17,6 +17,8 @@ mod catalog_fetch;
 mod https;
 #[cfg(windows)]
 mod inventory_watch;
+#[cfg(windows)]
+mod lab_verbs;
 mod modules_page;
 #[cfg(windows)]
 mod panel_feed;
@@ -254,6 +256,10 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
         exit,
         env!("CARGO_PKG_VERSION"),
     );
+    // The supervisor's update and quarantine verbs for lab control (#1096): a lab hub only.
+    if hideout_shell::lab_control::enabled(paths) {
+        lab_verbs::register(supervisor.clone());
+    }
     let hub = router.clone();
     let facts: modules_page::Facts = Box::new(move |k| hub.read(|r| r.fact(k).cloned()));
     let sup = supervisor.clone();

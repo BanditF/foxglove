@@ -25,6 +25,11 @@
 //!   flyout, other viewports (pop-outs), the foreground window, the tray menu, the tray events
 //!   received and the loop-wake and frame counters; and a frame log, one row per pass of each
 //!   window with what was on screen, for the double-click flicker check.
+//! - **Supervisor states** (#1096: `update-ready`, `update-waiting`, `updating`, `quarantine`):
+//!   the update verbs go to the hub's own handler ([`set_hub_verbs`], the supervisor's update
+//!   step for a lab module); `quarantine` puts a module's panels in the panel host's quarantine
+//!   in the next frame, which hands it to the supervisor as a broken panel does. A hub that set
+//!   no handler (not a lab hub) refuses them.
 //!
 //! What it does not prove (each stays one hand check, docs/hideout-lab.md): that Windows
 //! delivers a real click, double click or key to the icon (the shell's own messages, its
@@ -183,6 +188,9 @@ struct Inner {
     last_tray: String,
     /// Settings to change in the hub's next frame (`set-setting`): (module, name, value, ticket).
     settings: Vec<(String, String, serde_json::Value, u64)>,
+    /// Modules whose panels the hub's next frame quarantines (`quarantine`, #1096): (module,
+    /// ticket).
+    quarantines: Vec<(String, u64)>,
 }
 
 /// The control state the plugin, the tray hook and the pipe thread share.
@@ -258,6 +266,30 @@ impl Lab {
         all.into_iter().map(|(m, n, v, _)| (m, n, v)).collect()
     }
 
+    /// Queues a panel quarantine for the hub's next frame (`quarantine`, #1096); its ticket.
+    pub fn queue_quarantine(&self, module: &str) -> u64 {
+        let mut i = self.lock();
+        i.next_ticket += 1;
+        let t = i.next_ticket;
+        i.quarantines.push((module.into(), t));
+        t
+    }
+
+    /// The queued quarantines, for the hub's frame to hand to the panel host as its own
+    /// quarantine does (`PanelHost::quarantine`, then the supervisor through the hand-off).
+    pub fn take_quarantines(&self) -> Vec<String> {
+        let mut i = self.lock();
+        let all = std::mem::take(&mut i.quarantines);
+        let Some(took) = all.iter().map(|q| q.1).max() else {
+            return Vec::new();
+        };
+        i.taken = i.taken.max(took);
+        i.taken_pass = i.root_passes;
+        drop(i);
+        self.cv.notify_all();
+        all.into_iter().map(|(m, _)| m).collect()
+    }
+
     /// Waits until a pass took `ticket` and the root pass around it ended (at most `timeout`);
     /// returns the root passes so far. An action no pass took is dropped, so a later pass
     /// doesn't act on it.
@@ -282,6 +314,7 @@ impl Lab {
                 }
                 i.queue.retain(|q| q.3 != ticket);
                 i.settings.retain(|q| q.3 != ticket);
+                i.quarantines.retain(|q| q.1 != ticket);
                 return Err(format!(
                     "no pass of the window within {} s (is it on screen?)",
                     timeout.as_secs()
@@ -504,6 +537,27 @@ pub fn take_settings() -> Vec<(String, String, serde_json::Value)> {
     LAB.get().map(|l| l.take_settings()).unwrap_or_default()
 }
 
+/// Panel quarantines `quarantine` queued for this frame (none on the user's hub: no lab).
+pub fn take_quarantines() -> Vec<String> {
+    LAB.get().map(|l| l.take_quarantines()).unwrap_or_default()
+}
+
+/// The hub's own lab verbs (#1096): the supervisor's update steps and its state, which this
+/// crate can't reach. `hideout.exe` sets them in a lab hub only ([`set_hub_verbs`]); a hub
+/// without them refuses those verbs.
+pub type HubVerbs =
+    Box<dyn Fn(&str, &str) -> Result<serde_json::Value, String> + Send + Sync + 'static>;
+
+static HUB_VERBS: OnceLock<HubVerbs> = OnceLock::new();
+
+/// Why a hub verb was refused when the hub set none (not a lab hub).
+pub const NO_HUB_VERBS: &str = "lab hub only: this hub has no supervisor verbs";
+
+/// Sets the hub's lab verbs, once; `hideout.exe` calls it only when [`enabled`].
+pub fn set_hub_verbs(f: HubVerbs) {
+    let _ = HUB_VERBS.set(f);
+}
+
 pub fn note_tray(what: &dyn std::fmt::Debug) {
     if let Some(lab) = LAB.get() {
         lab.note_tray(&format!("{what:?}"));
@@ -620,6 +674,15 @@ pub trait Host: Send + 'static {
     fn menu_key(&self, vk: u16) -> Result<(), String>;
     /// Chooses the open tray menu's item `id`: closes the menu and posts its `WM_COMMAND`.
     fn menu_pick(&self, id: u32) -> Result<(), String>;
+    /// One of the hub's own lab verbs (#1096: `update-ready`, `update-waiting`, `updating`,
+    /// `quarantine` (the check before it is queued) and `module-state`), from
+    /// [`set_hub_verbs`]. Refused when the hub set none.
+    fn hub_verb(&self, verb: &str, rest: &str) -> Result<serde_json::Value, String> {
+        match HUB_VERBS.get() {
+            Some(f) => f(verb, rest),
+            None => Err(format!("{NO_HUB_VERBS} ({verb})")),
+        }
+    }
 }
 
 /// One item of the tray menu.
@@ -643,7 +706,9 @@ const WM_RBUTTONUP: u32 = 0x0205;
 pub const HELP: &str = "verbs: state | frames <ms> [<from_t>] | tray-click | tray-double-click [<gap_ms>] | \
 tray-menu | tray-key-select | menu-key <down|up|left|right|enter|esc|home|end> | menu-pick <text> | \
 key <chord> [main|flyout] | text <text> | click <name>[#n]|@<i> [main|flyout] | focus <tab or page> | \
-open-flyout | close-flyout | close-window | set-setting <module> <name> <value>";
+open-flyout | close-flyout | close-window | set-setting <module> <name> <value> | \
+update-ready <module> [<reason>] | update-waiting <module> <permission>... | updating <module> | \
+quarantine <module>";
 
 /// Answers one request line. Every answer is one JSON object with `ok` (and `error` when not).
 pub fn answer(line: &str, lab: &Lab, host: &dyn Host) -> String {
@@ -865,6 +930,43 @@ fn run_verb(
                 serde_json::json!({"verb": verb, "t": t, "module": module, "name": name,
                 "value": value, "settled": settled}),
             )
+        }
+        // The supervisor's update states (#1096), lab modules of a lab hub only: through its
+        // update step and the module's real drain call (driver_lab.rs in hideout-supervisor).
+        "update-ready" | "update-waiting" | "updating" => {
+            if rest.is_empty() {
+                return Err(format!("{verb} <module> ..."));
+            }
+            let t = lab.now_ms();
+            let mut v = host.hub_verb(verb, rest)?;
+            v["verb"] = verb.into();
+            v["t"] = t.into();
+            Ok(v)
+        }
+        // A panel quarantine (#1096): the panel host's own quarantine in the hub's next frame,
+        // which hands the module to the supervisor (§5.5, v1.10), as when a panel breaks.
+        "quarantine" => {
+            let module = rest;
+            if module.is_empty() || module.contains(' ') {
+                return Err("quarantine <module>".into());
+            }
+            // Lab hub and lab module only, before anything is queued.
+            host.hub_verb("quarantine", module)?;
+            if !main_on {
+                return Err(
+                    "the main window is not on screen (tray-double-click or menu-pick Open Hideout)"
+                        .into(),
+                );
+            }
+            let ticket = lab.queue_quarantine(module);
+            host.wake();
+            let t = lab.now_ms();
+            let passes = lab.wait_taken(ticket, PASS_TIMEOUT)?;
+            host.wake();
+            let settled = lab.wait_pass_after(passes, SETTLE_TIMEOUT);
+            let after = host.hub_verb("module-state", &format!("{module} quarantined"))?;
+            Ok(serde_json::json!({"verb": verb, "t": t, "module": module,
+                "settled": settled, "state": after["state"]}))
         }
         "open-flyout" => {
             if fly_open {
@@ -1500,6 +1602,171 @@ mod tests {
         let t = lab.queue_setting("m", "n", serde_json::json!(1));
         assert!(lab.wait_taken(t, Duration::from_millis(30)).is_err());
         assert!(lab.take_settings().is_empty());
+    }
+
+    /// A host with the hub's verbs (#1096): records what reached them and answers a state.
+    struct WithHub {
+        fake: Fake,
+        asked: Arc<Mutex<Vec<(String, String)>>>,
+        refuse: bool,
+    }
+
+    impl Host for WithHub {
+        fn wake(&self) {
+            self.fake.wake()
+        }
+        fn arm(&self) {}
+        fn windows(&self) -> (bool, bool, bool) {
+            self.fake.windows()
+        }
+        fn post_tray(&self, mouse: u32) -> Result<(), String> {
+            self.fake.post_tray(mouse)
+        }
+        fn close_main(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn foreground(&self) -> &'static str {
+            "other"
+        }
+        fn menu(&self) -> Option<Vec<MenuItem>> {
+            None
+        }
+        fn menu_key(&self, _vk: u16) -> Result<(), String> {
+            Ok(())
+        }
+        fn menu_pick(&self, _id: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn hub_verb(&self, verb: &str, rest: &str) -> Result<serde_json::Value, String> {
+            self.asked.lock().unwrap().push((verb.into(), rest.into()));
+            if self.refuse {
+                return Err("org.x is not a lab module".into());
+            }
+            let state = match verb {
+                "update-ready" => "update-busy",
+                "update-waiting" => "update-waiting",
+                "updating" => "updating",
+                _ => "quarantined",
+            };
+            Ok(serde_json::json!({"module": rest.split(' ').next(), "state": state}))
+        }
+    }
+
+    /// #1096: without the hub's verbs (not a lab hub) the supervisor verbs are refused and
+    /// nothing is queued; with them, the update verbs reach the hub's handler as asked.
+    #[test]
+    fn supervisor_verbs_are_refused_without_the_hubs_handler_and_passed_with_it() {
+        let lab = Lab::new(ViewportId::from_hash_of("fly"));
+        let fake = Fake {
+            main_on: true,
+            ..Fake::default()
+        };
+        for line in [
+            "update-ready org.x a flash",
+            "update-waiting org.x devices.read",
+            "updating org.x",
+            "quarantine org.x",
+        ] {
+            let r = json(&answer(line, &lab, &fake));
+            assert!(
+                r["error"].as_str().unwrap().starts_with(NO_HUB_VERBS),
+                "{line}: {r}"
+            );
+        }
+        assert!(lab.lock().quarantines.is_empty());
+
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let hub = WithHub {
+            fake: fake.clone(),
+            asked: asked.clone(),
+            refuse: false,
+        };
+        let r = json(&answer("update-ready org.x a flash running", &lab, &hub));
+        assert_eq!(
+            (r["ok"].as_bool(), r["state"].as_str()),
+            (Some(true), Some("update-busy"))
+        );
+        assert_eq!(r["verb"], "update-ready");
+        assert!(answer_ok(&answer(
+            "update-waiting org.x devices.read",
+            &lab,
+            &hub
+        )));
+        assert!(answer_ok(&answer("updating org.x", &lab, &hub)));
+        assert!(!answer_ok(&answer("updating", &lab, &hub)));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec![
+                ("update-ready".into(), "org.x a flash running".into()),
+                ("update-waiting".into(), "org.x devices.read".into()),
+                ("updating".into(), "org.x".into()),
+            ]
+        );
+        // The hub's check refuses (not a lab module): nothing is queued.
+        let refusing = WithHub {
+            fake,
+            asked,
+            refuse: true,
+        };
+        assert!(!answer_ok(&answer("quarantine org.x", &lab, &refusing)));
+        assert!(lab.lock().quarantines.is_empty());
+    }
+
+    /// #1096: `quarantine` is taken by the hub's next frame (the panel host's quarantine) and
+    /// answers the supervisor's state after it; a window not on screen is refused.
+    #[test]
+    fn a_quarantine_is_taken_by_the_next_frame() {
+        let lab = Arc::new(Lab::new(ViewportId::from_hash_of("fly")));
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let hidden = WithHub {
+            fake: Fake::default(),
+            asked: asked.clone(),
+            refuse: false,
+        };
+        let r = json(&answer("quarantine org.x", &lab, &hidden));
+        assert!(
+            r["error"].as_str().unwrap().contains("not on screen"),
+            "{r}"
+        );
+        assert!(lab.lock().quarantines.is_empty());
+
+        let ctx = egui::Context::default();
+        ctx.add_plugin(Plugin::new(lab.clone(), || (true, false)));
+        let taken = Arc::new(Mutex::new(Vec::new()));
+        let frames = {
+            let (ctx, lab, taken) = (ctx.clone(), lab.clone(), taken.clone());
+            std::thread::spawn(move || {
+                // The hub side: frames until the quarantine is taken, then two more.
+                for _ in 0..400 {
+                    let _ = ctx.run(egui::RawInput::default(), |_| {
+                        taken.lock().unwrap().extend(lab.take_quarantines());
+                    });
+                    if !taken.lock().unwrap().is_empty() {
+                        for _ in 0..2 {
+                            let _ = ctx.run(egui::RawInput::default(), |_| {});
+                        }
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            })
+        };
+        let shown = WithHub {
+            fake: Fake {
+                main_on: true,
+                ..Fake::default()
+            },
+            asked: asked.clone(),
+            refuse: false,
+        };
+        let r = json(&answer("quarantine org.x", &lab, &shown));
+        frames.join().unwrap();
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["state"], "quarantined");
+        assert_eq!(*taken.lock().unwrap(), vec!["org.x".to_string()]);
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.last().unwrap().0, "module-state");
+        assert_eq!(asked.last().unwrap().1, "org.x quarantined");
     }
 
     /// The whole path over the current-user pipe, window-free.

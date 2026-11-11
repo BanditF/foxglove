@@ -298,7 +298,8 @@ pub fn list(reg: &hideout_registry::Registry) -> Vec<hideout_shell::modules_list
         .iter()
         .map(|(id, m)| hideout_shell::modules_list::Installed {
             id: id.clone(),
-            name: reg.manifest(id).map_or_else(|| id.clone(), |x| x.name),
+            // A manifest for a newer hub is named from its head (#1096).
+            name: reg.module_name(id),
             version: m.version.clone(),
             enabled: reg.hub.enabled(id),
         })

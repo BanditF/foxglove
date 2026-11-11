@@ -55,6 +55,19 @@ file to see the notification again). `hideout.log` says `lab: <id>: <version> re
 says "No new version yet"; taken out of the file (or the version changed), the module starts
 again. A normal hub has no catalog fetch yet, so its Check for updates says "Couldn't check".
 
+## A module that needs a newer Hideout (#1096)
+
+A lab module whose `module.toml` asks for a newer hub than this one serves (`hub = "1.9"` while
+the hub serves 1.2) is listed, not dropped: only its head is read (`id`, `name`, `version`,
+`hub`; nothing else in the file, so new keys are fine), it joins the lab inventory with no
+grants, and the supervisor reads it as `needs-hub` (contract §7.8) and never starts it.
+`hideout.log` says `lab: <id>: listed from <folder>, needs hub 1.9 (this hub serves 1.2); not
+started`. The Modules page row reads Needs a newer Hideout with Update Hideout, and the tray
+menu names it. It has no page or tab: a module's page comes from the panels it registers, and
+it never runs. Installed (sideloaded or catalog) modules read the same at hub start when their
+installed manifest asks for a newer hub (the hub went back a version); installing such a version
+is still refused (`manifest.hub`, install step 6), so the version that runs stays.
+
 ## Pipe names: one set per hub folder (#1010)
 
 A lab hub and the user's hub can run side by side: every pipe and kernel object a hub names
@@ -178,6 +191,16 @@ passes. The accessible tree is built only after the first request. `hideout.log`
 | `open-flyout` / `close-flyout` | A tray click if the flyout is closed / Esc into the flyout if it is open. |
 | `close-window` | Posts `WM_CLOSE` to the main window, which closes it to the tray. |
 | `set-setting <module> <name> <value>` | Changes a module setting in the main window's next frame through the Settings form's own path (`settings.set` to the module), for a field a script can't type into (a file picker). The value is JSON when it parses (`10`, `true`), else text (a path). |
+| `update-ready <module> [<reason>]` | (#1096) **Update ready**: stages an update of the running lab module through the supervisor's update step; its `module.drain` answer reads as busy with `<reason>` (default "a lab check"). Answers `{"module", "state": "update-busy"}` once the state is reached. |
+| `update-waiting <module> <permission>...` | (#1096) **Update waiting for you**: an update that adds those permissions (`devices.read`), so it waits for Review. No drain. |
+| `updating <module>` | (#1096) **Updating…**: the drain answer reads as done; the old instance gets `module.exit` (5 s, then its job ends, not a crash) and the new one starts. |
+| `quarantine <module>` | (#1096) Quarantines the module's panels in the main window's next frame (the panel host's own quarantine), which hands it to the supervisor as a broken panel does: `quarantined`, the card, the module stopped. Answers the supervisor's state after it. |
+
+The four state verbs are lab only twice over: lab control is served by a lab hub only, and the
+supervisor refuses them unless lab mode is on for the folder and the module is a lab module
+(`<config>\lab-modules\<id>\`). The user's hub never sets them. The update verbs answer once the
+state is reached (each policy step wakes the wait); a module that never answers its drain is
+answered for by the router's 30 s call timeout, so a verb can take that long, and gives up at 35 s.
 
 An action answers after the pass that took it and the frame after that (at most 2 s + 0.5 s; an
 action no pass took is dropped). A window that isn't on screen is refused at once.
@@ -206,7 +229,7 @@ refuses the user's hub folder.
 $env:FOXGLOVE_APP_OK = '1'
 python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --start
 # Against a lab hub that already runs (HIDEOUT_LAB=1, HIDEOUT_LAB_CAPTURE=1): leave out --start.
-# One group only: --only flyout, --only pages or --only supervisor.
+# One group only: --only flyout, --only pages, --only supervisor or --only states.
 ```
 
 **Automated now** (step numbers from the PRs' lab steps):
@@ -237,6 +260,18 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
   leaves the tray menu's status line alone, then the page comes back live. Five kills show the
   stopped card with Start again focused and Copy diagnostics, and the tray menu names the module.
   Esc changes nothing; Enter starts it again.
+- #1093 2 (`--only states`, #1096): a lab module whose `module.toml` asks for a newer hub is
+  listed (`hideout.log`: `lab: <id>: listed from …, needs hub 1.9 …; not started`), never runs,
+  its Modules row reads Needs a newer Hideout with Update Hideout, and the tray menu names it.
+  BLOCKED unless one lab module's `module.toml` says `hub = "1.9"` before the hub starts.
+- #1093 3: on the Focus timer, `update-ready` shows Update ready / "Waits until you finish a lab
+  check" / Force / Not now; Not now clears it; Update ready again and Force swaps (Updating…,
+  then live); `update-waiting … devices.read` shows Update waiting for you with the permission,
+  Review greyed and Not now; `updating` shows "Updating… Your place on this page is kept." and
+  then the page is live again.
+- #1093 4: `quarantine` on OBS (else iCUE or Mic mute) shows "<Module>'s page couldn't be shown"
+  / "Hideout stopped twice while drawing it." with Start again focused, the tray stays quiet,
+  and Enter (Start again) runs it again with its page released.
 
 **Still needs a human** (one check each; these stay in #90):
 1. A real click on the tray icon opens the flyout, and a real double click opens the window
@@ -246,7 +281,8 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
 4. The taskbar on the top, left and right, or a second monitor at another scale: the flyout
    follows.
 5. The flyout has no taskbar button.
-6. Update Hideout opens the releases page in the browser (needs a module that needs a newer hub).
+6. Update Hideout opens the releases page in the browser (a lab module with `hub = "1.9"` gives
+   the row, #1096).
 7. The stopped toast shows, and its Start again and Open <Module> work.
 8. #996's visual steps: the room map moves smoothly, pauses when minimised or on another tab,
    and follows "animation effects" off.
