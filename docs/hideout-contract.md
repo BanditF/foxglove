@@ -1,7 +1,9 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.11** (v1.10 plus a catalog entry's optional `min_hub_release`,
-the Hideout release Update Hideout links, #991; v1.10 was v1.9 plus the manifest's `[limits]` and the rules of
+Status: spec, contract version **1.12** (v1.11 plus the hub's host services: the network broker
+`net.*` and the microphone, `mic.*` and `audio.inputs.set_mute`, #1102; v1.11 was v1.10 plus a
+catalog entry's optional `min_hub_release`, the Hideout release Update Hideout links, #991; v1.10
+was v1.9 plus the manifest's `[limits]` and the rules of
 the activation events `open`, `fact:`, `app:` and `device:`, #983; v1.9 was v1.8 plus the state
 `revoked` and its card's fact `module.<id>.check`, #1026; v1.8 was v1.7 plus the last spec items of #918: the canvas-shape
 and table-row caps, which stream overs are refused and which closed, when the backoff run resets,
@@ -9,12 +11,31 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.12** (#1102): the hub's host services: the calls the first-party plugins already make
+  through Foxglove's API (1.2, 1.3), which the hub answered −32601. **Network** (§8.10):
+  `net.open {kind, host, port}` → `{stream}`, `net.send {stream, data}`, `net.close {stream}`
+  and the events `net.data`, `net.accepted` and `net.closed`, on the wire Foxglove API 1.3 and
+  the SDK use. The hub opens what the caller's grant names (`net.connect:<host>:<port|*>`,
+  `net.listen:udp|tcp:127.0.0.1:<port>`, or `net`), so a contained module (§7.7) reaches exactly
+  that; at most 16 streams a connection and 256 in the hub; every stream ends with its
+  connection. **Microphone** (§8.11): the hub follows the default communications microphone
+  through Core Audio's callbacks and publishes `mic.state`, `mic.endpoint_id`,
+  `mic.endpoint_name` and `mic.error` (hub facts, read with `audio.inputs.read`);
+  `audio.inputs.set_mute {muted}` needs `audio.inputs.mute`. `net.*` and `audio.inputs.*` join
+  the methods only the hub answers (§8.3), `mic.*` the facts only the hub writes. New error ids
+  (§15): `net.denied`, `net.argument`, `net.stream`, `net.io`, `net.limit`, `audio.denied`,
+  `audio.unavailable` and `audio.backend`. `hub` is 1.3 (§8.7): new hub messages, no manifest
+  key; a module that needs them says `hub = "1.3"`, and an older hub lists it needs-hub instead
+  of running it into −32601. Spec 1.11 (#991) stayed `hub` 1.2. Vectors: `transcripts/net/open-refused.json`,
+  `transcripts/net/stream-refused.json` and `transcripts/audio/set-mute-refused.json`;
+  `manifests/invalid/hub-newer-minor*.toml` now say `1.4`, and the hub's `initialize` results
+  say `1.3`.
 - **1.11** (#991): the Hideout release a module version needs. A catalog entry may carry the
   optional `min_hub_release` `{version, url}`: the first Hideout release that serves this
   module version, and that release's page (§12.4). **Update Hideout** on a Needs a newer
@@ -1614,7 +1635,9 @@ Rules:
 - The old `\\.\pipe\foxglove-<user>` is served as an alias once `foxglove.exe` no longer owns it
   (§8.6).
 - **No network listener** in the hub. Loopback WebSockets stay opt-in adapters inside modules,
-  with a per-install token. Tailnet exposure is Vulpes-only and MUST NOT forward to the hub's
+  with a per-install token. (v1.12) The one exception is a module's own granted loopback
+  listen, which the network broker opens for it (§8.10): `127.0.0.1` only, the port its grant
+  names, and the connections go to that module alone. Tailnet exposure is Vulpes-only and MUST NOT forward to the hub's
   pipe.
 
 ### 8.3 Routing (control plane)
@@ -1625,6 +1648,10 @@ Rules:
 - **Facts** go through the hub's cache: modules publish with `facts.set`, subscribers and panels
   get `facts.changed`.
 - The hub carries control and status only. Fast data uses channels.
+- **Host services (v1.12)** are methods the hub answers itself: the network broker `net.*`
+  (§8.10) and the microphone `audio.inputs.*` (§8.11). No module may provide them (§6.3: they are
+  rejected at `module.register` with `permission.provider`), and a hub without one answers
+  −32601. `mic.*` facts are the hub's: `facts.set` on one is refused (error 5).
 
 ### 8.4 Direct channels (data plane)
 
@@ -1760,7 +1787,9 @@ and a hub-owned `hideout.toml` table, no message or manifest key). The hub answe
   with its own `hub`. (v1.10) Spec 1.7 to 1.9 stay `hub` 1.1; spec 1.10 is `hub` 1.2 (the
   manifest key `[limits]`). A hub 1.2 reader accepts `1.0`, `1.1` and `1.2`. (v1.11) Spec
   1.11 stays `hub` 1.2: its one addition is an optional catalog entry field, which a reader
-  that doesn't know it ignores (catalog entries ignore unknown fields, §12.4).
+  that doesn't know it ignores (catalog entries ignore unknown fields, §12.4). (v1.12) Spec
+  1.12 is `hub` 1.3 (the host services' messages, §8.10, §8.11). A hub 1.3 reader accepts `1.0`
+  to `1.3`.
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
 - A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
@@ -1816,6 +1845,18 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `channel.open` | C → H | call | `{module, channel}` | `{pipe, nonce}` | `channel.open:<module>/<channel>` |
 | `channel.create` | H → M | call | `{channel, consumer, nonce}` | `{pipe}` | the provider offers it |
 
+**Host services (v1.12)**
+
+| Message | From → to | Kind | Params | Result | Needs |
+|---|---|---|---|---|---|
+| `net.open` | C → H | call | `{kind: "tcp" \| "udp" \| "tcp-listen", host, port}` | `{stream}` | `net.connect:<host>:<port>` (tcp), `net.listen:udp:127.0.0.1:<port>` (udp), `net.listen:tcp:127.0.0.1:<port>` (tcp-listen), or `net` |
+| `net.send` | C → H | call | `{stream, data}` (base64) | `{}` | the stream is the caller's |
+| `net.close` | C → H | call | `{stream}` | `{}` | — |
+| `net.data` | H → C | notification | `{stream, data, from?}` | — | the stream's holder only |
+| `net.accepted` | H → C | notification | `{listener, stream, from}` | — | the listener's holder only |
+| `net.closed` | H → C | notification | `{stream, reason}` | — | the stream's holder only |
+| `audio.inputs.set_mute` | C → H | call | `{muted}` | `{}` | `audio.inputs.mute` |
+
 **Module management**
 
 | Message | From → to | Kind | Params | Result | Needs |
@@ -1829,7 +1870,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 (§8.5); the hub delivers it only to that lease's holder.
 
 **Facts the hub publishes:** `module.<id>.state`, `module.<id>.reason`, `module.<id>.version`,
-(v1.4) `module.<id>.restart` and `module.<id>.recovery` (§7.8), (v1.6) `module.<id>.revoked` (§7.8), `hub.safe_mode`. Facts about private modules never reach MCP or the tailnet by default (§13.5).
+(v1.4) `module.<id>.restart` and `module.<id>.recovery` (§7.8), (v1.6) `module.<id>.revoked` (§7.8), `hub.safe_mode`, (v1.12) `mic.state`, `mic.endpoint_id`, `mic.endpoint_name` and `mic.error` (§8.11). Facts about private modules never reach MCP or the tailnet by default (§13.5).
 
 **Provider methods** (lighting, screens, art, GPU and the rest) are the providers' own API and
 are listed in their API docs (local-api.md for Foxglove; §8.9 for the GPU).
@@ -1850,6 +1891,96 @@ Provided by the Vulpes module.
   Free GPU action or panel button (`action.invoke` or `ui.event` with a user source).
 - Gaming is a shared signal: Vulpes publishes `gpu.reserved`, the link publishes
   `keyboard.game_mode`; neither acts on the other's alone.
+
+### 8.10 The network broker (v1.12, #1102)
+
+The hub opens network connections for modules, so a module needs no network of its own: a
+contained module (§7.7) has none, and through the hub it reaches exactly what its grant names.
+The wire is Foxglove API 1.2 and 1.3's, unchanged, which the SDK (`foxglove-plugin`'s `net`) and
+the first-party plugins already speak. Any connection may call it (a module, a bridged plugin,
+an outside tool); the grant decides.
+
+- **`net.open {kind, host, port}`** answers `{stream}`, a new stream of the caller's.
+  - `tcp`: a TCP connection to `host`:`port`. Needs a `net.connect:<host>:<port>` or
+    `net.connect:<host>:*` that covers it. `host` is matched as written, ASCII case ignored,
+    never after resolving it: `127.0.0.1` and `localhost` are two hosts. `*.example.com`
+    covers every name ending in `.example.com`, not `example.com` itself; a bare `*` host is
+    not a permission (`permission.argument`, §6.1). The hub resolves `host` and tries each
+    address in turn, at most 10 s for each connect.
+  - `udp`: datagrams sent to `127.0.0.1`:`port`, received only. `host` MUST be `127.0.0.1`.
+    Needs `net.listen:udp:127.0.0.1:<port>`.
+  - `tcp-listen`: accepts TCP connections on `127.0.0.1`:`port`. `host` MUST be `127.0.0.1`.
+    Needs `net.listen:tcp:127.0.0.1:<port>`. Each connection arrives as `net.accepted` with a
+    stream of its own, then flows as any `tcp` stream.
+  - `net` (unrestricted network, §6.1) covers each of the three.
+  - Port 0, another `kind`, a missing field, or a listen on any host but `127.0.0.1` answers
+    −32602 with `data.id` `net.argument`. A grant that doesn't cover it answers error 5
+    `net.denied`, its `data.reason` naming the permission it needs. A host that doesn't
+    resolve, a refused or timed-out connect, or a port already taken answers error 6 `net.io`
+    with the OS's words.
+- **`net.send {stream, data}`** writes `data` (base64) to a `tcp` stream (connected or accepted)
+  and answers `{}` once written. A stream the caller doesn't hold, a `udp` stream or a listener
+  answers −32602 `net.stream`; bad base64 −32602 `net.argument`; a failed write (or one blocked
+  for 10 s) error 6 `net.io`, and the stream ends with `net.closed`.
+- **`net.close {stream}`** ends the stream and answers `{}`, also for a stream that already
+  ended (the SDK closes on drop). Closing a listener stops accepting; the connections it
+  accepted stay. No `net.closed` follows a close the caller asked for.
+- **Events** go only to the connection that holds the stream, never broadcast:
+  - `net.data {stream, data, from?}`: bytes that arrived, base64: at most 16 KiB of bytes in one
+    event for `tcp`; one datagram (at most 64 KiB) for `udp`, with `from` (`<ip>:<port>`), the
+    sender.
+  - `net.accepted {listener, stream, from}`: a listener accepted a connection from `from`; sent
+    before any `net.data` of that stream.
+  - `net.closed {stream, reason}`: the stream ended other than by `net.close`: the other side
+    closed it, an error, or a cap below. Once per stream; `reason` is plain words for the log.
+
+  An event MAY arrive before the `net.open` answer that names its stream; a client keeps it
+  until it knows the stream (the SDK does).
+- **Stream ids** are per connection: whole numbers from 1 upward, never reused on that
+  connection. Another connection's ids mean nothing on this one (`net.stream`).
+- **Limits.** At most 16 open streams per connection (listeners, accepted connections and opens
+  still connecting count) and 256 in the hub. A `net.open` over either answers error 8
+  `net.limit`; a connection a listener accepts over a cap is closed at once and never
+  announced. When more than 8 MiB of a connection's messages wait to be written to it (its
+  client isn't reading), a stream whose data can't be queued ends with `net.closed` ("the
+  module isn't reading"). The line cap (§8.1) bounds one `net.send` (about 192 KiB of bytes).
+- **Clean-up.** Every stream a connection holds (connected, listening, accepted, or still
+  connecting) ends when the connection ends: the module exits, crashes, is stopped or swapped
+  (§7.6, §7.7), or a tool disconnects. Nothing is sent for them, and a connect that finishes
+  afterwards is closed at once. The grant is checked at `net.open`; a changed grant comes with a
+  restart (§6.4).
+- **No polling.** Each stream waits on the OS (a blocking read, accept or receive, woken by its
+  data or by its close); nothing runs on a timer. The connect and write timeouts are fallbacks
+  only.
+
+### 8.11 The microphone (v1.12, #1102)
+
+The hub follows the **default communications microphone** (Core Audio's default `eCapture`
+endpoint for the `eCommunications` role) and its endpoint mute, the switch Windows' own mute
+toggles. That isn't a privacy guarantee: apps can mute themselves, and exclusive-mode streams
+bypass it.
+
+- **Facts** (the hub's: no module writes `mic.*`, §8.3), read with `audio.inputs.read` (it
+  covers `mic.*`) or a `facts.read:` grant:
+  - `mic.state`: `"muted"`, `"unmuted"`, `"unavailable"` (no active capture endpoint) or
+    `"unknown"` (it couldn't be read; never shown as muted).
+  - `mic.endpoint_id`, `mic.endpoint_name`: the endpoint's Core Audio id and friendly name;
+    removed while `unavailable`.
+  - `mic.error`: plain words while `unknown`; removed otherwise.
+
+  They are set at hub start, before the supervisor starts any module, and after every change.
+- **Changes come from Core Audio's callbacks, never polling.** `IMMNotificationClient`: a new
+  default capture endpoint for `eCommunications`, or a device added, removed or changing state;
+  the hub reads the default endpoint again, moves its `IAudioEndpointVolumeCallback` to it and
+  publishes the facts. `OnNotify` on the current endpoint: its mute sets `mic.state`.
+- **`audio.inputs.set_mute {muted}`** (needs `audio.inputs.mute`) mutes or unmutes the current
+  default endpoint and answers `{}` once Windows took it. The hub passes its own event-context
+  GUID to `SetMute`, publishes the new `mic.state` itself, and skips the `OnNotify` echo that
+  carries its GUID; a change made by anyone else (Windows' own mute, another app) arrives
+  through `OnNotify`. No endpoint: error 6 `audio.unavailable`; Windows refused, or Core Audio
+  can't be reached: error 6 `audio.backend`; without the permission: error 5 `audio.denied`. A
+  `muted` that isn't a boolean: −32602.
+- A hub that can't reach Core Audio publishes `mic.state` `"unknown"` with `mic.error`.
 
 ## 9. The MCP bridge
 
@@ -2232,6 +2363,14 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `trust.sideload-scope` | a sideloaded module uses a first-party id |
 | `rpc.duplicate-request-id` | (v1.2) a request id already in flight on the connection: error -32600, id null (§8.1) |
 | `rpc.frame-too-large` | (v1.2) a line over 256 KiB: error -32600, id null, then the channel closes (§8.1) |
+| `net.denied` | (v1.12) `net.open` without the grant its kind needs: error 5 (§8.10) |
+| `net.argument` | (v1.12) a `net.open` kind, host or port the broker doesn't take, or bad base64 in `net.send`: −32602 (§8.10) |
+| `net.stream` | (v1.12) `net.send` to a stream the caller doesn't hold, a `udp` stream or a listener: −32602 (§8.10) |
+| `net.io` | (v1.12) the network refused: resolve, connect, bind or write failed: error 6 (§8.10) |
+| `net.limit` | (v1.12) over 16 streams on the connection or 256 in the hub: error 8 (§8.10) |
+| `audio.denied` | (v1.12) `audio.inputs.set_mute` without `audio.inputs.mute`: error 5 (§8.11) |
+| `audio.unavailable` | (v1.12) `audio.inputs.set_mute` with no default communications microphone: error 6 (§8.11) |
+| `audio.backend` | (v1.12) Core Audio refused the change or can't be reached: error 6 (§8.11) |
 | `channel.pipe` | (v1.4, #977) a provider answered `channel.create` with no pipe or one that is not `\\.\pipe\hideout-ch-<rest>`: the consumer gets error 6 with this `data.id` (§8.4) |
 | `rpc.*` | JSON-RPC transcripts use the numeric codes of §8.1; the two ids above travel in the error's `data.id` |
 
@@ -2252,7 +2391,9 @@ and invalid one each, a stream in a tile, a whole and a split multibyte text fra
 `manifests/invalid/when-apps-running-with-exe.toml` and `transcripts/ui/asset-put-refused.json`;
 v1.8: `panels/valid/at-cap-*.json` and `panels/invalid/over-cap-*.json`, each page cap at the cap
 and one over, and `transcripts/supervisor/backoff-resets-after-quiet.json`; v1.11:
-`trust/hub-release.json`, a catalog entry's `min_hub_release` and the page Update Hideout opens). The vectors are
+`trust/hub-release.json`, a catalog entry's `min_hub_release` and the page Update Hideout opens; v1.12:
+`transcripts/net/open-refused.json`, `transcripts/net/stream-refused.json` and
+`transcripts/audio/set-mute-refused.json`). The vectors are
 edited by hand, each in the PR that changes its result: the generator #914 used was never
 committed (`**/tools/*` is git-ignored) and no copy survives. A future generator lives at a tracked
 path (`scripts/`).

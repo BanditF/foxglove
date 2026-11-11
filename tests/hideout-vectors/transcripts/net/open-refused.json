@@ -1,0 +1,222 @@
+{
+  "name": "open-refused",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.10",
+    "6.1",
+    "15"
+  ],
+  "description": "net.open is checked against the caller's grant before the hub opens anything. The module holds net.connect:127.0.0.1:4455, net.connect:*.example.test:* and net.listen:udp:127.0.0.1:5568. Another port, another spelling of the host, the bare domain of a wildcard, or a listen it wasn't granted answers error 5 net.denied; port 0 and a listen on any host but 127.0.0.1 answer -32602 net.argument.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "net.open",
+        "params": {
+          "kind": "tcp",
+          "host": "127.0.0.1",
+          "port": 4456
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "id": "net.denied",
+            "reason": "Example Art needs permission net.connect:127.0.0.1:4456 to open 127.0.0.1:4456. Allow it in Hideout's permissions for Example Art."
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "net.open",
+        "params": {
+          "kind": "tcp",
+          "host": "localhost",
+          "port": 4455
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "id": "net.denied",
+            "reason": "Example Art needs permission net.connect:localhost:4455 to open localhost:4455. Allow it in Hideout's permissions for Example Art."
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "net.open",
+        "params": {
+          "kind": "tcp",
+          "host": "example.test",
+          "port": 443
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "id": "net.denied",
+            "reason": "Example Art needs permission net.connect:example.test:443 to open example.test:443. Allow it in Hideout's permissions for Example Art."
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "net.open",
+        "params": {
+          "kind": "udp",
+          "host": "127.0.0.1",
+          "port": 5569
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "id": "net.denied",
+            "reason": "Example Art needs permission net.listen:udp:127.0.0.1:5569 to open 127.0.0.1:5569. Allow it in Hideout's permissions for Example Art."
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "net.open",
+        "params": {
+          "kind": "tcp-listen",
+          "host": "127.0.0.1",
+          "port": 47911
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "id": "net.denied",
+            "reason": "Example Art needs permission net.listen:tcp:127.0.0.1:47911 to open 127.0.0.1:47911. Allow it in Hideout's permissions for Example Art."
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "net.open",
+        "params": {
+          "kind": "udp",
+          "host": "0.0.0.0",
+          "port": 5568
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "error": {
+          "code": -32602,
+          "message": "invalid params",
+          "data": {
+            "id": "net.argument",
+            "reason": "net.open: a udp or tcp-listen stream is on 127.0.0.1 only"
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "net.open",
+        "params": {
+          "kind": "tcp",
+          "host": "127.0.0.1",
+          "port": 0
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "error": {
+          "code": -32602,
+          "message": "invalid params",
+          "data": {
+            "id": "net.argument",
+            "reason": "net.open: port 0 is not a port"
+          }
+        }
+      }
+    }
+  ]
+}

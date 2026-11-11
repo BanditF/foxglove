@@ -186,6 +186,21 @@ pub fn start(
     let (events, rx) = mpsc::channel();
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(suffix);
+    // The host services (§8.10, §8.11, #1102): the network broker, and the microphone unless
+    // HIDEOUT_DISABLE lists `mic`. Its first facts are in before any module starts.
+    let mic = !std::env::var("HIDEOUT_DISABLE")
+        .unwrap_or_default()
+        .split(',')
+        .any(|s| s.trim().eq_ignore_ascii_case("mic"));
+    hideout_services::start(&hub, mic);
+    log::info!(
+        "router: host services: net{}",
+        if mic {
+            ", mic"
+        } else {
+            " (mic off: HIDEOUT_DISABLE)"
+        }
+    );
     let (side, feed) = panel_feed::feed(hub.clone());
     // `hideout.appwatch` (§4.6, v1.7): only the apps the manifests ask about, by name from the
     // manifests; with none it doesn't run. Its facts go through the router like any hub fact.

@@ -5,7 +5,7 @@ name = "OpenRGB"
 version = "1.0.0"
 kind = "service"
 family = "foxglove"
-hub = "1.0"
+hub = "1.3"
 transport = "stdio"
 api = { foxglove = "1.3" }
 run = ["openrgb-e131.exe"]

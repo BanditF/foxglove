@@ -28,6 +28,9 @@ pub const HOST_CONSUMER: &str = "hub.panel-host";
 mod activation;
 pub use activation::Triggers;
 
+mod services;
+pub use services::{all_methods as host_methods, ServiceCall, ServiceError};
+
 mod code {
     pub const PARSE: i64 = -32700;
     pub const INVALID_REQUEST: i64 = -32600;
@@ -102,6 +105,12 @@ pub enum Out {
         call: u64,
         params: Value,
     },
+    /// A host-service call (§8.10, §8.11, v1.12), already checked, for the hub's services: they
+    /// answer it with [`Router::service_answer`].
+    Service(ServiceCall),
+    /// A connection ended (v1.12): the hub's services end what it held (its network streams).
+    /// Sent only while the hub serves a host service.
+    ServiceGone(ConnId),
     /// The answer to [`Router::call_module`].
     HubResult {
         tag: u64,
@@ -325,6 +334,8 @@ pub struct Router {
     next_host_call: u64,
     /// Each module's `open` and fact activation events (§4.6, v1.10), from its manifest.
     triggers: BTreeMap<String, Triggers>,
+    /// The host-service methods the hub serves (§8.3, v1.12); see [`Router::serve`].
+    services: std::collections::BTreeSet<String>,
 }
 
 /// The file in a v1 plugin's settings folder where the hub keeps the values the user changed.
@@ -378,6 +389,7 @@ impl Router {
             host_calls: HashMap::new(),
             next_host_call: 1,
             triggers: BTreeMap::new(),
+            services: Default::default(),
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -829,6 +841,10 @@ impl Router {
         let Some(c) = self.conns.remove(&conn) else {
             return out;
         };
+        // Its network streams end with it (§8.10, v1.12).
+        if !self.services.is_empty() {
+            out.push(Out::ServiceGone(conn));
+        }
         self.subs.retain(|_, (owner, _)| *owner != conn);
         // Leases it held end: tell each provider (§8.5).
         let held: Vec<(String, String)> = self
@@ -1168,6 +1184,10 @@ impl Router {
                 _ => out.push(answer(denied(&id, None))),
             },
             "channel.open" => self.channel_open(conn, &who, &caps, id, &params, now, out),
+            // The hub's host services (§8.10, §8.11, v1.12).
+            m if self.services.contains(m) => {
+                self.service_call(conn, &who, &caps, id, m, params, now, out)
+            }
             m if HUB_OWNED.iter().any(|p| covers(p, m)) => out.push(answer(error(
                 &id,
                 code::METHOD_NOT_FOUND,
@@ -1805,7 +1825,8 @@ impl Router {
                         .any(|r| r.module == m && key_matches(&r.pattern, &key))
                 });
                 // The app watch's facts are the hub's too (§4.6, v1.7).
-                let hub_fact = ["module.", "hub.", "apps."]
+                // (v1.12) So are the microphone's `mic.*` (§8.11).
+                let hub_fact = ["module.", "hub.", "apps.", "mic."]
                     .iter()
                     .any(|p| key.starts_with(p));
                 // `facts.write` never covers device.* (§6.6); a registered owner may.

@@ -14,6 +14,7 @@
 //! - [`release`]: a catalog entry's `min_hub_release` and the page Update Hideout opens (§12.4,
 //!   v1.11)
 //! - [`error`]: the §15 error ids
+//! - [`services`]: the hub's host services, the network broker and the microphone (§8.10, §8.11)
 //!
 //! `foxglove-plugin-api` re-exports this crate, so plugins built against it are unchanged.
 
@@ -28,16 +29,18 @@ pub mod module;
 pub mod panel;
 pub mod permission;
 pub mod release;
+pub mod services;
 
 pub use error::{Error, ErrorId};
 
 /// The contract version this crate reads (`hub` in a manifest, §8.7). 1.1 since spec v1.4 (a
-/// `file` setting kind and its `filter` key).
-pub const HUB_VERSION: Version = Version { major: 1, minor: 2 };
+/// `file` setting kind and its `filter` key); 1.2 since spec v1.10 (`[limits]`); 1.3 since spec
+/// v1.12 (the host services' messages, §8.10, §8.11).
+pub const HUB_VERSION: Version = Version { major: 1, minor: 3 };
 
 /// The spec version this crate implements (docs/hideout-contract.md's status line, the test
 /// vectors' `index.json` and README). A drift test keeps them equal.
-pub const SPEC_VERSION: &str = "1.11";
+pub const SPEC_VERSION: &str = "1.12";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];
@@ -162,6 +165,15 @@ pub fn schema() -> serde_json::Value {
         config::Config,
         config::Windows,
         release::HubRelease,
+        services::NetKind,
+        services::NetOpen,
+        services::NetStream,
+        services::NetSend,
+        services::NetData,
+        services::NetAccepted,
+        services::NetClosed,
+        services::SetMute,
+        services::MicState,
     );
     serde_json::json!({
         "hub": HUB_VERSION.to_string(),
@@ -192,6 +204,15 @@ pub fn schema() -> serde_json::Value {
             "nodes": panel::STREAM_NODES,
             "text_bytes": panel::STREAM_TEXT_BYTES,
             "reopen_s": panel::STREAM_REOPEN_S,
+        },
+        // The network broker's caps (§8.10, spec v1.12).
+        "net": {
+            "streams_per_connection": services::NET_STREAMS_PER_CONNECTION,
+            "streams_per_hub": services::NET_STREAMS_PER_HUB,
+            "read_chunk": services::NET_READ_CHUNK,
+            "datagram": services::NET_DATAGRAM,
+            "timeout_s": services::NET_TIMEOUT_S,
+            "backlog_bytes": services::NET_BACKLOG_BYTES,
         },
         "types": types,
     })
@@ -312,7 +333,8 @@ mod tests {
 
     #[test]
     fn versions() {
-        assert_eq!(Version::parse("1.2"), Some(HUB_VERSION));
+        assert_eq!(Version::parse("1.3"), Some(HUB_VERSION));
+        assert!(Version::parse("1.2").unwrap().served_by(HUB_VERSION));
         assert!(Version::parse("1.1").unwrap().served_by(HUB_VERSION));
         assert!(Version::parse("1.0").unwrap().served_by(HUB_VERSION));
         assert_eq!(Version::parse("1.0.0"), None);

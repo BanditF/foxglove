@@ -1,8 +1,8 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.11",
-  "reader_hub": "1.2",
+  "contract": "1.12",
+  "reader_hub": "1.3",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
   "vectors": {
@@ -574,7 +574,7 @@
       ],
       "result": "invalid",
       "id": "manifest.hub",
-      "note": "Written for a newer minor than a v1.0 reader serves. (v1.4: this reader serves 1.1, so the vector said 1.2; v1.10: it serves 1.2, so the vector says 1.3.)"
+      "note": "Written for a newer minor than a v1.0 reader serves. (v1.4: this reader serves 1.1, so the vector said 1.2; v1.10: it serves 1.2, so the vector said 1.3; v1.12: it serves 1.3, so the vector says 1.4.)"
     },
     "manifests/invalid/hub-newer-minor-new-key.toml": {
       "spec": [
@@ -4837,6 +4837,54 @@
       ],
       "result": "table",
       "note": "A catalog entry's min_hub_release {version, url} and the page Update Hideout opens: the url only on https://github.com/BanditF/foxglove/releases and below, else that releases page; a field that can't be read is ignored, never a catalog error. (v1.11)"
+    },
+    "transcripts/audio/set-mute-refused.json": {
+      "spec": [
+        "8.11",
+        "8.3"
+      ],
+      "note": "audio.inputs.set_mute without audio.inputs.mute is error 5 audio.denied; mic.* facts are the hub's (v1.12).",
+      "result": "valid",
+      "final": {
+        "errors": [
+          5,
+          5
+        ]
+      }
+    },
+    "transcripts/net/open-refused.json": {
+      "spec": [
+        "8.10",
+        "6.1"
+      ],
+      "note": "net.open checked against the grant: net.denied (error 5) for another port, host spelling, wildcard's bare domain or an ungranted listen; net.argument (-32602) for port 0 or a listen off 127.0.0.1 (v1.12).",
+      "result": "valid",
+      "final": {
+        "errors": [
+          5,
+          5,
+          5,
+          5,
+          5,
+          -32602,
+          -32602
+        ]
+      }
+    },
+    "transcripts/net/stream-refused.json": {
+      "spec": [
+        "8.10"
+      ],
+      "note": "Per-connection stream ids: net.send to a stream not held or to a udp stream is net.stream (-32602); bad base64 net.argument; net.close of a missing stream answers {} (v1.12). Run by crates/hideout-services/tests/net.rs (the broker answers it).",
+      "result": "valid",
+      "final": {
+        "errors": [
+          -32602,
+          -32602,
+          -32602,
+          -32602
+        ]
+      }
     }
   }
 }

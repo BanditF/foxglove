@@ -3,6 +3,6 @@ name = "Example Art"
 version = "0.4.0"
 kind = "service"
 family = "foxglove"
-hub = "1.3"
+hub = "1.4"
 run = ["example-art.exe"]
 some_future_key = true

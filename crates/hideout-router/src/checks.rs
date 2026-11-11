@@ -18,6 +18,9 @@ pub const HUB_OWNED: &[&str] = &[
     "state.*",
     "settings.*",
     "action.*",
+    // The host services (§8.3, v1.12).
+    "net.*",
+    "audio.inputs.*",
 ];
 
 /// Method areas a first-party catalog assigns (§6.3): a third-party or private module never
