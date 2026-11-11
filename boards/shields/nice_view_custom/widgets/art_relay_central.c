@@ -2121,6 +2121,19 @@ static uint8_t look_forced[RGB_IDLE_LOOK_SIZE];
 static atomic_t look_forced_valid;
 static uint8_t rgb_retries;
 static atomic_t hsb_sent = ATOMIC_INIT(-1); // the PC colour the right last acknowledged (#266)
+// The look the right confirmed on this link (#945): the RGB op's write response carried it, and a
+// PC colour's (hsb_cb) since then its hue, saturation and brightness. A report with another look
+// before the right confirmed the left's is the right ahead of the op (the link-up's, a key's, the
+// PC's), not a drift: only a right that confirmed the look and then shows another one counts.
+static uint8_t look_acked[RGB_IDLE_LOOK_SIZE];
+static atomic_t look_acked_valid;
+static bool hsb_in_flight(void);
+
+static void look_acked_set(const uint8_t look[RGB_IDLE_LOOK_SIZE], size_t n) {
+    atomic_clear(&look_acked_valid); // a Bluetooth-thread reader skips a half-written copy
+    memcpy(look_acked, look, n);
+    atomic_set(&look_acked_valid, 1);
+}
 
 // The RGB op as the right should have it now; false when the on/off can't be read. Any thread.
 static bool rgb_op(uint8_t buf[sizeof(rgb_sent)], uint8_t *len) {
@@ -2161,7 +2174,8 @@ static void lane_rgb(struct bt_conn *conn, uint16_t handle) {
 static void rgb_sync_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     bool synced = true;
-    if (atomic_clear(&rgb_force)) {
+    bool forced = atomic_clear(&rgb_force);
+    if (forced) {
         rgb_sent_valid = false; // the right doesn't show what it confirmed (#624)
     }
     uint8_t buf[sizeof(rgb_sent)];
@@ -2180,6 +2194,12 @@ static void rgb_sync_cb(struct k_work *work) {
                 bool dim_changed = !rgb_sent_valid || memcmp(&buf[3], &rgb_sent[3], 5) != 0;
                 memcpy(rgb_sent, buf, sizeof(buf));
                 rgb_sent_valid = true;
+                look_acked_set(&buf[RGB_LOOK_AT], RGB_IDLE_LOOK_SIZE);
+                if (forced) {
+                    // One read to see the resync landed (#945): in step, rgb_reconcile re-arms
+                    // for the next drift. Starts at this answer, ends at the read's.
+                    k_work_submit_to_queue(&relay_q, &status_work);
+                }
                 if (dim_changed && IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)) {
                     dim_read(); // the PC hears once the right has the new levels
                 }
@@ -2205,6 +2225,7 @@ static void rgb_sync_link_up(void) {
     rgb_sent_valid = false;
     rgb_retries = 0;
     atomic_clear(&look_forced_valid); // a new link may need the look again
+    atomic_clear(&look_acked_valid);  // nothing confirmed on this link yet (#945)
     atomic_set(&hsb_sent, -1); // a new link: the right may have rebooted
     k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);
 }
@@ -2219,16 +2240,29 @@ static void rgb_reconcile(void) {
     rgb_idle_look(look);
     if (sys_get_le16(look) == right.rgb.hue && look[2] == right.rgb.saturation &&
         look[3] == right.rgb.brightness && look[4] == right.rgb.effect) {
+        // In step: a later drift, even back to the same look, gets the look again (#945). A right
+        // that ignores the look (older firmware) never gets here, so it isn't asked forever.
+        atomic_clear(&look_forced_valid);
         return;
+    }
+    bool acked = atomic_get(&look_acked_valid) && memcmp(look, look_acked, sizeof(look)) == 0;
+    if (!acked && (k_work_delayable_is_pending(&rgb_sync_work) || hsb_in_flight())) {
+        return; // the left's look is on its way: its answer confirms it (#945)
     }
     if (atomic_get(&look_forced_valid) && memcmp(look, look_forced, sizeof(look)) == 0) {
         return; // sent once for this look already
     }
-    health_inc(HEALTH_RGB_MISMATCHES); // the right shows another look than it was sent (#705)
+    if (acked) {
+        // The right confirmed this look and shows another (#705): a drift, such as an &rgb_ug
+        // step from ZMK's split queue landing after the relay's look.
+        health_inc(HEALTH_RGB_MISMATCHES);
+    }
+    // Unconfirmed with nothing on its way (the sync gave up: those failures count as
+    // light_sync_fails) is sent once more, not counted.
     memcpy(look_forced, look, sizeof(look));
     atomic_set(&look_forced_valid, 1);
     atomic_set(&rgb_force, 1);
-    k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, K_NO_WAIT);
+    k_work_schedule_for_queue(&relay_q, &rgb_sync_work, K_NO_WAIT);
 }
 
 void art_relay_rgb_kick(void) {
@@ -2291,6 +2325,14 @@ static void hsb_cb(struct k_work *work) {
     right.rgb.saturation = (want >> 8) & 0xff;
     right.rgb.brightness = want & 0xff;
     right_read_at = k_uptime_get();
+    if (atomic_get(&look_acked_valid)) { // the PC's colour on the confirmed effect (#945)
+        uint8_t look[RGB_IDLE_LOOK_SIZE];
+        memcpy(look, look_acked, sizeof(look));
+        sys_put_le16(want >> 16, look);
+        look[2] = (want >> 8) & 0xff;
+        look[3] = want & 0xff;
+        look_acked_set(look, sizeof(look));
+    }
     if (atomic_get(&hsb_want) != want) {
         k_work_reschedule_for_queue(&relay_q, dwork, K_NO_WAIT); // a newer one came meanwhile
     } else {
@@ -2298,6 +2340,12 @@ static void hsb_cb(struct k_work *work) {
     }
 }
 static K_WORK_DELAYABLE_DEFINE(hsb_work, hsb_cb);
+
+// A PC colour the right hasn't acknowledged yet, queued or being written (rgb_reconcile, #945).
+static bool hsb_in_flight(void) {
+    atomic_val_t want = atomic_get(&hsb_want);
+    return want >= 0 && want != atomic_get(&hsb_sent) && k_work_delayable_is_pending(&hsb_work);
+}
 
 int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness) {
     if (art_relay_link() < 2 || right_read_at == 0 || right.version < 5) {

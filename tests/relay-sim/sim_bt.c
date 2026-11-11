@@ -957,6 +957,12 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
         }
         right_update_lit();
         return 0;
+    case ART_RELAY_RGB_HSB: // the PC's colour (#266): zmk_rgb_underglow_set_hsb, the effect kept
+        if (len != 5) {
+            return BT_ATT_ERR_INVALID_ATTRIBUTE_LEN;
+        }
+        memcpy(sim_right.look, &d[1], 4);
+        return 0;
     case ART_RELAY_ACTIVITY:
         sim_right.left_activity = d[1];
         right_update_lit();
@@ -1045,6 +1051,12 @@ static void right_rx_cb(struct k_work *w) {
             }
             break;
         case P_REQ_WRITE:
+            if (p->handle == H_DATA && p->len && sim_bt_faults.ignore_count > 0 &&
+                sim_bt_faults.ignore_op == op) {
+                sim_bt_faults.ignore_count--;
+                sim_bt_stats.rsp_dropped++; // not applied, no response (#945)
+                break;
+            }
             respond(p->handle == H_DATA && p->len ? right_op(p->data, p->len) : 0, NULL, 0);
             break;
         case P_REQ_SUB: {
@@ -1290,6 +1302,8 @@ static void ring(uint8_t what) {
     ring_what |= what;
     k_work_submit_to_queue(&right_sys_q, &ring_work);
 }
+
+void sim_bt_right_ring_rgb(void) { ring(ART_RELAY_RANG_RGB); }
 
 static void right_animate(void *arg) {
     (void)arg;

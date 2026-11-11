@@ -43,7 +43,7 @@ enum health_counter {
     HEALTH_LIGHT_APPLIES,     // the PC's colour, frames or effect applied on this half
     HEALTH_LIGHT_SYNCS,       // left: RGB ops the right acknowledged; right: RGB ops taken
     HEALTH_LIGHT_SYNC_FAILS,  // left: RGB ops that failed (each retry counts)
-    HEALTH_RGB_MISMATCHES,    // left: a status read showed the right with another look (#624)
+    HEALTH_RGB_MISMATCHES,    // left: the right confirmed the look, then showed another (#624, #945)
     HEALTH_SPLIT_DROPS,       // split links that went down
     HEALTH_KNOB_EVENTS,       // left: knob events sent to the PC (D7 94 01, #719)
     HEALTH_KNOB_KEYS,         // left: fallback keys the knob tapped (detents, presses)
