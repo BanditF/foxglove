@@ -407,6 +407,9 @@ pub enum TabState {
     Live,
     /// Starting, updating or restarting: a ring round the mark. The words are the §7.8 ones.
     Busy(String),
+    /// Waiting for another module (§7.8, root cause once): the same ring, but the words are a
+    /// fact, not something in progress, so no "…" ("Art, waiting for Link").
+    Waiting(String),
     /// Crash-stopped, install failed, needs a newer hub, quarantined, couldn't be shown.
     Stopped(String),
     /// The module is turned off.
@@ -459,7 +462,7 @@ impl Look {
     }
 
     pub fn busy(&self) -> bool {
-        matches!(self.state, TabState::Busy(_))
+        matches!(self.state, TabState::Busy(_) | TabState::Waiting(_))
     }
 
     /// Popped out or off: the label is muted even on the active tab.
@@ -475,6 +478,7 @@ impl Look {
             // "Restarting… (2 of 5)" already has its ellipsis.
             TabState::Busy(w) if w.contains('\u{2026}') => parts.push(w.clone()),
             TabState::Busy(w) => parts.push(format!("{w}\u{2026}")),
+            TabState::Waiting(w) => parts.push(w.clone()),
             TabState::Stopped(w) => parts.push(w.clone()),
             TabState::Off => parts.push("Off".into()),
         }

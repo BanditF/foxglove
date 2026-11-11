@@ -20,6 +20,14 @@ pub const TILE_WIDTH: f32 = 228.0;
 /// `words::TILE_WITHDRAWN`: this crate can't depend on the supervisor, so a test in
 /// hideout-shell keeps the two equal.
 pub const TILE_WITHDRAWN: (&str, &str) = ("Version withdrawn", "by its publisher");
+/// A module in a hot swap (§7.6): its tile's state line. The supervisor's `words::UPDATING`
+/// (kept equal by the same hideout-shell test).
+pub const TILE_UPDATING: &str = "Updating\u{2026}";
+/// A running module waiting for another one (§7.8 `waiting`, root cause once): the supervisor's
+/// `words::waiting_for` (kept equal by a hideout-shell test).
+pub fn tile_waiting(root: &str) -> String {
+    format!("Waiting for {root}")
+}
 /// Tiles per row.
 pub const COLUMNS: usize = 2;
 
@@ -594,6 +602,7 @@ fn tile_ui_keyed(
             }
             if panel.is_none() {
                 let words = match current.as_deref() {
+                    Some("updating") => TILE_UPDATING,
                     Some(s) if s != "running" => crate::model::state_words(s),
                     _ => "Starting\u{2026}",
                 };
@@ -601,7 +610,24 @@ fn tile_ui_keyed(
                 ui.label(RichText::new(words).weak());
                 return;
             }
-            if let Some(s) = greyed.as_deref().filter(|s| *s != "restarting") {
+            // Waiting for another module (§7.8): the body stays live; one line names the root,
+            // never a mark of its own (root cause once).
+            if current.as_deref() == Some("waiting") {
+                let root = host
+                    .fact(&format!("module.{}.waiting", key.module))
+                    .and_then(|v| v.as_str())
+                    .map(|r| host.module_name(r));
+                let words = root.map_or_else(
+                    || crate::model::state_words("waiting").to_string(),
+                    |r| tile_waiting(&r),
+                );
+                spoken.push(words.clone());
+                ui.label(RichText::new(words).weak());
+            }
+            if current.as_deref() == Some("updating") {
+                spoken.push(TILE_UPDATING.into());
+                ui.label(RichText::new(TILE_UPDATING).weak());
+            } else if let Some(s) = greyed.as_deref().filter(|s| *s != "restarting") {
                 ui.label(RichText::new(crate::model::state_words(s)).weak());
             }
             let body = ui.scope(|ui| tile_body(host, ui, key, keys.press));
