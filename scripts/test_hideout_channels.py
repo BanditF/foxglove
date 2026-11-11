@@ -78,6 +78,210 @@ class WireVectors(unittest.TestCase):
                 self.assertEqual(channel.encode_panel(f).hex(), row["wire_hex"], "re-encodes byte for byte")
 
 
+SID = "S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844"
+NS = f"Sessions\\1\\AppContainerNamedObjects\\{SID}"
+
+
+class ContainedRules(unittest.TestCase):
+    """#1092, any platform: the ACL, the names in an AppContainer and whom a pipe admits."""
+
+    def test_app_container_sid(self):
+        self.assertTrue(channel.is_app_container_sid(SID))
+        for bad in ("S-1-5-21-1-2-3-1001", "S-1-15-2-", "S-1-15-2-1)(A;;GA;;;WD", None, "s-1-15-2-1"):
+            self.assertFalse(channel.is_app_container_sid(bad), bad)
+
+    def test_pipe_sddl(self):
+        me = "S-1-5-21-1-2-3-1001"
+        self.assertEqual(channel.pipe_sddl(me), f"D:P(A;;GA;;;{me})", "the user alone, no label")
+        self.assertEqual(channel.pipe_sddl(me, SID),
+                         f"D:P(A;;GA;;;{me})(A;;0x12019b;;;{SID})S:(ML;;NW;;;LW)",
+                         "client rights for the consumer's SID only, and a Low label")
+        for bad in ("S-1-15-2-1)(A;;GA;;;WD)", "WD", me):
+            with self.assertRaises(ValueError):
+                channel.pipe_sddl(me, bad)
+
+    def test_own_namespace_names(self):
+        plain = channel.PIPE_PREFIX + "4242-0-example.room-map-map"
+        self.assertEqual(channel.own_namespace_names(plain, None), (plain, plain))
+        make, full = channel.own_namespace_names(plain, NS)
+        self.assertEqual(make, "\\\\.\\pipe\\LOCAL\\hideout-ch-4242-0-example.room-map-map")
+        self.assertEqual(channel.parse_channel_pipe(full), (1, SID))
+        # The vectors' contained row is exactly what a contained provider answers.
+        row = next(r for r in _load("channels/channel-wire.json")["pipes"] if SID in r["pipe"] and r["result"] == "valid")
+        self.assertEqual(full, row["pipe"])
+        # A long name is cut to 256 and stays a valid name in its session.
+        long_ = channel.unique_pipe_name("m" * 200, "c" * 100)
+        make, full = channel.own_namespace_names(long_, NS)
+        self.assertEqual(len(full), channel.MAX_PIPE_NAME)
+        self.assertTrue(channel.is_channel_pipe_in(full, 1), full)
+        self.assertTrue(full.endswith(make[len("\\\\.\\pipe\\LOCAL\\"):]))
+
+    def test_admits_client(self):
+        def boom(pid):
+            raise PermissionError("no token")
+
+        C = channel.Consumer
+        self.assertIsNone(channel.admits_client(C(), 7, boom), "an older hub: the nonce decides")
+        self.assertIsNone(channel.admits_client(C(pid=7), 7, boom))
+        self.assertIn("not the consumer's 7", channel.admits_client(C(pid=7, sid=SID), 8, lambda p: SID))
+        self.assertIsNone(channel.admits_client(C(sid=SID), 8, lambda p: SID))
+        self.assertIn("isn't the consumer", channel.admits_client(C(sid=SID), 8, lambda p: None))
+        self.assertIn("no token", channel.admits_client(C(sid=SID), 8, boom), "unreadable is a refusal")
+
+    def test_consumer_of(self):
+        from hideout_module import models
+
+        create = models.ChannelCreate.from_json(
+            {"channel": "map", "consumer": "x", "nonce": "n", "consumer_pid": 5, "consumer_sid": SID})
+        self.assertEqual(channel.consumer_of(create), channel.Consumer(5, SID))
+        self.assertEqual(channel.consumer_of({"channel": "map", "consumer": "x", "nonce": "n"}), channel.Consumer())
+
+
+def _security(handle):
+    """A kernel object's DACL ACEs and label ACEs, each (type, mask, SID string)."""
+    import ctypes
+    from ctypes import wintypes
+
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    adv.GetSecurityInfo.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
+                                    ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+                                    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+    adv.GetAce.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
+    adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    k32.LocalFree.argtypes = [ctypes.c_void_p]
+    dacl, sacl, sd = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+    # SE_KERNEL_OBJECT; DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION
+    rc = adv.GetSecurityInfo(handle, 6, 0x4 | 0x10, None, None, ctypes.byref(dacl), ctypes.byref(sacl),
+                             ctypes.byref(sd))
+    assert rc == 0, rc
+
+    def aces(acl):
+        out = []
+        for i in range(ctypes.c_uint16.from_address(acl.value + 4).value if acl.value else 0):
+            ace = ctypes.c_void_p()
+            assert adv.GetAce(acl, i, ctypes.byref(ace))
+            text = ctypes.c_void_p()
+            assert adv.ConvertSidToStringSidW(ace.value + 8, ctypes.byref(text))
+            out.append((ctypes.c_uint8.from_address(ace.value).value,
+                        ctypes.c_uint32.from_address(ace.value + 4).value, ctypes.wstring_at(text.value)))
+            k32.LocalFree(text)
+        return out
+
+    try:
+        assert dacl.value, "a null DACL would grant everyone"
+        return aces(dacl), aces(sacl)
+    finally:
+        k32.LocalFree(sd)
+
+
+@unittest.skipUnless(os.name == "nt", "named pipes are Windows")
+class PipeIdentity(unittest.TestCase):
+    """#1092 in this process: the guest ACE and label, the client pid before a byte is read,
+    the server pid before a byte is sent (channels and the router pipe)."""
+
+    def test_guest_ace_and_low_label_only_with_a_guest(self):
+        me = channel.current_user_sid()
+        p = channel.ChannelPipe.create(channel.unique_pipe_name("test.module", "guest"), channel.Consumer(sid=SID))
+        try:
+            dacl, label = _security(p.handle)
+            self.assertEqual(dacl, [(0, 0x1F01FF, me), (0, channel.PIPE_CLIENT_ACCESS, SID)])
+            self.assertEqual(label, [(0x11, 0x1, "S-1-16-4096")], "Low, no write up")
+        finally:
+            p.close()
+        p = channel.ChannelPipe.create(channel.unique_pipe_name("test.module", "noguest"))
+        try:
+            dacl, label = _security(p.handle)
+            self.assertEqual(dacl, [(0, 0x1F01FF, me)])
+            self.assertEqual(label, [], "no label set")
+        finally:
+            p.close()
+
+    def _refused(self, consumer):
+        p = channel.ChannelPipe.create(channel.unique_pipe_name("test.module", "who"), consumer)
+        result = {}
+
+        def provider():
+            try:
+                result["conn"] = p.accept_nonce("n-who", 10)
+            except channel.ChannelError as e:
+                result["err"] = e
+
+        t = threading.Thread(target=provider)
+        t.start()
+        try:
+            with channel.connect(p.name, "n-who", server_pid=os.getpid()) as conn:
+                t.join(10)
+                self.assertIsNone(conn.read_frame(), "dropped")
+        except BrokenPipeError:
+            pass  # dropped before the nonce was even written: the same refusal
+        t.join(10)
+        return result.get("err")
+
+    def test_only_the_named_client_pid(self):
+        err = self._refused(channel.Consumer(pid=4))
+        self.assertIn(f"pid {os.getpid()}, not the consumer's 4", str(err))
+
+    def test_sid_only_refuses_a_client_outside_that_container(self):
+        err = self._refused(channel.Consumer(sid=SID))
+        self.assertIn("isn't the consumer", str(err))
+
+    def test_consumer_sends_nothing_to_another_server(self):
+        p = channel.ChannelPipe.create(channel.unique_pipe_name("test.module", "server"))
+        result = {}
+
+        def provider():
+            try:
+                p.accept_nonce("n-s", 10)
+            except channel.ChannelError as e:
+                result["err"] = e
+
+        t = threading.Thread(target=provider)
+        t.start()
+        with self.assertRaises(PermissionError):
+            channel.connect_grant({"pipe": p.name, "nonce": "n-s", "pid": 4})
+        t.join(10)
+        self.assertIn("not the nonce", str(result["err"]), "the provider read no nonce")
+
+    def test_serve_create_for_the_named_consumer(self):
+        create = {"channel": "c", "consumer": "x", "nonce": "n-sc", "consumer_pid": os.getpid()}
+        pipe = channel.serve_create("test.module", create, lambda conn: conn.write_frame(b"hi"))
+        with channel.connect_grant({"pipe": pipe, "nonce": "n-sc", "pid": os.getpid()}) as conn:
+            self.assertEqual(conn.read_frame(), b"hi")
+
+    def test_consumer_refuses_names_windows_would_rewrite(self):
+        for bad in ("\\\\.\\pipe\\hideout-ch-a\\..\\..\\..\\UNC\\h\\s\\hideout-ch-x", "\\\\.\\pipe\\hideout-ch-x.",
+                    "\\\\.\\pipe\\LOCAL\\hideout-ch-x"):
+            with self.assertRaises(ValueError):
+                channel.connect(bad, "n")
+        self.assertTrue(channel.stays_a_local_pipe("\\\\.\\pipe\\hideout-ch-x"))
+        self.assertFalse(channel.stays_a_local_pipe("\\\\.\\pipe\\hideout-ch-a/../x"))
+
+    def test_router_pipe_checks_the_hub_pid(self):
+        from hideout_module import session
+
+        self.assertEqual(session.hub_pid_from_env({"HIDEOUT_HUB_PID": " 42 "}), 42)
+        self.assertIsNone(session.hub_pid_from_env({}), "an older hub: no check")
+        self.assertIsNone(session.hub_pid_from_env({"HIDEOUT_HUB_PID": "x"}))
+        for hub, ok in ((4, False), (os.getpid(), True)):
+            with self.subTest(hub=hub):
+                import _winapi
+
+                p = channel.ChannelPipe.create(channel.unique_pipe_name("test.hub", "router"))
+                h, p.handle = p.handle, None
+                ov = _winapi.ConnectNamedPipe(h, overlapped=True)
+                if ok:
+                    f = session.open_router_pipe(p.name, hub)
+                    f.write(b"line\n")
+                    f.close()
+                else:
+                    with self.assertRaises(PermissionError):
+                        session.open_router_pipe(p.name, hub)
+                channel._wait(ov, time.monotonic() + 10)
+                with channel.ChannelConn(h) as conn:
+                    self.assertEqual(conn._read_exact(5), b"line\n" if ok else b"", "nothing before the check")
+
+
 @unittest.skipUnless(os.name == "nt", "named pipes are Windows")
 class Pipes(unittest.TestCase):
     def test_stream_one_consumer_only(self):
