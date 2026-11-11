@@ -646,7 +646,7 @@ fn card_contents(ui: &mut egui::Ui, c: &Card, state: &mut UiState, out: &mut Vec
             }
         }
         let open = state.open.as_deref() == Some(id.as_str());
-        if theme::pill(ui, open, "Options").clicked() {
+        if theme::toggle_pill(ui, open, "Options").clicked() {
             state.open = if open { None } else { Some(id.clone()) };
         }
         let confirming = state.confirm_remove.as_deref() == Some(id.as_str());
