@@ -1897,7 +1897,15 @@ impl Hub {
 
     fn apply(&mut self, a: Action) {
         match a {
-            Action::Activate(i) => self.tabs.activate(i),
+            Action::Activate(i) => {
+                // Opening the page that is already open (a click, Enter or AccessKit's click on
+                // its own tab) is opening it too: a card on it focuses its main button again
+                // (docs/hideout-supervisor-ux.md, "Keyboard and screen reader"; #1104).
+                if self.tabs.active() == Some(i) {
+                    self.card_target = None;
+                }
+                self.tabs.activate(i)
+            }
             Action::Close(i) => {
                 let Some(id) = self.tabs.tabs().get(i).map(|t| t.id.clone()) else {
                     return;
