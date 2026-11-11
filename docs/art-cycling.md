@@ -53,7 +53,11 @@ layers = { 3 = { builtin = "Bandit_Radar" } }   # layer index -> art while that 
 - **With the app connected,** the key sends a host-link event (a new D7 notify, like the RGB
   wake one), and the app steps the hotlist, which can include library files.
 - **Without the app,** the firmware steps through what it holds itself: the built-ins in the
-  hotlist and the saved slots. So the key always does something.
+  hotlist and the saved slots. So the key always does something. The list (built-ins, then kept
+  slots in slot order) comes from the right's status as it is now: the left reads it again
+  before it steps when its copy may be out of date (a new link, or a Keep the app quit during).
+  A kept slot the right refuses (its CRC or header doesn't check out) is stepped past, so one
+  bad slot never ends the lap (#851).
 - No polling, and `key.events` isn't needed: the behaviour is the event.
 
 ### On a layer

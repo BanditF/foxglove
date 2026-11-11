@@ -1164,12 +1164,16 @@ static void health_scenario(void) {
 // still going steps nothing and shows nothing, and so does one with the link down.
 static bool board_step(int dir, int8_t want, char *why, size_t n) {
     int toasts = sim_left.toasts;
+    int64_t start = k_uptime_get();
     art_relay_step(dir);
+    // The step is a job on relay_q since #851: the toast comes once the right took the SELECT.
+    while (sim_left.toasts == toasts && k_uptime_get() - start < 5000) {
+        k_msleep(10);
+    }
     if (sim_left.toasts != toasts + 1) {
-        snprintf(why, n, "no toast");
+        snprintf(why, n, "no toast (%d), right on set %d", sim_left.toasts - toasts, sim_right.set);
         return false;
     }
-    int64_t start = k_uptime_get();
     while (sim_right.set != want && k_uptime_get() - start < 5000) {
         k_msleep(50);
     }
@@ -1295,6 +1299,108 @@ static void art_step_boot(void) {
     check("first-prev-after-restart",
           ok && sim_left.toast_index == 2 && sim_left.toast_total == 3 && sim_left.toast_dir == -1,
           "%s", why);
+    debug_line("at the end");
+}
+
+/* #851, "Kept: 4 of 8" but the board steps between fewer: the places are kept the way the app
+ * keeps them (D6 01/02/09 STORE over the relay, Screens -> Keep on keyboard), then Foxglove quits
+ * and &art_next / &art_prev step on the board. Unlike art-step-cycles, which sets the right's
+ * slots behind the left's back and lets a SELECT's read show them, nothing but the keeping itself
+ * tells the left here. The list is the emblem (set 0) and places 0-3 (sets 1-4); two laps each
+ * way, every press on the next set round the list, the wraps included, the toast's n/5 and m = 5.
+ *   wait:    the app waits for each STORE to end (art::finish_slot_op) before it quits.
+ *   quit:    the app quits while the last STORE is still writing (SAVING): no STATUS after it.
+ *   relink:  then the split link drops and comes back (the right's sleep, a range drop).
+ *   restart: then the right restarts (power switch, an update that keeps the places).
+ *   bad:     place 1 (set 2) is listed but the right refuses it (BAD_BLOB, its CRC or header):
+ *            every lap steps past it to the others and wraps; before, each press selected it
+ *            again and the lap ended on set 1. The toast still counts the whole list (n/5). */
+enum kept_after { KEPT_WAIT, KEPT_QUIT, KEPT_RELINK, KEPT_RESTART, KEPT_BAD };
+
+static void art_step_kept(enum kept_after after) {
+    sim_right.set_count = 1;
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    char why[200];
+    check("start-on-emblem", lab_select(0, why, sizeof(why)), "%s", why);
+    static const char *names[] = {"hearth-moongarde", "constellations", "fury", "moon-garden"};
+    static const uint16_t lens[] = {3281, 1756, 3599, 2048};
+    const int kept = (int)ARRAY_SIZE(names);
+    for (int i = 0; i < kept; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "keep-%d", i);
+        if (after == KEPT_QUIT && i == kept - 1) {
+            // The last Keep's D6 09 goes out and the app is gone before its STATUS reads.
+            make_piece(lens[i], (uint8_t)(40 + i));
+            uint8_t nm[16];
+            name16(nm, names[i]);
+            bool sent = art_relay_begin(lens[i], crc32_ieee(piece, lens[i])) == 0;
+            for (int at = 0; sent && at < lens[i]; at += 27) {
+                art_relay_data(at, &piece[at], (uint8_t)MIN(27, lens[i] - at));
+                k_msleep(1);
+            }
+            app_on = false;
+            sent = sent && art_relay_store((uint8_t)i, nm) == 0;
+            k_msleep(3000); // the left's job ends; the right's flash write ends after it
+            check(name, sent && place_holds((uint8_t)i, lens[i], (uint8_t)(40 + i), names[i]),
+                  "STORE %s, place %d %s", sent ? "sent" : "refused", i,
+                  sim_right.flash[i].used ? "used" : "empty");
+        } else {
+            check(name, lab_store((uint8_t)i, lens[i], (uint8_t)(40 + i), names[i], why,
+                                  sizeof(why)),
+                  "%s", why);
+        }
+    }
+    app_on = false; // Foxglove quit: from here on no STATUS, no D6 07, nothing from the PC
+    if (after == KEPT_RELINK) {
+        sim_bt_drop(2000000);
+        k_msleep(500);
+        wait_relay(40);
+        check("relinked", art_relay_link() == 2, "link %d", art_relay_link());
+    } else if (after == KEPT_RESTART) {
+        sim_bt_right_update(false, 3000000);
+        k_msleep(3500);
+        wait_relay(40);
+        check("right-back", art_relay_link() == 2 && sim_right.set == 0, "link %d, right on set %d",
+              art_relay_link(), sim_right.set);
+    }
+    uint8_t bad = 0; // sets the right refuses
+    if (after == KEPT_BAD) {
+        sim_right.bad_slots = BIT(1);
+        bad = BIT(2);
+    }
+    k_msleep(2000);
+    const int total = 1 + kept;
+    int good = 0;
+    for (int i = 0; i < total; i++) {
+        good += !(bad & BIT(i));
+    }
+    int fails = 0, visited = 0;
+    for (int lap = 0; lap < 4; lap++) {
+        int8_t dir = lap < 2 ? 1 : -1;
+        uint8_t seen = 0;
+        for (int i = 0; i < good; i++) {
+            int8_t want = sim_right.set;
+            do {
+                want = (int8_t)(((want + dir) % total + total) % total);
+            } while (bad & BIT(want));
+            bool ok = board_step(dir, want, why, sizeof(why));
+            ok = ok && sim_left.toast_index == want && sim_left.toast_total == total &&
+                 sim_left.toast_dir == dir && sim_left.toast_kept == (want >= 1);
+            seen |= ok ? BIT(want) : 0;
+            if (!ok || (want == 0 && dir > 0) || (want == total - 1 && dir < 0)) {
+                char name[24];
+                snprintf(name, sizeof(name), "lap-%d-%s-%d", lap, dir > 0 ? "next" : "prev", want);
+                check(name, ok, "want %d/%d: %s", want + 1, total, why); // the wraps, and any miss
+            }
+            fails += !ok;
+        }
+        visited += seen == ((BIT(total) - 1) & ~bad);
+    }
+    check("all-kept-visited", fails == 0 && visited == 4,
+          "%d of %d presses missed; %d of 4 laps visited all %d sets", fails, 4 * good, visited,
+          good);
     debug_line("at the end");
 }
 #endif
@@ -1693,6 +1799,16 @@ static void lab_thread(void *arg) {
         art_step_cycles(false);
     } else if (!strcmp(scenario, "art-step-cycles-lag")) {
         art_step_cycles(true);
+    } else if (!strcmp(scenario, "art-step-kept")) {
+        art_step_kept(KEPT_WAIT);
+    } else if (!strcmp(scenario, "art-step-kept-quit")) {
+        art_step_kept(KEPT_QUIT);
+    } else if (!strcmp(scenario, "art-step-kept-relink")) {
+        art_step_kept(KEPT_RELINK);
+    } else if (!strcmp(scenario, "art-step-kept-restart")) {
+        art_step_kept(KEPT_RESTART);
+    } else if (!strcmp(scenario, "art-step-kept-bad")) {
+        art_step_kept(KEPT_BAD);
 #endif
 #ifdef SIM_HEALTH
     } else if (!strcmp(scenario, "health")) {

@@ -1085,6 +1085,19 @@ fn board_steps_hand_the_art_keys_back_first() {
     assert!(long.iter().all(|k| !k.subscribed && !k.keep_found_opt_in));
     let bad = case("[{art_key={pos=11,subscribed=true,keep_found_opt_in=true}}]");
     assert!(bad.steps[0].validate().is_err());
+    // #851: every kept place in order on the emblem plus 4, round both wraps, on the board.
+    let lands: Vec<Option<i8>> = art_keys("art-keys-board-visits-all-kept")
+        .iter()
+        .map(|k| k.lands_on)
+        .collect();
+    let want = [1, 2, 3, 4, 0, 1, 0, 4, 3, 2, 1, 0].map(Some);
+    assert_eq!(lands, want);
+    for bad in [
+        "[{art_key={pos=11,subscribed=true,lands_on=1}}]",
+        "[{art_key={pos=11,lands_on=-1}}]",
+    ] {
+        assert!(case(bad).steps[0].validate().is_err(), "{bad}");
+    }
 }
 
 #[test]

@@ -638,6 +638,14 @@ impl<'a, D: Device> Runner<'a, D> {
             loop {
                 let after = fresh(self)?;
                 if after.right_set != before.right_set {
+                    if let Some(want) = k.lands_on {
+                        ensure!(
+                            after.right_set == want,
+                            "the board stepped to set {} (wanted {want}) from {}: {after}",
+                            after.right_set,
+                            before.right_set
+                        );
+                    }
                     return Ok(format!(
                         "{}the board stepped the art: set {} -> {} ({after})",
                         if cleared { "D7 0D 00 sent first; " } else { "" },
