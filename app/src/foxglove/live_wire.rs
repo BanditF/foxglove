@@ -947,4 +947,53 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.chars().all(|c| c.is_ascii_alphanumeric()));
     }
+
+    /// #1075: the lab's feed fold (`labkit.feed_art_facts`, tested on this file by
+    /// scripts/test_restart_parity.py) reads the messages a client gets when it joins a restarted
+    /// app before the pushed set is named again. Each line is what the feed sends, so the fold
+    /// can't be tested on a shape the app never sends (it read `state` messages as nested).
+    #[test]
+    fn the_restart_fixture_is_the_wire() {
+        let fixture = include_str!("../../../scripts/lab/fixtures/feed-pushed-set-restart.jsonl");
+        let link = Link {
+            connected: true,
+            ..Link::default()
+        };
+        let state = |art: Option<&str>, right: Option<u8>| State {
+            art: art.map(Into::into),
+            battery: Battery { left: None, right },
+            link: link.clone(),
+            ..State::default()
+        };
+        let want = [
+            Message::Hello {
+                v: VERSION,
+                topics: TOPICS,
+                board: None,
+                state: state(None, None),
+                quiet: None,
+            },
+            Message::Art {
+                art: Some(Art {
+                    name: String::new(),
+                    from: FROM_FILE,
+                    nva: None,
+                    missing: Some(MISSING_PUSHED_UNKNOWN),
+                }),
+            },
+            Message::State(state(Some("ink-fixture"), None)),
+            Message::Art {
+                art: Some(Art {
+                    name: "ink-fixture".into(),
+                    from: FROM_FILE,
+                    nva: Some("TlZBMQ==".into()),
+                    missing: None,
+                }),
+            },
+            Message::State(state(Some("ink-fixture"), Some(61))),
+        ];
+        let lines: Vec<&str> = fixture.lines().filter(|l| !l.trim().is_empty()).collect();
+        let want: Vec<String> = want.iter().map(Message::json).collect();
+        assert_eq!(lines, want);
+    }
 }

@@ -1,0 +1,5 @@
+{"t":"hello","v":1,"topics":["keys","state","art","panel"],"board":null,"state":{"layer":null,"art":null,"battery":{},"link":{"connected":true}},"quiet":null}
+{"t":"art","art":{"name":"","from":"file","nva":null,"missing":"pushed_unknown"}}
+{"t":"state","layer":null,"art":"ink-fixture","battery":{},"link":{"connected":true}}
+{"t":"art","art":{"name":"ink-fixture","from":"file","nva":"TlZBMQ=="}}
+{"t":"state","layer":null,"art":"ink-fixture","battery":{"right":61},"link":{"connected":true}}

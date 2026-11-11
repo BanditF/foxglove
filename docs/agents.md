@@ -104,6 +104,11 @@ Live Board "NO FRAMES after restart" retro: `Snapshot.sent` was in memory only).
   never a store write by hand) and `read(want)` (event-driven, bounded: the feed's pushed
   messages, an API answer, a `facts.changed` event), add it to `CASES`, and test the pure parts
   in `scripts/test_restart_parity.py`. On-call runs it (`FOXGLOVE_APP_OK=1`).
+- **Check the published field, on the wire's own shape.** The unit test reads the fact from what
+  is sent (`live_feed::art_messages`: the feed's JSON), not from the service's snapshot; the lab
+  fold's tests read message fixtures (`scripts/lab/fixtures/*.jsonl`) that a Rust test builds
+  with `Message::json`, never hand-made dicts (#1075: a fold read `state` messages as nested,
+  a shape the feed never sends, and its own test made the same mistake).
 - **Health:** a published fact the keyboard can contradict gets a read-time health row comparing
   the two (`live_parity`'s `feed_art`: the keyboard shows art, the feed has `art: null`).
 

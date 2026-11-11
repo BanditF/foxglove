@@ -647,7 +647,9 @@ def feed_art_facts(messages, until):
     for m in messages:
         t = m.get('t')
         if t in ('hello', 'state'):
-            state = m.get('state') or {}
+            # The hello nests the state; a `state` message is the state itself, flat (#1075:
+            # reading `m['state']` there made every state after the hello `state_art: None`).
+            state = (m.get('state') or {}) if t == 'hello' else m
             facts = {'art': None, **(facts or {}), 'state_art': state.get('art')}
         elif t == 'art':
             a = m.get('art')
