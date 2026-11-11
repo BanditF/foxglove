@@ -260,10 +260,12 @@ fn watch_inventory(
     let watched = crate::inventory_watch::start(
         home,
         Box::new(move |change| {
+            // The router and the supervisor forget first, so whoever the shell's removal
+            // message wakes already sees the module gone.
             for id in &change.removed {
-                side.removed(id);
                 sup.forget(id);
                 hub.act(|r| r.forget_module(id));
+                side.removed(id);
             }
             if fresh.put(crate::modules_page::installed(&at)) {
                 side.wake();
