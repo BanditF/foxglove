@@ -6,13 +6,16 @@
 //! holds the art keys:
 //!
 //! - **click:** the next app with an active audio session that has played sound during this run
-//!   (#854: a background helper holding a silent stream isn't offered), in the order first heard;
-//!   past the last one, back to master. Apps whose program has no window and apps on the hidden
-//!   list are skipped (#952, `knob_hide.rs`);
+//!   (#854: a background helper holding a silent stream isn't offered; #1060: nor is an app whose
+//!   meter only follows the speakers' mix), in the order first heard; past the last one, back to
+//!   master. Apps whose program has no window and apps on the hidden list are skipped (#952,
+//!   `knob_hide.rs`). An app is one row however many sessions it has (#1061,
+//!   `foxglove_panel::sessions::group`), and "n of m" counts apps;
 //! - **turn:** the target's level, 2 % a detent: an app's through Windows' own session volume
-//!   (ISimpleAudioVolume, the Volume Mixer's); master's through the default output device's
-//!   IAudioEndpointVolume, unmuting it as Windows' volume keys do (#855);
-//! - **double click:** mutes or unmutes the target;
+//!   (ISimpleAudioVolume, the Volume Mixer's), each of its sessions from its own level; master's
+//!   through the default output device's IAudioEndpointVolume, unmuting it as Windows' volume
+//!   keys do (#855). An app shows its loudest session's level;
+//! - **double click:** mutes or unmutes the target (all of an app's sessions);
 //! - **hold** (half a second): back to master.
 //!
 //! Master volume (#855): firmware with HELLO v2's `KNOB_VOLUME` (word 2's bit 35, D7 16) lets
@@ -22,7 +25,7 @@
 //! paused or quit, or killed and its hold lease lapsed, #847) master is the keyboard's volume
 //! keys and mute, and Windows' own flyout, as before.
 //!
-//! Nothing is kept: the target lives as long as its session. When the session expires or
+//! Nothing is kept: the target lives as long as any of its sessions. When the last one expires or
 //! disconnects the knob goes back to master and the keyboard is told. No hooks, no system
 //! volume keys intercepted. Polling: none. Start events: a link's connect, a knob event from the
 //! keyboard, a session change from Windows, pause/resume, a lapsed hold lease (#847,
@@ -32,7 +35,9 @@
 //! Which sessions have played (#854): Windows has no event for sound, so the knob reads the
 //! sessions' peak meters, and only in its per-app mode: once on each click, and while an app is
 //! the target every [`LISTEN_EVERY`] for at most [`LISTEN_FOR`] after the last knob event (so a
-//! session that starts playing meanwhile is there on the next click). On master: no reads.
+//! session that starts playing meanwhile is there on the next click). On master: no reads. Each
+//! read also reads the device's own meter once (#1060), for `Heard`'s mirror test: no other
+//! read and no other timer.
 
 use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -42,7 +47,7 @@ use foxglove_link::link::{Event, EventSubscription, Link};
 use foxglove_link::protocol::knob::{self as wire, EventKind, Target as WireTarget};
 use foxglove_link::protocol::{self, capabilities};
 use foxglove_link::Transport;
-use foxglove_panel::sessions::{Change, Heard, Sessions};
+use foxglove_panel::sessions::{self, AppGroup, Change, Heard, Member, Sessions, AUDIBLE};
 
 use super::knob_health::{self, LastLevel};
 use super::knob_hide::Hidden;
@@ -51,11 +56,19 @@ use super::knob_popup::{self, Card};
 /// The app the knob points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct App {
-    /// The session instance id (`foxglove_panel::sessions::Session::id`).
-    pub id: String,
+    /// The app's row key (`foxglove_panel::sessions::AppGroup::key`, #1061).
+    pub key: String,
     pub name: String,
-    /// The program's path (#952: what "Hide from knob" hides), when Windows tells it.
+    /// The windowed program's path (#952: what "Hide from knob" hides), when Windows tells it.
     pub exe: Option<String>,
+    /// Its sessions (#1061): a turn moves each, a double click mutes each.
+    pub members: Vec<Member>,
+}
+
+impl App {
+    fn has(&self, id: &str) -> bool {
+        self.members.iter().any(|m| m.id == id)
+    }
 }
 
 /// What the keyboard must be told after an event.
@@ -89,6 +102,8 @@ pub struct Cycle {
     /// The keyboard sends master's turns and double click here (Foxglove holds master volume,
     /// D7 16, #855); `false`: on master it sends the volume keys and mute itself.
     pub volume: bool,
+    /// The sessions playing at the last read, loudest first: an app shows its loudest (#1061).
+    pub playing: Vec<String>,
 }
 
 /// How often the knob reads the peaks while an app is its target.
@@ -109,7 +124,7 @@ impl Cycle {
     /// Sets the target; what to tell the keyboard (only a change between master and an app).
     fn set(&mut self, target: Option<App>) -> Tell {
         let was = self.wire();
-        if self.target.as_ref().map(|a| &a.id) != target.as_ref().map(|a| &a.id) {
+        if self.target.as_ref().map(|a| &a.key) != target.as_ref().map(|a| &a.key) {
             self.level = None;
             self.place = None;
         }
@@ -121,46 +136,96 @@ impl Cycle {
         }
     }
 
-    /// Notes the sessions playing now (one peak read each).
+    /// Notes the sessions playing now (one peak read each, and the device's).
     pub fn listen(&mut self, sessions: &dyn Sessions) {
         match sessions.peaks() {
             Ok(peaks) => {
                 self.heard.note(&peaks);
+                let mut loud: Vec<&sessions::Meter> =
+                    peaks.sessions.iter().filter(|m| m.peak > AUDIBLE).collect();
+                loud.sort_by(|a, b| b.peak.total_cmp(&a.peak));
+                self.playing = loud.into_iter().map(|m| m.id.clone()).collect();
             }
             Err(e) => eprintln!("Foxglove: knob: no audio peaks: {e}"),
         }
     }
 
-    /// A click: the next heard active session after the target, in the order first heard; the
-    /// first from master; master again after the last (and when nothing plays).
-    pub fn click(&mut self, sessions: &dyn Sessions) -> Tell {
-        self.listen(sessions);
-        let list = match sessions.active() {
+    /// The apps with an Active session now, one row each (#1061); `Heard` learns their rows and
+    /// the Knob card's Add an app gets the list.
+    fn rows(&mut self, sessions: &dyn Sessions) -> Option<Vec<AppGroup>> {
+        match sessions.active() {
             Ok(list) => {
-                publish_apps(&list);
-                self.hidden.offer(self.heard.offer(list))
+                let rows = sessions::group(list);
+                self.heard.learn(&rows);
+                publish_apps(&rows);
+                Some(rows)
             }
             Err(e) => {
                 eprintln!("Foxglove: knob: no audio sessions: {e}");
-                return Tell::Nothing;
+                None
             }
+        }
+    }
+
+    /// Windows' sessions changed: the target takes in a new session of its app (#1061).
+    pub fn changed(&mut self, sessions: &dyn Sessions) {
+        let Some(rows) = self.rows(sessions) else {
+            return;
         };
+        if let Some(t) = self.target.as_mut() {
+            if let Some(row) = rows.iter().find(|r| r.key == t.key) {
+                for m in &row.members {
+                    if !t.has(&m.id) {
+                        t.members.push(m.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The session an app shows: its loudest at the last read, else its first.
+    fn shown(&self, app: &App) -> String {
+        self.playing
+            .iter()
+            .find(|id| app.has(id))
+            .or(app.members.first().map(|m| &m.id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The app's level and mute as it shows them (its loudest session's).
+    fn level_of(&self, sessions: &dyn Sessions, app: &App) -> Option<(u8, bool)> {
+        sessions.level(&self.shown(app)).ok()
+    }
+
+    /// A click: the next heard app after the target, in the order first heard; the first from
+    /// master; master again after the last (and when nothing plays).
+    pub fn click(&mut self, sessions: &dyn Sessions) -> Tell {
+        // The rows first, so the mirror test knows which sessions have an app window.
+        let Some(rows) = self.rows(sessions) else {
+            return Tell::Nothing;
+        };
+        self.listen(sessions);
+        let mut list = self.hidden.offer(self.heard.offer(rows));
+        sessions::tell_apart(&mut list);
         let at = match &self.target {
             None => 0,
-            Some(t) => list.iter().position(|s| s.id == t.id).map_or(0, |i| i + 1),
+            Some(t) => list
+                .iter()
+                .position(|s| s.key == t.key)
+                .map_or(0, |i| i + 1),
         };
         let next = list.get(at).map(app_of);
         eprintln!(
             "Foxglove: knob: {}",
-            next.as_ref()
-                .map_or("master".to_string(), |a| a.name.clone())
+            click_line(next.as_ref(), (at + 1, list.len()))
         );
         let was_app = self.target.is_some();
         let tell = self.set(next);
         self.place = self.target.as_ref().map(|_| (at + 1, list.len()));
         self.popup = Some(match &self.target {
             Some(app) => {
-                self.level = sessions.level(&app.id).ok();
+                self.level = self.level_of(sessions, app);
                 (
                     Card::App {
                         name: app.name.clone(),
@@ -197,29 +262,27 @@ impl Cycle {
         if self.hidden.why(app.exe.as_deref()).is_none() {
             return Tell::Nothing;
         }
-        let heard = match sessions.active() {
-            Ok(list) => self.heard.offer(list),
-            Err(e) => {
-                eprintln!("Foxglove: knob: no audio sessions: {e}");
-                Vec::new()
-            }
+        let heard = match self.rows(sessions) {
+            Some(rows) => self.heard.offer(rows),
+            None => Vec::new(),
         };
         // The next app after this one's place among the heard ones.
         let before = heard
             .iter()
-            .position(|s| s.id == app.id)
+            .position(|s| s.key == app.key)
             .unwrap_or(heard.len());
-        let list = self.hidden.offer(heard.clone());
+        let mut list = self.hidden.offer(heard.clone());
+        sessions::tell_apart(&mut list);
         let at = list
             .iter()
-            .filter(|s| heard.iter().position(|h| h.id == s.id) < Some(before))
+            .filter(|s| heard.iter().position(|h| h.key == s.key) < Some(before))
             .count();
         let next = list.get(at).map(app_of);
         let tell = self.set(next);
-        let note = match &self.target {
+        let note = match self.target.clone() {
             Some(t) => {
                 self.place = Some((at + 1, list.len()));
-                self.level = sessions.level(&t.id).ok();
+                self.level = self.level_of(sessions, &t);
                 format!("knob: {} · {} of {}", t.name, at + 1, list.len())
             }
             None => "knob: master".to_string(),
@@ -251,7 +314,7 @@ impl Cycle {
         let Some(app) = &self.target else {
             return;
         };
-        if let Ok(l) = sessions.level(&app.id) {
+        if let Some(l) = self.level_of(sessions, app) {
             self.level = Some(l);
         }
         self.popup = Some((
@@ -301,7 +364,8 @@ impl Cycle {
         }
     }
 
-    /// Detents (+ clockwise): the target's level, 2 % each.
+    /// Detents (+ clockwise): the target's level, 2 % each: each of an app's sessions from its own
+    /// level, so their balance stays (#1061). The health row gets the shown session's new level.
     pub fn turn(&mut self, sessions: &dyn Sessions, steps: i8) {
         let Some(app) = &self.target else {
             if self.volume {
@@ -310,12 +374,25 @@ impl Cycle {
             // Else master is the keyboard's volume keys: a turn here came by mistake.
             return;
         };
-        let last = match sessions.step(&app.id, i32::from(steps)) {
-            Ok(percent) => LastLevel::Set {
+        let shown = self.shown(app);
+        let mut set: Option<u8> = None;
+        let mut failed: Option<String> = None;
+        for m in &app.members {
+            match sessions.step(&m.id, i32::from(steps)) {
+                Ok(percent) if m.id == shown || set.is_none() => set = Some(percent),
+                Ok(_) => {}
+                Err(why) => {
+                    failed.get_or_insert(why);
+                }
+            }
+        }
+        let last = match (set, failed) {
+            (Some(percent), _) => LastLevel::Set {
                 app: app.name.clone(),
                 percent,
             },
-            Err(why) => {
+            (None, why) => {
+                let why = why.unwrap_or_else(|| "the app's sound ended".to_string());
                 eprintln!("Foxglove: knob: {}'s level: {why}", app.name);
                 LastLevel::Failed {
                     app: app.name.clone(),
@@ -353,15 +430,28 @@ impl Cycle {
             }
             return;
         };
-        let last = match sessions.toggle_mute(&app.id) {
-            Ok(muted) => LastLevel::Muted {
+        // One state for the whole app (#1061): the opposite of the shown session's.
+        let muted = !self.level_of(sessions, app).is_some_and(|l| l.1);
+        let mut done = false;
+        let mut failed: Option<String> = None;
+        for m in &app.members {
+            match sessions.set_mute(&m.id, muted) {
+                Ok(_) => done = true,
+                Err(why) => {
+                    failed.get_or_insert(why);
+                }
+            }
+        }
+        let last = if done {
+            LastLevel::Muted {
                 app: app.name.clone(),
                 muted,
-            },
-            Err(why) => LastLevel::Failed {
+            }
+        } else {
+            LastLevel::Failed {
                 app: app.name.clone(),
-                why,
-            },
+                why: failed.unwrap_or_else(|| "the app's sound ended".to_string()),
+            }
         };
         let ok = matches!(last, LastLevel::Muted { .. });
         self.last_level = Some(last);
@@ -383,12 +473,18 @@ impl Cycle {
         self.set(None)
     }
 
-    /// Windows says session `id` expired or disconnected: if it was the target, back to master.
+    /// Windows says session `id` expired or disconnected: when it was the target's last session,
+    /// back to master (#1061: the app lives while any of its sessions does).
     pub fn gone(&mut self, id: &str) -> Tell {
         self.heard.forget(id);
-        let Some(app) = self.target.as_ref().filter(|a| a.id == id) else {
+        self.playing.retain(|p| p != id);
+        let Some(app) = self.target.as_mut().filter(|a| a.has(id)) else {
             return Tell::Nothing;
         };
+        app.members.retain(|m| m.id != id);
+        if !app.members.is_empty() {
+            return Tell::Nothing;
+        }
         let why = format!("{}'s sound ended", app.name);
         eprintln!("Foxglove: knob: {why}; back to master");
         self.popup = Some((
@@ -471,12 +567,39 @@ pub struct TrayLine {
     pub muted: bool,
 }
 
-fn app_of(s: &foxglove_panel::sessions::Session) -> App {
+fn app_of(row: &AppGroup) -> App {
     App {
-        id: s.id.clone(),
-        name: s.name.clone(),
-        exe: s.exe.clone(),
+        key: row.key.clone(),
+        name: row.name.clone(),
+        exe: row.exe.clone(),
+        members: row.members.clone(),
     }
+}
+
+/// The log line for a click (#1061): the target, its place, and each of its sessions' process id
+/// and program, so a report of "the knob does nothing" can be checked against Windows' list.
+pub fn click_line(app: Option<&App>, place: (usize, usize)) -> String {
+    let Some(app) = app else {
+        return "master".into();
+    };
+    let members: Vec<String> = app
+        .members
+        .iter()
+        .map(|m| {
+            format!(
+                "pid {} {}",
+                m.pid,
+                m.exe.as_deref().unwrap_or("(program unknown)")
+            )
+        })
+        .collect();
+    format!(
+        "{} {} of {} ({})",
+        app.name,
+        place.0,
+        place.1,
+        members.join(", ")
+    )
 }
 
 /// The name master's level goes by in the health view.
@@ -668,9 +791,7 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
         hidden: Hidden::load(),
         ..Cycle::default()
     };
-    if let Ok(list) = sessions.active() {
-        publish_apps(&list);
-    }
+    cycle.changed(sessions);
     // The link the knob is held on now, and the last event's sequence number.
     let mut current: Option<Weak<Link>> = None;
     let mut last_seq: Option<u8> = None;
@@ -814,10 +935,9 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                 }
             }
             Work::Sessions(Change::Changed) => {
-                // The apps with sound now, for the Knob card's Add an app (#952).
-                if let Ok(list) = sessions.active() {
-                    publish_apps(&list);
-                }
+                // The apps with sound now, for the Knob card's Add an app (#952), and a new
+                // session of the target's app (#1061).
+                cycle.changed(sessions);
             }
             Work::Hidden => {
                 let paused = super::pause::paused();
@@ -881,7 +1001,7 @@ pub fn tray_line() -> Option<TrayLine> {
 /// The apps with an active session now (name, program path), for the Knob card's Add an app.
 static APPS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-fn publish_apps(list: &[foxglove_panel::sessions::Session]) {
+fn publish_apps(list: &[AppGroup]) {
     let mut apps: Vec<(String, String)> = Vec::new();
     for s in list {
         if let Some(exe) = &s.exe {
@@ -927,25 +1047,65 @@ mod tests {
     use foxglove_panel::sessions::Session;
     use std::sync::Mutex;
 
-    /// Windows' sessions, as a test lays them out: (id, name, level %, muted), in Windows' order;
-    /// only the active ones are listed. Each plays sound (its peak is 0.5) unless it is silent.
+    /// One fake session: what Windows' list says of it, its level % and mute, and its raw peak.
+    #[derive(Clone)]
+    struct Rec {
+        s: Session,
+        level: i32,
+        muted: bool,
+        peak: f32,
+    }
+
+    /// Windows' sessions, as a test lays them out, in Windows' order; only the active ones are
+    /// listed. Each plays sound (its peak is 0.5) unless it is silent. Without an `endpoint` the
+    /// device's meter can't be read (no mirror test).
     #[derive(Default)]
     struct FakeSessions {
-        list: Mutex<Vec<(String, String, i32, bool)>>,
+        list: Mutex<Vec<Rec>>,
         steps: Mutex<Vec<(String, i32)>>,
         silent: Mutex<Vec<String>>,
         peak_reads: Mutex<u32>,
+        endpoint: Mutex<Option<f32>>,
         /// The fake IAudioEndpointVolume (#855): master's level % and mute once Foxglove set
         /// them (`None`: 64 %, unmuted). Tests never touch the system's volume.
         master: Mutex<Option<(i32, bool)>>,
     }
 
+    /// A session of its own program `C:\Apps\<id>.exe`, with a window.
+    fn plain(id: &str, name: &str) -> Session {
+        let exe = format!(r"C:\Apps\{id}.exe");
+        Session {
+            id: id.into(),
+            name: name.into(),
+            pid: 1,
+            key: Some(sessions::exe_key(&exe)),
+            exe: Some(exe),
+            windowed: Some(true),
+            app_window: Some(true),
+            ..Session::default()
+        }
+    }
+
     impl FakeSessions {
         fn with(apps: &[(&str, &str, i32)]) -> FakeSessions {
+            FakeSessions::of(
+                apps.iter()
+                    .map(|(id, name, level)| (plain(id, name), *level, 0.5))
+                    .collect(),
+            )
+        }
+
+        /// Sessions as given: (session, level %, raw peak).
+        fn of(list: Vec<(Session, i32, f32)>) -> FakeSessions {
             let s = FakeSessions::default();
-            *s.list.lock().unwrap() = apps
-                .iter()
-                .map(|(id, name, level)| (id.to_string(), name.to_string(), *level, false))
+            *s.list.lock().unwrap() = list
+                .into_iter()
+                .map(|(s, level, peak)| Rec {
+                    s,
+                    level,
+                    muted: false,
+                    peak,
+                })
                 .collect();
             s
         }
@@ -960,24 +1120,34 @@ mod tests {
         }
 
         fn start(&self, id: &str, name: &str) {
-            self.list
-                .lock()
-                .unwrap()
-                .push((id.to_string(), name.to_string(), 50, false));
+            self.list.lock().unwrap().push(Rec {
+                s: plain(id, name),
+                level: 50,
+                muted: false,
+                peak: 0.5,
+            });
         }
 
         fn end(&self, id: &str) {
-            self.list.lock().unwrap().retain(|(i, ..)| i != id);
+            self.list.lock().unwrap().retain(|r| r.s.id != id);
         }
 
-        fn level(&self, id: &str) -> i32 {
+        fn rec(&self, id: &str) -> Rec {
             self.list
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|s| s.0 == id)
+                .find(|r| r.s.id == id)
                 .unwrap()
-                .2
+                .clone()
+        }
+
+        fn level(&self, id: &str) -> i32 {
+            self.rec(id).level
+        }
+
+        fn muted(&self, id: &str) -> bool {
+            self.rec(id).muted
         }
     }
 
@@ -988,27 +1158,32 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .map(|(id, name, ..)| Session {
-                    id: id.clone(),
-                    name: name.clone(),
-                    icon: None,
-                    pid: 1,
-                    exe: Some(format!(r"C:\Apps\{id}.exe")),
-                    windowed: Some(true),
-                })
+                .map(|r| r.s.clone())
                 .collect())
         }
 
-        fn peaks(&self) -> Result<Vec<(String, f32)>, String> {
+        fn peaks(&self) -> Result<sessions::Peaks, String> {
             *self.peak_reads.lock().unwrap() += 1;
             let silent = self.silent.lock().unwrap();
-            Ok(self
-                .list
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(id, ..)| (id.clone(), if silent.contains(id) { 0.0 } else { 0.5 }))
-                .collect())
+            Ok(sessions::Peaks {
+                endpoint: *self.endpoint.lock().unwrap(),
+                sessions: self
+                    .list
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|r| sessions::Meter {
+                        id: r.s.id.clone(),
+                        peak: if silent.contains(&r.s.id) {
+                            0.0
+                        } else {
+                            r.peak
+                        },
+                        level: r.level as f32 / 100.0,
+                        muted: r.muted,
+                    })
+                    .collect(),
+            })
         }
 
         fn step(&self, id: &str, steps: i32) -> Result<u8, String> {
@@ -1016,30 +1191,30 @@ mod tests {
             let mut list = self.list.lock().unwrap();
             let s = list
                 .iter_mut()
-                .find(|s| s.0 == id)
+                .find(|r| r.s.id == id)
                 .ok_or_else(|| "the app's sound ended".to_string())?;
-            let level = foxglove_panel::sessions::step_level(s.2 as f32 / 100.0, steps);
-            s.2 = (level * 100.0).round() as i32;
-            Ok(s.2 as u8)
+            let level = sessions::step_level(s.level as f32 / 100.0, steps);
+            s.level = (level * 100.0).round() as i32;
+            Ok(s.level as u8)
         }
 
-        fn toggle_mute(&self, id: &str) -> Result<bool, String> {
+        fn set_mute(&self, id: &str, muted: bool) -> Result<bool, String> {
             let mut list = self.list.lock().unwrap();
             let s = list
                 .iter_mut()
-                .find(|s| s.0 == id)
+                .find(|r| r.s.id == id)
                 .ok_or_else(|| "the app's sound ended".to_string())?;
-            s.3 = !s.3;
-            Ok(s.3)
+            s.muted = muted;
+            Ok(muted)
         }
 
         fn level(&self, id: &str) -> Result<(u8, bool), String> {
             let list = self.list.lock().unwrap();
             let s = list
                 .iter()
-                .find(|s| s.0 == id)
+                .find(|r| r.s.id == id)
                 .ok_or_else(|| "the app's sound ended".to_string())?;
-            Ok((s.2 as u8, s.3))
+            Ok((s.level as u8, s.muted))
         }
 
         fn master(&self) -> Result<(u8, bool), String> {
@@ -1050,7 +1225,7 @@ mod tests {
         fn step_master(&self, steps: i32) -> Result<u8, String> {
             let mut m = self.master.lock().unwrap();
             let (level, _) = m.unwrap_or((64, false));
-            let new = foxglove_panel::sessions::step_level(level as f32 / 100.0, steps);
+            let new = sessions::step_level(level as f32 / 100.0, steps);
             let percent = (new * 100.0).round() as i32;
             *m = Some((percent, false)); // a step unmutes, as Windows' volume keys do
             Ok(percent as u8)
@@ -1301,15 +1476,12 @@ mod tests {
         let s = FakeSessions::with(&[("a", "Spotify", 40)]);
         let mut c = Cycle::default();
         assert_eq!(c.event(&s, EventKind::Double), Tell::Nothing);
-        assert!(
-            !s.list.lock().unwrap()[0].3,
-            "master's mute is the keyboard's key"
-        );
+        assert!(!s.muted("a"), "master's mute is the keyboard's key");
         c.event(&s, EventKind::Click);
         c.event(&s, EventKind::Double);
-        assert!(s.list.lock().unwrap()[0].3);
+        assert!(s.muted("a"));
         c.event(&s, EventKind::Double);
-        assert!(!s.list.lock().unwrap()[0].3);
+        assert!(!s.muted("a"));
     }
 
     #[test]
@@ -1553,5 +1725,227 @@ mod tests {
         assert_eq!(popup(&mut c), None);
         c.master_changed(true);
         assert_eq!(popup(&mut c), Some((Card::MasterTab, knob_popup::TAB)));
+    }
+
+    // #1061: one row per app.
+
+    const VIVALDI: &str = r"C:\Users\u\AppData\Local\Vivaldi\Application\vivaldi.exe";
+
+    /// Vivaldi as Chromium plays: the browser process (app windows) with a silent session at 70 %,
+    /// and its audio-service child (same program) playing at 40 %.
+    fn browser_and_child() -> Vec<(Session, i32, f32)> {
+        let vivaldi = |id: &str, pid: u32, parent: u32| Session {
+            id: id.into(),
+            name: "Vivaldi".into(),
+            pid,
+            parent,
+            exe: Some(VIVALDI.into()),
+            key: Some(sessions::exe_key(VIVALDI)),
+            windowed: Some(true),
+            app_window: Some(true),
+            ..Session::default()
+        };
+        vec![
+            (vivaldi("main", 18132, 900), 70, 0.0),
+            (vivaldi("audio", 43484, 18132), 40, 0.3),
+        ]
+    }
+
+    #[test]
+    fn one_app_with_two_sessions_is_one_row_and_a_step_moves_both() {
+        let s = FakeSessions::of(browser_and_child());
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        assert_eq!(target(&c), Some("Vivaldi"));
+        // One row, "1 of 1"; it shows the playing session's level.
+        assert_eq!(c.tray_line().unwrap().place, Some((1, 1)));
+        assert_eq!(c.tray_line().unwrap().level, Some(40));
+        // A turn moves each session from its own level: the offset stays.
+        c.event(&s, EventKind::Turn(3));
+        assert_eq!((s.level("main"), s.level("audio")), (76, 46));
+        assert_eq!(c.panel_line(), Some(("Vivaldi".into(), 46, false)));
+        assert_eq!(
+            c.last_level,
+            Some(LastLevel::Set {
+                app: "Vivaldi".into(),
+                percent: 46
+            })
+        );
+        // A double click mutes both, and unmutes both.
+        c.event(&s, EventKind::Double);
+        assert!(s.muted("main") && s.muted("audio"));
+        assert_eq!(c.panel_line(), Some(("Vivaldi".into(), 46, true)));
+        c.event(&s, EventKind::Double);
+        assert!(!s.muted("main") && !s.muted("audio"));
+    }
+
+    #[test]
+    fn a_double_click_puts_every_session_in_one_state() {
+        // One session muted from Windows' mixer: the app shows the playing one (unmuted), so a
+        // double click mutes all of them rather than flipping each.
+        let s = FakeSessions::of(browser_and_child());
+        s.set_mute("main", true).unwrap();
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        c.event(&s, EventKind::Double);
+        assert!(s.muted("main") && s.muted("audio"));
+    }
+
+    #[test]
+    fn the_row_lives_while_any_of_its_sessions_does() {
+        let s = FakeSessions::of(browser_and_child());
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        s.end("audio");
+        assert_eq!(c.gone("audio"), Tell::Nothing);
+        assert_eq!(target(&c), Some("Vivaldi"));
+        c.event(&s, EventKind::Turn(1));
+        assert_eq!(s.level("main"), 72, "the session left is still moved");
+        // A new session of the app joins the target.
+        s.list.lock().unwrap().push(Rec {
+            s: Session {
+                id: "audio-2".into(),
+                ..browser_and_child().remove(1).0
+            },
+            level: 20,
+            muted: false,
+            peak: 0.3,
+        });
+        c.changed(&s);
+        c.event(&s, EventKind::Turn(1));
+        assert_eq!((s.level("main"), s.level("audio-2")), (74, 22));
+        s.end("main");
+        assert_eq!(c.gone("main"), Tell::Nothing);
+        s.end("audio-2");
+        assert_eq!(c.gone("audio-2"), Tell::Target(WireTarget::Master));
+        assert_eq!(c.last_back.as_deref(), Some("Vivaldi's sound ended"));
+    }
+
+    #[test]
+    fn n_of_m_counts_apps_not_sessions() {
+        let mut list = browser_and_child();
+        list.push((plain("p", "Player"), 50, 0.5));
+        let s = FakeSessions::of(list);
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        assert_eq!(c.tray_line().unwrap().place, Some((1, 2)));
+        assert_eq!(names(&mut c, &s, 2), ["Player", "master"]);
+    }
+
+    #[test]
+    fn the_captured_mirrors_stay_out_of_the_cycle() {
+        // #1060, the 11/10 capture: Vivaldi plays at 8 %, the game at 100 %; the lighting app and
+        // the wallpaper hold loopback sessions whose meters are the mix (hidden windows only).
+        let hidden_only = |id: &str, name: &str| Session {
+            app_window: Some(false),
+            ..plain(id, name)
+        };
+        let vivaldi = Session {
+            app_window: Some(true),
+            ..browser_and_child().remove(1).0
+        };
+        let s = FakeSessions::of(vec![
+            (vivaldi, 8, 0.0548),
+            (
+                hidden_only("lighting", "LightStudio-background"),
+                100,
+                0.0070,
+            ),
+            (hidden_only("wallpaper", "wallpaper32"), 100, 0.0070),
+            (plain("game", "EscapeFromTarkov"), 100, 0.0038),
+        ]);
+        *s.endpoint.lock().unwrap() = Some(0.0070);
+        let mut c = Cycle::default();
+        assert_eq!(
+            names(&mut c, &s, 4),
+            ["Vivaldi", "EscapeFromTarkov", "master", "Vivaldi"]
+        );
+        assert!(c.heard.is_mirror("lighting") && c.heard.is_mirror("wallpaper"));
+    }
+
+    #[test]
+    fn hide_from_knob_on_a_joined_row_stores_the_windowed_program() {
+        // A WebView2-style host (another program, no app window) under a windowed app: one row
+        // named after the app, and Hide stores the app's file, never the host's.
+        const APP: &str = r"C:\Apps\Notes\Notes.exe";
+        let host = Session {
+            id: "view".into(),
+            name: "Microsoft Edge WebView2".into(),
+            pid: 52,
+            exe: Some(r"C:\WebView\msedgewebview2.exe".into()),
+            key: Some(sessions::exe_key(r"C:\WebView\msedgewebview2.exe")),
+            windowed: Some(true),
+            app_window: Some(false),
+            owner: Some(sessions::Owner {
+                pid: 50,
+                key: sessions::exe_key(APP),
+                name: "Notes".into(),
+                exe: Some(APP.into()),
+            }),
+            ..Session::default()
+        };
+        let s = FakeSessions::of(vec![(host, 60, 0.4)]);
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        let line = c.tray_line().unwrap();
+        assert_eq!(line.name, "Notes");
+        assert_eq!(line.exe.as_deref(), Some(APP));
+        let mut hidden = c.hidden.clone();
+        crate::foxglove::knob_hide::hide_in(&mut hidden.user, APP, "Notes", "d");
+        assert_eq!(c.rehide(&s, hidden), Tell::Target(WireTarget::Master));
+    }
+
+    #[test]
+    fn a_click_logs_the_rows_processes() {
+        let s = FakeSessions::of(browser_and_child());
+        let mut c = Cycle::default();
+        c.event(&s, EventKind::Click);
+        let app = c.target.clone().unwrap();
+        assert_eq!(
+            click_line(Some(&app), (1, 1)),
+            format!("Vivaldi 1 of 1 (pid 18132 {VIVALDI}, pid 43484 {VIVALDI})")
+        );
+        assert_eq!(click_line(None, (1, 0)), "master");
+        let unknown = App {
+            members: vec![Member {
+                id: "x".into(),
+                pid: 7,
+                exe: None,
+            }],
+            ..app
+        };
+        assert!(click_line(Some(&unknown), (1, 1)).ends_with("(pid 7 (program unknown))"));
+    }
+
+    #[test]
+    fn two_installs_with_one_name_add_their_folder_on_the_card() {
+        let install = |id: &str, dir: &str| {
+            let exe = format!(r"C:\Apps\{dir}\vivaldi.exe");
+            Session {
+                id: id.into(),
+                name: "Vivaldi".into(),
+                pid: 1,
+                key: Some(sessions::exe_key(&exe)),
+                exe: Some(exe),
+                windowed: Some(true),
+                app_window: Some(true),
+                ..Session::default()
+            }
+        };
+        let s = FakeSessions::of(vec![
+            (install("a", "Vivaldi"), 50, 0.5),
+            (install("b", "Vivaldi Snapshot"), 50, 0.5),
+        ]);
+        let mut c = Cycle::default();
+        assert_eq!(
+            names(&mut c, &s, 2),
+            ["Vivaldi · Vivaldi", "Vivaldi · Vivaldi Snapshot"]
+        );
+        let (card, _) = popup(&mut c).unwrap();
+        let words = card.words().to_lowercase();
+        assert!(
+            !words.contains("session") && !words.contains("(2"),
+            "{words}"
+        );
     }
 }

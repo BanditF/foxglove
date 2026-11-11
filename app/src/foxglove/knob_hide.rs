@@ -1,7 +1,8 @@
 //! Apps hidden from the knob (#952, UX plan `docs/knob-exclude-ux.md`). A click on the knob goes
 //! to the next app that's playing sound; it skips:
 //!
-//! - apps that haven't played anything during this run (#854, `Heard`);
+//! - apps that haven't played anything during this run (#854, `Heard`), and apps that only
+//!   listen to the speakers (#1060: their meter follows the mix, `Heard`'s mirror test);
 //! - apps whose program has no window at all (a background helper holding a stream; hidden and
 //!   tool windows count, so a player in the tray stays; when it can't be told, the app stays);
 //! - apps on the hidden list: the user's choices (settings section `[knob]`, "Hide from knob" in
@@ -10,14 +11,16 @@
 //!   later shipped list never hides an app the user showed again.
 //!
 //! Apps are matched by their program's file name, never by session id or pid: a hidden app stays
-//! hidden after it (or Foxglove) restarts, and after an update moves it to another folder.
+//! hidden after it (or Foxglove) restarts, and after an update moves it to another folder. An
+//! app is one row however many processes play its sound (#1061); its program is the windowed
+//! one, never a helper's (hiding a WebView2 host would hide every app that uses it).
 //! Nothing here names an app.
 
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, OnceLock};
 
 use egui::RichText;
-use foxglove_panel::sessions::Session;
+use foxglove_panel::sessions::AppGroup;
 
 use super::theme;
 
@@ -176,9 +179,9 @@ impl Hidden {
         rows
     }
 
-    /// Of the heard sessions (in the knob's order), the ones a click offers: not windowless,
-    /// not hidden.
-    pub fn offer(&self, mut heard: Vec<Session>) -> Vec<Session> {
+    /// Of the heard apps (in the knob's order), the ones a click offers: not windowless, not
+    /// hidden (by the row's windowed program).
+    pub fn offer(&self, mut heard: Vec<AppGroup>) -> Vec<AppGroup> {
         heard.retain(|s| s.windowed != Some(false) && self.why(s.exe.as_deref()).is_none());
         heard
     }
@@ -272,7 +275,7 @@ static UNDO: Mutex<Option<Undo>> = Mutex::new(None);
 pub const TITLE: &str = "Knob";
 pub const INTRO: [&str; 2] = [
     "A click on the knob goes to the next app that's playing sound.",
-    "It skips apps that haven't played anything and apps on this list.",
+    "It skips apps that haven't played anything, apps that only listen to the speakers, and apps on this list.",
 ];
 pub const CAPTION: &str = "HIDDEN FROM THE KNOB";
 pub const EMPTY: &str =
@@ -515,19 +518,18 @@ pub fn page_left() {
 mod tests {
     use super::*;
 
-    fn session(id: &str, exe: Option<&str>, windowed: Option<bool>) -> Session {
-        Session {
-            id: id.into(),
+    fn session(id: &str, exe: Option<&str>, windowed: Option<bool>) -> AppGroup {
+        AppGroup {
+            key: id.into(),
             name: id.into(),
-            icon: None,
-            pid: 1,
             exe: exe.map(Into::into),
             windowed,
+            ..AppGroup::default()
         }
     }
 
-    fn ids(list: &[Session]) -> Vec<&str> {
-        list.iter().map(|s| s.id.as_str()).collect()
+    fn ids(list: &[AppGroup]) -> Vec<&str> {
+        list.iter().map(|s| s.key.as_str()).collect()
     }
 
     fn seed_of(files: &[&str]) -> Vec<SeedApp> {
@@ -543,7 +545,7 @@ mod tests {
 
     /// A captured session list (the fixture): what Windows' Volume Mixer had while a game, music,
     /// a chat app's helper process, a vendor helper and the system sounds were active.
-    fn fixture() -> Vec<Session> {
+    fn fixture() -> Vec<AppGroup> {
         vec![
             session(
                 "music",
@@ -691,10 +693,20 @@ mod tests {
             r"C:\Vendor\CenterMgr.exe"
         );
         assert_eq!(icon_path(&rows[0], &[], &known), r"C:\Apps\Chat\Chat.exe");
-        // UX plan: "Hide", never "exclude" or "block"; no "session" in the UI.
+        // UX plan: "Hide", never "exclude" or "block"; no "session", "mirror", "loopback" or
+        // "helper" in the UI (#1060/#1061 addendum).
+        assert_eq!(
+            INTRO[1],
+            "It skips apps that haven't played anything, apps that only listen to the speakers, \
+             and apps on this list."
+        );
         for s in INTRO.iter().chain([&CAPTION, &EMPTY]) {
             let l = s.to_lowercase();
-            assert!(!l.contains("exclude") && !l.contains("block") && !l.contains("session"));
+            for word in [
+                "exclude", "block", "session", "mirror", "loopback", "helper",
+            ] {
+                assert!(!l.contains(word), "{s}");
+            }
         }
     }
 
