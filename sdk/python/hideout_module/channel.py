@@ -394,14 +394,18 @@ if os.name == "nt":
     def current_user_sid():
         """The current user's SID string, from the process token."""
         # TOKEN_USER.User.Sid is the buffer's first pointer.
-        return _with_token(_k32.GetCurrentProcess(),
-                           lambda t: _sid_string(ctypes.c_void_p.from_buffer(_token_info(t, _TOKEN_USER)).value))
+        def read(t):
+            # Keep the buffer alive while the SID inside it is read (#1105 review).
+            buf = _token_info(t, _TOKEN_USER)
+            return _sid_string(ctypes.c_void_p.from_buffer(buf).value)
+        return _with_token(_k32.GetCurrentProcess(), read)
 
     def _token_app_container(token):
         if not ctypes.c_uint32.from_buffer(_token_info(token, _TOKEN_IS_APP_CONTAINER)).value:
             return None
         # TOKEN_APPCONTAINER_INFORMATION.TokenAppContainer is the buffer's first pointer.
-        return _sid_string(ctypes.c_void_p.from_buffer(_token_info(token, _TOKEN_APP_CONTAINER_SID)).value)
+        buf = _token_info(token, _TOKEN_APP_CONTAINER_SID)  # alive while the SID is read
+        return _sid_string(ctypes.c_void_p.from_buffer(buf).value)
 
     def process_app_container(pid=None):
         """The AppContainer SID of process `pid` (this process when None), or None outside one.
