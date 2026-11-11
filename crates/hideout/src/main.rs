@@ -12,6 +12,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod about_page;
 mod catalog_fetch;
 #[cfg(windows)]
 mod https;
@@ -308,7 +309,7 @@ fn main() {
     if let Some(f) = &started.finder {
         watch_search(f, start_in_tray);
     }
-    let pages = modules_page::pages(
+    let mut pages = modules_page::pages(
         modules_page::installed(&paths.root),
         started.facts.take(),
         started.actions.take(),
@@ -316,6 +317,12 @@ fn main() {
         started.finder.clone(),
         started.fresh.take(),
     );
+    // About, with Privacy and Forget seen apps (#991), after Modules.
+    pages.push(Box::new(about_page::AboutPage::new(
+        paths.root.clone(),
+        env!("CARGO_PKG_VERSION"),
+        about_page::watching_names(&paths.root),
+    )));
     let opts = hideout_shell::ShellOptions {
         paths,
         pages,

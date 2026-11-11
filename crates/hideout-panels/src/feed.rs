@@ -110,7 +110,16 @@ pub trait PanelFeed: Send {
     /// A page of `module` came on screen (the `open` activation event, §4.6 v1.10): the hub
     /// starts the module when it waits for `open`. A feed without a supervisor does nothing.
     fn opened(&mut self, _module: &str) {}
+    /// Sends `action.invoke {action, source: "key"}` for a bound key (#991), from any thread:
+    /// the hub's hotkeys call it, so a key works while the window is in the tray. A feed
+    /// without a router has none.
+    fn key_invoker(&self) -> Option<KeyInvoker> {
+        None
+    }
 }
+
+/// What [`PanelFeed::key_invoker`] gives: called with (module, action) per key press.
+pub type KeyInvoker = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 impl PanelHost {
     /// Applies what `feed` has, answers its calls, sends input out, and flushes coalesced

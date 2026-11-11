@@ -33,6 +33,9 @@ enum Tag {
 /// Tags start high so they never meet the supervisor's.
 const FIRST_TAG: u64 = 1 << 40;
 
+/// Bound keys' calls (#991) number from here, apart from the shell's own tags.
+const FIRST_KEY_TAG: u64 = 1 << 41;
+
 #[derive(Clone)]
 struct Shared {
     tx: mpsc::Sender<Inbound>,
@@ -94,6 +97,11 @@ pub fn feed(hub: Hub) -> (RouterSide, HubFeed) {
             io: None,
         },
     )
+}
+
+/// A bound key's `action.invoke` params (§8.8: `source` is `key`).
+fn key_params(action: &str) -> Value {
+    json!({"action": action, "source": "key"})
 }
 
 /// `data.reason` of an error result, else its message.
@@ -274,6 +282,26 @@ impl HubFeed {
 impl PanelFeed for HubFeed {
     fn drain(&mut self) -> Vec<Inbound> {
         self.rx.try_iter().collect()
+    }
+
+    /// A bound key (#991): `action.invoke {action, source: "key"}` from the hotkey thread; a
+    /// refusal is logged like a button's.
+    fn key_invoker(&self) -> Option<hideout_shell::hideout_panels::KeyInvoker> {
+        let hub = self.hub.clone();
+        let tags = self.shared.tags.clone();
+        let next = Arc::new(AtomicU64::new(FIRST_KEY_TAG));
+        Some(Arc::new(move |module: &str, action: &str| {
+            let tag = next.fetch_add(1, Ordering::Relaxed);
+            tags.lock().unwrap().insert(
+                tag,
+                Tag::Invoke {
+                    module: module.to_string(),
+                    action: action.to_string(),
+                },
+            );
+            let params = key_params(action);
+            hub.act(|r| r.call_module(module, "action.invoke", params, tag, Instant::now()));
+        }))
     }
 
     fn send(&mut self, out: Outbound) {
@@ -514,5 +542,57 @@ mod tests {
         let tree = serde_json::to_value(&host.panel(&key).unwrap().tree).unwrap();
         assert_eq!(tree["children"][0]["props"]["hash"], HASH);
         assert_eq!(host.assets.get(HASH).unwrap().mime, "image/png");
+    }
+
+    /// A bound key (#991): the hotkey thread's call reaches the module over the router pipe as
+    /// `action.invoke {action, source: "key"}`, with no panel host frame in between.
+    #[test]
+    fn a_bound_key_invokes_the_action_over_the_router_pipe() {
+        const KEY_ID: &str = "foxglove.example-keys";
+        let mut router = Router::new(Settings::default(), Box::new(|_, _| Vec::new()));
+        router.add_module(ModuleEntry {
+            id: KEY_ID.into(),
+            name: "Example Keys".into(),
+            holder: Holder::FirstParty,
+            granted: vec![],
+            catalog_provide: None,
+            channel_risk: Default::default(),
+            activate_on_call: false,
+            panels: None,
+            settings_dir: String::new(),
+            data_dir: String::new(),
+        });
+        router.set_token(KEY_ID, "tok-keys");
+        let (events, _rx) = mpsc::channel();
+        let hub = Hub::new(router, events);
+        let (_side, feed) = feed(hub.clone());
+        let name = format!(r"\\.\pipe\hideout-key-invoke-test-{}", std::process::id());
+        hub.serve_pipe(&name).expect("serve the test pipe");
+        let pipe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .expect("router pipe");
+        let mut from_hub = BufReader::new(pipe.try_clone().unwrap());
+        let mut read = move || {
+            let mut line = String::new();
+            from_hub.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        let mut to_hub = pipe;
+        writeln!(
+            to_hub,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "id": KEY_ID, "token": "tok-keys", "instance": "i1", "version": "0.1.0", "hub": "1.0",
+            "api": {}, "client": {"name": "example-keys", "version": "0.1.0"}}})
+        )
+        .unwrap();
+        assert!(read().get("result").is_some());
+        let invoke = feed.key_invoker().expect("the hub feed has a key invoker");
+        invoke(KEY_ID, "toggle");
+        let call = read();
+        assert_eq!(call["method"], "action.invoke");
+        assert_eq!(call["params"], json!({"action": "toggle", "source": "key"}));
     }
 }

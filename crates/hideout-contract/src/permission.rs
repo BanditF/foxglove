@@ -132,6 +132,32 @@ impl Permission {
     }
 }
 
+impl Permission {
+    /// [`Permission::describe_spelled`], with an app watch's app called `program` when the hub
+    /// found its friendly name (its exe's version info, #991: "see whether Example Studio is
+    /// running"). `None`, or any other permission, reads as `describe_spelled(names)`. A name
+    /// that ends in `.exe` is ignored, so no line names a file.
+    pub fn describe_with_program(&self, names: &[&str], program: Option<&str>) -> String {
+        match (self, program.map(str::trim)) {
+            (Permission::AppsWatch(_), Some(n))
+                if !n.is_empty() && !n.to_ascii_lowercase().contains(".exe") =>
+            {
+                format!("see whether {n} is running")
+            }
+            _ => self.describe_spelled(names),
+        }
+    }
+
+    /// The app an app watch is about: its exe name without `.exe` (`obs64`), for a friendly
+    /// name lookup. `None` for every other permission.
+    pub fn watched_app(&self) -> Option<&str> {
+        match self {
+            Permission::AppsWatch(exe) => Some(exe.strip_suffix(".exe").unwrap_or(exe)),
+            _ => None,
+        }
+    }
+}
+
 /// An app watch's app for a permission line: `exe` without `.exe`, spelled as one of `names`
 /// spells it when one matches it without regard to case.
 fn watched_name(exe: &str, names: &[&str]) -> String {
@@ -437,6 +463,30 @@ mod tests {
         assert_eq!(
             p("files").unwrap().describe_windows_spelled(&[]),
             p("files").unwrap().describe()
+        );
+    }
+
+    #[test]
+    fn a_friendly_program_name_wins_and_never_names_a_file() {
+        let app = p("apps.watch:obs64.exe").unwrap();
+        assert_eq!(app.watched_app(), Some("obs64"));
+        assert_eq!(
+            app.describe_with_program(&[], Some("Example Studio")),
+            "see whether Example Studio is running"
+        );
+        assert_eq!(
+            app.describe_with_program(&[], None),
+            "see whether obs64 is running"
+        );
+        assert_eq!(
+            app.describe_with_program(&[], Some("obs64.EXE")),
+            "see whether obs64 is running"
+        );
+        let files = p("files").unwrap();
+        assert_eq!(files.watched_app(), None);
+        assert_eq!(
+            files.describe_with_program(&[], Some("Example Studio")),
+            files.describe()
         );
     }
 

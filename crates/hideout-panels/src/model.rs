@@ -208,6 +208,12 @@ pub struct PanelHost {
     manifests: BTreeMap<String, Module>,
     /// Bound keys by (module, action), as people read them ("F13").
     keys: HashMap<(String, String), String>,
+    /// The Keys row waiting for a key press (Set key or Change, #991).
+    capturing: Option<(String, String)>,
+    /// A Keys row's line: why a key wasn't bound, or that another app has it.
+    key_notes: HashMap<(String, String), String>,
+    /// The user bound or removed a key since the last [`PanelHost::take_keys_changed`].
+    keys_changed: bool,
     /// When each module's panels last went from live to greyed ("Last seen", §7.8).
     gone_at: HashMap<String, Instant>,
     /// When the current `module.<id>.restart` fact arrived (the restart countdown, §7.8).
@@ -336,6 +342,9 @@ impl PanelHost {
             hidden_tiles: HashSet::new(),
             manifests: BTreeMap::new(),
             keys: HashMap::new(),
+            capturing: None,
+            key_notes: HashMap::new(),
+            keys_changed: false,
             gone_at: HashMap::new(),
             restart_since: HashMap::new(),
             settings: HashMap::new(),
@@ -447,6 +456,106 @@ impl PanelHost {
         self.keys
             .get(&(module.to_string(), action.to_string()))
             .map(String::as_str)
+    }
+
+    /// Every bound key as (module, action, key), sorted, for the hub's hotkeys and
+    /// `hideout.toml`'s `[keys]`.
+    pub fn bound_keys(&self) -> Vec<(String, String, String)> {
+        let mut out: Vec<_> = self
+            .keys
+            .iter()
+            .map(|((m, a), k)| (m.clone(), a.clone(), k.clone()))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Set key or Change on a Keys row: the next key press binds it (Esc or Cancel stops).
+    pub fn start_capture(&mut self, module: &str, action: &str) {
+        let k = (module.to_string(), action.to_string());
+        self.key_notes.remove(&k);
+        self.capturing = Some(k);
+    }
+
+    pub fn cancel_capture(&mut self) {
+        self.capturing = None;
+    }
+
+    /// The Keys row waiting for a key press, if any.
+    pub fn capturing(&self) -> Option<(&str, &str)> {
+        self.capturing
+            .as_ref()
+            .map(|(m, a)| (m.as_str(), a.as_str()))
+    }
+
+    /// A key press while capturing. Binds it unless another action has it (the row then says
+    /// which), or the key isn't one to bind (the row says why and keeps waiting).
+    pub fn capture_press(&mut self, press: crate::keys::Press) {
+        use crate::keys::Press;
+        let Some(k) = self.capturing.clone() else {
+            return;
+        };
+        match press {
+            Press::Wait => {}
+            Press::Cancel => self.capturing = None,
+            Press::Refused(why) => {
+                self.key_notes.insert(k, why.to_string());
+            }
+            Press::Bind(chord) => {
+                let text = chord.to_string();
+                let other = self
+                    .keys
+                    .iter()
+                    .find(|(o, v)| **v == text && **o != k)
+                    .map(|((m, a), _)| (m.clone(), a.clone()));
+                if let Some((m, a)) = other {
+                    let action = self.action_name(&m, &a);
+                    let note = crate::keys::taken_here(&text, &action, &self.module_name(&m));
+                    self.key_notes.insert(k, note);
+                    return;
+                }
+                self.key_notes.remove(&k);
+                self.keys.insert(k, text);
+                self.capturing = None;
+                self.keys_changed = true;
+            }
+        }
+    }
+
+    /// Remove on a Keys row: the action has no key any more.
+    pub fn unbind_key(&mut self, module: &str, action: &str) {
+        let k = (module.to_string(), action.to_string());
+        self.key_notes.remove(&k);
+        self.keys_changed |= self.keys.remove(&k).is_some();
+    }
+
+    /// The Keys row's line, if it has one.
+    pub fn key_note(&self, module: &str, action: &str) -> Option<&str> {
+        self.key_notes
+            .get(&(module.to_string(), action.to_string()))
+            .map(String::as_str)
+    }
+
+    /// Sets or clears a Keys row's line (the hotkeys report a key another app holds).
+    pub fn set_key_note(&mut self, module: &str, action: &str, note: Option<String>) {
+        let k = (module.to_string(), action.to_string());
+        match note {
+            Some(n) => self.key_notes.insert(k, n),
+            None => self.key_notes.remove(&k),
+        };
+    }
+
+    /// The bound keys when the user changed them since the last call (to save and register).
+    pub fn take_keys_changed(&mut self) -> Option<Vec<(String, String, String)>> {
+        std::mem::take(&mut self.keys_changed).then(|| self.bound_keys())
+    }
+
+    /// An action's `name` from the manifest, else its id.
+    fn action_name(&self, module: &str, action: &str) -> String {
+        self.manifests
+            .get(module)
+            .and_then(|m| m.actions.iter().find(|a| a.decl.id == action))
+            .map_or_else(|| action.to_string(), |a| a.decl.name.clone())
     }
 
     /// A `when` clause against the hub's facts (§4.6).
@@ -762,7 +871,13 @@ impl PanelHost {
         self.shown.retain(|k| k.module != module);
         self.visibility_out.retain(|(m, _)| m != module);
         self.hub_calls.retain(|c| c.module() != module);
+        let bound = self.keys.len();
         self.keys.retain(|(m, _), _| m != module);
+        self.keys_changed |= self.keys.len() != bound;
+        self.key_notes.retain(|(m, _), _| m != module);
+        if self.capturing.as_ref().is_some_and(|(m, _)| m == module) {
+            self.capturing = None;
+        }
         self.manifests.remove(module);
         self.quarantined.remove(module);
         self.gone_at.remove(module);

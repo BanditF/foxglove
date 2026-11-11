@@ -2770,3 +2770,88 @@ fn renders_the_search_for_review() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Set key (#991): while a Keys row waits for a key, Ctrl+W binds instead of closing the tab,
+/// and the key is saved in `hideout.toml`'s `[keys]`; Esc then leaves the next capture as it was.
+#[test]
+fn set_key_takes_the_press_from_the_window_and_saves_it() {
+    let ctx = ctx();
+    let dir = temp_dir("set-key");
+    let mut hub = hub_in(&dir, None);
+    let toml = format!(
+        r#"
+id = "{SUP}"
+name = "Art"
+version = "0.5.0"
+kind = "service"
+family = "third-party"
+hub = "1.0"
+run = ["art.exe"]
+description = "Art."
+
+[[actions]]
+id = "toggle"
+name = "Toggle it"
+"#
+    );
+    let m = hideout_contract::module::Module::parse(&toml, &Default::default()).unwrap();
+    hub.panels.set_manifest(m);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    let tabs = hub.tabs.len();
+    let ctrl = Modifiers {
+        ctrl: true,
+        command: true,
+        ..Modifiers::NONE
+    };
+    hub.panels.start_capture(SUP, "toggle");
+    quiet_frame(&ctx, &mut hub, vec![key(Key::W, ctrl)]);
+    assert_eq!(hub.panels.key(SUP, "toggle"), Some("Ctrl+W"));
+    assert_eq!(hub.panels.capturing(), None);
+    assert_eq!(hub.tabs.len(), tabs, "Ctrl+W bound; no tab closed");
+    let saved = Prefs::load(&hub.shared.paths.prefs_file()).0;
+    assert_eq!(
+        saved.keys.get(&format!("{SUP}/toggle")).map(String::as_str),
+        Some("Ctrl+W")
+    );
+    hub.panels.start_capture(SUP, "toggle");
+    quiet_frame(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
+    assert_eq!(hub.panels.capturing(), None);
+    assert_eq!(hub.panels.key(SUP, "toggle"), Some("Ctrl+W"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review image of the Keys rows (#991): a bound key with Change and Remove, Set key, and a row
+/// waiting for a key that was just refused, on the first real module with three actions.
+#[test]
+fn renders_the_keys_rows_for_review() {
+    let (mut host, ids) = review_modules();
+    let Some(id) = ids
+        .iter()
+        .find(|id| host.manifest(id).is_some_and(|m| m.actions.len() >= 3))
+        .cloned()
+    else {
+        return;
+    };
+    let actions: Vec<String> = host
+        .manifest(&id)
+        .unwrap()
+        .actions
+        .iter()
+        .map(|a| a.decl.id.clone())
+        .collect();
+    host.set_key(&id, &actions[0], Some("Ctrl+Alt+M".into()));
+    host.start_capture(&id, &actions[2]);
+    host.capture_press(hideout_panels::keys::Chord::press(Key::M, Modifiers::NONE));
+    host.set_fact(&format!("module.{id}.state"), serde_json::json!("running"));
+    let Some(page) = host.navigate(&id, "page") else {
+        return;
+    };
+    let (w, h) = (640u32, 240u32);
+    let rgba = rasterise(w, h, |c| {
+        egui::CentralPanel::default().show(c, |ui| {
+            hideout_panels::page_sections_ui(&mut host, ui, &page)
+        });
+    })
+    .unwrap();
+    save_png("built-keys-rows.png", w, h, rgba);
+}

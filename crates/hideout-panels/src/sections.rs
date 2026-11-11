@@ -45,15 +45,13 @@ pub fn page_sections_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) {
                     .show(ui, |ui| {
                         for a in &actions {
                             ui.label(&a.decl.name);
-                            match host.key(module, &a.decl.id) {
-                                Some(k) => key_chip(ui, k),
-                                // Choosing a key (UX3) needs the key capture, not in this hub yet.
-                                None => {
-                                    ui.label(RichText::new("No key").weak())
-                                        .on_hover_text("Choosing a key comes in a later Hideout.");
-                                }
-                            }
+                            key_row(ui, host, module, &a.decl.id, &a.decl.name);
                             ui.end_row();
+                            if let Some(note) = host.key_note(module, &a.decl.id) {
+                                ui.label("");
+                                ui.label(RichText::new(note).color(ui.visuals().error_fg_color));
+                                ui.end_row();
+                            }
                         }
                     });
             });
@@ -112,6 +110,51 @@ pub fn page_sections_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) {
         r.header_response.scroll_to_me(Some(egui::Align::TOP));
         host.view_mut(key).focus = None;
     }
+}
+
+/// A Keys row's key cell (#991): the bound key with Change and Remove, or **Set key**; while
+/// it waits for a key, "Press a key…" with Cancel (the shell hands it the key presses, see
+/// [`PanelHost::capture_press`]).
+fn key_row(ui: &mut Ui, host: &mut PanelHost, module: &str, action: &str, name: &str) {
+    use crate::keys::{CANCEL, CHANGE, PRESS_A_KEY, REMOVE, SET_KEY};
+    ui.horizontal(|ui| {
+        if host.capturing() == Some((module, action)) {
+            ui.label(RichText::new(PRESS_A_KEY).strong());
+            let cancel = ui.button(CANCEL);
+            // Focus on Cancel: a screen reader says the row is waiting, and Esc is the key way.
+            if !cancel.has_focus() {
+                cancel.request_focus();
+            }
+            if cancel.clicked() {
+                host.cancel_capture();
+            }
+            return;
+        }
+        match host.key(module, action).map(str::to_string) {
+            Some(k) => {
+                key_chip(ui, &k);
+                if ui
+                    .small_button(CHANGE)
+                    .on_hover_text(format!("{CHANGE} the key for {name}"))
+                    .clicked()
+                {
+                    host.start_capture(module, action);
+                }
+                if ui
+                    .small_button(REMOVE)
+                    .on_hover_text(format!("{REMOVE} the key for {name}"))
+                    .clicked()
+                {
+                    host.unbind_key(module, action);
+                }
+            }
+            None => {
+                if ui.button(SET_KEY).clicked() {
+                    host.start_capture(module, action);
+                }
+            }
+        }
+    });
 }
 
 /// One row of the generated form; the new value when the user changed it.

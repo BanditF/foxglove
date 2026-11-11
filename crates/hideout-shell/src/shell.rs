@@ -366,6 +366,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             platform::set_popout_waker(Box::new(move || pop_ctx.request_repaint()));
             let mut hub = Hub::new(shared, pages, feed, hooks);
             hub.popouts_held = start_in_tray;
+            hub.start_hotkeys(&ctx);
             if let Some(f) = finder.as_ref() {
                 let wake_ctx = ctx.clone();
                 f.set_waker(Box::new(move || wake_ctx.request_repaint()));
@@ -685,6 +686,9 @@ struct Hub {
     search_focused: bool,
     /// "<Module> was removed; its window was closed." in the status strip (#1012.4).
     removed_notice: Option<Notice>,
+    /// The bound keys as system-wide hotkeys (#991); `None` without a router (a second hub,
+    /// tests).
+    hotkeys: Option<crate::hotkeys::Hotkeys>,
 }
 
 /// A line the status strip shows for a while (#1012.4): [`NOTICE_FOR`] of the main window on
@@ -914,7 +918,7 @@ impl Hub {
                 Tabs::default()
             }
         };
-        let (tray_layout, windows) = shared
+        let (tray_layout, windows, keys) = shared
             .prefs
             .lock()
             .map(|p| {
@@ -922,9 +926,17 @@ impl Hub {
                 for e in errors {
                     log::warn!("{e}; that page opens at the fallback place");
                 }
-                (layout_from(&p.tray), windows)
+                (layout_from(&p.tray), windows, p.keys.clone())
             })
             .unwrap_or_default();
+        // The keys bound with Set key (#991), `[keys]` in hideout.toml.
+        let mut panels = PanelHost::default();
+        for (target, key) in keys {
+            match target.split_once('/') {
+                Some((module, action)) => panels.set_key(module, action, Some(key)),
+                None => log::warn!("hideout.toml [keys]: {target:?} is no <module>/<action>"),
+            }
+        }
         Self {
             shared,
             pages,
@@ -935,7 +947,7 @@ impl Hub {
             quitting: false,
             quit_now: false,
             menu_cmds: Vec::new(),
-            panels: PanelHost::default(),
+            panels,
             feed,
             hooks,
             title: String::new(),
@@ -965,6 +977,85 @@ impl Hub {
             search_off: HashMap::new(),
             search_focused: false,
             removed_notice: None,
+            hotkeys: None,
+        }
+    }
+
+    /// Registers the bound keys system-wide (#991): a press sends `action.invoke` through the
+    /// router from the hotkey thread, so it works with the window in the tray.
+    fn start_hotkeys(&mut self, ctx: &egui::Context) {
+        let Some(invoke) = self.feed.as_ref().and_then(|f| f.key_invoker()) else {
+            return;
+        };
+        let wake_ctx = ctx.clone();
+        self.hotkeys = crate::hotkeys::Hotkeys::start(
+            Box::new(move |m, a| invoke(m, a)),
+            Box::new(move || wake_ctx.request_repaint()),
+        );
+        if let Some(h) = &self.hotkeys {
+            h.set(self.panels.bound_keys());
+        }
+    }
+
+    /// While a Keys row waits for a key (Set key), this frame's key presses are its and nobody
+    /// else's: Ctrl+W must bind, not close the tab. `ctx` is the window the row is drawn in.
+    fn capture_keys(&mut self, ctx: &egui::Context) {
+        if self.panels.capturing().is_none() {
+            return;
+        }
+        let presses = ctx.input_mut(|i| {
+            let mut out = Vec::new();
+            i.events.retain(|e| match e {
+                egui::Event::Key {
+                    key,
+                    physical_key,
+                    pressed,
+                    modifiers,
+                    ..
+                } => {
+                    if *pressed {
+                        out.push((physical_key.unwrap_or(*key), *modifiers));
+                    }
+                    false
+                }
+                egui::Event::Text(_) => false,
+                _ => true,
+            });
+            out
+        });
+        for (key, mods) in presses {
+            self.panels
+                .capture_press(hideout_panels::keys::Chord::press(key, mods));
+        }
+    }
+
+    /// Bound keys the user changed are saved (`[keys]`) and registered again; a key the
+    /// system refused shows on its row.
+    fn keys_sync(&mut self) {
+        if let Some(list) = self.panels.take_keys_changed() {
+            if let Ok(mut p) = self.shared.prefs.lock() {
+                p.keys = list
+                    .iter()
+                    .map(|(m, a, k)| (format!("{m}/{a}"), k.clone()))
+                    .collect();
+                if let Err(e) = p.save(&self.shared.paths.prefs_file()) {
+                    log::warn!("saving {}: {e}", self.shared.paths.prefs_file().display());
+                }
+            }
+            if let Some(h) = &self.hotkeys {
+                h.set(list);
+            }
+        }
+        let Some(refused) = self.hotkeys.as_ref().and_then(|h| h.take_refused()) else {
+            return;
+        };
+        for (m, a, k) in self.panels.bound_keys() {
+            let elsewhere = hideout_panels::keys::taken_elsewhere(&k);
+            if refused.iter().any(|r| r.0 == m && r.1 == a) {
+                self.panels.set_key_note(&m, &a, Some(elsewhere));
+            } else if self.panels.key_note(&m, &a) == Some(elsewhere.as_str()) {
+                self.panels.set_key_note(&m, &a, None);
+            }
         }
     }
 
@@ -2607,6 +2698,7 @@ impl Hub {
         for (module, name) in self.panels.take_removed() {
             self.module_removed(&module, &name);
         }
+        self.capture_keys(ctx);
         self.notice_tick(ctx);
         self.take_open_requests();
         self.main_window_commands(ctx);
@@ -2634,6 +2726,7 @@ impl Hub {
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(ctx, |ui| self.page_area(ui, &t));
+        self.keys_sync();
         if self.quitting {
             self.quit_ui(ctx, &t);
         } else {
@@ -2943,6 +3036,8 @@ impl Hub {
                     // in the page area stays the way to the page.
                     return PopFrame::default();
                 }
+                // A Keys row waiting in this pop-out takes its key presses (#991).
+                self.capture_keys(vctx);
                 let out = self.popout_window_ui(vctx, t, i);
                 if let Some(tx) = capture.as_ref().filter(|_| p.shown && !p.minimized) {
                     shown_n = shown_n.saturating_add(1);

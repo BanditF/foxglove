@@ -31,6 +31,8 @@ pub mod capture;
 #[cfg(windows)]
 pub mod exit_watch;
 #[cfg(windows)]
+pub mod hotkeys;
+#[cfg(windows)]
 pub mod lab_control;
 #[cfg(windows)]
 pub mod modules_list;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-//! `hideout.toml`, the hub's own preferences (contract §7.3). The shell owns `theme` and
-//! `[window]`; every other key (modules, sources, trust, privacy, safe mode, written by later
+//! `hideout.toml`, the hub's own preferences (contract §7.3). The shell owns `theme`,
+//! `[window]`, `[tray]` and `[keys]`; every other key (modules, sources, trust, privacy, safe mode, written by later
 //! parts of the hub) is kept as it was when the file is saved.
 
 use crate::placement::SavedRect;
@@ -62,6 +62,9 @@ pub struct Prefs {
     /// `[tray]`: the tray panel's tile layout.
     #[serde(skip_serializing_if = "TrayPrefs::is_empty")]
     pub tray: TrayPrefs,
+    /// `[keys]`: bound keys (Set key, #991), `"<module>/<action>" = "Ctrl+Alt+M"`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, String>,
     /// Keys the shell doesn't own, kept verbatim.
     #[serde(flatten)]
     pub rest: toml::Table,
@@ -194,6 +197,16 @@ other = 1
         let back = Prefs::parse(&text).unwrap();
         assert_eq!(back.tray, p.tray);
         assert_eq!(back.rest["other"].as_integer(), Some(1));
+    }
+
+    #[test]
+    fn bound_keys_round_trip_and_none_writes_nothing() {
+        let mut p = Prefs::default();
+        assert!(!p.to_toml().contains("[keys]"));
+        p.keys.insert("m.a/toggle".into(), "Ctrl+Alt+M".into());
+        let text = p.to_toml();
+        assert!(text.contains("[keys]"), "{text}");
+        assert_eq!(Prefs::parse(&text).unwrap().keys, p.keys);
     }
 
     #[test]

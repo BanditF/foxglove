@@ -713,6 +713,21 @@ impl Module {
             .collect();
         p.describe_spelled(&names)
     }
+
+    /// [`Module::describe_permission`] with an app watch's app called by its friendly name when
+    /// `program` finds one for its exe name (`obs64` gives "OBS Studio" from the exe's version
+    /// info, #991); otherwise the manifest's spelling, then the bare exe name. The hub passes
+    /// `hideout_appwatch::program_name`.
+    pub fn describe_permission_named(
+        &self,
+        p: &crate::permission::Permission,
+        program: impl Fn(&str) -> Option<String>,
+    ) -> String {
+        match p.watched_app().and_then(program) {
+            Some(name) => p.describe_with_program(&[], Some(&name)),
+            None => self.describe_permission(p),
+        }
+    }
 }
 
 /// One `when` clause: a fact name, optionally prefixed by `!` (§4.6). An `apps.seen.<name>`
@@ -1415,6 +1430,16 @@ when = "!apps.seen.fourth"
         assert_eq!(
             m.describe_permission(&watch("art.exe")),
             "see whether Art is running"
+        );
+        // A friendly name from the exe's version info wins (#991); none keeps the spelling.
+        let named = |label: &str| (label == "other-app").then(|| "Other Studio".to_string());
+        assert_eq!(
+            m.describe_permission_named(&watch("other-app.exe"), named),
+            "see whether Other Studio is running"
+        );
+        assert_eq!(
+            m.describe_permission_named(&watch("example-app.exe"), named),
+            "see whether Example-App is running"
         );
     }
 }

@@ -657,6 +657,12 @@ Windows' **Settings > System > Sound > Volume mixer > Reset** puts every app bac
 | updates downloaded | `%LOCALAPPDATA%\Foxglove\updates\` |
 | firmware flash history | `%LOCALAPPDATA%\Foxglove\flash-history.log` |
 | Foxglove's log (two files, about 2 MB at most) | `%APPDATA%\Foxglove\logs\foxglove.log` and `foxglove.1.log` |
+| the Hideout hub's settings, bound keys and tile layout | `%LOCALAPPDATA%\Hideout\hideout.toml` |
+| the apps the Hideout hub has seen run | `%LOCALAPPDATA%\Hideout\apps-seen.txt` |
+
+**Hideout and privacy:** Hideout notices when apps that your modules work with (like OBS or
+iCUE) start or quit, so their tiles show up. It keeps a list of those apps on this PC only.
+**About → Forget seen apps** clears that list.
 
 To try things without touching your real settings, start Foxglove with `FOXGLOVE_CONFIG_DIR`
 set to another folder: every settings file goes there instead.
