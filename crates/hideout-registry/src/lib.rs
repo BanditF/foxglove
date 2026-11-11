@@ -341,9 +341,18 @@ impl Registry {
         self.inventory.save(&self.home.join("inventory.json"))
     }
 
-    fn save_hub(&self) -> io::Result<()> {
+    /// Applies `f` to the hub config held here and to `hideout.toml` as it is on disk now, and
+    /// saves that: only the change is written. A lab module's "on unless the file says
+    /// otherwise" lives in memory only ([`Registry::load_lab`]); writing the whole held table
+    /// would save it as a choice (#1076), and would write back over what another writer saved.
+    fn change_hub(&mut self, f: impl Fn(&mut HubConfig)) -> Result<(), Failure> {
+        f(&mut self.hub);
+        let path = self.home.join("hideout.toml");
+        let mut disk = HubConfig::load(&path)??;
+        f(&mut disk);
         hideout_acl::create_private_dir_all(&self.home)?;
-        self.hub.save(&self.home.join("hideout.toml"))
+        disk.save(&path)?;
+        Ok(())
     }
 
     /// Verifies `root.json` against the pinned key, stores the raised `seen`, and only then uses
@@ -732,18 +741,16 @@ impl Registry {
 
     /// Sets or clears `hideout.toml`'s `safe_mode` flag (§7.10) and saves the file.
     pub fn set_safe_mode(&mut self, on: bool) -> Result<(), Failure> {
-        self.hub.set_safe_mode(on);
-        self.save_hub()?;
-        Ok(())
+        self.change_hub(|h| h.set_safe_mode(on))
     }
 
+    /// Saves `[modules.<id>] enabled` in `hideout.toml`, a lab module's too (in a registry
+    /// opened in lab mode, [`Registry::open_from_env`]).
     pub fn set_enabled(&mut self, id: &str, on: bool) -> Result<(), Failure> {
         if !self.inventory.modules.contains_key(id) {
             return Err(Failure::NotInstalled(id.into()));
         }
-        self.hub.set_enabled(id, on);
-        self.save_hub()?;
-        Ok(())
+        self.change_hub(|h| h.set_enabled(id, on))
     }
 
     /// Removes a module that isn't running: its folders, inventory entry and hub table.
@@ -758,10 +765,8 @@ impl Registry {
         if dir.exists() {
             std::fs::remove_dir_all(dir)?;
         }
-        self.hub.forget(id);
         self.save_inventory()?;
-        self.save_hub()?;
-        Ok(())
+        self.change_hub(|h| h.forget(id))
     }
 
     /// The check before every launch (§12.5, §12.6): installed and enabled; a catalog module's

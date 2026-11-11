@@ -20,6 +20,9 @@ pub enum Command {
     /// A left click on the icon: open or close the tray flyout above the icon (its rectangle,
     /// physical pixels).
     Flyout(crate::placement::Rect),
+    /// A double click on the icon: the flyout goes at once (not drawn again), then Hideout's
+    /// window opens (#997, #1076).
+    DoubleClick,
     Pause(bool),
     OpenLogs,
     Quit,
@@ -165,17 +168,27 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
         menu_cmd(cmd);
     }));
     TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| match ev {
-        // A click opens the tray flyout (#991); a double click opens Hideout itself.
+        // A click opens the tray flyout (#991); a double click opens Hideout itself, and the
+        // flyout never shows on the way (#997, #1076): see `ClickGate`.
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Down,
+            ..
+        } => GATE.with(|g| g.borrow_mut().down()),
         TrayIconEvent::Click {
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
             rect,
             ..
-        } => on_command(Command::Flyout(icon_rect(&rect))),
+        } => {
+            if let Some(cmd) = GATE.with(|g| g.borrow_mut().up(icon_rect(&rect))) {
+                on_command(cmd)
+            }
+        }
         TrayIconEvent::DoubleClick {
             button: MouseButton::Left,
             ..
-        } => on_command(Command::Open),
+        } => on_command(GATE.with(|g| g.borrow_mut().double())),
         // tray-icon arms a 15 ms leave-check timer on each move over the icon and only kills it
         // when a tick still holds a fresh position; after the menu opens (the cursor leaves
         // through the menu, so no move clears it) it ticks at 64 Hz for good. The hub uses no
@@ -193,6 +206,42 @@ fn icon_rect(r: &tray_icon::Rect) -> crate::placement::Rect {
         y: r.position.y.round() as i32,
         w: r.size.width as i32,
         h: r.size.height as i32,
+    }
+}
+
+thread_local! {
+    /// The left button on the icon (UI thread only, where tray-icon delivers its events).
+    static GATE: RefCell<ClickGate> = RefCell::new(ClickGate::default());
+}
+
+/// The left button on the tray icon (#997, #1076). Windows sends a double click as down, up,
+/// `WM_LBUTTONDBLCLK`, up, and tray-icon makes a click of each up. The first up opens the
+/// flyout at once, as any click does; the double click then sends [`Command::DoubleClick`],
+/// which takes the flyout away in the same handler before Hideout shows; the up that ends the
+/// double click is not a click of its own, so it never opens or toggles the flyout again.
+#[derive(Debug, Default)]
+pub(crate) struct ClickGate {
+    /// A double click came: the next up ends it.
+    swallow_up: bool,
+}
+
+impl ClickGate {
+    pub(crate) fn down(&mut self) {
+        self.swallow_up = false;
+    }
+
+    /// An up: the flyout toggles at once, unless it ends a double click.
+    pub(crate) fn up(&mut self, icon: crate::placement::Rect) -> Option<Command> {
+        if std::mem::take(&mut self.swallow_up) {
+            return None;
+        }
+        Some(Command::Flyout(icon))
+    }
+
+    /// `WM_LBUTTONDBLCLK`.
+    pub(crate) fn double(&mut self) -> Command {
+        self.swallow_up = true;
+        Command::DoubleClick
     }
 }
 
@@ -308,6 +357,34 @@ mod tests {
         assert_eq!(LEAVE_TIMER_ID, 6007);
         // Lab control (#1003) posts tray-icon's callback message, private as well.
         assert_eq!(crate::lab_control::WM_USER_TRAYICON, 6002);
+    }
+
+    const ICON: crate::placement::Rect = crate::placement::Rect {
+        x: 1800,
+        y: 1044,
+        w: 24,
+        h: 24,
+    };
+
+    /// #997 / #1076: a double click as Windows (and lab control's `tray-double-click`) sends
+    /// it: down, up, `WM_LBUTTONDBLCLK`, up. The first up opens the flyout at once (no wait,
+    /// as any single click); the double click is a `DoubleClick` (the shell takes the flyout
+    /// away then); the up that ends it is no click, so the flyout isn't asked for again.
+    #[test]
+    fn a_double_click_asks_once_then_takes_the_flyout_away() {
+        let mut g = ClickGate::default();
+        g.down();
+        assert_eq!(g.up(ICON), Some(Command::Flyout(ICON)));
+        assert_eq!(g.double(), Command::DoubleClick);
+        assert_eq!(
+            g.up(ICON),
+            None,
+            "the up ending the double click toggled the flyout"
+        );
+        // The next click is a click again, at once.
+        g.down();
+        assert_eq!(g.up(ICON), Some(Command::Flyout(ICON)));
+        assert_eq!(g.up(ICON), Some(Command::Flyout(ICON)));
     }
 
     #[test]

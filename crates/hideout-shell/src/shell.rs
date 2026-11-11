@@ -168,6 +168,8 @@ struct Shared {
     hidden: AtomicBool,
     /// A left click on the tray icon (the icon's rectangle and when), for the next frame.
     flyout_click: Mutex<Option<(placement::Rect, std::time::Instant)>>,
+    /// A double click on the tray icon took the flyout away (#1076): the next frame drops it.
+    flyout_dismiss: AtomicBool,
     /// The tray menu's Start normally.
     start_normally: Option<StartNormally>,
     /// Quit Hideout's one ask across windows (#1012.5).
@@ -277,6 +279,7 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        flyout_dismiss: AtomicBool::new(false),
         start_normally: opts.start_normally.clone(),
         quit: QuitAsk::default(),
     });
@@ -437,6 +440,17 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
             return;
         }
         tray::Command::Open => {
+            shared.hidden.store(false, Ordering::Release);
+            platform::show_main_window()
+        }
+        // #997, #1076: in this handler, before Hideout shows, the flyout goes: an open not
+        // drawn yet is dropped, one on screen is hidden at once (`flyout::dismiss_now`).
+        tray::Command::DoubleClick => {
+            if let Ok(mut c) = shared.flyout_click.lock() {
+                *c = None;
+            }
+            flyout::hide_now();
+            shared.flyout_dismiss.store(true, Ordering::Release);
             shared.hidden.store(false, Ordering::Release);
             platform::show_main_window()
         }
@@ -1027,6 +1041,10 @@ impl Hub {
             .lock()
             .ok()
             .and_then(|mut c| c.take());
+        // A double click hid it already (#1076): gone now, not a "closed by focus" toggle.
+        if self.shared.flyout_dismiss.swap(false, Ordering::AcqRel) {
+            self.close_flyout(ctx, false);
+        }
         if let Some((icon, at)) = click {
             match flyout::on_click(self.flyout.is_some(), self.flyout_closed_by_focus, at) {
                 flyout::Click::Open => {

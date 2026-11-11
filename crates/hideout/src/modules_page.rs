@@ -235,12 +235,40 @@ impl ModulesPage {
     }
 }
 
-/// What is installed: id, name (from its manifest), version and whether it is on.
+/// What is installed: id, name (from its manifest), version and whether it is on. A registry
+/// that can't be read is logged with its reason and reads as nothing (the page's first list).
 #[cfg(windows)]
 pub fn installed(home: &std::path::Path) -> Vec<hideout_shell::modules_list::Installed> {
-    let Ok(reg) = hideout_registry::Registry::open_from_env(home) else {
-        return Vec::new();
-    };
+    match read_installed(home) {
+        Ok(list) => {
+            // Which folder and how many, so a page without rows says why in the log (#1076).
+            log::info!(
+                "Modules page: {} installed module(s) in {}",
+                list.len(),
+                home.display()
+            );
+            list
+        }
+        Err(why) => {
+            log::warn!("Modules page: the installed modules couldn't be read ({why}); no rows");
+            Vec::new()
+        }
+    }
+}
+
+/// [`installed`], or why the registry couldn't be read (#1076): the inventory watch keeps the
+/// page's last list then, so a failed read never empties the page.
+#[cfg(windows)]
+pub fn read_installed(
+    home: &std::path::Path,
+) -> Result<Vec<hideout_shell::modules_list::Installed>, String> {
+    let reg = hideout_registry::Registry::open_from_env(home).map_err(|e| e.to_string())?;
+    Ok(list(&reg))
+}
+
+/// The page's list from a registry already read.
+#[cfg(windows)]
+pub fn list(reg: &hideout_registry::Registry) -> Vec<hideout_shell::modules_list::Installed> {
     let mut out: Vec<_> = reg
         .inventory
         .modules

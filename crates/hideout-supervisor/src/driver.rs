@@ -47,6 +47,40 @@ struct Withdrawal {
     last_check: Option<(SystemTime, String)>,
 }
 
+/// What the router and the policy learn of an installed module, at the start and when it
+/// joins later (#1076): its router entry with the manifest's name and `call` activation, and
+/// its `Known` (`None` when the manifest has no `run`: nothing to start).
+fn known_event(
+    reg: &Registry,
+    id: &str,
+    manifest: Option<&hideout_contract::module::Module>,
+) -> (Option<ModuleEntry>, Option<Ev>) {
+    let activation = manifest
+        .map(|m| m.activation_on.clone())
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| vec!["enable".into()]);
+    let on_call = activation.iter().any(|a| a == "call");
+    let name = manifest.map_or_else(|| id.to_string(), |m| m.name.clone());
+    let entry = ModuleEntry::from_registry(reg, id).map(|mut e| {
+        e.activate_on_call = on_call;
+        e.name = name.clone();
+        e
+    });
+    let runs = manifest.is_some_and(|m| m.run.is_some());
+    let ev = runs.then(|| Ev::Known {
+        id: id.into(),
+        name,
+        enabled: reg.hub.enabled(id),
+        at_enable: activation.iter().any(|a| a == "enable"),
+        previous: reg
+            .inventory
+            .modules
+            .get(id)
+            .and_then(|m| m.previous.clone()),
+    });
+    (entry, ev)
+}
+
 /// `run\withdrawn-notified.json`: the withdrawn versions already notified (`id@version`), so a
 /// later sign-in shows the card and the dot but no second notification (decision 3, 11/10).
 fn notified_path(home: &Path) -> PathBuf {
@@ -296,39 +330,20 @@ impl Supervisor {
         if let Some(reg) = &reg {
             for id in reg.inventory.modules.keys() {
                 let manifest = reg.manifest(id);
-                let activation = manifest
-                    .as_ref()
-                    .map(|m| m.activation_on.clone())
-                    .filter(|a| !a.is_empty())
-                    .unwrap_or_else(|| vec!["enable".into()]);
-                let runs = manifest.as_ref().is_some_and(|m| m.run.is_some());
-                let name = manifest
-                    .as_ref()
-                    .map(|m| m.name.clone())
-                    .unwrap_or_else(|| id.clone());
-                if activation.iter().any(|a| a == "call") || name != *id {
-                    if let Some(mut e) = ModuleEntry::from_registry(reg, id) {
-                        e.activate_on_call = activation.iter().any(|a| a == "call");
-                        e.name = name.clone();
-                        hub.act(|r| {
-                            r.add_module(e);
-                            Vec::new()
-                        });
-                    }
+                let (entry, ev) = known_event(reg, id, manifest.as_ref());
+                if let Some(e) = entry.filter(|e| e.activate_on_call || e.name != *id) {
+                    hub.act(|r| {
+                        r.add_module(e);
+                        Vec::new()
+                    });
                 }
-                if !runs {
+                let Some(ev) = ev else {
                     continue;
-                }
+                };
                 if reg.hub.enabled(id) {
                     runnable.insert(id.clone());
                 }
-                known.push(Ev::Known {
-                    id: id.clone(),
-                    name,
-                    enabled: reg.hub.enabled(id),
-                    at_enable: activation.iter().any(|a| a == "enable"),
-                    previous: reg.inventory.modules[id].previous.clone(),
-                });
+                known.push(ev);
             }
         }
         // Take back first, so `Known` never starts a second instance of a module still running
@@ -570,6 +585,81 @@ impl Supervisor {
         known || recorded
     }
 
+    /// `id` joined the inventory while the hub runs (#1076; the inventory watch, #1058): the
+    /// router learns it (its entry and manifest) and the policy gets its `Known`, so an enabled
+    /// module with `[activation] on = ["enable"]` starts now, as it would at a hub start, and
+    /// an activation fact already set starts it too (§4.6). `None` when the registry doesn't
+    /// hold it yet (a lab folder whose manifest isn't written yet): the caller asks again at
+    /// the next change. `Some(manifest)` once learned. A module the router already knows
+    /// answers `Some(None)`; if `hideout.toml` turned it on or off since the policy learnt it
+    /// (an install that enables in a second write, after the watch read the first), the
+    /// policy gets its `Known` again: turned on, it starts; turned off, an idle one reads Off
+    /// (a running one keeps running until Turn off, as at a start).
+    pub fn learn(&self, id: &str) -> Option<Option<hideout_contract::module::Module>> {
+        match Registry::open_from_env(&self.0.home) {
+            Ok(reg) => self.learn_from(&reg, id),
+            Err(e) => {
+                log::warn!(
+                    "supervisor: {id}: registry not read ({e:?}); asked again at the next change"
+                );
+                None
+            }
+        }
+    }
+
+    /// [`Supervisor::learn`] from a registry read just now (the inventory watch reads one per
+    /// change and lists the Modules page from the same read, so the page never shows what the
+    /// supervisor hasn't seen).
+    pub fn learn_from(
+        &self,
+        reg: &Registry,
+        id: &str,
+    ) -> Option<Option<hideout_contract::module::Module>> {
+        if !reg.inventory.modules.contains_key(id) {
+            return None;
+        }
+        if self.0.hub.read(|r| r.knows_module(id)) {
+            let on = reg.hub.enabled(id);
+            let held = self.0.policy.lock().unwrap().enabled(id);
+            if held.is_some_and(|h| h != on) {
+                if let (_, Some(ev)) = known_event(reg, id, reg.manifest(id).as_ref()) {
+                    log::info!(
+                        "supervisor: {id} turned {} in hideout.toml",
+                        if on { "on" } else { "off" }
+                    );
+                    self.feed(ev);
+                    self.0.hub.act(|r| r.activation_due(Some(id)));
+                }
+            }
+            return Some(None);
+        }
+        let manifest = reg.manifest(id);
+        let (entry, ev) = known_event(reg, id, manifest.as_ref());
+        let m = manifest.clone();
+        self.0.hub.act(|r| {
+            if let Some(e) = entry {
+                r.add_module(e);
+            }
+            if let Some(m) = &m {
+                r.apply_manifest(m);
+            }
+            Vec::new()
+        });
+        match ev {
+            Some(ev) => {
+                let on = reg.hub.enabled(id);
+                log::info!(
+                    "supervisor: {id} joined the inventory ({})",
+                    if on { "on" } else { "off" }
+                );
+                self.feed(ev);
+                self.0.hub.act(|r| r.activation_due(Some(id)));
+            }
+            None => log::info!("supervisor: {id} joined the inventory (nothing to run)"),
+        }
+        Some(manifest)
+    }
+
     /// Whether the policy knows `id` (an installed module it could start).
     pub fn knows(&self, id: &str) -> bool {
         self.0.policy.lock().unwrap().state(id).is_some()
@@ -627,7 +717,8 @@ impl Supervisor {
     /// "Turn off <Module>" (the ladder's last step): saved as off, like the Modules page's
     /// switch, then stopped.
     pub fn turn_off(&self, id: &str) {
-        let saved = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+        // From the environment, so a lab hub's lab modules are known and saved too (#1076).
+        let saved = Registry::open_from_env(&self.0.home)
             .map_err(|e| format!("{e:?}"))
             .and_then(|mut r| r.set_enabled(id, false).map_err(|e| format!("{e:?}")));
         if let Err(e) = saved {
@@ -650,7 +741,7 @@ impl Supervisor {
             log::warn!("supervisor: {id}: not turned on: {e}");
             return Err(e);
         }
-        let saved = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+        let saved = Registry::open_from_env(&self.0.home)
             .map_err(|e| format!("{e:?}"))
             .and_then(|mut r| {
                 let pending = r
@@ -681,7 +772,7 @@ impl Supervisor {
     /// hub: no restart. Safe to press twice. The flag not being saved is logged; the modules
     /// start anyway, and the next hub start would be in safe mode again.
     pub fn start_normally(&self) {
-        let saved = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+        let saved = Registry::open_from_env(&self.0.home)
             .map_err(|e| format!("{e:?}"))
             .and_then(|mut r| r.set_safe_mode(false).map_err(|e| format!("{e:?}")));
         if let Err(e) = saved {
