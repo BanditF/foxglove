@@ -276,6 +276,8 @@ The user-guide entry goes under Scenes, after Effect:
 
 ## Questions (for the Hub; my pick first)
 
+**Decided 11/11: the designer's picks (standing rule: designer picks go ahead; the Hub may object).** Screen glow; full-screen games pause it, video keeps glowing; asked once until Stop allowing; off by default.
+
 1. **Name:** **Screen glow** (pick: a noun like the other effects, plain words) / Ambient screen /
    Follow screen.
 2. **Full-screen video:** **keeps glowing; only full-screen games pause it** (pick: the main use is
