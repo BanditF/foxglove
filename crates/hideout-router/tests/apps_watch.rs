@@ -39,6 +39,7 @@ fn entry(id: &str, name: &str, granted: Vec<String>) -> ModuleEntry {
         panels: None,
         settings_dir: String::new(),
         data_dir: String::new(),
+        registered_version: None,
     }
 }
 

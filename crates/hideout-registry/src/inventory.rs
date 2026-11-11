@@ -20,6 +20,9 @@ pub const SIDELOAD: &str = "sideload";
 /// The source of a lab module (`<config>\lab-modules\`, docs/hideout-lab.md): held in memory
 /// only, never written to `inventory.json`.
 pub const LAB: &str = "lab";
+/// The source of an `adopted` module (§3): an install the hub registered but did not make. It
+/// has no files of its own to hash; the hub keeps only a copy of its `module.toml`.
+pub const ADOPTED: &str = "adopted";
 
 /// One installed module.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -53,7 +56,8 @@ impl Installed {
     /// Who this module is for the never-list (§6.6).
     pub fn holder(&self) -> Holder {
         // A lab module holds permissions as a sideload does, never as a first-party module.
-        let source = if self.source == SIDELOAD || self.source == LAB {
+        // An adopted module has no catalog behind it either: it is held as a sideload is.
+        let source = if self.source == SIDELOAD || self.source == LAB || self.source == ADOPTED {
             Source::Sideload
         } else {
             match self.anchor.as_deref() {

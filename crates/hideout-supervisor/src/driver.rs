@@ -1267,6 +1267,12 @@ impl Supervisor {
                 l.dir.join(p)
             }
         };
+        // An adopted module (absolute run[0]) runs from its own install folder, not the hub's
+        // record folder, so its relative paths resolve as they do outside the hub (#1115).
+        let cwd = match exe.parent() {
+            Some(d) if PathBuf::from(&run[0]).is_absolute() => d.to_path_buf(),
+            _ => l.dir.clone(),
+        };
         let sha256 = sha256_file(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
         let caps = self.caps_of(Some(&reg), id);
@@ -1290,7 +1296,7 @@ impl Supervisor {
             // the hub made, given in the handle list, attached before it runs.
             let env = [("HIDEOUT_INSTANCE", instance.to_string())];
             let (s, to_child, from_child) = c
-                .spawn_stdio(&job, &exe, &run[1..], &l.dir, &env, self.log_file(id))
+                .spawn_stdio(&job, &exe, &run[1..], &cwd, &env, self.log_file(id))
                 .map_err(|e| format!("AppContainer start: {e}"))?;
             self.0.hub.attach_in(
                 hideout_router::Origin::Bridged(id.into()),
@@ -1313,13 +1319,13 @@ impl Supervisor {
                 ("HIDEOUT_HUB_PID", std::process::id().to_string()),
             ];
             let (p, _) = c
-                .spawn(&job, &exe, &run[1..], &l.dir, &env, self.log_file(id))
+                .spawn(&job, &exe, &run[1..], &cwd, &env, self.log_file(id))
                 .and_then(|s| s.resume())
                 .map_err(|e| format!("AppContainer start: {e}"))?;
             Child::Contained(p)
         } else if l.stdio {
             let mut cmd = Command::new(&exe);
-            cmd.args(&run[1..]).current_dir(&l.dir).stderr(self.log(id));
+            cmd.args(&run[1..]).current_dir(&cwd).stderr(self.log(id));
             // The legacy bridge (§8.2): stdin and stdout are the router connection.
             cmd.env("HIDEOUT_INSTANCE", instance.to_string());
             let hub = self.0.hub.clone();
@@ -1333,7 +1339,7 @@ impl Supervisor {
                 Vec::new()
             });
             let mut cmd = Command::new(&exe);
-            cmd.args(&run[1..]).current_dir(&l.dir).stderr(self.log(id));
+            cmd.args(&run[1..]).current_dir(&cwd).stderr(self.log(id));
             cmd.env("HIDEOUT_PIPE", self.0.hub.router_pipe())
                 .env("HIDEOUT_TOKEN", &token)
                 .env("HIDEOUT_INSTANCE", instance.to_string())

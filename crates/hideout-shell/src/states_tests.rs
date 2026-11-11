@@ -576,6 +576,7 @@ fn installed() -> Vec<Installed> {
     ]
     .iter()
     .map(|(id, name)| Installed {
+        adopted: false,
         id: (*id).into(),
         name: (*name).into(),
         version: "1.0.0".into(),

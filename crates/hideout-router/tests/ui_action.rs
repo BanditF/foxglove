@@ -33,6 +33,7 @@ fn a_bridged_plugin_registers_a_tile_and_unknown_actions_are_refused() {
         panels: Some(vec!["tile".into()]),
         settings_dir: String::new(),
         data_dir: String::new(),
+        registered_version: None,
     });
     router.set_actions(ID, vec!["toggle".into(), "mute".into()]);
     let (events, _rx) = mpsc::channel();
