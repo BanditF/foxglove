@@ -79,6 +79,21 @@ struct Shared {
     nudge: Mutex<Sender<()>>,
     /// The hub folder's [`folder_suffix`]; empty for the default folder.
     suffix: Mutex<String>,
+    /// Who besides the current user may open the router pipe (contract §7.7).
+    pipe_acl: Mutex<PipeAcl>,
+}
+
+/// The router pipe's AppContainer guests, and its keeper: the first instance, the only one
+/// Windows lets the hub change the pipe's descriptor through. The hub holds the keeper's
+/// client end itself, so no module ever lands on it. The pipe's instances share one
+/// descriptor: a guest set through the keeper is let in on every instance, the one waiting
+/// now included.
+#[derive(Default)]
+struct PipeAcl {
+    guests: Vec<String>,
+    /// One per served pipe (the router pipe and its alias).
+    #[cfg(windows)]
+    keepers: Vec<(foxglove_plugin::channel::ServerPipe, std::fs::File)>,
 }
 
 /// A router with its connections. Cheap to clone; clones share everything.
@@ -96,6 +111,7 @@ impl Hub {
             events: Mutex::new(events),
             nudge: Mutex::new(nudge),
             suffix: Mutex::new(String::new()),
+            pipe_acl: Mutex::new(PipeAcl::default()),
         }));
         let weak = Arc::downgrade(&hub.0);
         std::thread::Builder::new()
@@ -248,7 +264,15 @@ impl Hub {
     #[cfg(windows)]
     pub fn serve_pipe(&self, name: &str) -> io::Result<std::thread::JoinHandle<()>> {
         use foxglove_plugin::channel::ServerPipe;
-        let first = ServerPipe::create(name, true)?;
+        {
+            // The keeper takes the name first (a squatter makes this fail), then the hub
+            // connects to it itself.
+            let mut acl = self.0.pipe_acl.lock().unwrap();
+            let keeper = ServerPipe::create_keeper(name, &acl.guests)?;
+            let client = foxglove_plugin::hideout::open_pipe(name)?;
+            acl.keepers.push((keeper, client));
+        }
+        let first = ServerPipe::create(name, false)?;
         let hub = self.clone();
         let name = name.to_string();
         std::thread::Builder::new()
@@ -271,12 +295,82 @@ impl Hub {
                         Ok(conn) => {
                             // The handle stays open while `conn` lives.
                             let pid = client_pid(handle);
+                            if let Err(why) = hub.admit(pid) {
+                                // Dropping the connection closes it.
+                                log::warn!("router: {name}: client refused: {why}");
+                                continue;
+                            }
                             hub.attach_peer(Origin::Pipe, pid, conn.clone(), conn);
                         }
                         Err(e) => log::warn!("router: {name}: accept: {e}"),
                     }
                 }
             })
+    }
+}
+
+#[cfg(windows)]
+impl Hub {
+    /// Lets the AppContainer `sid` open the router pipe (contract §7.7), on every instance.
+    /// Call before starting a contained module. Before [`Hub::serve_pipe`] it is kept for the
+    /// pipe's first descriptor.
+    pub fn allow_pipe_client(&self, sid: &str) -> io::Result<()> {
+        let mut acl = self.0.pipe_acl.lock().unwrap();
+        if acl.guests.iter().any(|g| g == sid) {
+            return Ok(());
+        }
+        let mut guests = acl.guests.clone();
+        guests.push(sid.to_string());
+        let sd = hideout_acl::Descriptor::current_user_and(&guests)?;
+        for (keeper, _) in &acl.keepers {
+            hideout_acl::apply_to_handle(keeper.raw_handle(), &sd)?;
+        }
+        acl.guests = guests;
+        Ok(())
+    }
+
+    /// Takes the AppContainer `sid` off the router pipe (the module was removed, §7.7).
+    pub fn disallow_pipe_client(&self, sid: &str) -> io::Result<()> {
+        let mut acl = self.0.pipe_acl.lock().unwrap();
+        if !acl.guests.iter().any(|g| g == sid) {
+            return Ok(());
+        }
+        let guests: Vec<String> = acl.guests.iter().filter(|g| *g != sid).cloned().collect();
+        let sd = hideout_acl::Descriptor::current_user_and(&guests)?;
+        for (keeper, _) in &acl.keepers {
+            hideout_acl::apply_to_handle(keeper.raw_handle(), &sd)?;
+        }
+        acl.guests = guests;
+        Ok(())
+    }
+
+    /// Whether a router pipe client with process id `pid` is let in (contract §2.3, §7.7).
+    /// While the pipe has AppContainer guests it carries a Low label, so a Low-integrity
+    /// process could open it: below Medium only the hub's own containers are admitted; the
+    /// user's Medium processes (modules, outside tools) are as before. A container that isn't
+    /// (or no longer is) a guest is refused either way, and so is a client whose process or
+    /// token can't be read (an elevated tool the hub can't look into, a process already gone).
+    pub fn admit(&self, pid: Option<u32>) -> Result<(), String> {
+        let guests = self.pipe_guests();
+        // A client the router can't name is refused, guests or not (#1089 re-check).
+        let pid = pid.ok_or("its process is unknown")?;
+        let peer = hideout_acl::peer(pid).map_err(|e| format!("pid {pid}: token not read: {e}"))?;
+        if hideout_acl::admits(&peer, &guests) {
+            Ok(())
+        } else {
+            Err(format!(
+                "pid {pid} runs at integrity {:#x}{} and isn't one of the hub's AppContainers",
+                peer.integrity,
+                peer.app_container
+                    .as_deref()
+                    .map_or(String::new(), |s| format!(" in {s}"))
+            ))
+        }
+    }
+
+    /// The AppContainer SIDs that may open the router pipe.
+    pub fn pipe_guests(&self) -> Vec<String> {
+        self.0.pipe_acl.lock().unwrap().guests.clone()
     }
 }
 

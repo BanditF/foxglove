@@ -6,6 +6,7 @@ description = "The Hideout hub's light supervisor (contract §7.5, §7.7 to §7.
 license = "MIT"
 
 [dependencies]
+foxglove-plugin = { path = "../plugin-sdk" }
 hideout-contract = { path = "../hideout-contract" }
 hideout-registry = { path = "../hideout-registry" }
 hideout-router = { path = "../hideout-router" }
@@ -14,5 +15,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 
+[[bin]]
+# A test module for tests/appcontainer.rs (connects like every module, then waits); not shipped.
+name = "hideout-ac-probe"
+path = "src/bin/ac_probe.rs"
+test = false
+
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }

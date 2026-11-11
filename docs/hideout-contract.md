@@ -275,6 +275,14 @@ The hub MUST NOT contain:
   every hub start. Its sequence and accepted time go to Copy diagnostics only once verified.
 - `HIDEOUT_HOME`, when set, replaces `%LOCALAPPDATA%\Hideout` and `%APPDATA%\Hideout` (tests).
 - Every file and pipe here MUST have a current-user-only ACL.
+- (v1.10, #983) One exception, only while modules run in AppContainers (§7.7): the router pipe
+  also lets each such container's SID in (client rights, no create-instance) and carries a Low
+  mandatory label, which Windows has one of per object, not per SID. A Low-integrity process of
+  the user's then passes Windows' check too; the router refuses it (below Medium it admits only
+  the hub's own containers, and never a client whose process or token it can't read), a module
+  talks only to the pipe server whose pid is `HIDEOUT_HUB_PID`, and it opens the pipe at
+  identification level (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`), so a server can't act
+  as it. What stays open is in §7.7.
 - A module's files outside `data\` and `settings\` are written only by `hideout-core`.
 
 ### 2.4 Draw first (UX2)
@@ -1191,7 +1199,11 @@ LSP-style: capabilities and versions are exchanged once.
    - `HIDEOUT_PIPE`: the router pipe name, the one this hub serves (§8.2: a hub on another
      folder than the default serves a name of its own);
    - `HIDEOUT_TOKEN`: a one-time launch token;
-   - `HIDEOUT_INSTANCE`: the instance id.
+   - `HIDEOUT_INSTANCE`: the instance id;
+   - (v1.10, #983) `HIDEOUT_HUB_PID`: the hub's process id. Before it sends anything (the token
+     least of all), a module checks that the pipe's server is that process
+     (`GetNamedPipeServerProcessId`); the SDK's `connect_env` does. A launch without it (an older
+     hub) skips the check.
 2. **Connect.** The module sends `initialize {id, version, instance, token, hub, api}`. The hub
    checks the token, the pid and the exe hash. The result gives `granted`, `settings_dir`,
    `data_dir` and the served `hub` and `api` versions.
@@ -1263,7 +1275,44 @@ Design §3.1.
 - **Caps (v1.10)** come from the manifest's `[limits]`, each clamped to the hub's maximum
   (4,096 MiB for all the module's processes, a hard 50 % of the machine's CPU); an absent value
   is the maximum. A clamp is logged, not refused. A module taken back after a hub restart gets
-  them again in its new job (§7.9). (Not built yet: the AppContainer.)
+  them again in its new job (§7.9).
+- **AppContainer (v1.10, #983)** is opt-in for now: the hub setting `[supervisor] appcontainer =
+  true` in `hideout.toml` (off when absent), until the first-party modules have run in one.
+  With it on, the plan is made from the module's **granted** permissions (an ungranted one
+  counts for nothing):
+  - **Contained** (the usual case): its own AppContainer (`CreateAppContainerProfile`, profile
+    `hideout.<id>`, or `hideout.<first 38 of the id>._<16 hex of its SHA-256>` when that would be
+    longer than 64 characters; no id label starts with `_`, so the two forms never meet and two
+    ids never share a profile; removed with the module). What the
+    hub brokers (facts, lights, `net.connect`, `net.listen`, GPU, `secrets.ref`, app watches)
+    needs nothing inside. A permission the module carries out itself through a device gets the
+    matching capability in `SECURITY_CAPABILITIES`: `device.hid:` gives `humaninterfacedevice`.
+  - **Outside**, logged: a granted `net` or `files`, whose permission lines already told the
+    user it runs without the sandbox or with their files.
+  - **Refused** (`install-failed`, "It can't run in a sandbox, and Hideout is set to sandbox
+    modules."): a stdio module, `secrets` (Windows' credential store, which a container blocks),
+    and for now `channel.open:` / `channel.offer:` (channel pipes don't admit a container yet).
+    Nothing runs without a sandbox unless the user approved something that says so.
+  The container may read and run its version folder and write its `settings\` and `data\`,
+  nothing else of the user's; stdin and stdout are NUL, stderr is its log; the three handles
+  are inheritable only while it starts, with no other start of the supervisor meanwhile. The
+  router pipe lets its SID in with read and write but not `FILE_APPEND_DATA` (on a pipe, the
+  right to create an instance, so a contained module never serves the hub's pipe), and a Low
+  mandatory label; a client opens the pipe with exactly those rights (`0x0012019B`; the SDK's
+  `open_pipe` does), not `GENERIC_WRITE`. The hub changes the pipe's descriptor through its
+  first instance, which it holds itself; the instances share it. A removed module's SID is
+  taken off, and with no guest left the label is Medium again. A container that can't be set
+  up fails the launch; it never runs the module uncontained instead. Taken back after a hub
+  restart, a contained process keeps its container and is let in again only if it is its own
+  profile's.
+- **What stays open while modules are contained (v1.10, #983).** The Low label is per pipe, so
+  a Low-integrity process of the user's that isn't a container (a browser's or PDF reader's
+  sandbox) can open the router pipe and make instances of it. The router refuses it as a
+  client. As a server it can catch a module's connect: a module that checks
+  `HIDEOUT_HUB_PID` sends it nothing and fails to start (a denial of service, counted as a
+  crash), and an outside tool that doesn't check the server could talk to it. Without the
+  setting, or with no contained module running, the pipe keeps Windows' Medium floor and none
+  of this applies.
 - **Restarts** a crashed instance with backoff from 1 s up to 60 s. Five crashes in ten minutes
   stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash. A
   channel closed for an oversized line (§8.1, v1.2) counts as one crash.

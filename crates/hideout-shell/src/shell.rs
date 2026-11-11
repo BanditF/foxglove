@@ -467,7 +467,10 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
         }
         tray::Command::OpenLogs => {
             let dir = shared.paths.logs_dir();
-            if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
+            // Under the supervisor's spawn lock: no contained module's handle goes with it.
+            if let Err(e) =
+                hideout_supervisor::win::spawn(std::process::Command::new("explorer.exe").arg(&dir))
+            {
                 log::warn!("open {}: {e}", dir.display());
             }
         }
@@ -3664,9 +3667,8 @@ fn main_viewport(title: &str, start_in_tray: bool) -> egui::ViewportBuilder {
 /// files with (the crash bar, Couldn't start and the rollback notification's Open log).
 pub fn open_module_log(home: &std::path::Path, module: &str) {
     let file = home.join("logs").join(format!("{module}.log"));
-    if let Err(e) = std::process::Command::new("explorer.exe")
-        .arg(&file)
-        .spawn()
+    if let Err(e) =
+        hideout_supervisor::win::spawn(std::process::Command::new("explorer.exe").arg(&file))
     {
         log::warn!("open {}: {e}", file.display());
     }

@@ -372,6 +372,9 @@ pub fn waiting_reason(root: &str) -> String {
     format!("{root} is not running.")
 }
 
+/// `module.<id>.reason` when sandboxing is on and the module can't run in one (§7.7).
+pub const NO_SANDBOX: &str = "It can't run in a sandbox, and Hideout is set to sandbox modules.";
+
 /// `needs-hub` (§7.8).
 pub const NEEDS_HUB: &str = "Needs a newer Hideout";
 
@@ -485,6 +488,7 @@ pub fn every_string() -> Vec<String> {
     ]);
     for s in [
         NEEDS_HUB,
+        NO_SANDBOX,
         QUARANTINED_LINE,
         UPDATING,
         UPDATE_READY,

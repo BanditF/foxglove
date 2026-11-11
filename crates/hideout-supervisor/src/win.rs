@@ -37,7 +37,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 /// An owned kernel handle.
-pub struct Handle(HANDLE);
+pub struct Handle(pub(crate) HANDLE);
 
 // SAFETY: kernel handles may be used from any thread.
 unsafe impl Send for Handle {}
@@ -48,6 +48,18 @@ impl Drop for Handle {
         // SAFETY: the handle is owned and closed once.
         unsafe { CloseHandle(self.0) };
     }
+}
+
+/// Held around every process start of the supervisor: an AppContainer start makes its three
+/// handles inheritable for a moment, and no other start may pick them up meanwhile.
+pub(crate) static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Starts `command` under [`SPAWN`]: for every start in the hub process outside the
+/// supervisor (the shell opening a folder in Explorer), so it never inherits a contained
+/// module's handles (#1089 re-check).
+pub fn spawn(command: &mut Command) -> io::Result<Child> {
+    let _spawning = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    command.spawn()
 }
 
 /// JOB_OBJECT_ASSIGN_PROCESS | SET_ATTRIBUTES | QUERY | TERMINATE (winnt.h).
@@ -247,6 +259,11 @@ impl Job {
         Ok(())
     }
 
+    /// The job's handle, for the AppContainer launch (`crate::sandbox`).
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.handle.0
+    }
+
     /// Ends every process in the job.
     pub fn kill(&self, code: u32) {
         // SAFETY: an owned job handle.
@@ -266,7 +283,10 @@ impl Job {
         spawn: impl FnOnce(Command) -> io::Result<Child>,
     ) -> io::Result<Child> {
         command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
-        let mut child = spawn(command)?;
+        let mut child = {
+            let _spawning = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+            spawn(command)?
+        };
         // SAFETY: the child's process handle is valid while `child` lives.
         let ok = unsafe { AssignProcessToJobObject(self.handle.0, child.as_raw_handle() as _) };
         if ok == 0 {
@@ -312,6 +332,21 @@ fn resume(pid: u32) -> io::Result<()> {
 pub struct Process(Handle);
 
 impl Process {
+    /// Takes ownership of a process handle (one `CreateProcessW` returned).
+    pub(crate) fn from_raw(h: HANDLE) -> Process {
+        Process(Handle(h))
+    }
+
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.0 .0
+    }
+
+    /// Its process id.
+    pub fn pid(&self) -> u32 {
+        // SAFETY: an owned process handle.
+        unsafe { windows_sys::Win32::System::Threading::GetProcessId(self.0 .0) }
+    }
+
     pub fn open(pid: u32) -> io::Result<Process> {
         // SAFETY: plain call; the handle is checked.
         let h = unsafe {

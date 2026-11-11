@@ -14,6 +14,7 @@ log = "0.4"
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
+hideout-acl = { path = "../hideout-acl" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Pipes"] }
 
 [target.'cfg(windows)'.dev-dependencies]

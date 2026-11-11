@@ -379,7 +379,22 @@ pub struct ServerPipe {
 impl ServerPipe {
     /// Creates an instance of `name`; `first` for the first one a server makes.
     pub fn create(name: &str, first: bool) -> io::Result<ServerPipe> {
-        let sd = Descriptor::current_user_only()?;
+        Self::make(name, first, &Descriptor::current_user_only()?, 0)
+    }
+
+    /// The first instance of `name`, opened with `WRITE_DAC` and `WRITE_OWNER` so the server
+    /// can change the pipe's DACL and label later (its instances share one descriptor):
+    /// [`hideout_acl::apply_to_handle`] on [`ServerPipe::raw_handle`] lets AppContainer
+    /// clients in (contract §7.7). Windows refuses those rights on any later instance, so only
+    /// the first gets them; `guests` may open it from the start.
+    pub fn create_keeper(name: &str, guests: &[String]) -> io::Result<ServerPipe> {
+        const WRITE_DAC: u32 = 0x0004_0000;
+        const WRITE_OWNER: u32 = 0x0008_0000;
+        let sd = Descriptor::current_user_and(guests)?;
+        Self::make(name, true, &sd, WRITE_DAC | WRITE_OWNER)
+    }
+
+    fn make(name: &str, first: bool, sd: &Descriptor, access: u32) -> io::Result<ServerPipe> {
         let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: sd.as_ptr(),
@@ -394,7 +409,7 @@ impl ServerPipe {
         let h = unsafe {
             CreateNamedPipeW(
                 wname.as_ptr(),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | first,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | first | access,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
                 PIPE_UNLIMITED_INSTANCES,
                 64 * 1024,
@@ -647,5 +662,22 @@ mod tests {
             .unwrap();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
         t.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod server_check_tests {
+    use super::ServerPipe;
+    use crate::hideout::{check_server, open_pipe};
+
+    /// A module checks who serves the pipe before it sends anything (contract §7.5).
+    #[test]
+    fn the_server_pid_is_checked() {
+        let name = format!(r"\\.\pipe\hideout-servercheck-{}", std::process::id());
+        let _server = ServerPipe::create(&name, true).unwrap();
+        let f = open_pipe(&name).unwrap();
+        assert!(check_server(&f, std::process::id()).is_ok());
+        let e = check_server(&f, std::process::id() + 1).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
     }
 }
