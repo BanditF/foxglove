@@ -33,6 +33,10 @@ pub trait Page {
         "module"
     }
     fn ui(&mut self, ui: &mut egui::Ui, tokens: &Tokens);
+    /// Listed at the bottom of the sidebar, after the modules' pages (Settings, #1087).
+    fn at_bottom(&self) -> bool {
+        false
+    }
 }
 
 pub struct ShellOptions {
@@ -1003,6 +1007,34 @@ impl Hub {
         if self.panels.capturing().is_none() {
             return;
         }
+        let vid = ctx.viewport_id();
+        // It ends on a click outside its row, or when its window loses the focus (#1087).
+        let (clicks, unfocused) = ctx.input(|i| {
+            let clicks: Vec<Option<egui::Pos2>> = i
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::PointerButton {
+                        pos, pressed: true, ..
+                    } => Some(Some(*pos)),
+                    _ => None,
+                })
+                .collect();
+            let lost = i
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::WindowFocused(false)));
+            (clicks, lost || !i.focused)
+        });
+        if unfocused {
+            self.panels.capture_window_unfocused(vid);
+        }
+        for pos in clicks {
+            self.panels.capture_click(vid, pos);
+        }
+        if self.panels.capturing().is_none() {
+            return;
+        }
         let presses = ctx.input_mut(|i| {
             let mut out = Vec::new();
             i.events.retain(|e| match e {
@@ -1024,8 +1056,15 @@ impl Hub {
             out
         });
         for (key, mods) in presses {
-            self.panels
-                .capture_press(hideout_panels::keys::Chord::press(key, mods));
+            use hideout_panels::keys::{types_char, Chord, Press};
+            let mut press = Chord::press(key, mods);
+            // A chord that types a character here (AltGr) stays the user's.
+            if let Press::Bind(c) = &press {
+                if let Some(text) = crate::hotkeys::chord_types(c) {
+                    press = Press::Typed(types_char(&c.to_string(), &text));
+                }
+            }
+            self.panels.capture_press(press);
         }
     }
 
@@ -2004,6 +2043,7 @@ impl Hub {
                 let mut entries: Vec<(TabId, String, bool, Option<String>)> = self
                     .pages
                     .iter()
+                    .filter(|p| !p.at_bottom())
                     .map(|p| (TabId::page(p.id()), p.title().to_string(), false, None))
                     .collect();
                 entries.extend(self.panels.in_slot(Slot::Page).map(|p| {
@@ -2019,6 +2059,12 @@ impl Hub {
                         stopped.then(|| look.accessible_name()),
                     )
                 }));
+                entries.extend(
+                    self.pages
+                        .iter()
+                        .filter(|p| p.at_bottom())
+                        .map(|p| (TabId::page(p.id()), p.title().to_string(), false, None)),
+                );
                 let active = self.tabs.active_id().cloned();
                 for (target, title, attention, stopped) in entries {
                     let selected = active.as_ref() == Some(&target);
@@ -2744,6 +2790,8 @@ impl Hub {
             crate::capture::queue_readback(ctx, crate::capture::Window::Main, j.shots);
         }
         self.popouts_ui(ctx, &t, pop_shot);
+        // A waiting Keys row that no window drew this frame ends its capture (#1087).
+        self.panels.capture_frame_end();
         // A placeholder tab that became active (a click, Ctrl+number) brings its window forward.
         let active = self.tabs.active_id().cloned();
         if active != self.last_active {

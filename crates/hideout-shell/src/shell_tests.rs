@@ -2771,13 +2771,51 @@ fn renders_the_search_for_review() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Set key (#991): while a Keys row waits for a key, Ctrl+W binds instead of closing the tab,
-/// and the key is saved in `hideout.toml`'s `[keys]`; Esc then leaves the next capture as it was.
+/// Set key (#991, #1087): while a Keys row waits for a key, the window's key presses are its:
+/// Ctrl+W is refused (one modifier; it stays the apps') rather than closing the tab, and
+/// Ctrl+Shift+W binds and is saved in `hideout.toml`'s `[keys]`. Esc ends the next capture.
 #[test]
 fn set_key_takes_the_press_from_the_window_and_saves_it() {
     let ctx = ctx();
     let dir = temp_dir("set-key");
     let mut hub = hub_in(&dir, None);
+    hub.panels.set_manifest(keys_manifest());
+    quiet_frame(&ctx, &mut hub, vec![]);
+    let tabs = hub.tabs.len();
+    let ctrl = Modifiers {
+        ctrl: true,
+        command: true,
+        ..Modifiers::NONE
+    };
+    hub.panels.start_capture(SUP, "toggle");
+    quiet_frame(&ctx, &mut hub, vec![key(Key::W, ctrl)]);
+    assert_eq!(
+        hub.tabs.len(),
+        tabs,
+        "Ctrl+W went to the row; no tab closed"
+    );
+    assert_eq!(hub.panels.key(SUP, "toggle"), None);
+    assert_eq!(
+        hub.panels.key_note(SUP, "toggle"),
+        Some(hideout_panels::keys::NEEDS_MODIFIER)
+    );
+    quiet_frame(&ctx, &mut hub, vec![key(Key::W, ctrl | Modifiers::SHIFT)]);
+    assert_eq!(hub.panels.key(SUP, "toggle"), Some("Ctrl+Shift+W"));
+    assert_eq!(hub.panels.capturing(), None);
+    let saved = Prefs::load(&hub.shared.paths.prefs_file()).0;
+    assert_eq!(
+        saved.keys.get(&format!("{SUP}/toggle")).map(String::as_str),
+        Some("Ctrl+Shift+W")
+    );
+    hub.panels.start_capture(SUP, "toggle");
+    quiet_frame(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
+    assert_eq!(hub.panels.capturing(), None);
+    assert_eq!(hub.panels.key(SUP, "toggle"), Some("Ctrl+Shift+W"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A module with one action, for the Set key tests.
+fn keys_manifest() -> hideout_contract::module::Module {
     let toml = format!(
         r#"
 id = "{SUP}"
@@ -2794,29 +2832,24 @@ id = "toggle"
 name = "Toggle it"
 "#
     );
-    let m = hideout_contract::module::Module::parse(&toml, &Default::default()).unwrap();
-    hub.panels.set_manifest(m);
+    hideout_contract::module::Module::parse(&toml, &Default::default()).unwrap()
+}
+
+/// The capture ends when its row isn't on screen (#1087): a frame with another page up (the
+/// module's page isn't drawn) ends it, so Ctrl+K and text fields work again.
+#[test]
+fn a_capture_ends_when_its_row_is_not_drawn() {
+    let ctx = ctx();
+    let dir = temp_dir("set-key-off");
+    let mut hub = hub_in(&dir, None);
+    hub.panels.set_manifest(keys_manifest());
     quiet_frame(&ctx, &mut hub, vec![]);
-    let tabs = hub.tabs.len();
-    let ctrl = Modifiers {
-        ctrl: true,
-        command: true,
-        ..Modifiers::NONE
-    };
     hub.panels.start_capture(SUP, "toggle");
-    quiet_frame(&ctx, &mut hub, vec![key(Key::W, ctrl)]);
-    assert_eq!(hub.panels.key(SUP, "toggle"), Some("Ctrl+W"));
+    // The active tab is a hub page, not the module's: the row isn't drawn. (The frame that
+    // starts a capture counts as drawn: Set key was clicked in it.)
+    quiet_frame(&ctx, &mut hub, vec![]);
+    quiet_frame(&ctx, &mut hub, vec![]);
     assert_eq!(hub.panels.capturing(), None);
-    assert_eq!(hub.tabs.len(), tabs, "Ctrl+W bound; no tab closed");
-    let saved = Prefs::load(&hub.shared.paths.prefs_file()).0;
-    assert_eq!(
-        saved.keys.get(&format!("{SUP}/toggle")).map(String::as_str),
-        Some("Ctrl+W")
-    );
-    hub.panels.start_capture(SUP, "toggle");
-    quiet_frame(&ctx, &mut hub, vec![key(Key::Escape, Modifiers::NONE)]);
-    assert_eq!(hub.panels.capturing(), None);
-    assert_eq!(hub.panels.key(SUP, "toggle"), Some("Ctrl+W"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2839,14 +2872,14 @@ fn renders_the_keys_rows_for_review() {
         .iter()
         .map(|a| a.decl.id.clone())
         .collect();
-    host.set_key(&id, &actions[0], Some("Ctrl+Alt+M".into()));
+    host.set_key(&id, &actions[0], Some("Ctrl+Shift+M".into()));
     host.start_capture(&id, &actions[2]);
-    host.capture_press(hideout_panels::keys::Chord::press(Key::M, Modifiers::NONE));
+    host.capture_press(hideout_panels::keys::Chord::press(Key::M, Modifiers::CTRL));
     host.set_fact(&format!("module.{id}.state"), serde_json::json!("running"));
     let Some(page) = host.navigate(&id, "page") else {
         return;
     };
-    let (w, h) = (640u32, 240u32);
+    let (w, h) = (640u32, 260u32);
     let rgba = rasterise(w, h, |c| {
         egui::CentralPanel::default().show(c, |ui| {
             hideout_panels::page_sections_ui(&mut host, ui, &page)
@@ -2854,4 +2887,25 @@ fn renders_the_keys_rows_for_review() {
     })
     .unwrap();
     save_png("built-keys-rows.png", w, h, rgba);
+}
+
+/// Review image of the Settings page (#1087): Privacy with Forget seen apps (pressed, so its
+/// line shows), then About.
+#[test]
+fn renders_the_settings_page_for_review() {
+    let t = theme::tokens(true);
+    let (w, h) = (720u32, 300u32);
+    let rgba = rasterise(w, h, |c| {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(t.bg.0, t.bg.1, t.bg.2))
+                    .inner_margin(egui::Margin::same(24)),
+            )
+            .show(c, |ui| {
+                crate::settings_view::settings_ui(ui, &t, "0.3.0", true);
+            });
+    })
+    .unwrap();
+    save_png("built-settings-page.png", w, h, rgba);
 }

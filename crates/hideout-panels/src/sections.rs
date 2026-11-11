@@ -39,6 +39,8 @@ pub fn page_sections_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) {
             .id_salt(("hideout.keys", module))
             .default_open(true)
             .show(ui, |ui| {
+                // Bound keys are global (the #1087 review): one plain line, always shown.
+                ui.label(RichText::new(crate::keys::GLOBAL_LINE).weak());
                 egui::Grid::new(("hideout.keys.grid", module))
                     .num_columns(2)
                     .spacing([16.0, 6.0])
@@ -116,28 +118,41 @@ pub fn page_sections_ui(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey) {
 /// it waits for a key, "Press a key…" with Cancel (the shell hands it the key presses, see
 /// [`PanelHost::capture_press`]).
 fn key_row(ui: &mut Ui, host: &mut PanelHost, module: &str, action: &str, name: &str) {
-    use crate::keys::{CANCEL, CHANGE, PRESS_A_KEY, REMOVE, SET_KEY};
-    ui.horizontal(|ui| {
+    use crate::keys::{stop_setting, CANCEL, CHANGE, PRESS_A_KEY, REMOVE, SET_KEY};
+    let row = ui.horizontal(|ui| {
         if host.capturing() == Some((module, action)) {
             ui.label(RichText::new(PRESS_A_KEY).strong());
             let cancel = ui.button(CANCEL);
-            // Focus on Cancel: a screen reader says the row is waiting, and Esc is the key way.
+            // Focus on Cancel: a screen reader says the row is waiting, by the button's name
+            // and the refusal as its description; Esc or Enter on it cancels.
+            let said = stop_setting(name);
+            let note = host.key_note(module, action).map(str::to_string);
+            ui.ctx().accesskit_node_builder(cancel.id, |n| {
+                n.set_label(said);
+                if let Some(note) = note {
+                    n.set_description(note);
+                }
+            });
             if !cancel.has_focus() {
                 cancel.request_focus();
             }
             if cancel.clicked() {
                 host.cancel_capture();
             }
-            return;
+            return true;
         }
+        // After a bind, Esc, Cancel or Remove the focus comes back to this row's first button.
+        let focus = host.take_key_focus(module, action);
         match host.key(module, action).map(str::to_string) {
             Some(k) => {
                 key_chip(ui, &k);
-                if ui
+                let change = ui
                     .small_button(CHANGE)
-                    .on_hover_text(format!("{CHANGE} the key for {name}"))
-                    .clicked()
-                {
+                    .on_hover_text(format!("{CHANGE} the key for {name}"));
+                if focus {
+                    change.request_focus();
+                }
+                if change.clicked() {
                     host.start_capture(module, action);
                 }
                 if ui
@@ -149,12 +164,20 @@ fn key_row(ui: &mut Ui, host: &mut PanelHost, module: &str, action: &str, name: 
                 }
             }
             None => {
-                if ui.button(SET_KEY).clicked() {
+                let set = ui.button(SET_KEY);
+                if focus {
+                    set.request_focus();
+                }
+                if set.clicked() {
                     host.start_capture(module, action);
                 }
             }
         }
+        false
     });
+    if row.inner && host.capturing() == Some((module, action)) {
+        host.note_capture_row(ui.ctx().viewport_id(), row.response.rect);
+    }
 }
 
 /// One row of the generated form; the new value when the user changed it.

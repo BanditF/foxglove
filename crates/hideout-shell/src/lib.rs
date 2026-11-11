@@ -41,6 +41,8 @@ pub mod notify;
 #[cfg(windows)]
 mod platform;
 #[cfg(windows)]
+pub mod settings_view;
+#[cfg(windows)]
 mod shell;
 #[cfg(windows)]
 pub mod strip;

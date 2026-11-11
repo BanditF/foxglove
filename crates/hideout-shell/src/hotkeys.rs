@@ -180,3 +180,66 @@ mod tests {
         assert_eq!(second.take_refused(), Some(vec![]));
     }
 }
+
+/// What `chord` types on the foreground window's keyboard layout, when it types a character:
+/// on many layouts Ctrl+Alt is AltGr (Ctrl+Alt+Q types "@" on a German one), and such a
+/// chord must stay the user's (#1087). Only Ctrl+Alt chords are asked: Ctrl without Alt gives
+/// control characters, and Alt without Ctrl types nothing.
+pub fn chord_types(chord: &Chord) -> Option<String> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetKeyboardLayout, MapVirtualKeyExW, ToUnicodeEx, MAPVK_VK_TO_VSC,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    if !(chord.ctrl && chord.alt) {
+        return None;
+    }
+    let vk = chord.win_vk();
+    let mut state = [0u8; 256];
+    for (on, key) in [
+        (chord.ctrl, 0x11usize), // VK_CONTROL
+        (chord.ctrl, 0xA2),      // VK_LCONTROL
+        (chord.alt, 0x12),       // VK_MENU
+        (chord.alt, 0xA5),       // VK_RMENU
+        (chord.shift, 0x10),     // VK_SHIFT
+    ] {
+        if on {
+            state[key] = 0x80;
+        }
+    }
+    let mut buf = [0u16; 8];
+    let n = unsafe {
+        let thread = GetWindowThreadProcessId(GetForegroundWindow(), None);
+        let hkl = GetKeyboardLayout(thread);
+        let scan = MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, Some(hkl));
+        // Flag 4: leave the keyboard's dead-key state as it is.
+        ToUnicodeEx(vk, scan, &state, &mut buf, 4, Some(hkl))
+    };
+    typed_text(n, &buf)
+}
+
+/// `ToUnicodeEx`'s answer as text people see: `n` units in `buf` (negative: a dead key, one
+/// unit); control characters and empty answers are no text.
+pub fn typed_text(n: i32, buf: &[u16]) -> Option<String> {
+    let len = match n {
+        0 => return None,
+        n if n < 0 => 1,
+        n => (n as usize).min(buf.len()),
+    };
+    let s = String::from_utf16_lossy(&buf[..len]);
+    (!s.is_empty() && !s.chars().any(char::is_control)).then_some(s)
+}
+
+#[cfg(test)]
+mod typed_tests {
+    use super::*;
+
+    #[test]
+    fn only_visible_characters_count_as_typed() {
+        assert_eq!(typed_text(1, &[u16::from(b'@')]).as_deref(), Some("@"));
+        assert_eq!(typed_text(-1, &[0x00B4, 0]).as_deref(), Some("\u{b4}"));
+        assert_eq!(typed_text(1, &[0x0011]), None, "Ctrl+Q's control character");
+        assert_eq!(typed_text(0, &[]), None);
+        let ctrl_shift = Chord::parse("Ctrl+Shift+Q").unwrap();
+        assert_eq!(chord_types(&ctrl_shift), None, "no Alt: never AltGr");
+    }
+}

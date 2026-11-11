@@ -4,9 +4,15 @@
 //! "F13"); the hub registers it as a system-wide key (the shell's hotkeys) and a press sends
 //! `action.invoke {source: "key"}`.
 //!
-//! The rule: F13 to F24 alone (keys a keyboard's macro layer sends), or any other key with
-//! Ctrl or Alt held, so a bound key never takes a letter or a plain function key from typing.
-//! Esc cancels the capture. A few chords Windows keeps for itself are refused.
+//! The rule (the #1087 design review): F13 to F24 (keys a keyboard's macro layer sends), with
+//! or without modifiers, or any other key with **two** of Ctrl, Alt and Shift. A global key
+//! must never take an everyday shortcut (Ctrl+C, Ctrl+W) or a menu key (Alt+letter); Windows'
+//! own shortcut-key field asks for two modifiers for the same reason. The shell also refuses a
+//! chord that types a character on the current keyboard layout (Ctrl+Alt is AltGr on many):
+//! [`Press::Typed`]. A few chords Windows keeps for itself are refused.
+//!
+//! Esc, or Enter, Space or Tab with no modifier (keys that act on the focused Cancel or move
+//! the focus away), end the capture.
 
 use egui::{Key, Modifiers};
 
@@ -24,32 +30,46 @@ pub struct Chord {
 pub enum Press {
     /// A key to bind.
     Bind(Chord),
-    /// Esc: the capture ends, nothing changes.
+    /// Esc (or plain Enter, Space, Tab): the capture ends, nothing changes.
     Cancel,
     /// Not a key to bind; the capture goes on and shows [`NEEDS_MODIFIER`] or [`RESERVED`].
     Refused(&'static str),
+    /// The chord types a character on this keyboard layout; the note ([`types_char`]).
+    Typed(String),
     /// A modifier alone (Ctrl going down): wait for the key.
     Wait,
 }
 
-/// The Keys section's words. "Set key" is the plan's (docs/hideout-plugin-modules-ux.md);
-/// the others are proposed (designer to confirm).
+/// The Keys section's words: "Set key" is the plan's (docs/hideout-plugin-modules-ux.md), the
+/// rest the #1087 design review's.
 pub const SET_KEY: &str = "Set key";
-pub const PRESS_A_KEY: &str = "Press a key\u{2026}";
+pub const PRESS_A_KEY: &str = "Press a key\u{2026} (Esc cancels)";
 pub const CANCEL: &str = "Cancel";
 pub const CHANGE: &str = "Change";
 pub const REMOVE: &str = "Remove";
-pub const NEEDS_MODIFIER: &str = "Use F13 to F24, or hold Ctrl or Alt with the key.";
+pub const NEEDS_MODIFIER: &str = "Use F13 to F24, or hold two of Ctrl, Alt and Shift with the key.";
 pub const RESERVED: &str = "Windows keeps that key for itself.";
+/// The muted line under the Keys heading: bound keys are global.
+pub const GLOBAL_LINE: &str = "These keys work in every app, also with Hideout in the tray.";
 
-/// "<Key> already runs <Action> in <Module>." (proposed).
+/// "<Key> already runs <Action> in <Module>."
 pub fn taken_here(chord: &str, action: &str, module: &str) -> String {
     format!("{chord} already runs {action} in {module}.")
 }
 
-/// "Another app uses <Key>." (proposed): the system refused to register it.
+/// "Another app uses <Key>. Pick another with Change.": the system refused to register it.
 pub fn taken_elsewhere(chord: &str) -> String {
-    format!("Another app uses {chord}.")
+    format!("Another app uses {chord}. Pick another with Change.")
+}
+
+/// Cancel's accessible name while a row waits: "Stop setting a key for <Action>".
+pub fn stop_setting(action: &str) -> String {
+    format!("Stop setting a key for {action}")
+}
+
+/// "On this keyboard, <Key> types <char>."
+pub fn types_char(chord: &str, text: &str) -> String {
+    format!("On this keyboard, {chord} types {text}.")
 }
 
 const F13_TO_F24: [Key; 12] = [
@@ -70,7 +90,8 @@ const F13_TO_F24: [Key; 12] = [
 impl Chord {
     /// One key press while capturing (`key` the physical key when egui knows it).
     pub fn press(key: Key, m: Modifiers) -> Press {
-        if key == Key::Escape && !m.ctrl && !m.alt && !m.shift {
+        let plain = !m.ctrl && !m.alt && !m.shift && !m.command;
+        if plain && matches!(key, Key::Escape | Key::Enter | Key::Space | Key::Tab) {
             return Press::Cancel;
         }
         if vk(key).is_none() {
@@ -85,7 +106,8 @@ impl Chord {
         if c.reserved() {
             return Press::Refused(RESERVED);
         }
-        if F13_TO_F24.contains(&key) || c.ctrl || c.alt {
+        let held = [c.ctrl, c.alt, c.shift].iter().filter(|h| **h).count();
+        if F13_TO_F24.contains(&key) || held >= 2 {
             Press::Bind(c)
         } else {
             Press::Refused(NEEDS_MODIFIER)
@@ -218,21 +240,42 @@ mod tests {
     }
 
     #[test]
-    fn f13_to_f24_bind_alone_and_other_keys_need_ctrl_or_alt() {
+    fn f13_to_f24_bind_alone_and_other_keys_need_two_modifiers() {
         let none = mods(false, false, false);
         assert!(matches!(Chord::press(Key::F13, none), Press::Bind(_)));
         assert!(matches!(Chord::press(Key::F24, none), Press::Bind(_)));
-        assert_eq!(Chord::press(Key::M, none), Press::Refused(NEEDS_MODIFIER));
-        assert_eq!(
-            Chord::press(Key::F5, mods(false, false, true)),
-            Press::Refused(NEEDS_MODIFIER)
-        );
+        assert!(matches!(
+            Chord::press(Key::F14, mods(true, false, false)),
+            Press::Bind(_)
+        ));
+        // Everyday shortcuts and menu keys stay the apps'.
+        for (k, m) in [
+            (Key::M, none),
+            (Key::F5, mods(false, false, true)),
+            (Key::C, mods(true, false, false)),
+            (Key::W, mods(true, false, false)),
+            (Key::F, mods(false, true, false)),
+            (Key::A, mods(false, false, true)),
+        ] {
+            assert_eq!(Chord::press(k, m), Press::Refused(NEEDS_MODIFIER), "{k:?}");
+        }
         let Press::Bind(c) = Chord::press(Key::M, mods(true, true, false)) else {
             panic!("Ctrl+Alt+M binds");
         };
         assert_eq!(c.to_string(), "Ctrl+Alt+M");
         assert_eq!((c.win_modifiers(), c.win_vk()), (3, 0x4D));
-        assert_eq!(Chord::press(Key::Escape, none), Press::Cancel);
+        let Press::Bind(c) = Chord::press(Key::W, mods(true, false, true)) else {
+            panic!("Ctrl+Shift+W binds");
+        };
+        assert_eq!(c.to_string(), "Ctrl+Shift+W");
+        assert!(matches!(
+            Chord::press(Key::K, mods(false, true, true)),
+            Press::Bind(_)
+        ));
+        // Esc, and the keys that act on the focused Cancel or move the focus, end it.
+        for k in [Key::Escape, Key::Enter, Key::Space, Key::Tab] {
+            assert_eq!(Chord::press(k, none), Press::Cancel, "{k:?}");
+        }
         assert_eq!(
             Chord::press(Key::Copy, mods(true, false, false)),
             Press::Wait
@@ -253,6 +296,10 @@ mod tests {
             Chord::press(Key::F4, mods(true, true, false)),
             Press::Bind(_)
         ));
+        assert_eq!(
+            Chord::press(Key::F4, mods(false, true, true)),
+            Press::Refused(RESERVED)
+        );
     }
 
     #[test]

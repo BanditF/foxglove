@@ -662,7 +662,7 @@ Windows' **Settings > System > Sound > Volume mixer > Reset** puts every app bac
 
 **Hideout and privacy:** Hideout notices when apps that your modules work with (like OBS or
 iCUE) start or quit, so their tiles show up. It keeps a list of those apps on this PC only.
-**About → Forget seen apps** clears that list.
+**Settings → Forget seen apps** clears that list.
 
 To try things without touching your real settings, start Foxglove with `FOXGLOVE_CONFIG_DIR`
 set to another folder: every settings file goes there instead.

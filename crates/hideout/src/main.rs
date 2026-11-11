@@ -12,7 +12,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(windows)]
-mod about_page;
 mod catalog_fetch;
 #[cfg(windows)]
 mod https;
@@ -23,6 +22,7 @@ mod modules_page;
 mod panel_feed;
 #[cfg(windows)]
 mod router_start;
+mod settings_page;
 
 /// What runs beside the shell: kept alive for the life of the process.
 #[cfg(windows)]
@@ -317,11 +317,10 @@ fn main() {
         started.finder.clone(),
         started.fresh.take(),
     );
-    // About, with Privacy and Forget seen apps (#991), after Modules.
-    pages.push(Box::new(about_page::AboutPage::new(
+    // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
+    pages.push(Box::new(settings_page::SettingsPage::new(
         paths.root.clone(),
         env!("CARGO_PKG_VERSION"),
-        about_page::watching_names(&paths.root),
     )));
     let opts = hideout_shell::ShellOptions {
         paths,

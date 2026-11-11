@@ -33,6 +33,8 @@ name = "Other thing"
 }
 
 fn ctrl_alt() -> Modifiers {
+    // Two of Ctrl, Alt and Shift (#1087).
+
     Modifiers {
         ctrl: true,
         alt: true,
@@ -96,4 +98,80 @@ fn a_removed_module_takes_its_keys_with_it() {
     assert_eq!(host.take_keys_changed(), None, "loading keys is no change");
     host.module_removed("m.a");
     assert_eq!(host.take_keys_changed(), Some(vec![]));
+}
+
+#[test]
+fn a_capture_ends_on_a_click_outside_a_lost_focus_or_an_unseen_row() {
+    use egui::{pos2, Rect, ViewportId};
+    let row = Rect::from_min_max(pos2(10.0, 10.0), pos2(200.0, 30.0));
+    let mut host = PanelHost::default();
+    host.set_manifest(manifest("m.a"));
+    // A click inside the row (on Cancel) keeps it; outside ends it, without taking the focus.
+    host.start_capture("m.a", "toggle");
+    host.note_capture_row(ViewportId::ROOT, row);
+    host.capture_click(ViewportId::ROOT, Some(pos2(50.0, 20.0)));
+    assert!(host.capturing().is_some());
+    host.capture_click(ViewportId::ROOT, Some(pos2(500.0, 20.0)));
+    assert_eq!(host.capturing(), None);
+    assert!(!host.take_key_focus("m.a", "toggle"));
+    // A click in another window ends it too.
+    host.start_capture("m.a", "toggle");
+    host.note_capture_row(ViewportId::ROOT, row);
+    host.capture_click(ViewportId::from_hash_of("pop"), Some(pos2(50.0, 20.0)));
+    assert_eq!(host.capturing(), None);
+    // Its window losing the focus ends it; another window's doesn't.
+    host.start_capture("m.a", "toggle");
+    host.note_capture_row(ViewportId::ROOT, row);
+    host.capture_window_unfocused(ViewportId::from_hash_of("pop"));
+    assert!(host.capturing().is_some());
+    host.capture_window_unfocused(ViewportId::ROOT);
+    assert_eq!(host.capturing(), None);
+    // A frame that didn't draw the row (another tab came up) ends it.
+    host.start_capture("m.a", "toggle");
+    host.capture_frame_end();
+    assert!(
+        host.capturing().is_some(),
+        "drawn in the frame that started it"
+    );
+    host.capture_frame_end();
+    assert_eq!(host.capturing(), None);
+}
+
+#[test]
+fn the_focus_comes_back_to_the_rows_first_button() {
+    let mut host = PanelHost::default();
+    host.set_manifest(manifest("m.a"));
+    host.start_capture("m.a", "toggle");
+    host.capture_press(Press::Cancel);
+    assert!(host.take_key_focus("m.a", "toggle"), "Esc: back to Set key");
+    assert!(!host.take_key_focus("m.a", "toggle"), "once");
+    host.start_capture("m.a", "toggle");
+    host.capture_press(Chord::press(Key::F15, Modifiers::NONE));
+    assert!(host.take_key_focus("m.a", "toggle"), "bound: to Change");
+    host.unbind_key("m.a", "toggle");
+    assert!(host.take_key_focus("m.a", "toggle"), "removed: to Set key");
+}
+
+#[test]
+fn a_typed_chord_is_refused_and_another_apps_key_note_outlives_a_capture() {
+    let mut host = PanelHost::default();
+    host.set_manifest(manifest("m.a"));
+    host.set_key("m.a", "toggle", Some("Ctrl+Alt+F12".into()));
+    host.set_key_note(
+        "m.a",
+        "toggle",
+        Some("Another app uses Ctrl+Alt+F12.".into()),
+    );
+    host.start_capture("m.a", "toggle");
+    host.capture_press(Press::Typed("On this keyboard, Ctrl+Alt+Q types @.".into()));
+    assert_eq!(
+        host.key_note("m.a", "toggle"),
+        Some("On this keyboard, Ctrl+Alt+Q types @.")
+    );
+    assert!(host.capturing().is_some());
+    host.capture_press(Press::Cancel);
+    assert_eq!(
+        host.key_note("m.a", "toggle"),
+        Some("Another app uses Ctrl+Alt+F12.")
+    );
 }

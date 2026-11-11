@@ -210,8 +210,16 @@ pub struct PanelHost {
     keys: HashMap<(String, String), String>,
     /// The Keys row waiting for a key press (Set key or Change, #991).
     capturing: Option<(String, String)>,
-    /// A Keys row's line: why a key wasn't bound, or that another app has it.
+    /// A Keys row's line from the capture: why a key wasn't bound.
     key_notes: HashMap<(String, String), String>,
+    /// A Keys row's line from the hotkeys: another app holds its key.
+    key_conflicts: HashMap<(String, String), String>,
+    /// Where the waiting row was drawn (its window and rect), for a click outside it.
+    capture_row: Option<(egui::ViewportId, egui::Rect)>,
+    /// The waiting row was drawn since the last [`PanelHost::capture_frame_end`].
+    capture_drawn: bool,
+    /// The Keys row whose first button (Change or Set key) takes the focus at its next draw.
+    key_focus: Option<(String, String)>,
     /// The user bound or removed a key since the last [`PanelHost::take_keys_changed`].
     keys_changed: bool,
     /// When each module's panels last went from live to greyed ("Last seen", §7.8).
@@ -344,6 +352,10 @@ impl PanelHost {
             keys: HashMap::new(),
             capturing: None,
             key_notes: HashMap::new(),
+            key_conflicts: HashMap::new(),
+            capture_row: None,
+            capture_drawn: false,
+            key_focus: None,
             keys_changed: false,
             gone_at: HashMap::new(),
             restart_since: HashMap::new(),
@@ -475,10 +487,69 @@ impl PanelHost {
         let k = (module.to_string(), action.to_string());
         self.key_notes.remove(&k);
         self.capturing = Some(k);
+        self.capture_row = None;
+        self.capture_drawn = true;
     }
 
+    /// Esc or Cancel: the capture ends and the focus goes back to the button that started it.
     pub fn cancel_capture(&mut self) {
-        self.capturing = None;
+        self.end_capture(true);
+    }
+
+    /// The capture ends with nothing bound (#1087): `refocus` puts the focus back on the row's
+    /// Set key or Change (Esc, Cancel), not after a click elsewhere or a focus change.
+    pub fn end_capture(&mut self, refocus: bool) {
+        if let Some(k) = self.capturing.take() {
+            self.key_notes.remove(&k);
+            if refocus {
+                self.key_focus = Some(k);
+            }
+        }
+        self.capture_row = None;
+    }
+
+    /// The waiting row was drawn in `viewport` at `rect` (the Keys section calls it).
+    pub fn note_capture_row(&mut self, viewport: egui::ViewportId, rect: egui::Rect) {
+        self.capture_row = Some((viewport, rect));
+        self.capture_drawn = true;
+    }
+
+    /// A pointer press in `viewport` at `pos`: outside the waiting row, the capture ends.
+    pub fn capture_click(&mut self, viewport: egui::ViewportId, pos: Option<egui::Pos2>) {
+        let inside = self
+            .capture_row
+            .is_some_and(|(v, r)| v == viewport && pos.is_some_and(|p| r.contains(p)));
+        if self.capturing.is_some() && !inside {
+            self.end_capture(false);
+        }
+    }
+
+    /// The window `viewport` lost the focus: a capture in it ends.
+    pub fn capture_window_unfocused(&mut self, viewport: egui::ViewportId) {
+        if self.capture_row.is_some_and(|(v, _)| v == viewport) {
+            self.end_capture(false);
+        }
+    }
+
+    /// The end of a hub frame: a waiting row that wasn't drawn in it (another tab came up, its
+    /// page closed, the window went to the tray) ends its capture.
+    pub fn capture_frame_end(&mut self) {
+        if self.capturing.is_some() && !self.capture_drawn {
+            self.end_capture(false);
+        }
+        self.capture_drawn = false;
+    }
+
+    /// Whether the row's first button (Change or Set key) takes the focus now; asked once.
+    pub fn take_key_focus(&mut self, module: &str, action: &str) -> bool {
+        let hit = self
+            .key_focus
+            .as_ref()
+            .is_some_and(|(m, a)| m == module && a == action);
+        if hit {
+            self.key_focus = None;
+        }
+        hit
     }
 
     /// The Keys row waiting for a key press, if any.
@@ -497,9 +568,12 @@ impl PanelHost {
         };
         match press {
             Press::Wait => {}
-            Press::Cancel => self.capturing = None,
+            Press::Cancel => self.cancel_capture(),
             Press::Refused(why) => {
                 self.key_notes.insert(k, why.to_string());
+            }
+            Press::Typed(note) => {
+                self.key_notes.insert(k, note);
             }
             Press::Bind(chord) => {
                 let text = chord.to_string();
@@ -515,8 +589,11 @@ impl PanelHost {
                     return;
                 }
                 self.key_notes.remove(&k);
-                self.keys.insert(k, text);
+                self.key_conflicts.remove(&k);
+                self.keys.insert(k.clone(), text);
                 self.capturing = None;
+                self.capture_row = None;
+                self.key_focus = Some(k);
                 self.keys_changed = true;
             }
         }
@@ -526,22 +603,27 @@ impl PanelHost {
     pub fn unbind_key(&mut self, module: &str, action: &str) {
         let k = (module.to_string(), action.to_string());
         self.key_notes.remove(&k);
+        self.key_conflicts.remove(&k);
         self.keys_changed |= self.keys.remove(&k).is_some();
+        self.key_focus = Some(k);
     }
 
     /// The Keys row's line, if it has one.
     pub fn key_note(&self, module: &str, action: &str) -> Option<&str> {
+        let k = (module.to_string(), action.to_string());
         self.key_notes
-            .get(&(module.to_string(), action.to_string()))
+            .get(&k)
+            .or_else(|| self.key_conflicts.get(&k))
             .map(String::as_str)
     }
 
-    /// Sets or clears a Keys row's line (the hotkeys report a key another app holds).
+    /// Sets or clears a Keys row's line from the hotkeys (another app holds its key). It
+    /// stays through a capture that binds nothing.
     pub fn set_key_note(&mut self, module: &str, action: &str, note: Option<String>) {
         let k = (module.to_string(), action.to_string());
         match note {
-            Some(n) => self.key_notes.insert(k, n),
-            None => self.key_notes.remove(&k),
+            Some(n) => self.key_conflicts.insert(k, n),
+            None => self.key_conflicts.remove(&k),
         };
     }
 
@@ -875,8 +957,9 @@ impl PanelHost {
         self.keys.retain(|(m, _), _| m != module);
         self.keys_changed |= self.keys.len() != bound;
         self.key_notes.retain(|(m, _), _| m != module);
+        self.key_conflicts.retain(|(m, _), _| m != module);
         if self.capturing.as_ref().is_some_and(|(m, _)| m == module) {
-            self.capturing = None;
+            self.end_capture(false);
         }
         self.manifests.remove(module);
         self.quarantined.remove(module);
