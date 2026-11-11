@@ -162,6 +162,7 @@
     "truncated": "closed inside a length prefix or payload",
     "too-long": "a length prefix over 64 MiB; the reader closes the channel"
   },
+  "session": 1,
   "pipes": [
     {
       "pipe": "\\\\.\\pipe\\hideout-ch-4242-0-foxglove.example-art-previews",
@@ -257,6 +258,46 @@
       "pipe": "\\\\.\\pipe\\LOCAL\\hideout-ch-x",
       "result": "invalid",
       "note": "LOCAL is the provider's own spelling; others open the full name."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\hideout-ch-a\\..\\..\\..\\..\\..\\..\\UNC\\evilhost\\share\\hideout-ch-x",
+      "result": "invalid",
+      "note": "#1092 review: segments after the one channel segment; Windows would normalise this to a remote share."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-a\\..\\..\\..\\..\\..\\..\\UNC\\evilhost\\share\\hideout-ch-x",
+      "result": "invalid",
+      "note": "The same walk from the plain form."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\hideout-ch-a\\hideout-ch-b",
+      "result": "invalid",
+      "note": "Exactly one segment after the SID."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\..\\hideout-ch-x",
+      "result": "invalid",
+      "note": "No . or .. segment."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\hideout-ch-a/../x",
+      "result": "invalid",
+      "note": "No forward slash: Windows treats it as a separator."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\2\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\hideout-ch-x",
+      "result": "invalid",
+      "note": "Another session's namespace: the reader is in session 1 (the table's session)."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\01\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\hideout-ch-x",
+      "result": "invalid",
+      "note": "The session in digits without a leading zero."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\hideout-ch-x.",
+      "result": "invalid",
+      "note": "No trailing dot: Windows would drop it and open another name."
     }
   ]
 }

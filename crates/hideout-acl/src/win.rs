@@ -274,7 +274,7 @@ pub fn own_pipe_namespace() -> io::Result<Option<String>> {
 }
 
 /// This process's session id, from its token.
-fn own_session() -> io::Result<u32> {
+pub fn own_session() -> io::Result<u32> {
     use windows_sys::Win32::Security::TokenSessionId;
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();

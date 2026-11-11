@@ -273,12 +273,16 @@ pub fn connect(pipe: &str, nonce: &str) -> io::Result<ChannelConn> {
 /// pipe is opened with client rights only (read and write, no create-instance), which is what
 /// an AppContainer consumer is let in with.
 pub fn connect_to(pipe: &str, nonce: &str, server: Option<u32>) -> io::Result<ChannelConn> {
-    if !is_channel_pipe(pipe) {
+    // The whole name, strictly; a contained provider's only in this session; and, in depth,
+    // only a name Windows leaves as it is, under `\\.\pipe\` (#1092 review: never a UNC share).
+    let session = hideout_acl::own_session()?;
+    if !wire::is_channel_pipe_in(pipe, session) || !stays_a_local_pipe(pipe) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "not a local hideout-ch- channel pipe",
         ));
     }
+    // std adds SECURITY_SQOS_PRESENT to the flags: identification level only.
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -389,6 +393,28 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(Some(buf))
+}
+
+/// Whether Windows' own normalisation (`GetFullPathNameW`) leaves `pipe` exactly as it is,
+/// under `\\.\pipe\`: no `.`/`..` walk, no slash turned into a separator, no alias.
+fn stays_a_local_pipe(pipe: &str) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::GetFullPathNameW;
+    let w = wide(pipe);
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: a NUL-terminated name and a buffer of the length given.
+    let n = unsafe {
+        GetFullPathNameW(
+            w.as_ptr(),
+            buf.len() as u32,
+            buf.as_mut_ptr(),
+            std::ptr::null_mut(),
+        )
+    } as usize;
+    if n == 0 || n >= buf.len() {
+        return false;
+    }
+    let full = String::from_utf16_lossy(&buf[..n]);
+    full == pipe && full.starts_with(r"\\.\pipe\")
 }
 
 /// Whether the connected client of pipe instance `h` is `consumer`: its process id when the
@@ -875,6 +901,34 @@ mod consumer_tests {
             }
             t.join().unwrap();
         }
+    }
+
+    /// #1092 review: a name that walks out of the pipe namespace (to a UNC share), another
+    /// session's container namespace, or anything Windows would rewrite is never opened.
+    #[test]
+    fn the_consumer_opens_only_a_local_pipe_name() {
+        let s = hideout_acl::own_session().unwrap();
+        let ns = format!(r"\\.\pipe\Sessions\{s}\AppContainerNamedObjects\S-1-15-2-1-2");
+        for bad in [
+            format!(r"{ns}\hideout-ch-a\..\..\..\..\..\..\UNC\evilhost\share\hideout-ch-x"),
+            format!(
+                r"\\.\pipe\Sessions\{}\AppContainerNamedObjects\S-1-15-2-1-2\hideout-ch-x",
+                s + 1
+            ),
+            r"\\.\pipe\hideout-ch-x.".to_string(),
+            "//./pipe/hideout-ch-x".to_string(),
+        ] {
+            let e = connect_to(&bad, "n", None).err().unwrap();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{bad}");
+        }
+        // The normalisation check on its own: what Windows would rewrite fails it.
+        assert!(stays_a_local_pipe(r"\\.\pipe\hideout-ch-x"));
+        assert!(stays_a_local_pipe(&format!(r"{ns}\hideout-ch-x")));
+        assert!(!stays_a_local_pipe(
+            r"\\.\pipe\hideout-ch-a\..\..\..\UNC\evilhost\share\x"
+        ));
+        assert!(!stays_a_local_pipe(r"\\.\pipe\hideout-ch-x."));
+        assert!(!stays_a_local_pipe(r"\\.\pipe\a/../hideout-ch-x"));
     }
 
     /// The consumer sends nothing, the nonce least of all, to a pipe another process serves.

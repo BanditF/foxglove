@@ -48,35 +48,53 @@ IMAGE, CANVAS, TEXT = 1, 2, 3
 _NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 
 
+# (v1.10, #1092) A contained provider's pipe, in its own AppContainer namespace: the whole name,
+# strictly, with exactly one segment after the SID (the token rule is checked below).
 _CONTAINER_PIPE = re.compile(
-    r"\\\\\.\\pipe\\Sessions\\[0-9]+\\AppContainerNamedObjects\\(S-1-15-2(?:-[0-9]+)+)\\(hideout-ch-.*)\Z"
+    r"\\\\\.\\pipe\\Sessions\\(0|[1-9][0-9]*)\\AppContainerNamedObjects\\(S-1-15-2(?:-[0-9]+)+)\\([^\\/]*)\Z"
 )
+_PLAIN_DIR = "\\\\.\\pipe\\"
+
+
+def parse_channel_pipe(name):
+    """The whole name, strictly (#1092 review), as the Rust contract's `parse_channel_pipe`:
+    `None` when it isn't a channel pipe; `(None, None)` for the plain form; `(session, SID)`
+    for a contained provider's pipe in its own namespace. The one segment is `hideout-ch-` and
+    letters, digits, `.`, `_` or `-`, not ending in `.`: no further separator, no `.`/`..`, no
+    UNC walk."""
+    if not isinstance(name, str) or len(name) > MAX_PIPE_NAME or not name.startswith(_PLAIN_DIR):
+        return None
+    if name.startswith(_PLAIN_DIR + "Sessions\\"):
+        m = _CONTAINER_PIPE.match(name)
+        if not m:
+            return None
+        where, leaf = (int(m.group(1)), m.group(2)), m.group(3)
+    else:
+        where, leaf = (None, None), name[len(_PLAIN_DIR):]
+    if not leaf.startswith("hideout-ch-"):
+        return None
+    rest = leaf[len("hideout-ch-"):]
+    if not rest or rest.endswith(".") or not all(c in _NAME_CHARS for c in rest):
+        return None
+    return where
 
 
 def app_container_of(name):
-    """(v1.10, #1092) For a contained provider's pipe, in its own AppContainer namespace
-    (`\\\\.\\pipe\\Sessions\\<n>\\AppContainerNamedObjects\\<SID>\\hideout-ch-<rest>`), the SID;
-    else None."""
-    m = _CONTAINER_PIPE.match(name) if isinstance(name, str) else None
-    return m.group(1) if m else None
+    """For a contained provider's channel pipe, its AppContainer SID; else None."""
+    p = parse_channel_pipe(name)
+    return p[1] if p else None
 
 
 def is_channel_pipe(name):
-    """Whether `name` is a local channel pipe a consumer may connect to: the plain form, or
-    (v1.10) a contained provider's, in its own namespace."""
-    if not isinstance(name, str) or len(name) > MAX_PIPE_NAME:
-        return False
-    m = _CONTAINER_PIPE.match(name)
-    if m:
-        leaf = m.group(2)
-    elif name.startswith("\\\\.\\pipe\\"):
-        leaf = name[len("\\\\.\\pipe\\"):]
-    else:
-        return False
-    if not leaf.startswith("hideout-ch-"):
-        return False
-    rest = leaf[len("hideout-ch-"):]
-    return bool(rest) and all(c in _NAME_CHARS for c in rest)
+    """Whether `name` is a channel pipe a consumer may connect to, in any session (the syntax
+    alone; a consumer uses `is_channel_pipe_in` with its own session)."""
+    return parse_channel_pipe(name) is not None
+
+
+def is_channel_pipe_in(name, session):
+    """`is_channel_pipe`, and a contained provider's pipe only in `session`, the reader's own."""
+    p = parse_channel_pipe(name)
+    return p is not None and (p[0] is None or p[0] == session)
 
 
 def nonce_matches(got, nonce):
@@ -429,7 +447,10 @@ if os.name == "nt":
     def connect(pipe, nonce):
         """The consumer's end: connects to a local `hideout-ch-` pipe (ValueError otherwise),
         with identification-level impersonation only, and sends the nonce first."""
-        if not is_channel_pipe(pipe):
+        session = wintypes.DWORD()
+        if not _k32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session)):
+            _fail("ProcessIdToSessionId")
+        if not is_channel_pipe_in(pipe, session.value):
             raise ValueError("not a local hideout-ch- channel pipe")
         h = _k32.CreateFileW(pipe, _GENERIC_RW, 0, None, _OPEN_EXISTING,
                              _FILE_FLAG_OVERLAPPED | _SECURITY_SQOS_PRESENT | _SECURITY_IDENTIFICATION, None)

@@ -3,7 +3,16 @@
 //! `channel.create`, checks the provider's `{pipe}` answer, and steps out. Frames never pass
 //! through it: they flow on the provider's own one-time pipe.
 
-use hideout_contract::channel::{app_container_of, is_channel_pipe};
+use hideout_contract::channel::parse_channel_pipe;
+
+/// The hub's Windows session: a contained provider's pipe is only ever in it. `None` (not
+/// read, or not Windows) refuses every container-namespace name.
+fn hub_session() -> Option<u32> {
+    #[cfg(windows)]
+    return hideout_acl::own_session().ok();
+    #[cfg(not(windows))]
+    None
+}
 use serde_json::{json, Value};
 
 /// Error 6, backend (§8.1).
@@ -33,9 +42,15 @@ pub(crate) fn grant(
     let r = result?;
     let pipe = r.get("pipe").and_then(Value::as_str);
     // A contained provider can make pipes only in its own namespace, so any other name from it
-    // is someone else's pipe; a provider outside one never names a container's.
-    let ok = pipe.is_some_and(|p| {
-        is_channel_pipe(p) && app_container_of(p) == provider.app_container.as_deref()
+    // is someone else's pipe; a provider outside one never names a container's. The name is
+    // parsed whole and strictly, and a container's namespace counts only in the hub's own
+    // session (#1092 review).
+    let ok = pipe.is_some_and(|p| match parse_channel_pipe(p) {
+        Some(None) => provider.app_container.is_none(),
+        Some(Some((session, sid))) => {
+            provider.app_container.as_deref() == Some(sid) && hub_session() == Some(session)
+        }
+        None => false,
     });
     match pipe {
         Some(pipe) if ok => {
@@ -100,9 +115,12 @@ mod tests {
     /// namespace passes only from that container.
     #[test]
     fn a_contained_providers_pipe_is_its_own() {
-        let mine = r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-7-8\hideout-ch-1-0-a-b";
-        let theirs =
-            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-9-9\hideout-ch-1-0-a-b";
+        let s = hub_session().expect("the test's session");
+        let ns = |sid: &str, session: u32, leaf: &str| {
+            format!(r"\\.\pipe\Sessions\{session}\AppContainerNamedObjects\{sid}\{leaf}")
+        };
+        let mine = &ns("S-1-15-2-7-8", s, "hideout-ch-1-0-a-b");
+        let theirs = &ns("S-1-15-2-9-9", s, "hideout-ch-1-0-a-b");
         let p = Provider {
             name: "A".into(),
             pid: Some(42),
@@ -110,11 +128,24 @@ mod tests {
         };
         let g = grant(Ok(json!({ "pipe": mine })), "n", &p).unwrap();
         assert_eq!(g["pid"], 42);
-        assert_eq!(g["pipe"], mine);
+        assert_eq!(g["pipe"], mine.as_str());
         // Another container's pipe, from a contained provider or from one outside any.
         assert!(grant(Ok(json!({ "pipe": theirs })), "n", &p).is_err());
         assert!(grant(Ok(json!({ "pipe": mine })), "n", &plain()).is_err());
         // A contained provider can't make a plain pipe: one it names is someone else's.
         assert!(grant(Ok(json!({"pipe": r"\\.\pipe\hideout-ch-1"})), "n", &p).is_err());
+        // #1092 review: its own SID, but another session, or a name that walks out of the
+        // namespace (to a UNC share), or a second segment.
+        for bad in [
+            ns("S-1-15-2-7-8", s + 1, "hideout-ch-1-0-a-b"),
+            ns(
+                "S-1-15-2-7-8",
+                s,
+                r"hideout-ch-a\..\..\..\..\..\..\UNC\evilhost\share\hideout-ch-x",
+            ),
+            ns("S-1-15-2-7-8", s, r"hideout-ch-a\hideout-ch-b"),
+        ] {
+            assert!(grant(Ok(json!({ "pipe": bad })), "n", &p).is_err(), "{bad}");
+        }
     }
 }

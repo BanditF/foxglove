@@ -1635,12 +1635,22 @@ Rules:
     namespace: it creates `\\.\pipe\LOCAL\hideout-ch-<rest>`, which every other process opens
     as `\\.\pipe\Sessions\<session>\AppContainerNamedObjects\<its SID>\hideout-ch-<rest>`, and
     answers `channel.create` with that full name (at most 256 characters; the SDK cuts the
-    end of `<rest>`). This is the second form of a channel pipe name: the session in digits,
-    the SID `S-1-15-2-` and digits and dashes, then `hideout-ch-` and `<rest>` by the rule
-    above. Its pipe is Low by Windows' rule (made by a Low process).
+    end of `<rest>`). This is the second form of a channel pipe name: the session in digits
+    (no leading zero), the SID `S-1-15-2-` and dash-separated digits, then exactly one segment,
+    `hideout-ch-` and `<rest>` by the rule above. Its pipe is Low by Windows' rule (made by a
+    Low process).
+  - **The whole name, strictly (#1092 review).** Both forms are parsed in full: the exact
+    prefix, then exactly one segment. No further `\` or any `/`, no `.` or `..` segment, and
+    `<rest>` doesn't end in `.` (Windows drops a trailing dot). Nothing Windows could normalise
+    into another path passes, a remote UNC share least of all (opening one would send the
+    user's credentials). A second-form name counts only in the reader's own session: the hub
+    checks its session, and a consumer checks its own. As defence in depth, a consumer opens
+    only a name that `GetFullPathNameW` leaves unchanged under `\\.\pipe\`, at identification
+    level (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`). The vectors' table states the
+    reader's session (`"session": 1`).
   - **The router's check.** A contained provider's answer passes only in the second form with
-    its own SID (from its token), and a provider outside a container only in the first form:
-    no provider can send a consumer to another module's pipe.
+    its own SID (from its token) in the hub's session, and a provider outside a container only
+    in the first form: no provider can send a consumer to another module's pipe.
   - **Frames.** Both directions may carry frames; what they mean is the channel's own
     business. A payload may be empty and is at most 64 MiB; a longer length prefix closes the
     channel unread. A stream that stops inside a length prefix or a payload ends the channel;
