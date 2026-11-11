@@ -344,7 +344,17 @@ mod tests {
         save(&["a.art", "b.beat", "c.chat"]);
         ids_after(&["a.art", "b.beat", "c.chat"]);
         save(&["a.art", "c.chat"]);
-        let seen = ids_after(&["a.art", "c.chat"]);
+        let mut seen = ids_after(&["a.art", "c.chat"]);
+        // The removal reaches the feed on its own path; the list can land first (flaky on a
+        // loaded gate, 11/11). Wait, bounded, for the removal too.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !seen.contains(&Inbound::ModuleRemoved {
+            module: "b.beat".into(),
+        }) && std::time::Instant::now() < until
+        {
+            let _ = wakes.recv_timeout(std::time::Duration::from_millis(200));
+            seen.extend(feed.drain());
+        }
         assert!(
             seen.contains(&Inbound::ModuleRemoved {
                 module: "b.beat".into()
