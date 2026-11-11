@@ -336,7 +336,8 @@ devices keep their own choice and show it when they are the default.
 | While on, line 3 (exclusive control, §5) | "Apps that take exclusive control of this device play at full volume." |
 | Not eligible (Windows sets its volume in software) | "Windows sets this device's volume itself." (no toggle) |
 | After turning off (until the page changes) | "Windows sets this device's volume again." |
-| On, but the saved levels can't be read (#1070), instead of the while-on lines | "Master volume is paused: Foxglove couldn't read its saved levels." |
+| After turning off while master was muted (#1070) | "Windows sets this device's volume again. Apps stay muted until you unmute the device." |
+| On, but the saved levels can't be read (#1070), instead of the while-on lines | "Master volume is paused: Foxglove couldn't read its saved levels. It tries again when you change the volume." |
 
 - **Default:** on for a listed device, and only when Windows hands its volume to the hardware. Off for
   every other eligible device. The user's choice is stored per device and wins over the list.

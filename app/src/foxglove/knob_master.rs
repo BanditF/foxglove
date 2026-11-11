@@ -238,7 +238,11 @@ pub const ON_LINES: [&str; 3] = [
 pub const NOT_ELIGIBLE: &str = "Windows sets this device's volume itself.";
 pub const AFTER_OFF: &str = "Windows sets this device's volume again.";
 /// On, but not started: the journal can't be read (#1070). It replaces the while-on lines.
-pub const PAUSED: &str = "Master volume is paused: Foxglove couldn't read its saved levels.";
+pub const PAUSED: &str = "Master volume is paused: Foxglove couldn't read its saved levels. \
+                          It tries again when you change the volume.";
+/// After turning off while master was muted: the apps stay muted with the device (#1070).
+pub const AFTER_OFF_MUTED: &str =
+    "Windows sets this device's volume again. Apps stay muted until you unmute the device.";
 pub const OPEN_SOUND: &str = "Open Sound settings";
 /// The master card's third row, on the first outside change of a run (§1).
 pub const SLIDER_ROW: &str = "Windows' slider goes back near the top.";
@@ -279,7 +283,8 @@ pub fn tray_hover(name: &str, volume: &AppVolume) -> String {
 /// The page asked for the device's facts on this visit.
 static ASKED: AtomicBool = AtomicBool::new(false);
 /// The endpoint just turned off on this visit ("Windows sets this device's volume again.").
-static TURNED_OFF: Mutex<Option<String>> = Mutex::new(None);
+/// With whether master was muted then (its apps stay muted).
+static TURNED_OFF: Mutex<Option<(String, bool)>> = Mutex::new(None);
 
 /// What the part draws, for a device.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,13 +299,16 @@ pub enum View {
         listed: bool,
         open_sound: bool,
         after_off: bool,
+        /// Turned off while master was muted: [`AFTER_OFF_MUTED`] instead of [`AFTER_OFF`].
+        kept_muted: bool,
         /// On, but the journal can't be read: [`PAUSED`] instead of the while-on lines.
         paused: bool,
     },
 }
 
 /// The part's view of `d`, with the user's choice `choice` as stored now.
-pub fn view(d: &Device, choice: Option<bool>, turned_off: bool) -> View {
+/// `turned_off`: turned off on this visit, and whether master was muted then.
+pub fn view(d: &Device, choice: Option<bool>, turned_off: Option<bool>) -> View {
     let name = d.name.clone();
     if !d.eligible {
         return View::NotEligible { name };
@@ -312,7 +320,8 @@ pub fn view(d: &Device, choice: Option<bool>, turned_off: bool) -> View {
         listed: d.listed,
         // Windows' default is to allow it: unknown counts as allowed.
         open_sound: on && !d.paused && d.exclusive != Some(false),
-        after_off: !on && turned_off,
+        after_off: !on && turned_off.is_some(),
+        kept_muted: !on && turned_off == Some(true),
         paused: on && d.paused,
     }
 }
@@ -326,6 +335,7 @@ pub fn lines(v: &View) -> Vec<&'static str> {
             on,
             listed,
             after_off,
+            kept_muted,
             paused,
             ..
         } => {
@@ -336,7 +346,11 @@ pub fn lines(v: &View) -> Vec<&'static str> {
                 out.extend(ON_LINES);
             }
             if *after_off {
-                out.push(AFTER_OFF);
+                out.push(if *kept_muted {
+                    AFTER_OFF_MUTED
+                } else {
+                    AFTER_OFF
+                });
             }
             out
         }
@@ -355,8 +369,9 @@ pub fn part(ui: &mut egui::Ui) {
     let turned_off = TURNED_OFF
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .as_deref()
-        == Some(d.endpoint.as_str());
+        .as_ref()
+        .filter(|(e, _)| *e == d.endpoint)
+        .map(|(_, muted)| *muted);
     let v = view(&d, choice_of(&d.endpoint), turned_off);
     ui.add_space(10.0);
     ui.label(theme::caps_label(ui, CAPTION));
@@ -372,13 +387,16 @@ pub fn part(ui: &mut egui::Ui) {
             listed,
             open_sound,
             after_off,
+            kept_muted,
             paused,
         } => {
             let mut checked = *on;
             if toggle(ui, &mut checked, name, *listed).changed() {
                 choose(&d.endpoint, name, checked);
+                // Master's mute as it stops: its apps stay muted until the device is unmuted.
+                let muted = master::handled_master().is_some_and(|(_, m)| m);
                 *TURNED_OFF.lock().unwrap_or_else(|e| e.into_inner()) =
-                    (!checked).then(|| d.endpoint.clone());
+                    (!checked).then(|| (d.endpoint.clone(), muted));
             }
             ui.label(RichText::new(second_line(*listed)).small().color(p.muted));
             if *paused {
@@ -399,7 +417,12 @@ pub fn part(ui: &mut egui::Ui) {
                 });
             }
             if *after_off {
-                ui.label(RichText::new(AFTER_OFF).color(p.text));
+                let words = if *kept_muted {
+                    AFTER_OFF_MUTED
+                } else {
+                    AFTER_OFF
+                };
+                ui.label(RichText::new(words).color(p.text));
             }
         }
     }
@@ -466,7 +489,7 @@ mod tests {
 
     #[test]
     fn the_setting_eligible_listed_is_on_unlisted_off_and_not_eligible_has_no_toggle() {
-        let v = view(&device(true, true, Some(true)), None, false);
+        let v = view(&device(true, true, Some(true)), None, None);
         assert!(matches!(
             v,
             View::Toggle {
@@ -477,11 +500,11 @@ mod tests {
         ));
         assert_eq!(lines(&v)[1], LISTED_LINE);
         assert_eq!(&lines(&v)[2..], &ON_LINES);
-        let v = view(&device(true, false, None), None, false);
+        let v = view(&device(true, false, None), None, None);
         assert!(matches!(v, View::Toggle { on: false, .. }));
         assert_eq!(lines(&v), [TOGGLE, OTHER_LINE]);
         // The user's choice wins over the list.
-        let v = view(&device(true, true, Some(false)), Some(false), true);
+        let v = view(&device(true, true, Some(false)), Some(false), Some(false));
         assert!(matches!(
             v,
             View::Toggle {
@@ -491,8 +514,11 @@ mod tests {
             }
         ));
         assert_eq!(lines(&v).last(), Some(&AFTER_OFF));
+        // Turned off while master was muted: the apps stay muted, and the line says so.
+        let v = view(&device(true, true, Some(false)), Some(false), Some(true));
+        assert_eq!(lines(&v).last(), Some(&AFTER_OFF_MUTED));
         // Exclusive control off in Windows: no button.
-        let v = view(&device(true, true, Some(false)), None, false);
+        let v = view(&device(true, true, Some(false)), None, None);
         assert!(matches!(
             v,
             View::Toggle {
@@ -503,7 +529,7 @@ mod tests {
         // On, but the journal can't be read: one plain line instead of the while-on lines.
         let mut d = device(true, true, Some(true));
         d.paused = true;
-        let v = view(&d, None, false);
+        let v = view(&d, None, None);
         assert!(matches!(
             v,
             View::Toggle {
@@ -515,7 +541,7 @@ mod tests {
         ));
         assert_eq!(lines(&v), [TOGGLE, LISTED_LINE, PAUSED]);
         // Windows sets the volume in software: one line, no toggle, even listed and chosen.
-        let v = view(&device(false, true, None), Some(true), false);
+        let v = view(&device(false, true, None), Some(true), None);
         assert_eq!(lines(&v), [NOT_ELIGIBLE]);
     }
 
@@ -548,6 +574,7 @@ mod tests {
             OTHER_LINE,
             NOT_ELIGIBLE,
             AFTER_OFF,
+            AFTER_OFF_MUTED,
             PAUSED,
             OPEN_SOUND,
             SLIDER_ROW,
