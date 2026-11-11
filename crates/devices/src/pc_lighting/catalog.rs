@@ -15,18 +15,23 @@ use crate::calibration::Calibration;
 pub enum Protocol {
     /// HP OMEN case lighting board (TracerLED): 59-byte static colour reports per zone.
     OmenTracer,
+    /// Witmod-firmware LCD pump caps (#614): a stub that sends nothing until the ring's command
+    /// is known (`[device.witmod]`, [`super::witmod_lcd`]).
+    WitmodLcd,
     /// Recognised, no driver yet.
     None,
 }
 
 impl Protocol {
-    /// Every protocol, for the manual add's choice.
+    /// Every protocol the manual add offers: a zone test writes its reports, so only the ones
+    /// that can light a zone, and "none". The witmod-lcd stub isn't one.
     pub const ALL: [Protocol; 2] = [Protocol::OmenTracer, Protocol::None];
 
     /// The catalog's name for it.
     pub fn id(self) -> &'static str {
         match self {
             Protocol::OmenTracer => "omen-tracer",
+            Protocol::WitmodLcd => "witmod-lcd",
             Protocol::None => "none",
         }
     }
@@ -35,6 +40,7 @@ impl Protocol {
     pub fn label(self) -> &'static str {
         match self {
             Protocol::OmenTracer => "HP OMEN case board (TracerLED)",
+            Protocol::WitmodLcd => "Witmod LCD pump cap",
             Protocol::None => "Unknown: list it, don't drive it",
         }
     }
@@ -43,7 +49,7 @@ impl Protocol {
     pub fn zones(self) -> Vec<u8> {
         match self {
             Protocol::OmenTracer => (1..=super::omen_tracer::MAX_ZONE).collect(),
-            Protocol::None => Vec::new(),
+            Protocol::WitmodLcd | Protocol::None => Vec::new(),
         }
     }
 }
@@ -211,7 +217,8 @@ pub struct CatalogDevice {
     /// How colour is addressed; per-zone when zones are listed, else none.
     #[serde(default)]
     pub color: Option<Color>,
-    /// Onboard effects by name.
+    /// Onboard effects by name. On a device Foxglove can't drive yet, the first is the one it
+    /// shows on its own (the page says so).
     #[serde(default)]
     pub effects: Vec<String>,
     #[serde(default)]
@@ -228,6 +235,12 @@ pub struct CatalogDevice {
     /// The device's front face in millimetres (width, height), for scenes' room map (#483).
     #[serde(default)]
     pub size: Option<[u16; 2]>,
+    /// Named from a vendor's software, not yet seen on real hardware.
+    #[serde(default)]
+    pub unconfirmed: bool,
+    /// The witmod-lcd protocol's numbers (`[device.witmod]`); only on that protocol.
+    #[serde(default)]
+    pub witmod: Option<super::witmod_lcd::Params>,
     /// From the user's own catalog (added by hand), not the bundled one.
     #[serde(skip)]
     pub local: bool,
@@ -267,7 +280,19 @@ impl CatalogDevice {
             calibration: None,
             calibration_hint: None,
             size: None,
+            unconfirmed: false,
+            witmod: None,
             local: true,
+        }
+    }
+
+    /// Whether Foxglove can change its lights: its protocol has a driver, and that driver
+    /// knows the command it needs (a witmod-lcd cap only once its ring op is known).
+    pub fn controllable(&self) -> bool {
+        match self.protocol {
+            Protocol::OmenTracer => true,
+            Protocol::WitmodLcd => self.witmod.as_ref().is_some_and(|w| w.ring_known()),
+            Protocol::None => false,
         }
     }
 
@@ -337,6 +362,9 @@ impl CatalogDevice {
         if let Some([w, h]) = self.size {
             out.push_str(&format!("size = [{w}, {h}]\n"));
         }
+        if self.unconfirmed {
+            out.push_str("unconfirmed = true\n");
+        }
         if !self.zones.is_empty() {
             out.push_str("zones = [\n");
             for z in &self.zones {
@@ -355,6 +383,9 @@ impl CatalogDevice {
                 ));
             }
             out.push_str("]\n");
+        }
+        if let Some(w) = &self.witmod {
+            out.push_str(&w.to_toml());
         }
         for c in &self.conflicts {
             let processes: Vec<String> = c.processes.iter().map(|p| quote(p)).collect();
@@ -408,6 +439,7 @@ impl Catalog {
             for z in &d.zones {
                 let ok = match d.protocol {
                     Protocol::OmenTracer => super::omen_tracer::zone_ok(z.id),
+                    Protocol::WitmodLcd => super::witmod_lcd::zone_ok(z.id),
                     Protocol::None => true,
                 };
                 if !ok {
@@ -416,6 +448,18 @@ impl Catalog {
             }
             if d.protocol == Protocol::OmenTracer && d.zones.is_empty() {
                 return Err(format!("{}: a driven board needs zones", d.name));
+            }
+            match (d.protocol, &d.witmod) {
+                (Protocol::WitmodLcd, None) => {
+                    return Err(format!("{}: witmod-lcd needs [device.witmod]", d.name));
+                }
+                (Protocol::WitmodLcd, Some(w)) => {
+                    w.check().map_err(|e| format!("{}: {e}", d.name))?;
+                }
+                (_, Some(_)) => {
+                    return Err(format!("{}: [device.witmod] is for witmod-lcd", d.name));
+                }
+                (_, None) => {}
             }
         }
         Ok(catalog)
@@ -520,7 +564,7 @@ mod tests {
         assert_eq!(ambient, [2]);
         assert_eq!(
             c.find(0x03f0, 0x7397).map(|d| d.protocol),
-            Some(Protocol::None)
+            Some(Protocol::WitmodLcd)
         );
         let cal = case
             .calibration
@@ -548,6 +592,39 @@ mod tests {
         assert_eq!(c.find(0x03f0, 0x7397).unwrap().kind, DeviceKind::Cooler);
         // No bundled model starts from a hint: their first matches start neutral, as before.
         assert!(c.devices.iter().all(|d| c.hint(d).is_none()));
+    }
+
+    /// #614: the LCD pump caps are a class in the catalog: zones, the effect they keep, the
+    /// vendor helper that holds them, and a second model known only from that helper.
+    #[test]
+    fn the_bundled_lcd_coolers_are_data() {
+        let c = Catalog::bundled();
+        let cap = c.find(0x03f0, 0x7397).expect("the 45L's pump cap");
+        assert_eq!(cap.kind, DeviceKind::Cooler);
+        let zones: Vec<_> = cap.zones.iter().map(|z| (z.id, z.name.as_str())).collect();
+        assert_eq!(zones, [(1, "Pump ring"), (2, "Radiator fans")]);
+        assert_eq!(cap.effects, ["rainbow"]);
+        assert!(!cap.unconfirmed);
+        assert!(!cap.controllable(), "no ring command known yet");
+        let helper = cap
+            .conflicts
+            .iter()
+            .find(|k| k.processes.iter().any(|p| p == "OMENLCDDisplayHelper.exe"))
+            .expect("HP's LCD helper");
+        assert!(helper.hint.is_some());
+        let other = c.find(0x03f0, 0x02be).expect("the second LCD cooler");
+        assert_eq!(
+            (other.kind, other.protocol),
+            (DeviceKind::Cooler, Protocol::None)
+        );
+        assert!(other.unconfirmed);
+        assert!(!other.controllable());
+        // Nothing else is unconfirmed, and the flag survives the user's own file.
+        assert_eq!(c.devices.iter().filter(|d| d.unconfirmed).count(), 1);
+        let back = Catalog::parse(&other.to_toml()).unwrap();
+        assert!(back.devices[0].unconfirmed);
+        // Its protocol table belongs to its protocol.
+        assert!(Catalog::parse(&cap.to_toml().replace("witmod-lcd", "none")).is_err());
     }
 
     #[test]
@@ -831,7 +908,9 @@ mod tests {
         assert_eq!(zones.source, super::ZoneSource::Catalog);
         assert_eq!(zones.list[4].area.as_deref(), Some("Front top fan"));
         let cooler = c.find(0x03f0, 0x7397).unwrap().caps();
-        assert_eq!(cooler.color, Color::None);
+        // Its ring and fan chain as two zones (#614), and the effect it keeps.
+        assert_eq!((cooler.color, cooler.count), (Color::PerZone, 2));
+        assert_eq!(cooler.effects, ["rainbow"]);
         assert_eq!(cooler.screens.len(), 1);
         assert!(cooler.screens[0].images && cooler.screens[0].animations);
         assert_eq!(Protocol::OmenTracer.zones().len(), 13);

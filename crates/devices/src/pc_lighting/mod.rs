@@ -10,6 +10,8 @@
 //!   [`unknown`] lists the rest for "Add a device", and [`test_zone`] lights one zone of it
 //! - [`lamp_array`]: Windows Dynamic Lighting (LampArray) devices' lamps, as zones
 //! - [`omen_tracer`]: the HP OMEN case lighting board (TracerLED)
+//! - [`witmod_lcd`]: Witmod-firmware LCD pump caps; a stub that sends nothing until the ring's
+//!   command is known (#614)
 //! - [`openrgb`]: every device a running OpenRGB drives, through its SDK server (#471);
 //!   opt-in, off by default
 //! - [`rates`]: how often each kind of light takes a scene's frames (`light-rates.toml`, #486)
@@ -29,6 +31,7 @@ pub mod lamp_array;
 pub mod omen_tracer;
 pub mod openrgb;
 pub mod rates;
+pub mod witmod_lcd;
 pub mod zones;
 
 use std::time::Duration;
@@ -204,9 +207,12 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
                 name: known.name.clone(),
                 vid: entry.vid,
                 pid: entry.pid,
-                control: match known.protocol {
-                    Protocol::None => Control::NotYet,
-                    p => Control::Driver(p),
+                // A protocol whose driver lacks the command it needs (a witmod-lcd cap with
+                // no ring op) reads as not controllable, like one with no driver.
+                control: if known.controllable() {
+                    Control::Driver(known.protocol)
+                } else {
+                    Control::NotYet
                 },
                 path: entry.path.clone(),
                 zones: known.zones.clone(),
@@ -441,7 +447,7 @@ pub fn test_zone(
             spec,
             writer,
         )?),
-        Protocol::None => return Err(DeviceError::Unsupported),
+        Protocol::WitmodLcd | Protocol::None => return Err(DeviceError::Unsupported),
     };
     let mut blink = || -> Result<()> {
         for step in 0..IDENTIFY_STEPS {
@@ -468,6 +474,11 @@ pub fn open(found: &Found, writer: Box<dyn HidWriter>) -> Result<Box<dyn Lightin
             found.zones.clone(),
             writer,
         )?),
+        // The stub gets no writer: it can't send anything.
+        Control::Driver(Protocol::WitmodLcd) => Box::new(witmod_lcd::WitmodLcd::new(
+            found.name.clone(),
+            found.zones.clone(),
+        )),
         _ => return Err(DeviceError::Unsupported),
     };
     Ok(Box::new(calibrated::Calibrated::new(

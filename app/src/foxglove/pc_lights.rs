@@ -850,7 +850,9 @@ impl Worker {
         // Each app's processes are looked for once a scan, however many devices name it.
         let mut asked: BTreeMap<Vec<String>, bool> = BTreeMap::new();
         let mut conflicts = Vec::new();
-        for f in &now {
+        // Only where Foxglove sets colours: an app can't override Foxglove on a device it can't
+        // drive yet (the 45L cooler's LCD helper runs all the time, #614).
+        for f in now.iter().filter(|f| f.control != Control::NotYet) {
             for c in &f.conflicts {
                 let runs = *asked.entry(c.processes.clone()).or_insert_with(|| {
                     let names: Vec<&str> = c.processes.iter().map(String::as_str).collect();
@@ -2322,7 +2324,8 @@ mod tests {
                     Control::Driver(pcl::Protocol::OmenTracer),
                     5
                 ),
-                ("HP OMEN liquid cooler", Control::NotYet, 0),
+                // Its pump ring and radiator fans, listed but not driven (#614).
+                ("HP OMEN liquid cooler", Control::NotYet, 2),
                 ("G502 Proteus Spectrum", Control::LampArray, 2),
             ]
         );
@@ -3556,7 +3559,11 @@ mod tests {
         );
         assert_eq!(
             s.devices[1].caps.chips(false),
-            vec!["Screen · images & animations"]
+            vec![
+                "Per-zone RGB · 2 zones",
+                "1 onboard effect",
+                "Screen · images & animations"
+            ]
         );
         assert_eq!(
             s.devices[2].caps.chips(false)[0],
@@ -3622,14 +3629,42 @@ mod tests {
 
     /// #558: the second desk's case names its own vendor tool; while it runs, the page warns
     /// about that app on that device and the case's saved colours wait. The 45L's tool doesn't
-    /// matter here.
+    /// matter here. The case is driven here (an OMEN-protocol board): a device Foxglove can't
+    /// drive yet has no colours to override, so its tool isn't warned about (#614).
     #[test]
     fn a_conflict_comes_from_the_devices_catalog_entry() {
         use crate::foxglove::fixtures::second_desk as desk;
-        let writers: Writers =
-            Box::new(|_path: &str| Ok(Box::new(Recorder(Arc::default())) as Box<dyn HidWriter>));
+        let writers = || -> Writers {
+            Box::new(|_path: &str| Ok(Box::new(Recorder(Arc::default())) as Box<dyn HidWriter>))
+        };
+        // Not controllable yet (its catalog entry as the fixture has it): no warning, and its
+        // tool isn't looked for.
+        let mut w = Worker::new(
+            desk::catalog(),
+            None,
+            Settings::default(),
+            writers(),
+            Box::new(Vec::new),
+        );
+        let mut looked = false;
+        w.scan(
+            &desk::hid(),
+            &mut |_: &[&str]| {
+                looked = true;
+                true
+            },
+            false,
+            true,
+        );
+        assert_eq!(w.snapshot().devices[0].control, Control::NotYet);
+        assert!(w.snapshot().conflicts.is_empty() && !looked);
+        let mut catalog = desk::catalog();
+        catalog.put(CatalogDevice {
+            protocol: pcl::Protocol::OmenTracer,
+            ..desk::case_entry()
+        });
         let lamps: LampArrays = Box::new(Vec::new);
-        let mut w = Worker::new(desk::catalog(), None, Settings::default(), writers, lamps);
+        let mut w = Worker::new(catalog, None, Settings::default(), writers(), lamps);
         let mut asked: Vec<Vec<String>> = Vec::new();
         let mut glow = |names: &[&str]| {
             asked.push(names.iter().map(|n| n.to_string()).collect());

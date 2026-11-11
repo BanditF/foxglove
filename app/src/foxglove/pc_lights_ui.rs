@@ -323,6 +323,30 @@ pub fn control_text(c: Control) -> &'static str {
     }
 }
 
+/// What a device Foxglove can't drive yet does instead (#614): it keeps its own effect, named
+/// when the catalog lists one (the first of its `effects` is the one it shows on its own).
+pub fn not_yet_text(effects: &[String]) -> String {
+    match effects.first().map(|e| e.trim()).filter(|e| !e.is_empty()) {
+        Some(effect) => {
+            format!("Lights not controllable yet: it keeps its own effect ({effect}).")
+        }
+        None => "Lights not controllable yet: it keeps its own effect.".into(),
+    }
+}
+
+/// The zone chip's hover on a device Foxglove can't drive yet (#614): its zones are how its
+/// lights are divided, not something Foxglove sets.
+pub const ZONES_NOT_YET_TIP: &str =
+    "How the device's lights are divided. Foxglove can't set them yet.";
+
+/// The zone chip's (and the open row's light line's) hover.
+pub fn zones_tip(row: &Row) -> &'static str {
+    match row.control {
+        Control::NotYet => ZONES_NOT_YET_TIP,
+        _ => super::light_zones::TIP,
+    }
+}
+
 /// What the card is for: its title's hover (#795 O1).
 pub const ABOUT: &str =
     "Case lights, screens and other lighting devices on this PC, and what each can do.";
@@ -863,7 +887,7 @@ fn light_line(ui: &mut egui::Ui, row: &Row) {
     let mut open = false;
     ui.horizontal_wrapped(|ui| {
         ui.add(egui::Label::new(RichText::new(summary).color(p.text)).wrap())
-            .on_hover_text(super::light_zones::TIP);
+            .on_hover_text(zones_tip(row));
         if offers_zones(row) {
             open = super::zones_ui::toggle(ui, &row.key, caps.kind(false));
         }
@@ -875,7 +899,8 @@ fn light_line(ui: &mut egui::Ui, row: &Row) {
 }
 
 /// The collapsed row's muted line (#795 O4, O14): how it's controlled, "· added by you",
-/// "· calibrated". A device Foxglove can't drive has the old sentence on hover.
+/// "· calibrated". A device Foxglove can't drive says on hover that it keeps its own effect
+/// ([`not_yet_text`]).
 pub fn row_note(row: &Row) -> String {
     let mut note = control_text(row.control).to_string();
     if row.entry.is_some() {
@@ -954,10 +979,10 @@ fn device(
                     .selectable(false),
             );
             if matches!(row.control, Control::NotYet) {
-                note.on_hover_text("Found, not controllable yet.");
+                note.on_hover_text(not_yet_text(&row.caps.effects));
             }
             if let Some(chip) = light_chip(row) {
-                theme::hint_chip(ui, &chip, Some(super::light_zones::TIP), None);
+                theme::hint_chip(ui, &chip, Some(zones_tip(row)), None);
             }
             match row.caps.summary(false) {
                 None if row.caps.screen_chips().is_empty() => {
@@ -1454,6 +1479,8 @@ pub mod tests {
                                 animations: true,
                                 ..Default::default()
                             }],
+                            // The effect it keeps, as the catalog has it (#614).
+                            effects: vec!["rainbow".into()],
                             ..Default::default()
                         },
                         entry: None,
@@ -2003,6 +2030,49 @@ pub mod tests {
         assert_eq!(control_text(Control::OpenRgb), "Through OpenRGB");
     }
 
+    /// #614: a device Foxglove can't drive keeps its own effect, named from the catalog when
+    /// it lists one (the first), generic when it lists none.
+    #[test]
+    fn a_device_not_controllable_yet_keeps_its_own_effect() {
+        let effects = |e: &[&str]| e.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            not_yet_text(&effects(&["rainbow"])),
+            "Lights not controllable yet: it keeps its own effect (rainbow)."
+        );
+        assert_eq!(
+            not_yet_text(&effects(&["colour cycle", "breathing"])),
+            "Lights not controllable yet: it keeps its own effect (colour cycle)."
+        );
+        assert_eq!(
+            not_yet_text(&[]),
+            "Lights not controllable yet: it keeps its own effect."
+        );
+        assert_eq!(
+            not_yet_text(&effects(&[" "])),
+            "Lights not controllable yet: it keeps its own effect."
+        );
+        // From the data: the bundled cooler's entry says rainbow, the unconfirmed one nothing.
+        use crate::foxglove::fixtures::users_desk;
+        let cooler = users_desk::catalog_row(users_desk::COOLER);
+        assert_eq!(cooler.control, Control::NotYet);
+        assert_eq!(
+            not_yet_text(&cooler.caps.effects),
+            "Lights not controllable yet: it keeps its own effect (rainbow)."
+        );
+        let other = users_desk::catalog_row((0x03f0, 0x02be));
+        assert_eq!(
+            not_yet_text(&other.caps.effects),
+            "Lights not controllable yet: it keeps its own effect."
+        );
+        // Its zone chip says the zones are how its lights are divided, not what Foxglove sets.
+        assert_eq!(
+            zones_tip(&cooler),
+            "How the device's lights are divided. Foxglove can't set them yet."
+        );
+        let case = users_desk::catalog_row(users_desk::CASE);
+        assert_eq!(zones_tip(&case), super::super::light_zones::TIP);
+    }
+
     /// What a click on a device's thumbnail asks for (#804): two frames, the press and the
     /// release, over the thumbnail where the first frame put it.
     fn click_thumb(v: &View, key: &str, busy: bool) -> Vec<Intent> {
@@ -2306,7 +2376,8 @@ pub mod tests {
                     s(&[
                         "Windows shows Foxglove's colours while Foxglove's window is in front; \
                          in the background its own Dynamic Lighting takes over.",
-                        "Found, not controllable yet.",
+                        // #614: the cooler's hover names the effect it keeps.
+                        "Lights not controllable yet: it keeps its own effect (rainbow).",
                     ]),
                     // O15, O16
                     s(&[
