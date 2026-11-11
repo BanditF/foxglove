@@ -137,18 +137,30 @@ mod tests {
 
     #[test]
     fn the_chains_run_at_once_not_one_after_the_other() {
-        let start = Instant::now();
-        let slow = || std::thread::sleep(Duration::from_millis(300));
+        // Each chain waits at a barrier that only opens when both are inside it, so they finish
+        // only if they really overlap. No wall-clock bound: if they ran one after the other the
+        // first would wait for a second that never starts, and the deadline would leave it open.
+        // The deadline is generous so a loaded machine can't trip it.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (b1, b2) = (barrier.clone(), barrier);
         let open = within(
-            start + Duration::from_secs(2),
-            vec![("one", Box::new(slow)), ("two", Box::new(slow))],
+            Instant::now() + Duration::from_secs(30),
+            vec![
+                (
+                    "one",
+                    Box::new(move || {
+                        b1.wait();
+                    }),
+                ),
+                (
+                    "two",
+                    Box::new(move || {
+                        b2.wait();
+                    }),
+                ),
+            ],
         );
-        assert!(open.is_empty());
-        assert!(
-            start.elapsed() < Duration::from_millis(550),
-            "{:?}",
-            start.elapsed()
-        );
+        assert!(open.is_empty(), "chains did not overlap: {open:?}");
     }
 
     #[test]
