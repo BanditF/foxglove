@@ -296,19 +296,35 @@ pub fn group(sessions: Vec<Session>) -> Vec<AppGroup> {
 }
 
 /// Two rows with one name (two installs of one app) each add their program's folder:
-/// "<app> · <folder>" (UX addendum, #1061).
+/// "<app> · <folder>" (UX addendum, #1061). The folder is the one nearest the program where the
+/// paths differ, so Chromium-style installs (`…\<Product>\Application\<exe>`) read by product.
 pub fn tell_apart(rows: &mut [AppGroup]) {
     let names: Vec<String> = rows.iter().map(|r| r.name.to_lowercase()).collect();
+    // Each row's folders, nearest the program first (no file name, no drive).
+    let folders: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            r.exe
+                .as_deref()
+                .map(|p| {
+                    p.rsplit(['\\', '/'])
+                        .skip(1)
+                        .filter(|f| !f.is_empty() && !f.ends_with(':'))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+    let differs = |a: &[String], b: &[String]| {
+        (0..a.len()).find(|&d| b.get(d).is_none_or(|f| !f.eq_ignore_ascii_case(&a[d])))
+    };
     for (i, row) in rows.iter_mut().enumerate() {
-        if names.iter().filter(|n| **n == names[i]).count() < 2 {
-            continue;
-        }
-        let folder = row.exe.as_deref().and_then(|p| {
-            let mut parts = p.rsplit(['\\', '/']);
-            parts.next();
-            parts.next().filter(|f| !f.is_empty() && !f.ends_with(':'))
-        });
-        if let Some(folder) = folder {
+        let depth = (0..names.len())
+            .filter(|&j| j != i && names[j] == names[i])
+            .filter_map(|j| differs(&folders[i], &folders[j]))
+            .min();
+        if let Some(folder) = depth.map(|d| &folders[i][d]) {
             row.name = format!("{} · {folder}", row.name);
         }
     }
@@ -2080,6 +2096,29 @@ mod tests {
             let l = r.name.to_lowercase();
             assert!(!l.contains("session") && !l.contains("(2"));
         }
+        // Chromium-style installs: the direct folder is "Application" for both, so the folder
+        // where the paths differ names them.
+        let mut rows = group(vec![
+            s(
+                "a",
+                r"C:\Users\u\AppData\Local\Vivaldi\Application\vivaldi.exe",
+            ),
+            s(
+                "b",
+                r"C:\Users\u\AppData\Local\Vivaldi Snapshot\Application\vivaldi.exe",
+            ),
+        ]);
+        tell_apart(&mut rows);
+        assert_eq!(
+            ids(&rows),
+            ["Vivaldi · Vivaldi", "Vivaldi · Vivaldi Snapshot"]
+        );
+        // The same path twice (can't be told apart): no folder added.
+        let mut same = vec![rows[0].clone(), rows[0].clone()];
+        same[0].name = "Vivaldi".into();
+        same[1].name = "Vivaldi".into();
+        tell_apart(&mut same);
+        assert_eq!(ids(&same), ["Vivaldi", "Vivaldi"]);
     }
 
     #[test]
