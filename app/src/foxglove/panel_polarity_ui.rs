@@ -177,22 +177,24 @@ pub fn draw(ui: &mut egui::Ui, s: &State) -> Option<Polarity> {
     };
     ui.horizontal_wrapped(|ui| {
         ui.label("Screens");
-        for (p, text, hint) in [
-            (Polarity::Dark, "Dark", "Light drawing on a dark screen."),
-            (Polarity::Light, "Light", "Dark drawing on a light screen."),
-        ] {
-            let on = known.polarity == Some(p);
-            if theme::pill(ui, on, text)
-                .on_hover_text(format!(
-                    "{hint} Both halves, every widget and every piece of art. Saved on the \
-                     keyboard, so it holds without Foxglove."
-                ))
-                .clicked()
-                && !on
-            {
-                out = Some(p);
+        theme::pill_group(ui, "Screens", |ui, g| {
+            for (p, text, hint) in [
+                (Polarity::Dark, "Dark", "Light drawing on a dark screen."),
+                (Polarity::Light, "Light", "Dark drawing on a light screen."),
+            ] {
+                let on = known.polarity == Some(p);
+                if g.pill(ui, on, text)
+                    .on_hover_text(format!(
+                        "{hint} Both halves, every widget and every piece of art. Saved on the \
+                         keyboard, so it holds without Foxglove."
+                    ))
+                    .clicked()
+                    && !on
+                {
+                    out = Some(p);
+                }
             }
-        }
+        });
     });
     out
 }

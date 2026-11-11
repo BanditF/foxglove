@@ -19,6 +19,8 @@ mod knob_mockup;
 mod lamp_keyboard;
 mod layout;
 mod overlay;
+#[cfg(test)]
+mod pill_groups;
 
 thread_local! { static LEGACY: Cell<bool> = const { Cell::new(false) }; }
 thread_local! {
@@ -487,9 +489,11 @@ fn widget_sheet(ctx: &egui::Context, focus: bool) {
                 ui.label(theme::heading(ui, "Keyboard"));
                 ui.label(theme::caps_label(ui, "Effect"));
                 ui.horizontal(|ui| {
-                    for (i, e) in ["Solid", "Breathe", "Spectrum", "Swirl"].iter().enumerate() {
-                        theme::pill(ui, i == 0, e);
-                    }
+                    theme::pill_group(ui, "Effect", |ui, g| {
+                        for (i, e) in ["Solid", "Breathe", "Spectrum", "Swirl"].iter().enumerate() {
+                            g.pill(ui, i == 0, e);
+                        }
+                    });
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {

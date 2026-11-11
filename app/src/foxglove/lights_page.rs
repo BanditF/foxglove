@@ -685,9 +685,11 @@ fn colour_side(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         ui.label(theme::caps_label(ui, "Effect"));
         ui.add_enabled_ui(super::pc_lights_ui::driven(row), |ui| {
             ui.horizontal_wrapped(|ui| {
-                for e in super::effect_controls::effects(shown.class) {
-                    theme::pill(ui, e.id == shown.id, e.name);
-                }
+                theme::pill_group(ui, "Effect", |ui, g| {
+                    for e in super::effect_controls::effects(shown.class) {
+                        g.pill(ui, e.id == shown.id, e.name);
+                    }
+                });
             });
         });
         ui.add_space(2.0);
@@ -1073,13 +1075,13 @@ fn palette_combo(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
 
 /// The chosen palette's effects as pills after the keyboard's own (#871): selected while it
 /// runs as the scene, and a click on a running one stops it. None for Bandit.
-fn palette_effects(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+fn palette_effects(ui: &mut egui::Ui, g: &mut theme::PillGroup, v: &View, out: &mut Vec<Intent>) {
     use super::lights_palette as lp;
     let p = lp::of(&v.palette.chosen);
     for kind in lp::effects(p) {
         let on = v.palette.running == Some(kind);
         let hint = format!("{} palette: {}", p.name, lp::effect_hint(kind));
-        let pill = theme::pill(ui, on, lp::effect_label(kind)).on_hover_text(hint);
+        let pill = g.pill(ui, on, lp::effect_label(kind)).on_hover_text(hint);
         if pill.clicked() {
             out.push(if on {
                 Intent::PaletteStop
@@ -1110,12 +1112,14 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     ui.add_enabled_ui(v.controls && !v.busy, |ui| {
         let on = left.map(|l| l.on);
         ui.horizontal(|ui| {
-            if theme::pill(ui, on == Some(false), "Off").clicked() {
-                out.push(Intent::Lights(false));
-            }
-            if theme::pill(ui, on == Some(true), "On").clicked() {
-                out.push(Intent::Lights(true));
-            }
+            theme::pill_group(ui, "Lights", |ui, g| {
+                if g.pill(ui, on == Some(false), "Off").clicked() {
+                    out.push(Intent::Lights(false));
+                }
+                if g.pill(ui, on == Some(true), "On").clicked() {
+                    out.push(Intent::Lights(true));
+                }
+            });
             // The palette picker (#871) on the same line, so the card keeps its height.
             ui.add_space(14.0);
             palette_combo(ui, v, out);
@@ -1133,18 +1137,20 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             let current = left
                 .map(|l| l.effect)
                 .filter(|_| v.palette.running.is_none());
-            for (i, e) in (0u8..).zip(&EFFECT_TABLE) {
-                let pill = theme::pill(ui, current == Some(i), e.name);
-                let pill = match e.note {
-                    Some(_) => pill.on_hover_text(e.label()),
-                    None => pill,
-                };
-                if pill.clicked() && current != Some(i) {
-                    out.push(Intent::Effect(i));
+            theme::pill_group(ui, "Effect", |ui, g| {
+                for (i, e) in (0u8..).zip(&EFFECT_TABLE) {
+                    let pill = g.pill(ui, current == Some(i), e.name);
+                    let pill = match e.note {
+                        Some(_) => pill.on_hover_text(e.label()),
+                        None => pill,
+                    };
+                    if pill.clicked() && current != Some(i) {
+                        out.push(Intent::Effect(i));
+                    }
                 }
-            }
-            // The chosen palette's own effects, which run as a scene (#871).
-            palette_effects(ui, v, out);
+                // The chosen palette's own effects, which run as a scene (#871).
+                palette_effects(ui, g, v, out);
+            });
             // The look Foxglove saved, when the keyboard shows another (K12).
             if let Some(saved) = &m.saved {
                 theme::hint_chip(ui, &format!("Saved: {saved}"), m.note.as_deref(), None);

@@ -1611,17 +1611,19 @@ fn screen_controls(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     ui.label(theme::caps_label(ui, glow::SMOOTHING));
     let now = glow::smoothing_for(look.smoothing);
     ui.horizontal_wrapped(|ui| {
-        for s in foxglove_scene::Smoothing::ALL {
-            if theme::pill(ui, now == s, glow::smoothing_label(s)).clicked() && now != s {
-                out.push(Intent::Look {
-                    look: Look {
-                        smoothing: Some(s),
-                        ..look.clone()
-                    },
-                    save: true,
-                });
+        theme::pill_group(ui, glow::SMOOTHING, |ui, g| {
+            for s in foxglove_scene::Smoothing::ALL {
+                if g.pill(ui, now == s, glow::smoothing_label(s)).clicked() && now != s {
+                    out.push(Intent::Look {
+                        look: Look {
+                            smoothing: Some(s),
+                            ..look.clone()
+                        },
+                        save: true,
+                    });
+                }
             }
-        }
+        })
     });
     ui.add(egui::Label::new(RichText::new(glow::SMOOTHING_HINT).color(p.muted)).wrap());
     ui.add_space(8.0);
@@ -1802,21 +1804,23 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
     }
     let mut set = |look: Look, save: bool| out.push(Intent::Look { look, save });
     ui.horizontal_wrapped(|ui| {
-        for k in Kind::ALL {
-            if theme::pill(ui, look.kind == k, k.label())
-                .on_hover_text(k.hint())
-                .clicked()
-                && look.kind != k
-            {
-                set(
-                    Look {
-                        kind: k,
-                        ..look.clone()
-                    },
-                    true,
-                );
+        theme::pill_group(ui, "Effect", |ui, g| {
+            for k in Kind::ALL {
+                if g.pill(ui, look.kind == k, k.label())
+                    .on_hover_text(k.hint())
+                    .clicked()
+                    && look.kind != k
+                {
+                    set(
+                        Look {
+                            kind: k,
+                            ..look.clone()
+                        },
+                        true,
+                    );
+                }
             }
-        }
+        })
     });
     ui.add_space(4.0);
     if look.kind.reads_screen() {
@@ -1846,55 +1850,59 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         });
         ui.label(theme::caps_label(ui, "Background"));
         ui.horizontal_wrapped(|ui| {
-            for b in Background::ALL {
-                if theme::pill(ui, look.background == b, b.label()).clicked() {
-                    set(
-                        Look {
-                            background: b,
-                            ..look.clone()
-                        },
-                        true,
-                    );
+            theme::pill_group(ui, "Background", |ui, g| {
+                for b in Background::ALL {
+                    if g.pill(ui, look.background == b, b.label()).clicked() {
+                        set(
+                            Look {
+                                background: b,
+                                ..look.clone()
+                            },
+                            true,
+                        );
+                    }
                 }
-            }
+            })
         });
     } else {
         ui.label(theme::caps_label(ui, "Palette"));
         ui.horizontal_wrapped(|ui| {
-            // A wallpaper's palette shows only while its look has it and its wallpaper is
-            // here (#488, #562).
-            let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette)
-                && looks::scenes()
-                    .palettes
+            theme::pill_group(ui, "Palette", |ui, g| {
+                // A wallpaper's palette shows only while its look has it and its wallpaper is
+                // here (#488, #562).
+                let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette)
+                    && looks::scenes()
+                        .palettes
+                        .iter()
+                        .any(|p| p.name == look.palette))
+                .then_some(look.palette.as_str());
+                // Then the palette that follows the wallpaper on screen (#40).
+                let names = PALETTES
                     .iter()
-                    .any(|p| p.name == look.palette))
-            .then_some(look.palette.as_str());
-            // Then the palette that follows the wallpaper on screen (#40).
-            let names = PALETTES
-                .iter()
-                .map(|(n, _)| *n)
-                .chain([looks::WALLPAPER])
-                .chain(own);
-            for name in names {
-                let label = if name == looks::WALLPAPER {
-                    looks::WALLPAPER_LABEL
-                } else {
-                    name
-                };
-                let mut pill = theme::pill(ui, look.palette == name, label);
-                if name == looks::WALLPAPER {
-                    pill = pill.on_hover_text(looks::WALLPAPER_HINT);
+                    .map(|(n, _)| *n)
+                    .chain([looks::WALLPAPER])
+                    .chain(own);
+                for name in names {
+                    let label = if name == looks::WALLPAPER {
+                        looks::WALLPAPER_LABEL
+                    } else {
+                        name
+                    };
+                    let mut pill = g.pill(ui, look.palette == name, label);
+                    if name == looks::WALLPAPER {
+                        pill = pill.on_hover_text(looks::WALLPAPER_HINT);
+                    }
+                    if pill.clicked() {
+                        set(
+                            Look {
+                                palette: name.into(),
+                                ..look.clone()
+                            },
+                            true,
+                        );
+                    }
                 }
-                if pill.clicked() {
-                    set(
-                        Look {
-                            palette: name.into(),
-                            ..look.clone()
-                        },
-                        true,
-                    );
-                }
-            }
+            })
         });
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), Sense::hover());
@@ -1918,17 +1926,19 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
     if look.kind.uses_direction() {
         ui.label(theme::caps_label(ui, "Direction"));
         ui.horizontal_wrapped(|ui| {
-            for d in Direction::ALL {
-                if theme::pill(ui, look.direction == d, d.label()).clicked() {
-                    set(
-                        Look {
-                            direction: d,
-                            ..look.clone()
-                        },
-                        true,
-                    );
+            theme::pill_group(ui, "Direction", |ui, g| {
+                for d in Direction::ALL {
+                    if g.pill(ui, look.direction == d, d.label()).clicked() {
+                        set(
+                            Look {
+                                direction: d,
+                                ..look.clone()
+                            },
+                            true,
+                        );
+                    }
                 }
-            }
+            })
         });
     }
     if look.kind.uses_width() {
