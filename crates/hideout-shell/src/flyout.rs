@@ -175,6 +175,33 @@ pub fn take_kick() -> bool {
     KICK.swap(false, Ordering::AcqRel)
 }
 
+/// A double click on the tray icon, in its handler before Hideout's window shows: the flyout's
+/// window, if it is on screen, is hidden at once with no DWM transition (#997, #1076); the
+/// caller marks it for the next frame to drop without counting a close by focus.
+pub fn hide_now() {
+    let h = crate::platform::flyout_hwnd();
+    if h != 0 {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+        let hwnd = HWND(h as *mut _);
+        // A Win32 BOOL, TRUE: transitions off for this window.
+        let off: i32 = 1;
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED,
+                (&off as *const i32).cast(),
+                std::mem::size_of::<i32>() as u32,
+            );
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+    // No kick: Hideout's window shows right after, and its next frame drops the flyout.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

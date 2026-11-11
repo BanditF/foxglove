@@ -47,6 +47,7 @@ fn hub_in(dir: &std::path::Path, feed: Option<Box<dyn PanelFeed>>) -> Hub {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        flyout_dismiss: AtomicBool::new(false),
         start_normally: None,
         quit: QuitAsk::default(),
     });
@@ -989,6 +990,67 @@ fn the_flyout_opens_settles_and_closes_while_the_hub_is_hidden() {
     assert!(hub.flyout.is_none());
 }
 
+/// #997 / #1076 (design review of #1080): a double click on the tray icon takes the flyout away
+/// in its own handler, before Hideout shows. An open not drawn yet never appears; one already
+/// shown is gone by the next frame and doesn't read as closed by focus (so the next single
+/// click opens it again at once). Flyout open, then a double click: the first click closes it,
+/// the double click keeps it closed, and it doesn't come back.
+#[test]
+fn a_double_click_takes_the_flyout_away_before_hideout_shows() {
+    let ctx = ctx();
+    let mut hub = hub_in(&temp_dir("flyout-dbl"), None);
+    hub.shared.hidden.store(true, Ordering::Release);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    // The first up's open, not drawn yet, then the double click.
+    tray_click(&hub);
+    on_tray(tray::Command::DoubleClick, &hub.shared, &ctx);
+    assert!(
+        hub.shared.flyout_click.lock().unwrap().is_none(),
+        "the pending open survived the double click"
+    );
+    for _ in 0..3 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+        assert!(
+            hub.flyout.is_none(),
+            "a flyout was drawn after the double click"
+        );
+    }
+    // Shown already (a slow double click): gone at the next frame, not a focus close.
+    hub.shared.hidden.store(true, Ordering::Release);
+    tray_click(&hub);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    assert!(hub.flyout.is_some());
+    on_tray(tray::Command::DoubleClick, &hub.shared, &ctx);
+    for _ in 0..3 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+        assert!(
+            hub.flyout.is_none(),
+            "the shown flyout stayed after the double click"
+        );
+    }
+    assert!(hub.flyout_closed_by_focus.is_none());
+    // A single click afterwards opens it at once.
+    tray_click(&hub);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    assert!(
+        hub.flyout.is_some(),
+        "the next single click didn't open the flyout"
+    );
+    // Flyout open, then a double click: the first click closes it, the double click opens
+    // Hideout, and the flyout stays closed.
+    tray_click(&hub);
+    quiet_frame(&ctx, &mut hub, vec![]);
+    assert!(hub.flyout.is_none());
+    on_tray(tray::Command::DoubleClick, &hub.shared, &ctx);
+    for _ in 0..3 {
+        quiet_frame(&ctx, &mut hub, vec![]);
+        assert!(
+            hub.flyout.is_none(),
+            "the flyout came back after the double click"
+        );
+    }
+}
+
 /// #1019: the main window closed to the tray, then a tray click. The frame that hid the window
 /// asked egui for a repaint (`CancelClose`) that eframe can never answer, as a hidden window gets
 /// no `RedrawRequested`; egui then holds that request and calls eframe's repaint callback only for
@@ -1025,11 +1087,7 @@ fn a_tray_click_draws_the_flyout_while_the_main_window_is_hidden() {
         w: 24,
         h: 24,
     };
-    on_tray(
-        tray::Command::Flyout(icon, std::time::Instant::now()),
-        &hub.shared,
-        &ctx,
-    );
+    on_tray(tray::Command::Flyout(icon), &hub.shared, &ctx);
     assert_eq!(
         asked.load(Ordering::Acquire),
         seen,
@@ -1183,6 +1241,7 @@ fn the_tile_layout_is_saved_in_hideout_toml() {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        flyout_dismiss: AtomicBool::new(false),
         start_normally: None,
         quit: QuitAsk::default(),
     });
@@ -2405,6 +2464,7 @@ fn renders_the_modules_page_for_review() {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        flyout_dismiss: AtomicBool::new(false),
         start_normally: None,
         quit: QuitAsk::default(),
     });

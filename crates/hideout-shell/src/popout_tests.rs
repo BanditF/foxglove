@@ -785,6 +785,7 @@ fn form_hub(dir: &std::path::Path) -> Hub {
         paused: AtomicBool::new(false),
         hidden: AtomicBool::new(false),
         flyout_click: Mutex::new(None),
+        flyout_dismiss: AtomicBool::new(false),
         start_normally: None,
         quit: QuitAsk::default(),
     });

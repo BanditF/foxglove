@@ -69,18 +69,43 @@ def tile_title(name):
     return (name or '').split(', ')[0]
 
 
-def flicker_verdict(frames, main_shown):
-    """The double-click check (#997 step 1): PASS when the flyout never became visible between
-    the double click and the main window showing, else FAIL with when and how long."""
+def flicker_verdict(frames, main_shown, dbl_t=None):
+    """The double-click check (#997 step 1, #1076): PASS when no flyout frame was on screen
+    after the hub took the double click (`dbl_t`, from `state().tray.last`), else FAIL with when
+    and how long. The first click's flyout before it is allowed (it opens at once, as any
+    single click). Without `dbl_t`, any flyout frame fails."""
     rows = frames.get('rows', [])
-    fly = [r['t'] for r in rows if r.get('flyout_visible')]
+    since = dbl_t if dbl_t is not None else -1
+    fly = [r['t'] for r in rows if r.get('flyout_visible') and r['t'] > since]
     passes = frames.get('counts', {}).get('flyout', 0)
     if not main_shown:
         return False, 'the main window did not open after the double click'
     if not fly:
-        return True, f'no flyout frame on screen ({passes} hidden flyout pass(es))'
-    return False, (f'flicker: the flyout was on screen {fly[-1] - fly[0]} ms '
-                   f'({len(fly)} frame(s), from t={fly[0]}); drop double click or delay the flyout')
+        return True, f'no flyout frame on screen after t={since} ({passes} flyout pass(es))'
+    return False, (f'flicker: the flyout was on screen {fly[-1] - fly[0]} ms after the double click '
+                   f'({len(fly)} frame(s), from t={fly[0]})')
+
+
+def tray_event_t(state, what):
+    """When the hub took the tray command `what` (`state().tray.last`: "<what> at <ms>"), or None."""
+    last = (state.get('tray') or {}).get('last') or ''
+    head, sep, t = last.rpartition(' at ')
+    if not sep or head != what:
+        return None
+    try:
+        return int(t)
+    except ValueError:
+        return None
+
+
+def click_latency(frames, click_t):
+    """Ms from a tray click to the flyout's first frame on screen, or None if none came."""
+    fly = [r['t'] for r in frames.get('rows', []) if r.get('flyout_visible') and r['t'] >= click_t]
+    return fly[0] - click_t if fly else None
+
+
+# A single click opens the flyout at once, as on main (#1076: no hold for the double-click time).
+CLICK_LATENCY_MS = 250
 
 
 def against_taskbar(geometry, gap=32):
@@ -240,10 +265,13 @@ def step(check, name, fn):
 def flyout_steps(hub, check):
     def s1_click_opens():
         hub.to_tray()
-        hub.do('tray-click')
+        t = hub.do('tray-click')['t']
         ok, s = hub.wait(lambda s: s['flyout']['open'] and s['flyout']['visible'], 5)
         if not check('997.1 tray click opens the flyout', ok, f'open={s["flyout"]["open"]} visible={s["flyout"]["visible"]}'):
             return
+        ms = click_latency(hub.do('frames', 1500, t), t)
+        check('997.1 the flyout opens at once (no double-click hold)',
+              ms is not None and ms <= CLICK_LATENCY_MS, f'first flyout frame {ms} ms after the click')
         tiles = [t for t in ('Focus timer', 'Mic mute') if has(s, t, 'flyout')]
         check('997.1 default tiles Focus timer and Mic mute', len(tiles) == 2, f'drawn: {texts(s, "flyout")[:20]}')
         ok, why = against_taskbar(s['flyout'].get('geometry'))
@@ -252,12 +280,13 @@ def flyout_steps(hub, check):
         check('997.1 capture', ok, why)
 
     def s1_double_click():
-        hub.to_tray()
-        t = hub.do('tray-double-click', 150)['t']
-        frames = hub.do('frames', 1500, t)
-        shown = hub.state()['main']['on_screen']
-        ok, why = flicker_verdict(frames, shown)
-        check('997.1 double click opens the main window without a flyout flash', ok, why)
+        for gap in (150, 400):
+            hub.to_tray()
+            t = hub.do('tray-double-click', gap)['t']
+            ok, s = hub.wait(lambda s: tray_event_t(s, 'DoubleClick') is not None and s['main']['on_screen'], 5)
+            frames = hub.do('frames', 1500, t)
+            ok, why = flicker_verdict(frames, s['main']['on_screen'], tray_event_t(s, 'DoubleClick'))
+            check(f'997.1 double click ({gap} ms) opens Hideout, no flyout frame after it', ok, why)
 
     def s2_toggle_and_esc():
         hub.to_tray()

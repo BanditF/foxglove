@@ -18,9 +18,11 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 pub enum Command {
     Open,
     /// A left click on the icon: open or close the tray flyout above the icon (its rectangle,
-    /// physical pixels), and when the button went down (an open waits out the double-click
-    /// time, [`ClickGate`]).
-    Flyout(crate::placement::Rect, std::time::Instant),
+    /// physical pixels).
+    Flyout(crate::placement::Rect),
+    /// A double click on the icon: the flyout goes at once (not drawn again), then Hideout's
+    /// window opens (#997, #1076).
+    DoubleClick,
     Pause(bool),
     OpenLogs,
     Quit,
@@ -148,8 +150,7 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
         })
     });
 
-    let on_command: OnCommand = std::sync::Arc::new(on_command);
-    ON_COMMAND.with(|c| *c.borrow_mut() = Some(on_command.clone()));
+    let on_command = std::sync::Arc::new(on_command);
     let menu_cmd = on_command.clone();
     MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
         let cmd = match ev.id.0.as_str() {
@@ -173,35 +174,21 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             button: MouseButton::Left,
             button_state: MouseButtonState::Down,
             ..
-        } => GATE.with(|g| g.borrow_mut().down(std::time::Instant::now())),
+        } => GATE.with(|g| g.borrow_mut().down()),
         TrayIconEvent::Click {
             button: MouseButton::Left,
             button_state: MouseButtonState::Up,
             rect,
             ..
         } => {
-            let step = GATE.with(|g| {
-                g.borrow_mut().up(
-                    icon_rect(&rect),
-                    std::time::Instant::now(),
-                    crate::flyout::live(),
-                    double_click_time(),
-                )
-            });
-            match step {
-                Step::Now(cmd) => on_command(cmd),
-                Step::Hold(wait) => hold(wait),
-                Step::Nothing => {}
+            if let Some(cmd) = GATE.with(|g| g.borrow_mut().up(icon_rect(&rect))) {
+                on_command(cmd)
             }
         }
         TrayIconEvent::DoubleClick {
             button: MouseButton::Left,
             ..
-        } => {
-            GATE.with(|g| g.borrow_mut().double());
-            cancel_hold();
-            on_command(Command::Open)
-        }
+        } => on_command(GATE.with(|g| g.borrow_mut().double())),
         // tray-icon arms a 15 ms leave-check timer on each move over the icon and only kills it
         // when a tick still holds a fresh position; after the menu opens (the cursor leaves
         // through the menu, so no move clears it) it ticks at 64 Hz for good. The hub uses no
@@ -222,128 +209,39 @@ fn icon_rect(r: &tray_icon::Rect) -> crate::placement::Rect {
     }
 }
 
-type OnCommand = std::sync::Arc<dyn Fn(Command) + Send + Sync>;
-
 thread_local! {
     /// The left button on the icon (UI thread only, where tray-icon delivers its events).
     static GATE: RefCell<ClickGate> = RefCell::new(ClickGate::default());
-    /// The held click's one-shot timer id; 0 while none is armed.
-    static HELD_TIMER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Where a held click goes when its time is up.
-    static ON_COMMAND: RefCell<Option<OnCommand>> = const { RefCell::new(None) };
 }
 
-/// The left button on the tray icon, so a double click opens Hideout with no flyout on the
-/// way (#997, #1076). Windows sends a double click as down, up, `WM_LBUTTONDBLCLK`, up, and
-/// tray-icon makes a click of each up: the first one opened the flyout, the double click then
-/// opened Hideout over it (on screen for 31 ms in the lab).
-///
-/// So a click that would open the flyout is held until Windows' double-click time has passed
-/// since its button went down (no second click can make a double click after that); a double
-/// click in that time drops it, and the up that ends the double click is not a click of its
-/// own. A click while the flyout is up closes it at once. Waits: start = the click's up, stop
-/// = the double-click time (a one-shot timer) or the double click, whichever comes first.
+/// The left button on the tray icon (#997, #1076). Windows sends a double click as down, up,
+/// `WM_LBUTTONDBLCLK`, up, and tray-icon makes a click of each up. The first up opens the
+/// flyout at once, as any click does; the double click then sends [`Command::DoubleClick`],
+/// which takes the flyout away in the same handler before Hideout shows; the up that ends the
+/// double click is not a click of its own, so it never opens or toggles the flyout again.
 #[derive(Debug, Default)]
 pub(crate) struct ClickGate {
-    down_at: Option<std::time::Instant>,
-    /// The click waiting out the double-click time: the icon's rectangle and its down time.
-    held: Option<(crate::placement::Rect, std::time::Instant)>,
     /// A double click came: the next up ends it.
     swallow_up: bool,
 }
 
-/// What an up on the icon does now.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Step {
-    Nothing,
-    /// At once (the flyout is up: the click closes it).
-    Now(Command),
-    /// Held; [`ClickGate::due`] after this long.
-    Hold(std::time::Duration),
-}
-
 impl ClickGate {
-    pub(crate) fn down(&mut self, now: std::time::Instant) {
+    pub(crate) fn down(&mut self) {
         self.swallow_up = false;
-        self.down_at = Some(now);
     }
 
-    pub(crate) fn up(
-        &mut self,
-        icon: crate::placement::Rect,
-        now: std::time::Instant,
-        flyout_live: bool,
-        double_click: std::time::Duration,
-    ) -> Step {
+    /// An up: the flyout toggles at once, unless it ends a double click.
+    pub(crate) fn up(&mut self, icon: crate::placement::Rect) -> Option<Command> {
         if std::mem::take(&mut self.swallow_up) {
-            return Step::Nothing;
+            return None;
         }
-        let at = self.down_at.take().unwrap_or(now);
-        if flyout_live {
-            self.held = None;
-            return Step::Now(Command::Flyout(icon, at));
-        }
-        self.held = Some((icon, at));
-        Step::Hold(double_click.saturating_sub(now.saturating_duration_since(at)))
+        Some(Command::Flyout(icon))
     }
 
-    /// The double click: the held click is dropped.
-    pub(crate) fn double(&mut self) {
-        self.held = None;
-        self.down_at = None;
+    /// `WM_LBUTTONDBLCLK`.
+    pub(crate) fn double(&mut self) -> Command {
         self.swallow_up = true;
-    }
-
-    /// The held click's time is up: the flyout opens (`None` if a double click dropped it).
-    pub(crate) fn due(&mut self) -> Option<Command> {
-        self.held.take().map(|(icon, at)| Command::Flyout(icon, at))
-    }
-}
-
-/// Windows' double-click time (the user's mouse setting).
-fn double_click_time() -> std::time::Duration {
-    let ms = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
-    std::time::Duration::from_millis(u64::from(ms.clamp(100, 5000)))
-}
-
-/// Arms the held click's one-shot timer (a thread timer of the UI thread, whose message loop
-/// runs it), in place of any armed one.
-fn hold(wait: std::time::Duration) {
-    use windows::Win32::UI::WindowsAndMessaging::SetTimer;
-    cancel_hold();
-    let ms = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX).max(1);
-    let id = unsafe { SetTimer(None, 0, ms, Some(held_due)) };
-    if id == 0 {
-        // No timer: the click opens the flyout now rather than never.
-        log::warn!("tray: double-click hold timer not set; the flyout opens now");
-        held_now();
-        return;
-    }
-    HELD_TIMER.with(|t| t.set(id));
-}
-
-/// Kills the held click's timer, if one is armed.
-fn cancel_hold() {
-    use windows::Win32::UI::WindowsAndMessaging::KillTimer;
-    let was = HELD_TIMER.with(|t| t.replace(0));
-    if was != 0 {
-        let _ = unsafe { KillTimer(None, was) };
-    }
-}
-
-unsafe extern "system" fn held_due(_: windows::Win32::Foundation::HWND, _: u32, _: usize, _: u32) {
-    // One shot.
-    cancel_hold();
-    held_now();
-}
-
-/// The held click, if still held, goes to the shell.
-fn held_now() {
-    let Some(cmd) = GATE.with(|g| g.borrow_mut().due()) else {
-        return;
-    };
-    if let Some(f) = ON_COMMAND.with(|c| c.borrow().clone()) {
-        f(cmd);
+        Command::DoubleClick
     }
 }
 
@@ -467,96 +365,26 @@ mod tests {
         w: 24,
         h: 24,
     };
-    const DOUBLE: std::time::Duration = std::time::Duration::from_millis(500);
 
-    fn ms(n: u64) -> std::time::Duration {
-        std::time::Duration::from_millis(n)
-    }
-
-    /// #997 / #1076: a double click as Windows (and lab control's `tray-double-click 150`)
-    /// sends it: down, up, `WM_LBUTTONDBLCLK`, up. Each up used to be a flyout toggle, so the
-    /// flyout opened on the first one and Hideout opened over it. Now no flyout command comes
-    /// at all: the first up is held, the double click drops it, the last up is no click.
+    /// #997 / #1076: a double click as Windows (and lab control's `tray-double-click`) sends
+    /// it: down, up, `WM_LBUTTONDBLCLK`, up. The first up opens the flyout at once (no wait,
+    /// as any single click); the double click is a `DoubleClick` (the shell takes the flyout
+    /// away then); the up that ends it is no click, so the flyout isn't asked for again.
     #[test]
-    fn a_double_click_never_asks_for_the_flyout() {
-        let t0 = std::time::Instant::now();
+    fn a_double_click_asks_once_then_takes_the_flyout_away() {
         let mut g = ClickGate::default();
-        g.down(t0);
-        assert_eq!(g.up(ICON, t0 + ms(10), false, DOUBLE), Step::Hold(ms(490)));
-        g.double();
-        assert_eq!(g.up(ICON, t0 + ms(160), false, DOUBLE), Step::Nothing);
-        assert_eq!(g.due(), None, "the held click survived the double click");
-        // The next click is a click again.
-        let t1 = t0 + ms(2000);
-        g.down(t1);
-        assert_eq!(g.up(ICON, t1 + ms(100), false, DOUBLE), Step::Hold(ms(400)));
-        assert_eq!(g.due(), Some(Command::Flyout(ICON, t1)));
-        assert_eq!(g.due(), None, "one flyout per click");
-    }
-
-    /// A click on the icon while the flyout is up closes it at once; a click held past the
-    /// double-click time (a long press) opens at once too.
-    #[test]
-    fn closing_and_a_long_press_do_not_wait() {
-        let t0 = std::time::Instant::now();
-        let mut g = ClickGate::default();
-        g.down(t0);
+        g.down();
+        assert_eq!(g.up(ICON), Some(Command::Flyout(ICON)));
+        assert_eq!(g.double(), Command::DoubleClick);
         assert_eq!(
-            g.up(ICON, t0 + ms(80), true, DOUBLE),
-            Step::Now(Command::Flyout(ICON, t0))
+            g.up(ICON),
+            None,
+            "the up ending the double click toggled the flyout"
         );
-        g.down(t0 + ms(1000));
-        assert_eq!(g.up(ICON, t0 + ms(1700), false, DOUBLE), Step::Hold(ms(0)));
-        assert_eq!(g.due(), Some(Command::Flyout(ICON, t0 + ms(1000))));
-    }
-
-    /// The real one-shot thread timer (window-free: a thread timer needs no window, only this
-    /// thread's message loop): a held click reaches the command handler once its time is up,
-    /// and a double click in time cancels it. Stop event: the command; 5 s fallback only.
-    #[test]
-    fn the_held_click_arrives_through_the_thread_timer() {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, MSG, PM_REMOVE, QS_ALLINPUT,
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        let tx = std::sync::Mutex::new(tx);
-        let f: OnCommand = std::sync::Arc::new(move |c| {
-            let _ = tx.lock().unwrap().send(c);
-        });
-        ON_COMMAND.with(|c| *c.borrow_mut() = Some(f));
-        let pump_until = |until: std::time::Instant| {
-            while std::time::Instant::now() < until {
-                let left = until.saturating_duration_since(std::time::Instant::now());
-                unsafe {
-                    MsgWaitForMultipleObjects(None, false, left.as_millis() as u32, QS_ALLINPUT);
-                    let mut msg = MSG::default();
-                    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                        DispatchMessageW(&msg);
-                    }
-                }
-                if HELD_TIMER.with(|t| t.get()) == 0 {
-                    return;
-                }
-            }
-        };
-        let t0 = std::time::Instant::now();
-        GATE.with(|g| g.borrow_mut().down(t0));
-        let step = GATE.with(|g| g.borrow_mut().up(ICON, t0, false, ms(30)));
-        let Step::Hold(wait) = step else {
-            panic!("{step:?}")
-        };
-        hold(wait);
-        pump_until(t0 + ms(5000));
-        assert_eq!(rx.try_recv().ok(), Some(Command::Flyout(ICON, t0)));
-        // Held, then a double click: nothing comes, the timer is gone.
-        GATE.with(|g| g.borrow_mut().down(t0));
-        let _ = GATE.with(|g| g.borrow_mut().up(ICON, t0, false, ms(30)));
-        hold(ms(30));
-        GATE.with(|g| g.borrow_mut().double());
-        cancel_hold();
-        pump_until(std::time::Instant::now() + ms(150));
-        assert_eq!(rx.try_recv().ok(), None);
-        ON_COMMAND.with(|c| *c.borrow_mut() = None);
+        // The next click is a click again, at once.
+        g.down();
+        assert_eq!(g.up(ICON), Some(Command::Flyout(ICON)));
+        assert_eq!(g.up(ICON), Some(Command::Flyout(ICON)));
     }
 
     #[test]

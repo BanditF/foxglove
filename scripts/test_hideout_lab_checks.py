@@ -32,6 +32,19 @@ class Verdicts(unittest.TestCase):
         ok, why = hl.flicker_verdict(flash, True)
         self.assertFalse(ok)
         self.assertIn('150 ms', why)
+        # #1076: the first click's flyout before the double click is allowed; after it, not.
+        self.assertTrue(hl.flicker_verdict(flash, True, dbl_t=160)[0])
+        ok, why = hl.flicker_verdict(flash, True, dbl_t=100)
+        self.assertFalse(ok)
+        self.assertIn('after the double click', why)
+
+    def test_tray_event_time_and_click_latency(self):
+        self.assertEqual(hl.tray_event_t({'tray': {'last': 'DoubleClick at 1234'}}, 'DoubleClick'), 1234)
+        self.assertIsNone(hl.tray_event_t({'tray': {'last': 'Flyout(Rect { x: 1 }) at 9'}}, 'DoubleClick'))
+        self.assertIsNone(hl.tray_event_t({}, 'DoubleClick'))
+        frames = {'rows': [{'t': 90, 'flyout_visible': False}, {'t': 140, 'flyout_visible': True}]}
+        self.assertEqual(hl.click_latency(frames, 100), 40)
+        self.assertIsNone(hl.click_latency({'rows': []}, 100))
 
     def test_the_flyout_sits_against_the_taskbar_inside_the_work_area(self):
         mon, work = [0, 0, 1920, 1080], [0, 0, 1920, 1032]  # taskbar at the bottom
