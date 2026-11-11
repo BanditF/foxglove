@@ -237,6 +237,8 @@ pub const ON_LINES: [&str; 3] = [
 ];
 pub const NOT_ELIGIBLE: &str = "Windows sets this device's volume itself.";
 pub const AFTER_OFF: &str = "Windows sets this device's volume again.";
+/// On, but not started: the journal can't be read (#1070). It replaces the while-on lines.
+pub const PAUSED: &str = "Master volume is paused: Foxglove couldn't read its saved levels.";
 pub const OPEN_SOUND: &str = "Open Sound settings";
 /// The master card's third row, on the first outside change of a run (§1).
 pub const SLIDER_ROW: &str = "Windows' slider goes back near the top.";
@@ -292,6 +294,8 @@ pub enum View {
         listed: bool,
         open_sound: bool,
         after_off: bool,
+        /// On, but the journal can't be read: [`PAUSED`] instead of the while-on lines.
+        paused: bool,
     },
 }
 
@@ -307,8 +311,9 @@ pub fn view(d: &Device, choice: Option<bool>, turned_off: bool) -> View {
         on,
         listed: d.listed,
         // Windows' default is to allow it: unknown counts as allowed.
-        open_sound: on && d.exclusive != Some(false),
+        open_sound: on && !d.paused && d.exclusive != Some(false),
         after_off: !on && turned_off,
+        paused: on && d.paused,
     }
 }
 
@@ -321,10 +326,13 @@ pub fn lines(v: &View) -> Vec<&'static str> {
             on,
             listed,
             after_off,
+            paused,
             ..
         } => {
             let mut out = vec![TOGGLE, second_line(*listed)];
-            if *on {
+            if *paused {
+                out.push(PAUSED);
+            } else if *on {
                 out.extend(ON_LINES);
             }
             if *after_off {
@@ -364,6 +372,7 @@ pub fn part(ui: &mut egui::Ui) {
             listed,
             open_sound,
             after_off,
+            paused,
         } => {
             let mut checked = *on;
             if toggle(ui, &mut checked, name, *listed).changed() {
@@ -372,7 +381,9 @@ pub fn part(ui: &mut egui::Ui) {
                     (!checked).then(|| d.endpoint.clone());
             }
             ui.label(RichText::new(second_line(*listed)).small().color(p.muted));
-            if *on {
+            if *paused {
+                ui.label(RichText::new(PAUSED).color(p.text));
+            } else if *on {
                 ui.label(RichText::new(ON_LINES[0]).color(p.text));
                 ui.label(RichText::new(ON_LINES[1]).color(p.text));
                 ui.horizontal_wrapped(|ui| {
@@ -489,6 +500,20 @@ mod tests {
                 ..
             }
         ));
+        // On, but the journal can't be read: one plain line instead of the while-on lines.
+        let mut d = device(true, true, Some(true));
+        d.paused = true;
+        let v = view(&d, None, false);
+        assert!(matches!(
+            v,
+            View::Toggle {
+                on: true,
+                paused: true,
+                open_sound: false,
+                ..
+            }
+        ));
+        assert_eq!(lines(&v), [TOGGLE, LISTED_LINE, PAUSED]);
         // Windows sets the volume in software: one line, no toggle, even listed and chosen.
         let v = view(&device(false, true, None), Some(true), false);
         assert_eq!(lines(&v), [NOT_ELIGIBLE]);
@@ -523,6 +548,7 @@ mod tests {
             OTHER_LINE,
             NOT_ELIGIBLE,
             AFTER_OFF,
+            PAUSED,
             OPEN_SOUND,
             SLIDER_ROW,
             OPEN_SOUND_HOVER,

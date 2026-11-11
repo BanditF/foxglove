@@ -311,7 +311,8 @@ slider cannot show the real master. The Hub's minimum is that it respects the dr
       drag, not a key press. Further whole steps the same way before then add up (a key repeat).
     - A device that reports a step coarser than Windows' default 2 % (10 %, say) while its keys
       move it less: a smaller whole-percent change from the hold is one key press, and master
-      steps by what the key moved, from then on (within the 1-10 % clamp). The hold stays where
+      steps by what the key moved (within the 1-10 % clamp). It becomes the device's step only
+      after two presses in a row of the same size, so one slider click is never learnt. The hold stays where
       it is, so no change makes the device louder. Up and down stay alike.
   - Engineering picks one and states it in the PR. The user sees only: keys work both ways, and a
     drag sets the level where it's dropped.
@@ -335,6 +336,7 @@ devices keep their own choice and show it when they are the default.
 | While on, line 3 (exclusive control, §5) | "Apps that take exclusive control of this device play at full volume." |
 | Not eligible (Windows sets its volume in software) | "Windows sets this device's volume itself." (no toggle) |
 | After turning off (until the page changes) | "Windows sets this device's volume again." |
+| On, but the saved levels can't be read (#1070), instead of the while-on lines | "Master volume is paused: Foxglove couldn't read its saved levels." |
 
 - **Default:** on for a listed device, and only when Windows hands its volume to the hardware. Off for
   every other eligible device. The user's choice is stored per device and wins over the list.
@@ -385,7 +387,8 @@ one way this gets loud. Foxglove can't see those streams without polling, so it 
   Foxglove first, which already puts everything back. Only a crash followed by an uninstall is
   left to the Volume mixer reset.
 - **A journal that can't be read** (a read error, not only a broken file, #1070) is kept and
-  never written over: master volume doesn't start until it can be read, and the log says so. A
+  never written over: master volume doesn't start until it can be read, the setting shows the
+  paused line (§3), and the device's next volume change or the page's next visit tries again. A
   broken one is moved aside as before.
 
 ### 7. Data (for app-engineer)

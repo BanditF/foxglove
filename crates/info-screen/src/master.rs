@@ -61,6 +61,8 @@ pub const DRAG_SETTLE: Duration = Duration::from_millis(500);
 /// drag on Windows' slider sends its next sample sooner, and a key's own repeat starts later
 /// (Windows' shortest repeat delay is 250 ms).
 pub const KEY_SETTLE: Duration = Duration::from_millis(120);
+/// Presses in a row of one smaller size before it becomes a coarse device's key step.
+pub const LEARN_PRESSES: u32 = 2;
 /// Most key steps one notification can carry (a key repeat that outran Foxglove's hold).
 pub const MAX_KEY_STEPS: f32 = 3.0;
 /// An app's write counts towards [`FIGHT_WRITES`] only when it puts back its own level this soon
@@ -232,6 +234,8 @@ pub struct Device {
     pub choice: Option<bool>,
     /// Foxglove sets its volume now.
     pub on: bool,
+    /// On, but not started: the journal on disk can't be read (#1070). The setting says so.
+    pub paused: bool,
     /// Windows lets apps take exclusive control of it (`None`: can't tell).
     pub exclusive: Option<bool>,
     /// Its volume key step.
@@ -307,6 +311,9 @@ struct On {
     seen: f32,
     /// Key presses waiting for [`KEY_SETTLE`]: applied at their deadline.
     press: Option<Press>,
+    /// A key step smaller than the device reports, and how many presses in a row moved it: it
+    /// becomes the device's step at [`LEARN_PRESSES`] (one slider click never does).
+    candidate: Option<(f32, u32)>,
     /// A drag on Windows' slider in progress: applied at its deadline.
     drag: Option<Drag>,
     apps: HashMap<String, App>,
@@ -559,6 +566,7 @@ impl Soft {
             hold,
             seen: scalar,
             press: None,
+            candidate: None,
             drag: None,
             apps: HashMap::new(),
         };
@@ -1031,14 +1039,25 @@ impl Soft {
         };
         on.press = None;
         if (p.step - on.step).abs() > f32::EPSILON {
-            eprintln!(
-                "Foxglove: master volume: {}'s keys move {} %, not the {} % it reports; master steps by {} %",
-                on.name,
-                percent(p.step),
-                percent(on.step),
-                percent(p.step)
-            );
-            on.step = p.step;
+            // Applied by the size it moved; the device's step only after presses in a row agree.
+            let n = match on.candidate {
+                Some((size, n)) if (size - p.step).abs() <= tolerance(p.step) => n + 1,
+                _ => 1,
+            };
+            on.candidate = Some((p.step, n));
+            if n >= LEARN_PRESSES {
+                eprintln!(
+                    "Foxglove: master volume: {}'s keys move {} %, not the {} % it reports; master steps by {} %",
+                    on.name,
+                    percent(p.step),
+                    percent(on.step),
+                    percent(p.step)
+                );
+                on.step = p.step;
+                on.candidate = None;
+            }
+        } else {
+            on.candidate = None;
         }
         let new = (on.level + p.steps * p.step).clamp(0.0, 1.0);
         // Snap to Windows' grid, as its own keys leave it; a step down never ends higher.
@@ -1230,6 +1249,39 @@ impl Soft {
             due: now + DRAG_SETTLE,
         });
         changed
+    }
+
+    /// The key step master counts presses by now (the device's, or what its keys were seen to
+    /// move); `None` when not on.
+    pub fn key_step(&self) -> Option<f32> {
+        self.on.as_ref().map(|o| o.step)
+    }
+
+    /// The knob turns master while Foxglove doesn't set the device's volume (#855): the device's
+    /// own level by `steps` detents, unmuted as Windows' keys do; its new level in percent. The
+    /// writes are Foxglove's own, so no notification follows them: an unmute frees the apps a
+    /// muted master left muted here ([`Soft::unmute_left`]).
+    pub fn plain_step(&mut self, audio: &mut dyn Audio, steps: i32) -> Result<u8, String> {
+        let (level, muted) = audio.endpoint()?;
+        let new = step_level(level, steps);
+        audio.set_endpoint(new)?;
+        if muted {
+            audio.set_endpoint_mute(false)?;
+            self.unmute_left(audio);
+        }
+        Ok(percent(new))
+    }
+
+    /// The knob's double click on master while Foxglove doesn't set the device's volume: the
+    /// device muted or unmuted (an unmute frees the apps a muted master left muted); whether it
+    /// is muted now.
+    pub fn plain_mute(&mut self, audio: &mut dyn Audio) -> Result<bool, String> {
+        let (_, muted) = audio.endpoint()?;
+        audio.set_endpoint_mute(!muted)?;
+        if muted {
+            self.unmute_left(audio);
+        }
+        Ok(!muted)
     }
 
     /// The knob turns master by `steps` detents (2 % each) and unmutes it, as Windows' keys do;
@@ -1731,10 +1783,16 @@ mod tests {
         assert!(key(&mut s, &mut a, 0.92, &mut t));
         assert_eq!(s.master(), Some((37, false)), "up by what the key moved");
         assert_eq!(a.w().endpoint, 0.9, "held where it was");
+        assert_eq!(s.key_step(), Some(coarse), "one press is not learnt yet");
         let mut loudest = a.level("tarkov");
         assert!(key(&mut s, &mut a, 0.88, &mut t));
         assert_eq!(s.master(), Some((35, false)), "and down by the same");
         assert!(a.level("tarkov") <= loudest);
+        assert_eq!(
+            s.key_step(),
+            Some(0.02),
+            "two presses of 2 % in a row: learnt"
+        );
         for _ in 0..5 {
             key(&mut s, &mut a, 0.92, &mut t);
         }
@@ -1761,6 +1819,22 @@ mod tests {
         assert_eq!(s.master(), Some((45, false)));
         assert!(key(&mut s, &mut a, 0.8, &mut t));
         assert_eq!(s.master(), Some((35, false)));
+        // One slider click of 3 %, then keys of the device's own step: nothing learnt.
+        assert!(key(&mut s, &mut a, 0.87, &mut t));
+        assert_eq!(s.master(), Some((32, false)));
+        assert!(key(&mut s, &mut a, 1.0, &mut t));
+        assert!(key(&mut s, &mut a, 0.93, &mut t));
+        assert_eq!(s.key_step(), Some(coarse), "3 % then 3 %, but not in a row");
+        // Two different sizes in a row don't agree either.
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", coarse).unwrap();
+        let mut t = Instant::now();
+        echo(&mut s, &mut a, t);
+        key(&mut s, &mut a, 0.93, &mut t);
+        key(&mut s, &mut a, 0.88, &mut t);
+        assert_eq!(s.key_step(), Some(coarse));
     }
 
     #[test]
@@ -2103,6 +2177,35 @@ mod tests {
         assert!(a.muted("tarkov"));
         s.toggle_mute(&mut a).unwrap();
         assert!(!a.muted("tarkov") && !a.w().endpoint_muted);
+    }
+
+    #[test]
+    fn the_knobs_unmute_while_off_frees_the_apps_a_muted_master_left_muted() {
+        // Review #1072: the knob's own writes send no outside notification, so its unmute must
+        // free them itself, by the step and by the double click.
+        for by_step in [true, false] {
+            let host = MemHost::default();
+            let mut s = soft(&host);
+            let mut a = the_three();
+            s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+            s.toggle_mute(&mut a).unwrap();
+            s.disengage(&mut a).unwrap();
+            assert!(a.muted("tarkov") && a.w().endpoint_muted);
+            if by_step {
+                assert_eq!(s.plain_step(&mut a, 1), Ok(37));
+            } else {
+                assert_eq!(s.plain_mute(&mut a), Ok(false));
+            }
+            assert!(!a.w().endpoint_muted);
+            assert!(
+                !a.muted("tarkov") && !a.muted("vivaldi"),
+                "by step: {by_step}"
+            );
+            assert!(host.journal().unwrap().is_none());
+            // Muting again with the knob leaves the apps be: the device's mute is enough.
+            assert_eq!(s.plain_mute(&mut a), Ok(true));
+            assert!(!a.muted("tarkov"));
+        }
     }
 
     #[test]

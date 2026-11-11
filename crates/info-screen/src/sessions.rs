@@ -1365,10 +1365,13 @@ mod imp {
             if soft.engaged().is_some_and(|e| e != dev.endpoint) {
                 soft.abandon();
             }
+            dev.paused = false;
             if dev.on {
                 if let Err(e) = soft.engage(&mut audio, &dev.endpoint, &dev.name, dev.step) {
                     eprintln!("Foxglove: master volume: {e}");
                 }
+                // Blocked by a journal that can't be read: the setting says so (#1070).
+                dev.paused = soft.engaged().is_none() && soft.journal_unread();
             } else if soft.engaged().is_some() {
                 if let Err(e) = soft.disengage(&mut audio) {
                     eprintln!("Foxglove: master volume: {e}");
@@ -1668,6 +1671,17 @@ mod imp {
                         let _ = reply.send(soft.step_master(&mut audio, steps));
                         return;
                     }
+                    // Not set by Foxglove: the device's own level; an unmute also frees the apps a
+                    // muted master left muted (its writes are Foxglove's own, so no outside
+                    // notification does it, #1072).
+                    if let (Some(soft), Some(_)) = (self.soft.as_mut(), &self.endpoint) {
+                        let mut audio = Com {
+                            endpoint: self.endpoint.as_ref(),
+                            sessions: &mut self.sessions,
+                        };
+                        let _ = reply.send(soft.plain_step(&mut audio, steps));
+                        return;
+                    }
                     let r = match &self.endpoint {
                         None => Err("no output device".to_string()),
                         Some(e) => master_step(e, steps).map_err(|e| e.to_string()),
@@ -1681,6 +1695,14 @@ mod imp {
                             sessions: &mut self.sessions,
                         };
                         let _ = reply.send(soft.toggle_mute(&mut audio));
+                        return;
+                    }
+                    if let (Some(soft), Some(_)) = (self.soft.as_mut(), &self.endpoint) {
+                        let mut audio = Com {
+                            endpoint: self.endpoint.as_ref(),
+                            sessions: &mut self.sessions,
+                        };
+                        let _ = reply.send(soft.plain_mute(&mut audio));
                         return;
                     }
                     let r = match &self.endpoint {
@@ -1701,6 +1723,11 @@ mod imp {
                             (self.notify)(Change::Adopted);
                         }
                         return;
+                    }
+                    // Paused by a journal that couldn't be read: the device's next change tries
+                    // the start again (no polling, #1070).
+                    if self.device.as_ref().is_some_and(|d| d.paused) {
+                        self.evaluate();
                     }
                     if !own {
                         // Unmuted while Foxglove doesn't set its volume: the apps a muted master
