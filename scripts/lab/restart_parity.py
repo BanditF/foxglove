@@ -22,7 +22,7 @@ Exit 0 PASS, 1 FAIL, 2 BLOCKED (no app OK, no keyboard).
 """
 import argparse, sys
 
-from labkit import App, Checks, REPO, connect, feed_art_facts, feed_messages, log_lines, restart_parity, temp_config, \
+from labkit import App, Checks, REAL_STORE, REPO, art_put_back, connect, feed_art_facts, feed_messages, log_lines, restart_parity, temp_config, \
     tool_arg, users_keyboard, wait_fact
 
 FIXTURE = REPO / 'tests' / 'art' / 'ink-fixture.bin'
