@@ -279,6 +279,16 @@ config FOXGLOVE_HOST_EFFECTS
       link carries one message per change (relay status version 8). Dev builds only until a Test
       lab pass. A right without it keeps its own effect.
 
+config FOXGLOVE_HOST_EFFECTS_KEYS
+    bool "SET_EFFECT key rings: a ring from each key pressed on a half, drawn there (#490)"
+    default y
+    depends on FOXGLOVE_HOST_EFFECTS
+    help
+      SET_EFFECT's kind 5 (HELLO v2 capability 37): the PC sends the ring and background colours,
+      width and time once; each half starts a ring at a key pressed on it (ZMK's physical layout),
+      with no PC and no split traffic per press. On with FOXGLOVE_HOST_EFFECTS (dev builds), so
+      off in GA until a Test lab pass. The right takes it from relay status version 13.
+
 config FOXGLOVE_HOST_EFFECTS_FRAME_MS
     int "Milliseconds between an effect's frames"
     default 33

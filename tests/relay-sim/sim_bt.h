@@ -120,6 +120,18 @@ struct sim_right {
     // The status version it reports: ART_RELAY_STORE_STATUS_VERSION has STORE (#522); a lower
     // one ignores the op as a right before it does.
     uint8_t version;
+    // SET_EFFECT (#490), as art_relay_peripheral.c takes it: the wire ART_RELAY_EFFECT fills, the
+    // GO that runs it and the clock it anchors (the right's effect clock reads 0 at
+    // effect_epoch_us; effect_run.c counts on from there). A link drop and LAMP_HOST stop it.
+    struct lamp_effect_wire effect;
+    bool effect_run;
+    int64_t effect_epoch_us;
+    int64_t effect_first_epoch_us; // the anchor the first GO of the last send set
+    int effect_gos, effect_stops, effect_writes;
+    int effect_gos_since_send; // GOs since the parameters' first write (offset 0)
+    int effect_black; // GOs of an effect this right can't draw (lamp_effect_prepare refuses it)
+    bool lamp_host;   // the PC's frames draw the right's LEDs (LAMP_HOST)
+    int lamp_host_writes;
     uint8_t set_count; // built-in sets (0: 1, the Bandit_Emblem since #671)
     // A right before #851: a SELECT of a built-in shows in the status only builtin_lag_us later
     // (its display queue's play_cb); until then the status keeps set_before. 0: at once.

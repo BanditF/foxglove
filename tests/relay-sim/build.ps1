@@ -29,6 +29,11 @@ if (Test-Path (Join-Path $Widgets "health.c")) {
     $healthSrc = "`"$Widgets\health.c`""
     $healthObj = "`"$Out\health.obj`""
 }
+# SET_EFFECT's maths (#490), so the effect scenarios render each half as it draws.
+if (Test-Path (Join-Path $Widgets "lamp_effect.c")) {
+    $healthSrc += " `"$Widgets\lamp_effect.c`""
+    $healthObj += " `"$Out\lamp_effect.obj`""
+}
 # The D7 05 position press (#851): test_hooks.c as dev builds have it, where the widgets have
 # the art relay's press job.
 $hooksSrc = ""

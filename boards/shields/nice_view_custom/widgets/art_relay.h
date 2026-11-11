@@ -132,7 +132,10 @@ enum art_relay_op {
                               // filled so far with its clock at that value now (the left's, read
                               // just before sending); run 0 stops it and hands the LEDs back to
                               // the right's own effect. LAMP_HOST stops the effect too (SET_FRAME
-                              // takes over).
+                              // takes over). Each GO 1 follows a one-byte EFFECT write of the
+                              // colour count the right has (it wakes the right); one the right
+                              // answers later than a frame after the left read its clock comes
+                              // again, at most 3 in all: the halves agree within a frame.
     // The left's activity (#603, activity_relay.h): state u8 (0 active, 1 idle, 2 going to
     // sleep), as a write request on relay_q and also, ahead of the queue, as a write command.
     ART_RELAY_ACTIVITY = ART_RELAY_ACTIVITY_OP,
@@ -163,6 +166,10 @@ enum art_relay_op {
 #define ART_RELAY_SLOT_CRC_STATUS_VERSION 11
 // The right status version with ART_RELAY_SLOT_READ (#878).
 #define ART_RELAY_SLOT_READ_STATUS_VERSION 12
+// The right status version that draws SET_EFFECT's key rings (#490, LAMP_EFFECT_KEYS in
+// ART_RELAY_EFFECT's wire): a right below it would refuse the kind and draw black, so the left
+// sends it none (and stops an older effect there).
+#define ART_RELAY_KEYS_STATUS_VERSION 13
 
 // The right rings on every CCC write that turns notify on (#618), not only when Zephyr's CCC value
 // changes: for the bonded left, Zephyr restores that value at encryption, ~15 s before the left

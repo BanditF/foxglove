@@ -10,6 +10,9 @@
  * the lights (#542): it draws through idle and the user's off, RGB_SYNC and the right hear the
  * left's real on/off meanwhile, RELEASE puts that on/off back, and (as the right) it draws on
  * through the left's link dropping and coming back with "off".
+ *
+ * The key-ripple case (CONFIG_FOXGLOVE_SIM_KEY_RIPPLE) runs key_ripple_driver instead: SET_EFFECT's
+ * key rings (kind 5) on a physical layout with the Eyelash Corne's key places.
  * SPDX-License-Identifier: MIT
  */
 
@@ -25,6 +28,8 @@
 #include <raw_hid/events.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/endpoint_changed.h>
+#include <zmk/events/position_state_changed.h>
+#include <zmk/physical_layouts.h>
 #include <zmk/rgb_underglow.h>
 #include <zmk/workqueue.h>
 
@@ -88,6 +93,11 @@ int zmk_rgb_underglow_select_effect(int effect) { return 0; }
 static uint8_t pixels[LAMP_STRIP_LEN][3], printed[LAMP_STRIP_LEN][3];
 static bool host, quiet;
 static atomic_t draws;
+// The key-ripple case watches draws: how many, and the draw each LED first left the background in.
+static bool watching;
+static uint8_t watch_bg[3];
+static atomic_t watch_draws;
+static int first_lit[LAMP_STRIP_LEN];
 static atomic_t want_owned;
 static bool owned; // the low-priority queue's
 
@@ -131,6 +141,14 @@ void lamp_strip_show(void) {
         return;
     }
     atomic_inc(&draws);
+    if (watching) {
+        int f = (int)atomic_inc(&watch_draws);
+        for (int i = 0; i < LAMP_STRIP_LEN; i++) {
+            if (first_lit[i] < 0 && memcmp(pixels[i], watch_bg, 3) != 0) {
+                first_lit[i] = f;
+            }
+        }
+    }
     if (!quiet && memcmp(pixels, printed, sizeof(pixels)) != 0) {
         memcpy(printed, pixels, sizeof(pixels));
         print_lamps("left draws", pixels, LAMP_STRIP_LEN);
@@ -160,7 +178,8 @@ void art_relay_lamps(bool on, const uint8_t rgb[ART_RELAY_LAMPS_MAX][3]) {
 
 uint8_t art_relay_lamps_right(void) { return ART_LAMPS_OK; }
 
-static const char *const kinds[] = {"none", "scanline", "sweep", "ripple", "breathe"};
+static const char *const kinds[] = {"none", "scanline", "sweep", "ripple", "breathe", "keys"};
+BUILD_ASSERT(ARRAY_SIZE(kinds) == LAMP_EFFECT_KINDS, "a name for every effect kind");
 
 void art_relay_effect(bool run, bool tell, const struct lamp_effect_wire *w) {
     if (!run) {
@@ -305,7 +324,7 @@ static void check_directions(void) {
 
 /* The PC */
 
-static uint32_t caps;
+static uint32_t caps, caps2;
 // The left's on/off in the last unsolicited RGB_STATE (D7 83): it comes 600 ms after a change,
 // so the walk reads it here when it reports rather than at a time-dependent place in the log.
 static atomic_t pc_heard = ATOMIC_INIT(-1);
@@ -314,6 +333,9 @@ static int effects_sent_listener(const zmk_event_t *eh) {
     const struct raw_hid_sent_event *ev = as_raw_hid_sent_event(eh);
     if (ev != NULL && ev->length >= 25 && ev->data[0] == 0xD5 && ev->data[1] == 0x81) {
         caps = sys_get_le32(&ev->data[21]);
+    }
+    if (ev != NULL && ev->length >= 7 && ev->data[0] == 0xD5 && ev->data[1] == 0x88) {
+        caps2 = sys_get_le32(&ev->data[3]); // D5 88: word 2 (capabilities 32 on)
     }
     if (ev != NULL && ev->length >= 3 && ev->data[0] == 0xD7 && ev->data[1] == 0x83) {
         atomic_set(&pc_heard, ev->data[2]);
@@ -438,7 +460,198 @@ static const uint8_t still[4][3] = {{0x20, 0x40, 0x60}, {0x20, 0x40, 0x60}};
 static const uint8_t band[4][3] = {{0xF0, 0x8A, 0x3C}, {0x06, 0x08, 0x0E}};
 static const uint8_t stops[4][3] = {{0xFF, 0x00, 0x00}, {0x00, 0xFF, 0x00}, {0x00, 0x00, 0xFF}};
 
+#if IS_ENABLED(CONFIG_FOXGLOVE_SIM_KEY_RIPPLE)
+/* SET_EFFECT's key rings (#490, tests/zmk-sim/key-ripple): kind 5 through the real host_link.c,
+ * host_effects.c, effect_run.c and lamp_effect.c, keys raised as ZMK's position events, their
+ * places from ZMK's physical layout (the case's keymap has the Eyelash Corne's). This build is a
+ * one-piece board: every key is this half's, and the right half's side of the layout is checked
+ * through lamp_effect_key_point directly. Frames tick at 10 ms here, so counts are ranges. */
+
+static const uint8_t ring[4][3] = {{0xF0, 0x8A, 0x3C}, {0x06, 0x08, 0x0E}};
+
+static void key(uint32_t position, bool down, uint8_t source) {
+    raise_zmk_position_state_changed((struct zmk_position_state_changed){
+        .source = source, .state = down, .position = position, .timestamp = k_uptime_get()});
+}
+
+static void tap(uint32_t position) {
+    key(position, true, ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL);
+    k_msleep(20);
+    key(position, false, ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL);
+}
+
+static void watch(bool on) {
+    if (on) {
+        memset(first_lit, 0xff, sizeof(first_lit)); // -1: never lit
+        memcpy(watch_bg, ring[1], 3);
+        atomic_set(&watch_draws, 0);
+    }
+    watching = on;
+}
+
+static bool all_background(void) {
+    for (int i = 0; i < LAMP_STRIP_LEN; i++) {
+        if (memcmp(pixels[i], ring[1], 3) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The LEDs a ring lit first (the earliest draw any LED left the background in).
+static void print_first_lit(void) {
+    int first = -1;
+    for (int i = 0; i < LAMP_STRIP_LEN; i++) {
+        if (first_lit[i] >= 0 && (first < 0 || first_lit[i] < first)) {
+            first = first_lit[i];
+        }
+    }
+    printk("effects: first lit:");
+    for (int i = 0; i < LAMP_STRIP_LEN && first >= 0; i++) {
+        if (first_lit[i] == first) {
+            printk(" %d", i);
+        }
+    }
+    printk(first < 0 ? " none\n" : "\n");
+}
+
+// One ring's run: the draws while it grows (a range: frames tick at 10 ms here), the background
+// after it, and no draws once it is gone.
+static void ring_run(const char *what) {
+    k_msleep(1000);
+    watch(false);
+    int n = atomic_get(&watch_draws);
+    printk("effects: %s: draws while it grew %s, then the background %s, draws after it %d\n", what,
+           n >= 10 && n <= 40 ? "one a frame" : "wrong", all_background() ? "yes" : "no",
+           count_draws(500));
+}
+
+static void key_ripple_driver(void) {
+    k_msleep(500);
+    note("hello and D5 08 CAPS: capability 37 KEY_RINGS (word 2's bit 5)");
+    {
+        const uint8_t hello[] = {0xD5, 0x01, 0x01};
+        put(hello, sizeof(hello));
+        settle();
+        const uint8_t caps_req[] = {0xD5, 0x08};
+        put(caps_req, sizeof(caps_req));
+        settle();
+    }
+    printk("effects: capability 37 %d\n", (caps2 >> 5) & 1);
+
+    note("where ZMK's physical layout puts keys: a one-piece board, the left half, the right half");
+    {
+        struct zmk_physical_layout const *const *layouts;
+        size_t n = zmk_physical_layouts_get_list(&layouts);
+        int sel = zmk_physical_layouts_get_selected();
+        const struct zmk_physical_layout *l = sel >= 0 && (size_t)sel < n ? layouts[sel] : NULL;
+        printk("effects: layout %s, %d keys\n", l ? l->display_name : "none",
+               l ? (int)l->keys_len : 0);
+        // Q, Backspace, the middle cluster's left key, the left and right middle thumbs (turned).
+        const int positions[] = {1, 12, 19, 43, 46};
+        for (int i = 0; l != NULL && i < (int)ARRAY_SIZE(positions); i++) {
+            uint16_t pt[3][2] = {{0}};
+            for (int side = -1; side <= 1; side++) {
+                lamp_effect_key_point((const struct lamp_effect_key *)l->keys, (int)l->keys_len,
+                                      positions[i], side, pt[side + 1]);
+            }
+            printk("effects: key %d: one piece %u,%u; left %u,%u; right %u,%u\n", positions[i],
+                   pt[0][0], pt[0][1], pt[1][0], pt[1][1], pt[2][0], pt[2][1]);
+        }
+    }
+
+    note("kind 5 without a period, or with three colours: refused");
+    effect(5, 2, 0, 0, 0, 250, 0, 0, ring);
+    effect(5, 3, 0, 600, 0, 250, 0, 0, ring);
+    settle();
+
+    note("kind 5: both halves told, the background drawn once; no frames without a key");
+    effect(5, 2, 0, 600, 0, 250, 0, 0, ring);
+    settle();
+    printk("effects: draws in 500 ms after it: %d\n", count_draws(500));
+
+    note("Q on this half: a ring from it, the nearest LED (0) lit first");
+    quiet = true; // the ring's frames move: watched, not printed
+    watch(true);
+    tap(1);
+    ring_run("Q");
+    print_first_lit();
+
+    note("the other half's key as it reaches this one, and a release alone: no ring");
+    atomic_set(&draws, 0);
+    key(7, true, 0); // source 0: the right half's, relayed (ZMK's split central)
+    k_msleep(20);
+    key(7, false, 0);
+    key(1, false, ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL);
+    k_msleep(500);
+    printk("effects: draws: %d\n", (int)atomic_get(&draws));
+
+    note("five keys at once: four rings, the fifth taking the oldest's place; then the background");
+    watch(true);
+    const uint32_t five[] = {1, 12, 19, 43, 46};
+    for (int i = 0; i < 5; i++) {
+        key(five[i], true, ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL);
+        k_msleep(10);
+    }
+    for (int i = 0; i < 5; i++) {
+        key(five[i], false, ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL);
+    }
+    ring_run("five keys");
+
+    note("the same effect sent again (as a re-anchor does): the ring in flight goes on");
+    tap(1);
+    k_msleep(100);
+    effect(5, 2, 0, 600, 0, 250, 0, 0, ring);
+    k_msleep(50);
+    {
+        int n = count_draws(200);
+        printk("effects: draws in 200 ms after it: %s\n", n >= 3 ? "still drawing" : "stopped");
+    }
+    k_msleep(800);
+
+    note("another effect (a still breathe): a key starts no ring");
+    quiet = false;
+    memset(printed, 0xff, sizeof(printed));
+    effect(4, 2, 0, 0, 0, 0, 0, 0, still);
+    settle();
+    atomic_set(&draws, 0);
+    tap(1);
+    k_msleep(500);
+    printk("effects: draws after the key: %d\n", (int)atomic_get(&draws));
+
+    note("key rings again, then the PC's frames take the lights: a key starts no ring");
+    effect(5, 2, 0, 600, 0, 250, 0, 0, ring);
+    settle();
+    {
+        const uint8_t d[] = {0xD7, 0x0C, 0x01, 0, 1, 0xFF, 0x00, 0x00};
+        put(d, sizeof(d));
+    }
+    settle();
+    atomic_set(&draws, 0);
+    tap(1);
+    k_msleep(500);
+    printk("effects: draws after the key: %d\n", (int)atomic_get(&draws));
+
+    note("RELEASE: both halves back to their own effect; a key starts no ring");
+    release();
+    settle();
+    effect(5, 2, 0, 600, 0, 250, 0, 0, ring);
+    settle();
+    release();
+    settle();
+    atomic_set(&draws, 0);
+    tap(1);
+    k_msleep(500);
+    printk("effects: draws after the key: %d\n", (int)atomic_get(&draws));
+    note("done");
+}
+#endif
+
 void effects_sim_driver(void) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_SIM_KEY_RIPPLE)
+    key_ripple_driver();
+    return;
+#endif
     k_msleep(500);
     note("the maths against crates/scene");
     check_vectors();

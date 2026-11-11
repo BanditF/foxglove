@@ -2560,6 +2560,18 @@ static void lamps_link_up(void) {}
  * latency; ATT keeps the order, so GO's response acknowledges the whole effect. A stop is a GO
  * with run 0, unless SET_FRAME took over (its LAMP_HOST stops the right's effect).
  *
+ * The halves' phase: the right takes the GO's clock when the GO lands, which is after the left
+ * read it and before the answer comes back. So a GO answered within one frame of the read puts
+ * the right within one frame of the left. A request waits for the right to wake (its peripheral
+ * latency: up to 31 connection events, 232 ms) and for REQ_GAP_MS after its last answer, so each
+ * GO first waits out the gap, then sends a write command the right takes as a no-op (its colour
+ * count again) and waits until it went: the right listened at that event, so it listens at the
+ * next, where the GO goes with the clock read just then. A GO answered later than a frame anyway
+ * goes again. Start: a GO. Stop: an answer within a frame, an error, or EFFECT_GO_TRIES GOs
+ * (relay-sim effect-phase). A
+ * key-ring effect (LAMP_EFFECT_KEYS) goes only to a right with ART_RELAY_KEYS_STATUS_VERSION;
+ * an older one keeps its own effect (one it drew before stops), and its state reads unsupported.
+ *
  * Start/stop: a job starts on an effect, a PLACE, a stop, link-up while an effect runs, or the
  * left waking from idle (the clock alone, so long runs don't drift); it stops when the right has
  * acknowledged, the link is gone, or after EFFECT_RETRIES failed tries. */
@@ -2576,19 +2588,66 @@ static atomic_t effect_dirty; // effect_want or effect_run changed since the rig
 static atomic_t effect_right; // ART_LAMPS_*
 static atomic_t effect_reset; // a new link: effect_cb starts over
 static atomic_t effect_resync; // the running effect's clock again, alone
+static atomic_t effect_keys;   // effect_want is key rings (LAMP_EFFECT_KEYS)
 // On relay_q only:
 static int8_t effect_sent = -1; // the GO the right last acknowledged: -1 unknown, 0 stop, 1 run
 static uint8_t effect_tries, effect_busy;
 
-static bool effect_takes_right(void) {
-    return atomic_get(&effect_run) && right.version >= EFFECT_STATUS_VERSION;
+// Whether the right can't draw the effect the PC sent: key rings on a right before them.
+static bool effect_right_cant(void) {
+    return atomic_get(&effect_keys) && right.version < ART_RELAY_KEYS_STATUS_VERSION;
 }
 
-// The left's clock, read just before it goes, so the right starts where the left is.
+static bool effect_takes_right(void) {
+    return atomic_get(&effect_run) && right.version >= EFFECT_STATUS_VERSION &&
+           !effect_right_cant();
+}
+
+// Waits until every write command queued has gone out (CMD_ROOM_MS at most).
+static int cmds_drained(void) {
+    int64_t until = k_uptime_get() + CMD_ROOM_MS;
+    while (atomic_get(&cmds_out) > 0) {
+        int64_t left = until - k_uptime_get();
+        if (left <= 0 || k_sem_take(&cmd_room, K_MSEC(left))) {
+            return -ETIMEDOUT;
+        }
+    }
+    return 0;
+}
+
+#ifdef CONFIG_FOXGLOVE_HOST_EFFECTS_FRAME_MS
+#define EFFECT_IN_PHASE_MS CONFIG_FOXGLOVE_HOST_EFFECTS_FRAME_MS
+#else
+#define EFFECT_IN_PHASE_MS 33
+#endif
+#define EFFECT_GO_TRIES 3
+
+// The left's clock, so the right starts where the left is, until a GO comes back within a frame
+// (see above).
 static int effect_go(struct bt_conn *conn) {
-    uint8_t go[6] = {ART_RELAY_EFFECT_GO, 1};
-    sys_put_le32(effect_run_clock(), &go[2]);
-    return write_req(conn, go, sizeof(go));
+    static uint8_t wake[3] = {ART_RELAY_EFFECT, offsetof(struct lamp_effect_wire, n)};
+    k_spinlock_key_t key = k_spin_lock(&effect_lock);
+    wake[2] = effect_want.n; // the byte the right has: a no-op there
+    k_spin_unlock(&effect_lock, key);
+    int err = 0;
+    for (int i = 0; !err && i < EFFECT_GO_TRIES; i++) {
+        req_space(); // before the wake, so the GO goes right after it
+        err = write_cmd(conn, wake, sizeof(wake));
+        if (!err) {
+            err = cmds_drained();
+        }
+        if (err) {
+            break;
+        }
+        uint8_t go[6] = {ART_RELAY_EFFECT_GO, 1};
+        int64_t read_at = k_uptime_get();
+        sys_put_le32(effect_run_clock(), &go[2]);
+        err = write_req(conn, go, sizeof(go));
+        if (!err && k_uptime_get() - read_at <= EFFECT_IN_PHASE_MS) {
+            break;
+        }
+    }
+    return err;
 }
 
 static int effect_send(struct bt_conn *conn) {
@@ -2636,7 +2695,8 @@ static void effect_cb(struct k_work *work) {
         bt_conn_unref(conn);
         return;
     }
-    bool run = atomic_get(&effect_run);
+    bool cant = !err && effect_right_cant(); // it keeps its own effect
+    bool run = atomic_get(&effect_run) && !cant;
     bool dirty = atomic_cas(&effect_dirty, 1, 0);
     bool resync = atomic_cas(&effect_resync, 1, 0);
     if (!err && run && (dirty || effect_sent != 1)) {
@@ -2650,7 +2710,7 @@ static void effect_cb(struct k_work *work) {
         if (err) {
             atomic_set(&effect_resync, 1);
         }
-    } else if (!err && !run && effect_sent != 0 && atomic_get(&effect_tell)) {
+    } else if (!err && !run && effect_sent != 0 && (atomic_get(&effect_tell) || cant)) {
         const uint8_t go[6] = {ART_RELAY_EFFECT_GO, 0};
         err = write_req(conn, go, sizeof(go));
         if (!err) {
@@ -2660,7 +2720,7 @@ static void effect_cb(struct k_work *work) {
         effect_sent = 0; // SET_FRAME's take-over stops it on the right
     }
     if (!err) {
-        atomic_set(&effect_right, ART_LAMPS_OK);
+        atomic_set(&effect_right, cant ? ART_LAMPS_UNSUPPORTED : ART_LAMPS_OK);
     } else if (dirty) {
         atomic_set(&effect_dirty, 1); // not sent: the retry sends it
     }
@@ -2683,6 +2743,7 @@ void art_relay_effect(bool run, bool tell, const struct lamp_effect_wire *right_
         k_spinlock_key_t key = k_spin_lock(&effect_lock);
         effect_want = *right_half;
         k_spin_unlock(&effect_lock, key);
+        atomic_set(&effect_keys, right_half->kind == LAMP_EFFECT_KEYS);
     }
     atomic_set(&effect_run, run);
     atomic_set(&effect_tell, tell);

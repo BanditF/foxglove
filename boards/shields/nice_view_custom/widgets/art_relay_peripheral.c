@@ -56,9 +56,12 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 // SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490), 9: ART_RELAY_EFFECT takes the whole wire, with
 // the PC's LED points (#550), 10: ART_RELAY_STORE keeps a received set in flash without showing it
 // (#522), 11: the slot CRC characteristic (#863), 12: ART_RELAY_SLOT_READ pushes a kept set back
-// (#878)). The rest of struct art_relay_status is the art store's. Builds without host effects
-// have the CRC characteristic and SLOT_READ too, but the left uses them only from 11 and 12 on.
-#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+// (#878), 13: SET_EFFECT's key rings, LAMP_EFFECT_KEYS (#490)). The rest of struct
+// art_relay_status is the art store's. Builds without host effects have the CRC characteristic
+// and SLOT_READ too, but the left uses them only from 11 and 12 on.
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS_KEYS)
+#define STATUS_VERSION ART_RELAY_KEYS_STATUS_VERSION
+#elif IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
 #define STATUS_VERSION ART_RELAY_SLOT_READ_STATUS_VERSION
 #elif IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
 #define STATUS_VERSION 7

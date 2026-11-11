@@ -85,7 +85,7 @@
  *      33 ART_PACE (#842: the art plays at its target's pace, D6 0A ANIMATE below),
  *      34 HOLD_LEASE (#847: D7 15 below), 35 KNOB_VOLUME (#855: D7 16 below; only with a
  *      &knob in the keymap), 36 SLOT_READ (#878: D6 0B below; a relaying board, or a local
- *      store with flash slots). A PC
+ *      store with flash slots), 37 KEY_RINGS (#490: D7 0F's kind 5 below). A PC
  *      that reads fewer words than n ignores the rest; words past n read as 0.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
  * With CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0, the WPM chart also comes back after that many
@@ -343,12 +343,22 @@
  *                     the scene's room space (x right, y down). Kept until a reboot; a running
  *                     effect moves at once on the same clock. Before any PLACE the room is the
  *                     two halves, 124 x 86 mm each, 80 mm apart. Status 5 for a half without area.
- *      op 2 EFFECT    kind u8 (1 scanline, 2 sweep, 3 ripple, 4 breathe), colours n u8,
+ *      op 2 EFFECT    kind u8 (1 scanline, 2 sweep, 3 ripple, 4 breathe, 5 keys), colours n u8,
  *                     clock ms u24 (the scene's time modulo the period, as sent), period ms u24
  *                     (0 stands still), angle u16 (0.01 degree, < 36000; 0 left to right, 90 down),
  *                     width u16 (0.1 mm), origin x, y i16 (mm; the ripple's centre),
  *                     n x (r, g, b) from byte 19. Scanline and ripple: colour, background;
  *                     breathe: from, to (n = 2). Sweep: 1-4 stops. Status 5 for anything else.
+ *                     Kind 5 KEYS (D5 88 capability 37, #490): ring, background (n = 2). Each half
+ *                     shows the background, and a key pressed on that half starts a ring of the
+ *                     ring colour at that key (ZMK's physical layout; the half's centre on a board
+ *                     without one) that grows to the half's far corner over one period, width
+ *                     wide; up to 4 at once, a 5th press takes the oldest's place. No PC and no
+ *                     split traffic per press: each half rings only its own keys. Period 1 ms or
+ *                     more (0 is status 5, as is kind 5 on a build without it); clock, angle and
+ *                     origin are unused (send 0). Frames draw only while a ring grows. A right
+ *                     whose relay status version is below 13 can't: the reply's right byte says 2
+ *                     and it keeps its own effect (any older effect on it stops).
  *      op 3 LAMPS     half u8 (0 left, 1 right), start u8, count u8 (<= 6), then count x (x, y)
  *                     u16 LE (HELLO bit 21, #550): where those LEDs of that half sit, in
  *                     thousandths of the half's width and height from its top-left corner (the
@@ -376,7 +386,10 @@
  *      drawn (updates with LampUpdateComplete), the host link's SHOWs and effects refused busy,
  *      and LampArray reports refused (short or unknown).
  *      The left sends the right its copy over the art relay with the left's clock read just before
- *      the send, so both halves agree on the phase within the link's latency; again on link-up.
+ *      the send, once a one-byte write has woken the right (its peripheral latency can hold a
+ *      message up to 31 connection events); a send the right answers more than one frame after
+ *      that read goes again (at most 3 in all), so both halves agree on the phase within one
+ *      frame. Again on link-up and on each wake from idle.
  *      The take-over and owner rules are SET_FRAME's, with no timeout and no hand-back on USB or
  *      endpoint changes: the effect ends on RELEASE, when a SET_FRAME SHOW takes the lights (the
  *      frames draw over it, both halves; owner 3 in D7 8C), or on a reboot. An effect replaces held
@@ -523,6 +536,10 @@
 // Capability 36 (#878): D6 0B SLOT_READ, a kept slot's bytes back, so the PC can draw a piece it
 // doesn't have. On a relaying board the right must have it too (status version >= 12, else 4).
 #define HOST_LINK_CAPS2_SLOT_READ (1U << 4)
+// Capability 37 (#490): D7 0F SET_EFFECT's kind 5 KEYS, rings each half starts from its own
+// pressed keys (CONFIG_FOXGLOVE_HOST_EFFECTS_KEYS). On a split board the right draws them from
+// relay status version 13 on (ART_RELAY_KEYS_STATUS_VERSION); an older one keeps its own effect.
+#define HOST_LINK_CAPS2_KEY_RINGS (1U << 5)
 // D6 8B's most data bytes: a 32-byte report less its 7-byte head.
 #define HOST_LINK_SLOT_READ_MAX 25
 // D6 8B's statuses past SLOT's 0-4 (#878): no such slot, an empty one, or an offset past its end.

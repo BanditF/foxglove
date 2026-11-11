@@ -1003,6 +1003,61 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
         sim_right.snap_ready = 1;
         right_redraw(); // the capture runs on the right's display (system) queue
         return 0;
+    case ART_RELAY_LAMP_HOST: // SET_FRAME (#272): the frames take over from an effect
+        if (sim_right.version < 7 || len != 2) {
+            return 0;
+        }
+        sim_right.effect_run = false;
+        sim_right.lamp_host = d[1] != 0;
+        sim_right.lamp_host_writes++;
+        return 0;
+    case ART_RELAY_EFFECT: // SET_EFFECT (#490): offset, bytes into the right's copy
+        if (sim_right.version < 8) {
+            return 0; // a right before it: no case for the op
+        }
+        if (len < 2 || d[1] > sizeof(sim_right.effect)) {
+            return BT_ATT_ERR_INVALID_OFFSET;
+        }
+        if (d[1] == 0) {
+            sim_right.effect_gos_since_send = 0;
+            sim_right.effect.lamps_set = 0;
+            memset(sim_right.effect.lamp, 0xFF, sizeof(sim_right.effect.lamp));
+        }
+        memcpy((uint8_t *)&sim_right.effect + d[1], &d[2],
+               MIN((size_t)(len - 2), sizeof(sim_right.effect) - d[1]));
+        sim_right.effect_writes++;
+        return 0;
+    case ART_RELAY_EFFECT_GO:
+        if (sim_right.version < 8) {
+            return 0;
+        }
+        if (len != 6) {
+            return BT_ATT_ERR_INVALID_ATTRIBUTE_LEN;
+        }
+        if (d[1]) {
+            // effect_run_start: the clock at that value now. A first GO after new parameters
+            // (the same effect again only re-anchors) is the send's first.
+            int64_t epoch = sim_now_us() - 1000LL * sys_get_le32(&d[2]);
+            if (sim_right.effect_gos_since_send == 0) {
+                sim_right.effect_first_epoch_us = epoch;
+            }
+            sim_right.effect_epoch_us = epoch;
+            sim_right.effect_run = true;
+            sim_right.effect_gos++;
+            sim_right.effect_gos_since_send++;
+            sim_right.lamp_host = true;
+#ifdef ART_RELAY_KEYS_STATUS_VERSION
+            if (sim_right.effect.kind == LAMP_EFFECT_KEYS &&
+                sim_right.version < ART_RELAY_KEYS_STATUS_VERSION) {
+                sim_right.effect_black++; // lamp_effect_prepare refuses it: a black half
+            }
+#endif
+        } else {
+            sim_right.effect_run = false;
+            sim_right.lamp_host = false;
+            sim_right.effect_stops++;
+        }
+        return 0;
     default:
         return 0;
     }
@@ -1424,6 +1479,10 @@ void sim_bt_drop(int64_t back_after_us) {
     sim_right.ccc_value = 0; // disconnected_cb in gatt.c: the value goes, the bond's cfg stays
     sim_right.held = 0;      // test_hooks.c on the right lets its keys go with the link (#851)
     sim_right.snap_ready = 0;
+    // art_relay_peripheral.c on link loss: the effect stops (the left sends it again), the LEDs
+    // go back to the right's own effect.
+    sim_right.effect_run = false;
+    sim_right.lamp_host = false;
     push_live = false;
     spush_live = false;
     push_out = 0;
@@ -1467,7 +1526,11 @@ void sim_bt_init(void) {
     k_work_init_delayable(&att_timeout_work, att_timeout_cb);
     att_timeout_work.target = &k_sys_work_q;
     sim_right.set = 0;
+#ifdef ART_RELAY_KEYS_STATUS_VERSION
+    sim_right.version = ART_RELAY_KEYS_STATUS_VERSION;
+#else
     sim_right.version = ART_RELAY_SLOT_READ_STATUS_VERSION;
+#endif
     sim_right.polarity = -1;
     sim_right.follow = true;
     sim_right.rgb_on = true;

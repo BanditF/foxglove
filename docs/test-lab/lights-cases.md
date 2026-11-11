@@ -44,6 +44,27 @@ Unit tests (`cargo test -p foxglove-lab host_lights`) run every row against a fa
 that behaves as host_frames.c and host_effects.c do, with knobs for the pass, fail and blocked
 paths.
 
+## Key rings and the halves' phase (#490, after the batched flash)
+
+Needs dev firmware on **both** halves (the right's relay status version 13; HELLO v2 word 2 bit 5,
+capability 37 KEY_RINGS, on the left). Not automated in `foxglove-lab lights` yet (follow-up on
+#490): until then On-call runs it by hand, with the user away (the key presses below go through
+the D7 05 test hook and so reach the desktop; the two `&mo` thumbs type nothing).
+
+| Step | Does | Pass |
+|---|---|---|
+| Rings sent | SET_EFFECT kind 5: ring red (FF0000), background dim blue (000010), period 3000 ms, width 30 mm (`D7 0F 02 05 02 00 00 00 B8 0B 00 00 00 2C 01 00 00 00 00 FF 00 00 00 00 10`) | D7 8F status 0, owner 3, kind 5, right 1 (2: the right's firmware is older, FAIL) |
+| Background | RGB_STATE (D7 83) | PC-drawn, the brightest LED blue; both halves dim blue by eye |
+| Left key | D7 05 43 1, then 43 0 (the left middle thumb, `&mo 1`); RGB_STATE 300 ms later | the brightest LED red; by eye a red ring grows from the left thumb over the left half only, about 3 s, then dim blue again |
+| Right key | D7 05 46 1, then 46 0 (the right middle thumb, `&mo 2`, relayed to the right) | by eye the ring grows over the right half only, from its thumb; the left's RGB_STATE stays blue (each half rings only its own keys) |
+| App dead | quit Foxglove, type on both halves | rings from the keys typed, on the half typed on; typing unaffected (#25) |
+| Phase | SET_EFFECT a scanline (kind 1, period 2000 ms, angle 0, width 30 mm); film both halves at 120 fps or more; again after a wake from idle and after switching the right off and on | the band leaves the left half and enters the right with no jump: the right's band within one frame (33 ms, about 5 mm at this speed) of where the left's predicts it |
+| Release | SET_EFFECT RELEASE (`D7 0F 00`) | owner 0, kind 0; both halves back to their own effect |
+
+The relay side of the phase (each send, each wake's re-anchor and each re-link land the right
+within one frame of the left under the link's latency) is relay-sim's `effect-phase` and
+`effect-relink`; the rings themselves are zmk-sim's `key-ripple`.
+
 ## Not here
 
 - Which key each LED sits under, and colours by eye: needs a person. That is #90 row G (the

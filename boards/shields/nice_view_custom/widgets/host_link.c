@@ -339,6 +339,9 @@ static uint32_t caps_word2(void) {
         caps |= HOST_LINK_CAPS2_SLOT_READ; // D6 0B (#878), from the store on this half
     }
 #endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS_KEYS)
+    caps |= HOST_LINK_CAPS2_KEY_RINGS; // SET_EFFECT kind 5: rings from pressed keys (#490)
+#endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_ART_LOCAL)
     caps |= HOST_LINK_CAPS2_ART_LOCAL; // D6 goes to the art store on this half (#834)
     caps |= HOST_LINK_CAPS2_ART_PACE;  // its art follows the target's pace; D6 0A (#842)

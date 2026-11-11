@@ -20,8 +20,14 @@ enum {
     LAMP_EFFECT_SWEEP = 2,    // colours: the stops (1-4), scrolling, wrapping
     LAMP_EFFECT_RIPPLE = 3,   // colours: colour, background; grows from origin
     LAMP_EFFECT_BREATHE = 4,  // colours: from, to
+    // colours: ring, background. Each half draws the background, and a ring that grows from a key
+    // pressed on that half over one period (lamp_effect_rings), with no PC (#490).
+    LAMP_EFFECT_KEYS = 5,
     LAMP_EFFECT_KINDS,
 };
+
+// Key rings one half keeps at once: a press past them takes the oldest one's place.
+#define LAMP_EFFECT_RINGS 4
 
 #define LAMP_EFFECT_COLOURS 4
 
@@ -59,6 +65,7 @@ struct lamp_effect {
     float width;        // mm, >= 0
     float ox, oy;       // ripple origin
     float reach;        // ripple: the farthest room corner from the origin
+    float hx, hy, hw, hh; // this half in the room (mm): where key rings start and how far they go
     float lab[LAMP_EFFECT_COLOURS][3];
     uint8_t rgb[LAMP_EFFECT_COLOURS][3];
     float lamp[LAMP_EFFECT_LAMPS][2]; // each lamp's room position
@@ -84,5 +91,36 @@ void lamp_effect_at(const struct lamp_effect *fx, float x, float y, float phase,
 void lamp_effect_render(const struct lamp_effect *fx, float phase,
                         uint8_t out[LAMP_EFFECT_LAMPS][3]);
 
-// Whether the effect looks the same at every phase (period 0): drawn once, no frame timer.
+// Whether the effect looks the same at every phase (period 0), or moves only after a key press
+// (LAMP_EFFECT_KEYS): drawn once, no frame timer of its own.
 bool lamp_effect_still(const struct lamp_effect *fx);
+
+// A key's place in the keyboard's physical layout: ZMK's struct zmk_key_physical_attrs, field for
+// field (effect_run.c checks the two agree), so this file stays free of ZMK. Hundredths of a key
+// unit; r in hundredths of a degree, about (rx, ry).
+struct lamp_effect_key {
+    int16_t width, height, x, y, rx, ry, r;
+};
+
+// Where key pos sits in its half, in thousandths of the half's width and height from its
+// top-left (as LAMPS' points), from the layout's keys[n]. side: -1 one piece (every key is the
+// half's), 0 the left half (the keys whose centre is left of the layout's middle), 1 the right.
+// A key past that side's keys (a middle cluster) is held to its edge. False for no such key, or
+// a side without keys or without area.
+bool lamp_effect_key_point(const struct lamp_effect_key *keys, int n, int pos, int side,
+                           uint16_t out[2]);
+
+// One key ring: where it starts (room mm) and how far it has grown, 0-1 over the period.
+struct lamp_effect_ring {
+    float ox, oy;
+    float phase;
+};
+
+// The room point at pt (thousandths of this half, as lamp_effect_key_point gives it).
+void lamp_effect_half_point(const struct lamp_effect *fx, const uint16_t pt[2], float out[2]);
+
+// LAMP_EFFECT_KEYS: every lamp of the half, the background with each ring of the ring colour
+// grown to its phase over the half (to the half's farthest corner from where it started), the
+// strongest ring winning where they cross. n rings, at most LAMP_EFFECT_RINGS.
+void lamp_effect_rings(const struct lamp_effect *fx, const struct lamp_effect_ring *rings, int n,
+                       uint8_t out[LAMP_EFFECT_LAMPS][3]);
