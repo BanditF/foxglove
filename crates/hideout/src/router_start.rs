@@ -53,6 +53,10 @@ impl hideout_shell::TabHooks for Hooks {
         hideout_shell::open_update_page();
     }
 
+    fn update_hub_for(&mut self, module: &str) {
+        hideout_shell::open_update_page_at(&self.0.update_hideout_url(module));
+    }
+
     fn force_update(&mut self, module: &str) {
         self.0.force_update(module);
     }

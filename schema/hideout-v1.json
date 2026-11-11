@@ -50,7 +50,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.10",
+  "spec": "1.11",
   "streams": {
     "nodes": [
       "canvas",
@@ -1639,6 +1639,25 @@
         "error"
       ],
       "title": "Rejected",
+      "type": "object"
+    },
+    "release.HubRelease": {
+      "description": "A catalog entry's `min_hub_release` (v1.11): the first Hideout release that serves this\nmodule version, and the page it is on.",
+      "properties": {
+        "url": {
+          "description": "The release's page. Opened only when [`link_allowed`]; otherwise [`RELEASES_URL`].",
+          "type": "string"
+        },
+        "version": {
+          "description": "The Hideout release, e.g. `0.4.0` (digits and dots, an optional `-` suffix).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "url"
+      ],
+      "title": "HubRelease",
       "type": "object"
     }
   }

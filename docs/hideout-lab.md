@@ -282,7 +282,9 @@ python scripts\lab\hideout_lab_checks.py --app "$bin\hideout.exe" --lab $lab --s
    follows.
 5. The flyout has no taskbar button.
 6. Update Hideout opens the releases page in the browser (a lab module with `hub = "1.9"` gives
-   the row, #1096).
+   the row, #1096). On a catalog module's card and Modules row it opens the release its catalog
+   names instead, when its entry has `min_hub_release` on the releases page (#991); a lab
+   module and the tray's stay on the releases page.
 7. The stopped toast shows, and its Start again and Open <Module> work.
 8. #996's visual steps: the room map moves smoothly, pauses when minimised or on another tab,
    and follows "animation effects" off.

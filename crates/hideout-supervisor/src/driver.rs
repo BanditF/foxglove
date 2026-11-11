@@ -609,6 +609,25 @@ impl Supervisor {
         });
     }
 
+    /// The page **Update Hideout** opens for `id` (#991, §7.8 v1.11): the `min_hub_release` page
+    /// of its installed version in its own source's accepted catalog when that page is allowed,
+    /// else the releases page. Reads the registry now (a click, not a frame).
+    pub fn update_hideout_url(&self, id: &str) -> String {
+        match Registry::open_from_env(&self.0.home) {
+            Ok(reg) => {
+                let release = reg.hub_release(id);
+                if let Some(r) = release {
+                    log::info!("supervisor: {id} needs Hideout {}", r.version);
+                }
+                hideout_contract::release::update_url(release).to_string()
+            }
+            Err(e) => {
+                log::warn!("supervisor: {id}: registry not read for Update Hideout ({e:?})");
+                hideout_contract::release::RELEASES_URL.to_string()
+            }
+        }
+    }
+
     /// **Check for updates** on the withdrawn card, its notification and its Modules row:
     /// fetches the source's catalog once, off the caller's thread, then answers on the card
     /// (`module.<id>.check`, #1026).

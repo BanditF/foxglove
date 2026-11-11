@@ -118,6 +118,12 @@ pub trait TabHooks {
     /// **Update Hideout** on a Needs a newer Hideout card: the hub's own update (today the
     /// releases page).
     fn update_hub(&mut self) {}
+    /// **Update Hideout** on `module`'s Needs a newer Hideout card (#991): the page of the
+    /// Hideout release it needs when its catalog names one (§7.8, v1.11). By default
+    /// [`TabHooks::update_hub`].
+    fn update_hub_for(&mut self, _module: &str) {
+        self.update_hub()
+    }
     /// **Force** on Update ready (§7.6).
     fn force_update(&mut self, _module: &str) {}
     /// **Not now** on Update ready or Update waiting for you: the old version keeps running.
@@ -833,12 +839,23 @@ pub(crate) fn flyout_id() -> egui::ViewportId {
 }
 
 /// The page that Update Hideout opens: the hub has no updater of its own yet.
-pub const RELEASES_URL: &str = "https://github.com/BanditF/foxglove/releases";
+pub const RELEASES_URL: &str = hideout_contract::release::RELEASES_URL;
 
 /// **Update Hideout** (a module needs a newer hub): opens [`RELEASES_URL`].
 pub fn open_update_page() {
     log::info!("update hideout: opening {RELEASES_URL}");
     platform::open_url(RELEASES_URL);
+}
+
+/// **Update Hideout** for a module whose catalog names the Hideout release it needs (#991,
+/// §7.8 v1.11): opens [`crate::update_page`] of `url`.
+pub fn open_update_page_at(url: &str) {
+    let page = crate::update_page(url);
+    if page != url {
+        log::warn!("update hideout: {url:?} is not on the releases page; opening {page}");
+    }
+    log::info!("update hideout: opening {page}");
+    platform::open_url(page);
 }
 
 fn layout_from(p: &crate::prefs::TrayPrefs) -> TrayLayout {

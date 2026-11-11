@@ -1341,6 +1341,9 @@ impl TabHooks for Asked {
     fn update_hub(&mut self) {
         self.0.lock().unwrap().push("update-hub".into());
     }
+    fn update_hub_for(&mut self, m: &str) {
+        self.0.lock().unwrap().push(format!("update-hub {m}"));
+    }
     fn force_update(&mut self, m: &str) {
         self.0.lock().unwrap().push(format!("force {m}"));
     }
