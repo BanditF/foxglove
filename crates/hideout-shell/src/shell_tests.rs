@@ -1816,6 +1816,100 @@ fn the_publishers_note_stays_on_the_card() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The check ends: Check for updates has the focus again (the disabled "Checking…" button
+/// dropped it), on the card and on the Off card; never when the user moved the focus to another
+/// button meanwhile (#1048 review nit 1).
+#[test]
+fn check_for_updates_takes_the_focus_back_when_the_check_ends() {
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let dir = temp_dir("withdrawn-refocus");
+    let check = format!("module.{SUP}.check");
+    for off in [false, true] {
+        let (mut hub, _) = withdrawn(&dir, "", None, None);
+        if off {
+            hub.panels
+                .set_fact(&format!("module.{SUP}.state"), serde_json::json!("off"));
+        }
+        let out = frames(&ctx, &mut hub, vec![]);
+        assert_eq!(
+            focused_label(&out).as_deref(),
+            Some("Check for updates"),
+            "off {off}"
+        );
+        hub.panels.set_fact(&check, serde_json::json!("checking"));
+        let out = frames(&ctx, &mut hub, vec![]);
+        assert_ne!(
+            focused_label(&out).as_deref(),
+            Some("Check for updates"),
+            "off {off}"
+        );
+        hub.panels.set_fact(&check, serde_json::json!("none"));
+        let out = frames(&ctx, &mut hub, vec![]);
+        assert_eq!(
+            focused_label(&out).as_deref(),
+            Some("Check for updates"),
+            "off {off}"
+        );
+    }
+
+    // Moved to Turn off while checking: it stays there when the check ends.
+    let (mut hub, _) = withdrawn(&dir, "", None, None);
+    let _ = frames(&ctx, &mut hub, vec![]);
+    hub.panels.set_fact(&check, serde_json::json!("checking"));
+    let mut out = frames(&ctx, &mut hub, vec![]);
+    for _ in 0..40 {
+        if focused_label(&out).as_deref() == Some("Turn off Art") {
+            break;
+        }
+        out = frames(&ctx, &mut hub, vec![key(Key::Tab, Modifiers::NONE)]);
+    }
+    assert_eq!(focused_label(&out).as_deref(), Some("Turn off Art"));
+    hub.panels.set_fact(&check, serde_json::json!("failed"));
+    let out = frames(&ctx, &mut hub, vec![]);
+    assert_eq!(focused_label(&out).as_deref(), Some("Turn off Art"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The withdrawn, Off and stopped cards are regions named by their titles (#1048 review nit 2).
+#[test]
+fn the_cards_are_regions_named_by_their_titles() {
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let dir = temp_dir("card-regions");
+    let regions = |out: &egui::FullOutput| -> Vec<String> {
+        out.platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|u| u.nodes.iter())
+            .filter(|(_, n)| n.role() == egui::accesskit::Role::Region)
+            .filter_map(|(_, n)| n.label().map(String::from))
+            .collect()
+    };
+    let (mut hub, _) = withdrawn(&dir, "Secret words", None, None);
+    let r = regions(&frames(&ctx, &mut hub, vec![]));
+    assert!(r.iter().any(|s| s == "Art 0.5.0 was withdrawn"), "{r:?}");
+    assert!(r.iter().all(|s| !s.contains("Secret")), "{r:?}");
+    hub.panels
+        .set_fact(&format!("module.{SUP}.state"), serde_json::json!("off"));
+    let r = regions(&frames(&ctx, &mut hub, vec![]));
+    assert!(
+        r.iter().any(|s| s == "Off \u{b7} 0.5.0 was withdrawn"),
+        "{r:?}"
+    );
+    let (mut hub, _) = stopped(&dir, "start-again", None);
+    let r = regions(&frames(&ctx, &mut hub, vec![]));
+    assert!(r.iter().any(|s| s == words::STOPPED), "{r:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The tray tile's withdrawn words are the supervisor's: hideout-panels can't depend on the
+/// supervisor, so this keeps the two from drifting apart (#1048 review nit 3).
+#[test]
+fn the_tray_tile_says_the_supervisors_withdrawn_words() {
+    assert_eq!(hideout_panels::tray::TILE_WITHDRAWN, words::TILE_WITHDRAWN);
+}
+
 /// Review renders (#1026): the withdrawn card with a long note, with none and no previous
 /// version, while checking, after nothing newer, and turned off.
 #[test]

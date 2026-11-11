@@ -343,3 +343,102 @@ fn a_change_saved_while_downloading_survives_the_accept() {
     assert_eq!(disk.seen["test-user"].catalogs["mine"], 3);
     let _ = std::fs::remove_dir_all(home);
 }
+
+/// A TEST-ONLY `root.json` (version `version`) naming one family `foxglove` with `family_key`.
+fn root_doc(root_secret: &str, family_key: &str, version: u64) -> (Vec<u8>, String) {
+    let doc = json!({
+        "format": "hideout-root-v1", "version": version, "epoch": 0,
+        "expires": "2099-01-01T00:00:00Z",
+        "families": { "foxglove": { "keys": [family_key], "scope": ["foxglove.*"] } },
+    });
+    let bytes = serde_json::to_vec_pretty(&doc).unwrap();
+    let sig = signed(root_secret, &bytes);
+    (bytes, sig)
+}
+
+/// A `foxglove` family catalog with `seq`.
+fn family_catalog(secret: &str, seq: u64) -> (Vec<u8>, String) {
+    let doc = json!({
+        "format": "hideout-catalog-v1", "family": "foxglove", "epoch": 0, "sequence": seq,
+        "expires": "2099-01-01T00:00:00Z", "modules": [], "revocations": [],
+    });
+    let bytes = serde_json::to_vec_pretty(&doc).unwrap();
+    let sig = signed(secret, &bytes);
+    (bytes, sig)
+}
+
+#[test]
+fn every_saved_catalog_keeps_the_root_it_was_verified_against() {
+    let home = home("root-moves");
+    let (root_key, root_secret) = keys();
+    let (fam_key, fam_secret) = keys();
+    let second = "https://catalog.example.invalid/d/catalog.json";
+    std::fs::write(
+        home.join("hideout.toml"),
+        format!(
+            "[[sources]]\nid = \"public\"\nkind = \"catalog\"\nvisibility = \"public\"\n\
+             url = \"{URL}\"\nanchor = \"{ROOT_ANCHOR}\"\n\n\
+             [[sources]]\nid = \"second\"\nkind = \"catalog\"\nvisibility = \"public\"\n\
+             url = \"{second}\"\nanchor = \"{ROOT_ANCHOR}\"\n"
+        ),
+    )
+    .unwrap();
+    let root_url = |cat: &str| cat.replace("catalog.json", "root.json");
+    let serve_at = |files: &Files, cat: &str, c: (Vec<u8>, String), r: (Vec<u8>, String)| {
+        let mut f = files.lock().unwrap();
+        f.retain(|(u, _)| !u.starts_with(&cat.replace("catalog.json", "")));
+        f.push((cat.to_string(), c.0));
+        f.push((format!("{cat}.minisig"), c.1.into_bytes()));
+        f.push((root_url(cat), r.0));
+        f.push((format!("{}.minisig", root_url(cat)), r.1.into_bytes()));
+    };
+    let files = Files::default();
+    let v1 = root_doc(&root_secret, &fam_key, 1);
+    serve_at(&files, URL, family_catalog(&fam_secret, 1), v1.clone());
+    serve_at(&files, second, family_catalog(&fam_secret, 1), v1.clone());
+
+    let mut reg = Registry::open(&home, false).unwrap();
+    reg.root_key = Some(root_key.clone());
+    reg.refresh_source("public", &fetcher(&files), NOW).unwrap();
+    reg.refresh_source("second", &fetcher(&files), NOW).unwrap();
+    let v1_text = String::from_utf8(v1.0.clone()).unwrap();
+    assert_eq!(
+        read_stored(&home, "second").unwrap().unwrap().root,
+        Some(v1_text)
+    );
+
+    // A new root (version 2) comes with public's catalog: second's saved catalog moves to it.
+    let v2 = root_doc(&root_secret, &fam_key, 2);
+    serve_at(&files, URL, family_catalog(&fam_secret, 2), v2.clone());
+    reg.refresh_source("public", &fetcher(&files), NOW).unwrap();
+    let v2_text = String::from_utf8(v2.0.clone()).unwrap();
+    for s in ["public", "second"] {
+        let st = read_stored(&home, s).unwrap().unwrap();
+        assert_eq!(st.root.as_deref(), Some(v2_text.as_str()), "{s}");
+        assert_eq!(st.root_signature.as_deref(), Some(v2.1.as_str()), "{s}");
+    }
+    assert_eq!(reg.trust.catalogs.len(), 2);
+    assert!(reg.stored_catalog("second").is_some());
+
+    // The old root beside second's catalog is now a rollback, so it isn't accepted.
+    assert_eq!(
+        id(reg.refresh_source("second", &fetcher(&files), NOW)),
+        "trust.root-rollback"
+    );
+    // The same root again keeps the stored file the catalog was checked against.
+    serve_at(&files, second, family_catalog(&fam_secret, 2), v2.clone());
+    reg.refresh_source("second", &fetcher(&files), NOW).unwrap();
+    let st = read_stored(&home, "second").unwrap().unwrap();
+    assert_eq!(
+        (st.sequence, st.root.as_deref()),
+        (2, Some(v2_text.as_str()))
+    );
+
+    // The next open: both load against the raised `seen` (root version 2).
+    let mut reg = Registry::open(&home, false).unwrap();
+    reg.root_key = Some(root_key);
+    reg.load_catalogs(NOW);
+    assert_eq!(reg.trust.catalogs.len(), 2, "{:?}", reg.catalog_report);
+    assert_eq!(reg.trust.root.as_ref().map(|r| r.version), Some(2));
+    let _ = std::fs::remove_dir_all(home);
+}

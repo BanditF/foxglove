@@ -17,7 +17,7 @@ use hideout_contract::config::{PageWindow, WindowState};
 use hideout_panels::Slot;
 use hideout_panels::{PanelFeed, PanelHost, PanelKey, PanelState, TrayAction, TrayLayout};
 use hideout_supervisor::words::{self, Recovery};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -624,6 +624,9 @@ struct Hub {
     /// The stopped card whose main button has had the focus (module page, ladder step): the
     /// button takes it once when the card appears.
     card_focus: HashMap<PanelKey, &'static str>,
+    /// Withdrawn cards whose check was running last frame: when it ends, Check for updates
+    /// takes the focus back (the disabled "Checking…" button dropped it, #1049).
+    card_checking: HashSet<PanelKey>,
     /// The page the focus rule last saw: opening another page (and coming back) focuses the
     /// card's main button again.
     card_target: Option<TabId>,
@@ -921,6 +924,7 @@ impl Hub {
             flyout: None,
             flyout_closed_by_focus: None,
             card_focus: HashMap::new(),
+            card_checking: HashSet::new(),
             card_target: None,
             capture: None,
             popouts: Vec::new(),
@@ -1369,7 +1373,7 @@ impl Hub {
         );
         let focus = self.card_takes_focus(ui, key, step.id());
         let (mut pressed, mut copy) = (false, false);
-        card(ui, t, |ui| {
+        region_card(ui, t, words::STOPPED, |ui| {
             ui.label(
                 egui::RichText::new(format!("\u{26A0} {}", words::STOPPED))
                     .size(16.0)
@@ -1445,13 +1449,44 @@ impl Hub {
         check.as_deref() == Some("checking")
     }
 
+    /// Whether `module.<id>.check` says a check is running.
+    fn checking(&self, module: &str) -> bool {
+        self.panels
+            .fact(&format!("module.{module}.check"))
+            .and_then(|v| v.as_str())
+            == Some("checking")
+    }
+
+    /// Whether Check for updates takes the focus back this frame: the check just ended (the
+    /// disabled "Checking…" button dropped the focus). Remembers whether one runs now.
+    fn check_ended(&mut self, key: &PanelKey, checking: bool) -> bool {
+        if checking {
+            self.card_checking.insert(key.clone());
+            false
+        } else {
+            self.card_checking.remove(key)
+        }
+    }
+
     /// Check for updates: the main button, "Checking…" and disabled while the check runs.
-    fn check_button(ui: &mut egui::Ui, t: &Tokens, checking: bool, focus: bool) -> bool {
+    /// `back`: the check just ended, so it takes the focus again unless the user put it on
+    /// another element meanwhile.
+    fn check_button(
+        ui: &mut egui::Ui,
+        t: &Tokens,
+        checking: bool,
+        focus: bool,
+        back: bool,
+    ) -> bool {
         if checking {
             ui.add_enabled(false, egui::Button::new(words::CHECKING));
             false
         } else {
-            main_button(ui, t, words::CHECK_FOR_UPDATES, focus).clicked()
+            let b = main_button(ui, t, words::CHECK_FOR_UPDATES, focus);
+            if back && ui.memory(|m| m.focused().is_none_or(|f| f == b.id)) {
+                b.request_focus();
+            }
+            b.clicked()
         }
     }
 
@@ -1476,10 +1511,11 @@ impl Hub {
             .and_then(|v| v.as_str())
             .map(String::from);
         let focus = self.card_takes_focus(ui, key, "withdrawn");
+        let refocus = self.check_ended(key, self.checking(module));
         let (mut check, mut back, mut off, mut copy) = (false, false, false, false);
         let mut checking = false;
         ui.push_id(("hideout.withdrawn-card", module), |ui| {
-            card(ui, t, |ui| {
+            region_card(ui, t, &title, |ui| {
                 let head = ui.label(
                     egui::RichText::new(format!("\u{26A0} {title}"))
                         .size(16.0)
@@ -1508,7 +1544,7 @@ impl Hub {
                 checking = self.check_status_ui(ui, t, module, name);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    check = Self::check_button(ui, t, checking, focus);
+                    check = Self::check_button(ui, t, checking, focus, refocus);
                     if let Some(p) = &previous {
                         back = ui.button(words::go_back(p)).clicked();
                     }
@@ -1552,18 +1588,16 @@ impl Hub {
         let module = &key.module;
         let (version, _) = self.withdrawn_fact(module).unwrap_or_default();
         let focus = self.card_takes_focus(ui, key, "off-withdrawn");
+        let refocus = self.check_ended(key, self.checking(module));
+        let title = words::off_withdrawn(&version);
         let mut check = false;
         ui.push_id(("hideout.off-withdrawn-card", module), |ui| {
-            card(ui, t, |ui| {
-                ui.label(
-                    egui::RichText::new(words::off_withdrawn(&version))
-                        .size(16.0)
-                        .color(c(t.text)),
-                );
+            region_card(ui, t, &title, |ui| {
+                ui.label(egui::RichText::new(&title).size(16.0).color(c(t.text)));
                 ui.add_space(4.0);
                 let checking = self.check_status_ui(ui, t, module, name);
                 ui.add_space(10.0);
-                check = Self::check_button(ui, t, checking, focus);
+                check = Self::check_button(ui, t, checking, focus, refocus);
             });
         });
         if check {
@@ -3436,6 +3470,19 @@ pub fn open_module_log(home: &std::path::Path, module: &str) {
 }
 
 /// A card on the page: surface fill, border, padding.
+/// [`card`] as a region named `name` (its title), so a screen reader can jump to it and says
+/// what it is (docs/hideout-revoked-ux.md, #1049).
+fn region_card(ui: &mut egui::Ui, t: &Tokens, name: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        let name = name.to_string();
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |n| {
+            n.set_role(egui::accesskit::Role::Region);
+            n.set_label(name);
+        });
+        card(ui, t, add);
+    });
+}
+
 fn card(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(c(t.surface))
