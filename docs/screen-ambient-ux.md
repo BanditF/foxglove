@@ -233,6 +233,7 @@ One control, three pills: **Quick · Even · Calm**. Default **Even**.
 | Room card, running hint | Drag a device to change which edge it follows. |
 | Status, running | Running: Screen glow · reading your screen |
 | Status, game | Paused while a game is full screen |
+| Status, presentation | Paused during a presentation |
 | Status, locked | Paused while the PC is locked |
 | Status, display off | Paused while the display is off |
 | Status, Foxglove paused | Paused: Foxglove is paused. Resume it from the tray. |
