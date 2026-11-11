@@ -78,6 +78,9 @@ static uint8_t error;
 static struct art_relay_status right;
 static uint16_t right_len;   // bytes of it the last status read filled
 static int64_t right_read_at; // uptime of that read, 0 = never
+// Uptime of the last status read itself on this link (read_cb), 0 = none. right_read_at also
+// moves with an RGB ring or an HSB ack, which carry the underglow only (#851: the step's list).
+static int64_t status_read_at;
 // What the right's LEDs show, from its last doorbell on this link (#605), while valid.
 static struct rgb_shown_wire right_shown;
 static atomic_t right_shown_valid;
@@ -266,6 +269,7 @@ static void drop_peer(void) {
     discovery = ART_DISCOVERY_IDLE;
     discovery_tries = 0;
     right_read_at = 0;
+    status_read_at = 0;
     atomic_clear(&right_shown_valid);
     memset(&dbg, 0, sizeof(dbg));
 }
@@ -718,7 +722,7 @@ static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_pa
             return BT_GATT_ITER_STOP;
         }
         right_len = length;
-        right_read_at = k_uptime_get();
+        right_read_at = status_read_at = k_uptime_get();
         health_set(HEALTH_ART_SET, (uint8_t)right.set);
         req_end(r, 0);
         if (right_rgb_known() != had || (had && right.rgb.on != was_on)) {
@@ -934,25 +938,33 @@ static void push_cb(struct k_work *work) {
 }
 static K_WORK_DEFINE(push_work, push_cb);
 
+// One SELECT and the status it leaves, on relay_q. False on an ATT or link error.
+static bool select_one(struct bt_conn *conn, int8_t set) {
+    uint8_t buf[] = {ART_RELAY_SELECT, set};
+    if (write_req(conn, buf, sizeof(buf)) || read_status(conn)) {
+        return false;
+    }
+    // A right before #851 names a built-in in its status only once its display queue has played
+    // it, so the read just now may still hold the set before. The SELECT it took (IDLE, no ATT
+    // error) is the set on screen: keep that, so the next on-board step starts from it and not
+    // from the old one (which stepped to the same set again: the stall at the wrap).
+    if (set >= 0 && set < right.set_count && right.state == ART_RIGHT_IDLE) {
+        right.set = set;
+    }
+    return true;
+}
+
 static void select_cb(struct k_work *work) {
     struct bt_conn *conn = job_conn();
     if (conn == NULL) {
         fail(ART_ERR_NO_LINK);
         return;
     }
-    uint8_t buf[] = {ART_RELAY_SELECT, select_set};
-    bool err = write_req(conn, buf, sizeof(buf)) || read_status(conn);
+    bool ok = select_one(conn, select_set);
     bt_conn_unref(conn);
-    if (err) {
+    if (!ok) {
         fail(ART_ERR_BLE);
         return;
-    }
-    // A right before #851 names a built-in in its status only once its display queue has played
-    // it, so the read just now may still hold the set before. The SELECT it took (IDLE, no ATT
-    // error) is the set on screen: keep that, so the next on-board step starts from it and not
-    // from the old one (which stepped to the same set again: the stall at the wrap).
-    if (select_set >= 0 && select_set < right.set_count && right.state == ART_RIGHT_IDLE) {
-        right.set = select_set;
     }
     done();
 }
@@ -1520,32 +1532,72 @@ int art_relay_select(int8_t set) {
     return 0;
 }
 
-void art_relay_step(int dir) {
-    if (art_relay_link() < 2 || right_read_at == 0) {
-        return;
-    }
-    int8_t ids[INT8_MAX];
+/* The on-board step (&art_next / &art_prev without the app, art_keys.c): one job on relay_q.
+ * The list is the right's built-in sets, then its kept slots in slot order, from its status.
+ * #851: that status must be what the right holds now. The cached one is read again first when it
+ * can be out of date: no status read on this link yet (a ring or an HSB ack also sets
+ * right_read_at, without the set or the slots), or the last read still saw SAVING (a Keep or a
+ * Remove whose end the PC never read, Foxglove quit right after it: the slot was missing or still
+ * listed). Every other slot change comes through this half and is read back. A kept slot the
+ * right refuses (BAD_BLOB: its CRC or header doesn't check out; the screen and the set stay) is
+ * stepped past, at most once round the list, or every press would select it again and the lap
+ * would end there. Start: the press. Stop: a SELECT the right took, a refusal of every other set,
+ * an ATT or link error. */
+static int8_t step_dir;
+
+static int step_list(int8_t ids[], int max) {
     int total = 0;
-    for (int i = 0; i < right.set_count && total < (int)ARRAY_SIZE(ids); i++) {
+    for (int i = 0; i < right.set_count && total < max; i++) {
         ids[total++] = i;
     }
     uint8_t used = right.version >= 3 ? right.flash_used : 0;
-    for (int n = 0; n < 8 && right.set_count + n < INT8_MAX; n++) {
+    for (int n = 0; n < 8 && right.set_count + n < INT8_MAX && total < max; n++) {
         if (used & BIT(n)) {
             ids[total++] = right.set_count + n;
         }
     }
-    if (total == 0) {
+    return total;
+}
+
+static void step_cb(struct k_work *work) {
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        fail(ART_ERR_NO_LINK);
         return;
     }
+    bool ok = true;
+    if (status_read_at == 0 || right.state == ART_RIGHT_SAVING) {
+        ok = read_status(conn) == 0;
+    }
+    int8_t ids[INT8_MAX];
+    int total = ok ? step_list(ids, ARRAY_SIZE(ids)) : 0;
+    int dir = step_dir;
     int at = dir > 0 ? -1 : 0; // a pushed set (-1) isn't in the list: start at either end
     for (int i = 0; i < total; i++) {
         if (ids[i] == right.set) {
             at = i;
         }
     }
-    int next = ((at + dir) % total + total) % total;
-    if (art_relay_select(ids[next]) == 0) {
+    int next = at;
+    bool landed = false;
+    for (int tries = 0; ok && tries < total; tries++) {
+        next = ((next + dir) % total + total) % total;
+        if (ids[next] == right.set) {
+            break; // round the list to the set on screen: every other one was refused
+        }
+        ok = select_one(conn, ids[next]);
+        landed = ok && right.set == ids[next];
+        if (landed || !ok || ids[next] < right.set_count || right.state != ART_RIGHT_BAD_BLOB) {
+            break;
+        }
+        LOG_WRN("art relay: kept set %d refused (bad blob), stepping past it", ids[next]);
+    }
+    bt_conn_unref(conn);
+    if (!ok) {
+        fail(ART_ERR_BLE);
+        return;
+    }
+    if (landed) {
         // The toast (#852) counts this same list: its place and length, whatever the list holds.
         struct art_toast t = {.index = (uint8_t)next,
                               .total = (uint8_t)total,
@@ -1553,6 +1605,20 @@ void art_relay_step(int dir) {
                               .kept = ids[next] >= right.set_count};
         art_toast_show(&t);
     }
+    done();
+}
+static K_WORK_DEFINE(step_work, step_cb);
+
+void art_relay_step(int dir) {
+    if (art_relay_link() < 2 || state == ART_LEFT_PUSHING) {
+        return; // a SELECT or a push still going: this press steps nothing
+    }
+    k_work_cancel_delayable(&receive_timeout);
+    step_dir = dir > 0 ? 1 : -1;
+    state = ART_LEFT_PUSHING;
+    error = ART_ERR_NONE;
+    pushed = blob_len = 0;
+    k_work_submit_to_queue(&relay_q, &step_work);
 }
 
 void art_relay_discovery(int8_t *result, uint8_t *tries) {

@@ -126,6 +126,9 @@ struct sim_right {
         char name[16];
         uint32_t crc;
     } flash[ART_RELAY_FLASH_SLOTS];
+    // Bit n: kept slot n is listed (its magic is there) but doesn't hold together (CRC or
+    // header), so a SELECT of it answers BAD_BLOB and the set stays (art_store_select, #851).
+    uint8_t bad_slots;
     uint16_t shown_len; // the pushed set on screen (COMMIT), for SAVE
     uint32_t shown_crc;
     int saves_ok, stores_ok;

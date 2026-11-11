@@ -382,6 +382,10 @@ pub struct ArtKey {
     /// (the USB-unplug follow-up, which checks the unplug ended it).
     #[serde(default)]
     pub keep_found_opt_in: bool,
+    /// Without `subscribed`: the set the step must land on (#851: the board's list, built-ins
+    /// then kept slots, in order and round the wrap). Unset: any change passes.
+    #[serde(default)]
+    pub lands_on: Option<i8>,
 }
 /// PANEL RELEASE: the firmware draws its own panel again.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -673,6 +677,14 @@ impl Step {
                 ensure!(
                     !(k.subscribed && k.keep_found_opt_in),
                     "art_key keep_found_opt_in is for steps without subscribed"
+                );
+                ensure!(
+                    !(k.subscribed && k.lands_on.is_some()),
+                    "art_key lands_on is for steps without subscribed"
+                );
+                ensure!(
+                    k.lands_on.is_none_or(|s| s >= 0),
+                    "art_key lands_on is a built-in or kept set (0 or more)"
                 );
             }
             Self::IdleCpu(i) => {

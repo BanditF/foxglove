@@ -927,6 +927,14 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
         if (sim_right.state == ART_RIGHT_SAVING) {
             return 0x82;
         }
+        {
+            int n = (int8_t)d[1] - (sim_right.set_count ? sim_right.set_count : 1);
+            // Only a slot the scenario marks bad: older scenarios select sets 1-5 as plain sets.
+            if (n >= 0 && n < ART_RELAY_FLASH_SLOTS && (sim_right.bad_slots & BIT(n))) {
+                sim_right.state = ART_RIGHT_BAD_BLOB; // the screen and the set stay
+                return 0;
+            }
+        }
         if (sim_right.builtin_lag_us && (int8_t)d[1] >= 0 &&
             (int8_t)d[1] < (sim_right.set_count ? sim_right.set_count : 1)) {
             sim_right.set_before = sim_now_us() < sim_right.builtin_shown_at_us
