@@ -28,6 +28,7 @@ A `ChannelConn` has `read_frame()`, `write_frame(payload)`, `write(bytes)` and `
 
 import hmac
 import os
+import re
 import struct
 import sys
 import threading
@@ -47,11 +48,34 @@ IMAGE, CANVAS, TEXT = 1, 2, 3
 _NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 
 
+_CONTAINER_PIPE = re.compile(
+    r"\\\\\.\\pipe\\Sessions\\[0-9]+\\AppContainerNamedObjects\\(S-1-15-2(?:-[0-9]+)+)\\(hideout-ch-.*)\Z"
+)
+
+
+def app_container_of(name):
+    """(v1.10, #1092) For a contained provider's pipe, in its own AppContainer namespace
+    (`\\\\.\\pipe\\Sessions\\<n>\\AppContainerNamedObjects\\<SID>\\hideout-ch-<rest>`), the SID;
+    else None."""
+    m = _CONTAINER_PIPE.match(name) if isinstance(name, str) else None
+    return m.group(1) if m else None
+
+
 def is_channel_pipe(name):
-    """Whether `name` is a local channel pipe a consumer may connect to."""
-    if not isinstance(name, str) or not name.startswith(PIPE_PREFIX) or len(name) > MAX_PIPE_NAME:
+    """Whether `name` is a local channel pipe a consumer may connect to: the plain form, or
+    (v1.10) a contained provider's, in its own namespace."""
+    if not isinstance(name, str) or len(name) > MAX_PIPE_NAME:
         return False
-    rest = name[len(PIPE_PREFIX):]
+    m = _CONTAINER_PIPE.match(name)
+    if m:
+        leaf = m.group(2)
+    elif name.startswith("\\\\.\\pipe\\"):
+        leaf = name[len("\\\\.\\pipe\\"):]
+    else:
+        return False
+    if not leaf.startswith("hideout-ch-"):
+        return False
+    rest = leaf[len("hideout-ch-"):]
     return bool(rest) and all(c in _NAME_CHARS for c in rest)
 
 

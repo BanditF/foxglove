@@ -1245,15 +1245,32 @@ impl Supervisor {
         );
         // An AppContainer when the hub's setting asks for one (§7.7), planned from what the
         // user GRANTED: a granted `net` or `files` runs outside (its permission line said so);
-        // anything else that can't be contained doesn't start; a container that can't be set
-        // up fails the launch. A module never runs uncontained without a word.
+        // everything else, stdio modules included (#1092), is contained; a plan that can't be
+        // made or a container that can't be set up fails the launch. A module never runs
+        // uncontained without a word.
         let container = if reg.hub.appcontainer() {
             self.container_for(id, &l.dir, &l.granted, l.stdio)?
         } else {
             None
         };
         let mut token = String::new();
-        let child = if let Some(c) = &container {
+        let child = if let (Some(c), true) = (&container, l.stdio) {
+            // The bridge (§8.2) in its container (#1092): stdin and stdout are anonymous pipes
+            // the hub made, given in the handle list, attached before it runs.
+            let env = [("HIDEOUT_INSTANCE", instance.to_string())];
+            let (s, to_child, from_child) = c
+                .spawn_stdio(&job, &exe, &run[1..], &l.dir, &env, self.log_file(id))
+                .map_err(|e| format!("AppContainer start: {e}"))?;
+            self.0.hub.attach_in(
+                hideout_router::Origin::Bridged(id.into()),
+                Some(s.pid),
+                Some(&c.sid_string),
+                from_child,
+                to_child,
+            );
+            let (p, _) = s.resume().map_err(|e| format!("AppContainer start: {e}"))?;
+            Child::Contained(p)
+        } else if let Some(c) = &container {
             self.0.hub.act(|r| {
                 token = r.issue_token(id);
                 Vec::new()
@@ -1492,7 +1509,7 @@ impl Supervisor {
         stdio: bool,
     ) -> Result<Option<crate::sandbox::Container>, String> {
         use crate::contain::Plan;
-        let caps = match crate::contain::plan_for(granted, stdio) {
+        let caps = match crate::contain::plan_for(granted) {
             Plan::Contained(c) => c,
             Plan::Outside(why) => {
                 log::info!("supervisor: {id} runs outside an AppContainer: {why}");
@@ -1508,7 +1525,11 @@ impl Supervisor {
                 std::fs::create_dir_all(&d)?;
                 c.grant(&d, true)?;
             }
-            self.0.hub.allow_pipe_client(&c.sid_string)?;
+            // A stdio module never opens the router pipe: it isn't let in, and the pipe keeps
+            // its Medium label for it (#1092).
+            if !stdio {
+                self.0.hub.allow_pipe_client(&c.sid_string)?;
+            }
             Ok(c)
         };
         set_up()

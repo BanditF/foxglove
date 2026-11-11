@@ -197,6 +197,19 @@ impl Hub {
         origin: Origin,
         pid: Option<u32>,
         reader: impl Read + Send + 'static,
+        writer: impl Write + Send + 'static,
+    ) -> ConnId {
+        self.attach_in(origin, pid, None, reader, writer)
+    }
+
+    /// [`Hub::attach_peer`] for a peer that may run in an AppContainer (`container`, its SID
+    /// as its token says, §7.7): recorded before the connection's first line is read.
+    pub fn attach_in(
+        &self,
+        origin: Origin,
+        pid: Option<u32>,
+        container: Option<&str>,
+        reader: impl Read + Send + 'static,
         mut writer: impl Write + Send + 'static,
     ) -> ConnId {
         let conn = {
@@ -204,6 +217,9 @@ impl Hub {
             let conn = r.connect(origin);
             if let Some(pid) = pid {
                 r.set_peer_pid(conn, pid);
+            }
+            if let Some(sid) = container {
+                r.set_peer_container(conn, sid);
             }
             conn
         };
@@ -255,7 +271,7 @@ impl Hub {
             .spawn()?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
-        self.attach(Origin::Bridged(id.into()), stdout, stdin);
+        self.attach_peer(Origin::Bridged(id.into()), Some(child.id()), stdout, stdin);
         Ok(child)
     }
 
@@ -295,12 +311,16 @@ impl Hub {
                         Ok(conn) => {
                             // The handle stays open while `conn` lives.
                             let pid = client_pid(handle);
-                            if let Err(why) = hub.admit(pid) {
-                                // Dropping the connection closes it.
-                                log::warn!("router: {name}: client refused: {why}");
-                                continue;
-                            }
-                            hub.attach_peer(Origin::Pipe, pid, conn.clone(), conn);
+                            let peer = match hub.admit(pid) {
+                                Ok(p) => p,
+                                Err(why) => {
+                                    // Dropping the connection closes it.
+                                    log::warn!("router: {name}: client refused: {why}");
+                                    continue;
+                                }
+                            };
+                            let sid = peer.app_container.as_deref();
+                            hub.attach_in(Origin::Pipe, pid, sid, conn.clone(), conn);
                         }
                         Err(e) => log::warn!("router: {name}: accept: {e}"),
                     }
@@ -350,13 +370,14 @@ impl Hub {
     /// user's Medium processes (modules, outside tools) are as before. A container that isn't
     /// (or no longer is) a guest is refused either way, and so is a client whose process or
     /// token can't be read (an elevated tool the hub can't look into, a process already gone).
-    pub fn admit(&self, pid: Option<u32>) -> Result<(), String> {
+    /// Admitted, the peer as its token says (its AppContainer SID goes on its connection).
+    pub fn admit(&self, pid: Option<u32>) -> Result<hideout_acl::Peer, String> {
         let guests = self.pipe_guests();
         // A client the router can't name is refused, guests or not (#1089 re-check).
         let pid = pid.ok_or("its process is unknown")?;
         let peer = hideout_acl::peer(pid).map_err(|e| format!("pid {pid}: token not read: {e}"))?;
         if hideout_acl::admits(&peer, &guests) {
-            Ok(())
+            Ok(peer)
         } else {
             Err(format!(
                 "pid {pid} runs at integrity {:#x}{} and isn't one of the hub's AppContainers",

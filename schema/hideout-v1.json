@@ -522,6 +522,22 @@
         "consumer": {
           "type": "string"
         },
+        "consumer_pid": {
+          "description": "(v1.10, #1092) The consumer's process id, when the hub knows it: the provider admits\nonly that process (`GetNamedPipeClientProcessId`) before it reads the nonce.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "consumer_sid": {
+          "description": "(v1.10, #1092) The consumer's AppContainer SID, when it runs in one (§7.7): the pipe\nlets that SID in with client rights and carries a Low label, and nothing else changes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "nonce": {
           "type": "string"
         }
@@ -556,6 +572,15 @@
       "properties": {
         "nonce": {
           "type": "string"
+        },
+        "pid": {
+          "description": "(v1.10, #1092) The provider's process id, when the hub knows it: the consumer checks\nthat the pipe's server is that process (`GetNamedPipeServerProcessId`) before it sends\nthe nonce, as a module checks `HIDEOUT_HUB_PID` (§7.5).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "pipe": {
           "type": "string"

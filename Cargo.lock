@@ -2084,6 +2084,10 @@ version = "0.1.0"
 dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-api",
+ "hideout-panels",
+ "hideout-registry",
+ "hideout-router",
+ "hideout-supervisor",
  "serde_json",
 ]
 

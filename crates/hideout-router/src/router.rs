@@ -224,8 +224,11 @@ struct Conn {
     origin: Origin,
     who: Who,
     caps: Caps,
-    /// The peer's process id, when the transport knows it (the router pipe).
+    /// The peer's process id, when the transport knows it (the router pipe, a bridged child).
     pid: Option<u32>,
+    /// The peer's AppContainer SID, when it runs in one (§7.7): what a channel's pipe lets in
+    /// (v1.10, #1092).
+    app_container: Option<String>,
 }
 
 /// Who waits for an answer.
@@ -657,6 +660,7 @@ impl Router {
                 who: Who::New,
                 caps: Caps::default(),
                 pid: None,
+                app_container: None,
             },
         );
         id
@@ -666,6 +670,15 @@ impl Router {
     pub fn set_peer_pid(&mut self, conn: ConnId, pid: u32) {
         if let Some(c) = self.conns.get_mut(&conn) {
             c.pid = Some(pid);
+        }
+    }
+
+    /// Records that `conn`'s peer runs in the AppContainer `sid` (read from its token by the
+    /// transport, §7.7): its channels' pipes let that SID in, and a pipe it offers must be in
+    /// that container's namespace (§8.4, v1.10, #1092).
+    pub fn set_peer_container(&mut self, conn: ConnId, sid: &str) {
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.app_container = Some(sid.to_string());
         }
     }
 
@@ -1612,7 +1625,7 @@ impl Router {
                 out.push(Out::Send(c, envelope(&id, result)))
             }
             Waiter::Channel { caller, id, nonce } => {
-                let r = crate::channels::grant(result, &nonce, &self.provider_name(conn));
+                let r = crate::channels::grant(result, &nonce, &self.provider(conn));
                 out.push(Out::Send(caller, envelope(&id, r)));
             }
             Waiter::Host {
@@ -1622,7 +1635,7 @@ impl Router {
             } => out.push(Out::HostChannel {
                 module,
                 channel,
-                result: crate::channels::grant(result, &nonce, &self.provider_name(conn)),
+                result: crate::channels::grant(result, &nonce, &self.provider(conn)),
             }),
             Waiter::Hub(tag) => out.push(Out::HubResult { tag, result }),
         }
@@ -1902,7 +1915,23 @@ impl Router {
             .is_some_and(|c| c.iter().any(|c| c == channel));
         match self.ready_conn(module) {
             Some(p) if offered => {
-                let params = json!({"channel": channel, "consumer": consumer, "nonce": nonce});
+                let mut params = json!({"channel": channel, "consumer": consumer, "nonce": nonce});
+                // Who the pipe is for (v1.10, #1092): the provider admits that process only,
+                // and lets its AppContainer in when it runs in one.
+                let (pid, sid) = match &waiter {
+                    Waiter::Channel { caller, .. } => self
+                        .conns
+                        .get(caller)
+                        .map_or((None, None), |c| (c.pid, c.app_container.clone())),
+                    // The hub's own panel host reads the stream.
+                    _ => (Some(std::process::id()), None),
+                };
+                if let Some(pid) = pid {
+                    params["consumer_pid"] = json!(pid);
+                }
+                if let Some(sid) = sid {
+                    params["consumer_sid"] = json!(sid);
+                }
                 let deadline = now + self.settings.call_timeout;
                 self.forward(p, waiter, "channel.create", params, deadline, out);
             }
@@ -1940,6 +1969,16 @@ impl Router {
                 self.modules.get(id).map_or(id.clone(), |m| m.name.clone())
             }
             _ => "The module".into(),
+        }
+    }
+
+    /// What the channel grant needs of a provider connection (§8.4).
+    fn provider(&self, conn: ConnId) -> crate::channels::Provider {
+        let c = self.conns.get(&conn);
+        crate::channels::Provider {
+            name: self.provider_name(conn),
+            pid: c.and_then(|c| c.pid),
+            app_container: c.and_then(|c| c.app_container.clone()),
         }
     }
 

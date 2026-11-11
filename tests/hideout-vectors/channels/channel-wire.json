@@ -227,6 +227,36 @@
       "pipe": "\\\\.\\pipe\\hideout-ch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "result": "invalid",
       "note": "257 characters: too long."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\hideout-ch-4242-0-example.room-map-map",
+      "result": "valid",
+      "note": "v1.10 (#1092): a contained provider's pipe, in its own AppContainer namespace."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\1\\AppContainerNamedObjects\\S-1-5-21-1-2-3-1001\\hideout-ch-x",
+      "result": "invalid",
+      "note": "The namespace is an AppContainer SID (S-1-15-2-) only."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\one\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\hideout-ch-x",
+      "result": "invalid",
+      "note": "The session is digits."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\other-ch-x",
+      "result": "invalid",
+      "note": "Not under hideout-ch- inside the namespace either."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\Sessions\\1\\AppContainerNamedObjects\\S-1-15-2-2542057647-2638163769-1067566796-1147736380-124582988-875803485-2694164844\\a\\hideout-ch-x",
+      "result": "invalid",
+      "note": "Nothing between the SID and hideout-ch-."
+    },
+    {
+      "pipe": "\\\\.\\pipe\\LOCAL\\hideout-ch-x",
+      "result": "invalid",
+      "note": "LOCAL is the provider's own spelling; others open the full name."
     }
   ]
 }

@@ -72,6 +72,19 @@ impl StreamIo {
     /// Connects to `pipe` with `nonce` on a thread of its own and reads frames until the
     /// provider closes or [`StreamIo::close`].
     pub fn connect(&mut self, key: StreamKey, gen: u64, pipe: String, nonce: String) {
+        self.connect_to(key, gen, pipe, nonce, None)
+    }
+
+    /// [`StreamIo::connect`], sending nothing unless the pipe's server is process `server` (the
+    /// grant's `pid`, contract v1.10, #1092).
+    pub fn connect_to(
+        &mut self,
+        key: StreamKey,
+        gen: u64,
+        pipe: String,
+        nonce: String,
+        server: Option<u32>,
+    ) {
         let stop = Arc::new(AtomicBool::new(false));
         let conn: Arc<Mutex<Option<ChannelConn>>> = Arc::new(Mutex::new(None));
         let (tx, waker) = (self.tx.clone(), self.waker.clone());
@@ -84,7 +97,7 @@ impl StreamIo {
                         waker();
                     }
                 };
-                let mut c = match channel::connect(&pipe, &nonce) {
+                let mut c = match channel::connect_to(&pipe, &nonce, server) {
                     Ok(c) => c,
                     Err(e) => {
                         log::warn!("stream {}: connect failed: {e}", t_key.node);
@@ -170,8 +183,15 @@ impl StreamIo {
         channel: &str,
         result: Result<Value, Value>,
     ) {
+        // The provider's pid, when the router knows it (v1.10, #1092).
+        let server = result
+            .as_ref()
+            .ok()
+            .and_then(|v| v.get("pid"))
+            .and_then(Value::as_u64)
+            .and_then(|p| u32::try_from(p).ok());
         if let Some((key, gen, pipe, nonce)) = streams.granted(module, channel, result) {
-            self.connect(key, gen, pipe, nonce);
+            self.connect_to(key, gen, pipe, nonce, server);
         }
     }
 }

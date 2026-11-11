@@ -20,6 +20,7 @@
         "params": {
           "channel": "previews",
           "consumer": "hub.panel-host",
+          "consumer_pid": 4242,
           "nonce": "n-6001"
         }
       }
@@ -51,6 +52,7 @@
         "params": {
           "channel": "previews",
           "consumer": "hub.panel-host",
+          "consumer_pid": 4242,
           "nonce": "n-6002"
         }
       }
@@ -82,6 +84,7 @@
         "params": {
           "channel": "previews",
           "consumer": "hub.panel-host",
+          "consumer_pid": 4242,
           "nonce": "n-6003"
         }
       }
@@ -113,6 +116,7 @@
         "params": {
           "channel": "previews",
           "consumer": "hub.panel-host",
+          "consumer_pid": 4242,
           "nonce": "n-6004"
         }
       }
@@ -147,6 +151,7 @@
         "params": {
           "channel": "previews",
           "consumer": "hub.panel-host",
+          "consumer_pid": 4242,
           "nonce": "n-6005"
         }
       }

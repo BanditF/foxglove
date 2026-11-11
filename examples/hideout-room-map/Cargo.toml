@@ -14,3 +14,10 @@ path = "src/main.rs"
 foxglove-plugin = { path = "../../crates/plugin-sdk" }
 foxglove-plugin-api = { path = "../../crates/plugin-api" }
 serde_json = "1"
+
+[target.'cfg(windows)'.dev-dependencies]
+# A lab hub that starts this module in an AppContainer and reads its stream (tests/contained.rs).
+hideout-panels = { path = "../../crates/hideout-panels" }
+hideout-registry = { path = "../../crates/hideout-registry" }
+hideout-router = { path = "../../crates/hideout-router" }
+hideout-supervisor = { path = "../../crates/hideout-supervisor" }

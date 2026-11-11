@@ -42,6 +42,10 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   held by safe mode starts nothing. Vectors: `manifests/valid/limits*.toml`,
   `manifests/invalid/limits-*.toml`; `manifests/invalid/hub-newer-minor.toml` now says `1.3`, and
   the hub's `initialize` results say `1.2`. One manifest key: `hub` is 1.2 (§8.7).
+  Also (#983, #1092): the opt-in AppContainer (§7.7), with stdio modules, `secrets` and direct
+  channels contained; `channel.create`'s optional `consumer_pid` and `consumer_sid`, the
+  grant's optional `pid`, and the contained provider's pipe name (§8.4). Vectors:
+  `channels/channel-wire.json`'s new pipe rows.
 - **1.9** (#1026): a version its publisher withdrew. When an accepted catalog revokes the
   installed version of a module (§12.4), the supervisor stops it and publishes the new state id
   `revoked` (§7.8): at hub start (the shallow verify refuses the launch, §12.5), when a catalog
@@ -282,7 +286,9 @@ The hub MUST NOT contain:
   the hub's own containers, and never a client whose process or token it can't read), a module
   talks only to the pipe server whose pid is `HIDEOUT_HUB_PID`, and it opens the pipe at
   identification level (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`), so a server can't act
-  as it. What stays open is in §7.7.
+  as it. What stays open is in §7.7. (#1092) A channel pipe (§8.4) has the same exception for
+  one consumer only: its own container's SID, with client rights and the Low label, only when
+  the consumer runs in an AppContainer.
 - A module's files outside `data\` and `settings\` are written only by `hideout-core`.
 
 ### 2.4 Draw first (UX2)
@@ -1290,12 +1296,33 @@ Design §3.1.
   - **Outside**, logged: a granted `net` or `files`, whose permission lines already told the
     user it runs without the sandbox or with their files.
   - **Refused** (`install-failed`, "It can't run in a sandbox, and Hideout is set to sandbox
-    modules."): a stdio module, `secrets` (Windows' credential store, which a container blocks),
-    and for now `channel.open:` / `channel.offer:` (channel pipes don't admit a container yet).
-    Nothing runs without a sandbox unless the user approved something that says so.
+    modules."): a module whose plan can't be made (a grant that doesn't parse). Nothing runs
+    without a sandbox unless the user approved something that says so.
+  - **Contained too (#1092),** each for a reason that holds for any module of its kind:
+    - **A stdio module** (§8.2's bridge). Its stdin and stdout are two anonymous pipes the hub
+      makes (`CreatePipe`, neither end inheritable), and the child's ends and its log are the
+      whole `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, made inheritable only while it starts, under
+      the same spawn lock. An anonymous pipe has no name, so nothing else can open it, and an
+      inherited handle needs no access check, so the container needs no ACE and no label for
+      it. The bridge knows it by its handle (and records its pid and SID, for channels). It
+      never opens the router pipe, so its SID is not a guest there and the pipe keeps its
+      Medium label for it.
+    - **`secrets`.** The hub keeps a module's secrets in Credential Manager and answers
+      `secrets.get` and `secrets.set` (§4.7); the module never touches the store, which a
+      container would block (rightly) if it tried.
+    - **Direct channels** (`channel.open:`, `channel.offer:`, a declared `channel:`), by the
+      rules in §8.4: a contained provider makes its pipe in its own namespace, and a contained
+      consumer's SID is let into the provider's pipe.
+    So the first-party bridged plugins run contained with the setting on: Broadcast Status
+    (`net.connect`, `apps.watch`, `secrets`, all brokered), Focus timer (its state in
+    `data\`), Mic mute (the hub does the Core Audio work) and OpenRGB (`net.listen`,
+    brokered). The iCUE mirror runs **outside** because its user grants `files`: it loads
+    Corsair's SDK DLL from wherever the user put it, and that SDK talks to iCUE over channels
+    a container blocks.
   The container may read and run its version folder and write its `settings\` and `data\`,
-  nothing else of the user's; stdin and stdout are NUL, stderr is its log; the three handles
-  are inheritable only while it starts, with no other start of the supervisor meanwhile. The
+  nothing else of the user's; stdin and stdout are NUL (a stdio module: its two pipes), stderr
+  is its log; the three handles are inheritable only while it starts, with no other start of
+  the supervisor meanwhile. The
   router pipe lets its SID in with read and write but not `FILE_APPEND_DATA` (on a pipe, the
   right to create an instance, so a contained module never serves the hub's pipe), and a Low
   mandatory label; a client opens the pipe with exactly those rights (`0x0012019B`; the SDK's
@@ -1312,7 +1339,10 @@ Design §3.1.
   `HIDEOUT_HUB_PID` sends it nothing and fails to start (a denial of service, counted as a
   crash), and an outside tool that doesn't check the server could talk to it. Without the
   setting, or with no contained module running, the pipe keeps Windows' Medium floor and none
-  of this applies.
+  of this applies. (#1092) A channel pipe that is Low (its consumer or its provider is
+  contained) can likewise be connected to first by such a process: the provider admits only
+  the consumer's pid, so that client gets nothing and the channel is spent (a denial of service,
+  the consumer opens again).
 - **Restarts** a crashed instance with backoff from 1 s up to 60 s. Five crashes in ten minutes
   stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash. A
   channel closed for an oversized line (§8.1, v1.2) counts as one crash.
@@ -1565,7 +1595,8 @@ Rules:
 - **The channel's wire (v1.4, #977).** Written down from the first SDKs; no new message.
   - **Pipe name.** A provider answers `channel.create` with `\\.\pipe\hideout-ch-<rest>`:
     exactly that prefix (the local machine, lower-case `pipe`), then one or more ASCII letters,
-    digits, `.`, `_` or `-`, at most 256 characters in all. The SDKs make
+    digits, `.`, `_` or `-`, at most 256 characters in all (a contained provider: the second
+    form, below, v1.10). The SDKs make
     `hideout-ch-<pid>-<n>-<module>-<channel>`. The hub checks the answer before passing it on:
     any other `pipe`, or none, answers the consumer error 6 (backend) with `data.id`
     `channel.pipe`, so a consumer is never sent to another machine's pipe or to the router's.
@@ -1583,6 +1614,33 @@ Rules:
   - **Deadline.** The provider waits at most 30 s (the call timeout, §8.1) from its
     `channel.create` answer for the consumer to connect and send the nonce, then closes the
     pipe.
+- **Who the pipe is for (v1.10, #1092).** Additive fields; a side that doesn't send them is
+  treated as before (the nonce decides).
+  - `channel.create` carries `consumer_pid` (the consumer's process id when the hub knows it:
+    the router pipe's client, a bridged child, or the hub itself for its panel host) and, when
+    the consumer runs in an AppContainer (§7.7), `consumer_sid` (its SID, from its token).
+  - The provider's pipe lets `consumer_sid` in, and only it: an allow ACE with client rights
+    (`0x0012019B`, no create-instance) and a Low mandatory label, which an AppContainer needs to
+    open it. Without `consumer_sid` the DACL is the user's alone and no label is set.
+  - On connect, before it reads a byte, the provider admits only `consumer_pid`
+    (`GetNamedPipeClientProcessId`), or without one only a client whose token has
+    `consumer_sid` (a token it can't read is a refusal). Anyone else is dropped and the
+    channel is spent, as for a wrong nonce.
+  - The grant (`channel.open`'s result, the panel host's answer) carries `pid`, the provider's
+    process id when the hub knows it. The consumer opens the pipe with client rights only and
+    identification-level impersonation, and sends nothing, the nonce least of all, unless the
+    pipe's server is that process (`GetNamedPipeServerProcessId`), as a module checks
+    `HIDEOUT_HUB_PID` (§7.5). The SDK's `connect_to` and the panel host do.
+  - **A contained provider's pipe.** An AppContainer may make pipes only in its own
+    namespace: it creates `\\.\pipe\LOCAL\hideout-ch-<rest>`, which every other process opens
+    as `\\.\pipe\Sessions\<session>\AppContainerNamedObjects\<its SID>\hideout-ch-<rest>`, and
+    answers `channel.create` with that full name (at most 256 characters; the SDK cuts the
+    end of `<rest>`). This is the second form of a channel pipe name: the session in digits,
+    the SID `S-1-15-2-` and digits and dashes, then `hideout-ch-` and `<rest>` by the rule
+    above. Its pipe is Low by Windows' rule (made by a Low process).
+  - **The router's check.** A contained provider's answer passes only in the second form with
+    its own SID (from its token), and a provider outside a container only in the first form:
+    no provider can send a consumer to another module's pipe.
   - **Frames.** Both directions may carry frames; what they mean is the channel's own
     business. A payload may be empty and is at most 64 MiB; a longer length prefix closes the
     channel unread. A stream that stops inside a length prefix or a payload ends the channel;
