@@ -108,6 +108,16 @@ fn shape(effect: &Effect) -> (&'static str, u32, f32, f32, Rgb, Rgb) {
             colours.get(1).copied().unwrap_or_else(|| first(colours)),
             first(colours),
         ),
+        // A wallpaper is part of the screen Screen glow reads: it gets no look of it (the app
+        // doesn't send one), and this still grey only if something asks.
+        Effect::Screen { .. } => (
+            "gradient",
+            0,
+            0.0,
+            0.0,
+            crate::effects::SCREEN_IDLE,
+            crate::effects::SCREEN_IDLE,
+        ),
     }
 }
 

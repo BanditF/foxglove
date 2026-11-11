@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::SceneTime;
 use crate::colour::{gradient, Rgb};
 use crate::room::{LightRole, RoomMap};
+use crate::screen::Smoothing;
 use crate::space::{along, extent, Point, Rect};
 
 /// One effect and its parameters.
@@ -88,7 +89,17 @@ pub enum Effect {
         floor: f32,
         dip_ms: u32,
     },
+    /// Screen glow (#496): the lights take the colours at the edges of the screens. Those come
+    /// from the app's capture through [`crate::screen::Glow`]; as a formula (the Scenes page's
+    /// map before it runs) it is a still grey, since nothing has been read.
+    Screen {
+        #[serde(default)]
+        smoothing: Smoothing,
+    },
 }
+
+/// What [`Effect::Screen`] shows where no screen has been read: a still, dim grey.
+pub const SCREEN_IDLE: Rgb = Rgb([46, 48, 52]);
 
 /// Where a light at `x` sits along Tide's wave: 0 at the outer edge, 1 at the inner one.
 fn tide_depth(x: f32, centre_x: f32, inner_mm: f32, outer_mm: f32) -> f32 {
@@ -385,6 +396,7 @@ impl Effect {
                     *dip_ms,
                 ),
             },
+            Effect::Screen { .. } => SCREEN_IDLE,
         }
     }
 

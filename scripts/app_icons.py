@@ -11,6 +11,8 @@ Writes:
 - tray-icon-white*.png / tray-icon-black*.png: the Bandit fox as a glyph, for dark / light
   taskbars. Plain: a keyboard is connected (solid, the mask cut out); -off: none is (the outline);
   -paused: Foxglove is paused (#404; the fox greyed, an orange pause badge in the corner).
+  -screen: Screen glow reads the screen (#496; the fox, an orange badge with an eye in the
+  corner where the pause badge sits). Paused wins over it in the app.
   Drawn for Windows' small-icon sizes: the plain name is 32 px, -16/-20/-24 the smaller ones.
 - tray-icon-template.png (44), -off and -paused: macOS templates (black + alpha).
 - packaging/identity/Assets/logo44/50/150.png for the sparse package.
@@ -123,7 +125,7 @@ TRAY_COLOURS = {
     "template": {"fox": (0, 0, 0), "muted": (0, 0, 0), "badge": (0, 0, 0)},
 }
 TRAY_SIZES = [16, 20, 24, 32]
-TRAY_STATES = ["on", "off", "paused"]
+TRAY_STATES = ["on", "off", "paused", "screen"]
 
 
 def tray(size, variant, state):
@@ -139,15 +141,16 @@ def tray(size, variant, state):
         alpha = ImageChops.subtract(sil, sil.filter(ImageFilter.MinFilter(k)))
     else:
         alpha = ImageChops.subtract(sil, holes)
-    if state == "paused":
-        # The badge: a disc in the bottom-right corner, cut clear of the fox, with two bars.
+    if state in ("paused", "screen"):
+        # The badge: a disc in the bottom-right corner, cut clear of the fox, with two bars
+        # (paused) or an eye (screen).
         br = S * 0.235
         bx, by = S - br, S - br
         gap = px * (1.0 if size <= 24 else 1.5)
         cut = Image.new("L", (S, S), 255)
         ImageDraw.Draw(cut).ellipse([bx - br - gap, by - br - gap, bx + br + gap, by + br + gap], fill=0)
         alpha = ImageChops.multiply(alpha, cut)
-        if variant == "template":  # one tone: the fox faint, the badge solid
+        if variant == "template" and state == "paused":  # one tone: the fox faint, the badge solid
             alpha = alpha.point(lambda v: v * 140 // 255)
     fill = c["muted"] if state == "paused" else c["fox"]
     im = Image.new("RGBA", (S, S), fill + (255,))
@@ -163,11 +166,26 @@ def tray(size, variant, state):
         top = round(by / px - bh / 2)
         for x0 in (left, left + bw + gap_bars):
             d.rectangle([x0 * px, top * px, (x0 + bw) * px - 1, (top + bh) * px - 1], fill=(0, 0, 0, 0))
+    if state == "screen":
+        d = ImageDraw.Draw(im)
+        d.ellipse([bx - br, by - br, bx + br, by + br], fill=c["badge"] + (255,))
+        # The eye: an almond (two overlapping circles) cut out of the disc, its pupil left in.
+        w, h = br * 0.78, br * 0.42
+        R = (h + w * w / h) / 2
+        k = (w * w / h - h) / 2
+        a = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(a).ellipse([bx - R, by + k - R, bx + R, by + k + R], fill=255)
+        b = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(b).ellipse([bx - R, by - k - R, bx + R, by - k + R], fill=255)
+        lens = ImageChops.multiply(a, b)
+        im.putalpha(ImageChops.subtract(im.getchannel("A"), lens))
+        pr = max(px * 1.0, h * 0.62)
+        d.ellipse([bx - pr, by - pr, bx + pr, by + pr], fill=c["badge"] + (255,))
     return im.reduce(ss)
 
 
 def tray_name(variant, state, size):
-    suffix = {"on": "", "off": "-off", "paused": "-paused"}[state]
+    suffix = {"on": "", "off": "-off", "paused": "-paused", "screen": "-screen"}[state]
     sized = "" if size in (32, 44) else "-%d" % size
     return "tray-icon-%s%s%s.png" % (variant, suffix, sized)
 
@@ -255,7 +273,7 @@ def sheet(path):
         bg = bgs[variant]
         fg = "#ffffff" if variant == "white" else "#000000"
         d.rectangle([0, y0, W, y0 + row_h - 4], fill=bg)
-        label = {"on": "connected", "off": "no keyboard", "paused": "paused"}[state]
+        label = {"on": "connected", "off": "no keyboard", "paused": "paused", "screen": "screen glow"}[state]
         d.text((12, y0 + 8), "%s taskbar" % ("dark" if variant == "white" else "light"), fill=fg, font=font)
         d.text((12, y0 + 28), label, fill=fg, font=font)
         x = 12

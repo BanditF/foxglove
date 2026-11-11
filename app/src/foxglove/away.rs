@@ -54,6 +54,11 @@ pub fn away() -> bool {
     LOCKED.load(Ordering::SeqCst) || DISPLAY_OFF.load(Ordering::SeqCst)
 }
 
+/// Whether the session is locked (Screen glow's status says so, #496).
+pub fn locked() -> bool {
+    LOCKED.load(Ordering::SeqCst)
+}
+
 /// Whether the display is off (the PC asleep, or about to be: Modern Standby starts there).
 pub fn display_off() -> bool {
     DISPLAY_OFF.load(Ordering::SeqCst)

@@ -63,6 +63,8 @@ pub fn start() {
                 continue;
             }
             last = Some(program.clone());
+            // A running Screen glow looks for a full-screen game (#496).
+            super::scene_run::foreground_changed();
             super::devices::bus().facts().set(
                 "app.foreground",
                 foxglove_devices::facts::Value::Text(program.clone()),

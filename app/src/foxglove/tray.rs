@@ -5,12 +5,14 @@ use super::art_service;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 /// What the tray icon shows (#403): the Bandit fox, solid while a keyboard is connected, its
-/// outline while none is, and greyed with an orange pause badge while Foxglove is paused.
+/// outline while none is, and greyed with an orange pause badge while Foxglove is paused. While
+/// Screen glow reads the screen (#496) the fox carries an eye badge instead; paused wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Glyph {
     Connected,
     Disconnected,
     Paused,
+    Screen,
 }
 
 impl Glyph {
@@ -19,6 +21,15 @@ impl Glyph {
             (true, _) => Glyph::Paused,
             (false, true) => Glyph::Connected,
             (false, false) => Glyph::Disconnected,
+        }
+    }
+
+    /// The eye while Screen glow reads the screen (only then); paused wins.
+    pub fn with_screen(self, reading: bool) -> Self {
+        if reading && self != Glyph::Paused {
+            Glyph::Screen
+        } else {
+            self
         }
     }
 }
@@ -51,13 +62,24 @@ macro_rules! sized {
 /// Drawn by `scripts/app_icons.py --tray`.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn png(glyph: Glyph, light_taskbar: bool, size: u32) -> &'static [u8] {
-    const DARK: [[&[u8]; 4]; 3] = [sized!("white"), sized!("white-off"), sized!("white-paused")];
-    const LIGHT: [[&[u8]; 4]; 3] = [sized!("black"), sized!("black-off"), sized!("black-paused")];
+    const DARK: [[&[u8]; 4]; 4] = [
+        sized!("white"),
+        sized!("white-off"),
+        sized!("white-paused"),
+        sized!("white-screen"),
+    ];
+    const LIGHT: [[&[u8]; 4]; 4] = [
+        sized!("black"),
+        sized!("black-off"),
+        sized!("black-paused"),
+        sized!("black-screen"),
+    ];
     let set = if light_taskbar { &LIGHT } else { &DARK };
     let row = match glyph {
         Glyph::Connected => 0,
         Glyph::Disconnected => 1,
         Glyph::Paused => 2,
+        Glyph::Screen => 3,
     };
     let col = SIZES
         .iter()
@@ -73,6 +95,7 @@ pub fn template_png(glyph: Glyph) -> &'static [u8] {
         Glyph::Connected => include_bytes!("../../resources/tray-icon-template.png"),
         Glyph::Disconnected => include_bytes!("../../resources/tray-icon-template-off.png"),
         Glyph::Paused => include_bytes!("../../resources/tray-icon-template-paused.png"),
+        Glyph::Screen => include_bytes!("../../resources/tray-icon-template-screen.png"),
     }
 }
 
@@ -165,6 +188,7 @@ impl Controls {
     /// The tray icon's glyph for what Foxglove knows now.
     pub fn glyph(&self) -> Glyph {
         Glyph::of(self.connected, super::pause::paused())
+            .with_screen(super::screen_glow::status().reading)
     }
 
     pub fn update(&mut self) {
@@ -201,7 +225,13 @@ impl Controls {
             .map(|k| k.name.clone())
             .or_else(super::link::connected_name)
             .unwrap_or_default();
-        self.status = status_line(self.connected || focus.is_some(), &name, paused);
+        let connected = self.connected || focus.is_some();
+        self.status = if super::screen_glow::status().reading && !paused {
+            // #496: always visible while the screen is read.
+            super::screen_glow::tooltip_status(connected).to_string()
+        } else {
+            status_line(connected, &name, paused)
+        };
     }
 }
 
@@ -268,6 +298,15 @@ mod tests {
         assert_eq!(Glyph::of(false, true), Glyph::Paused);
     }
 
+    /// #496: the eye only while frames are read, and paused wins over it.
+    #[test]
+    fn the_eye_shows_only_while_the_screen_is_read() {
+        assert_eq!(Glyph::of(true, false).with_screen(true), Glyph::Screen);
+        assert_eq!(Glyph::of(false, false).with_screen(true), Glyph::Screen);
+        assert_eq!(Glyph::of(true, false).with_screen(false), Glyph::Connected);
+        assert_eq!(Glyph::of(true, true).with_screen(true), Glyph::Paused);
+    }
+
     #[test]
     fn the_drawn_size_covers_the_small_icon_size() {
         assert_eq!(size_for(16), 16);
@@ -285,7 +324,12 @@ mod tests {
     /// differ on each taskbar.
     #[test]
     fn every_glyph_is_drawn_at_its_size() {
-        let glyphs = [Glyph::Connected, Glyph::Disconnected, Glyph::Paused];
+        let glyphs = [
+            Glyph::Connected,
+            Glyph::Disconnected,
+            Glyph::Paused,
+            Glyph::Screen,
+        ];
         for light in [false, true] {
             for size in SIZES {
                 let mut seen = Vec::new();

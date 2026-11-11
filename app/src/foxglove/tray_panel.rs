@@ -289,6 +289,25 @@ pub struct View {
     pub keyboard: Option<String>,
     /// The Knob row (#952): only while the knob is on an app, or just after hiding one.
     pub knob: Option<KnobRow>,
+    /// The Screen glow row (#496): while it runs, with the gate's words while one holds it.
+    pub screen: Option<ScreenRow>,
+}
+
+/// The tray panel's Screen glow row (#496): on top while Screen glow runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenRow {
+    /// Frames are read now (the eye); else `held` says why not.
+    pub reading: bool,
+    /// What holds it, in the Scenes page's words.
+    pub held: Option<String>,
+}
+
+/// The row from Screen glow's state: none while it doesn't run.
+pub fn screen_row(s: &super::screen_glow::Status, who: Option<&str>) -> Option<ScreenRow> {
+    s.on.then(|| ScreenRow {
+        reading: s.reading,
+        held: s.hold.map(|h| h.words(who)),
+    })
 }
 
 /// The tray panel's Knob row (#952, `docs/knob-exclude-ux.md`).
@@ -387,6 +406,8 @@ pub enum Intent {
     UndoHide,
     /// "Change in Settings": the Keyboard page, with its Knob card.
     KnobSettings,
+    /// The Screen glow row's Stop (#496): the Scenes page's Stop.
+    StopScreenGlow,
 }
 
 /// Next to the title while Foxglove is paused.
@@ -492,6 +513,10 @@ fn view(ctx: &egui::Context, hidden: Option<&str>) -> View {
         devices: devices(&super::peripherals::list()),
         keyboard: super::keyboard_focus::current().map(|k| k.name),
         knob: knob_row(super::knob::tray_line().as_ref(), hidden),
+        screen: screen_row(
+            &super::screen_glow::status(),
+            super::lights_owner::yielded_to(),
+        ),
     })
 }
 
@@ -730,6 +755,7 @@ fn act(ctx: &egui::Context, intent: Intent) -> bool {
             super::shell::set_page(super::shell::Page::Keyboard);
             return true;
         }
+        Intent::StopScreenGlow => super::scenes_ui::stop_look(),
         // Carried out in `show`, which keeps the Undo.
         Intent::HideFromKnob { .. } | Intent::UndoHide => {}
     }
@@ -808,6 +834,10 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     }
                 });
             });
+            // #496: Screen glow first, while it runs.
+            if let Some(row) = &v.screen {
+                screen_glow_row(ui, row, out);
+            }
             // #504: the other devices' batteries, only when one reports.
             if !v.devices.is_empty() {
                 part(ui, "Batteries", |_| {}, |ui| {
@@ -902,6 +932,64 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 });
             });
         });
+}
+
+/// The eye (#496): an almond with its pupil, in `c`; its shape, not its colour, says it.
+pub fn eye(painter: &egui::Painter, centre: egui::Pos2, width: f32, c: Color32) {
+    let (w, h) = (width / 2.0, width * 0.28);
+    let n = 16;
+    let mut points = Vec::with_capacity(2 * n);
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let x = -w + 2.0 * w * t;
+        points.push(centre + egui::vec2(x, -h * (1.0 - (x / w).powi(2))));
+    }
+    for i in 1..n {
+        let t = i as f32 / n as f32;
+        let x = w - 2.0 * w * t;
+        points.push(centre + egui::vec2(x, h * (1.0 - (x / w).powi(2))));
+    }
+    painter.add(egui::Shape::closed_line(points, Stroke::new(1.5, c)));
+    painter.circle_filled(centre, h * 0.7, c);
+}
+
+/// The Screen glow row (#496): the eye, "Reading your screen for the lights" (or the gate's
+/// words while one holds it) and Stop.
+fn screen_glow_row(ui: &mut egui::Ui, row: &ScreenRow, out: &mut Vec<Intent>) {
+    let p = theme::palette(ui);
+    part(
+        ui,
+        super::screen_glow::NAME,
+        |ui| {
+            let stop = ui
+                .button(super::screen_glow::TRAY_STOP)
+                .on_hover_text("Stop Screen glow and give the lights their colours back");
+            stop.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    super::screen_glow::TRAY_ROW_SPOKEN,
+                )
+            });
+            if stop.clicked() {
+                out.push(Intent::StopScreenGlow);
+            }
+        },
+        |ui| {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 14.0), Sense::hover());
+                let tint = if row.reading { p.accent } else { p.muted };
+                if row.reading {
+                    eye(ui.painter(), rect.center(), 18.0, tint);
+                }
+                let (text, colour) = match &row.held {
+                    Some(words) => (words.as_str(), p.warn),
+                    None => (super::screen_glow::TRAY_ROW_LINE, p.text),
+                };
+                ui.add(egui::Label::new(RichText::new(text).color(colour)).wrap());
+            });
+        },
+    );
 }
 
 /// The Knob row (#952): the knob's app with Hide from knob, or the line after hiding it.
@@ -1006,6 +1094,13 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
             }
         },
         |ui| {
+            // #496: the scene that drives the lights now.
+            if v.screen.is_some() {
+                ui.label(
+                    RichText::new(super::screen_glow::LIGHTS_SCENE).color(theme::palette(ui).text),
+                );
+                ui.add_space(4.0);
+            }
             let Some(l) = left else {
                 ui.weak("The lights show here once the keyboard reports them.");
                 return;
@@ -1424,7 +1519,37 @@ pub mod tests {
             devices: devices(&super::super::peripherals::tests::sample()),
             keyboard: Some("Eyelash Corne".into()),
             knob: None,
+            screen: None,
         }
+    }
+
+    /// #496: the row shows while Screen glow runs, with the gate's words while one holds it.
+    #[test]
+    fn the_screen_glow_row_follows_screen_glow() {
+        use crate::foxglove::screen_glow::{preview_status, Hold, Status};
+        assert_eq!(screen_row(&Status::default(), None), None);
+        assert_eq!(
+            screen_row(&preview_status(true, None), None),
+            Some(ScreenRow {
+                reading: true,
+                held: None
+            })
+        );
+        assert_eq!(
+            screen_row(&preview_status(false, Some(Hold::Game)), None),
+            Some(ScreenRow {
+                reading: false,
+                held: Some("Paused while a game is full screen".into())
+            })
+        );
+        assert_eq!(
+            screen_row(
+                &preview_status(false, Some(Hold::Yielded)),
+                Some("Windows Dynamic Lighting")
+            )
+            .and_then(|r| r.held),
+            Some("Paused for Windows Dynamic Lighting".into())
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod colour;
 pub mod effects;
 pub mod room;
 pub mod scheduler;
+pub mod screen;
 pub mod space;
 pub mod wallpaper;
 
@@ -17,5 +18,6 @@ pub use clock::{Clock, SceneTime};
 pub use colour::Rgb;
 pub use effects::{tone_key, tones_split, Effect, Frame};
 pub use room::{DeviceInfo, DeviceKind, Layout, LightRole, LightSpec, MonitorInfo, RoomMap, Side};
+pub use screen::{Edges, Glow, ScreenImage, Smoothing};
 pub use space::{Point, Rect};
 pub use wallpaper::WallpaperScene;

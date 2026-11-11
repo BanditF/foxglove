@@ -2220,6 +2220,210 @@ fn scenes_page_renders() {
     assert_ne!(with, dragging);
 }
 
+/// A recorded screen for Screen glow's previews (#496): a sunset film frame, letterboxed (black
+/// bars top and bottom), orange sky over a dark blue sea, a bright sun on the right.
+fn screen_glow_frame() -> Vec<foxglove_scene::Edges> {
+    use foxglove_scene::screen::{Edges, ScreenImage};
+    let mut img = ScreenImage::filled(r"\\.\DISPLAY1", 240, 135, [0, 0, 0]);
+    img.paint((0, 16, 240, 70), [0xf0, 0x7a, 0x2c]);
+    img.paint((0, 40, 240, 70), [0xd0, 0x4a, 0x5c]);
+    img.paint((0, 70, 240, 119), [0x10, 0x2a, 0x5c]);
+    img.paint((170, 30, 215, 62), [0xff, 0xe0, 0x90]);
+    vec![Edges::of(&img)]
+}
+
+/// #496 Screen glow on the Scenes page, for the UX review: the permission card after the first
+/// Start, the running effect (live edge strips and each device's line to its edge, Smoothing
+/// and "Stop allowing"), held by a full-screen game, and picked but not allowed (a still grey
+/// drawing). Saved as `ui-scenes-screen-glow-*.png`.
+#[test]
+fn screen_glow_page_renders() {
+    use crate::foxglove::scene_looks::{Kind, Look};
+    use crate::foxglove::scenes_ui::{tests, Draft, ScreenView, View};
+    use crate::foxglove::screen_glow::{preview_status, Hold};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let near = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| {
+                let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs();
+                d(p.0[0], c.r()) + d(p.0[1], c.g()) + d(p.0[2], c.b()) < 24
+            })
+            .count()
+    };
+    let glow = Look {
+        kind: Kind::ScreenGlow,
+        ..Look::default()
+    };
+    let page = |running: bool, screen: ScreenView, asking: bool| {
+        let mut s = Samples::full();
+        s.scenes = (
+            View {
+                look: glow.clone(),
+                running: running.then(|| "Screen glow".to_string()),
+                t: foxglove_scene::SceneTime(800),
+                screen,
+                ..tests::sample()
+            },
+            Draft {
+                asking,
+                ..Draft::default()
+            },
+        );
+        shell_preview_with(Page::Scenes, &s, 1100.0)
+    };
+    let consent = page(false, ScreenView::default(), true);
+    let running = page(
+        true,
+        ScreenView {
+            allowed: true,
+            status: Some(preview_status(true, None)),
+            edges: screen_glow_frame(),
+            ..ScreenView::default()
+        },
+        false,
+    );
+    let held = page(
+        true,
+        ScreenView {
+            allowed: true,
+            status: Some(preview_status(false, Some(Hold::Game))),
+            ..ScreenView::default()
+        },
+        false,
+    );
+    let stopped = page(false, ScreenView::default(), false);
+    keep("ui-scenes-screen-glow-consent.png", &consent);
+    keep("ui-scenes-screen-glow-running.png", &running);
+    keep("ui-scenes-screen-glow-held-game.png", &held);
+    keep("ui-scenes-screen-glow-stopped.png", &stopped);
+    assert_ne!(consent, stopped, "the card replaces the controls");
+    assert_ne!(running, held);
+    // The sunset's orange is on the running map's strips, not on the still drawing.
+    let sky = Color32::from_rgb(0xf0, 0x7a, 0x2c);
+    assert!(
+        near(&running, sky) > near(&stopped, sky) + 20,
+        "live edge strips"
+    );
+    assert!(
+        near(&held, DARK.warn) > near(&running, DARK.warn),
+        "held is amber"
+    );
+    assert!(
+        near(&running, DARK.ok) > near(&held, DARK.ok),
+        "reading is green"
+    );
+}
+
+/// #496 the tray while Screen glow reads: the fox with its eye on a dark and a light taskbar
+/// (next to the plain fox), the tooltip's status line, and the tray panel's Screen glow row,
+/// reading and held by a full-screen game. Saved as `ui-tray-screen-glow.png`.
+#[test]
+fn screen_glow_tray_renders() {
+    use crate::foxglove::screen_glow::{preview_status, tooltip_status, Hold};
+    use crate::foxglove::theme::DARK;
+    use crate::foxglove::tray::{png, Glyph};
+    use crate::foxglove::tray_panel::{self, screen_row, View};
+    let base = tray_panel::tests::sample();
+    let reading = View {
+        screen: screen_row(&preview_status(true, None), None),
+        ..base.clone()
+    };
+    let held = View {
+        screen: screen_row(&preview_status(false, Some(Hold::Game)), None),
+        ..base
+    };
+    let ctx = preview_ctx();
+    let glyph = |ctx: &egui::Context, g: Glyph, light: bool| {
+        let img = image::load_from_memory(png(g, light, 32))
+            .expect("decodes")
+            .into_rgba8();
+        let c = egui::ColorImage::from_rgba_unmultiplied([32, 32], img.as_raw());
+        ctx.load_texture(format!("{g:?}-{light}"), c, egui::TextureOptions::NEAREST)
+    };
+    let width = tray_panel::WIDTH * 2.0 + 420.0;
+    // Loaded once, kept for every pass of the render (a handle dropped frees its texture).
+    let textures: Vec<_> = [false, true]
+        .into_iter()
+        .map(|light| {
+            (
+                light,
+                glyph(&ctx, Glyph::Connected, light),
+                glyph(&ctx, Glyph::Screen, light),
+            )
+        })
+        .collect();
+    let img = render(
+        &ctx,
+        egui::vec2(width, 820.0),
+        Color32::from_rgb(0x09, 0x0a, 0x0c),
+        |ctx| {
+            egui::Area::new(egui::Id::new("tray-glyphs"))
+                .fixed_pos(egui::pos2(20.0, 20.0))
+                .show(ctx, |ui| {
+                    for (light, plain, eye) in &textures {
+                        let bg = if *light {
+                            Color32::from_gray(0xf3)
+                        } else {
+                            Color32::from_gray(0x20)
+                        };
+                        egui::Frame::new().fill(bg).inner_margin(12).show(ui, |ui| {
+                            ui.set_width(300.0);
+                            ui.horizontal(|ui| {
+                                for t in [plain, eye] {
+                                    ui.add(
+                                        egui::Image::new(t)
+                                            .fit_to_exact_size(egui::vec2(32.0, 32.0)),
+                                    );
+                                    ui.add_space(12.0);
+                                }
+                            });
+                        });
+                        ui.add_space(8.0);
+                    }
+                    // The tooltip as Windows shows it: the status line, the battery line.
+                    egui::Frame::new()
+                        .fill(Color32::from_gray(0x2b))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_gray(0x55)))
+                        .inner_margin(8)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Foxglove\n{}\nLeft 80% · Right 61%",
+                                    tooltip_status(true)
+                                ))
+                                .color(Color32::from_gray(0xee)),
+                            );
+                        });
+                });
+            for (i, v) in [&reading, &held].into_iter().enumerate() {
+                egui::Area::new(egui::Id::new(("screen-glow-tray", i)))
+                    .fixed_pos(egui::pos2(
+                        360.0 + i as f32 * (tray_panel::WIDTH + 20.0),
+                        20.0,
+                    ))
+                    .show(ctx, |ui| {
+                        tray_panel::panel(ui, v, &mut Default::default(), &mut Vec::new());
+                    });
+            }
+        },
+    );
+    keep("ui-tray-screen-glow.png", &img);
+    let ground = img
+        .pixels()
+        .filter(|p| p.0[..3] == [DARK.ground.r(), DARK.ground.g(), DARK.ground.b()])
+        .count();
+    assert!(
+        ground > (img.width() * img.height()) as usize / 6,
+        "both panels drawn"
+    );
+    assert_ne!(
+        png(Glyph::Screen, false, 32),
+        png(Glyph::Connected, false, 32),
+        "the eye is its own glyph"
+    );
+}
+
 /// A wallpaper pack's looks on the Scenes page (#488, #562; the fake third-party pack): one
 /// running with "Art screen too" and its wallpaper on screen, and one picked with nothing
 /// running, at the window's default size (one column).

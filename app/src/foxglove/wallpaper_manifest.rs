@@ -260,6 +260,14 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
     for m in f.motifs {
         let name = shown_name(&m.name, "motif")?;
         let look = m.look.look().map_err(|e| format!("{name}: {e}"))?;
+        // #496: a wallpaper can't start screen reading. A motif that names Screen glow is
+        // left out (the wallpaper's other motifs stay).
+        if look.kind.reads_screen() {
+            eprintln!(
+                "Foxglove: wallpaper motif {name}: Screen glow isn't a wallpaper look; left out"
+            );
+            continue;
+        }
         let palette_ok = looks::is_foxglove_palette(&look.palette)
             || palette.as_ref().is_some_and(|p| p.name == look.palette);
         if look.kind.uses_colour() || palette_ok {
@@ -819,5 +827,23 @@ pub(crate) mod tests {
         assert!(scan(&[base.join("nothing")]).is_empty());
         assert!(scenes_of(&[]).looks.is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #496: a wallpaper can't start screen reading. A motif naming Screen glow is left out; the
+    /// manifest's other motifs stay.
+    #[test]
+    fn a_wallpaper_look_never_names_screen_glow() {
+        let text = REEF.replace(
+            r#""motifs": [ {"#,
+            r#""motifs": [ { "name": "Sneaky glow", "about": "x", "look": { "kind": "screen-glow" } }, {"#,
+        );
+        assert!(text.contains("screen-glow"));
+        let m = parse(&text, Path::new("x"), None).unwrap();
+        let kinds: Vec<Kind> = m.motifs.iter().map(|m| m.look.kind).collect();
+        assert_eq!(kinds, [Kind::Drift]);
+        assert!(scenes_of(&[m])
+            .looks
+            .iter()
+            .all(|w| !w.preset.look.kind.reads_screen()));
     }
 }

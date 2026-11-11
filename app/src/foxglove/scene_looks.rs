@@ -50,10 +50,13 @@ pub enum Kind {
     TwoTone,
     /// A slow wave of the palette's second accent (the crate's `Tide`, the bold tier, #871).
     Tide,
+    /// The screens' edge colours (the crate's `Screen`, #496): reads the screen, so it needs
+    /// the user's yes (`screen_glow`).
+    ScreenGlow,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::Scanline,
         Kind::Sweep,
         Kind::Ripple,
@@ -62,6 +65,7 @@ impl Kind {
         Kind::Drift,
         Kind::TwoTone,
         Kind::Tide,
+        Kind::ScreenGlow,
     ];
 
     pub fn label(self) -> &'static str {
@@ -75,6 +79,7 @@ impl Kind {
             Kind::TwoTone => "Two-tone",
             // Tide is also a palette and a wallpaper: the effect says so (docs/palette.md).
             Kind::Tide => "Tide effect",
+            Kind::ScreenGlow => super::screen_glow::NAME,
         }
     }
 
@@ -94,6 +99,7 @@ impl Kind {
                 "The palette's two accents breathe in turn, once every 8 s: the thumbs against \
                  the letters on a per-key board, the whole board elsewhere"
             }
+            Kind::ScreenGlow => super::screen_glow::DESCRIPTION,
         }
     }
 
@@ -104,7 +110,20 @@ impl Kind {
 
     pub fn uses_speed(self) -> bool {
         // Two-tone keeps the palette rule's 8 s loop (docs/palette.md).
-        !matches!(self, Kind::Gradient | Kind::TwoTone | Kind::Tide)
+        !matches!(
+            self,
+            Kind::Gradient | Kind::TwoTone | Kind::Tide | Kind::ScreenGlow
+        )
+    }
+
+    /// Takes a palette (the others take a colour, or, Screen glow, nothing at all).
+    pub fn uses_palette(self) -> bool {
+        !self.uses_colour() && self != Kind::ScreenGlow
+    }
+
+    /// Reads the screen: Screen glow (#496).
+    pub fn reads_screen(self) -> bool {
+        self == Kind::ScreenGlow
     }
 
     pub fn uses_direction(self) -> bool {
@@ -408,6 +427,10 @@ pub struct Look {
     pub speed: u8,
     pub direction: Direction,
     pub width_mm: u16,
+    /// Screen glow's smoothing (#496); `None` until the user picks one: Even, or Calm when
+    /// Windows' animation effects are off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub smoothing: Option<foxglove_scene::Smoothing>,
 }
 
 impl Default for Look {
@@ -422,6 +445,7 @@ impl Default for Look {
             speed: 5,
             direction: Direction::Down,
             width_mm: 80,
+            smoothing: None,
         }
     }
 }
@@ -454,7 +478,7 @@ impl Look {
 
     /// Its effect takes the [`WALLPAPER`] palette, so it changes with the wallpaper.
     pub fn follows_wallpaper(&self) -> bool {
-        !self.kind.uses_colour() && self.palette == WALLPAPER
+        self.kind.uses_palette() && self.palette == WALLPAPER
     }
 
     /// The effect this look runs, over `room` (a ripple starts at its keyboard).
@@ -518,6 +542,9 @@ impl Look {
                     dip_ms: TIDE_DIP_MS,
                 }
             }
+            Kind::ScreenGlow => Effect::Screen {
+                smoothing: super::screen_glow::smoothing_for(l.smoothing),
+            },
         }
     }
 }
@@ -652,6 +679,14 @@ pub fn effect_presets() -> Vec<Preset> {
                 kind: Kind::Gradient,
                 palette: "Spectrum".into(),
                 direction: Direction::Right,
+                ..Look::default()
+            },
+        ),
+        // Last (#496): it reads the screen, so its first Start asks.
+        preset(
+            super::screen_glow::NAME,
+            Look {
+                kind: Kind::ScreenGlow,
                 ..Look::default()
             },
         ),
@@ -792,6 +827,7 @@ impl FileLook {
             speed: self.speed.unwrap_or(d.speed),
             direction: self.direction.unwrap_or(d.direction),
             width_mm: self.width_mm.unwrap_or(d.width_mm),
+            smoothing: None,
         };
         if !SPEEDS.contains(&look.speed) || !WIDTHS.contains(&look.width_mm) {
             return Err("speed or width out of range".into());
@@ -1142,6 +1178,7 @@ mod tests {
                 Kind::Drift => "Noise".to_string(),
                 Kind::TwoTone => "Tones".to_string(),
                 Kind::Tide => "Tide".to_string(),
+                Kind::ScreenGlow => "Screen".to_string(),
                 k => format!("{k:?}"),
             };
             assert!(name.starts_with(&want), "{k:?}: {name}");
