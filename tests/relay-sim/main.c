@@ -1743,6 +1743,117 @@ static void relink_busy(void) {
     debug_line("at the end");
 }
 
+/* #945: "Right lights showed another colour than the left sent". The left counted a mismatch
+ * whenever the right's report (a status read or a ring) held another look than the left's, even
+ * before the right had taken the RGB op with that look. Every link-up where the right held an
+ * older look (it missed a change while the link was down, or restarted with another saved look)
+ * counted one: the doorbell subscribe's ring carries the right's state and comes before the
+ * link-up RGB op. A drift is a right that confirmed the look and then shows another: that counts
+ * once and gets the look again, each time it happens. */
+static bool right_has_look(const uint8_t look[5]) { return !memcmp(sim_right.look, look, 5); }
+
+static void look_step(const char *name, uint32_t before) {
+    char ok[32], quiet[32];
+    snprintf(ok, sizeof(ok), "%s-synced", name);
+    snprintf(quiet, sizeof(quiet), "%s-no-mismatch", name);
+    check(ok, right_has_look(sim_left.look), "right hue %u effect %u, left hue %u effect %u",
+          sys_get_le16(sim_right.look), sim_right.look[4], sys_get_le16(sim_left.look),
+          sim_left.look[4]);
+    check(quiet, health_get(HEALTH_RGB_MISMATCHES) == before, "%u mismatches counted",
+          (unsigned)(health_get(HEALTH_RGB_MISMATCHES) - before));
+}
+
+static void rgb_relink_look(void) {
+    static const uint8_t teal[5] = {180, 0, 90, 60, 0}, red[5] = {0, 0, 100, 80, 1},
+                         blue[5] = {240 & 0xff, 0, 100, 50, 2};
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(3000);
+    uint32_t m = health_get(HEALTH_RGB_MISMATCHES);
+    look_step("start", m);
+    // The left's look changes while the link is down: the right comes back with the old one.
+    sim_bt_drop(2000000);
+    k_msleep(100);
+    memcpy(sim_left.look, teal, 5);
+    art_relay_rgb_kick();
+    wait_relay(40);
+    k_msleep(5000);
+    look_step("relink", m);
+    // The right restarts with another saved look.
+    sim_bt_right_update(false, 2000000);
+    memcpy(sim_right.look, red, 5);
+    wait_relay(40);
+    k_msleep(5000);
+    look_step("restart", m);
+    // As the hardware's "1 request timed out" on connect: the link-up RGB op answered past the
+    // 3 s GATT timeout, the app's STATUS and RGB_STATE reads going on meanwhile.
+    sim_bt_drop(2000000);
+    k_msleep(100);
+    memcpy(sim_left.look, blue, 5);
+    sim_bt_faults.late_op = ART_RELAY_RGB;
+    sim_bt_faults.late_us = 4500000;
+    sim_bt_faults.late_count = 1;
+    wait_relay(40);
+    k_msleep(9000);
+    sim_bt_faults.late_op = 0;
+    look_step("late-op", m);
+    // As the hardware's link-up (#943's burst): the right's response buffer is busy when the RGB op
+    // comes, so Zephyr ignores it; the doorbell's ring and the status reads still show its old
+    // look until the left sends the op again.
+    sim_bt_drop(2000000);
+    k_msleep(100);
+    memcpy(sim_left.look, teal, 5);
+    sim_bt_faults.ignore_op = ART_RELAY_RGB;
+    sim_bt_faults.ignore_count = 1;
+    // The left lets the op go after 3 s and its unstick may re-link to free the request (the
+    // hardware's "link dropped to free a stuck request"): up to 60 s for the relay and the look.
+    int64_t lost_at = k_uptime_get();
+    k_msleep(1000);
+    while (k_uptime_get() - lost_at < 60000 &&
+           (art_relay_link() != 2 || !right_has_look(sim_left.look))) {
+        k_msleep(100);
+    }
+    printf("  lost op: relay and look back after %lld ms\n", (long long)(k_uptime_get() - lost_at));
+    k_msleep(3000);
+    check("lost-op-ignored", sim_bt_faults.ignore_count == 0, "%d left to ignore",
+          sim_bt_faults.ignore_count);
+    look_step("lost-op", m);
+    // The PC's colour (#266), as at Foxglove's start: the right's ring (its LEDs going lit on the
+    // PC's wake) is on its way with the colour it shows, when the left takes the PC's colour at
+    // once (host_link.c sets its own after art_relay_rgb_hsb) and sends it. A report from before
+    // the right acknowledged the colour is not a drift. (A guard: in the sim's timing the ring
+    // lands before the left takes the colour, so main passed this step too.)
+    int rings = sim_bt_stats.rings;
+    sim_bt_right_ring_rgb();
+    for (int i = 0; i < 100 && sim_bt_stats.rings == rings; i++) {
+        k_msleep(1);
+    }
+    int rc = art_relay_rgb_hsb(30, 70, 90);
+    check("pc-colour-taken", rc == 0 && sim_bt_stats.rings > rings, "art_relay_rgb_hsb %d, %d ring",
+          rc, sim_bt_stats.rings - rings);
+    sim_left.look[0] = 30;
+    sim_left.look[1] = 0;
+    sim_left.look[2] = 70;
+    sim_left.look[3] = 90;
+    k_msleep(3000);
+    look_step("pc-colour", m);
+    // A real drift: the right confirmed the look, then shows another one. Counted and resynced,
+    // and again the second time.
+    for (int i = 1; i <= 2; i++) {
+        memcpy(sim_right.look, red, 5);
+        sim_bt_right_ring_rgb();
+        k_msleep(2000);
+        char name[24];
+        snprintf(name, sizeof(name), "drift%d-counted", i);
+        check(name, health_get(HEALTH_RGB_MISMATCHES) == m + i, "%u mismatches counted",
+              (unsigned)(health_get(HEALTH_RGB_MISMATCHES) - m));
+        snprintf(name, sizeof(name), "drift%d-resynced", i);
+        check(name, right_has_look(sim_left.look), "right hue %u", sys_get_le16(sim_right.look));
+    }
+    debug_line("at the end");
+}
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -1774,6 +1885,8 @@ static void lab_thread(void *arg) {
         polarity_relink();
     } else if (!strcmp(scenario, "relink-busy")) {
         relink_busy();
+    } else if (!strcmp(scenario, "rgb-relink-look")) {
+        rgb_relink_look();
     } else if (!strcmp(scenario, "playlist-store")) {
         playlist_store();
     } else if (!strcmp(scenario, "playlist-store-old")) {

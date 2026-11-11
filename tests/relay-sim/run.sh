@@ -28,7 +28,7 @@ DEFINES=(
     -DCONFIG_ZMK_LOG_LEVEL=0
     -DCONFIG_FOXGLOVE_TEST_HOOKS=1
 )
-SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency polarity-relink relink-busy playlist-store playlist-store-old restore-update slot-read health art-step-toast art-step-cycles art-step-cycles-lag art-step-boot art-step-kept art-step-kept-quit art-step-kept-relink art-step-kept-restart art-step-kept-bad right-reflash right-reflash-stall art-hold-cycles hooks-real-keys)
+SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency polarity-relink relink-busy rgb-relink-look playlist-store playlist-store-old restore-update slot-read health art-step-toast art-step-cycles art-step-cycles-lag art-step-boot art-step-kept art-step-kept-quit art-step-kept-relink art-step-kept-restart art-step-kept-bad right-reflash right-reflash-stall art-hold-cycles hooks-real-keys)
 # Known gaps: each must still FAIL (README.md, "Known gaps"). None at the moment.
 KNOWN_GAPS=()
 if [ "$#" -gt 0 ]; then

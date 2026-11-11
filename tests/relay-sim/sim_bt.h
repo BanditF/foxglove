@@ -69,6 +69,11 @@ struct sim_bt_faults {
     bool right_no_health;
     // The right refuses the next COMMIT (BAD_CRC), as one whose slot got a corrupt blob would.
     bool right_reject_commit;
+    // The right ignores the next ignore_count write requests of relay op ignore_op: neither applied
+    // nor answered, as Zephyr 3.5's att_write_rsp does when it can't get the response buffer (it
+    // takes it before the attribute's write callback). #945: the link-up RGB op lost this way.
+    uint8_t ignore_op;
+    int ignore_count;
 };
 extern struct sim_bt_faults sim_bt_faults;
 
@@ -84,6 +89,8 @@ void sim_bt_drop(int64_t back_after_us);
 // back_after_us, the right starts on its built-in set 0; with wipe its flash slots are empty
 // (a settings reset, or an update that moved the art partition).
 void sim_bt_right_update(bool wipe, int64_t back_after_us);
+// The right rings with its RGB state, as after a change of its own (a key, ZMK's split queue).
+void sim_bt_right_ring_rgb(void);
 bool sim_bt_att_alive(void);
 int sim_bt_queued_requests(void);
 bool sim_bt_request_on_air(void);
