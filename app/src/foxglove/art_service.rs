@@ -3522,15 +3522,34 @@ mod contention_tests {
     /// the right then plays "pushed set, set -1") is the feed's piece, with its frames, after a
     /// restart too, named from the last-pushed record; nothing is sent again. Shown, not
     /// pinned, so the shared test store's pin stays untouched.
+    ///
+    /// The facts are the feed's published fields, read from the wire JSON the hub sends
+    /// (`live_feed::art_messages`) the way the lab's `restart_parity.py --case pushed_set` folds
+    /// them (#1075): the flat `state` message's `art` and the `art` message's from, name,
+    /// frames and missing. Nothing is named by the test itself.
     #[test]
     fn restart_parity_a_pushed_set() {
-        use crate::foxglove::live_art::{art, source, Source};
+        use crate::foxglove::live_art::Source;
+        type Facts = (Option<String>, String, String, bool, Option<String>);
         let file = crate::foxglove::art_service::tests_fury();
         let board = Board::new(2);
-        let facts = |s: &Snapshot| {
-            let src = source(s).filter(|src| matches!(src, Source::File(..)))?;
-            let a = art(&src, "fury".into());
-            Some((src, a.nva.is_some(), a.missing))
+        let facts = |s: &Snapshot| -> Option<Facts> {
+            let (state, art) = crate::foxglove::live_feed::art_messages(s);
+            let state: serde_json::Value = serde_json::from_str(&state).unwrap();
+            let art: serde_json::Value = serde_json::from_str(&art).unwrap();
+            assert_eq!(state["t"], "state");
+            assert!(state.get("state").is_none(), "a state message is flat");
+            let a = &art["art"];
+            let text = |v: &serde_json::Value| v.as_str().map(String::from);
+            let f = (
+                text(&state["art"]),
+                text(&a["from"])?,
+                text(&a["name"])?,
+                a["nva"].is_string(),
+                text(&a["missing"]),
+            );
+            // As the lab's read(None): the pushed piece with its frames is there.
+            (f.1 == "file" && f.3).then_some(f)
         };
         let (rig, after) = restart_parity(
             board.clone(),
@@ -3543,12 +3562,19 @@ mod contention_tests {
             },
             facts,
         );
-        let hash = crate::foxglove::art_library::blob_hash(&pushed_bytes(&file).unwrap());
         assert_eq!(
             after,
-            (Source::File(file, hash), true, None),
-            "frames after the restart"
+            (
+                Some("fury".into()),
+                "file".into(),
+                "fury".into(),
+                true,
+                None
+            ),
+            "state.art and the art message after the restart"
         );
+        let hash = crate::foxglove::art_library::blob_hash(&pushed_bytes(&file).unwrap());
+        assert_eq!(rig.art(), Some(Source::File(file, hash)), "from the record");
         assert_eq!(
             board.pushes.load(Ordering::SeqCst),
             1,

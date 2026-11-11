@@ -125,7 +125,8 @@ guess from its key count), and no `keys` are sent. A change of keyboard sends a 
   `SLOT_READ`, #878), `other_firmware`
   (a built-in of firmware whose manifest Foxglove doesn't know), `unreadable`, `too_big`, or
   `pushed_unknown` (`from` is `file`: the right half plays a set pushed earlier that this PC has
-  no record of, or whose file changed since the push, #1044). Foxglove remembers the last piece
+  no record of, or whose file changed since the push, #1044; its `name` is "A piece from this PC",
+  #1075, and `state.art` stays null). Foxglove remembers the last piece
   it pushed in its settings (`[art_pushed]`), so after a restart or a replug a set it pushed
   itself gets its name and frames back.
   The wallpaper draws a labelled placeholder then, the same for both screens.

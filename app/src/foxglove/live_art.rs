@@ -332,12 +332,21 @@ mod tests {
         };
         let src = source(&s).expect("a piece");
         assert_eq!(src, Source::Pushed);
-        let a = art(&src, super::super::art_pieces::showing_name(&s));
+        // On the wire, as the feed sends it (#1075: the feed named it "" while the API's words
+        // were right, and this test used the API's).
+        let (state, art) = super::super::live_feed::art_messages(&s);
+        let state: serde_json::Value = serde_json::from_str(&state).unwrap();
+        let art: serde_json::Value = serde_json::from_str(&art).unwrap();
         assert_eq!(
-            (a.from, a.nva, a.missing),
-            (wire::FROM_FILE, None, Some(wire::MISSING_PUSHED_UNKNOWN))
+            art,
+            serde_json::json!({"t": "art", "art": {"name": "A piece from this PC", "from": "file",
+                "nva": null, "missing": "pushed_unknown"}})
         );
-        assert_eq!(a.name, "A piece from this PC");
+        assert_eq!(
+            state["art"],
+            serde_json::Value::Null,
+            "no state.art name for it"
+        );
     }
 
     /// A 140x68 stored frame (the Corne's screen, a quarter turn) with ink at upright (x, y).

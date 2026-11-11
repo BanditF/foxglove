@@ -25,6 +25,10 @@ finally:
 
 PUSHED = {'t': 'art', 'art': {'name': 'ink-fixture', 'from': 'file', 'nva': 'AAAA'}}
 UNKNOWN = {'t': 'art', 'art': {'name': 'pushed set', 'from': 'file', 'nva': None, 'missing': 'pushed_unknown'}}
+# The feed's messages as a lab client gets them when it joins a restarted app before the pushed set
+# is named again (#1075). Exactly what the app sends: the Rust test
+# `live_wire::tests::the_restart_fixture_is_the_wire` builds each line with `Message::json`.
+RESTART = LAB / 'fixtures' / 'feed-pushed-set-restart.jsonl'
 
 
 class FeedArtFacts(unittest.TestCase):
@@ -38,17 +42,62 @@ class FeedArtFacts(unittest.TestCase):
         seen = []
 
         def msgs():
-            for m in [{'t': 'hello', 'state': {'art': None}}, UNKNOWN, PUSHED, {'t': 'state', 'state': {}}]:
+            for m in [{'t': 'hello', 'state': {'art': None}}, UNKNOWN, PUSHED, {'t': 'state', 'art': None}]:
                 seen.append(m)
                 yield m
         f = labkit.feed_art_facts(msgs(), lambda f: bool(f['art'] and f['art']['frames']))
         self.assertTrue(f['art']['frames'])
         self.assertEqual(len(seen), 3, 'no message read past the accepted one')
 
+    def test_a_state_message_is_flat_on_the_wire(self):
+        # #1075: only the hello nests the state; a `state` message carries its fields itself.
+        # Reading `m['state']` there made every state after the hello `state_art: None`.
+        msgs = [{'t': 'hello', 'state': {'art': None}}, {'t': 'state', 'art': 'ink-fixture', 'layer': None}]
+        f = labkit.feed_art_facts(iter(msgs), lambda f: False)
+        self.assertEqual(f['state_art'], 'ink-fixture')
+
+    def test_a_restart_before_the_restore_reaches_the_pushed_facts(self):
+        # The lab's restart_parity pushed_set case, on the real wire sequence: hello before the
+        # restore (art null, pushed_unknown), then the restore's state and art, then a battery state.
+        msgs = [json.loads(l) for l in RESTART.read_text(encoding='utf-8').splitlines() if l.strip()]
+        want = {'state_art': 'ink-fixture',
+                'art': {'from': 'file', 'name': 'ink-fixture', 'frames': True, 'missing': None}}
+        self.assertEqual(labkit.feed_art_facts(iter(msgs), lambda f: f == want), want, 'accepted on the way')
+        self.assertEqual(labkit.feed_art_facts(iter(msgs), lambda f: False), want, 'still so after a later state')
+
     def test_art_null_and_no_messages(self):
         f = labkit.feed_art_facts(iter([{'t': 'art', 'art': None}]), lambda f: False)
         self.assertEqual(f, {'state_art': None, 'art': None})
         self.assertIsNone(labkit.feed_art_facts(iter([]), lambda f: True))
+
+
+class ArtPutBack(unittest.TestCase):
+    """#1075: the case puts the right half back on what it showed at the start, or doesn't start."""
+
+    def test_a_built_in_and_a_kept_place_go_back_as_they_were(self):
+        self.assertEqual(labkit.art_put_back({'built_in': 'Bandit emblem', 'slot': None, 'pushed': False}, '')[0],
+                         {'built_in': 'Bandit emblem'})
+        self.assertEqual(labkit.art_put_back({'built_in': None, 'slot': 0, 'pushed': False}, '')[0], {'slot': 0})
+
+    def test_a_pushed_set_is_pushed_again_from_the_users_record(self):
+        piece = Path(__file__).resolve().parent.parent / 'tests' / 'art' / 'ink-fixture.bin'
+        store = f"schema = 1\n\n[art_pushed]\nhash = \"e077df59e69fa309\"\npath = '{piece}'\n"
+        target, words = labkit.art_put_back({'built_in': None, 'slot': None, 'pushed': True}, store)
+        self.assertEqual(target, {'file': str(piece)})
+        self.assertIn(str(piece), words)
+
+    def test_what_cant_be_put_back_says_why(self):
+        pushed = {'built_in': None, 'slot': None, 'pushed': True}
+        for start, store, why in [
+            (pushed, 'schema = 1\n[art.pinned]\nBuiltIn = 0\n', 'no record'),
+            (pushed, "[art_pushed]\nhash = \"00\"\npath = 'C:/nowhere/gone.bin'\n", 'gone'),
+            (pushed, 'not toml [', 'no record'),
+            (None, '', 'no art status'),
+            ({'built_in': None, 'slot': None, 'pushed': False, 'name': '…'}, '', "can't name"),
+        ]:
+            target, words = labkit.art_put_back(start, store)
+            self.assertIsNone(target, words)
+            self.assertIn(why, words)
 
 
 class FakeApp:

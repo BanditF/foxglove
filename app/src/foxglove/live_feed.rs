@@ -1220,8 +1220,7 @@ impl ArtWatch {
             return None;
         }
         self.seen = Some(key.clone());
-        let name = key.name.unwrap_or_default();
-        let art = key.source.as_ref().map(|s| super::live_art::art(s, name));
+        let art = art_body(key.source.as_ref(), key.name);
         self.not_on_pc = match (&key.source, &art) {
             (Some(super::live_art::Source::Slot { crc: Some(crc), .. }), Some(a))
                 if a.missing == Some(wire::MISSING_NOT_ON_PC) =>
@@ -1377,6 +1376,37 @@ fn lights(facts: &Facts) -> Option<wire::Lights> {
         effect: text("keyboard.lighting.effect").unwrap_or_default(),
         rainbow: flag("keyboard.lighting.rainbow"),
     })
+}
+
+/// The `art` message's body for what plays (`live_art::source`) under the name `state.art`
+/// gives it: `None` (`art: null`) with nothing Foxglove can name. A pushed set Foxglove has no
+/// record of has no `state.art` name; its art goes out as "A piece from this PC" (#1051's
+/// promise, the tray panel's words), not `""` (#1075).
+fn art_body(source: Option<&super::live_art::Source>, name: Option<String>) -> Option<wire::Art> {
+    use super::live_art::Source;
+    source.map(|s| {
+        let name = match (s, name) {
+            (_, Some(n)) => n,
+            (Source::Pushed, None) => super::art_pieces::UNKNOWN_PUSHED.into(),
+            (_, None) => String::new(),
+        };
+        super::live_art::art(s, name)
+    })
+}
+
+/// The feed's two art facts for one snapshot, as the hub sends them (#1075): the `state`
+/// message (`state.art`, as `read_host_state` names it; the rest left default) and the `art`
+/// message (as `ArtWatch` makes it), both as wire JSON. Tests read the published fields from
+/// these, the same ones the lab's `feed_art_facts` reads, not from the art service's snapshot.
+#[cfg(test)]
+pub(super) fn art_messages(s: &super::art_service::Snapshot) -> (String, String) {
+    let name = showing_name(s);
+    let art = art_body(super::live_art::source(s).as_ref(), name.clone());
+    let state = wire::State {
+        art: name,
+        ..wire::State::default()
+    };
+    (Message::State(state).json(), Message::Art { art }.json())
 }
 
 /// The right screen's piece, by name.
