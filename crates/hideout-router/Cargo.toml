@@ -22,4 +22,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 # stream transcripts).
 hideout-panels = { path = "../hideout-panels" }
 hideout-room-map = { path = "../../examples/hideout-room-map" }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+# The app watch under `apps.watch` (apps_watch.rs, #1108).
+hideout-appwatch = { path = "../hideout-appwatch" }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_WindowsAndMessaging"] }

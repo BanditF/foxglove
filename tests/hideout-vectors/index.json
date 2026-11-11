@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.12",
+  "contract": "1.13",
   "reader_hub": "1.3",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -4882,6 +4882,20 @@
           -32602,
           -32602,
           -32602,
+          -32602
+        ]
+      }
+    },
+    "transcripts/apps/watch.json": {
+      "spec": [
+        "8.12",
+        "4.6"
+      ],
+      "note": "apps.watch answered by the hub from apps.running.<name>: {exe, open}, then app.window.appeared / app.window.closed to the watcher on each flip; apps.denied (error 5) for an app not granted, apps.argument (-32602) for an exe that isn't <name>.exe (v1.13).",
+      "result": "valid",
+      "final": {
+        "errors": [
+          5,
           -32602
         ]
       }

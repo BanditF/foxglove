@@ -455,6 +455,9 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         "net.accepted" => typed::<crate::services::NetAccepted>(params),
         "net.closed" => typed::<crate::services::NetClosed>(params),
         "audio.inputs.set_mute" => typed::<crate::services::SetMute>(params),
+        // The app watch (§8.12, v1.13).
+        "apps.watch" => typed::<crate::services::AppsWatch>(params),
+        "app.window.appeared" | "app.window.closed" => typed::<crate::services::AppWindows>(params),
         _ => Ok(()),
     }
 }

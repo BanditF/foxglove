@@ -21,6 +21,9 @@ pub const HUB_OWNED: &[&str] = &[
     // The host services (§8.3, v1.12).
     "net.*",
     "audio.inputs.*",
+    // The app watch's call and events (§8.12, v1.13).
+    "apps.*",
+    "app.window.*",
 ];
 
 /// Method areas a first-party catalog assigns (§6.3): a third-party or private module never

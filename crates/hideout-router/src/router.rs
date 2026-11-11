@@ -28,6 +28,7 @@ pub const HOST_CONSUMER: &str = "hub.panel-host";
 mod activation;
 pub use activation::Triggers;
 
+mod apps;
 mod services;
 pub use services::{all_methods as host_methods, ServiceCall, ServiceError};
 
@@ -336,6 +337,9 @@ pub struct Router {
     triggers: BTreeMap<String, Triggers>,
     /// The host-service methods the hub serves (§8.3, v1.12); see [`Router::serve`].
     services: std::collections::BTreeSet<String>,
+    /// The apps each connection watches with `apps.watch` (§8.12, v1.13): app label → `exe`
+    /// as asked. Ends with the connection.
+    app_watches: HashMap<ConnId, BTreeMap<String, String>>,
 }
 
 /// The file in a v1 plugin's settings folder where the hub keeps the values the user changed.
@@ -390,6 +394,7 @@ impl Router {
             next_host_call: 1,
             triggers: BTreeMap::new(),
             services: Default::default(),
+            app_watches: HashMap::new(),
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -846,6 +851,8 @@ impl Router {
             out.push(Out::ServiceGone(conn));
         }
         self.subs.retain(|_, (owner, _)| *owner != conn);
+        // Its app watches end with it (§8.12, v1.13).
+        self.app_watches.remove(&conn);
         // Leases it held end: tell each provider (§8.5).
         let held: Vec<(String, String)> = self
             .leases
@@ -1184,6 +1191,11 @@ impl Router {
                 _ => out.push(answer(denied(&id, None))),
             },
             "channel.open" => self.channel_open(conn, &who, &caps, id, &params, now, out),
+            // The app watch's call (§8.12, v1.13), on top of the app facts.
+            hideout_contract::services::APPS_WATCH => {
+                let reply = self.apps_watch(conn, &who, &caps, &id, params);
+                out.push(answer(reply));
+            }
             // The hub's host services (§8.10, §8.11, v1.12).
             m if self.services.contains(m) => {
                 self.service_call(conn, &who, &caps, id, m, params, now, out)
@@ -1848,6 +1860,7 @@ impl Router {
     }
 
     fn set_fact(&mut self, key: &str, value: Value, out: &mut Vec<Out>) {
+        let was_open = self.app_open_now(key);
         let changed = if value.is_null() {
             self.facts.remove(key).is_some()
         } else {
@@ -1872,6 +1885,7 @@ impl Router {
             }
         }
         self.fact_activations(key, &value, out);
+        self.app_window_events(key, was_open, &value, out);
     }
 
     #[allow(clippy::too_many_arguments)]

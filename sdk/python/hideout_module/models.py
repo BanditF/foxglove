@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.3'
-SPEC = '1.12'
+SPEC = '1.13'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -856,6 +856,33 @@ module version, and the page it is on."""
     }
 
 
+@dataclass(kw_only=True)
+class AppWindows(Model):
+    """`apps.watch`'s result and the `app.window.appeared` and `app.window.closed` events
+(§8.12): `exe` as asked (ASCII lower case) and `open`, 1 while the app runs and 0 while it
+doesn't. Foxglove API 1.3's shape, where `open` counts windows; the hub's watch follows
+processes, so 0 means the same in both: the app isn't open."""
+
+    exe: str
+    open: int
+
+    FIELDS: ClassVar[dict] = {
+        'exe': ('exe', 'str'),
+        'open': ('open', 'int'),
+    }
+
+
+@dataclass(kw_only=True)
+class AppsWatch(Model):
+    """`apps.watch` (M → H, §8.12): the app's exe file name, such as `obs64.exe`."""
+
+    exe: str
+
+    FIELDS: ClassVar[dict] = {
+        'exe': ('exe', 'str'),
+    }
+
+
 MicState = Any
 MICSTATE_SPEC = 'any'
 
@@ -998,6 +1025,8 @@ TYPES = {
     'panel.Register': Register,
     'panel.Rejected': Rejected,
     'release.HubRelease': HubRelease,
+    'services.AppWindows': AppWindows,
+    'services.AppsWatch': AppsWatch,
     'services.MicState': MicState,
     'services.NetAccepted': NetAccepted,
     'services.NetClosed': NetClosed,
