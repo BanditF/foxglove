@@ -348,22 +348,13 @@ impl Hub {
     /// While the pipe has AppContainer guests it carries a Low label, so a Low-integrity
     /// process could open it: below Medium only the hub's own containers are admitted; the
     /// user's Medium processes (modules, outside tools) are as before. A container that isn't
-    /// (or no longer is) a guest is refused either way.
+    /// (or no longer is) a guest is refused either way, and so is a client whose process or
+    /// token can't be read (an elevated tool the hub can't look into, a process already gone).
     pub fn admit(&self, pid: Option<u32>) -> Result<(), String> {
         let guests = self.pipe_guests();
-        let Some(pid) = pid else {
-            // Without guests the pipe keeps Windows' Medium floor: as before.
-            return if guests.is_empty() {
-                Ok(())
-            } else {
-                Err("its process is unknown".into())
-            };
-        };
-        let peer = match hideout_acl::peer(pid) {
-            Ok(p) => p,
-            Err(_) if guests.is_empty() => return Ok(()),
-            Err(e) => return Err(format!("pid {pid}: token not read: {e}")),
-        };
+        // A client the router can't name is refused, guests or not (#1089 re-check).
+        let pid = pid.ok_or("its process is unknown")?;
+        let peer = hideout_acl::peer(pid).map_err(|e| format!("pid {pid}: token not read: {e}"))?;
         if hideout_acl::admits(&peer, &guests) {
             Ok(())
         } else {

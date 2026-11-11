@@ -279,8 +279,10 @@ The hub MUST NOT contain:
   also lets each such container's SID in (client rights, no create-instance) and carries a Low
   mandatory label, which Windows has one of per object, not per SID. A Low-integrity process of
   the user's then passes Windows' check too; the router refuses it (below Medium it admits only
-  the hub's own containers), and a module talks only to the pipe server whose pid is
-  `HIDEOUT_HUB_PID`. What stays open is in §7.7.
+  the hub's own containers, and never a client whose process or token it can't read), a module
+  talks only to the pipe server whose pid is `HIDEOUT_HUB_PID`, and it opens the pipe at
+  identification level (`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`), so a server can't act
+  as it. What stays open is in §7.7.
 - A module's files outside `data\` and `settings\` are written only by `hideout-core`.
 
 ### 2.4 Draw first (UX2)
@@ -1279,8 +1281,9 @@ Design §3.1.
   With it on, the plan is made from the module's **granted** permissions (an ungranted one
   counts for nothing):
   - **Contained** (the usual case): its own AppContainer (`CreateAppContainerProfile`, profile
-    `hideout.<id>`, or `hideout.<first 39 of the id>.<16 hex of its SHA-256>` when that would be
-    longer than 64 characters, so two ids never share one; removed with the module). What the
+    `hideout.<id>`, or `hideout.<first 38 of the id>._<16 hex of its SHA-256>` when that would be
+    longer than 64 characters; no id label starts with `_`, so the two forms never meet and two
+    ids never share a profile; removed with the module). What the
     hub brokers (facts, lights, `net.connect`, `net.listen`, GPU, `secrets.ref`, app watches)
     needs nothing inside. A permission the module carries out itself through a device gets the
     matching capability in `SECURITY_CAPABILITIES`: `device.hid:` gives `humaninterfacedevice`.

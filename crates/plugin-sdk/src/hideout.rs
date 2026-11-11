@@ -260,6 +260,9 @@ pub fn open_pipe(name: &str) -> io::Result<std::fs::File> {
         use std::os::windows::fs::OpenOptionsExt;
         // FILE_GENERIC_READ | FILE_GENERIC_WRITE without FILE_APPEND_DATA (0x4).
         o.access_mode(0x0012_019B);
+        // SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION (std sets the first): a server may
+        // learn who connected, never act as the module (#1089 re-check).
+        o.security_qos_flags(0x0001_0000);
     }
     o.open(name)
 }

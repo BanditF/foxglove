@@ -63,15 +63,13 @@ fn wide_path(p: &Path) -> Vec<u16> {
 /// The longest profile name the API takes.
 const PROFILE_MAX: usize = 64;
 
-/// The profile name for module `id`: `hideout.<id>` when that fits in 64 characters and the id
-/// has only ASCII letters, digits, `.`, `-` and `_`; else `hideout.<first 39>.<16 hex of the
-/// id's SHA-256>`, so two ids never share a profile (and its SID).
+/// The profile name for module `id`: `hideout.<id>` when the id keeps the id grammar (§4.3)
+/// and that fits in 64 characters; else `hideout.<first 38>._<16 hex of the id's SHA-256>`. No
+/// id label starts with `_`, so a plain name never has `._` and never equals a hashed one: two
+/// ids never share a profile (and its SID), a crafted one included (#1089 review).
 pub fn profile_name(id: &str) -> String {
     let plain = format!("hideout.{id}");
-    let clean = id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c));
-    if clean && plain.len() <= PROFILE_MAX {
+    if hideout_contract::module::id_grammar_ok(id) && plain.len() <= PROFILE_MAX {
         return plain;
     }
     use sha2::{Digest, Sha256};
@@ -82,9 +80,9 @@ pub fn profile_name(id: &str) -> String {
     let head: String = id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || ".-_".contains(*c))
-        .take(39)
+        .take(38)
         .collect();
-    format!("hideout.{head}.{hash}")
+    format!("hideout.{head}._{hash}")
 }
 
 /// The SID of module `id`'s profile, if Windows derives one (it does for any name, made or
@@ -581,6 +579,23 @@ mod tests {
         assert!(pa.len() <= 64 && pb.len() <= 64, "{pa} {pb}");
         assert_eq!(pa, profile_name(&a), "the same id, the same profile");
         assert_eq!(profile_name("a.b"), "hideout.a.b");
+        // A crafted 56-character id spelling a victim's hashed name in full is a plain name
+        // that can't equal it: hashed names have `._`, which no id can (#1089 re-check).
+        let victim = format!("v.{}", "y".repeat(70));
+        let hashed = profile_name(&victim);
+        assert_eq!(hashed.len(), 64);
+        assert!(hashed.contains("._"), "{hashed}");
+        let crafted = hashed.strip_prefix("hideout.").unwrap();
+        assert!(
+            !hideout_contract::module::id_grammar_ok(crafted),
+            "{crafted}"
+        );
+        assert_ne!(profile_name(crafted), hashed);
+        // And the old form's spelling (no underscore) is a valid id, plain, and differs.
+        let old_form = crafted.replace("._", ".");
+        assert!(hideout_contract::module::id_grammar_ok(&old_form));
+        assert_eq!(profile_name(&old_form), format!("hideout.{old_form}"));
+        assert_ne!(profile_name(&old_form), hashed);
         let c = command_line(
             Path::new(r"C:\a b\m.exe"),
             &["/c".into(), "say \"hi\"".into(), r"C:\x\".into(), "".into()],

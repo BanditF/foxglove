@@ -264,8 +264,10 @@ fn a_low_integrity_process_is_refused_by_the_router() {
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(&format!(".lowtest{}", std::process::id()));
     hub.serve_pipe(&hub.router_pipe()).unwrap();
-    // No guests: the Medium floor holds, nothing is checked.
-    assert!(hub.admit(None).is_ok());
+    // No guests: the Medium floor holds, but a client the router can't name is refused anyway
+    // (#1089 re-check), and the user's own process is admitted.
+    assert!(hub.admit(None).is_err());
+    assert!(hub.admit(Some(std::process::id())).is_ok());
     hub.allow_pipe_client("S-1-15-2-1-2-3-4-5-6-7").unwrap();
     let (low, low_pid) = low_integrity_process();
     let refused = hub.admit(Some(low_pid));

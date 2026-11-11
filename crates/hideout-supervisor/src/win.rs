@@ -54,6 +54,14 @@ impl Drop for Handle {
 /// handles inheritable for a moment, and no other start may pick them up meanwhile.
 pub(crate) static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Starts `command` under [`SPAWN`]: for every start in the hub process outside the
+/// supervisor (the shell opening a folder in Explorer), so it never inherits a contained
+/// module's handles (#1089 re-check).
+pub fn spawn(command: &mut Command) -> io::Result<Child> {
+    let _spawning = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    command.spawn()
+}
+
 /// JOB_OBJECT_ASSIGN_PROCESS | SET_ATTRIBUTES | QUERY | TERMINATE (winnt.h).
 const JOB_ACCESS: u32 = 0x1 | 0x2 | 0x4 | 0x8;
 
