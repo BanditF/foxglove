@@ -295,6 +295,11 @@ impl Hub {
                         Ok(conn) => {
                             // The handle stays open while `conn` lives.
                             let pid = client_pid(handle);
+                            if let Err(why) = hub.admit(pid) {
+                                // Dropping the connection closes it.
+                                log::warn!("router: {name}: client refused: {why}");
+                                continue;
+                            }
                             hub.attach_peer(Origin::Pipe, pid, conn.clone(), conn);
                         }
                         Err(e) => log::warn!("router: {name}: accept: {e}"),
@@ -322,6 +327,54 @@ impl Hub {
         }
         acl.guests = guests;
         Ok(())
+    }
+
+    /// Takes the AppContainer `sid` off the router pipe (the module was removed, §7.7).
+    pub fn disallow_pipe_client(&self, sid: &str) -> io::Result<()> {
+        let mut acl = self.0.pipe_acl.lock().unwrap();
+        if !acl.guests.iter().any(|g| g == sid) {
+            return Ok(());
+        }
+        let guests: Vec<String> = acl.guests.iter().filter(|g| *g != sid).cloned().collect();
+        let sd = hideout_acl::Descriptor::current_user_and(&guests)?;
+        for (keeper, _) in &acl.keepers {
+            hideout_acl::apply_to_handle(keeper.raw_handle(), &sd)?;
+        }
+        acl.guests = guests;
+        Ok(())
+    }
+
+    /// Whether a router pipe client with process id `pid` is let in (contract §2.3, §7.7).
+    /// While the pipe has AppContainer guests it carries a Low label, so a Low-integrity
+    /// process could open it: below Medium only the hub's own containers are admitted; the
+    /// user's Medium processes (modules, outside tools) are as before. A container that isn't
+    /// (or no longer is) a guest is refused either way.
+    pub fn admit(&self, pid: Option<u32>) -> Result<(), String> {
+        let guests = self.pipe_guests();
+        let Some(pid) = pid else {
+            // Without guests the pipe keeps Windows' Medium floor: as before.
+            return if guests.is_empty() {
+                Ok(())
+            } else {
+                Err("its process is unknown".into())
+            };
+        };
+        let peer = match hideout_acl::peer(pid) {
+            Ok(p) => p,
+            Err(_) if guests.is_empty() => return Ok(()),
+            Err(e) => return Err(format!("pid {pid}: token not read: {e}")),
+        };
+        if hideout_acl::admits(&peer, &guests) {
+            Ok(())
+        } else {
+            Err(format!(
+                "pid {pid} runs at integrity {:#x}{} and isn't one of the hub's AppContainers",
+                peer.integrity,
+                peer.app_container
+                    .as_deref()
+                    .map_or(String::new(), |s| format!(" in {s}"))
+            ))
+        }
     }
 
     /// The AppContainer SIDs that may open the router pipe.

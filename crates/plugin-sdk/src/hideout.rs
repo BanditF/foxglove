@@ -264,6 +264,30 @@ pub fn open_pipe(name: &str) -> io::Result<std::fs::File> {
     o.open(name)
 }
 
+/// Fails unless the process serving `pipe` (a connected client end) is `hub`, the hub's pid
+/// from `HIDEOUT_HUB_PID` (contract §7.5): a module never talks to a squatter.
+pub fn check_server(pipe: &std::fs::File, hub: u32) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+        let mut pid = 0u32;
+        // SAFETY: an open pipe handle owned by `pipe`.
+        if unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle() as _, &mut pid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if pid != hub {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("the pipe is served by pid {pid}, not the hub's {hub}: nothing sent"),
+            ));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (pipe, hub);
+    Ok(())
+}
+
 /// Connects to the router pipe the hub named at launch.
 pub fn connect_env() -> io::Result<(Session<BufReader<std::fs::File>, std::fs::File>, Launch)> {
     let launch = Launch::from_env().ok_or_else(|| {
@@ -273,6 +297,14 @@ pub fn connect_env() -> io::Result<(Session<BufReader<std::fs::File>, std::fs::F
         )
     })?;
     let pipe = open_pipe(&launch.pipe)?;
+    // Nothing is sent, the token least of all, until the pipe is known to be the hub's own
+    // (contract §7.5): another process may have made an instance of the name.
+    if let Some(hub) = std::env::var("HIDEOUT_HUB_PID")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+    {
+        check_server(&pipe, hub)?;
+    }
     let reader = BufReader::new(pipe.try_clone()?);
     Ok((Session::new(reader, pipe), launch))
 }

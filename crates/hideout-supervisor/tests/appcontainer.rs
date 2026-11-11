@@ -54,6 +54,8 @@ fn lab_home(id: &str, contain: bool) -> (PathBuf, PathBuf) {
     let home = base.join("home");
     let mut reg = Registry::open(&home, true).unwrap();
     reg.install(&folder, NOW).unwrap();
+    // The plan reads granted permissions: approve its device.hid as the dialog would.
+    reg.approve(id).unwrap();
     reg.set_enabled(id, true).unwrap();
     if contain {
         let toml = home.join("hideout.toml");
@@ -160,7 +162,8 @@ fn without_the_setting_it_runs_outside() {
 }
 
 /// The router pipe admits a container's SID only once the hub allows it, on the instance that
-/// was already waiting and on every one after.
+/// was already waiting and on every one after; the module talks only to the hub's own pipe
+/// server (`HIDEOUT_HUB_PID`, #1089 review); a guest taken off is refused again.
 #[test]
 fn the_router_pipe_admits_a_container_only_once_allowed() {
     const ID: &str = "example.lab.ac-pipe";
@@ -177,41 +180,51 @@ fn the_router_pipe_admits_a_container_only_once_allowed() {
     hub.serve_pipe(&pipe).unwrap();
     let c = sandbox::Container::for_module(ID, &[]).unwrap();
     c.grant(&base, false).unwrap();
-    let env = [
-        ("HIDEOUT_PIPE", pipe.clone()),
-        ("HIDEOUT_TOKEN", "t".to_string()),
-        ("HIDEOUT_INSTANCE", "1".to_string()),
-    ];
     let job = Job::create(
         &Job::name_for("test", ID, std::process::id() as u64),
         Caps::default(),
     )
     .unwrap();
-    let run = || {
-        let (p, _) = c
-            .spawn(
-                &job,
-                &exe,
-                &[ID.into(), "-".into(), "--exit".into()],
-                &base,
-                &env,
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(base.join("probe.log"))
-                    .ok(),
-            )
+    let me = std::process::id();
+    let start = |hub_pid: u32, exit: bool| {
+        let env = [
+            ("HIDEOUT_PIPE", pipe.clone()),
+            ("HIDEOUT_TOKEN", "t".to_string()),
+            ("HIDEOUT_INSTANCE", "1".to_string()),
+            ("HIDEOUT_HUB_PID", hub_pid.to_string()),
+        ];
+        let mut args = vec![ID.to_string(), "-".into()];
+        if exit {
+            args.push("--exit".into());
+        }
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(base.join("probe.log"))
+            .ok();
+        let (p, pid) = c
+            .spawn(&job, &exe, &args, &base, &env, log)
             .unwrap()
             .resume()
             .unwrap();
         assert!(sandbox::is_app_container(&p).unwrap());
-        p.wait().unwrap()
+        (p, pid)
     };
-    let before = run();
+    let run = |hub_pid: u32| start(hub_pid, true).0.wait().unwrap();
+    let before = run(me);
     hub.allow_pipe_client(&c.sid_string).unwrap();
     hub.allow_pipe_client(&c.sid_string).unwrap(); // twice: one guest
-    let after = [run(), run()];
+    let after = [run(me), run(me)];
+    // A pipe served by another process than the hub: nothing is sent.
+    let elsewhere = run(me + 1);
     let guests = hub.pipe_guests();
+    // The router lets the container in while it is a guest, not once it is taken off.
+    let (live, pid) = start(me, false);
+    let admitted = hub.admit(Some(pid));
+    hub.disallow_pipe_client(&c.sid_string).unwrap();
+    let after_remove = hub.admit(Some(pid));
+    let guests_after = hub.pipe_guests();
+    live.kill(1);
     let log = std::fs::read_to_string(base.join("probe.log")).unwrap_or_default();
     job.kill(1);
     drop(c);
@@ -226,5 +239,137 @@ fn the_router_pipe_admits_a_container_only_once_allowed() {
         [0, 0],
         "the container couldn't open the pipe once allowed: {log}"
     );
+    assert_eq!(
+        elsewhere, 3,
+        "it talked to a pipe the hub doesn't serve: {log}"
+    );
+    assert!(log.contains("not the hub's"), "{log}");
     assert_eq!(guests.len(), 1);
+    assert!(admitted.is_ok(), "{admitted:?}");
+    assert!(
+        after_remove.is_err(),
+        "a removed module's container is still let in"
+    );
+    assert!(guests_after.is_empty());
+}
+
+/// A process of the user at Low integrity that isn't one of the hub's containers (a browser's
+/// or PDF reader's sandbox): while the pipe has guests (and so a Low label) Windows lets it
+/// open the pipe, and the router refuses it (#1089 review). The user's own Medium processes
+/// are admitted as before.
+#[test]
+fn a_low_integrity_process_is_refused_by_the_router() {
+    let router = Router::new(Settings::default(), Box::new(|_, asked| asked.to_vec()));
+    let (events, _rx) = mpsc::channel();
+    let hub = Hub::new(router, events);
+    hub.set_folder_suffix(&format!(".lowtest{}", std::process::id()));
+    hub.serve_pipe(&hub.router_pipe()).unwrap();
+    // No guests: the Medium floor holds, nothing is checked.
+    assert!(hub.admit(None).is_ok());
+    hub.allow_pipe_client("S-1-15-2-1-2-3-4-5-6-7").unwrap();
+    let (low, low_pid) = low_integrity_process();
+    let refused = hub.admit(Some(low_pid));
+    let me = hub.admit(Some(std::process::id()));
+    let unknown = hub.admit(None);
+    low.kill(1);
+    assert!(refused.is_err(), "a Low-integrity process was let in");
+    assert!(me.is_ok(), "the user's Medium process was refused: {me:?}");
+    assert!(unknown.is_err(), "a client of unknown pid was let in");
+}
+
+/// `cmd.exe` started suspended with this process's token lowered to Low integrity (no
+/// AppContainer): what a browser sandbox looks like to the router.
+fn low_integrity_process() -> (Process, u32) {
+    use windows_sys::Win32::Foundation::{LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::{
+        CreateRestrictedToken, GetLengthSid, SetTokenInformation, TokenIntegrityLevel,
+        SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
+        TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken, CREATE_NO_WINDOW,
+        CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    const SE_GROUP_INTEGRITY: u32 = 0x20;
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    unsafe {
+        let mut tok: HANDLE = std::ptr::null_mut();
+        assert_ne!(
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_ASSIGN_PRIMARY,
+                &mut tok,
+            ),
+            0
+        );
+        let mut low: HANDLE = std::ptr::null_mut();
+        assert_ne!(
+            CreateRestrictedToken(
+                tok,
+                0,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                &mut low
+            ),
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        let mut sid = std::ptr::null_mut();
+        assert_ne!(
+            ConvertStringSidToSidW(wide("S-1-16-4096").as_ptr(), &mut sid),
+            0
+        );
+        let label = TOKEN_MANDATORY_LABEL {
+            Label: SID_AND_ATTRIBUTES {
+                Sid: sid,
+                Attributes: SE_GROUP_INTEGRITY,
+            },
+        };
+        assert_ne!(
+            SetTokenInformation(
+                low,
+                TokenIntegrityLevel,
+                &label as *const _ as *const _,
+                (std::mem::size_of::<TOKEN_MANDATORY_LABEL>() + GetLengthSid(sid) as usize) as u32,
+            ),
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        LocalFree(sid);
+        let mut cmd = wide("cmd.exe /d /c ping -n 30 127.0.0.1");
+        let mut si: STARTUPINFOW = std::mem::zeroed();
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        assert_ne!(
+            CreateProcessAsUserW(
+                low,
+                std::ptr::null(),
+                cmd.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                std::ptr::null(),
+                std::ptr::null(),
+                &si,
+                &mut pi,
+            ),
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+        windows_sys::Win32::Foundation::CloseHandle(pi.hThread);
+        windows_sys::Win32::Foundation::CloseHandle(low);
+        windows_sys::Win32::Foundation::CloseHandle(tok);
+        let p = Process::open(pi.dwProcessId).unwrap();
+        windows_sys::Win32::Foundation::CloseHandle(pi.hProcess);
+        (p, pi.dwProcessId)
+    }
 }

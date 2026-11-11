@@ -263,6 +263,9 @@ struct Inner {
 
 /// What [`Supervisor::launch`] answers when the manifest's `hub` isn't served (§7.8 needs-hub).
 const NEEDS_HUB: &str = "manifest.hub";
+/// How [`Supervisor::launch`]'s answer starts when containment is on and the module may not
+/// run without one (§7.7).
+const NO_SANDBOX: &str = "no sandbox";
 
 /// The modules a manifest needs (§4.4): its `requires` ids and its `channel.open:` providers.
 fn depends_on(m: &hideout_contract::module::Module) -> BTreeSet<String> {
@@ -659,6 +662,11 @@ impl Supervisor {
         }
         let known = self.0.policy.lock().unwrap().forget(id);
         // Its AppContainer profile, if it ever ran in one (§7.7); nothing when it didn't.
+        if let Some(sid) = crate::sandbox::profile_sid(id) {
+            if let Err(e) = self.0.hub.disallow_pipe_client(&sid) {
+                log::warn!("supervisor: {id}: AppContainer not taken off the router pipe: {e}");
+            }
+        }
         crate::sandbox::delete_profile(id);
         self.0.expected.lock().unwrap().remove(id);
         self.0.withdrawals.lock().unwrap().remove(id);
@@ -1122,6 +1130,13 @@ impl Supervisor {
                             log::warn!("supervisor: {id} not started: needs a newer hub");
                             self.feed(Ev::NeedsHub { id });
                         }
+                        Err(r) if r.starts_with(NO_SANDBOX) => {
+                            log::warn!("supervisor: {id} not started: {r}");
+                            self.feed(Ev::LaunchFailed {
+                                id,
+                                reason: words::NO_SANDBOX.into(),
+                            });
+                        }
                         Err(reason) => {
                             log::warn!("supervisor: {id} not started: {reason}");
                             self.feed(Ev::LaunchFailed {
@@ -1228,11 +1243,12 @@ impl Supervisor {
             Job::create(&Job::name_for(&self.job_user(), id, instance), caps)
                 .map_err(|e| format!("job: {e}"))?,
         );
-        // An AppContainer when the hub's setting asks for one and the permissions allow it
-        // (§7.7). A module the plan keeps outside runs as before; a container that can't be
-        // set up fails the launch rather than running the module uncontained.
-        let container = if !l.stdio && reg.hub.appcontainer() {
-            self.container_for(&reg, id, &l.dir)?
+        // An AppContainer when the hub's setting asks for one (§7.7), planned from what the
+        // user GRANTED: a granted `net` or `files` runs outside (its permission line said so);
+        // anything else that can't be contained doesn't start; a container that can't be set
+        // up fails the launch. A module never runs uncontained without a word.
+        let container = if reg.hub.appcontainer() {
+            self.container_for(id, &l.dir, &l.granted, l.stdio)?
         } else {
             None
         };
@@ -1246,6 +1262,7 @@ impl Supervisor {
                 ("HIDEOUT_PIPE", self.0.hub.router_pipe()),
                 ("HIDEOUT_TOKEN", token.clone()),
                 ("HIDEOUT_INSTANCE", instance.to_string()),
+                ("HIDEOUT_HUB_PID", std::process::id().to_string()),
             ];
             let (p, _) = c
                 .spawn(&job, &exe, &run[1..], &l.dir, &env, self.log_file(id))
@@ -1272,6 +1289,7 @@ impl Supervisor {
             cmd.env("HIDEOUT_PIPE", self.0.hub.router_pipe())
                 .env("HIDEOUT_TOKEN", &token)
                 .env("HIDEOUT_INSTANCE", instance.to_string())
+                .env("HIDEOUT_HUB_PID", std::process::id().to_string())
                 .stdin(Stdio::null())
                 .stdout(Stdio::null());
             Child::Plain(job.spawn(cmd).map_err(|e| format!("{e}"))?)
@@ -1385,6 +1403,14 @@ impl Supervisor {
         // A contained survivor keeps its AppContainer: this hub's pipe lets its SID in before
         // it reconnects (§7.7, §7.9).
         match crate::sandbox::container_sid(&p) {
+            // Its own profile's container only: a survivor in any other container isn't
+            // let in (its token can't be spoofed, but its record could be another's).
+            Ok(Some(sid)) if crate::sandbox::profile_sid(id).as_deref() != Some(sid.as_str()) => {
+                return Err(format!(
+                    "pid {} runs in another AppContainer ({sid})",
+                    rec.pid
+                ));
+            }
             Ok(Some(sid)) => self
                 .0
                 .hub
@@ -1456,21 +1482,23 @@ impl Supervisor {
     }
 
     /// Module `id`'s AppContainer (§7.7), set up: its version folder readable, `settings\`
-    /// and `data\` writable, the router pipe open to it. `None` when its permissions keep it
-    /// outside (logged).
+    /// and `data\` writable, the router pipe open to it. `None` when its grants keep it outside
+    /// (logged); an error starting with [`NO_SANDBOX`] when it may not run at all.
     fn container_for(
         &self,
-        reg: &Registry,
         id: &str,
         dir: &Path,
+        granted: &[String],
+        stdio: bool,
     ) -> Result<Option<crate::sandbox::Container>, String> {
-        let permissions = reg.manifest(id).map(|m| m.permissions).unwrap_or_default();
-        let caps = match crate::contain::plan(&permissions) {
-            Ok(c) => c,
-            Err(why) => {
+        use crate::contain::Plan;
+        let caps = match crate::contain::plan_for(granted, stdio) {
+            Plan::Contained(c) => c,
+            Plan::Outside(why) => {
                 log::info!("supervisor: {id} runs outside an AppContainer: {why}");
                 return Ok(None);
             }
+            Plan::Refused(why) => return Err(format!("{NO_SANDBOX}: {why}")),
         };
         let set_up = || -> std::io::Result<crate::sandbox::Container> {
             let c = crate::sandbox::Container::for_module(id, &caps)?;

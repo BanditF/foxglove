@@ -664,3 +664,20 @@ mod tests {
         t.join().unwrap();
     }
 }
+
+#[cfg(test)]
+mod server_check_tests {
+    use super::ServerPipe;
+    use crate::hideout::{check_server, open_pipe};
+
+    /// A module checks who serves the pipe before it sends anything (contract §7.5).
+    #[test]
+    fn the_server_pid_is_checked() {
+        let name = format!(r"\\.\pipe\hideout-servercheck-{}", std::process::id());
+        let _server = ServerPipe::create(&name, true).unwrap();
+        let f = open_pipe(&name).unwrap();
+        assert!(check_server(&f, std::process::id()).is_ok());
+        let e = check_server(&f, std::process::id() + 1).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+}

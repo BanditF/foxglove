@@ -60,14 +60,47 @@ fn wide_path(p: &Path) -> Vec<u16> {
     p.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 
-/// The profile name for module `id`: `hideout.<id>`, ASCII letters, digits, `.`, `-`, `_`, at
-/// most 64 characters (the API's limit).
+/// The longest profile name the API takes.
+const PROFILE_MAX: usize = 64;
+
+/// The profile name for module `id`: `hideout.<id>` when that fits in 64 characters and the id
+/// has only ASCII letters, digits, `.`, `-` and `_`; else `hideout.<first 39>.<16 hex of the
+/// id's SHA-256>`, so two ids never share a profile (and its SID).
 pub fn profile_name(id: &str) -> String {
-    format!("hideout.{id}")
+    let plain = format!("hideout.{id}");
+    let clean = id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c));
+    if clean && plain.len() <= PROFILE_MAX {
+        return plain;
+    }
+    use sha2::{Digest, Sha256};
+    let hash: String = Sha256::digest(id.as_bytes())[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let head: String = id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || ".-_".contains(*c))
-        .take(64)
-        .collect()
+        .take(39)
+        .collect();
+    format!("hideout.{head}.{hash}")
+}
+
+/// The SID of module `id`'s profile, if Windows derives one (it does for any name, made or
+/// not), for taking it off the router pipe when the module is removed.
+pub fn profile_sid(id: &str) -> Option<String> {
+    let name = wide(&profile_name(id));
+    let mut sid: PSID = std::ptr::null_mut();
+    // SAFETY: a NUL-terminated name; the SID is freed once below.
+    unsafe {
+        if DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) < 0 {
+            return None;
+        }
+        let s = sid_string(sid).ok();
+        FreeSid(sid);
+        s
+    }
 }
 
 /// Removes module `id`'s profile (and its `%LOCALAPPDATA%\Packages` folder), for remove.
@@ -173,21 +206,34 @@ impl Container {
                 &mut sid,
             )
         };
-        if hr < 0 {
-            // Made by an earlier start: look it up.
+        // HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS): made by an earlier start, so look it up.
+        // Any other failure is a real one (access denied, no profile service) and is said.
+        const ALREADY_EXISTS: i32 = 0x8007_00B7_u32 as i32;
+        if hr == ALREADY_EXISTS {
             // SAFETY: as above.
             let hr = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
             if hr < 0 {
                 return Err(io::Error::other(format!(
-                    "AppContainer profile: HRESULT {hr:#x}"
+                    "AppContainer profile lookup: HRESULT {hr:#x}"
                 )));
             }
+        } else if hr < 0 {
+            return Err(io::Error::other(format!(
+                "AppContainer profile: HRESULT {hr:#x}"
+            )));
         }
+        // SAFETY: a valid SID; freed here when it can't be read, else by `Container`'s drop.
+        let sid_string = match unsafe { sid_string(sid) } {
+            Ok(s) => s,
+            Err(e) => {
+                unsafe { FreeSid(sid) };
+                return Err(e);
+            }
+        };
         let mut c = Container {
             sid,
             caps: Vec::new(),
-            // SAFETY: a valid SID.
-            sid_string: unsafe { sid_string(sid)? },
+            sid_string,
         };
         for name in capabilities {
             c.caps.push(capability_sid(name)?);
@@ -267,6 +313,11 @@ impl Container {
         env: &[(&str, String)],
         stderr: Option<File>,
     ) -> io::Result<Spawned> {
+        // Declared first, so it is released last: no other spawn of the supervisor (plain or
+        // stdio, `Job::spawn_with`) runs while these three handles are inheritable, and they are
+        // closed before it is released (#1089 review). The handle list gives this child exactly
+        // these three.
+        let _spawning = crate::win::SPAWN.lock().unwrap_or_else(|e| e.into_inner());
         let null_in = File::open("NUL")?;
         let null_out = std::fs::OpenOptions::new().write(true).open("NUL")?;
         let err = match stderr {
@@ -522,7 +573,14 @@ mod tests {
             profile_name("foxglove.example-art"),
             "hideout.foxglove.example-art"
         );
-        assert_eq!(profile_name(&"x".repeat(100)).len(), 64);
+        // Long ids that share their first 56 characters get two profiles (#1089 review).
+        let a = format!("{}.a", "x".repeat(60));
+        let b = format!("{}.b", "x".repeat(60));
+        let (pa, pb) = (profile_name(&a), profile_name(&b));
+        assert_ne!(pa, pb);
+        assert!(pa.len() <= 64 && pb.len() <= 64, "{pa} {pb}");
+        assert_eq!(pa, profile_name(&a), "the same id, the same profile");
+        assert_eq!(profile_name("a.b"), "hideout.a.b");
         let c = command_line(
             Path::new(r"C:\a b\m.exe"),
             &["/c".into(), "say \"hi\"".into(), r"C:\x\".into(), "".into()],

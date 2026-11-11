@@ -104,12 +104,10 @@ impl Descriptor {
 
     /// [`Descriptor::current_user_only`] plus, for each AppContainer SID in `guests`, the
     /// client rights of [`PIPE_CLIENT_ACCESS`], and a Low mandatory label (no write up) so a
-    /// Low-integrity AppContainer process may open it (contract §7.7). No guests: exactly
-    /// [`Descriptor::current_user_only`]. A guest that isn't an AppContainer SID is refused.
+    /// Low-integrity AppContainer process may open it (contract §7.7). No guests: the current
+    /// user only, with a Medium label (Windows' default floor, written out). A guest that isn't
+    /// an AppContainer SID is refused.
     pub fn current_user_and(guests: &[String]) -> io::Result<Descriptor> {
-        if guests.is_empty() {
-            return Self::current_user_only();
-        }
         let mut sddl = format!("D:P(A;;GA;;;{})", current_user_sid()?);
         for g in guests {
             if !is_app_container_sid(g) {
@@ -117,7 +115,13 @@ impl Descriptor {
             }
             sddl.push_str(&format!("(A;;0x{PIPE_CLIENT_ACCESS:x};;;{g})"));
         }
-        sddl.push_str("S:(ML;;NW;;;LW)");
+        // With no guests, Windows' Medium floor, stated: applied to a pipe that had guests, it
+        // takes the Low label off again.
+        sddl.push_str(if guests.is_empty() {
+            "S:(ML;;NW;;;ME)"
+        } else {
+            "S:(ML;;NW;;;LW)"
+        });
         Self::from_sddl(&sddl)
     }
 
@@ -190,6 +194,80 @@ pub fn apply_to_handle(handle: std::os::windows::io::RawHandle, sd: &Descriptor)
         }
     }
     Ok(())
+}
+
+/// What the router knows of a pipe peer's process (contract §2.3, §7.7): its integrity level
+/// (the RID: 0x1000 Low, 0x2000 Medium, 0x3000 High) and, in an AppContainer, its SID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Peer {
+    pub integrity: u32,
+    pub app_container: Option<String>,
+}
+
+/// Medium integrity: a plain process of the signed-in user.
+pub const MEDIUM_RID: u32 = 0x2000;
+
+/// Reads process `pid`'s token: integrity level and AppContainer SID.
+pub fn peer(pid: u32) -> io::Result<Peer> {
+    use windows_sys::Win32::Security::{
+        GetSidSubAuthority, GetSidSubAuthorityCount, TokenAppContainerSid, TokenIntegrityLevel,
+        TokenIsAppContainer, TOKEN_APPCONTAINER_INFORMATION, TOKEN_INFORMATION_CLASS,
+        TOKEN_MANDATORY_LABEL,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if p.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let mut token: HANDLE = std::ptr::null_mut();
+        let opened = OpenProcessToken(p, TOKEN_QUERY, &mut token);
+        CloseHandle(p);
+        if opened == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let info = |class: TOKEN_INFORMATION_CLASS| -> io::Result<Vec<u64>> {
+            let mut len = 0u32;
+            GetTokenInformation(token, class, std::ptr::null_mut(), 0, &mut len);
+            let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
+            if GetTokenInformation(token, class, buf.as_mut_ptr().cast(), len, &mut len) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(buf)
+        };
+        let out = (|| {
+            let label = info(TokenIntegrityLevel)?;
+            let sid = (*(label.as_ptr() as *const TOKEN_MANDATORY_LABEL))
+                .Label
+                .Sid;
+            let n = *GetSidSubAuthorityCount(sid);
+            let integrity = *GetSidSubAuthority(sid, n.saturating_sub(1) as u32);
+            let app_container = if info(TokenIsAppContainer)?[0] as u32 != 0 {
+                let a = info(TokenAppContainerSid)?;
+                let a = &*(a.as_ptr() as *const TOKEN_APPCONTAINER_INFORMATION);
+                Some(sid_string(a.TokenAppContainer)?)
+            } else {
+                None
+            };
+            Ok(Peer {
+                integrity,
+                app_container,
+            })
+        })();
+        CloseHandle(token);
+        out
+    }
+}
+
+/// Whether the router pipe admits `peer` (contract §2.3, §7.7): Medium integrity or above (the
+/// user's own processes, as before), or an AppContainer the hub let in. A Low-integrity
+/// process that isn't one of the hub's containers (a browser's or a PDF reader's sandbox)
+/// is refused, though the pipe's Low label lets it open the pipe.
+pub fn admits(peer: &Peer, guests: &[String]) -> bool {
+    match &peer.app_container {
+        Some(sid) => guests.iter().any(|g| g == sid),
+        None => peer.integrity >= MEDIUM_RID,
+    }
 }
 
 /// One ACE of a DACL.

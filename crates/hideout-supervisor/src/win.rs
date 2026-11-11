@@ -50,6 +50,10 @@ impl Drop for Handle {
     }
 }
 
+/// Held around every process start of the supervisor: an AppContainer start makes its three
+/// handles inheritable for a moment, and no other start may pick them up meanwhile.
+pub(crate) static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// JOB_OBJECT_ASSIGN_PROCESS | SET_ATTRIBUTES | QUERY | TERMINATE (winnt.h).
 const JOB_ACCESS: u32 = 0x1 | 0x2 | 0x4 | 0x8;
 
@@ -271,7 +275,10 @@ impl Job {
         spawn: impl FnOnce(Command) -> io::Result<Child>,
     ) -> io::Result<Child> {
         command.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
-        let mut child = spawn(command)?;
+        let mut child = {
+            let _spawning = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+            spawn(command)?
+        };
         // SAFETY: the child's process handle is valid while `child` lives.
         let ok = unsafe { AssignProcessToJobObject(self.handle.0, child.as_raw_handle() as _) };
         if ok == 0 {
