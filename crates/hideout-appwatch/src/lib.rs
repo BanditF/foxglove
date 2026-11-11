@@ -76,6 +76,24 @@ impl Watch {
         self.running.remove(&pid);
     }
 
+    /// Follows `names` from now on (a module joined or left while the hub runs, #1111).
+    /// Returns the pids of processes whose app is no longer watched, so the caller stops
+    /// waiting on them, and whether any name is new (the caller then looks at what runs).
+    pub fn set_names(&mut self, names: BTreeSet<String>) -> (Vec<u32>, bool) {
+        let added = names.difference(&self.names).next().is_some();
+        self.names = names;
+        let dropped: Vec<u32> = self
+            .running
+            .iter()
+            .filter(|(_, l)| !self.names.contains(*l))
+            .map(|(p, _)| *p)
+            .collect();
+        for p in &dropped {
+            self.running.remove(p);
+        }
+        (dropped, added)
+    }
+
     pub fn is_running(&self, pid: u32) -> bool {
         self.running.contains_key(&pid)
     }
@@ -105,11 +123,17 @@ impl Watch {
                 now.insert(key, json!(false));
             }
         }
-        let out: Changes = now
+        let mut out: Changes = now
             .iter()
             .filter(|(k, v)| self.published.get(*k) != Some(*v))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        // A name no longer followed stops reading "running" (#1111).
+        for (k, v) in &self.published {
+            if k.starts_with("apps.running.") && !now.contains_key(k) && *v != json!(false) {
+                out.push((k.clone(), json!(false)));
+            }
+        }
         self.published = now;
         out
     }
@@ -164,6 +188,76 @@ pub fn start(
     {
         let _ = (watch, file, sink);
         None
+    }
+}
+
+/// The names the app watch follows, kept per module so that a module installed or removed
+/// while the hub runs adds or drops its names (#1111). The watch starts when the first name
+/// arrives; a name stays followed while any module still names it. Event-driven: a change is
+/// a message to the watch's thread, which then looks at what runs once.
+#[derive(Clone)]
+pub struct Control(std::sync::Arc<std::sync::Mutex<Ctl>>);
+
+struct Ctl {
+    home: PathBuf,
+    sink: Option<Sink>,
+    by_module: BTreeMap<String, BTreeSet<String>>,
+    started: bool,
+}
+
+impl Control {
+    pub fn new(home: &Path, sink: Sink) -> Control {
+        Control(std::sync::Arc::new(std::sync::Mutex::new(Ctl {
+            home: home.to_path_buf(),
+            sink: Some(sink),
+            by_module: BTreeMap::new(),
+            started: false,
+        })))
+    }
+
+    /// Module `id` names `names` (empty: it names none). Replaces what it named before.
+    pub fn set_module(&self, id: &str, names: BTreeSet<String>) {
+        self.set_modules([(id.to_string(), names)]);
+    }
+
+    /// Several modules at once (the start): one change for the watch.
+    pub fn set_modules(&self, modules: impl IntoIterator<Item = (String, BTreeSet<String>)>) {
+        let mut c = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, names) in modules {
+            if names.is_empty() {
+                c.by_module.remove(&id);
+            } else {
+                c.by_module.insert(id, names);
+            }
+        }
+        c.apply();
+    }
+
+    /// Module `id` left: its names stop being followed unless another module names them.
+    pub fn remove_module(&self, id: &str) {
+        let mut c = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if c.by_module.remove(id).is_some() {
+            c.apply();
+        }
+    }
+}
+
+impl Ctl {
+    fn apply(&mut self) {
+        let all: BTreeSet<String> = self.by_module.values().flatten().cloned().collect();
+        if !self.started {
+            if all.is_empty() {
+                return;
+            }
+            log::info!("appwatch: watching {} app(s)", all.len());
+            if let Some(sink) = self.sink.take() {
+                self.started = start(all, &self.home, sink).is_some();
+            }
+            return;
+        }
+        log::info!("appwatch: now watching {} app(s)", all.len());
+        #[cfg(windows)]
+        win::post_names(&self.home.join(SEEN_FILE), all);
     }
 }
 
@@ -273,6 +367,20 @@ mod tests {
         assert!(!dir.join(SEEN_FILE).exists());
         forget_seen(&dir);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn names_joining_and_leaving_late_are_followed_and_retracted() {
+        let mut w = Watch::new(names(&["a"]), BTreeSet::new());
+        w.started(5, "a");
+        let _ = w.changes();
+        // A new name asks the caller to look at what runs; "a" stays.
+        assert_eq!(w.set_names(names(&["a", "b"])), (vec![], true));
+        assert_eq!(w.changes(), vec![("apps.running.b".into(), json!(false))]);
+        // "a" is dropped: its process is no longer waited on and its fact reads false.
+        assert_eq!(w.set_names(names(&["b"])), (vec![5], false));
+        assert_eq!(w.changes(), vec![("apps.running.a".into(), json!(false))]);
+        assert!(w.changes().is_empty(), "said once");
     }
 
     #[test]

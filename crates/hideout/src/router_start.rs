@@ -204,15 +204,8 @@ pub fn start(
     let (side, feed) = panel_feed::feed(hub.clone());
     // `hideout.appwatch` (§4.6, v1.7): only the apps the manifests ask about, by name from the
     // manifests; with none it doesn't run. Its facts go through the router like any hub fact.
-    let apps: std::collections::BTreeSet<String> =
-        manifests.iter().flat_map(|m| m.watched_apps()).collect();
-    if !apps.is_empty() {
-        log::info!("appwatch: watching {} app(s)", apps.len());
-    }
-    let h = hub.clone();
-    hideout_appwatch::start(
-        apps,
-        home,
+    let apps = hideout_appwatch::Control::new(home, {
+        let h = hub.clone();
         Box::new(move |changes| {
             h.act(|r| {
                 changes
@@ -220,8 +213,11 @@ pub fn start(
                     .flat_map(|(k, v)| r.publish(&k, v))
                     .collect()
             })
-        }),
-    );
+        })
+    });
+    // Modules that join or leave later add and drop their names through the same control
+    // (the inventory watch, #1111).
+    apps.set_modules(manifests.iter().map(|m| (m.id.clone(), m.watched_apps())));
     for m in manifests {
         side.manifest(m);
     }
@@ -278,7 +274,7 @@ pub fn start(
             }
         })
         .expect("router events thread");
-    watch_inventory(home, gone, hub.clone(), sup.clone(), fresh);
+    watch_inventory(home, gone, hub.clone(), sup.clone(), fresh, apps);
     (hub, sup, feed)
 }
 
@@ -291,6 +287,7 @@ fn watch_inventory(
     hub: Hub,
     sup: Supervisor,
     fresh: crate::modules_page::Fresh,
+    apps: hideout_appwatch::Control,
 ) {
     let at = home.to_path_buf();
     // Added ids the registry didn't hold yet (a lab folder copied before its manifest): while
@@ -314,6 +311,7 @@ fn watch_inventory(
                 sup.forget(id);
                 hub.act(|r| r.forget_module(id));
                 side.removed(id);
+                apps.remove_module(id);
             }
             // One read for the supervisor and the page, so the page never lists what the
             // supervisor hasn't seen (#1076). A failed read keeps the page's last list.
@@ -346,6 +344,7 @@ fn watch_inventory(
                 waiting.remove(&id);
                 if let Some(m) = sup.learn_from(&reg, &id) {
                     if let Some(m) = m {
+                        apps.set_module(&m.id, m.watched_apps());
                         side.manifest(m);
                     }
                     late.insert(id);
@@ -380,7 +379,13 @@ fn note_needs_hub_names(reg: &hideout_registry::Registry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hideout_shell::hideout_panels::PanelFeed;
     use hideout_supervisor::words;
+
+    /// An app watch control whose facts go nowhere.
+    fn no_apps(home: &Path) -> hideout_appwatch::Control {
+        hideout_appwatch::Control::new(home, Box::new(|_| {}))
+    }
 
     /// #1054.1–2, window-free: the watch's chain on a temp hub folder with a real router,
     /// supervisor and feed. A removal tells the shell, and the router forgets the module; an
@@ -425,7 +430,7 @@ mod tests {
         }));
         let sup = Supervisor::start(&home, hub.clone());
         let fresh = crate::modules_page::Fresh::default();
-        watch_inventory(&home, side, hub.clone(), sup, fresh.clone());
+        watch_inventory(&home, side, hub.clone(), sup, fresh.clone(), no_apps(&home));
         let mut ids_after = |want: &[&str]| -> Vec<Inbound> {
             let mut seen = Vec::new();
             loop {
@@ -524,7 +529,14 @@ mod tests {
         }));
         let sup = Supervisor::start(&home, hub.clone());
         let fresh = crate::modules_page::Fresh::default();
-        watch_inventory(&home, side, hub.clone(), sup.clone(), fresh.clone());
+        watch_inventory(
+            &home,
+            side,
+            hub.clone(),
+            sup.clone(),
+            fresh.clone(),
+            no_apps(&home),
+        );
         let late = "example.side.beat";
         assert!(!sup.knows(late) && !hub.read(|r| r.knows_module(late)));
 
@@ -584,6 +596,142 @@ mod tests {
                 );
             }
         }
+        drop(sup);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The child half of the test below: waits until it is ended (at most 60 s).
+    #[test]
+    #[ignore = "run by a_module_installed_after_the_start_gets_its_app_followed"]
+    fn late_probe_child_waits() {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
+
+    /// #1111, window-free: a stand-in exe (a copy of this test binary under a unique name, no
+    /// window) runs; a module naming it by `apps.watch` is installed while the hub runs, and
+    /// the watch reports it running. A second module names it too: removing the first keeps
+    /// it followed, removing the second retracts the fact. Start event: each registry write;
+    /// stop event: the watch's fact message; 10 s is the fallback only.
+    #[cfg(windows)]
+    #[test]
+    fn a_module_installed_after_the_start_gets_its_app_followed() {
+        use std::os::windows::process::CommandExt;
+        use std::time::Duration;
+        let base = std::env::temp_dir().join(format!("hideout-rs-apps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let label = format!("hideout-late-probe-{}", std::process::id());
+        let install = |id: &str| {
+            let src = base.join("src").join(id);
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(
+                src.join("module.toml"),
+                format!(
+                    "id = \"{id}\"
+name = \"{id}\"
+version = \"0.1.0\"
+kind = \"service\"
+                     family = \"third-party\"
+hub = \"1.0\"
+visibility = \"private\"
+                     run = [\"missing.exe\"]
+permissions = [\"apps.watch:{label}.exe\"]
+"
+                ),
+            )
+            .unwrap();
+            let mut reg = hideout_registry::Registry::open(&home, true).unwrap();
+            reg.install(&src, "2026-11-10T00:00:00Z").unwrap();
+        };
+        let remove = |id: &str| {
+            let mut reg = hideout_registry::Registry::open(&home, true).unwrap();
+            reg.remove(id).unwrap();
+        };
+        install("example.side.one");
+        std::fs::create_dir_all(&base).unwrap();
+        let exe = base.join(format!("{label}.exe"));
+        std::fs::copy(std::env::current_exe().unwrap(), &exe).unwrap();
+        let mut child = std::process::Command::new(&exe)
+            .args([
+                "--ignored",
+                "--exact",
+                "router_start::tests::late_probe_child_waits",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+
+        let router = Router::new(Settings::default(), approver());
+        let (events, _rx) = mpsc::channel();
+        let hub = Hub::new(router, events);
+        hub.set_folder_suffix(&hideout_router::server::folder_suffix(&home));
+        let (side, mut feed) = panel_feed::feed(hub.clone());
+        let (tx, facts) = mpsc::channel();
+        let tx = std::sync::Mutex::new(tx);
+        let h = hub.clone();
+        let apps = hideout_appwatch::Control::new(
+            &home,
+            Box::new(move |changes| {
+                let _ = tx.lock().unwrap().send(changes.clone());
+                h.act(|r| {
+                    changes
+                        .into_iter()
+                        .flat_map(|(k, v)| r.publish(&k, v))
+                        .collect()
+                })
+            }),
+        );
+        // No module names an app at the start: nothing is watched.
+        apps.set_modules(std::iter::empty());
+        let (woke, _wakes) = mpsc::channel::<()>();
+        let woke = std::sync::Mutex::new(woke);
+        feed.set_waker(Box::new(move || {
+            let _ = woke.lock().unwrap().send(());
+        }));
+        let sup = Supervisor::start(&home, hub.clone());
+        watch_inventory(
+            &home,
+            side,
+            hub.clone(),
+            sup.clone(),
+            crate::modules_page::Fresh::default(),
+            apps,
+        );
+        let key = format!("apps.running.{label}");
+        let next = |what: &str| -> Vec<(String, serde_json::Value)> {
+            facts
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("no app fact: {what}"))
+        };
+        // The first module is already installed but the watch only hears of it with a change:
+        // a second install is the change; both name the app.
+        install("example.side.two");
+        let first = next("install");
+        assert!(
+            first.contains(&(key.clone(), serde_json::json!(true))),
+            "{first:?}"
+        );
+        assert_eq!(
+            hub.read(|r| r.fact(&key).cloned()),
+            Some(serde_json::json!(true))
+        );
+        // One of the two leaves: the other still needs the name, so it stays followed.
+        remove("example.side.one");
+        assert!(
+            facts.recv_timeout(Duration::from_millis(1500)).is_err(),
+            "the app was dropped while a module still names it"
+        );
+        // The last one leaves: the name is no longer followed, and the fact reads false.
+        remove("example.side.two");
+        let gone = next("removal");
+        assert!(
+            gone.contains(&(key.clone(), serde_json::json!(false))),
+            "{gone:?}"
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
         drop(sup);
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -130,6 +130,34 @@ impl Watcher {
         true
     }
 
+    /// The names changed (`post_names`, #1111): wait no longer on a dropped app's processes,
+    /// and look at what runs when a name is new.
+    fn renew(&mut self, names: std::collections::BTreeSet<String>) -> bool {
+        let (dropped, added) = self.watch.set_names(names);
+        let mut changed = !dropped.is_empty();
+        self.handles.retain(|(pid, h)| {
+            let keep = !dropped.contains(pid);
+            if !keep {
+                unsafe { CloseHandle(*h) };
+            }
+            keep
+        });
+        if added {
+            for (pid, exe) in processes() {
+                changed |= self.consider(pid, &exe);
+            }
+        }
+        changed
+    }
+
+    fn take_names(&mut self) -> bool {
+        let names = PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.file);
+        names.is_some_and(|n| self.renew(n))
+    }
+
     fn publish(&mut self) {
         let changes = self.watch.changes();
         if !changes.is_empty() {
@@ -138,6 +166,11 @@ impl Watcher {
     }
 
     fn run(mut self) {
+        // Make the queue now, so a name change posted from here on is not lost; one posted
+        // before is waiting in PENDING.
+        let mut first: MSG = unsafe { std::mem::zeroed() };
+        unsafe { PeekMessageW(&mut first, std::ptr::null_mut(), 0, 0, 0) };
+        self.take_names();
         for (pid, exe) in processes() {
             self.consider(pid, &exe);
         }
@@ -187,6 +220,10 @@ impl Watcher {
                         changed = true;
                         continue;
                     }
+                    if msg.message == WM_NAMES {
+                        changed |= self.take_names();
+                        continue;
+                    }
                     unsafe { DispatchMessageW(&msg) };
                 }
                 let pids = NEW_WINDOWS.with(|w| std::mem::take(&mut *w.borrow_mut()));
@@ -214,6 +251,28 @@ static WATCHES: std::sync::Mutex<Vec<(u32, PathBuf)>> = std::sync::Mutex::new(Ve
 
 /// The message that tells the watch to forget the apps seen (`crate::forget_seen`).
 const WM_FORGET: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+
+/// The message that tells the watch its names changed ([`post_names`]).
+const WM_NAMES: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 2;
+
+/// The newest names for each watch (by seen file), waiting for its thread.
+static PENDING: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Gives the watch that keeps `file` its names now (#1111). A message wakes its thread; if it
+/// isn't up yet, it takes them when it starts.
+pub(crate) fn post_names(file: &std::path::Path, names: std::collections::BTreeSet<String>) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+    PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(file.to_path_buf(), names);
+    let watches = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
+    for (t, _) in watches.iter().filter(|(_, f)| f == file) {
+        unsafe { PostThreadMessageW(*t, WM_NAMES, 0, 0) };
+    }
+}
 
 /// Asks the watch that keeps `file` to forget the apps seen. Returns false when none runs.
 pub(crate) fn post_forget(file: &std::path::Path) -> bool {
