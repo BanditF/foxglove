@@ -74,7 +74,45 @@ pub fn now() -> KnobHealth {
 
 /// The health view's rows now (registered with `health::register`).
 pub fn rows_now() -> Vec<HealthRow> {
-    rows(&now())
+    let mut out = rows(&now());
+    out.push(master_row(
+        foxglove_panel::master::device().as_ref(),
+        foxglove_panel::master::handled_master(),
+        foxglove_panel::master::restored(),
+    ));
+    out
+}
+
+/// "Knob · Master volume" (#1064): whether Foxglove sets the default device's volume, and how
+/// many apps it put back from a crashed run's journal.
+pub fn master_row(
+    device: Option<&foxglove_panel::master::Device>,
+    master: Option<(u8, bool)>,
+    restored: u32,
+) -> HealthRow {
+    let mut words = match (device, master) {
+        (None, _) => "no output device read yet".to_string(),
+        (Some(d), Some((level, muted))) => format!(
+            "{}: Foxglove sets its volume · master {level} %{}, held one step below the top",
+            d.name,
+            if muted { " (muted)" } else { "" }
+        ),
+        (Some(d), None) if !d.eligible => {
+            format!("{}: Windows sets its volume itself", d.name)
+        }
+        (Some(d), None) if d.on => format!("{}: on, but not started (see the log)", d.name),
+        (Some(d), None) => format!("{}: Windows' own volume (the setting is off)", d.name),
+    };
+    match restored {
+        0 => {}
+        1 => words.push_str("; 1 app restored from a crashed run's journal"),
+        n => words.push_str(&format!("; {n} apps restored from a crashed run's journal")),
+    }
+    let level = match (device, master) {
+        (Some(d), None) if d.on && d.eligible => Level::Warn,
+        _ => Level::Ok,
+    };
+    HealthRow::new(SUBSYSTEM, "Knob · Master volume", level, words)
 }
 
 /// The health view's rows: Held, Target, Last level.
@@ -270,5 +308,43 @@ mod tests {
             ..KnobHealth::default()
         };
         assert!(rows(&old).iter().all(|r| r.level == Level::Ok));
+    }
+
+    #[test]
+    fn the_master_volume_row_says_who_sets_the_device() {
+        use foxglove_panel::master::Device;
+        let d = Device {
+            name: "Headphones (Xbox Controller)".into(),
+            eligible: true,
+            listed: true,
+            on: true,
+            ..Device::default()
+        };
+        let r = master_row(Some(&d), Some((35, false)), 3);
+        assert!(r.detail.contains("master 35 %"), "{}", r.detail);
+        assert!(r.detail.contains("3 apps restored"), "{}", r.detail);
+        assert!(
+            r.detail.starts_with(
+                "Headphones (Xbox Controller): Foxglove sets its volume · master 35 %"
+            ),
+            "{}",
+            r.detail
+        );
+        let one = master_row(Some(&d), Some((35, false)), 1);
+        assert!(one
+            .detail
+            .ends_with("; 1 app restored from a crashed run's journal"));
+        let r = master_row(Some(&d), None, 0);
+        assert_eq!(r.level, Level::Warn, "on but not started");
+        let r = master_row(
+            Some(&Device {
+                eligible: false,
+                ..d.clone()
+            }),
+            None,
+            0,
+        );
+        assert_eq!(r.level, Level::Ok);
+        assert!(r.detail.contains("Windows sets its volume itself"));
     }
 }

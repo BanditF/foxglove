@@ -31,6 +31,11 @@ mod imp {
     /// Default output device: (percent, muted). Asks again every call, so it follows device
     /// switches.
     pub fn volume() -> Option<(u8, bool)> {
+        // On a device Foxglove sets the volume of (#1064) the device is held near the top:
+        // master is Foxglove's level.
+        if let Some(m) = crate::master::handled_master() {
+            return Some(m);
+        }
         let get = || -> Result<(u8, bool)> {
             unsafe {
                 let en: IMMDeviceEnumerator =

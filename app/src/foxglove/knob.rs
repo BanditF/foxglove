@@ -104,6 +104,9 @@ pub struct Cycle {
     pub volume: bool,
     /// The sessions playing at the last read, loudest first: an app shows its loudest (#1061).
     pub playing: Vec<String>,
+    /// The master card above Windows' flyout said why the slider goes back (#1064): its third
+    /// row shows on the first outside change of a run only.
+    pub told_slider: bool,
 }
 
 /// How often the knob reads the peaks while an app is its target.
@@ -306,6 +309,7 @@ impl Cycle {
             place: self.place,
             level: self.level.map(|l| l.0),
             muted: self.level.is_some_and(|l| l.1),
+            volume: None,
         })
     }
 
@@ -533,6 +537,33 @@ impl Cycle {
         }
     }
 
+    /// On a device Foxglove sets the volume of (#1064), Windows' flyout or the volume keys moved
+    /// master: master's card with the real level, above Windows' flyout, for 2 s; the first time
+    /// in a run with the row saying why Windows' slider goes back.
+    pub fn master_adopted(&mut self, sessions: &dyn Sessions) {
+        let now = sessions.master().ok();
+        let first = !self.told_slider;
+        self.told_slider = true;
+        self.popup = Some((
+            Card::Outside {
+                level: now.map(|m| m.0),
+                muted: now.is_some_and(|m| m.1),
+                first,
+            },
+            knob_popup::MASTER,
+        ));
+    }
+
+    /// The tray row with the target's volume words on a device Foxglove sets the volume of
+    /// (#1064: its own level, Windows' and master's, or that it sets its own volume).
+    pub fn tray_line_with(&self, sessions: &dyn Sessions) -> Option<TrayLine> {
+        let mut line = self.tray_line()?;
+        if let Some(app) = &self.target {
+            line.volume = sessions.app_volume(&self.shown(app));
+        }
+        Some(line)
+    }
+
     /// What the left screen's volume line says: the target's name, level and mute (`None`:
     /// master, the plain volume bar).
     pub fn panel_line(&self) -> Option<(String, u8, bool)> {
@@ -565,6 +596,8 @@ pub struct TrayLine {
     pub place: Option<(usize, usize)>,
     pub level: Option<u8>,
     pub muted: bool,
+    /// On a device Foxglove sets the volume of (#1064): the app's levels for the tooltip.
+    pub volume: Option<foxglove_panel::master::AppVolume>,
 }
 
 fn app_of(row: &AppGroup) -> App {
@@ -688,8 +721,10 @@ pub fn holds_lapsed(link: Weak<Link>) {
 const RELEASE_REPLY: Duration = Duration::from_millis(300);
 
 /// Foxglove quits: the knob is the volume keys again once the keyboard answers (master volume
-/// first: Windows' own flyout again).
+/// first: Windows' own flyout again). A device Foxglove sets the volume of (#1064) and its apps
+/// go back to Windows' own levels first.
 pub fn stop() {
+    foxglove_panel::sessions::stop(RELEASE_REPLY);
     if let Some(link) = volume_link(None).and_then(|l| l.upgrade()) {
         let r = link.request(
             &wire::volume_hold(false),
@@ -761,12 +796,16 @@ pub fn start() {
     }
     let (tx, rx) = mpsc::channel::<Work>();
     *WORK.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
-    let sessions = foxglove_panel::sessions::start({
-        let tx = tx.clone();
-        move |change| {
-            let _ = tx.send(Work::Sessions(change));
-        }
-    });
+    let sessions = foxglove_panel::sessions::start(
+        {
+            let tx = tx.clone();
+            move |change| {
+                let _ = tx.send(Work::Sessions(change));
+            }
+        },
+        // Master volume on a device that ignores Windows volume (#1064).
+        Some(Box::new(super::knob_master::StoreHost)),
+    );
     let links = super::link::subscribe_links({
         let tx = tx.clone();
         move |link| {
@@ -950,6 +989,7 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
             Work::Sessions(Change::Master) => {
                 cycle.master_changed(current.is_some() && knob_health::now().held);
             }
+            Work::Sessions(Change::Adopted) => cycle.master_adopted(sessions),
             Work::Pause => {
                 let Some(link) = current.as_ref() else {
                     continue;
@@ -986,7 +1026,7 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
             }
         }
         publish_panel(cycle.panel_line());
-        *TRAY.lock().unwrap_or_else(|e| e.into_inner()) = cycle.tray_line();
+        *TRAY.lock().unwrap_or_else(|e| e.into_inner()) = cycle.tray_line_with(sessions);
     }
 }
 
@@ -1711,6 +1751,28 @@ mod tests {
         c.event(&s, EventKind::Turn(1));
         assert_eq!(s.level("a"), 42);
         assert_eq!(master_now(&s), (100, false));
+    }
+
+    #[test]
+    fn an_outside_change_on_a_handled_device_shows_master_above_the_flyout() {
+        // #1064: Windows' flyout or the volume keys moved master; the slider row only once a run.
+        let s = FakeSessions::with(&[]);
+        let mut c = Cycle::default();
+        c.master_adopted(&s);
+        let (card, time) = popup(&mut c).unwrap();
+        assert!(
+            matches!(card, Card::Outside { first: true, .. }),
+            "{card:?}"
+        );
+        assert_eq!(time, knob_popup::MASTER);
+        c.master_adopted(&s);
+        let (card, _) = popup(&mut c).unwrap();
+        assert!(
+            matches!(card, Card::Outside { first: false, .. }),
+            "{card:?}"
+        );
+        // Off a handled device the tray row has no volume words.
+        assert_eq!(c.tray_line_with(&s), None);
     }
 
     #[test]

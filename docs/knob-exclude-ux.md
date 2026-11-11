@@ -237,12 +237,12 @@ the sound stays the same. App volumes still work. The user wants master to work,
 controls and no hooks.
 
 Engineering design (research 11/10, Hub 11/10):
-- While on, Foxglove holds the device's own volume at 100 %. Master is a level Foxglove keeps,
+- While on, Foxglove holds the device's own volume near the top (one key step below it, §2). Master is a level Foxglove keeps,
   applied by turning every app on that device down by master's amount.
 - Each app's own level is stored and restored exactly; a write-ahead journal covers crashes.
 - **One master:**
   - Foxglove listens for the device's volume-change notification (event-driven, no polling).
-  - A flyout drag or a volume key press is taken as the new master. The device is put back at 100 %
+  - A flyout drag or a volume key press is taken as the new master. The device is put back near the top
     in the same callback.
   - Foxglove's own writes are recognised by their event context and ignored.
   - So the knob, Windows' slider and the volume keys all move the same master.
@@ -276,18 +276,18 @@ This replaces the earlier hint-only plan: when master works, there is nothing to
   2 s, **directly above Windows' flyout** (where the "Knob · Master" tab sits). For mute, it shows
   "Master volume muted".
   - The card gets a third row: it grows from 48 to 64 pt upwards, 10 pt, `DIM`, at most 212 pt wide:
-    **"Windows' slider goes back to 100 % on this device."**
+    **"Windows' slider goes back near the top."**
   - This row shows on the first outside change of each Foxglove run only. After that, the card alone
-    shows the level: the user has learnt why the slider is at 100 %.
+    shows the level: the user has learnt why the slider is near the top.
 
 ### 2. What Windows' flyout shows after a drag or a key press
 
-The device's volume has to stay at 100 % so that it never turns the sound down twice, so Windows'
+The device's volume has to stay near the top so that it never turns the sound down twice, so Windows'
 slider cannot show the real master. The Hub's minimum is that it respects the drag:
 - **Drag:** the slider stays where the user drops it while the mouse is held. On release, the sound
-  takes that level, and the slider moves back to 100 % within a moment. Foxglove's card above it
+  takes that level, and the slider moves back near the top within a moment. Foxglove's card above it
   shows the level the user chose (§1), so the drag visibly "took".
-- **Volume key:** Windows' flyout jumps one step and back to 100 %. The sound and Foxglove's card
+- **Volume key:** Windows' flyout jumps one step and back near the top. The sound and Foxglove's card
   move one step.
 - **Requirement for app-engineer:**
   - Keys step master **both ways** by Windows' own step. With the device at exactly 100 %, "volume
@@ -295,6 +295,10 @@ slider cannot show the real master. The Hub's minimum is that it respects the dr
   - So either hold the device one step below 100 % (and check that the step costs nothing audible
     on the listed devices), or read a key-sized change from the held level as a step and anything
     else as a drag to that level.
+  - Picked (#1069): the device is held one key step below the top, and whole key steps from the
+    level Windows last reported are key presses. A drag is applied once it settles, and a drag
+    down never raises master. The words say "near the top", with no number: the step depends on
+    the device.
   - Engineering picks one and states it in the PR. The user sees only: keys work both ways, and a
     drag sets the level where it's dropped.
 - Explained in three places: the card's row (§1), the setting's first while-on line (§3), and one
@@ -312,7 +316,7 @@ devices keep their own choice and show it when they are the default.
 | Toggle | "Foxglove sets this device's volume" |
 | Second line, listed device | "On by default: this device often ignores Windows volume." |
 | Second line, other eligible device | "Turn on if the volume number moves but the sound stays the same." |
-| While on, line 1 | "Windows' slider goes back to 100 % for this device; the sound follows the knob, the slider and the volume keys." |
+| While on, line 1 | "Windows' slider goes back near the top for this device; the sound follows the knob, the slider and the volume keys." |
 | While on, line 2 | "Foxglove turns each app down instead. Volume mixer shows those lower levels; the knob shows each app's own." |
 | While on, line 3 (exclusive control, §5) | "Apps that take exclusive control of this device play at full volume." |
 | Not eligible (Windows sets its volume in software) | "Windows sets this device's volume itself." (no toggle) |
@@ -348,7 +352,7 @@ one way this gets loud. Foxglove can't see those streams without polling, so it 
 
 ### 6. After a crash
 
-- **While Foxglove is down:** the sound stays where it was (apps turned down, device at 100 %). Nothing
+- **While Foxglove is down:** the sound stays where it was (apps turned down, device near the top). Nothing
   gets louder. Changes from the flyout or the keys are not followed until Foxglove is back.
 - **Next start:** Foxglove reads the journal and puts each app back as it appears.
   - An app still at Foxglove's applied level gets its own level from the journal.
@@ -359,8 +363,9 @@ one way this gets loud. Foxglove can't see those streams without polling, so it 
   health view counts it.
 - **Apps that closed while Foxglove was down** may start quieter (Windows remembers the lower level).
   Foxglove fixes each one the first time it plays, while its journal entry is kept (30 days).
-- **Uninstall, or Foxglove not started again:** the uninstaller restores from the journal. The user
-  guide's fallback is Windows' **Settings > System > Sound > Volume mixer > Reset**.
+- **Uninstall, or Foxglove not started again:** nothing restores from the journal yet (an
+  uninstaller step is a follow-up, not in #1069). Foxglove's next start restores it; otherwise the
+  user guide's fallback is Windows' **Settings > System > Sound > Volume mixer > Reset**.
 
 ### 7. Data (for app-engineer)
 

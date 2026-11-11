@@ -9,6 +9,7 @@ license = "MIT"
 chrono = "0.4"
 foxglove-link = { path = "../foxglove-link", default-features = false }
 embedded-graphics = "0.8"
+serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
 # The #[implement] macro (COM callbacks) names windows_core directly.
@@ -17,6 +18,8 @@ windows = { version = "0.62", features = [
     "Foundation",
     "Media_Control",
     "Win32_Devices_FunctionDiscovery",
+    # The output device's hardware ids for the master volume data list (#1064).
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_Foundation",
     "Win32_Media_Audio",

@@ -1,0 +1,9 @@
+# Output devices that take Windows' master volume into hardware and sometimes don't apply it (#1064).
+# Matched as a case-insensitive prefix against the default output device's parent hardware ids.
+# Listed devices get "Foxglove sets this device's volume" on by default (only if Windows reports
+# hardware volume for them); the user's choice per device wins.
+
+[[device]]
+ids = ["USB\\VID_0ECB&PID_2148"]
+name = "JBL headset dongle (Xbox protocol)"  # log and this file only; the UI uses Windows' name
+note = "Ignores endpoint volume after some reboots; the headset's wheel still works (2026-10-30)."
