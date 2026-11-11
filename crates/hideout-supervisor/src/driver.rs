@@ -671,6 +671,8 @@ impl Supervisor {
             log::info!("supervisor: {id}: turned on; not started in safe mode");
         }
         self.feed(Ev::Enable { id: id.into() });
+        // A fact it waits for that was set while it was off starts it now (§4.6, v1.10).
+        self.0.hub.act(|r| r.activation_due(Some(id)));
         Ok(())
     }
 
@@ -703,6 +705,8 @@ impl Supervisor {
             "supervisor: Start normally: safe mode off, {starting} module(s) starting (no hub restart)"
         );
         self.run(cmds);
+        // Activation facts set while safe mode held the modules (§4.6, v1.10).
+        self.0.hub.act(|r| r.activation_due(None));
     }
 
     /// Whether the supervisor is in safe mode (nothing starts by itself).
@@ -911,8 +915,9 @@ impl Supervisor {
         };
         let sha256 = sha256_file(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
+        let caps = self.caps_of(Some(&reg), id);
         let job = Arc::new(
-            Job::create(&Job::name_for(&self.job_user(), id, instance), self.0.caps)
+            Job::create(&Job::name_for(&self.job_user(), id, instance), caps)
                 .map_err(|e| format!("job: {e}"))?,
         );
         let mut cmd = Command::new(&exe);
@@ -992,14 +997,40 @@ impl Supervisor {
         Ok(())
     }
 
+    /// Module `id`'s Job Object caps (§7.7, v1.10): its manifest's `[limits]`, clamped to the
+    /// hub's maximum. A value over the maximum is logged once per launch, not refused.
+    fn caps_of(&self, reg: Option<&Registry>, id: &str) -> Caps {
+        let limits = reg.and_then(|r| r.manifest(id)).and_then(|m| m.limits);
+        let max = self.0.caps;
+        let caps = Caps::for_module(limits.as_ref(), max);
+        if let Some(l) = limits {
+            let asked = Caps::for_module(
+                Some(&l),
+                Caps {
+                    memory: usize::MAX,
+                    cpu_rate: u32::MAX,
+                },
+            );
+            if asked.memory > caps.memory || asked.cpu_rate > caps.cpu_rate {
+                log::info!(
+                    "supervisor: {id}: [limits] over the hub's maximum; clamped to {} MiB, {} %",
+                    caps.memory >> 20,
+                    caps.cpu_rate / 100
+                );
+            }
+        }
+        caps
+    }
+
     /// Takes back a module the last hub started (§7.9), already checked by [`examine`]: a fresh
     /// Job Object (the old one's name went with the last hub), or none if Windows refuses, and
     /// its original token for the reconnect.
     fn adopt(&self, id: &str, rec: &Record, p: Process) -> Result<(), String> {
         let p = Arc::new(p);
+        let reg = Registry::open_from_env(&self.0.home).ok();
         let job = Job::create(
             &Job::name_for(&self.job_user(), id, rec.instance),
-            self.0.caps,
+            self.caps_of(reg.as_ref(), id),
         )
         .and_then(|j| j.assign(&p).map(|()| j));
         let job = match job {

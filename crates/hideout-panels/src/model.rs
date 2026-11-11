@@ -226,6 +226,9 @@ pub struct PanelHost {
     pub streams: crate::streams::Streams,
     /// Modules removed since the hub last asked, with their names (#1012.4).
     removed_out: Vec<(String, String)>,
+    /// Modules a page of which came on screen since the hub last asked: the `open` activation
+    /// event (§4.6, v1.10), registered panels or not (a cold module's tab).
+    opened_out: Vec<String>,
 }
 
 /// A call the hub makes to a module for its own UI (not a `ui.event`).
@@ -343,6 +346,7 @@ impl PanelHost {
             picker: None,
             streams: Default::default(),
             removed_out: Vec::new(),
+            opened_out: Vec::new(),
         }
     }
 
@@ -843,8 +847,20 @@ impl PanelHost {
     /// on screen (the active tab, pop-outs that aren't minimised); every other open page panel is
     /// `hidden`, and closed ones `closed`. An empty slice is the hub minimised or in the tray.
     pub fn set_visible(&mut self, shown: &[PanelKey]) {
+        for k in shown {
+            let was = self.shown.iter().any(|s| s.module == k.module);
+            if !was && !self.opened_out.contains(&k.module) {
+                self.opened_out.push(k.module.clone());
+            }
+        }
         self.shown = shown.to_vec();
         self.sync_visibility();
+    }
+
+    /// The modules a page of which came on screen since the last call (the `open` activation
+    /// event, §4.6 v1.10), each once per time it comes on screen.
+    pub fn take_opened(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.opened_out)
     }
 
     /// The tray panel opened or closed: its tiles turn `visible` or `hidden` (5.9, v1.4).

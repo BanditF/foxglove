@@ -30,11 +30,11 @@ pub use error::{Error, ErrorId};
 
 /// The contract version this crate reads (`hub` in a manifest, §8.7). 1.1 since spec v1.4 (a
 /// `file` setting kind and its `filter` key).
-pub const HUB_VERSION: Version = Version { major: 1, minor: 1 };
+pub const HUB_VERSION: Version = Version { major: 1, minor: 2 };
 
 /// The spec version this crate implements (docs/hideout-contract.md's status line, the test
 /// vectors' `index.json` and README). A drift test keeps them equal.
-pub const SPEC_VERSION: &str = "1.9";
+pub const SPEC_VERSION: &str = "1.10";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];
@@ -129,6 +129,7 @@ pub fn schema() -> serde_json::Value {
         module::Pin,
         module::Identity,
         module::Edition,
+        module::ResourceLimits,
         panel::Node,
         panel::Panel,
         panel::Register,
@@ -307,7 +308,8 @@ mod tests {
 
     #[test]
     fn versions() {
-        assert_eq!(Version::parse("1.1"), Some(HUB_VERSION));
+        assert_eq!(Version::parse("1.2"), Some(HUB_VERSION));
+        assert!(Version::parse("1.1").unwrap().served_by(HUB_VERSION));
         assert!(Version::parse("1.0").unwrap().served_by(HUB_VERSION));
         assert_eq!(Version::parse("1.0.0"), None);
         assert_eq!(Version::parse("+1.0"), None);

@@ -107,6 +107,9 @@ pub trait PanelFeed: Send {
     /// router, reads the channels and draws what is due (`stream_io::StreamIo::pump`). Called
     /// on every pump and after each visibility change. A feed without channels does nothing.
     fn streams(&mut self, _streams: &mut crate::streams::Streams, _now: Instant) {}
+    /// A page of `module` came on screen (the `open` activation event, §4.6 v1.10): the hub
+    /// starts the module when it waits for `open`. A feed without a supervisor does nothing.
+    fn opened(&mut self, _module: &str) {}
 }
 
 impl PanelHost {
@@ -218,6 +221,9 @@ impl PanelHost {
         }
         for (module, visibility) in self.take_visibility() {
             feed.send(Outbound::Visibility { module, visibility });
+        }
+        for module in self.take_opened() {
+            feed.opened(&module);
         }
         // After `visible` went out: the panels' streams open or close (§5.4, §5.9), and the
         // feed reads their channels.

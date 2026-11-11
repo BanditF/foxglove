@@ -10,8 +10,8 @@ from typing import Any, ClassVar, Literal, Optional, Union
 
 from ._model import Model
 
-HUB = '1.1'
-SPEC = '1.9'
+HUB = '1.2'
+SPEC = '1.10'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -742,6 +742,21 @@ class Pin(Model):
 
 
 @dataclass(kw_only=True)
+class ResourceLimits(Model):
+    """`[limits]` (§4.2, §7.7, spec v1.10, `hub = "1.2"`): what the module's Job Object may use.
+Each value is clamped to the hub's maximum; an absent one is the hub's maximum."""
+
+    cpu_percent: Optional[int] = None
+    memory_mb: Optional[int] = None
+
+    FIELDS: ClassVar[dict] = {
+        'cpu_percent': ('cpu_percent', ('opt', 'int')),
+        'memory_mb': ('memory_mb', ('opt', 'int')),
+    }
+    CLOSED: ClassVar[bool] = True
+
+
+@dataclass(kw_only=True)
 class WindowDecl(Model):
     id: str
     title: str
@@ -855,6 +870,7 @@ TYPES = {
     'module.ModuleSettingKind': ModuleSettingKind,
     'module.PanelDecl': PanelDecl,
     'module.Pin': Pin,
+    'module.ResourceLimits': ResourceLimits,
     'module.WindowDecl': WindowDecl,
     'panel.Node': Node,
     'panel.Panel': Panel,

@@ -344,6 +344,12 @@ impl PanelFeed for HubFeed {
         *self.shared.waker.lock().unwrap() = Some(waker);
     }
 
+    /// The `open` activation event (§4.6, v1.10): the router sends `Activate` to the supervisor
+    /// when the module waits for `open` and isn't connected.
+    fn opened(&mut self, module: &str) {
+        self.hub.act(|r| r.panel_opened(module));
+    }
+
     fn streams(&mut self, streams: &mut Streams, now: Instant) {
         let shared = self.shared.clone();
         let io = self

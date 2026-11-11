@@ -1,0 +1,11 @@
+id = "foxglove.example-art"
+name = "Example Art"
+version = "0.4.0"
+kind = "service"
+family = "foxglove"
+hub = "1.2"
+run = ["example-art.exe"]
+
+[limits]
+memory_mb = 256
+cpu_percent = 25

@@ -12,6 +12,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
+use hideout_contract::module::ResourceLimits;
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
     WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -20,11 +21,12 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectCpuRateControlInformation,
-    JobObjectExtendedLimitInformation, OpenJobObjectW, SetInformationJobObject, TerminateJobObject,
-    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
-    JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectCpuRateControlInformation,
+    JobObjectExtendedLimitInformation, OpenJobObjectW, QueryInformationJobObject,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_CPU_RATE_CONTROL_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
+    JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
+    JOB_OBJECT_LIMIT_JOB_MEMORY,
 };
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread,
@@ -64,7 +66,7 @@ fn check(h: HANDLE) -> io::Result<Handle> {
 }
 
 /// The caps each instance's Job Object gets (§7.7).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caps {
     /// All the job's processes together, in bytes.
     pub memory: usize,
@@ -72,12 +74,32 @@ pub struct Caps {
     pub cpu_rate: u32,
 }
 
+impl Caps {
+    /// The hub's maximum (§7.7, v1.10): what a module with no `[limits]` gets, and the most any
+    /// module gets. 4 GiB for all its processes, half the machine's CPU.
+    pub const HUB_MAX: Caps = Caps {
+        memory: 4 << 30,
+        cpu_rate: 5000,
+    };
+
+    /// A module's caps from its manifest's `[limits]` (§7.7, v1.10): each value clamped to
+    /// `max`; an absent value (or no `[limits]`) is `max`'s.
+    pub fn for_module(limits: Option<&ResourceLimits>, max: Caps) -> Caps {
+        let l = limits.copied().unwrap_or_default();
+        Caps {
+            memory: l
+                .memory_mb
+                .map_or(max.memory, |m| ((m as usize) << 20).min(max.memory)),
+            cpu_rate: l
+                .cpu_percent
+                .map_or(max.cpu_rate, |c| (c * 100).min(max.cpu_rate)),
+        }
+    }
+}
+
 impl Default for Caps {
     fn default() -> Self {
-        Caps {
-            memory: 4 << 30,
-            cpu_rate: 5000,
-        }
+        Caps::HUB_MAX
     }
 }
 
@@ -144,6 +166,63 @@ impl Job {
             handle,
             name: name.into(),
         })
+    }
+
+    /// The caps the job holds now, read back from Windows: the job memory limit (0 when none)
+    /// and the hard CPU rate (0 when none).
+    pub fn caps(&self) -> io::Result<Caps> {
+        let mut ext = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        // SAFETY: the struct and its size match the info class; an owned job handle.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.handle.0,
+                JobObjectExtendedLimitInformation,
+                &mut ext as *mut _ as *mut _,
+                std::mem::size_of_val(&ext) as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut cpu = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
+        // SAFETY: as above.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.handle.0,
+                JobObjectCpuRateControlInformation,
+                &mut cpu as *mut _ as *mut _,
+                std::mem::size_of_val(&cpu) as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let hard = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+        let memory = if ext.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0 {
+            ext.JobMemoryLimit
+        } else {
+            0
+        };
+        // SAFETY: CpuRate is the union member for the hard-cap flags.
+        let cpu_rate = if cpu.ControlFlags & hard == hard {
+            unsafe { cpu.Anonymous.CpuRate }
+        } else {
+            0
+        };
+        Ok(Caps { memory, cpu_rate })
+    }
+
+    /// Whether process `p` runs inside this job (or a job nested in it).
+    pub fn holds(&self, p: &Process) -> io::Result<bool> {
+        let mut inside = 0;
+        // SAFETY: owned process and job handles.
+        let ok = unsafe { IsProcessInJob(p.0 .0, self.handle.0, &mut inside) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(inside != 0)
     }
 
     /// Opens a job the hub made before it restarted (§7.9).

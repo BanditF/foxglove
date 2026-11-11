@@ -1,8 +1,8 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.9",
-  "reader_hub": "1.1",
+  "contract": "1.10",
+  "reader_hub": "1.2",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
   "vectors": {
@@ -574,7 +574,7 @@
       ],
       "result": "invalid",
       "id": "manifest.hub",
-      "note": "Written for a newer minor than a v1.0 reader serves. (v1.4: this reader serves 1.1, so the vector says 1.2.)"
+      "note": "Written for a newer minor than a v1.0 reader serves. (v1.4: this reader serves 1.1, so the vector said 1.2; v1.10: it serves 1.2, so the vector says 1.3.)"
     },
     "manifests/invalid/hub-single-number.toml": {
       "spec": [
@@ -4727,6 +4727,98 @@
         ],
         "reset_after_quiet_s": 600
       }
+    },
+    "manifests/valid/limits.toml": {
+      "spec": [
+        "4.2",
+        "7.7",
+        "8.7"
+      ],
+      "result": "valid",
+      "note": "[limits] (v1.10, hub 1.2): the module's Job Object caps, 256 MiB for all its processes and a hard 25 % of the machine's CPU.",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.2",
+        "limits": {
+          "memory_mb": 256,
+          "cpu_percent": 25
+        }
+      }
+    },
+    "manifests/valid/limits-over-hub-maximum.toml": {
+      "spec": [
+        "4.2",
+        "7.7"
+      ],
+      "result": "valid",
+      "note": "Over the hub's maximum is still valid: the reader keeps the values and the supervisor clamps them (a hub of today: 4,096 MiB, 50 %).",
+      "normalized": {
+        "id": "foxglove.example-art",
+        "name": "Example Art",
+        "version": "0.4.0",
+        "kind": "service",
+        "family": "foxglove",
+        "hub": "1.2",
+        "limits": {
+          "memory_mb": 65536,
+          "cpu_percent": 100
+        }
+      }
+    },
+    "manifests/invalid/limits-hub-1-1.toml": {
+      "spec": [
+        "4.1",
+        "4.2",
+        "8.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.hub",
+      "note": "[limits] is new in hub 1.2 (v1.10): a manifest using it says hub = \"1.2\", so a 1.1 reader refuses it."
+    },
+    "manifests/invalid/limits-cpu-over-100.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.limits",
+      "note": "cpu_percent is 1 to 100. (v1.10)"
+    },
+    "manifests/invalid/limits-cpu-zero.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.limits",
+      "note": "cpu_percent is 1 to 100. (v1.10)"
+    },
+    "manifests/invalid/limits-memory-under-16.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.limits",
+      "note": "memory_mb is 16 to 1,048,576. (v1.10)"
+    },
+    "manifests/invalid/limits-memory-string.toml": {
+      "spec": [
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.limits",
+      "note": "memory_mb is an integer. (v1.10)"
+    },
+    "manifests/invalid/limits-unknown-key.toml": {
+      "spec": [
+        "4.1",
+        "4.2"
+      ],
+      "result": "invalid",
+      "id": "manifest.unknown-key",
+      "note": "[limits] has memory_mb and cpu_percent only. (v1.10)"
     }
   }
 }

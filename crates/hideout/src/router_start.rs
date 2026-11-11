@@ -211,6 +211,9 @@ pub fn start(
     // After the pipe is served, so modules it starts or takes back can connect. Router events
     // wait in the channel until then.
     let sup = Supervisor::start(home, hub.clone());
+    // Activation facts already set (§4.6, v1.10): once the supervisor knows its modules. The
+    // Activate events wait in the channel for the events thread below.
+    hub.act(|r| r.activation_due(None));
     sup.set_notifier(notifier(sup.clone(), home));
     // Check for updates (#1026) and the catalog fetch (#1049): a normal hub fetches each
     // source once now and the module's source on Check for updates (no source configured:
@@ -257,10 +260,12 @@ fn watch_inventory(
     let watched = crate::inventory_watch::start(
         home,
         Box::new(move |change| {
+            // The router and the supervisor forget first, so whoever the shell's removal
+            // message wakes already sees the module gone.
             for id in &change.removed {
-                side.removed(id);
                 sup.forget(id);
                 hub.act(|r| r.forget_module(id));
+                side.removed(id);
             }
             if fresh.put(crate::modules_page::installed(&at)) {
                 side.wake();
@@ -341,7 +346,17 @@ mod tests {
         save(&["a.art", "b.beat", "c.chat"]);
         ids_after(&["a.art", "b.beat", "c.chat"]);
         save(&["a.art", "c.chat"]);
-        let seen = ids_after(&["a.art", "c.chat"]);
+        let mut seen = ids_after(&["a.art", "c.chat"]);
+        // The removal reaches the feed on its own path; the list can land first (flaky on a
+        // loaded gate, 11/11). Wait, bounded, for the removal too.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !seen.contains(&Inbound::ModuleRemoved {
+            module: "b.beat".into(),
+        }) && std::time::Instant::now() < until
+        {
+            let _ = wakes.recv_timeout(std::time::Duration::from_millis(200));
+            seen.extend(feed.drain());
+        }
         assert!(
             seen.contains(&Inbound::ModuleRemoved {
                 module: "b.beat".into()

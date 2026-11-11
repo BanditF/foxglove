@@ -25,6 +25,9 @@ pub const MAX_MESSAGE: usize = 256 * 1024;
 /// The consumer name of the hub's own panel host in `channel.create` (§5.4).
 pub const HOST_CONSUMER: &str = "hub.panel-host";
 
+mod activation;
+pub use activation::Triggers;
+
 mod code {
     pub const PARSE: i64 = -32700;
     pub const INVALID_REQUEST: i64 = -32600;
@@ -54,7 +57,9 @@ pub enum Out {
     Send(ConnId, Value),
     /// Close a connection (after any `Send` before it).
     Close(ConnId),
-    /// Start this module: a call arrived for it and its activation has `call` (§4.6).
+    /// Start this module: an activation event for it (§4.6): a call arrived and its activation
+    /// has `call`, or (v1.10) one of its panels was shown (`open`) or a fact it waits for
+    /// (`fact:`, `app:`, `device:`) became true. Sent only while it isn't connected.
     Activate(String),
     /// A module's connection ended (the supervisor decides what that means).
     ModuleGone(String),
@@ -315,6 +320,8 @@ pub struct Router {
     /// Module calls waiting for the panel host's answer, by call number.
     host_calls: HashMap<u64, HostCall>,
     next_host_call: u64,
+    /// Each module's `open` and fact activation events (§4.6, v1.10), from its manifest.
+    triggers: BTreeMap<String, Triggers>,
 }
 
 /// The file in a v1 plugin's settings folder where the hub keeps the values the user changed.
@@ -367,6 +374,7 @@ impl Router {
             secret_store: crate::secrets::default_store(),
             host_calls: HashMap::new(),
             next_host_call: 1,
+            triggers: BTreeMap::new(),
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -409,6 +417,7 @@ impl Router {
         e.name = m.name.clone();
         e.panels = Some(m.panels.iter().map(|p| p.id.clone()).collect());
         e.activate_on_call = m.activation_on.iter().any(|a| a == "call");
+        self.set_triggers(&m.id, Triggers::from_on(&m.activation_on));
         let actions = m.actions.iter().map(|a| a.decl.id.clone()).collect();
         self.set_actions(&m.id, actions);
         self.settings_decl.insert(m.id.clone(), m.settings.clone());
@@ -897,6 +906,7 @@ impl Router {
         self.settings_decl.remove(id);
         self.secrets_decl.remove(id);
         self.channels_decl.remove(id);
+        self.triggers.remove(id);
         self.routes.retain(|r| r.module != id);
         self.fact_owners.retain(|r| r.module != id);
         self.channels.remove(id);
@@ -1821,6 +1831,7 @@ impl Router {
                 ));
             }
         }
+        self.fact_activations(key, &value, out);
     }
 
     #[allow(clippy::too_many_arguments)]
