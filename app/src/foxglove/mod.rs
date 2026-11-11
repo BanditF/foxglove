@@ -50,6 +50,7 @@ pub mod focus_ui;
 // Foxglove (#802): "Follow the keyboard I type on", Raw Input device handles only.
 pub mod follow_typing;
 pub mod foreground;
+mod glow_watch;
 pub mod gpu_reset;
 pub mod health;
 pub mod health_notice;

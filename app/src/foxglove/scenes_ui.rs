@@ -135,6 +135,8 @@ pub fn status(v: &View) -> (String, Tone) {
         (None, false, _) if v.screen.refused && v.look.kind.reads_screen() => {
             (glow::NEEDS_YES.into(), Tone::Warn)
         }
+        // No preview before the yes: the hint under the map says what shows once it runs.
+        (None, false, _) if v.look.kind.reads_screen() => ("Not running.".into(), Tone::Muted),
         (Some(_), false, Some(who)) => (format!("Paused for {who}"), Tone::Warn),
         (Some(name), false, None) => (format!("Running: {name}"), Tone::Ok),
         (None, false, _) => ("Not running. The map shows a preview.".into(), Tone::Muted),
@@ -1112,6 +1114,11 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 Tone::Plain => p.text,
                 Tone::Muted => p.muted,
             };
+            // #496: the eye in front of "Running: Screen glow · reading your screen".
+            if reads_now(v) {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 14.0), Sense::hover());
+                super::tray_panel::eye(ui.painter(), rect.center(), 18.0, color);
+            }
             ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
         },
     );
@@ -1171,6 +1178,15 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             },
         );
     }
+}
+
+/// Screen glow runs and reads the screen now (the status line's eye).
+fn reads_now(v: &View) -> bool {
+    !v.stopping
+        && v.running.is_some()
+        && v.screen
+            .status
+            .is_some_and(|s| s.on && s.reading && s.hold.is_none())
 }
 
 /// Which devices the scene lights, in words.
@@ -1557,9 +1573,15 @@ fn permission_card(ui: &mut egui::Ui, draft: &mut Draft, out: &mut Vec<Intent>) 
             }
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                // Reading order: Allow and start, Not now.
+                // Reading order: Allow and start, Not now. A screen reader hears the question
+                // with each button (the title and body as its description).
+                let question = format!("{} {}", glow::ASK_TITLE, glow::ASK_BODY);
                 let allow = ui.add(theme::primary_button(ui, glow::ALLOW));
                 let not_now = ui.button(glow::NOT_NOW);
+                for id in [allow.id, not_now.id] {
+                    ui.ctx()
+                        .accesskit_node_builder(id, |n| n.set_description(question.clone()));
+                }
                 if std::mem::take(&mut draft.ask_focus) {
                     not_now.request_focus();
                 }
@@ -2271,6 +2293,13 @@ pub(crate) mod tests {
             .0,
             "Paused for Windows Dynamic Lighting"
         );
+        // Picked, not running: no preview before the yes, so no "The map shows a preview".
+        let stopped = View {
+            look: glow.clone(),
+            running: None,
+            ..sample()
+        };
+        assert_eq!(status(&stopped), ("Not running.".to_string(), Tone::Muted));
         let refused = View {
             look: glow.clone(),
             running: None,

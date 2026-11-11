@@ -1094,12 +1094,13 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
             }
         },
         |ui| {
-            // #496: the scene that drives the lights now.
+            // #496: the scene drives the lights now; the keyboard's own effect and colour (what
+            // it falls back to) would read as a contradiction under it.
             if v.screen.is_some() {
                 ui.label(
                     RichText::new(super::screen_glow::LIGHTS_SCENE).color(theme::palette(ui).text),
                 );
-                ui.add_space(4.0);
+                return;
             }
             let Some(l) = left else {
                 ui.weak("The lights show here once the keyboard reports them.");

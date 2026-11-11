@@ -236,8 +236,12 @@ enum Ctl {
     Foreground,
     /// The displays changed: Screen glow's capture tries again.
     DisplayChanged,
-    /// Screen glow's capture failed.
-    CaptureFailed,
+    /// Screen glow's capture run (its generation) failed.
+    CaptureFailed(u64),
+    /// A window entered or left full screen (`glow_watch`).
+    FullScreen,
+    /// The desktop switched (a UAC prompt, Ctrl+Alt+Del; `glow_watch`).
+    DesktopSwitched,
     /// The keyboard's lights owner changed (#491): Screen glow holds while someone else has them.
     Owner,
     /// The user's yes for Screen glow was given or taken back.
@@ -691,21 +695,37 @@ fn control(
     let mut reader = super::screen_glow::Reader::new(
         super::screen_glow::opener(),
         screen_feed,
-        Arc::new(move || {
-            let _ = fail_tx.send(Ctl::CaptureFailed);
+        Arc::new(move |generation| {
+            let _ = fail_tx.send(Ctl::CaptureFailed(generation));
         }),
         true,
     );
-    let game = |on: bool| on && super::screen_glow::game_now();
+    use super::screen_glow::{full_screen_now, Event};
     reader.set(|g| {
         g.on = screen;
         g.allowed = super::screen_glow::allowed();
         g.paused = super::pause::paused();
         g.display_off = super::away::display_off();
         g.locked = super::away::locked();
-        g.game = game(screen);
         g.yielded = held.load(Ordering::Relaxed);
+        full_screen_now().apply(g);
     });
+    // Full-screen and desktop-switch events, only while the look is Screen glow.
+    let watch_for = |on: bool| {
+        on.then(|| {
+            let (full, desk) = (own.clone(), own.clone());
+            super::glow_watch::Watch::start(
+                Arc::new(move || {
+                    let _ = full.send(Ctl::FullScreen);
+                }),
+                Arc::new(move || {
+                    let _ = desk.send(Ctl::DesktopSwitched);
+                }),
+            )
+        })
+        .flatten()
+    };
+    let mut watch = watch_for(screen);
     let mut scene_held = reader.gates().scene_held();
     scheduler.set(Gate::Held, scene_held);
     scheduler.set(Gate::Away, super::away::away());
@@ -733,7 +753,7 @@ fn control(
                     if !a {
                         // Back: the screen may read again, and a game may have come up meanwhile.
                         g.failed = false;
-                        g.game = game(g.on);
+                        full_screen_now().apply(g);
                     }
                 });
             }
@@ -753,7 +773,7 @@ fn control(
                     g.paused = p;
                     if !p {
                         g.failed = false;
-                        g.game = game(g.on);
+                        full_screen_now().apply(g);
                     }
                 });
             }
@@ -803,9 +823,12 @@ fn control(
                 reader.set(|g| {
                     g.on = screen;
                     g.allowed = super::screen_glow::allowed();
-                    g.game = game(screen);
                     g.yielded = held.load(Ordering::Relaxed);
+                    full_screen_now().apply(g);
                 });
+                if screen != watch.is_some() {
+                    watch = watch_for(screen);
+                }
                 super::keyboard_facts::scene_look(&name, &effect);
                 outputs
                     .lock()
@@ -820,12 +843,10 @@ fn control(
                     .unwrap_or_else(|e| e.into_inner())
                     .set_keyboard_lamps(keyboard_lamps());
             }
-            Ctl::Foreground => reader.set(|g| g.game = game(g.on)),
-            Ctl::DisplayChanged => reader.set(|g| {
-                g.failed = false;
-                g.game = game(g.on);
-            }),
-            Ctl::CaptureFailed => reader.set(|g| g.failed = true),
+            Ctl::Foreground | Ctl::FullScreen => reader.event(Event::FullScreen),
+            Ctl::DisplayChanged => reader.event(Event::DisplayChanged),
+            Ctl::DesktopSwitched => reader.event(Event::DesktopSwitched),
+            Ctl::CaptureFailed(generation) => reader.event(Event::Failed(generation)),
             Ctl::Owner => reader.set(|g| g.yielded = held.load(Ordering::Relaxed)),
             Ctl::Allowed => reader.set(|g| g.allowed = super::screen_glow::allowed()),
             Ctl::Stop => {}
@@ -847,7 +868,8 @@ fn control(
         }
     });
     give_back.ended = ended;
-    // Joins the capture threads first: nothing reads the screen after this.
+    drop(watch);
+    // Stops the capture first: no picture is handed on after this (its threads end within 1 s).
     drop(reader);
     drop(away);
     // Joins the frame thread: nothing draws after this.

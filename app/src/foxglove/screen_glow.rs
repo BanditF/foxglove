@@ -44,7 +44,7 @@ pub const ASK_TITLE: &str = "Let Foxglove read your screen?";
 pub const ASK_BODY: &str = "To colour your lights, Foxglove looks at everything on your screens, up to 20 times a second, while Screen glow runs.";
 pub const ASK_POINTS: [&str; 3] = [
     "The picture never leaves Foxglove and is never saved. Only the edge colours go to the lights.",
-    "It pauses while a game is full screen, the PC is locked or the display is off.",
+    "It pauses while the PC is locked or the display is off, and during full-screen games (borderless ones keep glowing).",
     "While it runs, the tray icon shows an eye. Stop it there or here at any time.",
 ];
 pub const ALLOW: &str = "Allow and start";
@@ -198,6 +198,8 @@ pub enum Hold {
     DisplayOff,
     Locked,
     Game,
+    /// Windows' presentation mode (a slideshow, "presentation settings").
+    Presenting,
     /// Another app, or Windows Dynamic Lighting, has the lights (#491).
     Yielded,
     /// Capture failed (remote desktop, a GPU or driver change); tried again when the display
@@ -211,6 +213,7 @@ impl Hold {
     pub fn words(self, who: Option<&str>) -> String {
         match self {
             Hold::Game => "Paused while a game is full screen".into(),
+            Hold::Presenting => "Paused during a presentation".into(),
             Hold::Locked => "Paused while the PC is locked".into(),
             Hold::DisplayOff => "Paused while the display is off".into(),
             Hold::Paused => "Paused: Foxglove is paused. Resume it from the tray.".into(),
@@ -229,6 +232,7 @@ impl Hold {
             Hold::DisplayOff => "display off",
             Hold::Locked => "locked",
             Hold::Game => "full-screen game",
+            Hold::Presenting => "presentation",
             Hold::Yielded => "lights held by another app",
             Hold::Failed => "capture failed",
         }
@@ -245,6 +249,7 @@ pub struct Gates {
     pub display_off: bool,
     pub locked: bool,
     pub game: bool,
+    pub presenting: bool,
     pub yielded: bool,
     pub failed: bool,
 }
@@ -257,6 +262,7 @@ impl Gates {
             (self.display_off, Hold::DisplayOff),
             (self.locked, Hold::Locked),
             (self.game, Hold::Game),
+            (self.presenting, Hold::Presenting),
             (self.yielded, Hold::Yielded),
             (self.failed, Hold::Failed),
         ]
@@ -273,20 +279,32 @@ impl Gates {
     /// failing. The lights get their own colours back meanwhile. The other holds are the
     /// scene's own gates already (pause, away, the lights owner).
     pub fn scene_held(&self) -> bool {
-        self.on && (self.game || self.failed)
+        self.on && (self.game || self.presenting || self.failed)
     }
 }
 
 // ---------------------------------------------------------------------------- capture
 
-/// One screen's frames.
-pub trait Capture: Send {
-    /// The next picture of the screen, waiting at most `wait` for it to change: `Ok(None)` when
-    /// it didn't. An error ends this capture (the gate's "capture failed").
-    fn next(&mut self, wait: Duration) -> Result<Option<ScreenImage>, String>;
+/// What one wait for a screen's next frame got.
+#[derive(Debug)]
+pub enum Got {
+    /// The screen changed: its picture.
+    Picture(ScreenImage),
+    /// Only the pointer moved.
+    Pointer,
+    /// Nothing changed within the wait.
+    Unchanged,
 }
 
-/// Opens one [`Capture`] per screen.
+/// One screen's frames.
+pub trait Capture: Send {
+    /// The next frame of the screen, waiting at most `wait` for it to change. An error ends
+    /// this capture (the gate's "capture failed").
+    fn next(&mut self, wait: Duration) -> Result<Got, String>;
+}
+
+/// Opens one [`Capture`] per screen that can be read (a screen that can't, such as a VR headset
+/// or a virtual display, is left out); an error only when none can.
 pub type Opener = Arc<dyn Fn() -> Result<Vec<Box<dyn Capture>>, String> + Send + Sync>;
 
 /// The real screens (DXGI Desktop Duplication). Tests never call it: under `cfg(test)` it fails.
@@ -353,6 +371,17 @@ impl Stop {
         *self.stopped.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Runs `f` unless stopped, holding the stop's lock: once [`Stop::set`] returned, no `f`
+    /// runs or is running.
+    fn unless_set(&self, f: impl FnOnce()) -> bool {
+        let g = self.stopped.lock().unwrap_or_else(|e| e.into_inner());
+        if *g {
+            return false;
+        }
+        f();
+        true
+    }
+
     /// Waits `d` unless stopped first; true when stopped.
     fn wait(&self, d: Duration) -> bool {
         let g = self.stopped.lock().unwrap_or_else(|e| e.into_inner());
@@ -365,20 +394,44 @@ impl Stop {
 }
 
 struct Run {
+    /// Which run this is: a failure reported by an older one is ignored.
+    generation: u64,
     stop: Arc<Stop>,
-    threads: Vec<JoinHandle<()>>,
+    thread: JoinHandle<()>,
+}
+
+/// Screen glow's own events, from the scene's control thread (pause, away, the look and the yes
+/// go through [`Reader::set`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// The program in front changed, or a window entered or left full screen: read again what
+    /// is full screen.
+    FullScreen,
+    /// Windows' displays changed: open the screens again.
+    DisplayChanged,
+    /// The desktop switched (a UAC prompt, Ctrl+Alt+Del): open the screens again.
+    DesktopSwitched,
+    /// A capture run (its generation) failed.
+    Failed(u64),
 }
 
 /// Runs the capture threads while the gates are open. Owned by a running scene's control
 /// thread; each gate change is one [`Reader::set`].
+///
+/// Nothing here blocks that thread: a stop sets the run's stop and returns (its threads end at
+/// their next wake, at most [`WAIT`] later, without handing on another picture), and the next
+/// run's opening thread waits for them first, so two captures of one screen never overlap.
 pub struct Reader {
     gates: Gates,
     run: Option<Run>,
+    /// Stopped runs' threads, joined by the next run before it opens the screens.
+    retired: Vec<JoinHandle<()>>,
+    generation: u64,
     open: Opener,
     feed: Arc<Feed>,
-    /// Told (from a capture thread) when capture failed; the control thread then sets
-    /// `failed`.
-    on_fail: Arc<dyn Fn() + Send + Sync>,
+    /// Told (from a capture thread) when a run's capture failed, with its generation; the
+    /// control thread then calls [`Reader::failed`].
+    on_fail: Arc<dyn Fn(u64) + Send + Sync>,
     /// The app's reader publishes its state for the tray and the page ([`status`]); a test's
     /// doesn't.
     publish: bool,
@@ -388,7 +441,7 @@ impl Reader {
     pub fn new(
         open: Opener,
         feed: Arc<Feed>,
-        on_fail: Arc<dyn Fn() + Send + Sync>,
+        on_fail: Arc<dyn Fn(u64) + Send + Sync>,
         publish: bool,
     ) -> Reader {
         if publish {
@@ -397,6 +450,8 @@ impl Reader {
         Reader {
             gates: Gates::default(),
             run: None,
+            retired: Vec::new(),
+            generation: 0,
             open,
             feed,
             on_fail,
@@ -408,13 +463,19 @@ impl Reader {
         self.gates
     }
 
-    /// Whether the capture threads exist now.
+    /// Whether a run of capture threads is on now.
     #[cfg(test)]
     pub fn reading(&self) -> bool {
         self.run.is_some()
     }
 
-    /// Changes the gates; starts or stops capture to match (a stop joins the threads first).
+    /// The running capture's generation, if one runs.
+    #[cfg(test)]
+    pub fn generation(&self) -> Option<u64> {
+        self.run.as_ref().map(|r| r.generation)
+    }
+
+    /// Changes the gates; starts or stops capture to match.
     pub fn set(&mut self, change: impl FnOnce(&mut Gates)) {
         let before = self.gates;
         change(&mut self.gates);
@@ -437,26 +498,73 @@ impl Reader {
         self.publish();
     }
 
+    /// The screens changed under the capture (a display change, a switch to or from the secure
+    /// desktop): a failure is forgotten and a running capture opens the screens again, once. A
+    /// failure the old run reports after this is ignored ([`Reader::failed`]).
+    pub fn reopen(&mut self) {
+        if self.run.is_some() {
+            self.stop();
+        }
+        self.set(|g| g.failed = false);
+    }
+
+    /// A capture run reported a failure. Only the running one's counts: a run replaced since
+    /// (by [`Reader::reopen`]) is already gone.
+    pub fn failed(&mut self, generation: u64) {
+        if self
+            .run
+            .as_ref()
+            .is_some_and(|r| r.generation == generation)
+        {
+            self.set(|g| g.failed = true);
+        } else {
+            eprintln!("Foxglove: screen glow: a replaced capture's failure, ignored");
+        }
+    }
+
+    /// One of Screen glow's own events.
+    pub fn event(&mut self, e: Event) {
+        match e {
+            Event::FullScreen => self.set(|g| full_screen_now().apply(g)),
+            Event::DisplayChanged => {
+                self.reopen();
+                self.set(|g| full_screen_now().apply(g));
+            }
+            Event::DesktopSwitched => self.reopen(),
+            Event::Failed(generation) => self.failed(generation),
+        }
+    }
+
     fn start(&mut self) {
+        self.generation += 1;
+        let generation = self.generation;
         let stop = Arc::new(Stop::default());
         let wait = stop.clone();
         let open = self.open.clone();
         let feed = self.feed.clone();
         let on_fail = self.on_fail.clone();
-        // Opening (making the GPU devices) happens off the control thread too.
+        let retired = std::mem::take(&mut self.retired);
+        // Opening (making the GPU devices) happens off the control thread, after the stopped
+        // runs' threads have let the screens go.
         let first = std::thread::Builder::new()
             .name("screen-glow".into())
             .spawn(move || {
+                for t in retired {
+                    let _ = t.join();
+                }
+                if wait.is_set() {
+                    return;
+                }
                 let caps = match open() {
                     Ok(c) if !c.is_empty() => c,
                     Ok(_) => {
                         eprintln!("Foxglove: screen glow: no screen to read");
-                        on_fail();
+                        on_fail(generation);
                         return;
                     }
                     Err(e) => {
                         eprintln!("Foxglove: screen glow can't read the screen: {e}");
-                        on_fail();
+                        on_fail(generation);
                         return;
                     }
                 };
@@ -469,7 +577,10 @@ impl Reader {
                             (wait.clone(), feed.clone(), on_fail.clone(), failed.clone());
                         std::thread::Builder::new()
                             .name(format!("screen-glow-{i}"))
-                            .spawn(move || capture_loop(cap, &wait, &feed, &*on_fail, &failed))
+                            .spawn(move || {
+                                let report = || on_fail(generation);
+                                capture_loop(cap, &wait, &feed, &report, &failed)
+                            })
                             .ok()
                     })
                     .collect();
@@ -478,22 +589,22 @@ impl Reader {
                 }
             });
         match first {
-            Ok(t) => {
+            Ok(thread) => {
                 self.run = Some(Run {
+                    generation,
                     stop,
-                    threads: vec![t],
+                    thread,
                 })
             }
             Err(e) => eprintln!("Foxglove: no thread for screen glow: {e}"),
         }
     }
 
+    /// Stops the run without waiting for it: its threads hand on no picture after this.
     fn stop(&mut self) {
         if let Some(run) = self.run.take() {
             run.stop.set();
-            for t in run.threads {
-                let _ = t.join();
-            }
+            self.retired.push(run.thread);
         }
         // Nothing read is kept once reading stops.
         self.feed.clear();
@@ -522,19 +633,20 @@ impl Reader {
 
 impl Drop for Reader {
     fn drop(&mut self) {
+        // The threads end by themselves within [`WAIT`]; none hands on a picture after this.
         self.stop();
         self.gates.on = false;
         self.publish();
     }
 }
 
-/// One screen's capture: a picture when it changes, at most one per [`MIN_GAP`], until a stop or
-/// an error.
+/// One screen's capture: a picture when it changes, at most one per [`MIN_GAP`] (a pointer that
+/// moved wakes it no more often), until a stop or an error.
 fn capture_loop(
     mut cap: Box<dyn Capture>,
     stop: &Stop,
     feed: &Feed,
-    on_fail: &(dyn Fn() + Send + Sync),
+    on_fail: &dyn Fn(),
     failed: &AtomicBool,
 ) {
     loop {
@@ -542,19 +654,27 @@ fn capture_loop(
             return;
         }
         match cap.next(WAIT) {
-            Ok(Some(img)) => {
-                feed.put(Edges::of(&img));
+            Ok(Got::Picture(img)) => {
+                let edges = Edges::of(&img);
                 drop(img);
+                if !stop.unless_set(|| feed.put(edges)) {
+                    return;
+                }
                 // The rest of the gap, woken at once by a stop. Pictures that change meanwhile
                 // are merged by Windows into the next one.
                 if stop.wait(MIN_GAP) {
                     return;
                 }
             }
-            Ok(None) => {}
+            Ok(Got::Pointer) => {
+                if stop.wait(MIN_GAP) {
+                    return;
+                }
+            }
+            Ok(Got::Unchanged) => {}
             Err(e) => {
-                // One report for all the screens' threads.
-                if !failed.swap(true, Ordering::SeqCst) {
+                // One report for all the screens' threads, and none after a stop.
+                if !stop.is_set() && !failed.swap(true, Ordering::SeqCst) {
                     eprintln!("Foxglove: screen glow: capture stopped: {e}");
                     on_fail();
                 }
@@ -675,31 +795,58 @@ pub fn notify_started_unseen() {
     });
 }
 
-/// Whether a full-screen game is in front: Direct3D exclusive full screen or presentation mode.
-/// `QUNS_BUSY` is left out on purpose: Windows reports it for any full-screen window, a browser's
-/// full-screen video too, and video keeps glowing (the design's pick). Borderless-window games
-/// aren't seen (the guide says so).
+/// What is full screen now, as Screen glow's gates see it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FullScreen {
+    #[default]
+    Nothing,
+    /// A Direct3D exclusive full-screen game.
+    Game,
+    /// Windows' presentation mode.
+    Presentation,
+}
+
+impl FullScreen {
+    /// Sets the gates from it (both off when Screen glow isn't on).
+    pub fn apply(self, g: &mut Gates) {
+        g.game = g.on && self == FullScreen::Game;
+        g.presenting = g.on && self == FullScreen::Presentation;
+    }
+}
+
+/// What is full screen now. `QUNS_BUSY` is left out on purpose: Windows reports it for any
+/// full-screen window, a browser's full-screen video too, and video keeps glowing (the design's
+/// pick). Borderless-window games aren't seen (the guide says so). Read when the program in
+/// front changes and when a window enters or leaves full screen (`glow_watch`).
 #[cfg(all(windows, not(test)))]
-pub fn game_now() -> bool {
+pub fn full_screen_now() -> FullScreen {
     use windows::Win32::UI::Shell::{
         SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
     };
     // SAFETY: no arguments; it returns the state by value.
-    unsafe { SHQueryUserNotificationState() }
-        .is_ok_and(|s| matches!(s, QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE))
+    match unsafe { SHQueryUserNotificationState() } {
+        Ok(QUNS_RUNNING_D3D_FULL_SCREEN) => FullScreen::Game,
+        Ok(QUNS_PRESENTATION_MODE) => FullScreen::Presentation,
+        _ => FullScreen::Nothing,
+    }
 }
 
+/// Tests stand in for what is full screen (0 nothing, 1 a game, 2 a presentation).
 #[cfg(test)]
-pub static FAKE_GAME: AtomicBool = AtomicBool::new(false);
+pub static FAKE_FULL_SCREEN: AtomicU8 = AtomicU8::new(0);
 
 #[cfg(test)]
-pub fn game_now() -> bool {
-    FAKE_GAME.load(Ordering::SeqCst)
+pub fn full_screen_now() -> FullScreen {
+    match FAKE_FULL_SCREEN.load(Ordering::SeqCst) {
+        1 => FullScreen::Game,
+        2 => FullScreen::Presentation,
+        _ => FullScreen::Nothing,
+    }
 }
 
 #[cfg(all(not(windows), not(test)))]
-pub fn game_now() -> bool {
-    false
+pub fn full_screen_now() -> FullScreen {
+    FullScreen::Nothing
 }
 
 #[cfg(test)]

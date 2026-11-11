@@ -72,6 +72,26 @@ pub fn rotated(
     }
 }
 
+/// The screens that opened, each failure logged and left out (a VR headset, an indirect or
+/// virtual display, DisplayLink, a hybrid-GPU output). An error only when none opened.
+pub fn readable<T>(opened: Vec<(String, Result<T, String>)>) -> Result<Vec<T>, String> {
+    let mut out = Vec::new();
+    let mut why = Vec::new();
+    for (name, r) in opened {
+        match r {
+            Ok(s) => out.push(s),
+            Err(e) => {
+                eprintln!("Foxglove: screen glow leaves out {name}: it can't be read ({e})");
+                why.push(format!("{name}: {e}"));
+            }
+        }
+    }
+    if out.is_empty() && !why.is_empty() {
+        return Err(why.join("; "));
+    }
+    Ok(out)
+}
+
 /// One capture per screen on the desktop.
 #[cfg(test)]
 pub fn open() -> Result<Vec<Box<dyn Capture>>, String> {
@@ -97,7 +117,11 @@ mod imp {
     use windows::Win32::Graphics::Dxgi::Common::*;
     use windows::Win32::Graphics::Dxgi::*;
 
-    use super::{level_for, rotated, Capture, ScreenImage};
+    use super::super::screen_glow::Got;
+    use super::{level_for, readable, rotated, Capture, ScreenImage};
+
+    /// A screen's name and how opening it went.
+    type Opened = (String, Result<Box<dyn Capture>, String>);
 
     struct Screen {
         name: String,
@@ -119,7 +143,7 @@ mod imp {
         unsafe {
             let factory: IDXGIFactory1 =
                 CreateDXGIFactory1().map_err(|e| format!("no DXGI factory: {e}"))?;
-            let mut out: Vec<Box<dyn Capture>> = Vec::new();
+            let mut opened: Vec<Opened> = Vec::new();
             let mut a = 0;
             while let Ok(adapter) = factory.EnumAdapters1(a) {
                 a += 1;
@@ -133,16 +157,21 @@ mod imp {
                     let name = String::from_utf16_lossy(&desc.DeviceName)
                         .trim_end_matches('\0')
                         .to_string();
-                    match screen(&adapter, &output, name.clone()) {
-                        Ok(s) => out.push(Box::new(s)),
-                        Err(e) => return Err(format!("{name}: {e}")),
-                    }
+                    let s = screen(&adapter, &output, name.clone())
+                        .map(|s| Box::new(s) as Box<dyn Capture>)
+                        .map_err(|e| e.to_string());
+                    opened.push((name, s));
                 }
             }
-            Ok(out)
+            readable(opened)
         }
     }
 
+    /// One screen's device and duplication.
+    ///
+    /// # Safety
+    /// COM calls on interfaces the caller got from DXGI's enumeration; each out value is checked
+    /// before use.
     unsafe fn screen(
         adapter: &IDXGIAdapter1,
         output: &IDXGIOutput,
@@ -183,6 +212,11 @@ mod imp {
 
     impl Screen {
         /// The mip texture and staging texture for a picture of this size and format, made once.
+        ///
+        /// # Safety
+        /// Called on this screen's capture thread only (the device isn't shared). The
+        /// descriptions are complete structs built here; every created texture and view is
+        /// checked before it is kept.
         unsafe fn targets(&mut self, d: &D3D11_TEXTURE2D_DESC) -> windows::core::Result<()> {
             if self
                 .mips
@@ -234,6 +268,12 @@ mod imp {
         }
 
         /// Reads the small level back as sRGB pixels.
+        ///
+        /// # Safety
+        /// Called on this screen's capture thread only, after `targets` made the staging texture
+        /// for this size. The pixels are read only between a successful `Map` and its `Unmap`,
+        /// and only when the mapped rows hold the level's width (`RowPitch >= width * 4`, checked
+        /// below): each row slice then lies inside the mapped memory (`RowPitch * height` bytes).
         unsafe fn read(&mut self) -> windows::core::Result<ScreenImage> {
             let (Some((mips, _, w, h, level)), Some(staging)) = (&self.mips, &self.staging) else {
                 return Err(windows::core::Error::empty());
@@ -244,8 +284,16 @@ mod imp {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.ctx
                 .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            if mapped.pData.is_null() || (mapped.RowPitch as usize) < sw * 4 {
+                self.ctx.Unmap(staging, 0);
+                return Err(windows::core::Error::new(
+                    windows::core::HRESULT(0x887A_0004_u32 as i32),
+                    "the read-back rows are shorter than the picture",
+                ));
+            }
             let mut pixels = Vec::with_capacity(sw * sh);
             for y in 0..sh {
+                // SAFETY: inside the mapped memory (see above), read before `Unmap`.
                 let row = std::slice::from_raw_parts(
                     mapped.pData.cast::<u8>().add(y * mapped.RowPitch as usize),
                     sw * 4,
@@ -259,15 +307,17 @@ mod imp {
     }
 
     impl Capture for Screen {
-        fn next(&mut self, wait: Duration) -> Result<Option<ScreenImage>, String> {
+        fn next(&mut self, wait: Duration) -> Result<Got, String> {
             let ms = u32::try_from(wait.as_millis()).unwrap_or(u32::MAX);
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
-            // SAFETY: the duplication is this thread's; each acquired frame is released below.
+            // SAFETY: the duplication, device and context are this thread's; each acquired frame
+            // is released below before anything else is done with the duplication, and the
+            // desktop texture is used only while the frame is held.
             unsafe {
                 match self.dup.AcquireNextFrame(ms, &mut info, &mut resource) {
                     Ok(()) => {}
-                    Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
+                    Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(Got::Unchanged),
                     Err(e) => return Err(format!("{}: {e}", self.name)),
                 }
                 let shown = (|| -> windows::core::Result<bool> {
@@ -298,10 +348,10 @@ mod imp {
                 // The frame goes back to Windows before the read, which waits on the GPU.
                 let _ = self.dup.ReleaseFrame();
                 match shown {
-                    Ok(false) => Ok(None),
+                    Ok(false) => Ok(Got::Pointer),
                     Ok(true) => self
                         .read()
-                        .map(Some)
+                        .map(Got::Picture)
                         .map_err(|e| format!("{}: {e}", self.name)),
                     Err(e) => Err(format!("{}: {e}", self.name)),
                 }
@@ -334,6 +384,22 @@ mod tests {
         assert_eq!(r2.pixels[5], [255, 0, 0], "180: bottom right");
         let r0 = rotated("d", 3, 2, px, 0);
         assert_eq!(r0.pixels[0], [255, 0, 0]);
+    }
+
+    /// #496 review: one screen that can't be read (VR, a virtual display, DisplayLink) is left
+    /// out; only none at all fails.
+    #[test]
+    fn an_unreadable_screen_is_left_out() {
+        let r = readable(vec![
+            ("DISPLAY1".to_string(), Ok(1)),
+            ("VR".to_string(), Err("unsupported".to_string())),
+            ("DISPLAY2".to_string(), Ok(2)),
+        ]);
+        assert_eq!(r, Ok(vec![1, 2]));
+        let none: Result<Vec<u8>, String> =
+            readable(vec![("VR".into(), Err("unsupported".into()))]);
+        assert!(none.unwrap_err().contains("VR: unsupported"));
+        assert_eq!(readable::<u8>(Vec::new()), Ok(Vec::new()));
     }
 
     #[test]
