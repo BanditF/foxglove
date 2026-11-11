@@ -418,7 +418,8 @@ pub fn card(ui: &egui::Ui) -> egui::Frame {
         .corner_radius(CornerRadius::same(8))
 }
 
-/// A pill: when selected, an orange border on a dark-orange fill.
+/// A pill: when selected, an orange border on a dark-orange fill. This one stands on its own: a toggle such as "Options" or "Custom" that isn't one of a row's choices.
+/// A row of pills that picks one goes through [`pill_group`] instead.
 pub fn pill(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
     let pill = pill_button(ui, selected, text);
     ui.add(pill)
@@ -436,6 +437,213 @@ pub fn pill_button(ui: &egui::Ui, selected: bool, text: &str) -> egui::Button<'s
         .fill(fill)
         .stroke(Stroke::new(1.0, line))
         .corner_radius(CornerRadius::same(99))
+}
+
+// Pill rows as radio groups (#1085, item 3). A row of pills that picks one is one AccessKit
+// radio group named by its caption, each pill a radio button with its checked state. Only the
+// selected pill is a Tab stop (the first one while none is), so Tab enters the row at the
+// selected pill and the next Tab leaves it. Arrow keys move and select within the row,
+// wrapping; Home and End go to the first and last pill; Space or Enter selects (egui's own
+// click on a focused button). Nothing is drawn differently: the group adds no Ui and no space.
+
+/// The pills one [`pill_group`] row showed last frame: the keys act on these, since the row's
+/// pills are only known once it has been drawn.
+#[derive(Clone, Default)]
+struct PillRow {
+    /// Each pill's id and whether it could be picked.
+    pills: Vec<(egui::Id, bool)>,
+    /// Whether one of them was selected; while none is, the first pill is the Tab stop.
+    selected: bool,
+}
+
+/// The row being drawn by [`pill_group`]; add its pills with [`PillGroup::pill`].
+pub struct PillGroup {
+    id: egui::Id,
+    last: PillRow,
+    this: PillRow,
+}
+
+/// A row of pills that picks one, as a radio group named `caption` (what the row's label says,
+/// or what it would say where the row has none). `add` draws the row into `ui` as before, its
+/// pills through the group; the group itself adds nothing to the layout.
+pub fn pill_group<R>(
+    ui: &mut egui::Ui,
+    caption: &str,
+    add: impl FnOnce(&mut egui::Ui, &mut PillGroup) -> R,
+) -> R {
+    let ctx = ui.ctx().clone();
+    let id = ui.next_auto_id().with(("pill_group", caption));
+    let last: PillRow = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
+    pill_keys(&ctx, &last.pills);
+    // The group's node, a child of this Ui's node, ahead of the pills it will hold.
+    let parent = ui.unique_id();
+    ctx.accesskit_node_builder(parent, |_| ());
+    let made = ctx
+        .accesskit_node_builder(id, |n| {
+            n.set_role(egui::accesskit::Role::RadioGroup);
+            n.set_label(caption);
+        })
+        .is_some();
+    // A node made without a Ui lands under the root: move it under this Ui.
+    if made {
+        adopt(&ctx, egui::accesskit_root_id(), parent, id);
+    }
+    let mut g = PillGroup {
+        id,
+        last,
+        this: PillRow::default(),
+    };
+    let r = add(ui, &mut g);
+    let n = g.this.pills.len();
+    for (i, (pill, _)) in g.this.pills.iter().enumerate() {
+        ctx.accesskit_node_builder(*pill, |node| {
+            node.set_position_in_set(i + 1);
+            node.set_size_of_set(n);
+        });
+    }
+    ctx.data_mut(|d| d.insert_temp(id, g.this));
+    r
+}
+
+impl PillGroup {
+    /// One of the row's pills: a radio button, checked when `selected`. Its response is the
+    /// pill's own, so the row reacts to `clicked()` as before; an arrow key or Home/End on the
+    /// row arrives as a click on the pill it moves to.
+    pub fn pill(&mut self, ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+        self.pill_enabled(ui, true, selected, text)
+    }
+
+    /// [`Self::pill`], greyed out and not pickable unless `enabled` (#388).
+    pub fn pill_enabled(
+        &mut self,
+        ui: &mut egui::Ui,
+        enabled: bool,
+        selected: bool,
+        text: &str,
+    ) -> egui::Response {
+        let ctx = ui.ctx().clone();
+        let index = self.this.pills.len();
+        // The pill that has focus stays focusable, or egui would take its focus away while
+        // the pick it made is still on its way (a device answering).
+        let focused = self
+            .last
+            .pills
+            .get(index)
+            .is_some_and(|(id, _)| ctx.memory(|m| m.has_focus(*id)));
+        let first = index == 0 && !self.last.selected;
+        let sense = if selected || focused || first {
+            egui::Sense::click()
+        } else {
+            egui::Sense::CLICK
+        };
+        let parent = ui.unique_id();
+        ctx.accesskit_node_builder(parent, |_| ());
+        let r = ui.add_enabled(enabled, pill_button(ui, selected, text).sense(sense));
+        ctx.accesskit_node_builder(r.id, |n| {
+            n.set_role(egui::accesskit::Role::RadioButton);
+            n.set_toggled(if selected {
+                egui::accesskit::Toggled::True
+            } else {
+                egui::accesskit::Toggled::False
+            });
+        });
+        adopt(&ctx, parent, self.id, r.id);
+        self.this.pills.push((r.id, r.enabled()));
+        self.this.selected |= selected;
+        r
+    }
+}
+
+/// Moves `child`'s node from `from`'s children to `to`'s. Only a node that was there moves, so
+/// a node never ends up with two parents. True when it moved.
+fn adopt(ctx: &egui::Context, from: egui::Id, to: egui::Id, child: egui::Id) -> bool {
+    let node = child.accesskit_id();
+    let taken = ctx
+        .accesskit_node_builder(from, |n| {
+            let had = n.children().contains(&node);
+            if had {
+                let kept: Vec<_> = n
+                    .children()
+                    .iter()
+                    .copied()
+                    .filter(|c| *c != node)
+                    .collect();
+                n.set_children(kept);
+            }
+            had
+        })
+        .unwrap_or(false);
+    if taken {
+        ctx.accesskit_node_builder(to, |n| n.push_child(node));
+    }
+    taken
+}
+
+/// The keys of a radio group, while one of `pills` (last frame's row) has focus: Left/Up and
+/// Right/Down step and wrap, Home and End go to the ends, skipping pills that can't be picked.
+/// The pill moved to gets focus and a click (an AccessKit click request, which egui answers as
+/// one), and egui's own arrow-key focus move is cancelled so focus stays in the row.
+fn pill_keys(ctx: &egui::Context, pills: &[(egui::Id, bool)]) {
+    use egui::{Key, Modifiers};
+    let Some(focused) = ctx.memory(|m| m.focused()) else {
+        return;
+    };
+    let Some(start) = pills.iter().position(|(id, _)| *id == focused) else {
+        return;
+    };
+    let mut keys = Vec::new();
+    ctx.input_mut(|i| {
+        for key in [
+            Key::ArrowLeft,
+            Key::ArrowUp,
+            Key::ArrowRight,
+            Key::ArrowDown,
+            Key::Home,
+            Key::End,
+        ] {
+            while i.consume_key(Modifiers::NONE, key) {
+                keys.push(key);
+            }
+        }
+    });
+    if keys.is_empty() {
+        return;
+    }
+    let mut at = start;
+    for key in keys {
+        at = pill_step(pills, at, key);
+    }
+    let target = pills[at].0;
+    ctx.memory_mut(|m| {
+        m.move_focus(egui::FocusDirection::None);
+        m.request_focus(target);
+    });
+    if at != start {
+        ctx.input_mut(|i| {
+            i.events.push(egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Click,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: target.accesskit_id(),
+                    data: None,
+                },
+            ));
+        });
+    }
+}
+
+/// Where `key` moves from pill `at`, among the pills that can be picked (`at` itself when none
+/// other can).
+fn pill_step(pills: &[(egui::Id, bool)], at: usize, key: egui::Key) -> usize {
+    use egui::Key;
+    let n = pills.len();
+    let open = |i: &usize| pills[*i].1;
+    match key {
+        Key::Home => (0..n).find(open).unwrap_or(at),
+        Key::End => (0..n).rev().find(open).unwrap_or(at),
+        Key::ArrowLeft | Key::ArrowUp => (1..n).map(|k| (at + n - k) % n).find(open).unwrap_or(at),
+        _ => (1..n).map(|k| (at + k) % n).find(open).unwrap_or(at),
+    }
 }
 
 /// The main action of a card: an orange button.
@@ -805,21 +1013,23 @@ pub fn picker(ui: &mut egui::Ui) {
     let current = choice(ui.ctx());
     ui.horizontal_wrapped(|ui| {
         ui.label("Window theme");
-        for (choice, label) in [
-            (Choice::Dark, "Dark"),
-            (Choice::Light, "Light"),
-            (Choice::System, "System"),
-        ] {
-            if pill(ui, current == choice, label).clicked() && current != choice {
-                let windows = (choice == Choice::System)
-                    .then(super::windows_theme::current)
-                    .flatten();
-                set_choice(ui.ctx(), choice, windows);
-                if let Err(e) = super::store::save("ui", &UiSettings { theme: choice }) {
-                    eprintln!("Foxglove: can't save the theme: {e}");
+        pill_group(ui, "Window theme", |ui, g| {
+            for (choice, label) in [
+                (Choice::Dark, "Dark"),
+                (Choice::Light, "Light"),
+                (Choice::System, "System"),
+            ] {
+                if g.pill(ui, current == choice, label).clicked() && current != choice {
+                    let windows = (choice == Choice::System)
+                        .then(super::windows_theme::current)
+                        .flatten();
+                    set_choice(ui.ctx(), choice, windows);
+                    if let Err(e) = super::store::save("ui", &UiSettings { theme: choice }) {
+                        eprintln!("Foxglove: can't save the theme: {e}");
+                    }
                 }
             }
-        }
+        });
     });
     ui.add_space(4.0);
 }
@@ -1751,5 +1961,337 @@ mod tests {
             ctx.style_of(egui::Theme::Light).visuals.window_fill,
             LIGHT.ground
         );
+    }
+}
+
+/// Pill rows as radio groups (#1085, item 3): the tree a row gives, and its keys, window-free.
+#[cfg(test)]
+mod pill_group_tests {
+    use egui::accesskit::{Node, NodeId, Role, Toggled, TreeUpdate};
+    use egui::{Event, Key, Modifiers};
+
+    use super::pill_group;
+
+    const NAMES: [&str; 4] = ["Solid", "Breathe", "Wave", "Swirl"];
+
+    /// A window with a button, the "Effect" row and another button, as a page has them.
+    struct Row {
+        ctx: egui::Context,
+        /// The selected pill.
+        selected: usize,
+        /// Whether a click selects (a device that answers at once) or changes nothing yet.
+        follows: bool,
+        /// A pill that can't be picked.
+        disabled: Option<usize>,
+        /// Every click the row saw, by pill.
+        clicks: Vec<usize>,
+        last: Option<TreeUpdate>,
+    }
+
+    impl Row {
+        fn new(selected: usize) -> Row {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut r = Row {
+                ctx,
+                selected,
+                follows: true,
+                disabled: None,
+                clicks: Vec::new(),
+                last: None,
+            };
+            r.frame(Vec::new());
+            r
+        }
+
+        fn frame(&mut self, events: Vec<Event>) {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(600.0, 300.0),
+                )),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            let (selected, disabled) = (self.selected, self.disabled);
+            let mut clicked = Vec::new();
+            let mut out = self.ctx.run_ui(raw, |ui| {
+                let _ = ui.button("Before");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Effect");
+                    pill_group(ui, "Effect", |ui, g| {
+                        for (i, name) in NAMES.iter().enumerate() {
+                            let on = disabled != Some(i);
+                            if g.pill_enabled(ui, on, selected == i, name).clicked() {
+                                clicked.push(i);
+                            }
+                        }
+                    });
+                    let _ = ui.button("Beside");
+                });
+                let _ = ui.button("After");
+            });
+            out.textures_delta.clear(); // nothing is painted here
+            if let (true, Some(i)) = (self.follows, clicked.last()) {
+                self.selected = *i;
+            }
+            self.clicks.extend(clicked);
+            self.last = out.platform_output.accesskit_update;
+        }
+
+        fn key(&mut self, key: Key, modifiers: Modifiers) {
+            self.frame(vec![Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }]);
+            // A frame with no input after it, as egui repaints after focus moves.
+            self.frame(Vec::new());
+        }
+
+        fn press(&mut self, key: Key) {
+            self.key(key, Modifiers::NONE);
+        }
+
+        fn tree(&self) -> &TreeUpdate {
+            self.last.as_ref().expect("an accessibility tree")
+        }
+
+        fn node(&self, id: NodeId) -> &Node {
+            self.tree()
+                .nodes
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, n)| n)
+                .expect("the node")
+        }
+
+        /// The name of what has focus.
+        fn focus(&self) -> String {
+            let t = self.tree();
+            self.node(t.focus).label().unwrap_or_default().to_owned()
+        }
+    }
+
+    #[test]
+    fn the_row_is_a_radio_group_named_by_its_caption() {
+        let row = Row::new(2);
+        let t = row.tree();
+        let groups: Vec<_> = t
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.role() == Role::RadioGroup)
+            .collect();
+        assert_eq!(groups.len(), 1);
+        let (gid, group) = groups[0];
+        assert_eq!(group.label(), Some("Effect"));
+        let pills: Vec<_> = group.children().iter().map(|c| row.node(*c)).collect();
+        assert_eq!(
+            pills.len(),
+            NAMES.len(),
+            "the group holds the pills, nothing else"
+        );
+        for (i, p) in pills.iter().enumerate() {
+            assert_eq!(p.role(), Role::RadioButton);
+            assert_eq!(p.label(), Some(NAMES[i]));
+            let checked = if i == 2 {
+                Toggled::True
+            } else {
+                Toggled::False
+            };
+            assert_eq!(p.toggled(), Some(checked), "{}", NAMES[i]);
+            assert_eq!(p.position_in_set(), Some(i + 1));
+            assert_eq!(p.size_of_set(), Some(NAMES.len()));
+        }
+        // The group sits in the row, between its caption and the button beside it.
+        let (_, parent) = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.children().contains(gid))
+            .expect("the group's parent");
+        let names: Vec<_> = parent
+            .children()
+            .iter()
+            .map(|c| {
+                let n = row.node(*c);
+                (
+                    n.role(),
+                    n.label().or(n.value()).unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (Role::Label, "Effect".to_owned()),
+                (Role::RadioGroup, "Effect".to_owned()),
+                (Role::Button, "Beside".to_owned()),
+            ]
+        );
+        // No pill is anywhere else in the tree.
+        let mut parents = 0;
+        for (_, n) in &t.nodes {
+            parents += n
+                .children()
+                .iter()
+                .filter(|c| group.children().contains(c))
+                .count();
+        }
+        assert_eq!(parents, NAMES.len());
+    }
+
+    #[test]
+    fn tab_enters_at_the_selected_pill_and_leaves_after_it() {
+        let mut row = Row::new(2);
+        row.press(Key::Tab);
+        assert_eq!(row.focus(), "Before");
+        row.press(Key::Tab);
+        assert_eq!(
+            row.focus(),
+            "Wave",
+            "Tab enters the row at the selected pill"
+        );
+        row.press(Key::Tab);
+        assert_eq!(row.focus(), "Beside", "the next Tab leaves the row");
+        row.key(Key::Tab, Modifiers::SHIFT);
+        assert_eq!(
+            row.focus(),
+            "Wave",
+            "Shift+Tab comes back to the selected pill"
+        );
+        row.key(Key::Tab, Modifiers::SHIFT);
+        assert_eq!(row.focus(), "Before");
+        assert!(row.clicks.is_empty(), "Tab picks nothing");
+    }
+
+    #[test]
+    fn with_none_selected_tab_enters_at_the_first_pill() {
+        let mut row = Row::new(usize::MAX);
+        row.frame(Vec::new());
+        row.press(Key::Tab);
+        row.press(Key::Tab);
+        assert_eq!(row.focus(), "Solid");
+        row.press(Key::Tab);
+        assert_eq!(row.focus(), "Beside");
+    }
+
+    #[test]
+    fn arrows_move_and_select_and_wrap() {
+        let mut row = Row::new(2);
+        row.press(Key::Tab);
+        row.press(Key::Tab);
+        assert_eq!(row.focus(), "Wave");
+        let mut steps = Vec::new();
+        for key in [
+            Key::ArrowRight,
+            Key::ArrowRight,
+            Key::ArrowLeft,
+            Key::ArrowDown,
+            Key::ArrowUp,
+            Key::ArrowUp,
+            Key::Home,
+            Key::End,
+            Key::Home,
+        ] {
+            row.press(key);
+            assert_eq!(
+                row.focus(),
+                NAMES[row.selected],
+                "{key:?}: focus follows the pick"
+            );
+            steps.push(NAMES[row.selected]);
+        }
+        assert_eq!(
+            steps,
+            ["Swirl", "Solid", "Swirl", "Solid", "Swirl", "Wave", "Solid", "Swirl", "Solid"]
+        );
+        // Each move was one click on the pill it moved to, as a mouse would give.
+        assert_eq!(row.clicks, [3, 0, 3, 0, 3, 2, 0, 3, 0]);
+        // Focus never left the row: Tab still leaves from here.
+        row.press(Key::Tab);
+        assert_eq!(row.focus(), "Beside");
+    }
+
+    #[test]
+    fn space_or_enter_selects_the_focused_pill() {
+        // A device that hasn't answered yet: the pick stays where it was, focus moves on.
+        let mut row = Row::new(0);
+        row.follows = false;
+        row.press(Key::Tab);
+        row.press(Key::Tab);
+        row.press(Key::ArrowRight);
+        assert_eq!(row.focus(), "Breathe", "focus stays on the pill moved to");
+        assert_eq!(row.clicks, [1]);
+        row.press(Key::Space);
+        row.press(Key::Enter);
+        assert_eq!(row.clicks, [1, 1, 1]);
+        assert_eq!(row.focus(), "Breathe");
+    }
+
+    #[test]
+    fn a_pill_that_cant_be_picked_is_skipped() {
+        let mut row = Row::new(0);
+        row.disabled = Some(1);
+        row.frame(Vec::new());
+        row.press(Key::Tab);
+        row.press(Key::Tab);
+        row.press(Key::ArrowRight);
+        assert_eq!(NAMES[row.selected], "Wave");
+        row.press(Key::ArrowLeft);
+        assert_eq!(NAMES[row.selected], "Solid");
+        let t = row.tree();
+        let breathe = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Breathe"))
+            .map(|(_, n)| n)
+            .unwrap();
+        assert!(breathe.is_disabled());
+    }
+
+    #[test]
+    fn without_accesskit_the_keys_still_work() {
+        let ctx = egui::Context::default();
+        let mut selected = 1usize;
+        for events in [
+            vec![],
+            vec![Key::Tab],
+            vec![Key::ArrowRight],
+            vec![],
+            vec![Key::End],
+            vec![],
+        ] {
+            let raw = egui::RawInput {
+                focused: true,
+                events: events
+                    .into_iter()
+                    .map(|key| Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Modifiers::NONE,
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                ui.horizontal(|ui| {
+                    pill_group(ui, "Effect", |ui, g| {
+                        for (i, name) in NAMES.iter().enumerate() {
+                            if g.pill(ui, selected == i, name).clicked() {
+                                selected = i;
+                            }
+                        }
+                    });
+                });
+            });
+            out.textures_delta.clear();
+            assert!(out.platform_output.accesskit_update.is_none());
+        }
+        assert_eq!(selected, 3);
     }
 }

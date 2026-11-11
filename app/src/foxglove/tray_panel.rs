@@ -852,17 +852,17 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 });
             }
             part(ui, "Profile", |_| {}, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if theme::pill(ui, v.active_profile.is_none(), "Default").clicked() && v.active_profile.is_some() {
+                ui.horizontal_wrapped(|ui| theme::pill_group(ui, "Profile", |ui, g| {
+                    if g.pill(ui, v.active_profile.is_none(), "Default").clicked() && v.active_profile.is_some() {
                         out.push(Intent::Profile(None));
                     }
                     for name in &v.profiles {
                         let on = v.active_profile.as_deref() == Some(name.as_str());
-                        if theme::pill(ui, on, name).clicked() && !on {
+                        if g.pill(ui, on, name).clicked() && !on {
                             out.push(Intent::Profile(Some(name.clone())));
                         }
                     }
-                });
+                }));
             });
             if let Some(row) = &v.knob {
                 knob(ui, row, out);
@@ -1108,11 +1108,13 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
             };
             ui.add_enabled_ui(v.lights_ready, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for (i, name) in (0u8..).zip(super::lights_page::EFFECTS) {
-                        if theme::pill(ui, l.effect == i, name).clicked() && l.effect != i {
-                            out.push(Intent::Effect(i));
+                    theme::pill_group(ui, "Effect", |ui, g| {
+                        for (i, name) in (0u8..).zip(super::lights_page::EFFECTS) {
+                            if g.pill(ui, l.effect == i, name).clicked() && l.effect != i {
+                                out.push(Intent::Effect(i));
+                            }
                         }
-                    }
+                    })
                 });
                 ui.add_space(4.0);
                 // What the keyboard shows decides the controls (#670).

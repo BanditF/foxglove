@@ -1665,11 +1665,13 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
     let has_places = art_pieces::meter(s).is_some();
     ui.horizontal_wrapped(|ui| {
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-        for (f, text) in Filter::ALL {
-            if theme::pill(ui, state.filter == f, text).clicked() {
-                state.filter = f;
+        theme::pill_group(ui, "Show", |ui, g| {
+            for (f, text) in Filter::ALL {
+                if g.pill(ui, state.filter == f, text).clicked() {
+                    state.filter = f;
+                }
             }
-        }
+        });
         ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search").desired_width(140.0));
         {
             ui.menu_button("Add art…", |ui| {

@@ -521,17 +521,19 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
 fn choices(ui: &mut egui::Ui, v: &View, w: &mut Wizard, out: &mut Output) {
     ui.horizontal_wrapped(|ui| {
         ui.label(theme::caps_label(ui, "Compare with"));
-        let mut pick = |ui: &mut egui::Ui, w: &mut Wizard, r: Option<&Target>, name: &str| {
-            let selected = w.reference.as_ref().map(|t| &t.key) == r.map(|t| &t.key);
-            if theme::pill(ui, selected, name).clicked() && !selected {
-                out.reference_changed = Some(std::mem::replace(&mut w.reference, r.cloned()));
-                out.show_reference = true;
+        theme::pill_group(ui, "Compare with", |ui, g| {
+            let mut pick = |ui: &mut egui::Ui, w: &mut Wizard, r: Option<&Target>, name: &str| {
+                let selected = w.reference.as_ref().map(|t| &t.key) == r.map(|t| &t.key);
+                if g.pill(ui, selected, name).clicked() && !selected {
+                    out.reference_changed = Some(std::mem::replace(&mut w.reference, r.cloned()));
+                    out.show_reference = true;
+                }
+            };
+            pick(ui, w, None, "Screen");
+            for t in &v.others {
+                pick(ui, w, Some(t), &t.name);
             }
-        };
-        pick(ui, w, None, "Screen");
-        for t in &v.others {
-            pick(ui, w, Some(t), &t.name);
-        }
+        });
     });
     let Kind::Lights { zones } = w.target.kind.clone() else {
         return;
@@ -541,22 +543,24 @@ fn choices(ui: &mut egui::Ui, v: &View, w: &mut Wizard, out: &mut Output) {
     }
     ui.horizontal_wrapped(|ui| {
         ui.label(theme::caps_label(ui, "Zones"));
-        let mut choose = |ui: &mut egui::Ui, w: &mut Wizard, z: Option<&String>, name: &str| {
-            let selected = w.zone.as_ref() == z;
-            if theme::pill(ui, selected, name)
-                .on_hover_text("Match this zone on its own, when it doesn't look like the rest")
-                .clicked()
-                && !selected
-            {
-                w.zone = z.cloned();
-                w.load_current();
-                out.show = true;
+        theme::pill_group(ui, "Zones", |ui, g| {
+            let mut choose = |ui: &mut egui::Ui, w: &mut Wizard, z: Option<&String>, name: &str| {
+                let selected = w.zone.as_ref() == z;
+                if g.pill(ui, selected, name)
+                    .on_hover_text("Match this zone on its own, when it doesn't look like the rest")
+                    .clicked()
+                    && !selected
+                {
+                    w.zone = z.cloned();
+                    w.load_current();
+                    out.show = true;
+                }
+            };
+            choose(ui, w, None, "All zones");
+            for (id, name) in &zones {
+                choose(ui, w, Some(id), name);
             }
-        };
-        choose(ui, w, None, "All zones");
-        for (id, name) in &zones {
-            choose(ui, w, Some(id), name);
-        }
+        });
     });
 }
 
@@ -564,17 +568,19 @@ fn choices(ui: &mut egui::Ui, v: &View, w: &mut Wizard, out: &mut Output) {
 fn steps(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        for step in Step::ALL {
-            let tick = if w.matched(step.color()) { " ✓" } else { "" };
-            let selected = w.step == step && w.custom.is_none();
-            let text = format!("{}{tick}", step.name());
-            if theme::pill(ui, selected, &text).clicked() && !selected {
-                go(w, step, out);
+        theme::pill_group(ui, "Test colour", |ui, g| {
+            for step in Step::ALL {
+                let tick = if w.matched(step.color()) { " ✓" } else { "" };
+                let selected = w.step == step && w.custom.is_none();
+                let text = format!("{}{tick}", step.name());
+                if g.pill(ui, selected, &text).clicked() && !selected {
+                    go(w, step, out);
+                }
             }
-        }
-        if let Some(c) = w.custom {
-            theme::pill(ui, true, &format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]));
-        }
+            if let Some(c) = w.custom {
+                g.pill(ui, true, &format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]));
+            }
+        });
     });
 }
 
@@ -719,23 +725,25 @@ fn ask(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     ui.label(RichText::new(w.color_name()).color(p.text_strong).strong());
     ui.horizontal_wrapped(|ui| {
         ui.label(theme::caps_label(ui, "Adjust"));
-        for (side, text, hover) in [
-            (Side::Light, "Light", "Move what this device is sent"),
-            (
-                Side::Screen,
-                "Screen",
-                "Move what Foxglove draws for this device, when the light can't get there",
-            ),
-        ] {
-            if theme::pill(ui, w.side == side, text)
-                .on_hover_text(hover)
-                .clicked()
-                && w.side != side
-            {
-                w.set_side(side);
-                out.show = true;
+        theme::pill_group(ui, "Adjust", |ui, g| {
+            for (side, text, hover) in [
+                (Side::Light, "Light", "Move what this device is sent"),
+                (
+                    Side::Screen,
+                    "Screen",
+                    "Move what Foxglove draws for this device, when the light can't get there",
+                ),
+            ] {
+                if g.pill(ui, w.side == side, text)
+                    .on_hover_text(hover)
+                    .clicked()
+                    && w.side != side
+                {
+                    w.set_side(side);
+                    out.show = true;
+                }
             }
-        }
+        });
     });
     ui.label(RichText::new(match_text(&w.current)).font(theme::mono(12.0)));
     ui.add_space(6.0);
@@ -757,16 +765,18 @@ fn ask(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
         Side::Light => {
             ui.horizontal_wrapped(|ui| {
                 ui.label(theme::caps_label(ui, "Device shows"));
-                for (pick, text) in [(Pick::A, "A"), (Pick::B, "B")] {
-                    if theme::pill(ui, w.showing == pick, text)
-                        .on_hover_text("Light this candidate on the device")
-                        .clicked()
-                        && w.showing != pick
-                    {
-                        w.showing = pick;
-                        out.show = true;
+                theme::pill_group(ui, "Device shows", |ui, g| {
+                    for (pick, text) in [(Pick::A, "A"), (Pick::B, "B")] {
+                        if g.pill(ui, w.showing == pick, text)
+                            .on_hover_text("Light this candidate on the device")
+                            .clicked()
+                            && w.showing != pick
+                        {
+                            w.showing = pick;
+                            out.show = true;
+                        }
                     }
-                }
+                });
             });
             format!("Which looks closer to {}?", reference_name(w))
         }
