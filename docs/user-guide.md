@@ -620,9 +620,13 @@ goes back near the top after you let go of it; Foxglove's card above it shows th
 Windows' Volume mixer shows the lower app levels, and the knob shows each app's own. Apps that
 take exclusive control of the device play at full volume. If Windows lets apps take exclusive
 control, **Open Sound settings** opens Windows' Sound panel, where you can turn that off on the
-device's Properties > Advanced tab. If Foxglove ever stops without putting
-the levels back, it puts them back when it starts again; Windows' **Settings > System > Sound >
-Volume mixer > Reset** also puts every app back at full volume.
+device's Properties > Advanced tab. If you turn it off or quit Foxglove while master is muted,
+the apps stay muted until you unmute the device, so nothing gets loud on a device that ignores its
+mute too. Foxglove unmutes them when it sees the device unmuted, or at its next start. If Foxglove
+ever stops without putting the levels back, it puts them back when it starts again; Windows'
+**Settings > System > Sound > Volume mixer > Reset** also puts every app back at full volume.
+If the Knob card says master volume is paused, quit and start Foxglove again; if it stays paused,
+Windows' **Settings > System > Sound > Volume mixer > Reset** puts every app back at full volume.
 
 ### Reporting a problem
 
