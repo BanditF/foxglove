@@ -450,8 +450,12 @@ plug-ins** (no dylibs, no scripts in the hub).
   has keys the reader doesn't know. For a newer `hub` (a higher minor, or a higher major) the
   reader may still take the file's **head**: `id` (§4.3), `name`, `version` (SemVer) and `hub`,
   each checked alone, nothing else read. The head is only for listing the module as
-  `needs-hub` (§7.8); the name is drawn with control, bidi and zero-width characters dropped,
-  whitespace runs as one space, at most 64 characters, and is the id when nothing is left.
+  `needs-hub` (§7.8), and its name is cut to 64 characters. Every reader (full, legacy and
+  head) draws a module's `name` with C0/C1 controls, bidi marks and controls (U+061C,
+  U+200E/F, U+202A–202E, U+2066–2069), zero-width and invisible characters (U+00AD, U+180E,
+  U+200B–200D, U+2060–2064, U+FEFF), interlinear annotation marks (U+FFF9–FFFB) and tag
+  characters (U+E0000–E007F) dropped, whitespace runs as one space, and the id when nothing is
+  left.
 - Strings compare exactly (case-sensitive) unless a rule says otherwise.
 
 ### 4.2 Keys

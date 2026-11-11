@@ -1211,8 +1211,8 @@ impl Module {
             );
         }
         Ok(Module {
+            name: display_name(&raw.name, &id),
             id: write_vulpes(&id),
-            name: raw.name,
             version: raw.version,
             kind,
             family,
@@ -1302,8 +1302,8 @@ impl Module {
             pin: vec![],
             edition: None,
             legacy: true,
+            name: display_name(&m.name, &m.id),
             id: m.id,
-            name: m.name,
             version: m.version,
         }
     }
@@ -1378,26 +1378,43 @@ pub struct Head {
     pub hub: Version,
 }
 
-/// A name from a file this reader can't check, made safe to draw.
-fn head_name(raw: &str, id: &str) -> String {
-    let hidden = |c: char| {
-        c.is_control()
-            || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
-    };
-    let words: Vec<&str> = raw.split(|c: char| c.is_whitespace()).collect();
-    let joined = words
-        .iter()
-        .map(|w| w.chars().filter(|c| !hidden(*c)).collect::<String>())
+/// A character a drawn name never shows: C0/C1 controls, bidi marks, embeddings, overrides and
+/// isolates (U+061C, U+200E/F, U+202A–202E, U+2066–2069), zero-width and invisible characters
+/// (U+00AD, U+180E, U+200B–200D, U+2060–2064, U+FEFF), interlinear annotation marks
+/// (U+FFF9–FFFB) and the tag characters (U+E0000–E007F).
+fn hidden_in_name(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}' | '\u{E0000}'..='\u{E007F}')
+}
+
+/// A module's `name` made safe to draw (§4.1, #1096): the hidden characters of
+/// [`hidden_in_name`] dropped, whitespace runs as one space, trimmed; the id when nothing is
+/// left. Every reader names modules through it: the full manifest, a legacy one and a [`Head`].
+pub fn display_name(raw: &str, id: &str) -> String {
+    let name = raw
+        .split(char::is_whitespace)
+        .map(|w| {
+            w.chars()
+                .filter(|c| !hidden_in_name(*c))
+                .collect::<String>()
+        })
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    let name: String = joined.chars().take(HEAD_NAME_MAX).collect();
     if name.is_empty() {
         id.to_string()
     } else {
         name
     }
+}
+
+/// A [`Head`]'s name: [`display_name`], at most [`HEAD_NAME_MAX`] characters (nothing else in
+/// that file was checked).
+fn head_name(raw: &str, id: &str) -> String {
+    display_name(raw, id).chars().take(HEAD_NAME_MAX).collect()
 }
 
 impl Head {
@@ -1614,6 +1631,59 @@ anything = true
         assert_eq!(named("K\u{202e}iln\u{200b}  \t Glaze\u{7}"), "Kiln Glaze");
         assert_eq!(named("\u{202e}\u{200b} "), "org.example.kiln");
         assert_eq!(named(&"x".repeat(200)).chars().count(), HEAD_NAME_MAX);
+    }
+
+    /// #1096 review: one cleaner names modules for every reader, and it drops the Arabic letter
+    /// mark, the soft hyphen, the Mongolian vowel separator, interlinear annotation marks and
+    /// tag characters too.
+    #[test]
+    fn one_cleaner_names_modules_for_every_reader() {
+        let hidden = [
+            '\u{061C}',
+            '\u{00AD}',
+            '\u{180E}',
+            '\u{FFF9}',
+            '\u{FFFA}',
+            '\u{FFFB}',
+            '\u{E0000}',
+            '\u{E0041}',
+            '\u{E007F}',
+            '\u{202E}',
+            '\u{200B}',
+            '\u{2066}',
+            '\u{FEFF}',
+            '\u{7}',
+        ];
+        let raw: String = hidden.iter().fold(String::from("K"), |mut s, c| {
+            s.push(*c);
+            s
+        }) + "iln  Glaze";
+        assert_eq!(display_name(&raw, "org.example.kiln"), "Kiln Glaze");
+        assert_eq!(
+            display_name("\u{E0041}\u{00AD} ", "org.example.kiln"),
+            "org.example.kiln"
+        );
+        // Visible text stays as written, accents and other scripts too.
+        assert_eq!(display_name("Café Ünïcode 字", "x"), "Café Ünïcode 字");
+        let escaped: String = raw
+            .chars()
+            .map(|c| match c {
+                ' '..='~' => c.to_string(),
+                c if (c as u32) > 0xFFFF => format!("\\U{:08X}", c as u32),
+                c => format!("\\u{:04X}", c as u32),
+            })
+            .collect();
+        // The head and the full reader (a served manifest) name it the same.
+        let newer = NEWER.replace("name = \"Kiln\"", &format!("name = \"{escaped}\""));
+        assert_eq!(Head::parse(&newer).unwrap().name, "Kiln Glaze");
+        let served = newer
+            .replace("\"1.9\"", &format!("\"{HUB_VERSION}\""))
+            .replace("glaze = { colour = \"blue\" }\n", "")
+            .replace("\n[future_table]\nanything = true\n", "");
+        assert_eq!(
+            Module::parse(&served, &Context::default()).unwrap().name,
+            "Kiln Glaze"
+        );
     }
 
     #[test]

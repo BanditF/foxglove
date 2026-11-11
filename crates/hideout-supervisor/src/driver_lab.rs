@@ -8,7 +8,9 @@
 //! `Out::HubResult`, and from there Force, Not now, `module.idle`, `module.exit`, the 5 s exit
 //! fallback and the new instance's start. What the lab stands in for:
 //! - the new version is the one already loaded (a lab module has one folder): `version` and
-//!   `previous` are both its version, and the swap starts the same files again;
+//!   `previous` are both its version, and the swap starts the same files again. The policy reads
+//!   that as a re-stage: the module's kept `previous` and its last update time stay as they
+//!   were, so no "Go back to <same version>" and no automatic rollback after crashes;
 //! - the drain answer's content: the first-party plugins have no drain handler, so their answer
 //!   is an error (which counts as done). A lab verb sets, once, what the next drain answer of
 //!   that module reads as (`busy` with a reason, or done) when it arrives;

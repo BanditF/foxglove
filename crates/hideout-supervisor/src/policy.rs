@@ -279,6 +279,9 @@ enum Phase {
 struct Update {
     asks: Option<String>,
     phase: Phase,
+    /// The version that runs staged again (`version == previous`: the lab's stand-in update,
+    /// #1096): nothing to go back to, so no `previous`, update time or automatic rollback.
+    restage: bool,
 }
 
 /// What the driver must do.
@@ -704,7 +707,7 @@ impl Policy {
                             self.set_state(&id, State::UpdateWaiting, asks, &mut out);
                         }
                         u => {
-                            if u.is_some_and(|u| u.phase != Phase::Swapping) {
+                            if u.is_some_and(|u| u.phase != Phase::Swapping && !u.restage) {
                                 // A restart ran the new version: the update happened now.
                                 s.updated_at = Some(now);
                             }
@@ -1133,12 +1136,19 @@ impl Policy {
         let Some(s) = self.slots.get_mut(id) else {
             return;
         };
-        s.previous = Some(previous);
-        s.updated_to = version;
+        // The same version again (the lab's stand-in, #1096): what was kept and when the last
+        // real update ran stay as they were, so no "Go back to <same>" and no false rollback.
+        let restage = version == previous;
+        if !restage {
+            s.previous = Some(previous);
+            s.updated_to = version;
+        }
         let live = !s.ended && matches!(s.state, State::Running | State::Waiting);
         if !live {
             s.update = None;
-            s.updated_at = Some(now);
+            if !restage {
+                s.updated_at = Some(now);
+            }
             return;
         }
         match asks {
@@ -1146,6 +1156,7 @@ impl Policy {
                 s.update = Some(Update {
                     asks: Some(a.clone()),
                     phase: Phase::Review,
+                    restage,
                 });
                 self.set_state(id, State::UpdateWaiting, Some(a), out);
             }
@@ -1153,6 +1164,7 @@ impl Policy {
                 s.update = Some(Update {
                     asks: None,
                     phase: Phase::Draining,
+                    restage,
                 });
                 out.push(Cmd::Drain {
                     id: id.into(),
@@ -1168,10 +1180,14 @@ impl Policy {
         let Some(s) = self.slots.get_mut(id) else {
             return;
         };
+        let mut restage = false;
         if let Some(u) = s.update.as_mut() {
             u.phase = Phase::Swapping;
+            restage = u.restage;
         }
-        s.updated_at = Some(now);
+        if !restage {
+            s.updated_at = Some(now);
+        }
         s.then_launch = true;
         s.exit_by = Some(now + EXIT_AFTER_PIPE);
         self.set_state(id, State::Updating, Some(words::PLACE_KEPT.into()), out);
