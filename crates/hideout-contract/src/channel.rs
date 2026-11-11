@@ -2,8 +2,9 @@
 //! consumer connects to, the nonce frame, and the `u32 LE length` + payload framing.
 //!
 //! - [`is_channel_pipe`]: a provider's `{pipe}` answer must be a local pipe named
-//!   `\\.\pipe\hideout-ch-<rest>`; the router refuses any other (`channel.pipe`), and the SDKs
-//!   never connect to one.
+//!   `\\.\pipe\hideout-ch-<rest>`, or that name in the provider's own AppContainer namespace
+//!   ([`app_container_of`], v1.10, #1092); the router refuses any other (`channel.pipe`), and
+//!   the SDKs never connect to one.
 //! - [`nonce_matches`]: the consumer's first frame is the nonce, byte for byte, compared in
 //!   constant time.
 //! - [`read_stream`]: what the provider reads from a whole byte stream, for the shared vectors
@@ -25,18 +26,81 @@ pub const PIPE_PREFIX: &str = r"\\.\pipe\hideout-ch-";
 /// The longest pipe name accepted (Windows allows 256 characters).
 pub const MAX_PIPE_NAME: usize = 256;
 
-/// Whether `pipe` is a channel pipe a consumer may connect to: `\\.\pipe\hideout-ch-` (exact
-/// case, the local machine only), then one or more ASCII letters, digits, `.`, `_` or `-`, at
-/// most [`MAX_PIPE_NAME`] characters in all.
+/// Whether `pipe` is a channel pipe a consumer may connect to, in any session (the syntax
+/// alone; a hub and an SDK use [`is_channel_pipe_in`] with their own session):
+/// `\\.\pipe\hideout-ch-` (exact case, the local machine only), then one or more ASCII letters,
+/// digits, `.`, `_` or `-`, not ending in `.`, at most [`MAX_PIPE_NAME`] characters in all.
+/// (v1.10, #1092) Or that one segment in an AppContainer's own pipe namespace, where a contained
+/// provider has to make it ([`parse_channel_pipe`]).
 pub fn is_channel_pipe(pipe: &str) -> bool {
-    let Some(rest) = pipe.strip_prefix(PIPE_PREFIX) else {
-        return false;
+    parse_channel_pipe(pipe).is_some()
+}
+
+/// [`is_channel_pipe`], and a contained provider's pipe only in `session`, the reader's own
+/// (#1092 review: another session's namespace is never connected to).
+pub fn is_channel_pipe_in(pipe: &str, session: u32) -> bool {
+    match parse_channel_pipe(pipe) {
+        Some(None) => true,
+        Some(Some((s, _))) => s == session,
+        None => false,
+    }
+}
+
+/// `hideout-ch-`, the one segment every channel pipe ends in.
+const LEAF_PREFIX: &str = "hideout-ch-";
+
+/// The plain form's prefix up to the segment.
+const PIPE_DIR: &str = r"\\.\pipe\";
+
+/// Parses a channel pipe name strictly (#1092 review), the whole name and nothing else:
+/// - `\\.\pipe\` + one segment: `Some(None)`;
+/// - `\\.\pipe\Sessions\<session>\AppContainerNamedObjects\<SID>\` + one segment, where the
+///   session is digits (no leading zero) and the SID is `S-1-15-2-` and dash-separated digits:
+///   `Some(Some((session, SID)))`. An AppContainer may make a pipe only in its own namespace
+///   (`\\.\pipe\LOCAL\<name>`), which every other process reaches by this name.
+///
+/// The segment is `hideout-ch-` and one or more ASCII letters, digits, `.`, `_` or `-`, not
+/// ending in `.`: so no further backslash or forward slash, no `.` or `..` segment, no trailing
+/// dot Windows would drop, nothing Windows could normalise into another path (a UNC share
+/// above all). Anything else is `None`.
+pub fn parse_channel_pipe(pipe: &str) -> Option<Option<(u32, &str)>> {
+    if pipe.len() > MAX_PIPE_NAME {
+        return None;
+    }
+    let rest = pipe.strip_prefix(PIPE_DIR)?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let (container, leaf) = match rest.strip_prefix(r"Sessions\") {
+        None => (None, rest),
+        Some(rest) => {
+            let (session, rest) = rest.split_once('\\')?;
+            if !digits(session) || (session.len() > 1 && session.starts_with('0')) {
+                return None;
+            }
+            let rest = rest.strip_prefix(r"AppContainerNamedObjects\")?;
+            let (sid, leaf) = rest.split_once('\\')?;
+            let sid_ok = sid
+                .strip_prefix("S-1-15-2-")
+                .is_some_and(|r| r.split('-').all(digits));
+            if !sid_ok {
+                return None;
+            }
+            (Some((session.parse().ok()?, sid)), leaf)
+        }
     };
-    !rest.is_empty()
-        && pipe.len() <= MAX_PIPE_NAME
-        && rest
+    let token = leaf.strip_prefix(LEAF_PREFIX)?;
+    let ok = !token.is_empty()
+        && !token.ends_with('.')
+        && token
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    ok.then_some(container)
+}
+
+/// For a contained provider's channel pipe ([`parse_channel_pipe`]), its AppContainer SID;
+/// `None` for any other name. The router passes the name on only when that SID is the
+/// provider's own container.
+pub fn app_container_of(pipe: &str) -> Option<&str> {
+    parse_channel_pipe(pipe)?.map(|(_, sid)| sid)
 }
 
 /// Whether the first frame `got` is `nonce`, in time that does not depend on where they differ.
@@ -130,6 +194,42 @@ mod tests {
             "{PIPE_PREFIX}{}",
             "a".repeat(300)
         )));
+        // A contained provider's pipe, in its own namespace (#1092).
+        let sid = "S-1-15-2-1-22-333";
+        let inside =
+            format!(r"\\.\pipe\Sessions\1\AppContainerNamedObjects\{sid}\hideout-ch-9-0-a-map");
+        assert!(is_channel_pipe(&inside), "{inside}");
+        assert_eq!(app_container_of(&inside), Some(sid));
+        assert_eq!(app_container_of(r"\\.\pipe\hideout-ch-9-0-a-map"), None);
+        for bad in [
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-5-21-1\hideout-ch-x",
+            r"\\.\pipe\Sessions\x\AppContainerNamedObjects\S-1-15-2-1\hideout-ch-x",
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-1\hideout-x",
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-1\a\hideout-ch-x",
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-\hideout-ch-x",
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-1\hideout-ch-",
+            r"\\.\pipe\LOCAL\hideout-ch-x",
+            r"\\host\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-1\hideout-ch-x",
+            // #1092 review: nothing after the one segment, nothing Windows would normalise.
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-1\hideout-ch-a\..\..\..\..\..\..\UNC\evilhost\share\hideout-ch-x",
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-1\hideout-ch-a\hideout-ch-b",
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-1\hideout-ch-a/../x",
+            r"\\.\pipe\Sessions\1\AppContainerNamedObjects\S-1-15-2-1\..\hideout-ch-x",
+            r"\\.\pipe\Sessions\01\AppContainerNamedObjects\S-1-15-2-1\hideout-ch-x",
+            r"\\.\pipe\hideout-ch-a\..\..\UNC\evilhost\share\hideout-ch-x",
+            r"\\.\pipe\hideout-ch-x.",
+            r"//./pipe/hideout-ch-x",
+        ] {
+            assert!(!is_channel_pipe(bad), "{bad}");
+            assert!(!is_channel_pipe_in(bad, 1), "{bad}");
+        }
+        // Only the reader's own session.
+        assert!(is_channel_pipe_in(&inside, 1));
+        assert!(!is_channel_pipe_in(&inside, 2));
+        assert!(
+            is_channel_pipe_in(r"\\.\pipe\hideout-ch-x", 2),
+            "the plain form is local"
+        );
     }
 
     #[test]

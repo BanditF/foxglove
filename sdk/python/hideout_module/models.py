@@ -249,11 +249,15 @@ class ChannelCreate(Model):
 
     channel: str
     consumer: str
+    consumer_pid: Optional[int] = None
+    consumer_sid: Optional[str] = None
     nonce: str
 
     FIELDS: ClassVar[dict] = {
         'channel': ('channel', 'str'),
         'consumer': ('consumer', 'str'),
+        'consumer_pid': ('consumer_pid', ('opt', 'int')),
+        'consumer_sid': ('consumer_sid', ('opt', 'str')),
         'nonce': ('nonce', 'str'),
     }
 
@@ -276,10 +280,12 @@ class ChannelOpened(Model):
     """The `channel.open` result: the pipe to connect to and the nonce to present."""
 
     nonce: str
+    pid: Optional[int] = None
     pipe: str
 
     FIELDS: ClassVar[dict] = {
         'nonce': ('nonce', 'str'),
+        'pid': ('pid', ('opt', 'int')),
         'pipe': ('pipe', 'str'),
     }
 

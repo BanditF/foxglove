@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use hideout_contract::capability::{check_grantable, Capability, Holder, Source};
-use hideout_contract::channel::{is_channel_pipe, read_stream};
+use hideout_contract::channel::{is_channel_pipe_in, read_stream};
 use hideout_contract::config::{Config, Windows};
 use hideout_contract::frame::{decode_wire, Frame};
 use hideout_contract::messages::{check_hub_fact, check_message};
@@ -220,7 +220,9 @@ fn channel_rows(doc: &Value) -> Vec<(String, Result<(), String>)> {
     for row in doc["pipes"].as_array().unwrap() {
         let pipe = row["pipe"].as_str().unwrap();
         let want = row["result"] == "valid";
-        let result = if is_channel_pipe(pipe) == want {
+        // The reader's session, as the table states it (#1092 review).
+        let session = doc["session"].as_u64().unwrap() as u32;
+        let result = if is_channel_pipe_in(pipe, session) == want {
             Ok(())
         } else {
             Err(format!("want {}", row["result"]))

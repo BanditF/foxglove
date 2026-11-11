@@ -50,9 +50,11 @@ class WireVectors(unittest.TestCase):
                 self.assertEqual(data.hex(), row["hex"])
 
     def test_pipes(self):
-        for row in _load("channels/channel-wire.json")["pipes"]:
-            with self.subTest(row["pipe"][:40]):
-                self.assertEqual(channel.is_channel_pipe(row["pipe"]), row["result"] == "valid")
+        doc = _load("channels/channel-wire.json")
+        for row in doc["pipes"]:
+            with self.subTest(row["pipe"]):
+                got = channel.is_channel_pipe_in(row["pipe"], doc["session"])
+                self.assertEqual(got, row["result"] == "valid")
 
     def test_panel_frames(self):
         for row in _load("frames/panel-frames.json")["frames"]:

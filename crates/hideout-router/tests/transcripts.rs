@@ -386,6 +386,8 @@ impl Replay {
             "/id" if got.get("method").is_some() => Some("id"),
             _ if path.ends_with("/subscription") => Some("sub"),
             _ if path.ends_with("/nonce") => Some("nonce"),
+            // The panel host's process id (v1.10, #1092): the hub's, not the transcript's.
+            _ if path.ends_with("/consumer_pid") => Some("pid"),
             _ => None,
         };
         if let (Some(kind), Some(g)) = (bind, got.pointer(path)) {

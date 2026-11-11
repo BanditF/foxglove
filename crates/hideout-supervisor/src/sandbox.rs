@@ -8,8 +8,9 @@
 //! - The container may read and run its version folder, and write its `settings\` and
 //!   `data\` (granted to its SID, inherited inside). Nothing else of the user's.
 //! - The router pipe admits its SID ([`hideout_router::server::Hub::allow_pipe_client`]).
-//! - The process inherits only NUL for stdin and stdout and its log for stderr; it starts
-//!   suspended, goes into its Job Object, and only then runs ([`Spawned::resume`]).
+//! - The process inherits only NUL for stdin and stdout (a stdio module: two anonymous pipes,
+//!   [`Container::spawn_stdio`]) and its log for stderr; it starts suspended, goes into its Job
+//!   Object, and only then runs ([`Spawned::resume`]).
 
 use std::fs::File;
 use std::io;
@@ -302,6 +303,7 @@ impl Container {
 
     /// Starts `exe args` from `cwd` in this container and in `job`, suspended. `env` is added
     /// to (and overrides) the hub's environment. `stderr` is the module's log (NUL without).
+    /// stdin and stdout are NUL: the module talks over the router pipe.
     pub fn spawn(
         &self,
         job: &Job,
@@ -312,20 +314,66 @@ impl Container {
         stderr: Option<File>,
     ) -> io::Result<Spawned> {
         // Declared first, so it is released last: no other spawn of the supervisor (plain or
-        // stdio, `Job::spawn_with`) runs while these three handles are inheritable, and they are
-        // closed before it is released (#1089 review). The handle list gives this child exactly
-        // these three.
+        // stdio, `Job::spawn_with`) runs while the child's handles are inheritable, and they are
+        // closed before it is released (#1089 review).
         let _spawning = crate::win::SPAWN.lock().unwrap_or_else(|e| e.into_inner());
         let null_in = File::open("NUL")?;
         let null_out = std::fs::OpenOptions::new().write(true).open("NUL")?;
-        let err = match stderr {
-            Some(f) => f,
-            None => std::fs::OpenOptions::new().write(true).open("NUL")?,
-        };
+        self.start(
+            job,
+            exe,
+            args,
+            cwd,
+            env,
+            [null_in, null_out, log_or_nul(stderr)?],
+        )
+    }
+
+    /// [`Container::spawn`] for a stdio module (§8.2's bridge, contract §7.7 v1.10, #1092): its
+    /// stdin and stdout are two anonymous pipes made here. Returns the child and the hub's
+    /// ends: the writer to its stdin and the reader of its stdout, for the router. The pipes
+    /// have no name, so nothing else can open them; the child gets its two ends and its log
+    /// only, through the handle list, while no other start of the supervisor runs; the hub's
+    /// ends are never inheritable.
+    pub fn spawn_stdio(
+        &self,
+        job: &Job,
+        exe: &Path,
+        args: &[String],
+        cwd: &Path,
+        env: &[(&str, String)],
+        stderr: Option<File>,
+    ) -> io::Result<(Spawned, File, File)> {
+        let _spawning = crate::win::SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+        let (child_in, to_child) = anonymous_pipe()?;
+        let (from_child, child_out) = anonymous_pipe()?;
+        let spawned = self.start(
+            job,
+            exe,
+            args,
+            cwd,
+            env,
+            [child_in, child_out, log_or_nul(stderr)?],
+        )?;
+        Ok((spawned, to_child, from_child))
+    }
+
+    /// Starts the child with `std` as its stdin, stdout and stderr, which are made inheritable
+    /// for the start only and are its whole handle list. The caller holds `SPAWN`; the three
+    /// are closed when this returns.
+    fn start(
+        &self,
+        job: &Job,
+        exe: &Path,
+        args: &[String],
+        cwd: &Path,
+        env: &[(&str, String)],
+        std: [File; 3],
+    ) -> io::Result<Spawned> {
         let inherit: [HANDLE; 3] = [
-            null_in.as_raw_handle() as HANDLE,
-            null_out.as_raw_handle() as HANDLE,
-            err.as_raw_handle() as HANDLE,
+            std[0].as_raw_handle() as HANDLE,
+            std[1].as_raw_handle() as HANDLE,
+            std[2].as_raw_handle() as HANDLE,
         ];
         for h in inherit {
             // SAFETY: open handles owned by the Files above.
@@ -429,6 +477,38 @@ impl Container {
                 thread,
             })
         }
+    }
+}
+
+/// The module's log, or NUL without one.
+fn log_or_nul(log: Option<File>) -> io::Result<File> {
+    match log {
+        Some(f) => Ok(f),
+        None => std::fs::OpenOptions::new().write(true).open("NUL"),
+    }
+}
+
+/// An anonymous pipe, (read end, write end), neither end inheritable: [`Container::start`]
+/// makes the child's end so only for the start. Synchronous, as a child's stdio expects.
+fn anonymous_pipe() -> io::Result<(File, File)> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::System::Pipes::CreatePipe;
+    let sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: 0,
+    };
+    let (mut read, mut write): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
+    // SAFETY: out-pointers valid; each handle is owned by one File from here on.
+    unsafe {
+        if CreatePipe(&mut read, &mut write, &sa, 0) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((
+            File::from_raw_handle(read as _),
+            File::from_raw_handle(write as _),
+        ))
     }
 }
 

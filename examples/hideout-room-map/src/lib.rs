@@ -158,7 +158,8 @@ impl Handler for RoomMap {
         // A new stream gets a fresh stop flag; the old one (if any) was already told.
         self.stop = Arc::new(AtomicBool::new(false));
         let stop = self.stop.clone();
-        let pipe = channel::serve(ID, CHANNEL, &c.nonce, move |mut conn: ChannelConn| {
+        // For the consumer the hub names only, in or out of an AppContainer (#1092).
+        let pipe = channel::serve_create(ID, &c, move |mut conn: ChannelConn| {
             stream(&mut conn, &stop);
         })
         .map_err(|e| RpcError::new(6, e.to_string()))?;

@@ -43,8 +43,8 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::PIPE_UNLIMITED_INSTANCES;
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
@@ -91,23 +91,68 @@ pub fn unique_pipe_name(module: &str, channel: &str) -> String {
 pub use hideout_acl::current_user_sid;
 use hideout_acl::{wide, Descriptor};
 
+/// Who a channel pipe is for, from the hub's `channel.create` (v1.10, #1092): the consumer's
+/// process id and, when it runs in an AppContainer, its SID. Both `None` (an older hub): any
+/// process of the user's may connect, and the nonce alone decides.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Consumer {
+    pub pid: Option<u32>,
+    pub sid: Option<String>,
+}
+
+impl Consumer {
+    /// The consumer `channel.create` names.
+    pub fn of(create: &foxglove_plugin_api::hideout::messages::ChannelCreate) -> Consumer {
+        Consumer {
+            pid: create.consumer_pid,
+            sid: create.consumer_sid.clone(),
+        }
+    }
+}
+
 /// A one-time channel pipe, created and waiting for its consumer.
 pub struct ChannelPipe {
     handle: Owned,
     name: String,
+    consumer: Consumer,
 }
 
 impl ChannelPipe {
     /// Creates the pipe `name` (use [`unique_pipe_name`]) with a current-user-only ACL. It has
     /// one instance, so it takes no second client. Fails if the name is already taken.
     pub fn create(name: &str) -> io::Result<ChannelPipe> {
-        let sd = Descriptor::current_user_only()?;
+        Self::create_for(name, &Consumer::default())
+    }
+
+    /// [`ChannelPipe::create`] for `consumer` (contract §8.4, v1.10, #1092):
+    /// - a consumer in an AppContainer gets an allow ACE for its SID with client rights only
+    ///   (no create-instance) and the pipe a Low label, which an AppContainer needs to open it;
+    ///   without one, the ACL stays the current user's alone, with no label set;
+    /// - accepting admits only the consumer's process id (or, without one, its SID);
+    /// - in an AppContainer this process may make pipes only in its own namespace, so the pipe
+    ///   is made there and [`ChannelPipe::name`] is the full name others open it by.
+    pub fn create_for(name: &str, consumer: &Consumer) -> io::Result<ChannelPipe> {
+        let sd = match &consumer.sid {
+            Some(sid) => Descriptor::current_user_and(std::slice::from_ref(sid))?,
+            None => Descriptor::current_user_only()?,
+        };
         let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: sd.as_ptr(),
             bInheritHandle: 0,
         };
-        let wname = wide(name);
+        let (make, name) = match hideout_acl::own_pipe_namespace()? {
+            None => (name.to_string(), name.to_string()),
+            Some(ns) => {
+                let leaf = name.strip_prefix(r"\\.\pipe\").unwrap_or(name);
+                let dir = format!(r"\\.\pipe\{ns}\");
+                let mut full = format!("{dir}{leaf}");
+                // Names are ASCII (`unique_pipe_name`), so any cut is a character boundary.
+                full.truncate(wire::MAX_PIPE_NAME);
+                (format!(r"\\.\pipe\LOCAL\{}", &full[dir.len()..]), full)
+            }
+        };
+        let wname = wide(&make);
         let h = unsafe {
             CreateNamedPipeW(
                 wname.as_ptr(),
@@ -125,7 +170,8 @@ impl ChannelPipe {
         }
         Ok(ChannelPipe {
             handle: Owned(h),
-            name: name.to_string(),
+            name,
+            consumer: consumer.clone(),
         })
     }
 
@@ -159,6 +205,9 @@ impl ChannelPipe {
     fn accept_until(self, deadline: Option<Instant>) -> io::Result<ChannelConn> {
         let h = self.handle.0;
         overlapped(h, deadline, |ov| unsafe { ConnectNamedPipe(h, ov) })?;
+        // Before a byte is read: only the consumer the hub named (#1092). Dropping the handle
+        // on a refusal closes the pipe, and the channel is spent.
+        check_client(h, &self.consumer)?;
         Ok(ChannelConn {
             pipe: PipeConn(std::sync::Arc::new(self.handle)),
             deadline: None,
@@ -176,7 +225,28 @@ pub fn serve(
     nonce: &str,
     stream: impl FnOnce(ChannelConn) + Send + 'static,
 ) -> io::Result<String> {
-    let pipe = ChannelPipe::create(&unique_pipe_name(module, channel))?;
+    serve_for(module, channel, nonce, &Consumer::default(), stream)
+}
+
+/// [`serve`] for the hub's whole `channel.create` (v1.10, #1092): the pipe admits only the
+/// consumer it names, an AppContainer one included ([`ChannelPipe::create_for`]).
+pub fn serve_create(
+    module: &str,
+    create: &foxglove_plugin_api::hideout::messages::ChannelCreate,
+    stream: impl FnOnce(ChannelConn) + Send + 'static,
+) -> io::Result<String> {
+    let consumer = Consumer::of(create);
+    serve_for(module, &create.channel, &create.nonce, &consumer, stream)
+}
+
+fn serve_for(
+    module: &str,
+    channel: &str,
+    nonce: &str,
+    consumer: &Consumer,
+    stream: impl FnOnce(ChannelConn) + Send + 'static,
+) -> io::Result<String> {
+    let pipe = ChannelPipe::create_for(&unique_pipe_name(module, channel), consumer)?;
     let name = pipe.name().to_string();
     let nonce = nonce.to_string();
     let label = channel.to_string();
@@ -190,22 +260,39 @@ pub fn serve(
 }
 
 /// The consumer's end (§8.4): connects to the `pipe` the hub answered `channel.open` with and
-/// sends `nonce` as the first frame. Only a local `\\.\pipe\hideout-ch-` pipe is connected to
-/// (`InvalidInput` otherwise), with identification-level impersonation only. The pipe takes one
-/// client ever, so a second connect fails.
+/// sends `nonce` as the first frame. Only a local channel pipe ([`is_channel_pipe`]) is
+/// connected to (`InvalidInput` otherwise), with identification-level impersonation only. The
+/// pipe takes one client ever, so a second connect fails. Prefer [`connect_to`] with the
+/// grant's `pid`.
 pub fn connect(pipe: &str, nonce: &str) -> io::Result<ChannelConn> {
-    if !is_channel_pipe(pipe) {
+    connect_to(pipe, nonce, None)
+}
+
+/// [`connect`]; with `server` (the grant's `pid`, v1.10, #1092) nothing is sent, the nonce
+/// least of all, unless the pipe's server is that process (`PermissionDenied` otherwise). The
+/// pipe is opened with client rights only (read and write, no create-instance), which is what
+/// an AppContainer consumer is let in with.
+pub fn connect_to(pipe: &str, nonce: &str, server: Option<u32>) -> io::Result<ChannelConn> {
+    // The whole name, strictly; a contained provider's only in this session; and, in depth,
+    // only a name Windows leaves as it is, under `\\.\pipe\` (#1092 review: never a UNC share).
+    let session = hideout_acl::own_session()?;
+    if !wire::is_channel_pipe_in(pipe, session) || !stays_a_local_pipe(pipe) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "not a local hideout-ch- channel pipe",
         ));
     }
+    // std adds SECURITY_SQOS_PRESENT to the flags: identification level only.
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
+        .access_mode(hideout_acl::PIPE_CLIENT_ACCESS)
         .custom_flags(FILE_FLAG_OVERLAPPED)
         .security_qos_flags(SECURITY_IDENTIFICATION)
         .open(pipe)?;
+    if let Some(pid) = server {
+        crate::hideout::check_server(&file, pid)?;
+    }
     let mut conn = ChannelConn {
         pipe: PipeConn(std::sync::Arc::new(Owned(file.into_raw_handle() as HANDLE))),
         deadline: None,
@@ -306,6 +393,56 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     Ok(Some(buf))
+}
+
+/// Whether Windows' own normalisation (`GetFullPathNameW`) leaves `pipe` exactly as it is,
+/// under `\\.\pipe\`: no `.`/`..` walk, no slash turned into a separator, no alias.
+fn stays_a_local_pipe(pipe: &str) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::GetFullPathNameW;
+    let w = wide(pipe);
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: a NUL-terminated name and a buffer of the length given.
+    let n = unsafe {
+        GetFullPathNameW(
+            w.as_ptr(),
+            buf.len() as u32,
+            buf.as_mut_ptr(),
+            std::ptr::null_mut(),
+        )
+    } as usize;
+    if n == 0 || n >= buf.len() {
+        return false;
+    }
+    let full = String::from_utf16_lossy(&buf[..n]);
+    full == pipe && full.starts_with(r"\\.\pipe\")
+}
+
+/// Whether the connected client of pipe instance `h` is `consumer`: its process id when the
+/// hub named one, else its AppContainer SID when the hub named one (a token that can't be read
+/// is a refusal), else anyone (an older hub: the nonce decides).
+fn check_client(h: HANDLE, consumer: &Consumer) -> io::Result<()> {
+    if consumer.pid.is_none() && consumer.sid.is_none() {
+        return Ok(());
+    }
+    let mut pid = 0u32;
+    // SAFETY: a connected pipe instance owned by the caller.
+    if unsafe { GetNamedPipeClientProcessId(h, &mut pid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let refuse = |why: String| Err(io::Error::new(io::ErrorKind::PermissionDenied, why));
+    match (consumer.pid, &consumer.sid) {
+        (Some(want), _) if want != pid => refuse(format!(
+            "the channel's client is pid {pid}, not the consumer's {want}"
+        )),
+        (Some(_), _) | (None, None) => Ok(()),
+        (None, Some(sid)) => match hideout_acl::peer(pid) {
+            Ok(p) if p.app_container.as_deref() == Some(sid.as_str()) => Ok(()),
+            Ok(_) => refuse(format!(
+                "the channel's client (pid {pid}) isn't the consumer"
+            )),
+            Err(e) => refuse(format!("the channel's client (pid {pid}): {e}")),
+        },
+    }
 }
 
 /// An owned pipe handle, closed on drop.
@@ -661,6 +798,165 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        t.join().unwrap();
+    }
+}
+
+/// #1092: who a channel pipe admits.
+#[cfg(test)]
+mod consumer_tests {
+    use super::*;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
+    use windows_sys::Win32::Security::{
+        GetAce, GetSidSubAuthority, GetSidSubAuthorityCount, ACCESS_ALLOWED_ACE, ACL,
+        DACL_SECURITY_INFORMATION, LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        SYSTEM_MANDATORY_LABEL_ACE,
+    };
+
+    /// The pipe's DACL entries (access masks) and its mandatory label's RID, if it has one.
+    fn security(pipe: &ChannelPipe) -> (Vec<u32>, Option<u32>) {
+        unsafe {
+            let (mut dacl, mut sacl): (*mut ACL, *mut ACL) =
+                (std::ptr::null_mut(), std::ptr::null_mut());
+            let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let rc = GetSecurityInfo(
+                pipe.raw_handle() as HANDLE,
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut dacl,
+                &mut sacl,
+                &mut sd,
+            );
+            assert_eq!(rc, 0, "GetSecurityInfo");
+            let mut masks = Vec::new();
+            for i in 0..(*dacl).AceCount as u32 {
+                let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
+                assert_ne!(GetAce(dacl, i, &mut ace), 0);
+                masks.push((*(ace as *const ACCESS_ALLOWED_ACE)).Mask);
+            }
+            let mut label = None;
+            if !sacl.is_null() && (*sacl).AceCount > 0 {
+                let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
+                assert_ne!(GetAce(sacl, 0, &mut ace), 0);
+                let ace = &*(ace as *const SYSTEM_MANDATORY_LABEL_ACE);
+                let sid = std::ptr::addr_of!(ace.SidStart) as *mut core::ffi::c_void;
+                let n = *GetSidSubAuthorityCount(sid);
+                label = Some(*GetSidSubAuthority(sid, u32::from(n) - 1));
+            }
+            LocalFree(sd.cast());
+            (masks, label)
+        }
+    }
+
+    #[test]
+    fn a_contained_consumer_gets_an_ace_and_the_low_label_only_then() {
+        let plain = ChannelPipe::create(&unique_pipe_name("test.module", "plain")).unwrap();
+        let (masks, label) = security(&plain);
+        assert_eq!(masks.len(), 1, "the user's alone");
+        assert_ne!(label, Some(0x1000), "no Low label without a guest");
+        let guest = Consumer {
+            pid: None,
+            sid: Some("S-1-15-2-1-2-3-4-5-6-7".into()),
+        };
+        let p = ChannelPipe::create_for(&unique_pipe_name("test.module", "guest"), &guest).unwrap();
+        let (masks, label) = security(&p);
+        assert_eq!(masks.len(), 2, "the user's and the consumer's");
+        assert!(
+            masks.contains(&hideout_acl::PIPE_CLIENT_ACCESS),
+            "client rights, no create-instance: {masks:x?}"
+        );
+        assert_eq!(label, Some(0x1000), "a Low label for the AppContainer");
+        // Not an AppContainer SID: refused, never written into the ACL.
+        let bad = Consumer {
+            pid: None,
+            sid: Some("S-1-1-0".into()),
+        };
+        assert!(ChannelPipe::create_for(&unique_pipe_name("test.module", "bad"), &bad).is_err());
+    }
+
+    /// The provider admits only the consumer's pid; the nonce is never read from another.
+    #[test]
+    fn only_the_named_consumer_is_admitted() {
+        for (want, admitted) in [(std::process::id(), true), (std::process::id() + 1, false)] {
+            let name = unique_pipe_name("test.module", "who");
+            let consumer = Consumer {
+                pid: Some(want),
+                sid: None,
+            };
+            let pipe = ChannelPipe::create_for(&name, &consumer).unwrap();
+            let t = std::thread::spawn(move || {
+                let mut c = connect(&name, "n-who").unwrap();
+                let _ = read_frame(&mut c);
+            });
+            let r = pipe.accept_nonce("n-who", Duration::from_secs(10));
+            assert_eq!(r.is_ok(), admitted, "{want}: {:?}", r.as_ref().err());
+            if !admitted {
+                assert_eq!(r.err().unwrap().kind(), io::ErrorKind::PermissionDenied);
+            } else {
+                // Closing the provider's end lets the consumer's read end.
+                drop(r);
+            }
+            t.join().unwrap();
+        }
+    }
+
+    /// #1092 review: a name that walks out of the pipe namespace (to a UNC share), another
+    /// session's container namespace, or anything Windows would rewrite is never opened.
+    #[test]
+    fn the_consumer_opens_only_a_local_pipe_name() {
+        let s = hideout_acl::own_session().unwrap();
+        let ns = format!(r"\\.\pipe\Sessions\{s}\AppContainerNamedObjects\S-1-15-2-1-2");
+        for bad in [
+            format!(r"{ns}\hideout-ch-a\..\..\..\..\..\..\UNC\evilhost\share\hideout-ch-x"),
+            format!(
+                r"\\.\pipe\Sessions\{}\AppContainerNamedObjects\S-1-15-2-1-2\hideout-ch-x",
+                s + 1
+            ),
+            r"\\.\pipe\hideout-ch-x.".to_string(),
+            "//./pipe/hideout-ch-x".to_string(),
+        ] {
+            let e = connect_to(&bad, "n", None).err().unwrap();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{bad}");
+        }
+        // The normalisation check on its own: what Windows would rewrite fails it.
+        assert!(stays_a_local_pipe(r"\\.\pipe\hideout-ch-x"));
+        assert!(stays_a_local_pipe(&format!(r"{ns}\hideout-ch-x")));
+        assert!(!stays_a_local_pipe(
+            r"\\.\pipe\hideout-ch-a\..\..\..\UNC\evilhost\share\x"
+        ));
+        assert!(!stays_a_local_pipe(r"\\.\pipe\hideout-ch-x."));
+        assert!(!stays_a_local_pipe(r"\\.\pipe\a/../hideout-ch-x"));
+    }
+
+    /// The consumer sends nothing, the nonce least of all, to a pipe another process serves.
+    #[test]
+    fn the_consumer_checks_the_server_first() {
+        let name = unique_pipe_name("test.module", "server");
+        let pipe = ChannelPipe::create(&name).unwrap();
+        let n = name.clone();
+        let t = std::thread::spawn(move || {
+            let wrong = connect_to(&n, "n-server", Some(std::process::id() + 1));
+            wrong.err().map(|e| e.kind())
+        });
+        // The provider sees a client that sent nothing and left: no nonce.
+        let r = pipe.accept_nonce("n-server", Duration::from_secs(10));
+        assert_eq!(
+            t.join().unwrap(),
+            Some(io::ErrorKind::PermissionDenied),
+            "refused"
+        );
+        assert_eq!(r.err().unwrap().kind(), io::ErrorKind::PermissionDenied);
+        // And with the right pid it goes through.
+        let name = unique_pipe_name("test.module", "server2");
+        let pipe = ChannelPipe::create(&name).unwrap();
+        let t = std::thread::spawn(move || {
+            let mut c = connect_to(&name, "n-ok", Some(std::process::id())).unwrap();
+            let _ = read_frame(&mut c);
+        });
+        assert!(pipe.accept_nonce("n-ok", Duration::from_secs(10)).is_ok());
         t.join().unwrap();
     }
 }

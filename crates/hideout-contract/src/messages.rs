@@ -382,6 +382,11 @@ pub struct ChannelOpen {
 pub struct ChannelOpened {
     pub pipe: String,
     pub nonce: String,
+    /// (v1.10, #1092) The provider's process id, when the hub knows it: the consumer checks
+    /// that the pipe's server is that process (`GetNamedPipeServerProcessId`) before it sends
+    /// the nonce, as a module checks `HIDEOUT_HUB_PID` (§7.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 /// `channel.create` (H → M): the provider makes the pipe for `consumer`.
@@ -390,6 +395,14 @@ pub struct ChannelCreate {
     pub channel: String,
     pub consumer: String,
     pub nonce: String,
+    /// (v1.10, #1092) The consumer's process id, when the hub knows it: the provider admits
+    /// only that process (`GetNamedPipeClientProcessId`) before it reads the nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer_pid: Option<u32>,
+    /// (v1.10, #1092) The consumer's AppContainer SID, when it runs in one (§7.7): the pipe
+    /// lets that SID in with client rights and carries a Low label, and nothing else changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumer_sid: Option<String>,
 }
 
 /// `modules.enable`, `modules.disable`, `modules.reload`.

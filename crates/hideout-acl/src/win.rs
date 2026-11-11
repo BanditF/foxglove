@@ -209,11 +209,6 @@ pub const MEDIUM_RID: u32 = 0x2000;
 
 /// Reads process `pid`'s token: integrity level and AppContainer SID.
 pub fn peer(pid: u32) -> io::Result<Peer> {
-    use windows_sys::Win32::Security::{
-        GetSidSubAuthority, GetSidSubAuthorityCount, TokenAppContainerSid, TokenIntegrityLevel,
-        TokenIsAppContainer, TOKEN_APPCONTAINER_INFORMATION, TOKEN_INFORMATION_CLASS,
-        TOKEN_MANDATORY_LABEL,
-    };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     unsafe {
         let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -226,6 +221,92 @@ pub fn peer(pid: u32) -> io::Result<Peer> {
         if opened == 0 {
             return Err(io::Error::last_os_error());
         }
+        token_peer(token)
+    }
+}
+
+/// [`peer`] for this process.
+pub fn own_peer() -> io::Result<Peer> {
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        token_peer(token)
+    }
+}
+
+/// Where this process makes named pipes and every other process opens them (contract §8.4,
+/// v1.10, #1092): `None` outside an AppContainer (`\\.\pipe\` as ever); in one, its own
+/// namespace, which it writes as `\\.\pipe\LOCAL\` and others reach as
+/// `\\.\pipe\Sessions\<n>\AppContainerNamedObjects\<its SID>\` (this returns that path after
+/// `\\.\pipe\`, without the trailing backslash). An AppContainer may make no pipe elsewhere.
+pub fn own_pipe_namespace() -> io::Result<Option<String>> {
+    use windows_sys::Win32::Security::Isolation::GetAppContainerNamedObjectPath;
+    if own_peer()?.app_container.is_none() {
+        return Ok(None);
+    }
+    let mut buf = vec![0u16; 512];
+    let mut len = 0u32;
+    // SAFETY: a buffer of the length given; null token and SID mean this process's own.
+    let ok = unsafe {
+        GetAppContainerNamedObjectPath(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            buf.len() as u32,
+            buf.as_mut_ptr(),
+            &mut len,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let path = String::from_utf16_lossy(&buf[..n])
+        .trim_matches('\\')
+        .to_string();
+    // Windows answers relative to this session (`AppContainerNamedObjects\<SID>`); other
+    // processes reach it under `Sessions\<n>\`.
+    if path.starts_with(r"Sessions\") {
+        return Ok(Some(path));
+    }
+    Ok(Some(format!(r"Sessions\{}\{path}", own_session()?)))
+}
+
+/// This process's session id, from its token.
+pub fn own_session() -> io::Result<u32> {
+    use windows_sys::Win32::Security::TokenSessionId;
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut session = 0u32;
+        let mut len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenSessionId,
+            (&mut session as *mut u32).cast(),
+            4,
+            &mut len,
+        );
+        let e = io::Error::last_os_error();
+        CloseHandle(token);
+        if ok == 0 {
+            return Err(e);
+        }
+        Ok(session)
+    }
+}
+
+/// Reads an open token (closed here): integrity level and AppContainer SID.
+unsafe fn token_peer(token: HANDLE) -> io::Result<Peer> {
+    use windows_sys::Win32::Security::{
+        GetSidSubAuthority, GetSidSubAuthorityCount, TokenAppContainerSid, TokenIntegrityLevel,
+        TokenIsAppContainer, TOKEN_APPCONTAINER_INFORMATION, TOKEN_INFORMATION_CLASS,
+        TOKEN_MANDATORY_LABEL,
+    };
+    unsafe {
         let info = |class: TOKEN_INFORMATION_CLASS| -> io::Result<Vec<u64>> {
             let mut len = 0u32;
             GetTokenInformation(token, class, std::ptr::null_mut(), 0, &mut len);
