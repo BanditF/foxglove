@@ -79,6 +79,21 @@ struct Shared {
     nudge: Mutex<Sender<()>>,
     /// The hub folder's [`folder_suffix`]; empty for the default folder.
     suffix: Mutex<String>,
+    /// Who besides the current user may open the router pipe (contract §7.7).
+    pipe_acl: Mutex<PipeAcl>,
+}
+
+/// The router pipe's AppContainer guests, and its keeper: the first instance, the only one
+/// Windows lets the hub change the pipe's descriptor through. The hub holds the keeper's
+/// client end itself, so no module ever lands on it. The pipe's instances share one
+/// descriptor: a guest set through the keeper is let in on every instance, the one waiting
+/// now included.
+#[derive(Default)]
+struct PipeAcl {
+    guests: Vec<String>,
+    /// One per served pipe (the router pipe and its alias).
+    #[cfg(windows)]
+    keepers: Vec<(foxglove_plugin::channel::ServerPipe, std::fs::File)>,
 }
 
 /// A router with its connections. Cheap to clone; clones share everything.
@@ -96,6 +111,7 @@ impl Hub {
             events: Mutex::new(events),
             nudge: Mutex::new(nudge),
             suffix: Mutex::new(String::new()),
+            pipe_acl: Mutex::new(PipeAcl::default()),
         }));
         let weak = Arc::downgrade(&hub.0);
         std::thread::Builder::new()
@@ -248,7 +264,15 @@ impl Hub {
     #[cfg(windows)]
     pub fn serve_pipe(&self, name: &str) -> io::Result<std::thread::JoinHandle<()>> {
         use foxglove_plugin::channel::ServerPipe;
-        let first = ServerPipe::create(name, true)?;
+        {
+            // The keeper takes the name first (a squatter makes this fail), then the hub
+            // connects to it itself.
+            let mut acl = self.0.pipe_acl.lock().unwrap();
+            let keeper = ServerPipe::create_keeper(name, &acl.guests)?;
+            let client = foxglove_plugin::hideout::open_pipe(name)?;
+            acl.keepers.push((keeper, client));
+        }
+        let first = ServerPipe::create(name, false)?;
         let hub = self.clone();
         let name = name.to_string();
         std::thread::Builder::new()
@@ -277,6 +301,32 @@ impl Hub {
                     }
                 }
             })
+    }
+}
+
+#[cfg(windows)]
+impl Hub {
+    /// Lets the AppContainer `sid` open the router pipe (contract §7.7), on every instance.
+    /// Call before starting a contained module. Before [`Hub::serve_pipe`] it is kept for the
+    /// pipe's first descriptor.
+    pub fn allow_pipe_client(&self, sid: &str) -> io::Result<()> {
+        let mut acl = self.0.pipe_acl.lock().unwrap();
+        if acl.guests.iter().any(|g| g == sid) {
+            return Ok(());
+        }
+        let mut guests = acl.guests.clone();
+        guests.push(sid.to_string());
+        let sd = hideout_acl::Descriptor::current_user_and(&guests)?;
+        for (keeper, _) in &acl.keepers {
+            hideout_acl::apply_to_handle(keeper.raw_handle(), &sd)?;
+        }
+        acl.guests = guests;
+        Ok(())
+    }
+
+    /// The AppContainer SIDs that may open the router pipe.
+    pub fn pipe_guests(&self) -> Vec<String> {
+        self.0.pipe_acl.lock().unwrap().guests.clone()
     }
 }
 

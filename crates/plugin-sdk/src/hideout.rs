@@ -249,12 +249,19 @@ pub fn router_pipe_name(user: &str) -> String {
     format!(r"\\.\pipe\hideout-{user}")
 }
 
-/// Opens a named pipe as a client: the router pipe, or a channel pipe a provider made.
+/// Opens a named pipe as a client: the router pipe, or a channel pipe a provider made. It asks
+/// for read and write without `FILE_APPEND_DATA` (on a pipe, the right to create an instance),
+/// the rights a module in an AppContainer is given on the router pipe (contract §7.7).
 pub fn open_pipe(name: &str) -> io::Result<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(name)
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_GENERIC_READ | FILE_GENERIC_WRITE without FILE_APPEND_DATA (0x4).
+        o.access_mode(0x0012_019B);
+    }
+    o.open(name)
 }
 
 /// Connects to the router pipe the hub named at launch.

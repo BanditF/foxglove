@@ -13,6 +13,7 @@
 
 pub mod bisect;
 pub mod closes;
+pub mod contain;
 pub mod diagnostics;
 #[cfg(windows)]
 pub mod driver;
@@ -20,6 +21,8 @@ pub mod driver;
 pub mod finder;
 pub mod instances;
 pub mod policy;
+#[cfg(windows)]
+pub mod sandbox;
 #[cfg(windows)]
 pub mod win;
 pub mod words;

@@ -1263,7 +1263,24 @@ Design §3.1.
 - **Caps (v1.10)** come from the manifest's `[limits]`, each clamped to the hub's maximum
   (4,096 MiB for all the module's processes, a hard 50 % of the machine's CPU); an absent value
   is the maximum. A clamp is logged, not refused. A module taken back after a hub restart gets
-  them again in its new job (§7.9). (Not built yet: the AppContainer.)
+  them again in its new job (§7.9).
+- **AppContainer (v1.10, #983)** is opt-in for now: the hub setting `[supervisor] appcontainer =
+  true` in `hideout.toml` (off when absent), until the first-party modules have run in one.
+  With it on, a pipe module starts in its own AppContainer (`CreateAppContainerProfile`, profile
+  `hideout.<id>`, removed with the module) unless its permissions keep it outside: `net`,
+  `files`, `secrets` (it does those itself through Windows) and, for now, `channel.open:` or
+  `channel.offer:` (direct channel pipes don't admit a container yet). What the hub brokers
+  (facts, lights, `net.connect`, `net.listen`, GPU, `secrets.ref`, app watches) needs nothing
+  inside. A permission the module carries out itself through a device gets the matching
+  capability in `SECURITY_CAPABILITIES`: `device.hid:` gives `humaninterfacedevice`. The
+  container may read and run its version folder and write its `settings\` and `data\`, nothing
+  else of the user's; stdin and stdout are NUL, stderr is its log. The router pipe lets its SID
+  in with read and write but not `FILE_APPEND_DATA` (on a pipe, the right to create an
+  instance, so a contained module can never serve the hub's pipe), and a Low mandatory label;
+  a client therefore opens the pipe with exactly those rights (`0x0012019B`; the SDK's
+  `open_pipe` does), not `GENERIC_WRITE`. A container that can't be set up fails the launch
+  (`install-failed`); it never runs the module uncontained instead. Legacy stdio modules are
+  never contained. Taken back after a hub restart, a contained process keeps its container.
 - **Restarts** a crashed instance with backoff from 1 s up to 60 s. Five crashes in ten minutes
   stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash. A
   channel closed for an oversized line (§8.1, v1.2) counts as one crash.

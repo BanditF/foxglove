@@ -37,7 +37,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 /// An owned kernel handle.
-pub struct Handle(HANDLE);
+pub struct Handle(pub(crate) HANDLE);
 
 // SAFETY: kernel handles may be used from any thread.
 unsafe impl Send for Handle {}
@@ -247,6 +247,11 @@ impl Job {
         Ok(())
     }
 
+    /// The job's handle, for the AppContainer launch (`crate::sandbox`).
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.handle.0
+    }
+
     /// Ends every process in the job.
     pub fn kill(&self, code: u32) {
         // SAFETY: an owned job handle.
@@ -312,6 +317,21 @@ fn resume(pid: u32) -> io::Result<()> {
 pub struct Process(Handle);
 
 impl Process {
+    /// Takes ownership of a process handle (one `CreateProcessW` returned).
+    pub(crate) fn from_raw(h: HANDLE) -> Process {
+        Process(Handle(h))
+    }
+
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.0 .0
+    }
+
+    /// Its process id.
+    pub fn pid(&self) -> u32 {
+        // SAFETY: an owned process handle.
+        unsafe { windows_sys::Win32::System::Threading::GetProcessId(self.0 .0) }
+    }
+
     pub fn open(pid: u32) -> io::Result<Process> {
         // SAFETY: plain call; the handle is checked.
         let h = unsafe {

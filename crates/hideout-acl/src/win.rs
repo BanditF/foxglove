@@ -102,6 +102,25 @@ impl Descriptor {
         ))
     }
 
+    /// [`Descriptor::current_user_only`] plus, for each AppContainer SID in `guests`, the
+    /// client rights of [`PIPE_CLIENT_ACCESS`], and a Low mandatory label (no write up) so a
+    /// Low-integrity AppContainer process may open it (contract §7.7). No guests: exactly
+    /// [`Descriptor::current_user_only`]. A guest that isn't an AppContainer SID is refused.
+    pub fn current_user_and(guests: &[String]) -> io::Result<Descriptor> {
+        if guests.is_empty() {
+            return Self::current_user_only();
+        }
+        let mut sddl = format!("D:P(A;;GA;;;{})", current_user_sid()?);
+        for g in guests {
+            if !is_app_container_sid(g) {
+                return Err(io::Error::other(format!("{g} is not an AppContainer SID")));
+            }
+            sddl.push_str(&format!("(A;;0x{PIPE_CLIENT_ACCESS:x};;;{g})"));
+        }
+        sddl.push_str("S:(ML;;NW;;;LW)");
+        Self::from_sddl(&sddl)
+    }
+
     /// The pointer for `SECURITY_ATTRIBUTES::lpSecurityDescriptor`.
     pub fn as_ptr(&self) -> PSECURITY_DESCRIPTOR {
         self.0
@@ -112,6 +131,65 @@ impl Drop for Descriptor {
     fn drop(&mut self) {
         unsafe { LocalFree(self.0) };
     }
+}
+
+/// What an AppContainer client gets on the router pipe: `FILE_GENERIC_READ`, and of
+/// `FILE_GENERIC_WRITE` all but `FILE_APPEND_DATA`, which on a pipe is
+/// `FILE_CREATE_PIPE_INSTANCE`: a contained module may connect, never serve an instance of the
+/// hub's pipe to other modules. A client opens with exactly this (the SDK's `open_pipe`); one
+/// asking `GENERIC_WRITE` is refused.
+pub const PIPE_CLIENT_ACCESS: u32 = 0x0012_019B;
+
+/// `S-1-15-2-…`: an AppContainer's SID (digits and dashes only, so it is safe in SDDL).
+pub fn is_app_container_sid(s: &str) -> bool {
+    s.strip_prefix("S-1-15-2-")
+        .is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit() || c == '-'))
+}
+
+/// Sets the DACL and the mandatory label of the kernel object `handle` (opened with
+/// `WRITE_DAC` and `WRITE_OWNER`, as a server pipe instance can be) to `sd`'s.
+pub fn apply_to_handle(handle: std::os::windows::io::RawHandle, sd: &Descriptor) -> io::Result<()> {
+    use windows_sys::Win32::Security::Authorization::{SetSecurityInfo, SE_KERNEL_OBJECT};
+    use windows_sys::Win32::Security::{GetSecurityDescriptorSacl, LABEL_SECURITY_INFORMATION};
+    unsafe {
+        let (mut present, mut defaulted) = (0, 0);
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        if GetSecurityDescriptorDacl(sd.as_ptr(), &mut present, &mut dacl, &mut defaulted) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let (mut sacl_present, mut sacl_defaulted) = (0, 0);
+        let mut sacl: *mut ACL = std::ptr::null_mut();
+        if GetSecurityDescriptorSacl(
+            sd.as_ptr(),
+            &mut sacl_present,
+            &mut sacl,
+            &mut sacl_defaulted,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut what = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+        if sacl_present != 0 {
+            what |= LABEL_SECURITY_INFORMATION;
+        }
+        let rc = SetSecurityInfo(
+            handle as HANDLE,
+            SE_KERNEL_OBJECT,
+            what,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            dacl,
+            if sacl_present != 0 {
+                sacl
+            } else {
+                std::ptr::null_mut()
+            },
+        );
+        if rc != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(rc as i32));
+        }
+    }
+    Ok(())
 }
 
 /// One ACE of a DACL.
@@ -313,6 +391,19 @@ mod tests {
             "second start: nothing to do"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_app_container_sids_are_pipe_guests() {
+        assert!(is_app_container_sid("S-1-15-2-1-2-3"));
+        for bad in ["S-1-5-18", "S-1-15-2-", "S-1-15-2-1)(A;;GA;;;WD", "WD"] {
+            assert!(!is_app_container_sid(bad), "{bad}");
+            assert!(Descriptor::current_user_and(&[bad.to_string()]).is_err());
+        }
+        // No create-instance right for a guest.
+        assert_eq!(PIPE_CLIENT_ACCESS & 0x4, 0);
+        assert!(Descriptor::current_user_and(&[]).is_ok());
+        assert!(Descriptor::current_user_and(&["S-1-15-2-1-2-3".into()]).is_ok());
     }
 
     #[test]

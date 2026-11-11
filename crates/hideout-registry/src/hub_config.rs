@@ -92,6 +92,16 @@ impl HubConfig {
         }
     }
 
+    /// `[supervisor] appcontainer` (§7.7, opt-in): start modules whose permissions allow it in
+    /// an AppContainer. Off when absent.
+    pub fn appcontainer(&self) -> bool {
+        self.table
+            .get("supervisor")
+            .and_then(|s| s.get("appcontainer"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
     /// Drops a removed module's table.
     pub fn forget(&mut self, id: &str) {
         if let Some(toml::Value::Table(modules)) = self.table.get_mut("modules") {

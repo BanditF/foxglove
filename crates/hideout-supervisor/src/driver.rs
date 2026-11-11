@@ -658,6 +658,8 @@ impl Supervisor {
             return false;
         }
         let known = self.0.policy.lock().unwrap().forget(id);
+        // Its AppContainer profile, if it ever ran in one (§7.7); nothing when it didn't.
+        crate::sandbox::delete_profile(id);
         self.0.expected.lock().unwrap().remove(id);
         self.0.withdrawals.lock().unwrap().remove(id);
         let recorded = self.0.records.lock().unwrap().modules.remove(id).is_some();
@@ -1226,29 +1228,57 @@ impl Supervisor {
             Job::create(&Job::name_for(&self.job_user(), id, instance), caps)
                 .map_err(|e| format!("job: {e}"))?,
         );
-        let mut cmd = Command::new(&exe);
-        cmd.args(&run[1..]).current_dir(&l.dir).stderr(self.log(id));
+        // An AppContainer when the hub's setting asks for one and the permissions allow it
+        // (§7.7). A module the plan keeps outside runs as before; a container that can't be
+        // set up fails the launch rather than running the module uncontained.
+        let container = if !l.stdio && reg.hub.appcontainer() {
+            self.container_for(&reg, id, &l.dir)?
+        } else {
+            None
+        };
         let mut token = String::new();
-        let child = if l.stdio {
+        let child = if let Some(c) = &container {
+            self.0.hub.act(|r| {
+                token = r.issue_token(id);
+                Vec::new()
+            });
+            let env = [
+                ("HIDEOUT_PIPE", self.0.hub.router_pipe()),
+                ("HIDEOUT_TOKEN", token.clone()),
+                ("HIDEOUT_INSTANCE", instance.to_string()),
+            ];
+            let (p, _) = c
+                .spawn(&job, &exe, &run[1..], &l.dir, &env, self.log_file(id))
+                .and_then(|s| s.resume())
+                .map_err(|e| format!("AppContainer start: {e}"))?;
+            Child::Contained(p)
+        } else if l.stdio {
+            let mut cmd = Command::new(&exe);
+            cmd.args(&run[1..]).current_dir(&l.dir).stderr(self.log(id));
             // The legacy bridge (§8.2): stdin and stdout are the router connection.
             cmd.env("HIDEOUT_INSTANCE", instance.to_string());
             let hub = self.0.hub.clone();
-            job.spawn_with(cmd, |c| hub.spawn_stdio(id, c))
-                .map_err(|e| format!("{e}"))?
+            Child::Plain(
+                job.spawn_with(cmd, |c| hub.spawn_stdio(id, c))
+                    .map_err(|e| format!("{e}"))?,
+            )
         } else {
             self.0.hub.act(|r| {
                 token = r.issue_token(id);
                 Vec::new()
             });
+            let mut cmd = Command::new(&exe);
+            cmd.args(&run[1..]).current_dir(&l.dir).stderr(self.log(id));
             cmd.env("HIDEOUT_PIPE", self.0.hub.router_pipe())
                 .env("HIDEOUT_TOKEN", &token)
                 .env("HIDEOUT_INSTANCE", instance.to_string())
                 .stdin(Stdio::null())
                 .stdout(Stdio::null());
-            job.spawn(cmd).map_err(|e| format!("{e}"))?
+            Child::Plain(job.spawn(cmd).map_err(|e| format!("{e}"))?)
         };
         let pid = child.id();
-        let started = win::child_started(&child)
+        let started = child
+            .started()
             .map_err(|e| log::warn!("supervisor: {id}: start time of pid {pid}: {e}"))
             .ok();
         self.0.expected.lock().unwrap().insert(
@@ -1281,7 +1311,14 @@ impl Supervisor {
             },
         );
         self.save_records();
-        log::info!("supervisor: started {id} {} (pid {pid})", l.version);
+        log::info!(
+            "supervisor: started {id} {} (pid {pid}){}",
+            l.version,
+            container.as_ref().map_or(String::new(), |c| format!(
+                " in AppContainer {}",
+                c.sid_string
+            ))
+        );
         self.feed(Ev::Started {
             id: id.into(),
             instance,
@@ -1292,11 +1329,7 @@ impl Supervisor {
         std::thread::Builder::new()
             .name(format!("hideout-supervisor-{id}"))
             .spawn(move || {
-                let code = child
-                    .wait()
-                    .ok()
-                    .and_then(|s| s.code())
-                    .map_or(1, |c| c as i64);
+                let code = child.wait();
                 ended(me, &id, instance, code);
             })
             .map_err(|e| format!("{e}"))?;
@@ -1349,6 +1382,20 @@ impl Supervisor {
                 None
             }
         };
+        // A contained survivor keeps its AppContainer: this hub's pipe lets its SID in before
+        // it reconnects (§7.7, §7.9).
+        match crate::sandbox::container_sid(&p) {
+            Ok(Some(sid)) => self
+                .0
+                .hub
+                .allow_pipe_client(&sid)
+                .map_err(|e| format!("router pipe for its AppContainer: {e}"))?,
+            Ok(None) => {}
+            Err(e) => log::warn!(
+                "supervisor: {id}: AppContainer of pid {} unknown: {e}",
+                rec.pid
+            ),
+        }
         let mut rec = rec.clone();
         rec.job = job.as_ref().map(|j| j.name.clone()).unwrap_or_default();
         self.0.hub.act(|r| {
@@ -1393,14 +1440,52 @@ impl Supervisor {
 
     /// The module's log: stderr appended to `logs\<id>.log` (§7.7).
     fn log(&self, id: &str) -> Stdio {
+        self.log_file(id)
+            .map(Stdio::from)
+            .unwrap_or_else(Stdio::null)
+    }
+
+    fn log_file(&self, id: &str) -> Option<std::fs::File> {
         let dir = self.0.home.join("logs");
         let _ = std::fs::create_dir_all(&dir);
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(dir.join(format!("{id}.log")))
-            .map(Stdio::from)
-            .unwrap_or_else(|_| Stdio::null())
+            .ok()
+    }
+
+    /// Module `id`'s AppContainer (§7.7), set up: its version folder readable, `settings\`
+    /// and `data\` writable, the router pipe open to it. `None` when its permissions keep it
+    /// outside (logged).
+    fn container_for(
+        &self,
+        reg: &Registry,
+        id: &str,
+        dir: &Path,
+    ) -> Result<Option<crate::sandbox::Container>, String> {
+        let permissions = reg.manifest(id).map(|m| m.permissions).unwrap_or_default();
+        let caps = match crate::contain::plan(&permissions) {
+            Ok(c) => c,
+            Err(why) => {
+                log::info!("supervisor: {id} runs outside an AppContainer: {why}");
+                return Ok(None);
+            }
+        };
+        let set_up = || -> std::io::Result<crate::sandbox::Container> {
+            let c = crate::sandbox::Container::for_module(id, &caps)?;
+            c.grant(dir, false)?;
+            for sub in ["settings", hideout_registry::DATA_DIR] {
+                let d = dir.join(sub);
+                std::fs::create_dir_all(&d)?;
+                c.grant(&d, true)?;
+            }
+            self.0.hub.allow_pipe_client(&c.sid_string)?;
+            Ok(c)
+        };
+        set_up()
+            .map(Some)
+            .map_err(|e| format!("AppContainer for {id}: {e}"))
     }
 
     fn save_records(&self) {
@@ -1475,6 +1560,36 @@ fn withdrawn_lines(w: &Withdrawal) -> Vec<(String, String)> {
 
 fn same_path(a: &Path, b: &Path) -> bool {
     a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+}
+
+/// A started instance's process: a plain child, or one in an AppContainer.
+enum Child {
+    Plain(std::process::Child),
+    Contained(Process),
+}
+
+impl Child {
+    fn id(&self) -> u32 {
+        match self {
+            Child::Plain(c) => c.id(),
+            Child::Contained(p) => p.pid(),
+        }
+    }
+
+    fn started(&self) -> std::io::Result<u64> {
+        match self {
+            Child::Plain(c) => win::child_started(c),
+            Child::Contained(p) => p.started(),
+        }
+    }
+
+    /// Blocks until it ends; its exit code (1 when it can't be read).
+    fn wait(&mut self) -> i64 {
+        match self {
+            Child::Plain(c) => c.wait().ok().and_then(|s| s.code()).map_or(1, |c| c as i64),
+            Child::Contained(p) => p.wait().unwrap_or(1),
+        }
+    }
 }
 
 /// An instance's process ended: forget it, then tell the policy.

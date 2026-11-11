@@ -2093,6 +2093,7 @@ version = "0.1.0"
 dependencies = [
  "foxglove-plugin",
  "foxglove-plugin-api",
+ "hideout-acl",
  "hideout-contract",
  "hideout-panels",
  "hideout-registry",
@@ -2130,6 +2131,7 @@ dependencies = [
 name = "hideout-supervisor"
 version = "0.1.0"
 dependencies = [
+ "foxglove-plugin",
  "hideout-contract",
  "hideout-registry",
  "hideout-router",
