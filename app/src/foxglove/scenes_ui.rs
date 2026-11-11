@@ -2802,8 +2802,9 @@ pub(crate) mod tests {
     /// #490, states A to E (docs/key-rings-ux.md): each state's words, exactly, and only there.
     #[test]
     fn each_key_rings_state_says_its_own_words() {
+        // The caption as drawn: a caps label.
         let words = [
-            Starts::CAPTION,
+            "RINGS START",
             "On a loop",
             "On each key press",
             RINGS_COVERED,
@@ -2812,7 +2813,8 @@ pub(crate) mod tests {
             UPDATE_FIRMWARE,
         ];
         let said = |v: &View| -> Vec<&str> { words.into_iter().filter(|w| shows(v, w)).collect() };
-        let row = [Starts::CAPTION, "On a loop", "On each key press"];
+        assert_eq!(Starts::CAPTION.to_uppercase(), "RINGS START");
+        let row = ["RINGS START", "On a loop", "On each key press"];
         // A: the keyboard draws them, both halves current.
         let a = rings_sample(true, false);
         assert_eq!(said(&a), [&row[..], &[RINGS_COVERED]].concat(), "A");
@@ -2956,6 +2958,10 @@ pub(crate) mod tests {
     /// The page's meshes and text, to compare two draws.
     fn render_shapes(v: &View) -> String {
         let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        crate::platform::add_phosphor_to_fonts(&mut fonts);
+        theme::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 Pos2::ZERO,

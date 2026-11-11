@@ -386,7 +386,9 @@ scanline can run down the monitors, through the case's fans and on into the keys
 - **Effect:** Scanline, Sweep, Ripple, Breathe, Gradient, Drift, Two-tone or **Tide effect**,
   then its colour (and background) or palette (**From wallpaper** takes the colours of the
   wallpaper on screen), speed, direction and width. Changes show on the map at once, and on
-  the lights too while the scene runs.
+  the lights too while the scene runs. Ripple can start its rings on a loop or from each key
+  you press (**Rings start**); on each key press, **Ripple on key press** under Triggers is
+  already covered.
 - **Screen glow** (Effects): your lights take the colours at the edges of your screens, like a
   TV's ambient light. Each device follows the screen edge nearest to where it stands on the Room
   map; drag it to change that. The first Start asks whether Foxglove may read your screen. The
