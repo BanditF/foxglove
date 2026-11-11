@@ -227,3 +227,174 @@ counts in any drawn string. "Mirror" is a word for this doc and the code only.
   launcher keeps its own row. Hide from knob stores the windowed program's file name.
 - Strings test: no "session", "mirror" or "(2" in any drawn string; a same-name pair gets
   "· <folder>".
+
+## Master volume on a device that ignores Windows volume (#1064)
+
+Some output devices take Windows' master volume into their own hardware, and sometimes don't apply
+it. The first one we know of is a JBL headset's Xbox-protocol USB dongle, "Headphones (Xbox
+Controller)". In that state the knob, the volume keys and Windows' slider all move the number, but
+the sound stays the same. App volumes still work. The user wants master to work, with Windows' own
+controls and no hooks.
+
+Engineering design (research 11/10, Hub 11/10):
+- While on, Foxglove holds the device's own volume at 100 %. Master is a level Foxglove keeps,
+  applied by turning every app on that device down by master's amount.
+- Each app's own level is stored and restored exactly; a write-ahead journal covers crashes.
+- **One master:**
+  - Foxglove listens for the device's volume-change notification (event-driven, no polling).
+  - A flyout drag or a volume key press is taken as the new master. The device is put back at 100 %
+    in the same callback.
+  - Foxglove's own writes are recognised by their event context and ignored.
+  - So the knob, Windows' slider and the volume keys all move the same master.
+- Master mute mutes the apps and marks them; unmute unmutes only the marked ones.
+
+This replaces the earlier hint-only plan: when master works, there is nothing to hint.
+
+- **Reuse:**
+  - the master card as it is (`knob_popup.rs`), and its tab place above Windows' flyout;
+  - the Knob card in Settings (`knob_hide.rs`, Keyboard page) and its store-as-you-go rows;
+  - the tray panel's Knob row (`tray_panel.rs`);
+  - the seed-file pattern of `app/resources/knob-hidden.toml`.
+- **Emulate:**
+  - **WinSoftVol:** the same scaling, with "force software volume" per device.
+  - **EarTrumpet:** per-app levels are the app's own.
+  - **Windows Sound settings:** devices by their Windows name, and the wording of "Allow
+    applications to take exclusive control of this device".
+- **Scope:**
+  - In: master volume for any output device whose volume Windows hands to the hardware (systems, not
+    products; the dongle is the first entry of a data list).
+  - Out: drivers, audio effect plug-ins (APOs), virtual devices, hooks, Bluetooth's registry switch,
+    changing any Windows setting for the user, and detecting the fault by measurement (not possible:
+    the research, §1).
+
+### 1. The master card: the same as on any device
+
+- **Every knob master card on a device Foxglove handles looks exactly like today's:** "Master volume",
+  the level, the bar, and "Master volume muted". There is no extra line: it works, so it says nothing.
+- **A change from Windows' flyout or the volume keys** (another keyboard, or the knob on firmware
+  without #855): the sound follows at once, and Foxglove shows its master card with the real level for
+  2 s, **directly above Windows' flyout** (where the "Knob · Master" tab sits). For mute, it shows
+  "Master volume muted".
+  - The card gets a third row: it grows from 48 to 64 pt upwards, 10 pt, `DIM`, at most 212 pt wide:
+    **"Windows' slider goes back to 100 % on this device."**
+  - This row shows on the first outside change of each Foxglove run only. After that, the card alone
+    shows the level: the user has learnt why the slider is at 100 %.
+
+### 2. What Windows' flyout shows after a drag or a key press
+
+The device's volume has to stay at 100 % so that it never turns the sound down twice, so Windows'
+slider cannot show the real master. The Hub's minimum is that it respects the drag:
+- **Drag:** the slider stays where the user drops it while the mouse is held. On release, the sound
+  takes that level, and the slider moves back to 100 % within a moment. Foxglove's card above it
+  shows the level the user chose (§1), so the drag visibly "took".
+- **Volume key:** Windows' flyout jumps one step and back to 100 %. The sound and Foxglove's card
+  move one step.
+- **Requirement for app-engineer:**
+  - Keys step master **both ways** by Windows' own step. With the device at exactly 100 %, "volume
+    up" sends no change event, and "volume down" reads as "98 %", not "one step down".
+  - So either hold the device one step below 100 % (and check that the step costs nothing audible
+    on the listed devices), or read a key-sized change from the held level as a step and anything
+    else as a drag to that level.
+  - Engineering picks one and states it in the PR. The user sees only: keys work both ways, and a
+    drag sets the level where it's dropped.
+- Explained in three places: the card's row (§1), the setting's first while-on line (§3), and one
+  user-guide paragraph.
+
+### 3. The per-device setting: Settings > Keyboard > Knob card
+
+There is a new part under the hidden-apps list, for the **current default output device**. Other
+devices keep their own choice and show it when they are the default.
+
+| Where | Text |
+|---|---|
+| Caption | "MASTER VOLUME" |
+| Row title | the device's Windows name, e.g. "Headphones (Xbox Controller)" |
+| Toggle | "Foxglove sets this device's volume" |
+| Second line, listed device | "On by default: this device often ignores Windows volume." |
+| Second line, other eligible device | "Turn on if the volume number moves but the sound stays the same." |
+| While on, line 1 | "Windows' slider goes back to 100 % for this device; the sound follows the knob, the slider and the volume keys." |
+| While on, line 2 | "Foxglove turns each app down instead. Volume mixer shows those lower levels; the knob shows each app's own." |
+| While on, line 3 (exclusive control, §5) | "Apps that take exclusive control of this device play at full volume." |
+| Not eligible (Windows sets its volume in software) | "Windows sets this device's volume itself." (no toggle) |
+| After turning off (until the page changes) | "Windows sets this device's volume again." |
+
+- **Default:** on for a listed device, and only when Windows hands its volume to the hardware. Off for
+  every other eligible device. The user's choice is stored per device and wins over the list.
+- **Accessible text:** the toggle's name is the toggle label. Its description is the row title plus
+  the second line, e.g. "Headphones (Xbox Controller). On by default: this device often ignores
+  Windows volume."
+- It takes effect at once (no Save). Turning it off puts the device's volume back to the master level
+  and every app back to its own level.
+
+### 4. Per-app levels: the app's own
+
+- The knob's app cards and the tray Knob row show and step **the app's own level** (Tarkov 84 %).
+  Windows' Volume mixer shows the applied one (29 % with master at 35 %).
+- Explained in the setting's line 2, and in the **tray Knob row's tooltip** while the device is
+  handled: **"<app> <own> % · Volume mixer shows <applied> % with master at <master> %."**
+- An app that keeps setting its own volume (a game's slider: the self-managed cut-off) stops following
+  master. Its tray tooltip says **"<app> sets its own volume, so master doesn't change it."** There is
+  nothing on the card: a 2 s card is no place for it.
+
+### 5. Exclusive-control apps
+
+Apps that take exclusive control bypass app levels and play at the device's full volume. That is the
+one way this gets loud. Foxglove can't see those streams without polling, so it doesn't try:
+- Line 3 of the setting says so, in Windows' own words.
+- If Windows' "Allow applications to take exclusive control of this device" is on for the device, the
+  line gets **Open Sound settings**. Foxglove reads that once when the page draws. The button opens
+  Windows' Sound panel so the user can change it there; Foxglove never changes it. (This is the
+  question below.)
+
+### 6. After a crash
+
+- **While Foxglove is down:** the sound stays where it was (apps turned down, device at 100 %). Nothing
+  gets louder. Changes from the flyout or the keys are not followed until Foxglove is back.
+- **Next start:** Foxglove reads the journal and puts each app back as it appears.
+  - An app still at Foxglove's applied level gets its own level from the journal.
+  - An app the user or the app changed meanwhile keeps that new level as its own.
+  - Then Foxglove takes over again or, if the setting is now off, restores and stops.
+- **What the user sees:** nothing. There is no toast and no tray line, because the sound never jumps.
+  The log says "Foxglove: master volume: restored <n> apps from the last run's journal", and the
+  health view counts it.
+- **Apps that closed while Foxglove was down** may start quieter (Windows remembers the lower level).
+  Foxglove fixes each one the first time it plays, while its journal entry is kept (30 days).
+- **Uninstall, or Foxglove not started again:** the uninstaller restores from the journal. The user
+  guide's fallback is Windows' **Settings > System > Sound > Volume mixer > Reset**.
+
+### 7. Data (for app-engineer)
+
+`app/resources/volume-quirks.toml` is read-only and shipped with the app, with no device names in code:
+
+```toml
+# Output devices that take Windows' master volume into hardware and sometimes don't apply it (#1064).
+# Matched as a case-insensitive prefix against the default output device's parent hardware ids.
+# Listed devices get "Foxglove sets this device's volume" on by default (only if Windows reports
+# hardware volume for them); the user's choice per device wins.
+
+[[device]]
+ids = ["USB\\VID_0ECB&PID_2148"]
+name = "JBL headset dongle (Xbox protocol)"  # log and this file only; the UI uses Windows' name
+note = "Ignores endpoint volume after some reboots; the headset's wheel still works (2026-10-30)."
+```
+
+The per-device choice lives in Foxglove's settings, keyed by the endpoint id, with the device's Windows
+name for display.
+
+### Hand-off acceptance (adds to the list above)
+
+- On a handled device, the knob's master card draws the same as on any device. An outside change shows
+  the card above Windows' flyout, with the third row on the first change of the run only.
+- Flyout drag (fake endpoint event, no own context): master takes the dropped level, and the device
+  goes back to its held level in the same callback. Own writes are ignored.
+- Volume keys step master both ways from any level (window-free test over the fake endpoint).
+- Setting: eligible and listed is on by default; eligible and unlisted is off; not eligible shows the
+  line with no toggle. The choice survives a restart and a list update.
+- Tray tooltip strings for handled and self-managed apps; no session ids in any string. All strings
+  are at least 4.5:1 in both themes, and the card's third row fits 212 pt.
+
+### Open question for the user (via the Hub)
+
+1. Exclusive-control apps play at full volume while this is on. **Show "Open Sound settings" in the
+   setting when Windows allows exclusive control, so you can turn that off yourself** (pick) /
+   mention it only in the user guide.
