@@ -280,6 +280,104 @@ fn quarantined_reaches_the_supervisor_and_shows_its_card() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #1104, in the lab's order (`hideout_lab_checks.py` step 1093.4): the page is open and live; the
+/// panel host quarantines it (frames pass before the supervisor's fact comes back); the lab
+/// opens the page again (`focus Art`: AccessKit's Focus and Click on its tab). Start again still
+/// has the focus, Enter presses it: the supervisor is asked, the panels are released, greyed
+/// "starting", and the next `ui.register` makes the page live again.
+#[test]
+fn quarantine_then_start_again_in_the_labs_order() {
+    use egui::accesskit::{Action as AxAction, ActionRequest, Role};
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let dir = temp_dir("st-quarantine-lab");
+    let (mut hub, rec) = art_in(&dir, &[("state", serde_json::json!("running"))]);
+    let key_ = PanelKey::new(SUP, "art");
+    let _ = frames(&ctx, &mut hub, vec![]);
+    // The panel host's quarantine (lab control's `quarantine` queues exactly this).
+    hub.panels.quarantine(SUP);
+    let _ = frames(&ctx, &mut hub, vec![]);
+    assert_eq!(asked(&rec), [format!("quarantine {SUP}")], "told once");
+    // The supervisor's answer, a while later.
+    for (k, v) in [
+        ("state", serde_json::json!("quarantined")),
+        ("reason", serde_json::json!(words::QUARANTINED_LINE)),
+    ] {
+        hub.panels.set_fact(&format!("module.{SUP}.{k}"), v);
+    }
+    let out = frames(&ctx, &mut hub, vec![]);
+    assert_eq!(focused_label(&out).as_deref(), Some("Start again"));
+    // The lab's `focus Art`: Focus and Click on Art's tab, which is already open.
+    let tab = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .and_then(|u| {
+            u.nodes.iter().find(|(_, n)| {
+                n.role() == Role::Tab && n.label().is_some_and(|l| l.starts_with("Art"))
+            })
+        })
+        .map(|(id, _)| *id)
+        .expect("Art's tab in the AccessKit tree");
+    let ask = |action| {
+        Event::AccessKitActionRequest(ActionRequest {
+            action,
+            target: tab,
+            data: None,
+        })
+    };
+    let _ = ctx.run(
+        input(
+            1100.0,
+            640.0,
+            vec![ask(AxAction::Focus), ask(AxAction::Click)],
+        ),
+        |c| hub.frame(c),
+    );
+    let out = frames(&ctx, &mut hub, vec![]);
+    assert_eq!(
+        focused_label(&out).as_deref(),
+        Some("Start again"),
+        "opening the page again left the focus on its tab"
+    );
+    // Enter presses Start again.
+    let _ = frames(&ctx, &mut hub, vec![key(Key::Enter, Modifiers::NONE)]);
+    assert_eq!(
+        asked(&rec),
+        [format!("quarantine {SUP}"), format!("start-again {SUP}")]
+    );
+    assert_ne!(
+        hub.panels.panel(&key_).unwrap().state,
+        PanelState::Quarantined,
+        "Start again didn't release the panels"
+    );
+    // The supervisor starts it: greyed "starting", then its `ui.register` makes the page live.
+    hub.panels.set_fact(
+        &format!("module.{SUP}.state"),
+        serde_json::json!("starting"),
+    );
+    assert_eq!(
+        hub.panels.panel(&key_).unwrap().state,
+        PanelState::Greyed("starting".into())
+    );
+    hub.panels.register(SUP, SUP, None, &params("art", "Art"));
+    hub.panels
+        .set_fact(&format!("module.{SUP}.state"), serde_json::json!("running"));
+    let t = drawn(&frames(&ctx, &mut hub, vec![]));
+    assert_eq!(hub.panels.panel(&key_).unwrap().state, PanelState::Live);
+    assert!(
+        !t.iter()
+            .any(|s| s.contains("couldn't be shown") || s.contains("isn't running")),
+        "{t:?}"
+    );
+    assert!(
+        t.iter().any(|s| s == "Art page from Art."),
+        "the page: {t:?}"
+    );
+    assert_eq!(asked(&rec).len(), 2, "quarantined again: {:?}", asked(&rec));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Updating: one line, "Updating… Your place on this page is kept.", said once; the ring with
 /// "Updating…" on the tab; no doubled ellipsis from the generic line.
 #[test]
