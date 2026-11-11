@@ -1,0 +1,9 @@
+# SET_EFFECT's key rings (module/effects_sim.c, key_ripple_driver): capability 37; where ZMK's
+# physical layout puts keys for each half; kind 5's replies (D7 8F) and what each half is told;
+# the background drawn once and no frames without a key; a key on this half starts a ring from
+# it (the nearest LED first), frames only while it grows, then the background; the other half's
+# keys and releases start none; four rings at once, a fifth taking the oldest's place; a ring
+# lives through the same effect sent again; no ring under another effect, after RELEASE or
+# under the PC's frames.
+/^effects:/p
+/^hostlink: rx D7 8[CF]/p

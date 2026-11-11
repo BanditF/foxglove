@@ -1,0 +1,56 @@
+effects: -- hello and D5 08 CAPS: capability 37 KEY_RINGS (word 2's bit 5)
+effects: capability 37 1
+effects: -- where ZMK's physical layout puts keys: a one-piece board, the left half, the right half
+effects: layout Eyelash Corne, 48 keys
+effects: key 1: one piece 86,192; left 207,192; right 0,193
+effects: key 12: one piece 971,192; left 1000,192; right 946,193
+effects: key 19: one piece 500,384; left 1000,384; right 54,386
+effects: key 43: one piece 291,825; left 702,825; right 0,829
+effects: key 46: one piece 709,825; left 1000,825; right 449,829
+effects: -- kind 5 without a period, or with three colours: refused
+hostlink: rx D7 8F 05 00 00 01
+hostlink: rx D7 8F 05 00 00 01
+effects: -- kind 5: both halves told, the background drawn once; no frames without a key
+effects: right gets keys, 2 colours, half at 204,0 124x86, room 328x86
+effects: left taken from its effect
+hostlink: rx D7 8F 00 03 05 01
+effects: left draws 0-20=06080E
+effects: draws in 500 ms after it: 0
+effects: -- Q on this half: a ring from it, the nearest LED (0) lit first
+effects: Q: draws while it grew one a frame, then the background yes, draws after it 0
+effects: first lit: 0
+effects: -- the other half's key as it reaches this one, and a release alone: no ring
+effects: draws: 0
+effects: -- five keys at once: four rings, the fifth taking the oldest's place; then the background
+effects: five keys: draws while it grew one a frame, then the background yes, draws after it 0
+effects: -- the same effect sent again (as a re-anchor does): the ring in flight goes on
+effects: right gets keys, 2 colours, half at 204,0 124x86, room 328x86
+hostlink: rx D7 8F 00 03 05 01
+effects: draws in 200 ms after it: still drawing
+effects: -- another effect (a still breathe): a key starts no ring
+effects: right gets breathe, 2 colours, half at 204,0 124x86, room 328x86
+hostlink: rx D7 8F 00 03 04 01
+effects: left draws 0-20=204060
+effects: draws after the key: 0
+effects: -- key rings again, then the PC's frames take the lights: a key starts no ring
+effects: right gets keys, 2 colours, half at 204,0 124x86, room 328x86
+hostlink: rx D7 8F 00 03 05 01
+effects: left draws 0-20=06080E
+effects: right effect stops (frames take it)
+effects: left draws 0=FF0000
+effects: right frames on
+hostlink: rx D7 8C 00 03 03 01
+effects: draws after the key: 0
+effects: -- RELEASE: both halves back to their own effect; a key starts no ring
+hostlink: rx D7 8F 00 00 00 01
+effects: left back to its effect
+effects: right frames off
+effects: right gets keys, 2 colours, half at 204,0 124x86, room 328x86
+effects: left taken from its effect
+hostlink: rx D7 8F 00 03 05 01
+effects: left draws 0-20=06080E
+effects: left back to its effect
+effects: right effect stops, back to its own
+hostlink: rx D7 8F 00 00 00 01
+effects: draws after the key: 0
+effects: -- done

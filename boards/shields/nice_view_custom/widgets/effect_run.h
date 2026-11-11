@@ -13,7 +13,8 @@
 #include "lamp_effect.h"
 
 // Takes this half's LEDs from its own effect (lamp_strip.c) and draws w, its clock at at_ms now
-// (the scene's time modulo the period). A new call replaces the effect and re-anchors the clock.
+// (the scene's time modulo the period). A new call replaces the effect and re-anchors the clock;
+// the same effect again only re-anchors it (key rings in flight stay).
 // Any thread; the drawing runs on ZMK's low-priority queue. Copies w.
 void effect_run_start(const struct lamp_effect_wire *w, uint32_t at_ms);
 // Stops drawing. hand_back: the LEDs go back to the keyboard's own effect; without it they stay

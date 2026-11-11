@@ -1787,6 +1787,12 @@ pub enum EffectKind {
     Ripple = 3,
     /// colours[0] to colours[1] and back once per period.
     Breathe = 4,
+    /// Key rings (#490): colours[1] as the background, and a ring of colours[0] from each key
+    /// pressed on a half, grown over that half in one period (`period_ms` > 0), `width_mm` wide.
+    /// Each half starts its own rings from its own keys with no PC and no split traffic per
+    /// press; clock, angle and origin are unused. Only with HELLO v2's
+    /// [`crate::hello_v2::capabilities::KEY_RINGS`]; firmware without it answers 5.
+    KeyRings = 5,
 }
 
 /// One effect, in the wire's units.
@@ -1868,14 +1874,17 @@ pub fn effect_lamps_reports(half: u8, points: &[[u16; 2]]) -> Option<Vec<Vec<u8>
         .collect()
 }
 
-/// EFFECT: draws `e` on both halves. `None` when it doesn't fit the wire (colour count, period).
+/// EFFECT: draws `e` on both halves. `None` when it doesn't fit the wire (colour count, period;
+/// key rings need a period: the time a ring takes to grow).
 pub fn effect(e: &Effect) -> Option<Vec<u8>> {
     let n = e.colours.len();
     let colours_ok = match e.kind {
         EffectKind::Sweep => (1..=effect::MAX_COLOURS).contains(&n),
         _ => n == 2,
     };
-    if !colours_ok || e.period_ms > effect::MAX_PERIOD_MS {
+    let period_ok =
+        e.period_ms <= effect::MAX_PERIOD_MS && (e.kind != EffectKind::KeyRings || e.period_ms > 0);
+    if !colours_ok || !period_ok {
         return None;
     }
     let clock = if e.period_ms == 0 {
@@ -2507,6 +2516,37 @@ mod tests {
         .is_none());
         assert_eq!(effect_release(), [0xD7, 0x0F, 0]);
 
+        // Key rings (#490): kind 5, ring then background, the ring's time as the period; the
+        // clock goes as sent modulo the period (the firmware doesn't use it). No period: None.
+        let rings = Effect {
+            kind: EffectKind::KeyRings,
+            colours: vec![[0xF0, 0x8A, 0x3C], [6, 8, 14]],
+            clock_ms: 0,
+            period_ms: 600,
+            angle_deg: 0.0,
+            width_mm: 25.0,
+            origin_mm: [0, 0],
+        };
+        let r = effect(&rings).unwrap();
+        // The tests/zmk-sim/key-ripple case's report: kind 5, 2 colours, period 600, width 250.
+        assert_eq!(
+            r,
+            [
+                0xD7, 0x0F, 2, 5, 2, 0, 0, 0, 0x58, 0x02, 0, 0, 0, 0xFA, 0, 0, 0, 0, 0, 0xF0, 0x8A,
+                0x3C, 6, 8, 14
+            ]
+        );
+        assert!(effect(&Effect {
+            period_ms: 0,
+            ..rings.clone()
+        })
+        .is_none());
+        assert!(effect(&Effect {
+            colours: vec![[0; 3]; 3],
+            ..rings.clone()
+        })
+        .is_none());
+
         let mut r = [0u8; REPORT];
         r[..6].copy_from_slice(&[0xD7, 0x8F, 0, 3, 1, 1]);
         let reply = EffectReply::parse(&r);
@@ -2517,6 +2557,12 @@ mod tests {
         let back = EffectReply::parse(&r);
         assert!(!back.running());
         assert_eq!(back.right, FrameRight::Unsupported);
+        // Key rings on a right before them: the left runs them, the right keeps its own effect.
+        r[..6].copy_from_slice(&[0xD7, 0x8F, 0, 3, 5, 2]);
+        let old_right = EffectReply::parse(&r);
+        assert!(old_right.running());
+        assert_eq!(old_right.kind, EffectKind::KeyRings as u8);
+        assert_eq!(old_right.right, FrameRight::Unsupported);
     }
 
     #[test]

@@ -205,8 +205,10 @@ float lamp_effect_phase(uint64_t t_ms, uint32_t period_ms) {
 }
 
 bool lamp_effect_prepare(struct lamp_effect *fx, const struct lamp_effect_wire *w, bool mirror) {
+    uint32_t period = w->period_ms[0] | w->period_ms[1] << 8 | (uint32_t)w->period_ms[2] << 16;
     if (w->kind == LAMP_EFFECT_NONE || w->kind >= LAMP_EFFECT_KINDS || w->n < 1 ||
-        w->n > LAMP_EFFECT_COLOURS || (w->kind != LAMP_EFFECT_SWEEP && w->n != 2)) {
+        w->n > LAMP_EFFECT_COLOURS || (w->kind != LAMP_EFFECT_SWEEP && w->n != 2) ||
+        (w->kind == LAMP_EFFECT_KEYS && period == 0)) { // a key ring needs time to grow
         return false;
     }
     // Straight into fx (no copy on the stack: the low-priority queue's is small).
@@ -214,7 +216,7 @@ bool lamp_effect_prepare(struct lamp_effect *fx, const struct lamp_effect_wire *
     memset(f, 0, sizeof(*f));
     f->kind = w->kind;
     f->n = w->n;
-    f->period_ms = w->period_ms[0] | w->period_ms[1] << 8 | (uint32_t)w->period_ms[2] << 16;
+    f->period_ms = period;
     f->width = (uint16_t)(w->width_dmm[0] | w->width_dmm[1] << 8) / 10.0f;
     f->ox = i16(&w->origin[0]);
     f->oy = i16(&w->origin[2]);
@@ -240,6 +242,10 @@ bool lamp_effect_prepare(struct lamp_effect *fx, const struct lamp_effect_wire *
     }
     float hx = i16(&w->half[0]), hy = i16(&w->half[2]), hw = i16(&w->half[4]),
           hh = i16(&w->half[6]);
+    f->hx = hx;
+    f->hy = hy;
+    f->hw = hw;
+    f->hh = hh;
     for (int i = 0; i < LAMP_EFFECT_LAMPS; i++) {
         uint16_t pm[2];
         if (w->lamps_set) {
@@ -283,6 +289,9 @@ void lamp_effect_at(const struct lamp_effect *fx, float x, float y, float phase,
         mix(fx, 1, 0, band(d - radius, fx->width / 2.0f), out);
         break;
     }
+    case LAMP_EFFECT_KEYS: // no key pressed: the background (lamp_effect_rings draws rings)
+        memcpy(out, fx->rgb[1], 3);
+        break;
     case LAMP_EFFECT_BREATHE: {
         float a = phase * 6.2831855f; // f32::consts::TAU
         mix(fx, 0, 1, 0.5f - 0.5f * cosf(a), out);
@@ -300,4 +309,90 @@ void lamp_effect_render(const struct lamp_effect *fx, float phase,
     }
 }
 
-bool lamp_effect_still(const struct lamp_effect *fx) { return fx->period_ms == 0; }
+bool lamp_effect_still(const struct lamp_effect *fx) {
+    // Key rings move only after a press (effect_run.c draws them while one grows).
+    return fx->period_ms == 0 || fx->kind == LAMP_EFFECT_KEYS;
+}
+
+// A key's centre in layout units, turned about (rx, ry) by r (hundredths of a degree, clockwise
+// on the page: y points down), as ZMK Studio draws it.
+static void key_centre(const struct lamp_effect_key *k, float out[2]) {
+    float x = k->x + k->width / 2.0f, y = k->y + k->height / 2.0f;
+    if (k->r != 0) {
+        float a = k->r / 100.0f * 0.017453292519943295f;
+        float c = cosf(a), s = sinf(a), dx = x - k->rx, dy = y - k->ry;
+        x = k->rx + dx * c - dy * s;
+        y = k->ry + dx * s + dy * c;
+    }
+    out[0] = x;
+    out[1] = y;
+}
+
+bool lamp_effect_key_point(const struct lamp_effect_key *keys, int n, int pos, int side,
+                           uint16_t out[2]) {
+    if (keys == NULL || pos < 0 || pos >= n) {
+        return false;
+    }
+    // The layout's middle: halfway across all its keys' outlines.
+    float lo = INFINITY, hi = -INFINITY;
+    for (int i = 0; i < n; i++) {
+        float c[2];
+        key_centre(&keys[i], c);
+        lo = fminf(lo, c[0] - keys[i].width / 2.0f);
+        hi = fmaxf(hi, c[0] + keys[i].width / 2.0f);
+    }
+    float middle = (lo + hi) / 2.0f;
+    // This side's box: the outlines of the keys whose centre is on it.
+    float box[4] = {INFINITY, INFINITY, -INFINITY, -INFINITY};
+    for (int i = 0; i < n; i++) {
+        float c[2];
+        key_centre(&keys[i], c);
+        if (side >= 0 && (c[0] < middle) != (side == 0)) {
+            continue;
+        }
+        box[0] = fminf(box[0], c[0] - keys[i].width / 2.0f);
+        box[1] = fminf(box[1], c[1] - keys[i].height / 2.0f);
+        box[2] = fmaxf(box[2], c[0] + keys[i].width / 2.0f);
+        box[3] = fmaxf(box[3], c[1] + keys[i].height / 2.0f);
+    }
+    if (!(box[2] > box[0] && box[3] > box[1])) {
+        return false;
+    }
+    float c[2];
+    key_centre(&keys[pos], c);
+    for (int k = 0; k < 2; k++) {
+        float v = (c[k] - box[k]) / (box[k + 2] - box[k]);
+        out[k] = (uint16_t)lroundf(clamp01(v) * 1000.0f);
+    }
+    return true;
+}
+
+void lamp_effect_half_point(const struct lamp_effect *fx, const uint16_t pt[2], float out[2]) {
+    out[0] = fx->hx + fx->hw * (pt[0] / 1000.0f);
+    out[1] = fx->hy + fx->hh * (pt[1] / 1000.0f);
+}
+
+void lamp_effect_rings(const struct lamp_effect *fx, const struct lamp_effect_ring *rings, int n,
+                       uint8_t out[LAMP_EFFECT_LAMPS][3]) {
+    float reach[LAMP_EFFECT_RINGS] = {0};
+    n = n < 0 ? 0 : n > LAMP_EFFECT_RINGS ? LAMP_EFFECT_RINGS : n;
+    const float corners[4][2] = {{fx->hx, fx->hy},
+                                 {fx->hx + fx->hw, fx->hy},
+                                 {fx->hx, fx->hy + fx->hh},
+                                 {fx->hx + fx->hw, fx->hy + fx->hh}};
+    for (int r = 0; r < n; r++) {
+        for (int k = 0; k < 4; k++) {
+            reach[r] = fmaxf(reach[r],
+                             hypotf(corners[k][0] - rings[r].ox, corners[k][1] - rings[r].oy));
+        }
+    }
+    for (int i = 0; i < LAMP_EFFECT_LAMPS; i++) {
+        float strongest = 0.0f;
+        for (int r = 0; r < n; r++) {
+            float radius = band_centre(rings[r].phase, reach[r], fx->width);
+            float d = hypotf(fx->lamp[i][0] - rings[r].ox, fx->lamp[i][1] - rings[r].oy);
+            strongest = fmaxf(strongest, band(d - radius, fx->width / 2.0f));
+        }
+        mix(fx, 1, 0, strongest, out[i]); // the background, towards the ring colour
+    }
+}

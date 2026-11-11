@@ -118,7 +118,10 @@ static bool parse_effect(const uint8_t *d, int len, struct lamp_effect_wire *e, 
     }
     uint8_t kind = d[3], n = d[4];
     bool colours_ok = kind == LAMP_EFFECT_SWEEP ? n >= 1 && n <= LAMP_EFFECT_COLOURS : n == 2;
-    if (kind == LAMP_EFFECT_NONE || kind >= LAMP_EFFECT_KINDS || !colours_ok ||
+    // Key rings (HELLO v2 capability 37): built in, and with the time a ring takes to grow.
+    bool keys_ok = kind != LAMP_EFFECT_KEYS ||
+                   (IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS_KEYS) && sys_get_le24(&d[8]) > 0);
+    if (kind == LAMP_EFFECT_NONE || kind >= LAMP_EFFECT_KINDS || !colours_ok || !keys_ok ||
         len < EFFECT_COLOURS_AT + 3 * n || sys_get_le16(&d[11]) >= 36000) {
         return false;
     }

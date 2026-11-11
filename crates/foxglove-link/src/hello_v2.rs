@@ -9,7 +9,7 @@
 //! | D5 81 HELLO reply | 2 | version: **2** from HELLO v2 firmware on (1 before); the rest as before |
 //! | D5 08 CAPS (PC) | 0-1 | `D5 08`, nothing else |
 //! | D5 88 CAPS reply | 2 | n: the words that follow (1 today, at most [`MAX_WORDS`]) |
-//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`, 34 `HOLD_LEASE`, 35 `KNOB_VOLUME`, 36 `SLOT_READ`) |
+//! | | 3-6 | word 2, u32 LE: bit n is capability 32 + n ([`capabilities`]: 32 `ART_LOCAL`, 33 `ART_PACE`, 34 `HOLD_LEASE`, 35 `KNOB_VOLUME`, 36 `SLOT_READ`, 37 `KEY_RINGS`) |
 //! | | 7-30 | words 3-8, when n says so |
 //!
 //! Both ways stay compatible:
@@ -86,6 +86,18 @@ pub mod capabilities {
     /// Whether D6 0B is there: HELLO's word 1 (flash slots) and D5 88's word 2.
     pub fn slot_read(word1: u32, word2: u32) -> bool {
         word1 & crate::protocol::capabilities::ART_SLOTS != 0 && word2 & SLOT_READ != 0
+    }
+
+    /// Capability 37 (#490): SET_EFFECT's key rings ([`crate::protocol::EffectKind::KeyRings`]):
+    /// each half starts a ring from a key pressed on it, with no PC and no split traffic per
+    /// press. Only with HELLO's EFFECTS bit (19). On a split board the right draws them from its
+    /// relay status version 13 on; an older right keeps its own effect (EFFECT's reply says
+    /// [`crate::protocol::FrameRight::Unsupported`]).
+    pub const KEY_RINGS: u32 = 1 << 5;
+
+    /// Whether SET_EFFECT takes key rings: HELLO's word 1 and D5 88's word 2.
+    pub fn key_rings(word1: u32, word2: u32) -> bool {
+        word1 & crate::protocol::capabilities::EFFECTS != 0 && word2 & KEY_RINGS != 0
     }
 }
 
@@ -487,6 +499,20 @@ mod tests {
         assert!(capabilities::slot_read(slots, 0x17));
         assert!(!capabilities::slot_read(0, 0x17), "no flash slots");
         assert!(!capabilities::slot_read(slots, 0x07), "firmware before it");
+    }
+
+    /// KEY_RINGS (#490): capability 37, word 2's bit 5 (the key-ripple sim case's D5 88 has it);
+    /// it counts only with HELLO's EFFECTS bit.
+    #[test]
+    fn key_rings_is_capability_37() {
+        assert_eq!(capabilities::KEY_RINGS, 32);
+        let effects = crate::protocol::capabilities::EFFECTS;
+        assert!(capabilities::key_rings(effects, 0x24));
+        assert!(!capabilities::key_rings(0, 0x24), "no SET_EFFECT");
+        assert!(
+            !capabilities::key_rings(effects, 0x04),
+            "firmware before it"
+        );
     }
 
     /// Word 1 by name: every bit, a few, none, and no HELLO.

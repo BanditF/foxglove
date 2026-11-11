@@ -142,6 +142,15 @@ config FOXGLOVE_HOST_EFFECTS_FRAME_MS
     default 33
     depends on FOXGLOVE_HOST_EFFECTS
 
+# SET_EFFECT's key rings (#490), on wherever effects are, as in the dev firmware.
+config FOXGLOVE_HOST_EFFECTS_KEYS
+    bool
+    default y if FOXGLOVE_SIM_EFFECTS
+
+config FOXGLOVE_SIM_KEY_RIPPLE
+    bool "Simulator: SET_EFFECT's key rings case (the host-effects case's files and fakes with its own driver, module/effects_sim.c)"
+    depends on FOXGLOVE_SIM_EFFECTS
+
 config FOXGLOVE_HOST_FRAMES_TIMEOUT_S
     int
     default 3

@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -1854,6 +1855,313 @@ static void rgb_relink_look(void) {
     debug_line("at the end");
 }
 
+#ifdef ART_RELAY_KEYS_STATUS_VERSION
+/* SET_EFFECT over the relay (#490): the right half's copy of the PC's effect, as host_effects.c
+ * hands it to art_relay_effect, under the link's real timing (latency 30) with the app's traffic.
+ * The right model (sim_bt.c) keeps the wire it is sent and anchors its effect clock on each GO,
+ * as art_relay_peripheral.c and effect_run.c do; the left's clock is effect_run_clock (the sim's
+ * uptime). Each half then renders with the real lamp_effect.c. */
+
+#define FX_FRAME_MS 33 // CONFIG_FOXGLOVE_HOST_EFFECTS_FRAME_MS's default
+// The bytes of the wire the left sends a right of version >= 9 (art_relay_central.c effect_send).
+#define FX_SENT (offsetof(struct lamp_effect_wire, lamp) + 4 * ART_RELAY_LAMPS_MAX)
+
+static const int16_t fx_room[4] = {0, 0, 328, 86};
+static const int16_t fx_right[4] = {204, 0, 124, 86};
+
+static void put24(uint32_t v, uint8_t *p) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+}
+
+// The right half's copy of an effect, as host_effects.c's for_half makes it.
+static void fx_wire(struct lamp_effect_wire *w, uint8_t kind, uint32_t period, int16_t right_x) {
+    static const uint8_t rgb[2][3] = {{0xF0, 0x8A, 0x3C}, {0x06, 0x08, 0x0E}};
+    memset(w, 0, sizeof(*w));
+    w->kind = kind;
+    w->n = 2;
+    put24(period, w->period_ms);
+    sys_put_le16(kind == LAMP_EFFECT_KEYS ? 0 : 9000, w->angle_cdeg); // a scanline downwards
+    sys_put_le16(250, w->width_dmm);
+    memcpy(w->rgb, rgb, sizeof(rgb));
+    for (int i = 0; i < 4; i++) {
+        sys_put_le16(fx_room[i], &w->room[2 * i]);
+        sys_put_le16(i == 0 ? right_x : fx_right[i], &w->half[2 * i]);
+    }
+}
+
+// How far the right's effect clock runs behind the left's, in us (both read the sim's clock).
+static int64_t fx_lag_us(void) { return sim_right.effect_epoch_us; }
+
+// Waits up to max_ms for the right to draw w: its copy byte for byte, running, and a GO of
+// this send in.
+static bool fx_right_draws(const struct lamp_effect_wire *w, int max_ms, int64_t *took) {
+    int64_t start = k_uptime_get();
+    while (k_uptime_get() - start < max_ms) {
+        if (sim_right.effect_run && sim_right.effect_gos_since_send >= 1 &&
+            memcmp(&sim_right.effect, w, FX_SENT) == 0) {
+            *took = k_uptime_get() - start;
+            k_msleep(600); // a GO answered late goes again (at most 3): the left's last one in
+            return true;
+        }
+        k_msleep(5);
+    }
+    *took = k_uptime_get() - start;
+    return false;
+}
+
+// The most any LED channel differs between two renders of the right half.
+static int fx_diff(const uint8_t a[LAMP_EFFECT_LAMPS][3], const uint8_t b[LAMP_EFFECT_LAMPS][3]) {
+    int worst = 0;
+    for (int i = 0; i < LAMP_EFFECT_LAMPS; i++) {
+        for (int c = 0; c < 3; c++) {
+            int d = abs(a[i][c] - b[i][c]);
+            worst = d > worst ? d : worst;
+        }
+    }
+    return worst;
+}
+
+// The right half as the right draws it now (its copy, its clock) against the left's reference
+// for that half (the wire it sent, the left's clock): within what one frame of the effect moves.
+static bool fx_same_frame(const struct lamp_effect_wire *sent, int *got, int *bound) {
+    static struct lamp_effect fx, rx;
+    static uint8_t ref[LAMP_EFFECT_LAMPS][3], next[LAMP_EFFECT_LAMPS][3], right[LAMP_EFFECT_LAMPS][3];
+    if (!lamp_effect_prepare(&fx, sent, true) || !lamp_effect_prepare(&rx, &sim_right.effect, true)) {
+        return false;
+    }
+    int64_t now_us = sim_now_us();
+    uint64_t left_ms = (uint64_t)(now_us / 1000);
+    uint64_t right_ms = (uint64_t)((now_us - sim_right.effect_epoch_us) / 1000);
+    lamp_effect_render(&fx, lamp_effect_phase(left_ms, fx.period_ms), ref);
+    lamp_effect_render(&fx, lamp_effect_phase(left_ms + FX_FRAME_MS, fx.period_ms), next);
+    lamp_effect_render(&rx, lamp_effect_phase(right_ms, rx.period_ms), right);
+    *got = fx_diff(ref, right);
+    *bound = fx_diff(ref, next);
+    return *got <= *bound;
+}
+
+// The halves agree within one frame after every relay send (#490's acceptance): five effects,
+// sent at different points of the right's latency sleep, with the app's traffic; then the wake's
+// re-anchor (art_relay_effect_sync) alone, after the right slept.
+static void effect_phase(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(3000);
+    int drops = sim_bt_stats.link_drops;
+    int64_t worst = 0, worst_first = 0, slowest = 0;
+    bool all = true, frames = true;
+    int got = 0, bound = 0;
+    struct lamp_effect_wire w;
+    for (int i = 0; i < 5; i++) {
+        fx_wire(&w, LAMP_EFFECT_SCANLINE, 2000 + 500 * i, fx_right[0]);
+        art_relay_effect(true, true, &w);
+        int64_t took;
+        bool ok = fx_right_draws(&w, 3000, &took);
+        all = all && ok;
+        slowest = took > slowest ? took : slowest;
+        int64_t lag = fx_lag_us();
+        worst = lag > worst ? lag : worst;
+        frames = frames && ok && fx_same_frame(&w, &got, &bound);
+        printf("  effect %d: the right draws it after %lld ms; its clock %lld us behind\n", i,
+               (long long)took, (long long)lag);
+        k_msleep(1100 + 370 * i); // the right falls asleep again, more or less deep
+    }
+    check("right-draws-each", all, "slowest %lld ms", (long long)slowest);
+    check("phase-within-a-frame", worst <= FX_FRAME_MS * 1000LL, "worst %lld us behind the left",
+          (long long)worst);
+    check("same-frame", frames, "last: right differs by %d, one frame moves %d", got, bound);
+    // A wake from idle re-anchors the right's clock: GOs alone, with the right asleep in its
+    // latency (or not) and its clock drifted 400 ms; the parameters stay. Six wakes at different
+    // points of the right's sleep and of the app's traffic.
+    int most_gos = 0;
+    for (int i = 0; i < 6; i++) {
+        k_msleep(4000 + 90 * i);
+        int writes = sim_right.effect_writes, gos = sim_right.effect_gos;
+        sim_right.effect_epoch_us += 400000;
+        art_relay_effect_sync();
+        int64_t start = k_uptime_get();
+        while (sim_right.effect_gos < gos + 1 && k_uptime_get() - start < 3000) {
+            k_msleep(5);
+        }
+        k_msleep(1000);
+        int n = sim_right.effect_gos - gos;
+        most_gos = n > most_gos ? n : most_gos;
+        char name[24];
+        snprintf(name, sizeof(name), "wake%d-resync", i + 1);
+        check(name,
+              n >= 1 && n <= 3 && sim_right.effect_writes == writes + n &&
+                  memcmp(&sim_right.effect, &w, FX_SENT) == 0 &&
+                  fx_lag_us() <= FX_FRAME_MS * 1000LL,
+              "%d GO(s), %d write(s), the right %lld us behind", n,
+              sim_right.effect_writes - writes, (long long)fx_lag_us());
+    }
+    printf("  wakes: at most %d GOs for one re-anchor\n", most_gos);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    debug_line("at the end");
+}
+
+// An effect lives through a re-link: the right's effect stops with the link (art_relay_peripheral.c)
+// and the left sends it again on link-up, in phase; a PLACE while the link is down arrives as the
+// newest; RELEASE then hands the right back to its own effect.
+static void effect_relink(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    struct lamp_effect_wire w;
+    fx_wire(&w, LAMP_EFFECT_SCANLINE, 3000, fx_right[0]);
+    art_relay_effect(true, true, &w);
+    int64_t took;
+    bool drawn = fx_right_draws(&w, 3000, &took);
+    check("drawn", drawn, "after %lld ms", (long long)took);
+    for (int i = 0; i < 2; i++) {
+        sim_bt_drop(2000000);
+        k_msleep(100);
+        char name[32];
+        snprintf(name, sizeof(name), "drop%d-right-stops", i + 1);
+        check(name, !sim_right.effect_run && !sim_right.lamp_host, "right %s",
+              sim_right.effect_run ? "still draws" : "own effect");
+        snprintf(name, sizeof(name), "drop%d-left-says-no-link", i + 1);
+        check(name, art_relay_effect_right() == ART_LAMPS_NO_LINK, "state %d",
+              art_relay_effect_right());
+        if (i == 1) { // the PC moves the halves meanwhile: the newest place goes on link-up
+            fx_wire(&w, LAMP_EFFECT_SCANLINE, 3000, 214);
+            art_relay_effect(true, true, &w);
+        }
+        k_msleep(3000);
+        wait_relay(40);
+        bool ok = fx_right_draws(&w, 5000, &took);
+        k_msleep(100); // the GO's answer back at the left: its state
+        int got = 0, bound = 0;
+        bool frame = ok && fx_same_frame(&w, &got, &bound);
+        snprintf(name, sizeof(name), "relink%d-drawn-in-phase", i + 1);
+        check(name, ok && frame && fx_lag_us() <= FX_FRAME_MS * 1000LL,
+              "after %lld ms, %lld us behind, differs by %d (a frame moves %d)", (long long)took,
+              (long long)fx_lag_us(), got, bound);
+        snprintf(name, sizeof(name), "relink%d-state-ok", i + 1);
+        check(name, art_relay_effect_right() == ART_LAMPS_OK, "state %d", art_relay_effect_right());
+    }
+    int stops = sim_right.effect_stops;
+    art_relay_effect(false, true, NULL); // RELEASE
+    k_msleep(2000);
+    check("release-hands-back", !sim_right.effect_run && !sim_right.lamp_host &&
+                                    sim_right.effect_stops == stops + 1,
+          "right %s, %d stop(s)", sim_right.effect_run ? "still draws" : "own effect",
+          sim_right.effect_stops - stops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    debug_line("at the end");
+}
+
+// The PC's frames keep priority: SET_FRAME takes the right from the effect (LAMP_HOST, no GO 0, so
+// no flash of the right's own effect between), and the PC's next effect takes it back the same way
+// (no LAMP_HOST 0 between), in phase.
+static void effect_frames(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    struct lamp_effect_wire w;
+    fx_wire(&w, LAMP_EFFECT_SCANLINE, 2500, fx_right[0]);
+    art_relay_effect(true, true, &w);
+    int64_t took;
+    bool drawn = fx_right_draws(&w, 3000, &took);
+    check("drawn", drawn, "after %lld ms", (long long)took);
+    // host_frames.c SHOW: host_effects_yield (a quiet stop), then the frame to the right.
+    static uint8_t frame[ART_RELAY_LAMPS_MAX][3];
+    memset(frame, 0x40, sizeof(frame));
+    int stops = sim_right.effect_stops, hosts = sim_right.lamp_host_writes;
+    art_relay_effect(false, false, NULL);
+    art_relay_lamps(true, frame);
+    int64_t start = k_uptime_get();
+    while ((sim_right.effect_run || !sim_right.lamp_host) && k_uptime_get() - start < 3000) {
+        k_msleep(5);
+    }
+    check("frames-take-over", !sim_right.effect_run && sim_right.lamp_host &&
+                                  sim_right.effect_stops == stops,
+          "right effect %s, frames %s, %d GO 0", sim_right.effect_run ? "runs" : "stopped",
+          sim_right.lamp_host ? "on" : "off", sim_right.effect_stops - stops);
+    k_msleep(1500);
+    // The PC's effect again: host_frames_yield (frames released), then the effect.
+    hosts = sim_right.lamp_host_writes;
+    fx_wire(&w, LAMP_EFFECT_SCANLINE, 3500, fx_right[0]);
+    art_relay_lamps(false, frame);
+    art_relay_effect(true, true, &w);
+    bool ok = fx_right_draws(&w, 3000, &took);
+    k_msleep(500);
+    check("effect-takes-back", ok && sim_right.lamp_host_writes == hosts &&
+                                   fx_lag_us() <= FX_FRAME_MS * 1000LL,
+          "after %lld ms, %d LAMP_HOST write(s) between, %lld us behind", (long long)took,
+          sim_right.lamp_host_writes - hosts, (long long)fx_lag_us());
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    debug_line("at the end");
+}
+
+// Key rings (LAMP_EFFECT_KEYS) and the right's firmware: a right before them (status version 12)
+// is never sent the kind (it would refuse it and draw black): it keeps its own effect, one it drew
+// before stops, and the left reports it can't; other effects still go. After an update to 13 the
+// right gets the rings' parameters once, and the relay stays quiet while they run (each half
+// starts its own rings from its own keys, effect_run.c).
+static void effect_keys_old(void) {
+    sim_right.version = ART_RELAY_SLOT_READ_STATUS_VERSION;
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    struct lamp_effect_wire w, keys;
+    fx_wire(&w, LAMP_EFFECT_SCANLINE, 2500, fx_right[0]);
+    art_relay_effect(true, true, &w);
+    int64_t took;
+    bool drawn = fx_right_draws(&w, 3000, &took);
+    check("old-right-draws-a-scanline", drawn, "after %lld ms", (long long)took);
+    int stops = sim_right.effect_stops, writes = sim_right.effect_writes;
+    fx_wire(&keys, LAMP_EFFECT_KEYS, 1200, fx_right[0]);
+    art_relay_effect(true, true, &keys);
+    k_msleep(2000);
+    check("old-right-not-sent-rings", sim_right.effect_writes == writes &&
+                                          sim_right.effect.kind != LAMP_EFFECT_KEYS &&
+                                          sim_right.effect_black == 0,
+          "%d writes, kind %d, %d black", sim_right.effect_writes - writes, sim_right.effect.kind,
+          sim_right.effect_black);
+    check("old-right-own-effect", !sim_right.effect_run && sim_right.effect_stops == stops + 1,
+          "right %s, %d stop(s)", sim_right.effect_run ? "still draws" : "own effect",
+          sim_right.effect_stops - stops);
+    check("old-right-unsupported", art_relay_effect_right() == ART_LAMPS_UNSUPPORTED, "state %d",
+          art_relay_effect_right());
+    art_relay_effect(true, true, &w);
+    bool again = fx_right_draws(&w, 3000, &took);
+    k_msleep(100); // the GO's answer back at the left: its state
+    check("old-right-scanline-again", again && art_relay_effect_right() == ART_LAMPS_OK,
+          "after %lld ms, state %d", (long long)took, art_relay_effect_right());
+    // The right updated to key rings; the left sends them on the new link.
+    art_relay_effect(true, true, &keys);
+    k_msleep(1000);
+    sim_right.version = ART_RELAY_KEYS_STATUS_VERSION;
+    sim_bt_right_update(false, 3000000);
+    k_msleep(4000);
+    wait_relay(40);
+    bool ok = fx_right_draws(&keys, 5000, &took);
+    k_msleep(100); // the GO's answer back at the left: its state
+    check("new-right-gets-rings", ok && sim_right.effect_black == 0 &&
+                                      art_relay_effect_right() == ART_LAMPS_OK,
+          "after %lld ms, kind %d, state %d", (long long)took, sim_right.effect.kind,
+          art_relay_effect_right());
+    writes = sim_right.effect_writes;
+    int gos = sim_right.effect_gos, reqs = sim_bt_stats.requests_sent;
+    app_on = false;
+    k_msleep(10000);
+    check("rings-quiet", sim_right.effect_writes == writes && sim_right.effect_gos == gos,
+          "%d parameter writes, %d GOs in 10 s (%d requests in all)",
+          sim_right.effect_writes - writes, sim_right.effect_gos - gos,
+          sim_bt_stats.requests_sent - reqs);
+    debug_line("at the end");
+}
+#endif
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -1898,6 +2206,16 @@ static void lab_thread(void *arg) {
 #ifdef SIM_TEST_HOOKS
     } else if (!strcmp(scenario, "art-hold-cycles")) {
         art_hold_cycles();
+#endif
+#ifdef ART_RELAY_KEYS_STATUS_VERSION
+    } else if (!strcmp(scenario, "effect-phase")) {
+        effect_phase();
+    } else if (!strcmp(scenario, "effect-relink")) {
+        effect_relink();
+    } else if (!strcmp(scenario, "effect-frames")) {
+        effect_frames();
+    } else if (!strcmp(scenario, "effect-keys-old")) {
+        effect_keys_old();
 #endif
     } else if (!strcmp(scenario, "right-reflash")) {
         right_reflash(false);

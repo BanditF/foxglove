@@ -19,7 +19,7 @@ $RelaySimDefines = @(
 )
 # Gating: each must pass on this tree. stall and stall-app were known gaps until the left let
 # go of unanswered requests and dropped a link whose request never got an answer (#618).
-$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored", "select-snap", "snap-latency", "polarity-relink", "relink-busy", "rgb-relink-look", "playlist-store", "playlist-store-old", "restore-update", "slot-read", "health", "art-step-toast", "art-step-cycles", "art-step-cycles-lag", "art-step-boot", "art-step-kept", "art-step-kept-quit", "art-step-kept-relink", "art-step-kept-restart", "art-step-kept-bad", "right-reflash", "right-reflash-stall", "art-hold-cycles", "hooks-real-keys")
+$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored", "select-snap", "snap-latency", "polarity-relink", "relink-busy", "rgb-relink-look", "playlist-store", "playlist-store-old", "restore-update", "slot-read", "health", "art-step-toast", "art-step-cycles", "art-step-cycles-lag", "art-step-boot", "art-step-kept", "art-step-kept-quit", "art-step-kept-relink", "art-step-kept-restart", "art-step-kept-bad", "right-reflash", "right-reflash-stall", "art-hold-cycles", "hooks-real-keys", "effect-phase", "effect-relink", "effect-frames", "effect-keys-old")
 # Known gaps: each must still FAIL on this tree (README.md, "Known gaps"); one that passes means
 # the gap closed and the lists and README need updating. None at the moment.
 $RelaySimKnownGaps = @()
