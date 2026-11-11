@@ -324,6 +324,13 @@ pub fn knob_line(t: &super::knob::TrayLine) -> String {
         .join(" · ")
 }
 
+/// The Knob row's tooltip (#1061 addendum): "<app> · <file> · matched by this file", the program
+/// Hide from knob stores; `None` when Windows doesn't say which program it is.
+pub fn knob_hover(name: &str, exe: Option<&str>) -> Option<String> {
+    let file = super::knob_hide::file_name(exe?);
+    Some(format!("{name} · {file} · matched by this file"))
+}
+
 /// "<app> is hidden from the knob."
 pub fn hidden_line(name: &str) -> String {
     format!("{name} is hidden from the knob.")
@@ -903,7 +910,10 @@ fn knob(ui: &mut egui::Ui, row: &KnobRow, out: &mut Vec<Intent>) {
                 ui.horizontal(|ui| {
                     super::app_icon::show(ui, exe.as_deref());
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(name).color(p.text_strong));
+                        let label = ui.label(RichText::new(name).color(p.text_strong));
+                        if let Some(hover) = knob_hover(name, exe.as_deref()) {
+                            label.on_hover_text(hover);
+                        }
                         ui.label(RichText::new(line).small().color(p.muted));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1445,15 +1455,24 @@ pub mod tests {
             })
         );
         assert_eq!(hidden_line("Vendor"), "Vendor is hidden from the knob.");
-        // No session id, pid or "session" in what the row draws.
+        // The tooltip names the program Hide from knob stores (#1061 addendum).
+        let hover = knob_hover("Player", t.exe.as_deref()).unwrap();
+        assert_eq!(hover, "Player · Player.exe · matched by this file");
+        assert_eq!(knob_hover("Player", None), None);
+        // No session id, pid, "session", "mirror", "loopback" or "helper" in what the row draws.
         for s in [
             HIDE,
             UNDO,
             CHANGE_IN_SETTINGS,
             &hidden_line("Vendor"),
             &knob_line(&t),
+            &hover,
         ] {
-            assert!(!s.to_lowercase().contains("session") && !s.contains("pid"));
+            let l = s.to_lowercase();
+            for word in ["session", "mirror", "loopback", "helper"] {
+                assert!(!l.contains(word), "{s}");
+            }
+            assert!(!s.contains("pid"));
         }
     }
 }

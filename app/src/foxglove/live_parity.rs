@@ -184,13 +184,29 @@ pub fn row(feed: Option<&Feed>, what: Option<&str>, now: Instant) -> Option<Heal
             }
             (Level::Warn, d)
         }
-        Some(a) if a.frames => (Level::Ok, format!("{}, with its frames", a.name)),
+        Some(a) if a.frames => (
+            Level::Ok,
+            format!("{}, with its frames", piece_name(&a.name)),
+        ),
         Some(a) => (
             Level::Ok,
-            format!("{}, without its frames ({})", a.name, why(a.missing)),
+            format!(
+                "{}, without its frames ({})",
+                piece_name(&a.name),
+                why(a.missing)
+            ),
         ),
     };
     Some(HealthRow::new(SUBSYSTEM, ITEM, level, detail))
+}
+
+/// A piece's name in the row: "a piece with no name" when it has none (empty or only spaces).
+fn piece_name(name: &str) -> &str {
+    if name.trim().is_empty() {
+        "a piece with no name"
+    } else {
+        name
+    }
 }
 
 /// The row now (part of `live_feed::health_rows`).
@@ -369,6 +385,39 @@ mod tests {
         );
         assert_eq!(row(None, kb, now), None, "the feed is off");
         assert_eq!(row(Some(&gap), None, now), None, "nothing on the keyboard");
+    }
+
+    /// A piece with an empty (or blank) name reads "a piece with no name", with or without its
+    /// frames; a named one keeps its name.
+    #[test]
+    fn a_piece_with_no_name_says_so() {
+        let now = Instant::now();
+        let kb = Some("a piece sent from this PC");
+        for blank in ["", "   "] {
+            let named = |frames: bool| wire::Art {
+                name: blank.into(),
+                ..art(frames)
+            };
+            let without = Feed {
+                art: Some(Published::of(&named(false))),
+                gap_since: None,
+            };
+            assert_eq!(
+                row(Some(&without), kb, now).unwrap().detail,
+                "a piece with no name, without its frames \
+                 (sent earlier, and Foxglove has no record of it)"
+            );
+            let with = Feed {
+                art: Some(Published::of(&named(true))),
+                gap_since: None,
+            };
+            let r = row(Some(&with), kb, now).unwrap();
+            assert_eq!(
+                (r.level, r.detail.as_str()),
+                (Level::Ok, "a piece with no name, with its frames")
+            );
+        }
+        assert_eq!(piece_name(" fury "), " fury ");
     }
 
     /// #1053: one log line per step into the gap, not one per message; leaving it and coming
