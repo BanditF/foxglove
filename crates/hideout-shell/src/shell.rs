@@ -424,12 +424,14 @@ fn start_capture(
 
 fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
     match cmd {
-        tray::Command::Flyout(icon) => {
+        tray::Command::Flyout(icon, at) => {
             // The flyout is drawn by the main window's frame: ask for one even while the window
             // is hidden (`wake::Gate` runs it while the flyout is wanted, #935). The kick makes
             // the gate run it even when egui's repaint request doesn't reach eframe (#1019).
             if let Ok(mut c) = shared.flyout_click.lock() {
-                *c = Some((icon, std::time::Instant::now()));
+                // The click's own time: an open held for the double-click time (#1076) still
+                // reads as the click that closed the flyout by taking its focus.
+                *c = Some((icon, at));
             }
             flyout::set_live(true);
             flyout::kick();

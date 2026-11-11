@@ -1025,7 +1025,11 @@ fn a_tray_click_draws_the_flyout_while_the_main_window_is_hidden() {
         w: 24,
         h: 24,
     };
-    on_tray(tray::Command::Flyout(icon), &hub.shared, &ctx);
+    on_tray(
+        tray::Command::Flyout(icon, std::time::Instant::now()),
+        &hub.shared,
+        &ctx,
+    );
     assert_eq!(
         asked.load(Ordering::Acquire),
         seen,

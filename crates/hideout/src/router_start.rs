@@ -257,17 +257,68 @@ fn watch_inventory(
     fresh: crate::modules_page::Fresh,
 ) {
     let at = home.to_path_buf();
+    // Added ids the registry didn't hold yet (a lab folder copied before its manifest): while
+    // any waits, a change of only files inside `lab-modules\` is read too (#1076).
+    let mut waiting = std::collections::BTreeSet::new();
+    // Ids learnt that way: asked again at each change, so an install that enables the module
+    // in a second write (`hideout.toml` after `inventory.json`) still starts it.
+    let mut late = std::collections::BTreeSet::<String>::new();
     let watched = crate::inventory_watch::start(
         home,
         Box::new(move |change| {
+            if change.files_only && waiting.is_empty() {
+                // Only files inside a lab module's folder changed: nothing to read again.
+                return;
+            }
             // The router and the supervisor forget first, so whoever the shell's removal
             // message wakes already sees the module gone.
             for id in &change.removed {
+                waiting.remove(id);
+                late.remove(id);
                 sup.forget(id);
                 hub.act(|r| r.forget_module(id));
                 side.removed(id);
             }
-            if fresh.put(crate::modules_page::installed(&at)) {
+            // One read for the supervisor and the page, so the page never lists what the
+            // supervisor hasn't seen (#1076). A failed read keeps the page's last list.
+            let reg = match hideout_registry::Registry::open_from_env(&at) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::warn!(
+                        "Modules page: the installed modules couldn't be read ({e}); the last list stays"
+                    );
+                    waiting.extend(change.added.iter().cloned());
+                    return;
+                }
+            };
+            // Joined after the start (#1076): the router and the supervisor learn it, so an
+            // enabled module starts now; the panel host gets its manifest. Taken from this read,
+            // not from the watch's ids: those came from a read a moment earlier, which a write
+            // landing in between makes older than the page's list.
+            for id in &late {
+                let _ = sup.learn_from(&reg, id);
+            }
+            waiting.extend(change.added.iter().cloned());
+            let new: Vec<String> = reg
+                .inventory
+                .modules
+                .keys()
+                .filter(|id| !late.contains(*id) && !hub.read(|r| r.knows_module(id)))
+                .cloned()
+                .collect();
+            for id in new {
+                waiting.remove(&id);
+                if let Some(m) = sup.learn_from(&reg, &id) {
+                    if let Some(m) = m {
+                        side.manifest(m);
+                    }
+                    late.insert(id);
+                }
+            }
+            // Added but not in the registry yet (a lab folder whose manifest isn't written):
+            // kept, so a change of only files inside it is read again.
+            waiting.retain(|id| !reg.inventory.modules.contains_key(id));
+            if fresh.put(crate::modules_page::list(&reg)) {
                 side.wake();
             }
         }),
@@ -366,6 +417,128 @@ mod tests {
         assert!(!hub.read(|r| r.knows_module("b.beat")));
         assert!(hub.read(|r| r.knows_module("a.art")));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// #1076, window-free, on a normal hub's real files (`inventory.json`, `hideout.toml`,
+    /// `modules\<id>\<version>\module.toml`, installed by the registry): the Modules page lists
+    /// what is installed; a module installed after the start is learnt by the router and the
+    /// supervisor, which tries to start it (its exe is missing, so no process starts: its
+    /// state fact comes); an unreadable `hideout.toml` keeps the page's list instead of
+    /// emptying it. Start event: each write; stop event: the feed's wake or the state fact;
+    /// 10 s is the fallback only.
+    #[cfg(windows)]
+    #[test]
+    fn a_normal_hub_lists_and_starts_a_module_installed_after_the_start() {
+        use hideout_shell::hideout_panels::PanelFeed;
+        let base = std::env::temp_dir().join(format!("hideout-rs-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let install = |id: &str, name: &str, on: bool| {
+            let src = base.join("src").join(id);
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(
+                src.join("module.toml"),
+                format!(
+                    "id = \"{id}\"\nname = \"{name}\"\nversion = \"0.1.0\"\nkind = \"service\"\n\
+                     family = \"third-party\"\nhub = \"1.0\"\nvisibility = \"private\"\n\
+                     run = [\"missing.exe\"]\n"
+                ),
+            )
+            .unwrap();
+            let mut reg = hideout_registry::Registry::open(&home, true).unwrap();
+            reg.install(&src, "2026-11-10T00:00:00Z").unwrap();
+            if on {
+                reg.set_enabled(id, true).unwrap();
+            }
+        };
+        install("example.side.art", "Art", true);
+        assert!(home
+            .join("modules")
+            .join("example.side.art")
+            .join("0.1.0")
+            .join("module.toml")
+            .is_file());
+        let names = |l: &[hideout_shell::modules_list::Installed]| -> Vec<String> {
+            l.iter().map(|m| m.name.clone()).collect()
+        };
+        assert_eq!(names(&crate::modules_page::installed(&home)), ["Art"]);
+
+        let mut router = Router::new(Settings::default(), approver());
+        router.load_registry(&hideout_registry::Registry::open_from_env(&home).unwrap());
+        let _ = router.watch_facts(vec![String::new()]);
+        let (events, _rx) = mpsc::channel();
+        let hub = Hub::new(router, events);
+        hub.set_folder_suffix(&hideout_router::server::folder_suffix(&home));
+        let (side, mut feed) = panel_feed::feed(hub.clone());
+        let (woke, wakes) = mpsc::channel::<()>();
+        let woke = std::sync::Mutex::new(woke);
+        feed.set_waker(Box::new(move || {
+            let _ = woke.lock().unwrap().send(());
+        }));
+        let sup = Supervisor::start(&home, hub.clone());
+        let fresh = crate::modules_page::Fresh::default();
+        watch_inventory(&home, side, hub.clone(), sup.clone(), fresh.clone());
+        let late = "example.side.beat";
+        assert!(!sup.knows(late) && !hub.read(|r| r.knows_module(late)));
+
+        // The page's next list that `want` accepts (each list comes with a wake).
+        let mut list_where = |want: &dyn Fn(&[hideout_shell::modules_list::Installed]) -> bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < until {
+                let _ = wakes.recv_timeout(std::time::Duration::from_secs(1));
+                let _ = feed.drain();
+                if fresh.take().is_some_and(|l| want(&l)) {
+                    return true;
+                }
+            }
+            false
+        };
+        let state = |hub: &Hub| hub.read(|r| r.fact(&format!("module.{late}.state")).cloned());
+        // Installed while the hub runs, as an installer does it: `inventory.json` first (the
+        // watch reads it as off), then turned on in a second write to `hideout.toml`.
+        install(late, "Beat", false);
+        assert!(
+            list_where(&|l| names(l) == ["Art", "Beat"]),
+            "the page never got Beat"
+        );
+        assert!(
+            sup.knows(late),
+            "the supervisor didn't learn the late module"
+        );
+        assert!(
+            hub.read(|r| r.knows_module(late)),
+            "the router didn't learn it"
+        );
+        assert_eq!(state(&hub).as_ref().and_then(|v| v.as_str()), Some("off"));
+        let mut reg = hideout_registry::Registry::open(&home, true).unwrap();
+        reg.set_enabled(late, true).unwrap();
+        assert!(
+            list_where(&|l| l.iter().any(|m| m.id == late && m.enabled)),
+            "the page never read Beat as on"
+        );
+        let s = state(&hub);
+        assert!(
+            s.as_ref().is_some_and(|s| s != "off"),
+            "no start was tried after it was turned on: state {s:?}"
+        );
+
+        // An unreadable hideout.toml mid-run: the watch wakes (a new file), the page keeps Art
+        // and Beat. Before #1076 it got an empty list.
+        std::fs::write(home.join("hideout.toml.tmp"), "[modules\nbroken").unwrap();
+        std::fs::rename(home.join("hideout.toml.tmp"), home.join("hideout.toml")).unwrap();
+        std::fs::write(home.join("nudge.txt"), "x").unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        while std::time::Instant::now() < until {
+            let _ = wakes.recv_timeout(std::time::Duration::from_millis(200));
+            if let Some(l) = fresh.take() {
+                panic!(
+                    "the page got {:?} from an unreadable hideout.toml",
+                    names(&l)
+                );
+            }
+        }
+        drop(sup);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

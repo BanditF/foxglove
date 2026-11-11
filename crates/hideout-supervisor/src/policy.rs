@@ -340,6 +340,11 @@ impl Policy {
         self.slots.get(id).map(|s| s.state)
     }
 
+    /// Whether the policy holds `id` as on (`None`: not known).
+    pub fn enabled(&self, id: &str) -> Option<bool> {
+        self.slots.get(id).map(|s| s.enabled)
+    }
+
     /// Crashes in the window ending at `now`.
     pub fn crashes(&self, id: &str, now: Instant) -> usize {
         self.slots

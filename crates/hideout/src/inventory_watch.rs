@@ -25,10 +25,14 @@ use hideout_registry::installed::{installed_ids_in, removed};
 pub struct Change {
     pub removed: Vec<String>,
     pub added: Vec<String>,
+    /// Only files inside a lab module's folder changed (`lab-modules\` is watched with its
+    /// subfolders, so a manifest copied in after its folder is noticed, #1076): no id came or
+    /// went.
+    pub files_only: bool,
 }
 
 /// What the watch reports, on every readable change.
-pub type OnChange = Box<dyn Fn(&Change) + Send>;
+pub type OnChange = Box<dyn FnMut(&Change) + Send>;
 
 /// Starts the watch on `home`, in lab mode when the environment asks for it (the registry's
 /// rules). The ids installed now are the first "before".
@@ -57,7 +61,7 @@ fn run(
     home: PathBuf,
     lab_dir: Option<PathBuf>,
     mut before: BTreeSet<String>,
-    on_change: OnChange,
+    mut on_change: OnChange,
 ) {
     loop {
         let woke = match watch.wait() {
@@ -87,10 +91,13 @@ fn run(
             log::info!("inventory watch: the installed modules couldn't be read; next change");
             continue;
         };
-        let change = Change {
+        let mut change = Change {
             removed: removed(&before, &now),
             added: now.difference(&before).cloned().collect(),
+            files_only: false,
         };
+        change.files_only =
+            woke == win::Woke::Extra && change.removed.is_empty() && change.added.is_empty();
         before = now;
         if !change.removed.is_empty() {
             log::info!("inventory watch: removed {}", change.removed.join(", "));
@@ -137,7 +144,7 @@ mod win {
     impl Watch {
         pub fn new(home: &Path) -> std::io::Result<Watch> {
             Ok(Watch {
-                home: (first(home)?, home.to_path_buf()),
+                home: (first(home, false)?, home.to_path_buf()),
                 extra: None,
             })
         }
@@ -151,7 +158,8 @@ mod win {
             let Some(dir) = dir else {
                 return;
             };
-            match first(dir) {
+            // With its subfolders: a module folder's files arrive after the folder (#1076).
+            match first(dir, true) {
                 Ok(h) => self.extra = Some((h, dir.to_path_buf())),
                 Err(e) => log::warn!("inventory watch: {e}; not watched until it changes again"),
             }
@@ -198,10 +206,11 @@ mod win {
         }
     }
 
-    fn first(dir: &Path) -> std::io::Result<HANDLE> {
+    /// `subtree`: the folder's subfolders too (`lab-modules\`, #1076).
+    fn first(dir: &Path, subtree: bool) -> std::io::Result<HANDLE> {
         let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
         let filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME;
-        let h = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 0, filter) };
+        let h = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), subtree.into(), filter) };
         if h == INVALID_HANDLE_VALUE || h.is_null() {
             let e = std::io::Error::last_os_error();
             return Err(std::io::Error::other(format!("{}: {e}", dir.display())));
@@ -255,7 +264,7 @@ mod tests {
             let c = rx
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap_or_else(|_| panic!("no {want:?}; saw {seen:?}"));
-            if c != Change::default() {
+            if c != Change::default() && !c.files_only {
                 seen.push(c);
             }
         }
@@ -266,6 +275,7 @@ mod tests {
         Change {
             removed: removed.iter().map(|s| s.to_string()).collect(),
             added: added.iter().map(|s| s.to_string()).collect(),
+            files_only: false,
         }
     }
 
@@ -326,6 +336,17 @@ mod tests {
         // Only `lab-modules\`'s own notification can see this one.
         std::fs::create_dir(lab.join("m.lab")).unwrap();
         until(&rx, &change(&[], &["m.lab"]));
+        // #1076: its manifest, written after the folder (as a copy does), is noticed too, as
+        // a change of files only.
+        std::fs::write(lab.join("m.lab").join("module.toml"), "id = \"m.lab\"\n").unwrap();
+        let files = std::iter::from_fn(|| rx.recv_timeout(Duration::from_secs(10)).ok())
+            .find(|c| *c != Change::default())
+            .expect("a file inside the module's folder wasn't noticed");
+        assert!(
+            files.files_only && files.added.is_empty() && files.removed.is_empty(),
+            "{files:?}"
+        );
+        std::fs::remove_file(lab.join("m.lab").join("module.toml")).unwrap();
         std::fs::remove_dir(lab.join("m.lab")).unwrap();
         until(&rx, &change(&["m.lab"], &[]));
         // Removed and made again: watched anew.
