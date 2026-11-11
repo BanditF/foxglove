@@ -2430,6 +2430,7 @@ fn renders_the_modules_page_for_review() {
     .collect();
     let fact = |k: &str| facts.get(k).cloned();
     let m = |id: &str, name: &str, version: &str, enabled| Installed {
+        adopted: false,
         id: id.into(),
         name: name.into(),
         version: version.into(),
@@ -2717,6 +2718,7 @@ fn renders_the_search_for_review() {
             .iter()
             .map(|n| {
                 let m = Installed {
+                    adopted: false,
                     id: format!("m.{}", n.to_lowercase()),
                     name: n.to_string(),
                     version: "1.0.0".into(),

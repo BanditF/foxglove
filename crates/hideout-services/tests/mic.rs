@@ -56,6 +56,7 @@ fn entry(id: &str, granted: &[&str]) -> ModuleEntry {
         panels: None,
         settings_dir: String::new(),
         data_dir: String::new(),
+        registered_version: None,
     }
 }
 

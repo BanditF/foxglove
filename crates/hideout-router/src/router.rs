@@ -148,6 +148,9 @@ pub struct ModuleEntry {
     pub panels: Option<Vec<String>>,
     pub settings_dir: String,
     pub data_dir: String,
+    /// An `adopted` module's registered version (§7.4): `initialize`'s `version` must equal it,
+    /// else the instance is refused with `trust.mismatch`. `None` for every other kind.
+    pub registered_version: Option<String>,
 }
 
 impl ModuleEntry {
@@ -175,6 +178,8 @@ impl ModuleEntry {
             panels: None,
             settings_dir: dir.join("settings").display().to_string(),
             data_dir: dir.join(hideout_registry::DATA_DIR).display().to_string(),
+            registered_version: (m.source == hideout_registry::inventory::ADOPTED)
+                .then(|| m.version.clone()),
         })
     }
 }
@@ -1303,6 +1308,19 @@ impl Router {
             let Some(entry) = self.modules.get(&mid).cloned() else {
                 return refuse(out, code::DENIED, "denied", "unknown module");
             };
+            // An adopted module's version is its registration's (§7.4): checked here, where the
+            // module says which version it is. The supervisor shows `install-failed`.
+            if let Some(want) = &entry.registered_version {
+                let said = params.get("version").and_then(Value::as_str);
+                if said != Some(want.as_str()) {
+                    log::warn!(
+                        "router: {mid}: trust.mismatch: registered {want}, it says {}",
+                        said.unwrap_or("nothing")
+                    );
+                    out.push(Out::Refused(mid));
+                    return refuse(out, code::DENIED, "denied", "trust.mismatch");
+                }
+            }
             let caps = Caps::parse(&entry.granted);
             let version = params.get("version").cloned().unwrap_or(Value::Null);
             let c = self.conns.get_mut(&conn).unwrap();

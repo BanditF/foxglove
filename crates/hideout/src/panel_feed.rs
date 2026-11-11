@@ -454,6 +454,7 @@ mod tests {
             panels: None,
             settings_dir: String::new(),
             data_dir: String::new(),
+            registered_version: None,
         });
         router.set_token(ID, "tok-art");
         let (events, rx) = mpsc::channel();
@@ -561,6 +562,7 @@ mod tests {
             panels: None,
             settings_dir: String::new(),
             data_dir: String::new(),
+            registered_version: None,
         });
         router.set_token(KEY_ID, "tok-keys");
         let (events, _rx) = mpsc::channel();

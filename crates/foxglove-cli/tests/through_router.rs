@@ -28,6 +28,7 @@ fn status_works_through_the_router() {
         panels: None,
         settings_dir: String::new(),
         data_dir: String::new(),
+        registered_version: None,
     });
     let token = router.issue_token(LINK);
     let (events, _events_rx) = mpsc::channel();

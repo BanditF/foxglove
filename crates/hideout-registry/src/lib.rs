@@ -35,7 +35,7 @@ use hideout_contract::module::{read_dir, Context, Module, Visibility};
 use hideout_contract::{Error, ErrorId, Version};
 
 use hub_config::HubConfig;
-use inventory::{Installed, Inventory, LAB, SIDELOAD};
+use inventory::{Installed, Inventory, ADOPTED, LAB, SIDELOAD};
 use lab::LabMode;
 use trust::{verify_catalog, verify_root, Accepted, Signer, TrustSet, ROOT_ANCHOR};
 
@@ -163,6 +163,33 @@ pub struct Registry {
     /// Per source: the sequence and accepted time of the catalog this registry verified and
     /// uses (loaded at open or accepted since). Copy diagnostics reads only this (#1049).
     accepted_info: BTreeMap<String, catalogs::CatalogInfo>,
+}
+
+/// An adopted module's program: its absolute `run[0]`.
+fn adopted_exe(m: &Module) -> Result<PathBuf, Failure> {
+    match m.run.as_ref().and_then(|r| r.first()) {
+        Some(r) => Ok(PathBuf::from(r)),
+        None => Err(Error::new(ErrorId::ManifestRun, "run is required").into()),
+    }
+}
+
+fn not_found(exe: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("{} was not found", exe.display()),
+    )
+}
+
+/// Whether `path` is `base` or below it (case-insensitive, either slash).
+fn under(path: &Path, base: &Path) -> bool {
+    let norm = |p: &Path| {
+        p.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    };
+    let (p, b) = (norm(path), norm(base));
+    p == b || p.starts_with(&format!("{b}\\"))
 }
 
 fn hash_files(dir: &Path) -> io::Result<BTreeMap<String, String>> {
@@ -710,6 +737,93 @@ impl Registry {
         Ok(self.inventory.modules[&m.id].clone())
     }
 
+    /// Registers the `adopted` module whose `module.toml` is in `folder` (§3, §7.4): an install
+    /// the hub did not make, run from the absolute `run[0]` outside the hub's `modules\`. Only
+    /// the manifest is copied into the hub's own record (`modules\<id>\<version>\`); nothing at
+    /// the external path is read beyond its existence, written or hashed. Registering again
+    /// updates the version and keeps the grants. An id held by another kind of install is refused.
+    pub fn register_adopted(&mut self, folder: &Path, now: &str) -> Result<Installed, Failure> {
+        let m = self.read_manifest(folder)?;
+        if m.kind != hideout_contract::module::Kind::Adopted {
+            return Err(Error::new(
+                ErrorId::ManifestKind,
+                format!("{} is not kind = \"adopted\"", m.id),
+            )
+            .into());
+        }
+        let exe = adopted_exe(&m)?;
+        if under(&exe, &self.home.join("modules")) {
+            return Err(Error::new(
+                ErrorId::ManifestRun,
+                format!("run {} is inside the hub's modules folder", exe.display()),
+            )
+            .into());
+        }
+        if !exe.is_file() {
+            return Err(not_found(&exe).into());
+        }
+        let old = self.inventory.modules.get(&m.id).cloned();
+        if old.as_ref().is_some_and(|o| o.source != ADOPTED) {
+            return Err(Failure::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} is installed, not adopted", m.id),
+            )));
+        }
+        if self.running.contains_key(&m.id) {
+            return Err(Failure::Running(m.id));
+        }
+        let text = std::fs::read(folder.join("module.toml"))?;
+        let dir = self.module_dir(&m.id, &m.version);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("module.toml"), text)?;
+        if let Some(o) = old.as_ref().filter(|o| o.version != m.version) {
+            // The record of the version it replaces goes; its data folder, if any, stays.
+            let prev = self.module_dir(&m.id, &o.version);
+            let _ = std::fs::remove_file(prev.join("module.toml"));
+            let _ = std::fs::remove_dir(prev);
+        }
+        let entry = Installed {
+            version: m.version.clone(),
+            kind: m.kind,
+            family: m.family,
+            visibility: m.visibility,
+            source: ADOPTED.into(),
+            anchor: None,
+            channel: "adopted".into(),
+            installed: old
+                .as_ref()
+                .map_or_else(|| now.into(), |o| o.installed.clone()),
+            files: BTreeMap::new(),
+            footprint: Vec::new(),
+            previous: None,
+            granted: old.as_ref().map(|o| o.granted.clone()).unwrap_or_default(),
+            pending_permissions: Vec::new(),
+        };
+        self.inventory.modules.insert(m.id.clone(), entry);
+        self.inventory.ask(&m.id, &m.permissions);
+        self.save_inventory()?;
+        Ok(self.inventory.modules[&m.id].clone())
+    }
+
+    /// The shallow check of an `adopted` module (§7.4): `run[0]` exists. A missing path is
+    /// `Failure::Io(NotFound)`, never a panic; no file is hashed. A module that isn't adopted
+    /// is `Failure::NotInstalled` here.
+    pub fn verify_adopted(&self, id: &str) -> Result<(), Failure> {
+        let m = self
+            .inventory
+            .modules
+            .get(id)
+            .filter(|m| m.source == ADOPTED)
+            .ok_or_else(|| Failure::NotInstalled(id.into()))?;
+        let manifest = self.read_manifest(&self.module_dir(id, &m.version))?;
+        let exe = adopted_exe(&manifest)?;
+        if exe.is_file() {
+            Ok(())
+        } else {
+            Err(not_found(&exe).into())
+        }
+    }
+
     /// Removes version folders of `id` other than `keep` and `previous` (and the running one).
     fn prune(&self, id: &str, keep: &str, previous: Option<&str>) -> io::Result<()> {
         let base = self.home.join("modules").join(id);
@@ -863,11 +977,18 @@ impl Registry {
         if self.running.contains_key(id) {
             return Err(Failure::Running(id.into()));
         }
-        if self.inventory.modules.remove(id).is_none() {
+        let Some(gone) = self.inventory.modules.remove(id) else {
             return Err(Failure::NotInstalled(id.into()));
-        }
+        };
         let dir = self.home.join("modules").join(id);
-        if dir.exists() {
+        if gone.source == ADOPTED {
+            // Unregister only: the external install is never touched, and what the hub kept for
+            // the module (settings, data, secrets) stays; only the manifest record goes.
+            let version = dir.join(&gone.version);
+            let _ = std::fs::remove_file(version.join("module.toml"));
+            let _ = std::fs::remove_dir(&version);
+            let _ = std::fs::remove_dir(&dir);
+        } else if dir.exists() {
             std::fs::remove_dir_all(dir)?;
         }
         self.save_inventory()?;
@@ -887,6 +1008,24 @@ impl Registry {
             return Err(Failure::Disabled(id.into()));
         }
         let dir = self.module_dir(id, &m.version);
+        if m.source == ADOPTED {
+            // Path and version only (§7.4): no hashes; the version is checked at `initialize`.
+            self.verify_adopted(id)?;
+            let manifest = self.read_manifest(&dir)?;
+            return Ok(Launch {
+                id: id.into(),
+                version: m.version.clone(),
+                dir,
+                run: manifest.run,
+                granted: m.granted.clone(),
+                activation: if manifest.activation_on.is_empty() {
+                    vec!["enable".into()]
+                } else {
+                    manifest.activation_on
+                },
+                stdio: manifest.transport == hideout_contract::module::Transport::Stdio,
+            });
+        }
         let found = hash_files(&dir)?;
         if m.source == LAB {
             // Only a lab hub loads one; its files must be what was loaded (docs/hideout-lab.md).
@@ -972,7 +1111,7 @@ impl Registry {
                     reason: w.reason.clone(),
                 });
         }
-        if m.source == SIDELOAD {
+        if m.source == SIDELOAD || m.source == ADOPTED {
             return None;
         }
         self.trust.revocation(id, version).map(|r| Revoked {
@@ -988,7 +1127,7 @@ impl Registry {
     pub fn withdrawals_known(&self, id: &str) -> bool {
         match self.inventory.modules.get(id) {
             None => true,
-            Some(m) if m.source == LAB || m.source == SIDELOAD => true,
+            Some(m) if m.source == LAB || m.source == SIDELOAD || m.source == ADOPTED => true,
             Some(m) => self.catalog_loaded(&m.source),
         }
     }
@@ -1006,7 +1145,7 @@ impl Registry {
     pub fn go_back_version(&self, id: &str) -> Option<String> {
         let m = self.inventory.modules.get(id)?;
         let prev = m.previous.clone()?;
-        if m.source == SIDELOAD || m.source == LAB {
+        if m.source == SIDELOAD || m.source == LAB || m.source == ADOPTED {
             return None;
         }
         if !self.home.join("modules").join(id).join(&prev).is_dir() {

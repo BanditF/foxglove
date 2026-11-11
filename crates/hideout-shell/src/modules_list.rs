@@ -28,7 +28,13 @@ pub struct Installed {
     pub name: String,
     pub version: String,
     pub enabled: bool,
+    /// An `adopted` module (§3): an install the hub registered but did not make. Its row's
+    /// version reads "1.2.0 · adopted".
+    pub adopted: bool,
 }
+
+/// The marker after an adopted module's version.
+pub const ADOPTED: &str = "adopted";
 
 /// What a row's main button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,7 +292,11 @@ pub fn row_in(
     Row {
         id: m.id.clone(),
         name: m.name.clone(),
-        version: m.version.clone(),
+        version: if m.adopted {
+            format!("{} \u{b7} {ADOPTED}", m.version)
+        } else {
+            m.version.clone()
+        },
         // "Art's page couldn't be shown" already names the module.
         label: if state.as_deref() == Some("quarantined") {
             words.clone()
@@ -546,6 +556,7 @@ mod tests {
 
     fn m(id: &str, enabled: bool) -> Installed {
         Installed {
+            adopted: false,
             id: id.into(),
             name: "Art".into(),
             version: "0.5.0".into(),
@@ -809,6 +820,30 @@ mod tests {
     /// rows that need the user keep their words; a locked Turn on keeps its focus, says the
     /// lock line as its description and does nothing.
     #[test]
+    fn an_adopted_module_reads_as_a_row_with_its_version_and_the_marker() {
+        let fact = |_: &str| None;
+        let mut a = m("vulpes", true);
+        a.name = "Example AI".into();
+        a.version = "0.4.0".into();
+        a.adopted = true;
+        let r = row(&a, &fact, None);
+        assert_eq!(r.name, "Example AI");
+        assert_eq!(r.version, "0.4.0 \u{b7} adopted");
+        assert_eq!(r.state, "On");
+        // Any other row keeps its bare version.
+        assert_eq!(row(&m("x", true), &fact, None).version, "0.5.0");
+        // A path that isn't there is the launch's failure, worded as for any module.
+        let failed = |k: &str| match k {
+            "module.vulpes.state" => Some(json!("install-failed")),
+            "module.vulpes.failed" => Some(json!("launch")),
+            _ => None,
+        };
+        let r = row(&a, &failed, None);
+        assert!(r.stopped);
+        assert_eq!(r.state, words::COULDNT_START);
+    }
+
+    #[test]
     fn a_search_words_the_rows_and_locks_the_toggles() {
         use hideout_supervisor::bisect::words as w;
         let fact = |k: &str| match k {
@@ -817,6 +852,7 @@ mod tests {
             _ => None,
         };
         let m = |id: &str, name: &str, enabled| Installed {
+            adopted: false,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),

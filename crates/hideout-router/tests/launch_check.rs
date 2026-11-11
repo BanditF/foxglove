@@ -24,10 +24,11 @@ fn router() -> Router {
         panels: None,
         settings_dir: String::new(),
         data_dir: String::new(),
+        registered_version: None,
     });
     r.set_token(ART, "tok");
     r.set_launch_check(Box::new(|id, pid| {
-        if id == ART && pid == Some(42) {
+        if (id == ART || id == "vulpes") && pid == Some(42) {
             Ok(())
         } else {
             Err(format!("{id} from {pid:?}"))
@@ -69,4 +70,56 @@ fn another_process_with_the_token_is_refused() {
     assert_eq!(answer(&out)["error"]["code"], 5);
     assert!(out.contains(&Out::Refused(ART.into())));
     assert!(out.iter().any(|o| matches!(o, Out::Close(_))));
+}
+
+fn adopted_router(registered: &str) -> Router {
+    let mut r = router();
+    r.add_module(ModuleEntry {
+        id: "vulpes".into(),
+        name: "Example AI".into(),
+        holder: Holder::ThirdParty(hideout_contract::capability::Source::Sideload),
+        granted: vec![],
+        catalog_provide: None,
+        channel_risk: BTreeMap::new(),
+        activate_on_call: false,
+        panels: None,
+        settings_dir: String::new(),
+        data_dir: String::new(),
+        registered_version: Some(registered.into()),
+    });
+    r.set_token("vulpes", "tok");
+    r
+}
+
+fn initialize_adopted(r: &mut Router, version: Option<&str>) -> Vec<Out> {
+    let c = r.connect(Origin::Pipe);
+    r.set_peer_pid(c, 42);
+    let mut params = json!({"id": "vulpes", "instance": "i", "token": "tok",
+                            "hub": "1.0", "api": {"foxglove": "1.13"}});
+    if let Some(v) = version {
+        params["version"] = json!(v);
+    }
+    let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params});
+    r.receive(c, &msg.to_string(), Instant::now())
+}
+
+#[test]
+fn an_adopted_module_saying_its_registered_version_connects() {
+    let mut r = adopted_router("0.4.0");
+    let out = initialize_adopted(&mut r, Some("0.4.0"));
+    assert!(answer(&out).get("result").is_some(), "{out:?}");
+    assert!(!out.iter().any(|o| matches!(o, Out::Refused(_))));
+}
+
+#[test]
+fn an_adopted_module_with_another_version_is_stopped_as_a_trust_mismatch() {
+    for said in [Some("0.5.0"), None] {
+        let mut r = adopted_router("0.4.0");
+        let out = initialize_adopted(&mut r, said);
+        let a = answer(&out);
+        assert_eq!(a["error"]["code"], 5, "{said:?}");
+        assert!(a["error"].to_string().contains("trust.mismatch"), "{a}");
+        assert!(out.contains(&Out::Refused("vulpes".into())));
+        assert!(out.iter().any(|o| matches!(o, Out::Close(_))));
+    }
 }

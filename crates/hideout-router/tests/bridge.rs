@@ -26,6 +26,7 @@ fn a_legacy_plugin_works_through_the_bridge() {
         panels: None,
         settings_dir: String::new(),
         data_dir: String::new(),
+        registered_version: None,
     });
     let (events, _rx) = mpsc::channel();
     let hub = Hub::new(router, events);

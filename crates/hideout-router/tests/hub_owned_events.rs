@@ -24,6 +24,7 @@ fn entry(id: &str, granted: &[&str], provide: &[&str]) -> ModuleEntry {
         panels: None,
         settings_dir: String::new(),
         data_dir: String::new(),
+        registered_version: None,
     }
 }
 

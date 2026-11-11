@@ -103,6 +103,7 @@ fn art() -> ModuleEntry {
         panels: Some(vec!["art".into()]),
         settings_dir: format!("C:/example/settings/{ART}"),
         data_dir: format!("C:/example/data/{ART}"),
+        registered_version: None,
     }
 }
 
@@ -120,6 +121,7 @@ fn other(id: &str, name: &str, provide: &str, channel: Option<(&str, &str)>) -> 
         panels: None,
         settings_dir: String::new(),
         data_dir: String::new(),
+        registered_version: None,
     }
 }
 
