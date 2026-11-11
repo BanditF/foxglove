@@ -211,6 +211,9 @@ pub fn start(
     // After the pipe is served, so modules it starts or takes back can connect. Router events
     // wait in the channel until then.
     let sup = Supervisor::start(home, hub.clone());
+    // Activation facts already set (§4.6, v1.10): once the supervisor knows its modules. The
+    // Activate events wait in the channel for the events thread below.
+    hub.act(|r| r.activation_due(None));
     sup.set_notifier(notifier(sup.clone(), home));
     // Check for updates (#1026) and the catalog fetch (#1049): a normal hub fetches each
     // source once now and the module's source on Check for updates (no source configured:

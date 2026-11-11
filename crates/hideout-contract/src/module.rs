@@ -16,6 +16,29 @@ pub const LEGACY_HUB: &str = "1.0";
 
 /// The `hub` minor that brought `kind = "file"` settings (spec v1.4).
 const HUB_1_1: Version = Version { major: 1, minor: 1 };
+const HUB_1_2: Version = Version { major: 1, minor: 2 };
+
+/// The smallest `limits.memory_mb` a manifest may ask for (§4.2 v1.10): below it no module
+/// process starts.
+pub const LIMITS_MEMORY_MB_MIN: u32 = 16;
+/// The largest `limits.memory_mb` a manifest may write (1 TiB); the hub clamps to its own
+/// maximum anyway (§7.7 v1.10).
+pub const LIMITS_MEMORY_MB_MAX: u32 = 1 << 20;
+
+/// `[limits]` (§4.2, §7.7, spec v1.10, `hub = "1.2"`): what the module's Job Object may use.
+/// Each value is clamped to the hub's maximum; an absent one is the hub's maximum.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceLimits {
+    /// All the module's processes together, in MiB (16 to 1,048,576).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u32>,
+    /// A hard CPU cap in percent of the whole machine (1 to 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<u32>,
+}
 
 /// The manifest file of a module.
 pub const FILE: &str = "module.toml";
@@ -328,6 +351,8 @@ pub struct Module {
     pub provides: Vec<String>,
     pub permissions: Vec<Capability>,
     pub activation_on: Vec<String>,
+    /// `[limits]` (spec v1.10); `None` when the manifest has none.
+    pub limits: Option<ResourceLimits>,
     pub lifecycle_data: DataPolicy,
     pub identity: Option<Identity>,
     pub panels: Vec<PanelDecl>,
@@ -371,6 +396,7 @@ const SCHEMA: &[(&str, &[&str])] = &[
             "provides",
             "permissions",
             "activation",
+            "limits",
             "lifecycle",
             "identity",
             "ui",
@@ -383,6 +409,7 @@ const SCHEMA: &[(&str, &[&str])] = &[
         ],
     ),
     ("activation", &["on"]),
+    ("limits", &["memory_mb", "cpu_percent"]),
     ("lifecycle", &["data"]),
     ("identity", &["application"]),
     ("ui", &["panels", "windows"]),
@@ -501,6 +528,8 @@ struct Raw {
     permissions: Vec<String>,
     #[serde(default)]
     activation: Option<RawActivation>,
+    #[serde(default)]
+    limits: Option<toml::Value>,
     #[serde(default)]
     lifecycle: Option<RawLifecycle>,
     #[serde(default)]
@@ -726,6 +755,34 @@ pub fn activation_ok(e: &str) -> bool {
         Some(("app", exe)) => exe_ok(exe),
         Some(("device", class)) => !class.is_empty() && class.split('.').all(label_ok),
         _ => false,
+    }
+}
+
+/// The fact pattern an `activation.on` entry waits for (§4.6, v1.10): `fact:<pattern>` as
+/// written, `app:<name>.exe` as the app watch's `apps.running.<label>` ([`app_label`]), and
+/// `device:<class>` as `devices.present.<class>`. `None` for `enable`, `open` and `call`, and for
+/// an entry [`activation_ok`] refuses.
+pub fn activation_fact(e: &str) -> Option<String> {
+    if !activation_ok(e) {
+        return None;
+    }
+    match e.split_once(':')? {
+        ("fact", p) => Some(p.to_string()),
+        ("app", exe) => app_label(exe).map(|l| format!("apps.running.{l}")),
+        ("device", class) => Some(format!("devices.present.{class}")),
+        _ => None,
+    }
+}
+
+/// Whether a fact's value starts a module waiting for it (§4.6, v1.10): the `when` rule, set
+/// and not `false`, `null`, `0` or `""`.
+pub fn fact_true(v: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match v {
+        Value::Null | Value::Bool(false) => false,
+        Value::Number(n) => n.as_f64() != Some(0.0),
+        Value::String(s) => !s.is_empty(),
+        _ => true,
     }
 }
 
@@ -1018,6 +1075,30 @@ impl Module {
         if !hub_1_1 && settings.iter().any(|s| s.kind == ModuleSettingKind::File) {
             return fail(ManifestHub, "kind = \"file\" needs hub = \"1.1\"");
         }
+        // `[limits]` is new in hub 1.2 (spec v1.10).
+        let limits = match raw.limits {
+            None => None,
+            Some(v) => {
+                let l: ResourceLimits = part(v, ManifestLimits)?;
+                if !Version::parse(&raw.hub).is_some_and(|v| v >= HUB_1_2) {
+                    return fail(ManifestHub, "[limits] needs hub = \"1.2\"");
+                }
+                if l.memory_mb
+                    .is_some_and(|m| !(LIMITS_MEMORY_MB_MIN..=LIMITS_MEMORY_MB_MAX).contains(&m))
+                {
+                    return fail(
+                        ManifestLimits,
+                        format!(
+                            "limits.memory_mb is {LIMITS_MEMORY_MB_MIN} to {LIMITS_MEMORY_MB_MAX}"
+                        ),
+                    );
+                }
+                if l.cpu_percent.is_some_and(|c| !(1..=100).contains(&c)) {
+                    return fail(ManifestLimits, "limits.cpu_percent is 1 to 100");
+                }
+                Some(l)
+            }
+        };
         whens(
             panels
                 .iter()
@@ -1121,6 +1202,7 @@ impl Module {
             provides: raw.provides,
             permissions,
             activation_on,
+            limits,
             lifecycle_data: raw
                 .lifecycle
                 .and_then(|l| l.data)
@@ -1174,6 +1256,7 @@ impl Module {
             provides: vec![],
             permissions: m.permissions.into_iter().map(Capability::Kept).collect(),
             activation_on: vec!["enable".to_string()],
+            limits: None,
             lifecycle_data: DataPolicy::Remove,
             identity: None,
             panels: vec![],
@@ -1216,6 +1299,7 @@ impl Module {
             "transport": s(&self.transport),
             "swap": s(&self.swap),
             "activation_on": self.activation_on,
+            "limits": self.limits,
             "lifecycle_data": s(&self.lifecycle_data),
             "requires": self.requires,
             "run": self.run,

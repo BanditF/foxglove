@@ -56,6 +56,7 @@ error_ids! {
     ManifestActions => "manifest.actions",
     ManifestSettings => "manifest.settings",
     ManifestSecrets => "manifest.secrets",
+    ManifestLimits => "manifest.limits",
     PermissionUnknown => "permission.unknown",
     PermissionArgument => "permission.argument",
     PermissionNever => "permission.never",

@@ -1,18 +1,32 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.9** (v1.8 plus the state `revoked` and its card's fact
-`module.<id>.check`, #1026; v1.8 was v1.7 plus the last spec items of #918: the canvas-shape
+Status: spec, contract version **1.10** (v1.9 plus the manifest's `[limits]` and the rules of
+the activation events `open`, `fact:`, `app:` and `device:`, #983; v1.9 was v1.8 plus the state
+`revoked` and its card's fact `module.<id>.check`, #1026; v1.8 was v1.7 plus the last spec items of #918: the canvas-shape
 and table-row caps, which stream overs are refused and which closed, when the backoff run resets,
 and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` answer and the app
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.10** (#983): resource limits and activation events. A manifest's new `[limits]` table
+  (`memory_mb`, `cpu_percent`) sets the module's Job Object caps; the supervisor clamps each to
+  the hub's maximum (4,096 MiB and 50 % today), and a module without it gets the maximum, as
+  every module did before (§4.2, §7.7). A manifest using it says `hub = "1.2"`; a bad value is
+  the new error id `manifest.limits` (§15). The activation events `open`, `fact:`, `app:` and
+  `device:` get their rules (§4.6): a fact event starts the module when a matching fact turns
+  true by the `when` rule (set and not `false`, `null`, `0` or `""`), or is already true when
+  the module is armed (hub start, Turn on, Start normally); `app:<name>.exe` is the app watch's
+  `apps.running.<name>` turning true; `open` is a page of the module coming on screen (a tab or
+  a pop-out, its panels registered or not). An event for a module that is connected, off or
+  held by safe mode starts nothing. Vectors: `manifests/valid/limits*.toml`,
+  `manifests/invalid/limits-*.toml`; `manifests/invalid/hub-newer-minor.toml` now says `1.3`, and
+  the hub's `initialize` results say `1.2`. One manifest key: `hub` is 1.2 (§8.7).
 - **1.9** (#1026): a version its publisher withdrew. When an accepted catalog revokes the
   installed version of a module (§12.4), the supervisor stops it and publishes the new state id
   `revoked` (§7.8): at hub start (the shallow verify refuses the launch, §12.5), when a catalog
@@ -420,6 +434,7 @@ plug-ins** (no dylibs, no scripts in the hub).
 | `provides` | array of strings | no | What it offers (§4.5). |
 | `permissions` | array of strings | no | What it may touch (§6). |
 | `[activation]` | table | no | When it starts (§4.6). |
+| `[limits]` | table | no | (v1.10, hub 1.2) Its Job Object caps (§7.7): `memory_mb` (integer, 16 to 1,048,576: all its processes together, in MiB) and `cpu_percent` (integer, 1 to 100: a hard cap, in percent of the whole machine). Each absent value is the hub's maximum. |
 | `[lifecycle]` | table | no | `data = keep | remove | ask` (default `ask`): what remove does with `data\`. |
 | `[identity]` | table | no | Package identity (§4.8). |
 | `[[ui.panels]]`, `[[ui.windows]]` | arrays of tables | no | UI contributions (§4.7). |
@@ -442,6 +457,9 @@ Checks every reader MUST make (error ids in §15):
   `[[settings]]` are unique in their list and use `a-z`, `0-9`, `-`: `manifest.actions`,
   `manifest.ui`, `manifest.settings`, `manifest.mcp`.
 - Every `when` and `activation.on` entry parses (§4.6): `manifest.activation`.
+- (v1.10) `[limits]` has only `memory_mb` and `cpu_percent` (`manifest.unknown-key`), each an
+  integer in its range (`manifest.limits`), and needs `hub = "1.2"` or later (`manifest.hub`). A
+  value over the hub's maximum is valid: the supervisor clamps it (§7.7).
 - (v1.4) A `kind = "file"` setting needs `hub = "1.1"` or later (`manifest.hub`); `filter` is for
   `file` settings only and follows §4.7 (`manifest.settings`).
 
@@ -542,6 +560,21 @@ Rules:
 - Activation is by events only, never timers.
 - A module started by an event stops by its own decision (exit code 0); the hub does not stop
   idle modules.
+- **How each event fires (v1.10).** An event starts the module only while it is enabled, not
+  running or starting, and not held by safe mode (§7.10); an event for any other module does
+  nothing, so a second event while it starts never starts a second instance.
+  - `fact:<pattern>`: a fact matching the pattern (§8.3 patterns) changes to a value that is
+    true by the `when` rule (set and not `false`, `null`, `0` or `""`). Setting it to the same
+    value again is no change. A matching fact that is already true when the module is armed
+    (hub start, once the supervisor knows its modules; Turn on; Start normally) starts it then.
+  - `app:<name>.exe`: the app watch's `apps.running.<name>` turns true (same `<name>` rule as
+    `apps.seen`). A hub without the app watch never fires it.
+  - `device:<class>`: `devices.present.<class>` turns true. The hub publishes no device facts
+    itself: it fires once the first-party device module publishes them.
+  - `open`: a `page` panel of the module comes on screen (the active tab of a shown hub window,
+    or a shown pop-out), whether or not the module registered it yet. A tile in the tray panel
+    is not `open`.
+  - Once it has stopped by itself (exit code 0), the next event starts it again.
 
 `when` (on `[[ui.panels]]`, `[[ui.windows]]`, `[[actions]]`, `[[settings]]`) decides whether the
 item shows:
@@ -1176,6 +1209,10 @@ Design §3.1.
 
 - **Contains** each instance in its own Job Object: memory and CPU caps, no breakaway, and an
   AppContainer when the permissions allow it.
+- **Caps (v1.10)** come from the manifest's `[limits]`, each clamped to the hub's maximum
+  (4,096 MiB for all the module's processes, a hard 50 % of the machine's CPU); an absent value
+  is the maximum. A clamp is logged, not refused. A module taken back after a hub restart gets
+  them again in its new job (§7.9). (Not built yet: the AppContainer.)
 - **Restarts** a crashed instance with backoff from 1 s up to 60 s. Five crashes in ten minutes
   stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash. A
   channel closed for an oversized line (§8.1, v1.2) counts as one crash.
@@ -1498,7 +1535,8 @@ Rules:
   are `hub` 1.0; spec 1.4 is `hub` 1.1 (a new setting kind and key), and so is spec 1.5 (only
   optional panel props and stream rules, no manifest key), and so is spec 1.6 (hub window rules
 and a hub-owned `hideout.toml` table, no message or manifest key). The hub answers `initialize`
-  with its own `hub`.
+  with its own `hub`. (v1.10) Spec 1.7 to 1.9 stay `hub` 1.1; spec 1.10 is `hub` 1.2 (the
+  manifest key `[limits]`). A hub 1.2 reader accepts `1.0`, `1.1` and `1.2`.
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
 - A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
@@ -1913,6 +1951,7 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `manifest.enriches` | an entry isn't `<name>.exe` |
 | `manifest.provides` | unknown entry, or content/firmware without its entry |
 | `manifest.activation` | a bad `activation.on` or `when` entry |
+| `manifest.limits` | (v1.10) a `[limits]` value of the wrong type or out of range |
 | `manifest.ui` | a bad `[[ui.panels]]` or `[[ui.windows]]` entry |
 | `manifest.mcp` | a bad `[[mcp.tools]]` entry |
 | `manifest.mcp-method` | (v1.1) an `[[mcp.tools]]` `method` the module doesn't provide |

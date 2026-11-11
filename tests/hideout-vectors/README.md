@@ -1,7 +1,7 @@
 # Hideout shared test vectors (#906)
 
 Vendored by the hub, the Foxglove modules and Vulpes. Spec: [`docs/hideout-contract.md`](../../docs/hideout-contract.md)
-(section 16 sets this folder). Contract version 1.9. **No implementation lives here.**
+(section 16 sets this folder). Contract version 1.10. **No implementation lives here.**
 
 Rules (spec 16, 13.2):
 - A reader MUST pass every vector. A spec change that changes a result changes the vector in the same PR.
@@ -27,8 +27,8 @@ Each manifest and legacy file is **one whole file in, one result out**. Error id
 
 | Path | Covers | Spec |
 |---|---|---|
-| `manifests/valid/*.toml` | every kind, `[[ui.panels]]` (five slots), `[[ui.windows]]`, `[[settings]]`, `[[actions]]`, `[[secrets]]`, `[[mcp.tools]]`, `hub = "1.0"`, activation events, `when` clauses (with `!`, and `apps.seen.<name>`, v1.4), `kind = "file"` settings (v1.4, hub 1.1), a stdio module with panels (v1.4), `requires` forms, `api` string form, `arete` alias, `[edition]`, `[[pin]]`, `[identity]`, private module | 3, 4, 9, 13 |
-| `manifests/invalid/*.toml` | one broken thing each: syntax, unknown keys (top, nested, from a newer minor), missing keys, ids, family, kind, version, `hub` (shape and not served: `1.1`, `2.0`), `api`, `run`, visibility, `requires`, `enriches`, `provides`, activation and `when` grammar, UI, MCP, pin, edition, identity, actions, settings, secrets | 4, 15 |
+| `manifests/valid/*.toml` | every kind, `[[ui.panels]]` (five slots), `[[ui.windows]]`, `[[settings]]`, `[[actions]]`, `[[secrets]]`, `[[mcp.tools]]`, `hub = "1.0"`, activation events, `when` clauses (with `!`, and `apps.seen.<name>`, v1.4), `kind = "file"` settings (v1.4, hub 1.1), `[limits]` (v1.10, hub 1.2), a stdio module with panels (v1.4), `requires` forms, `api` string form, `arete` alias, `[edition]`, `[[pin]]`, `[identity]`, private module | 3, 4, 9, 13 |
+| `manifests/invalid/*.toml` | one broken thing each: syntax, unknown keys (top, nested, from a newer minor), missing keys, ids, family, kind, version, `hub` (shape and not served: `1.3`, `2.0`; `[limits]` under `1.1`), `[limits]` values, `api`, `run`, visibility, `requires`, `enriches`, `provides`, activation and `when` grammar, UI, MCP, pin, edition, identity, actions, settings, secrets | 4, 15 |
 | `legacy/*.plugin.toml`, `legacy/*.kit.toml` | what a legacy file reads as (kind service, stdio, `hub` 1.0, family by id prefix, `[lifecycle] data = "remove"`); legacy files with new keys fail | 4.10 |
 | `legacy/precedence-*/` | `module.toml` before `plugin.toml` before `kit.toml` | 4.10 |
 | `permissions/permissions.json` | the grammar (kept and new), unknown, bad argument, the never-list by holder | 6.1, 6.6 |

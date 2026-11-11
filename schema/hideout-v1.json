@@ -1,5 +1,5 @@
 {
-  "hub": "1.1",
+  "hub": "1.2",
   "icons": [
     "module",
     "battery",
@@ -50,7 +50,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.9",
+  "spec": "1.10",
   "streams": {
     "nodes": [
       "canvas",
@@ -1408,6 +1408,32 @@
         "sha256"
       ],
       "title": "Pin",
+      "type": "object"
+    },
+    "module.ResourceLimits": {
+      "additionalProperties": false,
+      "description": "`[limits]` (§4.2, §7.7, spec v1.10, `hub = \"1.2\"`): what the module's Job Object may use.\nEach value is clamped to the hub's maximum; an absent one is the hub's maximum.",
+      "properties": {
+        "cpu_percent": {
+          "description": "A hard CPU cap in percent of the whole machine (1 to 100).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "memory_mb": {
+          "description": "All the module's processes together, in MiB (16 to 1,048,576).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "title": "ResourceLimits",
       "type": "object"
     },
     "module.WindowDecl": {
