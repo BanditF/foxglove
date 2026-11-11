@@ -113,7 +113,11 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
   or removal (`device_watch`), and when the Lights page opens: never on a timer.
 - **Control:** each found device is one of `Driver(protocol)` (a Foxglove driver),
   `LampArray` (a standard Dynamic Lighting device; listed, support comes with #72) or
-  `NotYet` (recognised, no driver).
+  `NotYet` (recognised, but no driver, or a driver that lacks the command it needs:
+  `CatalogDevice::controllable`). A `NotYet` row's hover says the device keeps its own effect,
+  named from the first of its catalog `effects` when there is one: "Lights not controllable
+  yet: it keeps its own effect (rainbow)." Its `[[device.conflict]]` apps aren't warned about,
+  since there are no Foxglove colours to override.
 - **Drivers** implement `LightingDevice`: name, named zones, static colour per zone, off, and
   identify (a bounded blink, then the colours back). A driver writes through a `HidWriter`,
   which opens the device shared only while it sends; tests use a recording writer.
@@ -123,6 +127,14 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
   (3 and 4 aren't connected). The board can't be read back, so the app saves the colours it
   set (`[pc_lighting]`) and puts them back when the board arrives, unless an app its catalog
   entry names in `[[device.conflict]]` runs (OMEN Light Studio for the 45L).
+- **LCD pump caps (#614):** `witmod_lcd`, for Witmod-firmware LCD pump caps (the 45L's
+  `03F0:7397`). Every number it knows is the entry's `[device.witmod]` table: the vendor
+  interface (usage page, usage), report ids and lengths, the claim op and how often the vendor's
+  helper re-claims, LED counts (ring, per fan, fans), and `ring_op`, the ring's colour command.
+  It is a stub: no ring command is known, so the entry reads as `NotYet`, and its driver has no
+  writer and refuses every colour. Zones 1 (pump ring) and 2 (the fans chained from the cap)
+  are listed for scenes and the page. `03F0:02BE`, which HP's helper also looks for, is listed
+  as a cooler with `unconfirmed = true` (named from vendor software, never seen on hardware).
 - **Vendor quirks are data (#558):** `kind` (case, cooler, strip, peripheral, other) says what a
   device is for scenes and the page, and `[[device.conflict]]` names apps that fight Foxglove
   over it (`app`, `processes`, optional `hint`). No vendor's name or process is in the code.
@@ -156,7 +168,8 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
   for the same VID/PID); "Copy entry" puts it on the clipboard to share or contribute.
 
 Not yet: lighting leases (#73) for case boards, the board's own effects (breathing, colour
-cycle, themes), and the OMEN liquid cooler (`03F0:7397`), which is listed as found only.
+cycle, themes), and the OMEN liquid cooler's ring and fans (`03F0:7397`), which keep their own
+rainbow until a capture of HP's software shows the ring command (#614).
 
 ### Backends and where they live
 

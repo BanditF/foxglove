@@ -97,7 +97,6 @@ pub(crate) fn wedge_parts() -> super::parts::Parts {
 /// The user's desk: the devices Foxglove was first built on.
 pub(crate) mod users_desk {
     use super::*;
-    use foxglove_devices::pc_lighting::Protocol;
 
     /// The case board's VID/PID (HP OMEN 45L) and the cooler's.
     pub(crate) const CASE: (u16, u16) = (0x103c, 0x84fd);
@@ -117,9 +116,10 @@ pub(crate) mod users_desk {
     pub(crate) fn catalog_row((vid, pid): (u16, u16)) -> Row {
         let c = Catalog::bundled();
         let d = c.find(vid, pid).expect("a bundled catalog entry");
-        let control = match d.protocol {
-            Protocol::None => Control::NotYet,
-            p => Control::Driver(p),
+        let control = if d.controllable() {
+            Control::Driver(d.protocol)
+        } else {
+            Control::NotYet
         };
         row(d, control)
     }
