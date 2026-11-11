@@ -576,6 +576,16 @@
       "id": "manifest.hub",
       "note": "Written for a newer minor than a v1.0 reader serves. (v1.4: this reader serves 1.1, so the vector said 1.2; v1.10: it serves 1.2, so the vector says 1.3.)"
     },
+    "manifests/invalid/hub-newer-minor-new-key.toml": {
+      "spec": [
+        "4.1",
+        "7.8",
+        "8.7"
+      ],
+      "result": "invalid",
+      "id": "manifest.hub",
+      "note": "A manifest for a newer hub uses a key this reader doesn't know: hub is read first, so it is manifest.hub (needs-hub), not manifest.unknown-key (v1.10 clarification, #1096)."
+    },
     "manifests/invalid/hub-single-number.toml": {
       "spec": [
         "4.2"

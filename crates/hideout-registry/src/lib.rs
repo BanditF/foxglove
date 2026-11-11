@@ -273,15 +273,31 @@ impl Registry {
         dirs.sort();
         for dir in dirs {
             let line = match self.load_lab_one(&dir) {
-                Ok(id) => format!("{id}: loaded from {}", dir.display()),
+                Ok((id, None)) => format!("{id}: loaded from {}", dir.display()),
+                Ok((id, Some(hub))) => format!(
+                    "{id}: listed from {}, needs hub {hub} (this hub serves {}); not started",
+                    dir.display(),
+                    hideout_contract::HUB_VERSION
+                ),
                 Err(why) => format!("{}: not loaded: {why}", dir.display()),
             };
             self.lab_report.push(line);
         }
     }
 
-    fn load_lab_one(&mut self, dir: &Path) -> Result<String, String> {
-        let m = self.read_manifest(dir).map_err(|e| e.to_string())?;
+    /// One lab folder: its id, and the hub it needs when that is newer than this one (listed
+    /// from its [`Head`](hideout_contract::module::Head) only, §7.8 needs-hub, #1096).
+    fn load_lab_one(
+        &mut self,
+        dir: &Path,
+    ) -> Result<(String, Option<hideout_contract::Version>), String> {
+        let m = match self.read_manifest(dir) {
+            Ok(m) => m,
+            Err(Failure::Check(e)) if e.id == ErrorId::ManifestHub => {
+                return self.load_lab_needs_hub(dir, e);
+            }
+            Err(e) => return Err(e.to_string()),
+        };
         let folder = dir.file_name().unwrap_or_default().to_string_lossy();
         if folder != m.id.as_str() {
             return Err(format!("the folder must be named {}", m.id));
@@ -318,7 +334,59 @@ impl Registry {
             // In memory: a lab module runs unless the lab's hideout.toml turns it off.
             self.hub.set_enabled(&m.id, true);
         }
-        Ok(m.id)
+        Ok((m.id, None))
+    }
+
+    /// A lab folder whose manifest asks for a newer hub (§7.8 needs-hub, #1096): only its head
+    /// (id, name, version, hub) is read, and it joins the inventory as a lab module with no
+    /// grants, so the Modules page lists it and the supervisor reads it as needs-hub and never
+    /// starts it. Anything else wrong with the file (an older major, a bad id) stays `why`.
+    fn load_lab_needs_hub(
+        &mut self,
+        dir: &Path,
+        why: Error,
+    ) -> Result<(String, Option<hideout_contract::Version>), String> {
+        let head = match hideout_contract::module::read_head(dir) {
+            Ok(Ok(h)) if h.needs_newer_hub() => h,
+            _ => return Err(why.to_string()),
+        };
+        let folder = dir.file_name().unwrap_or_default().to_string_lossy();
+        if folder != head.id.as_str() {
+            return Err(format!("the folder must be named {}", head.id));
+        }
+        if self
+            .inventory
+            .modules
+            .get(&head.id)
+            .is_some_and(|i| i.source != LAB)
+        {
+            return Err(format!("{} is installed; the installed one runs", head.id));
+        }
+        let files = hash_files(dir).map_err(|e| e.to_string())?;
+        self.inventory.modules.insert(
+            head.id.clone(),
+            Installed {
+                version: head.version.clone(),
+                // Placeholders: the rest of the file isn't read. Nothing is granted and it
+                // never runs, so neither its kind nor its family decides anything.
+                kind: hideout_contract::module::Kind::Service,
+                family: hideout_contract::module::Family::ThirdParty,
+                visibility: Visibility::Public,
+                source: LAB.into(),
+                anchor: None,
+                channel: "lab".into(),
+                installed: String::new(),
+                files,
+                footprint: Vec::new(),
+                previous: None,
+                granted: Vec::new(),
+                pending_permissions: Vec::new(),
+            },
+        );
+        if self.hub.enabled_set(&head.id).is_none() {
+            self.hub.set_enabled(&head.id, true);
+        }
+        Ok((head.id, Some(head.hub)))
     }
 
     /// Whether `id` is a lab module (source `lab`).
@@ -670,6 +738,32 @@ impl Registry {
     pub fn manifest(&self, id: &str) -> Option<Module> {
         let m = self.inventory.modules.get(id)?;
         self.read_manifest(&self.module_dir(id, &m.version)).ok()
+    }
+
+    /// The head (id, name, version, hub) of `id`'s installed manifest when it asks for a newer
+    /// hub than this one serves (§7.8 needs-hub, #1096): what the Modules page, the tray and
+    /// the supervisor name it by. `None` for a manifest this hub reads, or one broken otherwise.
+    pub fn manifest_head(&self, id: &str) -> Option<hideout_contract::module::Head> {
+        let m = self.inventory.modules.get(id)?;
+        let dir = self.module_dir(id, &m.version);
+        match self.read_manifest(&dir) {
+            Err(Failure::Check(e)) if e.id == ErrorId::ManifestHub => {
+                hideout_contract::module::read_head(&dir)
+                    .ok()?
+                    .ok()
+                    .filter(|h| h.needs_newer_hub() && h.id == id)
+            }
+            _ => None,
+        }
+    }
+
+    /// `id`'s name for people: its manifest's `name`, the head's for one that needs a newer
+    /// hub, else the id.
+    pub fn module_name(&self, id: &str) -> String {
+        self.manifest(id)
+            .map(|m| m.name)
+            .or_else(|| self.manifest_head(id).map(|h| h.name))
+            .unwrap_or_else(|| id.to_string())
     }
 
     /// Automatic rollback (§7.8): the previous version becomes the current one and the one that

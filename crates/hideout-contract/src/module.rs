@@ -862,6 +862,17 @@ impl Module {
     /// Reads `module.toml` text and makes every §4 check.
     pub fn parse(text: &str, ctx: &Context) -> Result<Module, Error> {
         let table = parse_table(text)?;
+        // A manifest for a hub this reader doesn't serve may use keys it doesn't know (§4.1): its
+        // `hub` is read first, so it fails as `manifest.hub` (needs-hub, §7.8, #1096), never as
+        // `manifest.unknown-key`.
+        if let Some(toml::Value::String(hub)) = table.get("hub") {
+            if Version::parse(hub).is_some_and(|v| !v.served_by(HUB_VERSION)) {
+                return fail(
+                    ErrorId::ManifestHub,
+                    format!("hub {hub:?}: this reader serves {HUB_VERSION}"),
+                );
+            }
+        }
         check_keys(&table, "", SCHEMA)?;
         for key in ["id", "name", "version", "kind", "family", "hub"] {
             if !table.contains_key(key) {
@@ -1350,6 +1361,89 @@ impl ManifestFile {
     }
 }
 
+/// The longest name a [`Head`] keeps (characters); a longer one is cut.
+pub const HEAD_NAME_MAX: usize = 64;
+
+/// The safe minimum of a `module.toml` written for a newer hub than this reader serves (§7.8
+/// needs-hub, #1096): its `id`, `name`, `version` and `hub`, read without checking anything
+/// else, so the hub can list the module and show it as Needs a newer Hideout. Never enough to
+/// run it: nothing else of the file (permissions, `run`, panels) is read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Head {
+    pub id: String,
+    /// The name for people: control, bidi and zero-width characters dropped, whitespace runs as
+    /// one space, at most [`HEAD_NAME_MAX`] characters; the id when nothing is left.
+    pub name: String,
+    pub version: String,
+    pub hub: Version,
+}
+
+/// A name from a file this reader can't check, made safe to draw.
+fn head_name(raw: &str, id: &str) -> String {
+    let hidden = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+    };
+    let words: Vec<&str> = raw.split(|c: char| c.is_whitespace()).collect();
+    let joined = words
+        .iter()
+        .map(|w| w.chars().filter(|c| !hidden(*c)).collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let name: String = joined.chars().take(HEAD_NAME_MAX).collect();
+    if name.is_empty() {
+        id.to_string()
+    } else {
+        name
+    }
+}
+
+impl Head {
+    /// Reads the four keys from `module.toml` text: the file must be TOML, `id` must follow §4.3,
+    /// `version` must be SemVer and `hub` `MAJOR.MINOR`. Other keys are not looked at.
+    pub fn parse(text: &str) -> Result<Head, Error> {
+        use ErrorId::*;
+        let table = parse_table(text)?;
+        let s = |k: &str| match table.get(k) {
+            Some(toml::Value::String(s)) => Ok(s.clone()),
+            Some(_) => fail(ManifestSyntax, format!("{k} must be a string")),
+            None => fail(ManifestMissingKey, format!("missing key {k}")),
+        };
+        let id = s("id")?;
+        if !id_grammar_ok(&id) {
+            return fail(ManifestId, format!("id {id:?} breaks §4.3"));
+        }
+        let version = s("version")?;
+        if !semver_ok(&version) {
+            return fail(ManifestVersion, format!("version {version:?} isn't SemVer"));
+        }
+        let raw_hub = s("hub")?;
+        let hub = Version::parse(&raw_hub)
+            .ok_or_else(|| Error::new(ManifestHub, format!("hub {raw_hub:?} isn't MAJOR.MINOR")))?;
+        let name = head_name(&s("name")?, &id);
+        Ok(Head {
+            id,
+            name,
+            version,
+            hub,
+        })
+    }
+
+    /// Whether it asks for a newer hub than this reader serves (a newer minor or major): the
+    /// needs-hub case. An older major isn't one (that module is simply not served).
+    pub fn needs_newer_hub(&self) -> bool {
+        self.hub > HUB_VERSION && !self.hub.served_by(HUB_VERSION)
+    }
+}
+
+/// Reads a folder's `module.toml` as a [`Head`] only (a legacy manifest has no `hub`).
+pub fn read_head(dir: &Path) -> std::io::Result<Result<Head, Error>> {
+    let text = std::fs::read_to_string(dir.join(ManifestFile::Module.name()))?;
+    Ok(Head::parse(&text))
+}
+
 /// Reads a module folder: `module.toml`, else `plugin.toml`, else `kit.toml` (§4.10).
 pub fn read_dir(
     dir: &Path,
@@ -1441,5 +1535,94 @@ when = "!apps.seen.fourth"
             m.describe_permission_named(&watch("example-app.exe"), named),
             "see whether Example-App is running"
         );
+    }
+}
+
+#[cfg(test)]
+mod head_tests {
+    use super::*;
+
+    const NEWER: &str = r#"
+id = "org.example.kiln"
+name = "Kiln"
+version = "2.0.0"
+kind = "service"
+family = "third-party"
+hub = "1.9"
+run = ["kiln.exe"]
+glaze = { colour = "blue" }
+
+[future_table]
+anything = true
+"#;
+
+    /// A manifest for a newer hub that uses keys this reader doesn't know reads `manifest.hub`
+    /// (needs-hub, #1096), not `manifest.unknown-key`; its head is the safe minimum.
+    #[test]
+    fn a_newer_hub_manifest_fails_as_hub_and_its_head_reads() {
+        let e = Module::parse(NEWER, &Context::default()).unwrap_err();
+        assert_eq!(e.id, ErrorId::ManifestHub, "{e}");
+        let h = Head::parse(NEWER).unwrap();
+        assert_eq!(h.id, "org.example.kiln");
+        assert_eq!(h.name, "Kiln");
+        assert_eq!(h.version, "2.0.0");
+        assert_eq!(h.hub, Version { major: 1, minor: 9 });
+        assert!(h.needs_newer_hub());
+        // A newer major needs a newer hub too; an older major or a served hub doesn't.
+        let with = |hub: &str| Head::parse(&NEWER.replace("\"1.9\"", hub)).unwrap();
+        assert!(with("\"2.0\"").needs_newer_hub());
+        assert!(!with("\"0.9\"").needs_newer_hub());
+        assert!(!with(&format!("\"{HUB_VERSION}\"")).needs_newer_hub());
+        // An unknown key in a manifest this reader serves is still refused as one.
+        let served = NEWER.replace("\"1.9\"", &format!("\"{HUB_VERSION}\""));
+        assert_eq!(
+            Module::parse(&served, &Context::default()).unwrap_err().id,
+            ErrorId::ManifestUnknownKey
+        );
+    }
+
+    /// Only the four keys are checked; each must still be well formed. The name is made safe to
+    /// draw (no controls, bidi or zero-width characters, one space, at most 64 characters).
+    #[test]
+    fn the_head_checks_its_four_keys_and_cleans_the_name() {
+        let bad = |from: &str, to: &str| Head::parse(&NEWER.replace(from, to)).unwrap_err().id;
+        assert_eq!(
+            bad("\"org.example.kiln\"", "\"Org..Kiln\""),
+            ErrorId::ManifestId
+        );
+        assert_eq!(bad("\"2.0.0\"", "\"2.0\""), ErrorId::ManifestVersion);
+        assert_eq!(bad("\"1.9\"", "\"1.9.1\""), ErrorId::ManifestHub);
+        assert_eq!(bad("name = \"Kiln\"", "name = 3"), ErrorId::ManifestSyntax);
+        assert_eq!(bad("name = \"Kiln\"\n", ""), ErrorId::ManifestMissingKey);
+        assert_eq!(
+            Head::parse("id = [").unwrap_err().id,
+            ErrorId::ManifestSyntax
+        );
+        // A TOML basic string, every character outside printable ASCII as `\uXXXX`.
+        let named = |n: &str| {
+            let quoted: String = n
+                .chars()
+                .map(|c| match c {
+                    ' '..='~' if c != '"' && c != '\\' => c.to_string(),
+                    _ => format!("\\u{:04X}", c as u32),
+                })
+                .collect();
+            Head::parse(&NEWER.replace("name = \"Kiln\"", &format!("name = \"{quoted}\"")))
+                .unwrap()
+                .name
+        };
+        assert_eq!(named("K\u{202e}iln\u{200b}  \t Glaze\u{7}"), "Kiln Glaze");
+        assert_eq!(named("\u{202e}\u{200b} "), "org.example.kiln");
+        assert_eq!(named(&"x".repeat(200)).chars().count(), HEAD_NAME_MAX);
+    }
+
+    #[test]
+    fn read_head_reads_module_toml_only() {
+        let dir = std::env::temp_dir().join(format!("hideout-head-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_head(&dir).is_err());
+        std::fs::write(dir.join("module.toml"), NEWER).unwrap();
+        assert_eq!(read_head(&dir).unwrap().unwrap().name, "Kiln");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

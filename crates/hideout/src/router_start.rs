@@ -171,6 +171,7 @@ pub fn start(
                     .keys()
                     .filter_map(|id| reg.manifest(id)),
             );
+            note_needs_hub_names(&reg);
         }
         Err(e) => log::warn!("router: registry not read ({e:?}); no modules"),
     }
@@ -331,6 +332,7 @@ fn watch_inventory(
                     late.insert(id);
                 }
             }
+            note_needs_hub_names(&reg);
             // Added but not in the registry yet (a lab folder whose manifest isn't written):
             // kept, so a change of only files inside it is read again.
             waiting.retain(|id| !reg.inventory.modules.contains_key(id));
@@ -343,6 +345,16 @@ fn watch_inventory(
         log::warn!(
             "inventory watch not started: {e}; installs and removals show at the next start"
         );
+    }
+}
+
+/// The tray names a module whose manifest asks for a newer hub by its head's name (#1096): the
+/// panel feed gets no manifest for it, so it would otherwise say the id.
+fn note_needs_hub_names(reg: &hideout_registry::Registry) {
+    for id in reg.inventory.modules.keys() {
+        if let Some(h) = reg.manifest_head(id) {
+            hideout_shell::marks::note_name(id, &h.name);
+        }
     }
 }
 

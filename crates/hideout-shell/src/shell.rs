@@ -2774,6 +2774,11 @@ impl Hub {
         for (module, name, value) in crate::lab_control::take_settings() {
             self.panels.set_setting(&module, &name, value);
         }
+        // Lab control's `quarantine` (#1096): the panel host's own quarantine; the hand-off
+        // below takes it to the supervisor.
+        for module in crate::lab_control::take_quarantines() {
+            self.panels.quarantine(&module);
+        }
         if let Some(feed) = self.feed.as_mut() {
             let now = std::time::Instant::now();
             // Event-driven: the feed's waker brought this frame; a held-back patch asks for one

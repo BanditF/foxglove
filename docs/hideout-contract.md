@@ -25,6 +25,10 @@ does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
   exit after `module.exit` before its job is ended (not a crash); both `swap` modes stop the
   old instance before the new one starts for now; a crash while an update waits for Review
   restarts into the new version with the old grants and shows Update waiting for you again.
+  **needs-hub is listed** (§4.1, §7.8, #1096): a reader checks `hub` before unknown keys, and a
+  module whose manifest asks for a newer hub is listed from its head (`id`, `name`, `version`,
+  `hub`) for every source, lab included, never dropped; installing such a version stays refused.
+  Vector `manifests/invalid/hub-newer-minor-new-key.toml`.
   No message, manifest key or error id is new; it adds one hub fact and stays `hub` 1.2. Vectors: the supervisor
   transcripts `state-waiting`, `root-cause-once`, `state-needs-hub`, `state-quarantined`,
   `state-update-busy`, `state-update-waiting`, `state-updating` and
@@ -441,6 +445,13 @@ plug-ins** (no dylibs, no scripts in the hub).
 - **Unknown keys are refused** at every level (`manifest.unknown-key`), as `Manifest::parse` does
   today. New keys come only with a new `hub` minor (§8.7); a module that uses them sets `hub` to
   that minor, so an older reader refuses it with `manifest.hub`.
+- (v1.10 clarification, #1096) A reader checks `hub` **first**: a file whose `hub` is a
+  `MAJOR.MINOR` it doesn't serve fails with `manifest.hub` before any other check, even when it
+  has keys the reader doesn't know. For a newer `hub` (a higher minor, or a higher major) the
+  reader may still take the file's **head**: `id` (§4.3), `name`, `version` (SemVer) and `hub`,
+  each checked alone, nothing else read. The head is only for listing the module as
+  `needs-hub` (§7.8); the name is drawn with control, bidi and zero-width characters dropped,
+  whitespace runs as one space, at most 64 characters, and is the id when nothing is left.
 - Strings compare exactly (case-sensitive) unless a rule says otherwise.
 
 ### 4.2 Keys
@@ -1453,6 +1464,14 @@ Rules:
   activation, Start again or Turn on. **Update Hideout** is the hub's own update (a newer hub
   starts it as usual); **Go back to <previous>** rolls back, then starts it, and is offered
   only with a previous version kept (`module.<id>.previous`).
+- (v1.10 clarification, #1096) A `needs-hub` module is **listed, never dropped**: the hub reads
+  its manifest's head (§4.1: `id`, `name`, `version`, `hub`) and names it by that `name` on the
+  Modules page and in the tray. This holds for every source: an installed catalog or sideloaded
+  version (the hub went back a version) and a lab module (docs/hideout-lab.md), which joins the
+  lab inventory from its head with nothing granted. Installing or updating to a version whose
+  `hub` isn't served is still refused at install step (6) (`manifest.hub`, §7.4) before
+  anything changes, so the version that runs stays; that is why `needs-hub` arises only at hub
+  start or a launch, and why no "update that caused it" notification exists.
 
 ### 7.9 When the hub goes
 

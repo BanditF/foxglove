@@ -98,7 +98,8 @@ fn read_manifest(reg: &Registry, id: &str) -> Read {
             log::warn!("supervisor: {id}: {e}; needs a newer hub");
             Read::NeedsHub(vec![Ev::Known {
                 id: id.into(),
-                name: id.into(),
+                // Its head's name (#1096): the rest of the file isn't read.
+                name: reg.module_name(id),
                 enabled: reg.hub.enabled(id),
                 at_enable: false,
                 previous: reg
@@ -259,7 +260,14 @@ struct Inner {
     /// whether its answer is a drain's. Tags stay below the panel feed's (`1 << 40`).
     calls: Mutex<BTreeMap<u64, (String, bool)>>,
     next_tag: AtomicU64,
+    /// Lab hub only (#1096, [`lab`]): what the next `module.drain` answer of a lab module reads
+    /// as, set by a lab verb; and the condvar every policy step signals, for a verb's wait.
+    lab: lab::LabState,
 }
+
+// The lab hub's update and quarantine verbs (#1096).
+#[path = "driver_lab.rs"]
+pub mod lab;
 
 /// What [`Supervisor::launch`] answers when the manifest's `hub` isn't served (§7.8 needs-hub).
 const NEEDS_HUB: &str = "manifest.hub";
@@ -369,6 +377,7 @@ impl Supervisor {
             early: Mutex::new(Vec::new()),
             calls: Mutex::new(BTreeMap::new()),
             next_tag: AtomicU64::new(1),
+            lab: lab::LabState::default(),
         }));
         hub.act(|r| {
             r.set_launch_check(Box::new(move |id, pid| launch_check(&expected, id, pid)));
@@ -824,6 +833,8 @@ impl Supervisor {
                         None
                     }
                 };
+                // A lab verb set what this answer reads as (lab modules only, #1096).
+                let busy = self.lab_answer(&id).unwrap_or(busy);
                 Ev::Drained { id, busy }
             }
             _ => return,
@@ -1109,6 +1120,7 @@ impl Supervisor {
     pub fn feed(&self, ev: Ev) {
         let cmds = self.0.policy.lock().unwrap().handle(ev, Instant::now());
         self.run(cmds);
+        self.0.lab.stepped();
     }
 
     fn run(&self, cmds: Vec<Cmd>) {
