@@ -132,6 +132,12 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_HiDpi",
     # Foxglove (#447): the test that reads back the embedded manifest.
     "Win32_System_LibraryLoader",
+    # Foxglove (#496): Screen glow reads the screens' edges (DXGI Desktop Duplication, a GPU
+    # downscale through Direct3D 11 mips).
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
 ] }
 winreg = "0.56.0"
 

@@ -51,6 +51,15 @@
 //! stops by itself after that long, putting the lights back. Quitting stops it too. Copy
 //! diagnostics has a "Scene" line with what was sent.
 //!
+//! Screen glow (#496, `screen_glow`): a scene whose look is `Effect::Screen` also owns a
+//! [`super::screen_glow::Reader`], whose capture threads run only while its gates are open. It
+//! never starts without the user's yes: [`start`] and [`set_effect`] refuse it ([`may_run`]),
+//! whoever asks (the Scenes page, a profile, the last look after a restart, the Lights page).
+//! The gates come from this thread's events: pause, away (lock, display off), the program in
+//! front ([`foreground_changed`]: a full-screen game), the lights owner ([`owner_changed`]), a
+//! display change ([`display_changed`]: capture tries again) and capture failing. A game or a
+//! failure also closes the scheduler's `Held` gate, so the lights get their own colours back.
+//!
 //! Threads: one control thread per scene (it owns the scheduler and takes the gate events),
 //! the scheduler's frame thread while the gates are open, and one keyboard writer that sleeps
 //! on a condition variable until a colour is due. None exists without a scene.
@@ -223,7 +232,51 @@ enum Ctl {
     LayerSweep(Rgb),
     /// A keyboard connected: send it the scene again.
     KeyboardArrived,
+    /// Another program is in front: Screen glow looks for a full-screen game (#496).
+    Foreground,
+    /// The displays changed: Screen glow's capture tries again.
+    DisplayChanged,
+    /// Screen glow's capture run (its generation) failed.
+    CaptureFailed(u64),
+    /// A window entered or left full screen (`glow_watch`).
+    FullScreen,
+    /// The desktop switched (a UAC prompt, Ctrl+Alt+Del; `glow_watch`).
+    DesktopSwitched,
+    /// The keyboard's lights owner changed (#491): Screen glow holds while someone else has them.
+    Owner,
+    /// The user's yes for Screen glow was given or taken back.
+    Allowed,
     Stop,
+}
+
+/// Whether a look may run: Screen glow only with the user's yes (#496).
+pub fn may_run(effect: &Effect, allowed: bool) -> bool {
+    !matches!(effect, Effect::Screen { .. }) || allowed
+}
+
+fn is_screen(effect: &Effect) -> bool {
+    matches!(effect, Effect::Screen { .. })
+}
+
+/// The program in front changed (the foreground watch): a running Screen glow looks for a
+/// full-screen game. A no-op without a scene.
+pub fn foreground_changed() {
+    tell(Ctl::Foreground);
+}
+
+/// Windows' displays changed (`WM_DISPLAYCHANGE`): Screen glow's capture tries again.
+pub fn display_changed() {
+    tell(Ctl::DisplayChanged);
+}
+
+/// The keyboard's lights owner changed (#491).
+pub fn owner_changed() {
+    tell(Ctl::Owner);
+}
+
+/// The user gave or took back the yes for Screen glow.
+pub fn screen_allowed_changed() {
+    tell(Ctl::Allowed);
 }
 
 struct Running {
@@ -361,6 +414,12 @@ pub fn start_from_env() {
 
 /// Starts a scene; false if one already runs. `limit` stops it after that long.
 pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
+    // Screen glow reads the screen: never without the user's yes (#496).
+    if !may_run(&effect, super::screen_glow::allowed()) {
+        eprintln!("Foxglove: scene {name} not started: Screen glow needs the user's yes");
+        super::screen_glow::set_refused(true);
+        return false;
+    }
     // A scene still giving the lights back would undo this one's: wait for its end.
     let Ok(_ending) = ENDING.try_lock() else {
         return false;
@@ -377,6 +436,8 @@ pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
     let shown = name.to_string();
     let name = name.to_string();
     let clock = Clock::starting_now();
+    super::screen_glow::set_refused(false);
+    super::screen_glow::scene_started();
     // Before the thread, whose end (even a failed start) takes it back.
     *ART.lock().unwrap_or_else(|e| e.into_inner()) = Some(None);
     let thread = super::services::spawn_named("scene-control", move || {
@@ -404,6 +465,11 @@ pub fn running() -> Option<(String, Clock)> {
 
 /// Gives the running scene another look (a no-op when none runs).
 pub fn set_effect(name: &str, effect: Effect) {
+    if !may_run(&effect, super::screen_glow::allowed()) {
+        eprintln!("Foxglove: look {name} not taken: Screen glow needs the user's yes");
+        super::screen_glow::set_refused(true);
+        return;
+    }
     let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = running.as_mut().filter(|r| !r.thread.is_finished()) {
         r.name = name.to_string();
@@ -559,14 +625,21 @@ fn control(
     super::pc_lights::send(super::pc_lights::Msg::SceneStart);
     let (room, cases, lamp_targets) = gather();
     eprintln!("Foxglove: scene {name} started; room: {}", room.summary());
-    super::wallpaper_sync::scene_started(name, &effect, clock, room.clone());
+    let screen = is_screen(&effect);
+    // A wallpaper is part of the screen Screen glow reads: it keeps its own look.
+    if !screen {
+        super::wallpaper_sync::scene_started(name, &effect, clock, room.clone());
+    }
     // While Windows holds the keyboard, the lighting facts follow the look (#789).
     super::keyboard_facts::scene_look(name, &effect);
     // The room as last placed, for the wallpapers when the look changes.
     let mut placed = room.clone();
     let outputs = Arc::new(Mutex::new(Outputs::new(effect, room, cases)));
+    // Screen glow's edge colours, from its capture threads to the frames (#496).
+    let screen_feed = Arc::new(super::screen_glow::Feed::default());
     {
         let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+        o.set_screen_feed(screen_feed.clone());
         o.set_keyboard_parts(keyboard_parts());
         o.set_lamps(lamp_targets);
         o.set_keyboard_lamps(keyboard_lamps());
@@ -616,86 +689,188 @@ fn control(
     let away = super::away::subscribe(move |a| {
         let _ = away_tx.send(Ctl::Away(a));
     });
+    // Screen glow's reader (#496): no capture thread unless the look is Screen glow, the user
+    // said yes and nothing holds it.
+    let fail_tx = own.clone();
+    let mut reader = super::screen_glow::Reader::new(
+        super::screen_glow::opener(),
+        screen_feed,
+        Arc::new(move |generation| {
+            let _ = fail_tx.send(Ctl::CaptureFailed(generation));
+        }),
+        true,
+    );
+    use super::screen_glow::{full_screen_now, Event};
+    reader.set(|g| {
+        g.on = screen;
+        g.allowed = super::screen_glow::allowed();
+        g.paused = super::pause::paused();
+        g.display_off = super::away::display_off();
+        g.locked = super::away::locked();
+        g.yielded = held.load(Ordering::Relaxed);
+        full_screen_now().apply(g);
+    });
+    // Full-screen and desktop-switch events, only while the look is Screen glow.
+    let watch_for = |on: bool| {
+        on.then(|| {
+            let (full, desk) = (own.clone(), own.clone());
+            super::glow_watch::Watch::start(
+                Arc::new(move || {
+                    let _ = full.send(Ctl::FullScreen);
+                }),
+                Arc::new(move || {
+                    let _ = desk.send(Ctl::DesktopSwitched);
+                }),
+            )
+        })
+        .flatten()
+    };
+    let mut watch = watch_for(screen);
+    let mut scene_held = reader.gates().scene_held();
+    scheduler.set(Gate::Held, scene_held);
     scheduler.set(Gate::Away, super::away::away());
     scheduler.set(Gate::Paused, super::pause::paused());
     scheduler.set(Gate::Scene, true);
-    let ended = pump(rx, limit.map(|l| Instant::now() + l), |ctl| match ctl {
-        Ctl::Away(a) => {
-            if !a {
-                // Before the gate opens, so the first frame back draws the keyboard and the
-                // Dynamic Lighting devices (let go while away) even when nothing changed.
+    let ended = pump(rx, limit.map(|l| Instant::now() + l), |ctl| {
+        match ctl {
+            Ctl::Away(a) => {
+                if !a {
+                    // Before the gate opens, so the first frame back draws the keyboard and the
+                    // Dynamic Lighting devices (let go while away) even when nothing changed.
+                    again.store(true, Ordering::Relaxed);
+                    redraw_lamps(&outputs);
+                }
+                scheduler.set(Gate::Away, a);
+                if a {
+                    // Nothing draws while away: the keyboard shows the lease's colour, not a
+                    // frame that stopped, and Dynamic Lighting devices Windows' own lights.
+                    keyboard.mailbox.release();
+                    lamp_writer.release();
+                }
+                reader.set(|g| {
+                    g.locked = super::away::locked();
+                    g.display_off = super::away::display_off();
+                    if !a {
+                        // Back: the screen may read again, and a game may have come up meanwhile.
+                        g.failed = false;
+                        full_screen_now().apply(g);
+                    }
+                });
+            }
+            Ctl::Paused(p) => {
+                // Pausing hands the frames back through the lease arbiter (the keyboard's own
+                // lights); resuming draws again.
+                if !p {
+                    again.store(true, Ordering::Relaxed);
+                    redraw_lamps(&outputs);
+                }
+                scheduler.set(Gate::Paused, p);
+                if p {
+                    // Paused: Windows' own lights on Dynamic Lighting devices.
+                    lamp_writer.release();
+                }
+                reader.set(|g| {
+                    g.paused = p;
+                    if !p {
+                        g.failed = false;
+                        full_screen_now().apply(g);
+                    }
+                });
+            }
+            Ctl::Devices => {
+                let (room, cases, lamp_targets) = gather();
+                super::wallpaper_sync::scene_room(room.clone());
+                placed = room.clone();
+                lamp_writer.devices_changed();
+                let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+                o.set_keyboard_parts(keyboard_parts());
+                o.set_room(room, cases);
+                o.set_lamps(lamp_targets);
+                o.set_keyboard_lamps(keyboard_lamps());
+            }
+            Ctl::KeyRipple(row, col) => {
+                let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+                let keys = super::scene_triggers::keys();
+                let ring = super::scene_triggers::ripple(
+                    &keys,
+                    row,
+                    col,
+                    o.room(),
+                    o.effect(),
+                    clock.now(),
+                );
+                if let Some(ring) = ring {
+                    o.burst(ring);
+                }
+            }
+            Ctl::LayerSweep(colour) => {
+                let sweep = super::scene_triggers::sweep(colour, clock.now());
+                outputs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .burst(sweep);
+            }
+            Ctl::Effect(name, effect) => {
+                super::lights_owner::retry("the scene's look changed");
+                let screen = is_screen(&effect);
+                // The wallpapers draw the new look on the same clock (#493); Screen glow leaves
+                // them their own (they are part of the screen it reads).
+                if screen {
+                    super::wallpaper_sync::scene_stopped();
+                } else {
+                    super::wallpaper_sync::scene_started(&name, &effect, clock, placed.clone());
+                }
+                reader.set(|g| {
+                    g.on = screen;
+                    g.allowed = super::screen_glow::allowed();
+                    g.yielded = held.load(Ordering::Relaxed);
+                    full_screen_now().apply(g);
+                });
+                if screen != watch.is_some() {
+                    watch = watch_for(screen);
+                }
+                super::keyboard_facts::scene_look(&name, &effect);
+                outputs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_effect(*effect);
+            }
+            Ctl::KeyboardArrived => {
+                again.store(true, Ordering::Relaxed);
+                // Paired again: the keyboard may be another one, or known only now.
+                outputs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_keyboard_lamps(keyboard_lamps());
+            }
+            Ctl::Foreground | Ctl::FullScreen => reader.event(Event::FullScreen),
+            Ctl::DisplayChanged => reader.event(Event::DisplayChanged),
+            Ctl::DesktopSwitched => reader.event(Event::DesktopSwitched),
+            Ctl::CaptureFailed(generation) => reader.event(Event::Failed(generation)),
+            Ctl::Owner => reader.set(|g| g.yielded = held.load(Ordering::Relaxed)),
+            Ctl::Allowed => reader.set(|g| g.allowed = super::screen_glow::allowed()),
+            Ctl::Stop => {}
+        }
+        // A full-screen game, or capture failing, holds the scene itself: the lights get their
+        // own colours back meanwhile, and the next frame after draws them in full.
+        let now_held = reader.gates().scene_held();
+        if now_held != scene_held {
+            scene_held = now_held;
+            if !now_held {
                 again.store(true, Ordering::Relaxed);
                 redraw_lamps(&outputs);
             }
-            scheduler.set(Gate::Away, a);
-            if a {
-                // Nothing draws while away: the keyboard shows the lease's colour, not a
-                // frame that stopped, and Dynamic Lighting devices Windows' own lights.
+            scheduler.set(Gate::Held, now_held);
+            if now_held {
                 keyboard.mailbox.release();
                 lamp_writer.release();
             }
         }
-        Ctl::Paused(p) => {
-            // Pausing hands the frames back through the lease arbiter (the keyboard's own
-            // lights); resuming draws again.
-            if !p {
-                again.store(true, Ordering::Relaxed);
-                redraw_lamps(&outputs);
-            }
-            scheduler.set(Gate::Paused, p);
-            if p {
-                // Paused: Windows' own lights on Dynamic Lighting devices.
-                lamp_writer.release();
-            }
-        }
-        Ctl::Devices => {
-            let (room, cases, lamp_targets) = gather();
-            super::wallpaper_sync::scene_room(room.clone());
-            placed = room.clone();
-            lamp_writer.devices_changed();
-            let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
-            o.set_keyboard_parts(keyboard_parts());
-            o.set_room(room, cases);
-            o.set_lamps(lamp_targets);
-            o.set_keyboard_lamps(keyboard_lamps());
-        }
-        Ctl::KeyRipple(row, col) => {
-            let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
-            let keys = super::scene_triggers::keys();
-            let ring =
-                super::scene_triggers::ripple(&keys, row, col, o.room(), o.effect(), clock.now());
-            if let Some(ring) = ring {
-                o.burst(ring);
-            }
-        }
-        Ctl::LayerSweep(colour) => {
-            let sweep = super::scene_triggers::sweep(colour, clock.now());
-            outputs
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .burst(sweep);
-        }
-        Ctl::Effect(name, effect) => {
-            super::lights_owner::retry("the scene's look changed");
-            // The wallpapers draw the new look on the same clock (#493).
-            super::wallpaper_sync::scene_started(&name, &effect, clock, placed.clone());
-            super::keyboard_facts::scene_look(&name, &effect);
-            outputs
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .set_effect(*effect);
-        }
-        Ctl::KeyboardArrived => {
-            again.store(true, Ordering::Relaxed);
-            // Paired again: the keyboard may be another one, or known only now.
-            outputs
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .set_keyboard_lamps(keyboard_lamps());
-        }
-        Ctl::Stop => {}
     });
     give_back.ended = ended;
+    drop(watch);
+    // Stops the capture first: no picture is handed on after this (its threads end within 1 s).
+    drop(reader);
     drop(away);
     // Joins the frame thread: nothing draws after this.
     drop(scheduler);

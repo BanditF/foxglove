@@ -387,6 +387,14 @@ scanline can run down the monitors, through the case's fans and on into the keys
   then its colour (and background) or palette (**From wallpaper** takes the colours of the
   wallpaper on screen), speed, direction and width. Changes show on the map at once, and on
   the lights too while the scene runs.
+- **Screen glow** (Effects): your lights take the colours at the edges of your screens, like a
+  TV's ambient light. Each device follows the screen edge nearest to where it stands on the Room
+  map; drag it to change that. The first Start asks whether Foxglove may read your screen. The
+  picture never leaves Foxglove and is never saved. While it reads, the tray icon shows an eye,
+  and **Stop** is in the tray panel. **Stop allowing** (under the effect) takes the yes back.
+  **Smoothing:** Quick, Even or Calm. It pauses during full-screen games (not borderless ones),
+  while the PC is locked or the display is off, and with Pause Foxglove. Some streaming services
+  show as black to other apps, so the lights stay dim during them.
 - **Start** sends the scene to the lights; **Stop** puts back the colours from before (or the
   ones you picked for the keyboard or the case meanwhile). A plugin's notification still shows
   over a scene, and nothing is sent while the PC is locked, the display is off or Foxglove is

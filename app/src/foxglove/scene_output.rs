@@ -416,11 +416,13 @@ pub fn keyboard_effect(
             0.0,
             [0, 0],
         ),
-        // Tide's per-key wave has no firmware effect: frames.
+        // Tide's per-key wave has no firmware effect, and Screen glow's colours come from the
+        // screen (#496): frames.
         Effect::Gradient { .. }
         | Effect::Noise { .. }
         | Effect::Tones { .. }
-        | Effect::Tide { .. } => return None,
+        | Effect::Tide { .. }
+        | Effect::Screen { .. } => return None,
     };
     let wire = foxglove_link::protocol::Effect {
         kind,
@@ -592,10 +594,30 @@ pub struct Outputs {
     bursts: Bursts,
     /// Eases the ambient lights (the case's interior light) frame to frame.
     ambient: Ambient,
+    /// Screen glow (#496): each light's eased, flash-limited screen colour, while the look is
+    /// Screen glow.
+    glow: Option<foxglove_scene::Glow>,
+    /// The screens' newest edge colours, from the scene's reader.
+    screen_feed: Option<Arc<super::screen_glow::Feed>>,
+}
+
+/// A Screen glow look's own state, kept across a smoothing change.
+fn glow_for(effect: &Effect, now: Option<foxglove_scene::Glow>) -> Option<foxglove_scene::Glow> {
+    match effect {
+        Effect::Screen { smoothing } => Some(match now {
+            Some(mut g) => {
+                g.smoothing = *smoothing;
+                g
+            }
+            None => foxglove_scene::Glow::new(*smoothing),
+        }),
+        _ => None,
+    }
 }
 
 impl Outputs {
     pub fn new(effect: Effect, room: RoomMap, cases: Vec<CaseTarget>) -> Self {
+        let glow = glow_for(&effect, None);
         let mut o = Outputs {
             effect,
             room: RoomMap::default(),
@@ -615,9 +637,16 @@ impl Outputs {
             keyboard_lamps: None,
             bursts: Bursts::default(),
             ambient: Ambient::new(),
+            glow,
+            screen_feed: None,
         };
         o.set_room(room, cases);
         o
+    }
+
+    /// Where Screen glow finds the screens' newest edge colours (#496).
+    pub fn set_screen_feed(&mut self, feed: Arc<super::screen_glow::Feed>) {
+        self.screen_feed = Some(feed);
     }
 
     /// A ring or sweep over the scene from its next frame on (at most four at once).
@@ -739,6 +768,7 @@ impl Outputs {
     /// frame in full. The ambient lights fade across to the new look rather than jumping (so
     /// the case is written at its own rate until they settle, a few seconds).
     pub fn set_effect(&mut self, effect: Effect) {
+        self.glow = glow_for(&effect, self.glow.take());
         self.effect = effect;
         self.sent_case.clear();
         self.sent_lamps.clear();
@@ -752,6 +782,10 @@ impl Outputs {
         if self.keyboard_again.swap(false, Ordering::Relaxed) {
             self.sent_keyboard = None;
             self.effect_sent = false;
+        }
+        // Screen glow: at most 20 updates a second reach the lights (#496).
+        if self.glow.as_ref().is_some_and(|g| !g.due(t)) {
+            return Vec::new();
         }
         let mut due = self.pacing.due(t);
         if self.keyboard_held.load(Ordering::Relaxed) {
@@ -794,7 +828,11 @@ impl Outputs {
         } else {
             self.effect_sent = false;
         }
-        let mut frame = self.effect.render(&self.room, t);
+        let mut frame = match (self.glow.as_mut(), &self.screen_feed) {
+            (Some(g), Some(feed)) => g.render(&self.room, &feed.latest(), t),
+            (Some(g), None) => g.render(&self.room, &[], t),
+            (None, _) => self.effect.render(&self.room, t),
+        };
         if bursting {
             // `render` lists the lights device by device, in the room's order.
             let places = self.room.devices.iter().flat_map(|d| d.lights.iter());
@@ -875,6 +913,9 @@ impl Outputs {
                 colors,
             });
         }
+        if self.glow.is_some() && !out.is_empty() {
+            super::screen_glow::sent();
+        }
         out
     }
 
@@ -893,7 +934,8 @@ impl Outputs {
         let (first, rest) = parts.split_first()?;
         let rect = rest.iter().fold(first.rect, |r, d| r.union(&d.rect));
         let bounds = &self.room.bounds;
-        let colors = if k.places.is_empty() {
+        // Screen glow's colours aren't a formula of the place: the keyboard's lights mixed.
+        let colors = if k.places.is_empty() || self.glow.is_some() {
             let lights: Vec<Rgb> = frame
                 .lights
                 .iter()
@@ -935,6 +977,61 @@ mod tests {
     use foxglove_scene::{DeviceInfo, DeviceKind, LightSpec, MonitorInfo, Point};
 
     const ORANGE: Rgb = Rgb([0xf0, 0x8a, 0x3c]);
+
+    /// #496 on a recorded frame (the screen's left half blue, its right half red): the case on
+    /// the screen's right takes the right edge's red, the keyboard takes frames (never a firmware
+    /// effect), and at most 20 updates a second go out.
+    #[test]
+    fn screen_glow_lights_the_room_from_the_recorded_edges() {
+        use foxglove_scene::screen::{Edges, ScreenImage, Smoothing};
+        let (room, cases) = desk();
+        let mut o = Outputs::new(
+            Effect::Screen {
+                smoothing: Smoothing::Quick,
+            },
+            room,
+            cases,
+        );
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        let feed = Arc::new(crate::foxglove::screen_glow::Feed::default());
+        o.set_screen_feed(feed.clone());
+        let mut img = ScreenImage::filled(r"\\.\DISPLAY1", 256, 144, [20, 40, 230]);
+        img.paint((128, 0, 256, 144), [230, 20, 20]);
+        feed.put(Edges::of(&img));
+        let (mut updates, mut case, mut keyboard) = (0, None, 0);
+        // The scene's frame thread at 30 a second, for a second.
+        for i in 0..30 {
+            let outs = o.frame(SceneTime(i * 1000 / 30));
+            if !outs.is_empty() {
+                updates += 1;
+            }
+            for out in outs {
+                match out {
+                    Out::Case { colors, .. } => case = Some(colors),
+                    Out::Keyboard(_) => keyboard += 1,
+                    Out::KeyboardEffect(_) => panic!("Screen glow has no firmware effect"),
+                    Out::Lamps { .. } => {}
+                }
+            }
+        }
+        assert!(updates <= 20, "{updates} updates in a second");
+        assert!(keyboard >= 1, "the keyboard gets frames");
+        let case = case.expect("the case was lit");
+        for (zone, [r, _, b]) in &case {
+            assert!(*r > 150 && *b < 120, "zone {zone}: {case:?}");
+        }
+        assert!(keyboard_effect(
+            &Effect::Screen {
+                smoothing: Smoothing::Even
+            },
+            o.room(),
+            &crate::foxglove::boards::lamp_parts(None)
+        )
+        .is_none());
+        // Another look: Screen glow's state goes with it.
+        o.set_effect(crate::foxglove::scene_run::demo_effect());
+        assert!(o.glow.is_none());
+    }
 
     /// The user's desk: one 1440p monitor, the Corne's halves and the 45L with its catalog
     /// zones, as `scene_room` gathers them.

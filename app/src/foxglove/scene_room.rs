@@ -144,6 +144,8 @@ pub fn monitors() -> Vec<MonitorInfo> {
 /// A display change: read the monitors again.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn display_changed() {
+    // Screen glow's capture tries again on any display change (#496); a no-op without a scene.
+    super::scene_run::display_changed();
     let now = imp::read();
     let mut known = MONITORS.lock().unwrap_or_else(|e| e.into_inner());
     if known.as_ref() != Some(&now) {

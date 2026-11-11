@@ -218,7 +218,7 @@ One control, three pills: **Quick · Even · Calm**. Default **Even**.
 | Permission card, title | Let Foxglove read your screen? |
 | Permission card, body | To colour your lights, Foxglove looks at everything on your screens, up to 20 times a second, while Screen glow runs. |
 | Permission card, point 1 | The picture never leaves Foxglove and is never saved. Only the edge colours go to the lights. |
-| Permission card, point 2 | It pauses while a game is full screen, the PC is locked or the display is off. |
+| Permission card, point 2 | It pauses while the PC is locked or the display is off, and during full-screen games (borderless ones keep glowing). |
 | Permission card, point 3 | While it runs, the tray icon shows an eye. Stop it there or here at any time. |
 | Permission card, primary button | Allow and start |
 | Permission card, secondary button | Not now |
@@ -233,6 +233,7 @@ One control, three pills: **Quick · Even · Calm**. Default **Even**.
 | Room card, running hint | Drag a device to change which edge it follows. |
 | Status, running | Running: Screen glow · reading your screen |
 | Status, game | Paused while a game is full screen |
+| Status, presentation | Paused during a presentation |
 | Status, locked | Paused while the PC is locked |
 | Status, display off | Paused while the display is off |
 | Status, Foxglove paused | Paused: Foxglove is paused. Resume it from the tray. |

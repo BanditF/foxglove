@@ -197,6 +197,8 @@ pub fn effect_colour(e: &Effect) -> Rgb {
         Effect::Sweep { stops, .. }
         | Effect::Gradient { stops, .. }
         | Effect::Noise { stops, .. } => stops.first().copied().unwrap_or(Rgb([255, 255, 255])),
+        // Screen glow has no colour of its own: white rings over the screen's colours.
+        Effect::Screen { .. } => Rgb([255, 255, 255]),
     }
 }
 

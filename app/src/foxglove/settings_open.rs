@@ -77,6 +77,11 @@ pub fn publish(hwnd: Option<isize>) {
     HWND.store(hwnd.unwrap_or(0), Ordering::Release);
 }
 
+/// Whether the Settings window is open now (its frame published its handle).
+pub fn window_shown() -> bool {
+    published().is_some()
+}
+
 fn published() -> Option<isize> {
     match HWND.load(Ordering::Acquire) {
         0 => None,

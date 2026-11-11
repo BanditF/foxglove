@@ -11,6 +11,11 @@
 //! running scene's look all go through `scene_run`, which owns the clock, the outputs' pacing
 //! and who holds the lights (#485).
 //!
+//! Screen glow (#496, `screen_glow`) is the last effect. Its first Start shows the permission
+//! card in place of the Effect card's controls; only "Allow and start" gives the yes, and no
+//! other path asks or starts it without one. While it runs the map draws each screen's live edge
+//! strips and a line from each lit device to the stretch it follows.
+//!
 //! The preview animates only while the page is drawn: each frame asks for the next one
 //! [`PREVIEW_INTERVAL`] later (20 a second at most), and not while the window is minimised or
 //! the PC is away (locked, display off). Another page, a closed window or a still effect asks
@@ -32,6 +37,7 @@ use super::scene_looks::{
     self as looks, Background, Chosen, Direction, Kind, Look, Preset, Saved, WallpaperLook,
     PALETTES,
 };
+use super::screen_glow as glow;
 use super::settings_ui::{card, split_row};
 use super::theme;
 
@@ -89,6 +95,21 @@ pub struct View {
     /// The room ids of the focused keyboard's devices, ringed on the map (#801); empty with
     /// one keyboard, where there is nothing to tell apart.
     pub focused: Vec<String>,
+    /// Screen glow (#496).
+    pub screen: ScreenView,
+}
+
+/// What the page knows of Screen glow (#496).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScreenView {
+    /// The user said yes ("Allow and start") and hasn't taken it back.
+    pub allowed: bool,
+    /// A start without the yes was refused (a profile, the last look after a restart).
+    pub refused: bool,
+    /// While Screen glow runs: reading, or what holds it.
+    pub status: Option<glow::Status>,
+    /// The screens' newest edge colours, while it reads.
+    pub edges: Vec<foxglove_scene::Edges>,
 }
 
 /// How the status line reads.
@@ -103,8 +124,19 @@ pub enum Tone {
 /// The scene's status line: stopping, paused for someone else's lights (#491), running, or
 /// not running.
 pub fn status(v: &View) -> (String, Tone) {
+    let screen = v.screen.status.filter(|s| s.on);
     match (&v.running, v.stopping, v.yielded_to) {
         (_, true, _) => ("Stopping: putting the lights back…".into(), Tone::Plain),
+        // Screen glow (#496): reading, or what holds it, in the design's words.
+        (Some(_), false, who) if screen.is_some() => match screen.and_then(|s| s.hold) {
+            Some(h) => (h.words(who), Tone::Warn),
+            None => (glow::RUNNING.into(), Tone::Ok),
+        },
+        (None, false, _) if v.screen.refused && v.look.kind.reads_screen() => {
+            (glow::NEEDS_YES.into(), Tone::Warn)
+        }
+        // No preview before the yes: the hint under the map says what shows once it runs.
+        (None, false, _) if v.look.kind.reads_screen() => ("Not running.".into(), Tone::Muted),
         (Some(_), false, Some(who)) => (format!("Paused for {who}"), Tone::Warn),
         (Some(name), false, None) => (format!("Running: {name}"), Tone::Ok),
         (None, false, _) => ("Not running. The map shows a preview.".into(), Tone::Muted),
@@ -160,6 +192,10 @@ pub struct Draft {
     pub drag: Option<(String, Point)>,
     /// The preview's ambient lights, eased from frame to frame as the scene eases them.
     pub ambient: Ambient,
+    /// Screen glow's permission card shows (Start without the yes, #496).
+    pub asking: bool,
+    /// The card just opened: focus goes to "Not now", so a stray Enter never agrees.
+    pub ask_focus: bool,
 }
 
 /// What a click, a slider or a drag asks for.
@@ -188,6 +224,10 @@ pub enum Intent {
     KeepOnKeyboard(bool),
     /// "Find my LEDs…": to the Lights page, with the wizard open.
     FindLeds,
+    /// Screen glow's "Allow and start" (#496): the yes, then Start.
+    AllowAndStart,
+    /// Screen glow's "Stop allowing": forgets the yes and stops it.
+    StopAllowing,
 }
 
 /// The page's own state between frames.
@@ -219,6 +259,8 @@ static DRAFT: Mutex<Draft> = Mutex::new(Draft {
     name: String::new(),
     drag: None,
     ambient: Ambient::new(),
+    asking: false,
+    ask_focus: false,
 });
 static STOPPING: AtomicBool = AtomicBool::new(false);
 /// The running scene was started by a profile switch ("Start with this profile"), so a switch
@@ -321,12 +363,28 @@ fn show(ui: &mut egui::Ui) {
         lamp_note: lamp_note(st),
         yielded_to: super::lights_owner::yielded_to(),
         focused: st.focused.clone(),
+        screen: screen_view(),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
     animate(&ctx, &view);
     for intent in intents {
         apply(st, &mut draft, intent, &ctx);
+    }
+}
+
+/// Screen glow as it is now.
+fn screen_view() -> ScreenView {
+    let s = glow::status();
+    ScreenView {
+        allowed: glow::allowed(),
+        refused: glow::refused(),
+        status: s.on.then_some(s),
+        edges: if s.reading {
+            glow::live_edges()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -491,7 +549,10 @@ pub fn profile_changed() {
     let running = super::scene_run::running().is_some();
     let by_profile = BY_PROFILE.load(Ordering::Relaxed);
     match super::scene_triggers::on_profile(running, by_profile, chosen.start_with_profile) {
-        super::scene_triggers::ProfileAction::Start => start_by_profile(&chosen),
+        super::scene_triggers::ProfileAction::Start => {
+            start_by_profile(&chosen);
+            tell_unseen(&chosen);
+        }
         super::scene_triggers::ProfileAction::Stop => {
             BY_PROFILE.store(false, Ordering::Relaxed);
             RECHECK.store(true, Ordering::Relaxed);
@@ -509,9 +570,11 @@ pub fn profile_changed() {
                 chosen.look.effect(&room),
             );
             show_art(&chosen);
+            tell_unseen(&chosen);
         }
         super::scene_triggers::ProfileAction::Nothing if RESUME.load(Ordering::Relaxed) => {
             start_by_hand(&chosen);
+            tell_unseen(&chosen);
         }
         super::scene_triggers::ProfileAction::Nothing => {}
     }
@@ -611,6 +674,11 @@ fn stop_by_hand() {
 /// the look that ran when Foxglove closed. A scene still ending makes it wait: the stop thread
 /// decides again ([`after_start`]).
 fn start_by_hand(chosen: &Chosen) {
+    if needs_yes(chosen) {
+        // Nothing to retry: only the user's click gives the yes.
+        RESUME.store(false, Ordering::Relaxed);
+        return;
+    }
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
     let name = scene_name(&chosen.look, &saved);
@@ -636,6 +704,9 @@ fn after_start(started: bool) {
 
 /// A profile's "Start with this profile" starts its scene.
 fn start_by_profile(chosen: &Chosen) {
+    if needs_yes(chosen) {
+        return;
+    }
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
     let name = scene_name(&chosen.look, &saved);
@@ -646,6 +717,35 @@ fn start_by_profile(chosen: &Chosen) {
     } else {
         // A scene is still ending: start once it has (the stop thread decides again).
         RECHECK.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Screen glow without the user's yes (#496): nothing starts, and the page says so.
+fn needs_yes(chosen: &Chosen) -> bool {
+    let refuse = !start_allowed(chosen.look.kind, glow::allowed());
+    if refuse {
+        eprintln!("Foxglove: Screen glow didn't start: it needs the user's yes");
+        glow::set_refused(true);
+        super::scene_run::repaint_page();
+    }
+    refuse
+}
+
+/// Whether a look may start without asking: anything but Screen glow, which needs the yes.
+pub fn start_allowed(kind: Kind, allowed: bool) -> bool {
+    !kind.reads_screen() || allowed
+}
+
+/// Screen glow started (or the look became it) without a click, while Foxglove's window is
+/// closed: one Windows notification says so (#496).
+fn tell_unseen(chosen: &Chosen) {
+    let running_glow = glow::status().on || super::scene_run::running().is_some();
+    if chosen.look.kind.reads_screen()
+        && glow::allowed()
+        && running_glow
+        && !super::settings_open::window_shown()
+    {
+        glow::notify_started_unseen();
     }
 }
 
@@ -694,14 +794,22 @@ const CUSTOM_SCENE: &str = "Custom scene";
 
 /// The name a look runs under: its preset's, or "Custom scene".
 fn scene_name(look: &Look, saved: &[Preset]) -> String {
+    let fallback = if look.kind.reads_screen() {
+        glow::NAME
+    } else {
+        CUSTOM_SCENE
+    };
     looks::named(look, &looks::built_in(), saved)
-        .unwrap_or(CUSTOM_SCENE)
+        .unwrap_or(fallback)
         .to_string()
 }
 
 fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context) {
     match intent {
         Intent::Look { look, save } => {
+            if !look.kind.reads_screen() {
+                draft.asking = false;
+            }
             st.chosen.look = look.clamped();
             if save {
                 looks::save_chosen(&st.chosen);
@@ -712,6 +820,21 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             BY_PROFILE.store(false, Ordering::Relaxed);
             looks::save_chosen(&st.chosen);
             start_by_hand(&st.chosen);
+        }
+        Intent::AllowAndStart => {
+            draft.asking = false;
+            glow::allow();
+            BY_PROFILE.store(false, Ordering::Relaxed);
+            looks::save_chosen(&st.chosen);
+            start_by_hand(&st.chosen);
+            ctx.request_repaint();
+        }
+        Intent::StopAllowing => {
+            glow::forget();
+            if glow::status().on {
+                stop_by_hand();
+            }
+            ctx.request_repaint();
         }
         Intent::WithArt(on) => {
             st.chosen.with_art = on;
@@ -826,11 +949,19 @@ fn show_art(chosen: &Chosen) {
 
 /// When the preview wants its next frame: never while minimised or away, or for a still look.
 pub fn next_frame(kind: Kind, minimised: bool, away: bool) -> Option<Duration> {
-    (!minimised && !away && kind != Kind::Gradient).then_some(PREVIEW_INTERVAL)
+    (!minimised && !away && !matches!(kind, Kind::Gradient | Kind::ScreenGlow))
+        .then_some(PREVIEW_INTERVAL)
 }
 
 fn animate(ctx: &egui::Context, v: &View) {
     let minimised = ctx.input(|i| i.viewport().minimized) == Some(true);
+    if v.look.kind.reads_screen() {
+        // Screen glow's map is a still drawing until it reads; then its live edge strips.
+        if !v.screen.edges.is_empty() && !minimised && !super::away::away() {
+            ctx.request_repaint_after(PREVIEW_INTERVAL);
+        }
+        return;
+    }
     if let Some(after) = next_frame(v.look.kind, minimised, super::away::away()) {
         ctx.request_repaint_after(after);
         #[cfg(test)]
@@ -919,6 +1050,10 @@ fn triggers_card(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         "Changing layer sends one sweep across the room in that layer's overlay colour.",
     );
     ui.weak("Ripples and sweeps show while a scene runs.");
+    // With Foxglove closed nothing reads the screen: Screen glow can't keep running (#496).
+    if v.look.kind.reads_screen() {
+        return;
+    }
     ui.add_space(4.0);
     let mut keep = v.keep_on_keyboard;
     if ui
@@ -944,12 +1079,23 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 {
                     out.push(Intent::Stop);
                 }
-            } else if ui
-                .add(theme::primary_button(ui, "Start"))
-                .on_hover_text("Run this scene on the lights")
-                .clicked()
-            {
-                out.push(Intent::Start);
+            } else {
+                // Screen glow needs a screen (#496), and its first Start asks.
+                let screen = v.look.kind.reads_screen();
+                let no_screen =
+                    screen && !v.room.devices.iter().any(|d| d.kind == DeviceKind::Monitor);
+                let start = ui
+                    .add_enabled(!no_screen, theme::primary_button(ui, "Start"))
+                    .on_hover_text("Run this scene on the lights")
+                    .on_disabled_hover_text(glow::NO_SCREEN);
+                if start.clicked() {
+                    if start_allowed(v.look.kind, v.screen.allowed) {
+                        out.push(Intent::Start);
+                    } else {
+                        draft.asking = true;
+                        draft.ask_focus = true;
+                    }
+                }
             }
             if v.moved
                 && ui
@@ -968,12 +1114,26 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 Tone::Plain => p.text,
                 Tone::Muted => p.muted,
             };
+            // #496: the eye in front of "Running: Screen glow · reading your screen".
+            if reads_now(v) {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 14.0), Sense::hover());
+                super::tray_panel::eye(ui.painter(), rect.center(), 18.0, color);
+            }
             ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
         },
     );
     ui.add_space(6.0);
     room_map(ui, v, draft, out);
     ui.add_space(6.0);
+    if v.look.kind.reads_screen() {
+        let line = if v.screen.status.is_some_and(|s| s.on) {
+            glow::ROOM_RUNNING
+        } else {
+            glow::ROOM_STOPPED
+        };
+        ui.add(egui::Label::new(RichText::new(line).color(p.muted)).wrap());
+        ui.add_space(4.0);
+    }
     ui.add(egui::Label::new(RichText::new(legend(v)).color(p.muted)).wrap());
     if let Some((text, stopped)) = &v.lamp_note {
         let color = if *stopped { p.warn } else { p.muted };
@@ -1018,6 +1178,15 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             },
         );
     }
+}
+
+/// Screen glow runs and reads the screen now (the status line's eye).
+fn reads_now(v: &View) -> bool {
+    !v.stopping
+        && v.running.is_some()
+        && v.screen
+            .status
+            .is_some_and(|s| s.on && s.reading && s.hold.is_none())
 }
 
 /// Which devices the scene lights, in words.
@@ -1180,7 +1349,17 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
         let r = map.rect(&m);
         painter.rect_stroke(r, 3.0, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
     }
-    let mut frame = effect.render(&room, v.t);
+    let live = v.look.kind.reads_screen() && !v.screen.edges.is_empty();
+    let mut frame = if live {
+        // The screen's colours as they are now (the lights ease towards them).
+        foxglove_scene::Glow::new(foxglove_scene::Smoothing::Quick).render(
+            &room,
+            &v.screen.edges,
+            v.t,
+        )
+    } else {
+        effect.render(&room, v.t)
+    };
     if v.look.kind == Kind::Gradient {
         // A still look asks for no more frames, so nothing would finish the fade: show where
         // it settles.
@@ -1290,6 +1469,171 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
             };
             response.on_hover_text_at_pointer(format!("{}{shown} · {lit} · drag to move", d.name));
         }
+    }
+    if live {
+        screen_overlay(&painter, &map, &room, v);
+    }
+}
+
+/// Screen glow's running map (#496): each screen's edge strips in their live colours, and a thin
+/// line from each lit device to the stretch of edge it follows.
+fn screen_overlay(painter: &egui::Painter, map: &Map, room: &RoomMap, v: &View) {
+    use foxglove_scene::screen::{nearest_edge, Edge, MONITOR_PREFIX};
+    let edges = &v.screen.edges;
+    let find = |id: &str| {
+        let name = id.strip_prefix(MONITOR_PREFIX)?;
+        edges.iter().find(|e| e.monitor == name)
+    };
+    for d in room
+        .devices
+        .iter()
+        .filter(|d| d.kind == DeviceKind::Monitor)
+    {
+        let Some(e) = find(&d.id) else { continue };
+        let r = map.rect(&d.rect).shrink(1.5);
+        let depth = (r.width().min(r.height()) * 0.1).clamp(3.0, 10.0);
+        let sides = [
+            (Edge::Top, &e.top),
+            (Edge::Bottom, &e.bottom),
+            (Edge::Left, &e.left),
+            (Edge::Right, &e.right),
+        ];
+        for (side, colours) in sides {
+            let n = colours.len().max(1) as f32;
+            for (i, c) in colours.iter().enumerate() {
+                let (a, b) = (i as f32 / n, (i + 1) as f32 / n);
+                let seg = match side {
+                    Edge::Top => egui::Rect::from_x_y_ranges(
+                        r.left() + r.width() * a..=r.left() + r.width() * b,
+                        r.top()..=r.top() + depth,
+                    ),
+                    Edge::Bottom => egui::Rect::from_x_y_ranges(
+                        r.left() + r.width() * a..=r.left() + r.width() * b,
+                        r.bottom() - depth..=r.bottom(),
+                    ),
+                    Edge::Left => egui::Rect::from_x_y_ranges(
+                        r.left()..=r.left() + depth,
+                        r.top() + r.height() * a..=r.top() + r.height() * b,
+                    ),
+                    Edge::Right => egui::Rect::from_x_y_ranges(
+                        r.right() - depth..=r.right(),
+                        r.top() + r.height() * a..=r.top() + r.height() * b,
+                    ),
+                };
+                painter.rect_filled(seg, 0.0, color(*c));
+            }
+        }
+    }
+    for d in room
+        .devices
+        .iter()
+        .filter(|d| d.kind != DeviceKind::Monitor && v.is_lit(&d.id))
+    {
+        let from = d.rect.centre();
+        let Some(spot) = nearest_edge(room, from) else {
+            continue;
+        };
+        let c = find(&spot.monitor).map_or(Rgb::WHITE, |e| e.at(spot.edge, spot.along));
+        painter.line_segment(
+            [map.pos(from), map.pos(spot.at)],
+            Stroke::new(1.0, color(c).gamma_multiply(0.8)),
+        );
+        painter.circle_filled(map.pos(spot.at), 2.5, color(c));
+    }
+}
+
+/// The permission card (#496), in place of the Effect card's controls after the first Start:
+/// what Screen glow reads, the three points, Allow and start and Not now (focused; Esc too).
+fn permission_card(ui: &mut egui::Ui, draft: &mut Draft, out: &mut Vec<Intent>) {
+    let p = theme::palette(ui);
+    egui::Frame::new()
+        .fill(p.surface_raised)
+        .stroke(Stroke::new(1.0, p.accent))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(
+                egui::Label::new(
+                    RichText::new(glow::ASK_TITLE)
+                        .size(16.0)
+                        .strong()
+                        .color(p.text_strong),
+                )
+                .wrap(),
+            );
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(glow::ASK_BODY).color(p.text)).wrap());
+            ui.add_space(6.0);
+            for point in glow::ASK_POINTS {
+                ui.horizontal_top(|ui| {
+                    ui.label(RichText::new("•").color(p.accent));
+                    ui.add(egui::Label::new(RichText::new(point).color(p.text)).wrap());
+                });
+            }
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                // Reading order: Allow and start, Not now. A screen reader hears the question
+                // with each button (the title and body as its description).
+                let question = format!("{} {}", glow::ASK_TITLE, glow::ASK_BODY);
+                let allow = ui.add(theme::primary_button(ui, glow::ALLOW));
+                let not_now = ui.button(glow::NOT_NOW);
+                for id in [allow.id, not_now.id] {
+                    ui.ctx()
+                        .accesskit_node_builder(id, |n| n.set_description(question.clone()));
+                }
+                if std::mem::take(&mut draft.ask_focus) {
+                    not_now.request_focus();
+                }
+                if allow.clicked() {
+                    draft.asking = false;
+                    out.push(Intent::AllowAndStart);
+                }
+                if not_now.clicked() {
+                    draft.asking = false;
+                }
+            });
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(glow::ASK_FOOTNOTE).color(p.muted)).wrap());
+        });
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        draft.asking = false;
+    }
+}
+
+/// Screen glow's controls (#496): what it does, Smoothing, and whether Foxglove may read the
+/// screen, with "Stop allowing".
+fn screen_controls(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    let p = theme::palette(ui);
+    let look = &v.look;
+    ui.add(egui::Label::new(RichText::new(glow::DESCRIPTION).color(p.text)).wrap());
+    ui.add_space(6.0);
+    ui.label(theme::caps_label(ui, glow::SMOOTHING));
+    let now = glow::smoothing_for(look.smoothing);
+    ui.horizontal_wrapped(|ui| {
+        for s in foxglove_scene::Smoothing::ALL {
+            if theme::pill(ui, now == s, glow::smoothing_label(s)).clicked() && now != s {
+                out.push(Intent::Look {
+                    look: Look {
+                        smoothing: Some(s),
+                        ..look.clone()
+                    },
+                    save: true,
+                });
+            }
+        }
+    });
+    ui.add(egui::Label::new(RichText::new(glow::SMOOTHING_HINT).color(p.muted)).wrap());
+    ui.add_space(8.0);
+    if v.screen.allowed {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(glow::ALLOWED_LINE).color(p.muted));
+            if ui.link(glow::STOP_ALLOWING).clicked() {
+                out.push(Intent::StopAllowing);
+            }
+        });
+    } else {
+        ui.label(RichText::new(glow::NOT_ALLOWED_LINE).color(p.muted));
     }
 }
 
@@ -1434,6 +1778,13 @@ fn strip(painter: &egui::Painter, rect: egui::Rect, stops: &[Rgb]) {
 
 /// A look's colours, for its chip in the preset list.
 fn look_stops(look: &Look) -> Vec<Rgb> {
+    if look.kind.reads_screen() {
+        // Screen glow has no colours of its own: a screen's grey.
+        return vec![
+            foxglove_scene::effects::SCREEN_IDLE,
+            Rgb([0x9a, 0xa0, 0xa8]),
+        ];
+    }
     if look.kind.uses_colour() {
         vec![Rgb(look.colour), look.background.rgb()]
     } else {
@@ -1444,6 +1795,11 @@ fn look_stops(look: &Look) -> Vec<Rgb> {
 /// The effect and its parameters, and saving the look as a preset.
 fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
     let look = &v.look;
+    // Screen glow's first Start: the permission card instead of the controls (#496).
+    if look.kind.reads_screen() && draft.asking {
+        permission_card(ui, draft, out);
+        return;
+    }
     let mut set = |look: Look, save: bool| out.push(Intent::Look { look, save });
     ui.horizontal_wrapped(|ui| {
         for k in Kind::ALL {
@@ -1463,6 +1819,12 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         }
     });
     ui.add_space(4.0);
+    if look.kind.reads_screen() {
+        screen_controls(ui, v, out);
+        ui.add_space(6.0);
+        save_row(ui, draft, out);
+        return;
+    }
     if look.kind.uses_colour() {
         ui.label(theme::caps_label(ui, "Colour"));
         ui.horizontal_wrapped(|ui| {
@@ -1775,6 +2137,7 @@ pub(crate) mod tests {
             lamp_note: None,
             yielded_to: None,
             focused: Vec::new(),
+            screen: ScreenView::default(),
         }
     }
 
@@ -1837,7 +2200,122 @@ pub(crate) mod tests {
             lamp_note: None,
             yielded_to: None,
             focused: Vec::new(),
+            screen: ScreenView::default(),
         }
+    }
+
+    /// #496: Screen glow never starts without the yes, whoever asks: the page's Start shows the
+    /// permission card instead, and a profile, the last look or the API is refused.
+    #[test]
+    fn screen_glow_needs_the_yes() {
+        assert!(!start_allowed(Kind::ScreenGlow, false));
+        assert!(start_allowed(Kind::ScreenGlow, true));
+        for k in Kind::ALL.into_iter().filter(|k| *k != Kind::ScreenGlow) {
+            assert!(start_allowed(k, false), "{k:?} needs no yes");
+        }
+        let glow = Effect::Screen {
+            smoothing: foxglove_scene::Smoothing::Even,
+        };
+        // The one gate every start goes through (`scene_run::start`, `set_effect`).
+        assert!(!crate::foxglove::scene_run::may_run(&glow, false));
+        assert!(crate::foxglove::scene_run::may_run(&glow, true));
+        assert!(crate::foxglove::scene_run::may_run(
+            &crate::foxglove::scene_run::demo_effect(),
+            false
+        ));
+        // Its map is a still drawing until it reads.
+        assert_eq!(next_frame(Kind::ScreenGlow, false, false), None);
+        // Its scene's name, even with a smoothing picked.
+        let look = Look {
+            kind: Kind::ScreenGlow,
+            smoothing: Some(foxglove_scene::Smoothing::Calm),
+            ..Look::default()
+        };
+        assert_eq!(scene_name(&look, &[]), "Screen glow");
+        assert_eq!(
+            look.effect(&RoomMap::default()),
+            Effect::Screen {
+                smoothing: foxglove_scene::Smoothing::Calm
+            }
+        );
+    }
+
+    /// #496: the status line while Screen glow reads, while each gate holds it, and after a
+    /// start without the yes was refused.
+    #[test]
+    fn the_status_says_what_screen_glow_is_doing() {
+        use crate::foxglove::screen_glow::{preview_status, Hold};
+        let glow = Look {
+            kind: Kind::ScreenGlow,
+            ..Look::default()
+        };
+        let running = |status, yielded_to| View {
+            look: glow.clone(),
+            running: Some("Screen glow".into()),
+            yielded_to,
+            screen: ScreenView {
+                allowed: true,
+                status: Some(status),
+                ..ScreenView::default()
+            },
+            ..sample()
+        };
+        assert_eq!(
+            status(&running(preview_status(true, None), None)),
+            (
+                "Running: Screen glow · reading your screen".to_string(),
+                Tone::Ok
+            )
+        );
+        for (hold, words) in [
+            (Hold::Game, "Paused while a game is full screen"),
+            (Hold::Locked, "Paused while the PC is locked"),
+            (Hold::DisplayOff, "Paused while the display is off"),
+            (
+                Hold::Paused,
+                "Paused: Foxglove is paused. Resume it from the tray.",
+            ),
+            (
+                Hold::Failed,
+                "Can't read the screen right now. Foxglove tries again when the display changes.",
+            ),
+        ] {
+            assert_eq!(
+                status(&running(preview_status(false, Some(hold)), None)),
+                (words.to_string(), Tone::Warn)
+            );
+        }
+        assert_eq!(
+            status(&running(
+                preview_status(false, Some(Hold::Yielded)),
+                Some("Windows Dynamic Lighting")
+            ))
+            .0,
+            "Paused for Windows Dynamic Lighting"
+        );
+        // Picked, not running: no preview before the yes, so no "The map shows a preview".
+        let stopped = View {
+            look: glow.clone(),
+            running: None,
+            ..sample()
+        };
+        assert_eq!(status(&stopped), ("Not running.".to_string(), Tone::Muted));
+        let refused = View {
+            look: glow.clone(),
+            running: None,
+            screen: ScreenView {
+                refused: true,
+                ..ScreenView::default()
+            },
+            ..sample()
+        };
+        assert_eq!(
+            status(&refused),
+            (
+                "Screen glow didn't start: it needs your yes. Pick it and press Start.".to_string(),
+                Tone::Warn
+            )
+        );
     }
 
     /// #491: while the scene steps aside the status says for whom, in the warning tone; after

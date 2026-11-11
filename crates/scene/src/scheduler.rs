@@ -80,6 +80,9 @@ pub enum Gate {
     Away,
     /// Foxglove is paused.
     Paused,
+    /// The scene can't draw for a reason of its own: Screen glow while a game is full screen
+    /// or the screen can't be read (#496).
+    Held,
 }
 
 /// The gates' state.
@@ -88,12 +91,14 @@ pub struct Gates {
     pub scene: bool,
     pub away: bool,
     pub paused: bool,
+    pub held: bool,
 }
 
 impl Gates {
-    /// Frames are drawn only with a scene, someone present and Foxglove not paused.
+    /// Frames are drawn only with a scene, someone present, Foxglove not paused and the scene
+    /// not held.
     pub fn open(&self) -> bool {
-        self.scene && !self.away && !self.paused
+        self.scene && !self.away && !self.paused && !self.held
     }
 
     fn set(&mut self, gate: Gate, on: bool) {
@@ -101,6 +106,7 @@ impl Gates {
             Gate::Scene => self.scene = on,
             Gate::Away => self.away = on,
             Gate::Paused => self.paused = on,
+            Gate::Held => self.held = on,
         }
     }
 }
@@ -261,6 +267,7 @@ mod tests {
         for (gate, closed) in [
             (Gate::Away, true),
             (Gate::Paused, true),
+            (Gate::Held, true),
             (Gate::Scene, false),
         ] {
             s.set(gate, closed);
@@ -297,7 +304,8 @@ mod tests {
             Gates {
                 scene: true,
                 away: false,
-                paused: false
+                paused: false,
+                held: false
             }
         );
     }
