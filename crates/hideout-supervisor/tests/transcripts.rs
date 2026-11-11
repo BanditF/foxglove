@@ -4,11 +4,12 @@
 //! scenario below plays the events on a fake clock and checks the facts and the expectations.
 //! The router test (crates/hideout-router/tests/transcripts.rs) skips these files.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use hideout_supervisor::policy::{Cmd, Ev, Policy, State};
+use hideout_supervisor::words;
 use serde_json::Value;
 
 const ART: &str = "foxglove.example-art";
@@ -26,6 +27,8 @@ struct Sim {
     cmds: Vec<(u64, Cmd)>,
     facts: BTreeMap<String, Value>,
     instance: u64,
+    /// Each module's current instance (the driver's answers to its launches).
+    instances: BTreeMap<String, u64>,
     /// The state fact right after the last crash.
     after_crash: Option<String>,
 }
@@ -40,6 +43,7 @@ impl Sim {
             cmds: Vec::new(),
             facts: BTreeMap::new(),
             instance: 0,
+            instances: BTreeMap::new(),
             after_crash: None,
         }
     }
@@ -49,23 +53,36 @@ impl Sim {
     }
 
     fn take(&mut self, cmds: Vec<Cmd>) {
-        let mut launched = false;
+        let mut launched = Vec::new();
         for c in cmds {
             if let Cmd::Publish { key, value } = &c {
                 self.facts.insert(key.clone(), value.clone());
             }
-            launched |= matches!(c, Cmd::Launch { .. });
+            if let Cmd::Launch { id } = &c {
+                launched.push(id.clone());
+            }
             self.cmds.push((self.ms(), c));
         }
         // The driver answers a launch with the instance it started.
-        if launched {
+        for id in launched {
             self.instance += 1;
+            self.instances.insert(id.clone(), self.instance);
             let ev = Ev::Started {
-                id: ART.into(),
+                id,
                 instance: self.instance,
             };
             let more = self.p.handle(ev, self.now);
             self.take(more);
+        }
+    }
+
+    /// Records commands without answering their launches (a launch that fails in the driver).
+    fn take_quiet(&mut self, cmds: Vec<Cmd>) {
+        for c in cmds {
+            if let Cmd::Publish { key, value } = &c {
+                self.facts.insert(key.clone(), value.clone());
+            }
+            self.cmds.push((self.ms(), c));
         }
     }
 
@@ -99,7 +116,7 @@ impl Sim {
 
     fn crash(&mut self, s: u64) {
         self.at(s * 1000);
-        let instance = self.instance;
+        let instance = self.instances.get(ART).copied().unwrap_or(0);
         self.ev(Ev::Exited {
             id: ART.into(),
             instance,
@@ -135,6 +152,98 @@ impl Sim {
             .filter(|c| matches!(c, Cmd::Notify { .. }))
             .collect()
     }
+
+    /// A known, enabled module that starts at enable, with an optional previous version.
+    fn known(&mut self, id: &str, name: &str, previous: Option<&str>) {
+        self.ev(Ev::Known {
+            id: id.into(),
+            name: name.into(),
+            enabled: true,
+            at_enable: true,
+            previous: previous.map(String::from),
+        });
+    }
+
+    fn ready(&mut self, id: &str) {
+        self.ev(Ev::Ready { id: id.into() });
+    }
+
+    /// `module.<id>.<key>` as a string, `None` for null or unset.
+    fn fact(&self, id: &str, key: &str) -> Option<&str> {
+        self.facts
+            .get(&format!("module.{id}.{key}"))
+            .and_then(Value::as_str)
+    }
+
+    /// The commands given since `from` (an index into `cmds`).
+    fn since(&self, from: usize) -> Vec<&Cmd> {
+        self.cmds[from..].iter().map(|(_, c)| c).collect()
+    }
+
+    /// Ids of the launches and kills since `from`.
+    fn touched(&self, from: usize) -> BTreeSet<String> {
+        self.since(from)
+            .into_iter()
+            .filter_map(|c| match c {
+                Cmd::Launch { id } | Cmd::Kill { id } | Cmd::Exit { id } => Some(id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Running Art, with an update staged (`asks`: the permissions it adds, in words).
+    fn staged(&mut self, asks: Option<&str>) {
+        self.known(ART, NAME, Some("0.3.0"));
+        self.ready(ART);
+        self.ev(Ev::UpdateStaged {
+            id: ART.into(),
+            version: "0.5.0".into(),
+            previous: "0.4.0".into(),
+            asks: asks.map(String::from),
+        });
+    }
+}
+
+const LINK: &str = "foxglove.example-link";
+const LINK_NAME: &str = "Example Link";
+const LIGHTS: &str = "hideout.example-lights";
+
+fn has(cmds: &[&Cmd], f: impl Fn(&Cmd) -> bool) -> bool {
+    cmds.iter().any(|c| f(c))
+}
+
+fn order(cmds: &[&Cmd]) -> (Option<usize>, Option<usize>) {
+    (
+        cmds.iter().position(|c| matches!(c, Cmd::RollBack { .. })),
+        cmds.iter().position(|c| matches!(c, Cmd::Launch { .. })),
+    )
+}
+
+/// The ways out and the UI name in a state transcript's `expect`, against the words.
+fn names(ex: &Value, ui: &str, ways: &[&str]) -> Result<(), String> {
+    // The vectors write "..." for the ellipsis and "<previous>" for a version.
+    let plain = |s: &str| s.replace('\u{2026}', "...");
+    if ex["ui_name"].as_str().map(plain) != Some(plain(ui)) {
+        return Err(format!("ui name {} vs {ui}", ex["ui_name"]));
+    }
+    let want: Vec<&str> = ex["ways_out"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let same = want.len() == ways.len()
+        && want
+            .iter()
+            .zip(ways)
+            .all(|(w, g)| match w.split_once(" <") {
+                Some((head, _)) => g.starts_with(&format!("{head} ")),
+                None => w == g,
+            });
+    if !same {
+        return Err(format!("ways out {want:?} vs {ways:?}"));
+    }
+    Ok(())
 }
 
 /// The `facts.changed` values a transcript says the hub publishes for `module.<id>.state`.
@@ -512,37 +621,387 @@ fn play(file: &str, doc: &Value) -> Result<(), String> {
             )?;
             check(s.p.crashes(ART, s.now) == 0, "counted a crash")
         }
+        "supervisor/root-cause-once.json" => {
+            // Art requires Link; Lights opens a channel on Art. Link crashes: both read Waiting
+            // for Link (the root, named once), and only Link restarts (§4.4, §7.8).
+            for (id, name) in [(LINK, LINK_NAME), (ART, NAME), (LIGHTS, "Example Lights")] {
+                s.known(id, name, None);
+            }
+            s.ev(Ev::Depends {
+                id: ART.into(),
+                on: [LINK.to_string()].into(),
+            });
+            s.ev(Ev::Depends {
+                id: LIGHTS.into(),
+                on: [ART.to_string()].into(),
+            });
+            for id in [LINK, ART, LIGHTS] {
+                s.ready(id);
+            }
+            let from = s.cmds.len();
+            s.at(1_000);
+            let instance = s.instances[LINK];
+            s.ev(Ev::Exited {
+                id: LINK.into(),
+                instance,
+                code: 1,
+            });
+            check(
+                published_states(doc) == vec![s.state().unwrap_or_default().to_string()],
+                "state fact",
+            )?;
+            check(
+                s.fact(LIGHTS, "state") == Some("waiting"),
+                "lights not waiting",
+            )?;
+            check(
+                s.fact(ART, "waiting") == Some(LINK) && s.fact(LIGHTS, "waiting") == Some(LINK),
+                "the root isn't the one named",
+            )?;
+            check(
+                s.fact(ART, "reason").is_some_and(|r| r.contains(LINK_NAME)),
+                "reason doesn't name the root",
+            )?;
+            // The tray: only the root has a status line of its own ("Example Link:
+            // Restarting"); the waiting ones point at it.
+            let own: Vec<&str> = [LINK, ART, LIGHTS]
+                .into_iter()
+                .filter(|id| !matches!(s.fact(id, "state"), Some("running" | "waiting")))
+                .collect();
+            check(
+                own == vec![LINK]
+                    && ex["tray_lines"][0] == format!("{LINK_NAME}: Restarting")
+                    && s.fact(LINK, "state") == Some("restarting"),
+                "the tray shows more than the root",
+            )?;
+            // Back: the restart starts only Link, and the dependents read running again.
+            let due = s.p.restart_at(LINK).unwrap();
+            s.at((due - s.t0).as_millis() as u64);
+            s.ready(LINK);
+            let restarted: Vec<String> = ex["hub_restarted"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            check(
+                s.touched(from).into_iter().collect::<Vec<_>>() == restarted,
+                "restarted a dependent",
+            )?;
+            check(
+                s.fact(ART, "state") == Some("running")
+                    && s.fact(LIGHTS, "state") == Some("running")
+                    && s.fact(ART, "waiting").is_none(),
+                "dependents not running again",
+            )
+        }
+        "supervisor/state-waiting.json" => {
+            s.known(LINK, LINK_NAME, None);
+            s.known(ART, NAME, None);
+            s.ev(Ev::Depends {
+                id: ART.into(),
+                on: [LINK.to_string()].into(),
+            });
+            s.ready(LINK);
+            s.ready(ART);
+            // The provider turned off (a channel provider can be; `requires` refuses it).
+            let from = s.cmds.len();
+            s.ev(Ev::Disable { id: LINK.into() });
+            check(
+                published_states(doc) == vec![s.state().unwrap_or_default().to_string()],
+                "state fact",
+            )?;
+            check(!s.touched(from).contains(ART), "the dependent was stopped")?;
+            let root = s.fact(ART, "waiting").unwrap();
+            check(root == LINK, "waiting names the wrong module")?;
+            names(
+                &ex,
+                &words::waiting_for(LINK_NAME),
+                &[&words::go_to(LINK_NAME)],
+            )
+        }
+        "supervisor/state-needs-hub.json" => {
+            // At hub start: the manifest's hub isn't served, so the driver knows it without a
+            // start and says so.
+            s.ev(Ev::Known {
+                id: ART.into(),
+                name: NAME.into(),
+                enabled: true,
+                at_enable: false,
+                previous: Some("0.4.0".into()),
+            });
+            s.ev(Ev::NeedsHub { id: ART.into() });
+            check(
+                published_states(doc) == vec![s.state().unwrap_or_default().to_string()],
+                "state fact",
+            )?;
+            check(s.fact(ART, "previous") == Some("0.4.0"), "previous fact")?;
+            for ev in [
+                Ev::Activate { id: ART.into() },
+                Ev::StartAgain { id: ART.into() },
+                Ev::Enable { id: ART.into() },
+            ] {
+                s.ev(ev);
+            }
+            check(s.launches().is_empty(), "started")?;
+            names(
+                &ex,
+                words::NEEDS_HUB,
+                &[words::UPDATE_HIDEOUT, &words::go_back("0.4.0")],
+            )?;
+            // Go back: the rollback, then the start.
+            let from = s.cmds.len();
+            s.ev(Ev::GoBack { id: ART.into() });
+            check(
+                matches!(order(&s.since(from)), (Some(r), Some(l)) if r < l),
+                "Go back didn't roll back then start",
+            )?;
+            // At a launch (the driver's answer instead of Started): the same state.
+            let mut s = Sim::new();
+            s.p.handle(
+                Ev::Known {
+                    id: ART.into(),
+                    name: NAME.into(),
+                    enabled: true,
+                    at_enable: false,
+                    previous: None,
+                },
+                s.now,
+            );
+            let cmds = s.p.handle(Ev::Activate { id: ART.into() }, s.now);
+            s.take_quiet(cmds);
+            s.ev(Ev::NeedsHub { id: ART.into() });
+            check(s.state() == Some("needs-hub"), "not needs-hub at a launch")
+        }
+        "supervisor/state-quarantined.json" => {
+            s.known(ART, NAME, Some("0.4.0"));
+            s.ready(ART);
+            s.ev(Ev::Quarantine { id: ART.into() });
+            check(
+                published_states(doc) == vec![s.state().unwrap_or_default().to_string()],
+                "state fact",
+            )?;
+            check(
+                has(&s.since(0), |c| matches!(c, Cmd::Kill { .. })),
+                "not stopped",
+            )?;
+            check(
+                s.fact(ART, "reason").is_some_and(|r| !r.is_empty()),
+                "no reason",
+            )?;
+            // Its exit is no crash; nothing starts it but the card.
+            s.ev(Ev::Exited {
+                id: ART.into(),
+                instance: s.instances[ART],
+                code: 1,
+            });
+            s.ev(Ev::Activate { id: ART.into() });
+            s.at(120_000);
+            check(s.launches().len() == 1, "started by itself")?;
+            check(s.p.crashes(ART, s.now) == 0, "counted as a crash")?;
+            names(
+                &ex,
+                &words::quarantined_title(NAME),
+                &[words::START_AGAIN, &words::go_back("0.4.0")],
+            )?;
+            s.ev(Ev::StartAgain { id: ART.into() });
+            check(s.launches().len() == 2, "Start again didn't start it")?;
+            // Go back instead: the rollback before the start.
+            let mut s = Sim::new();
+            s.known(ART, NAME, Some("0.4.0"));
+            s.ready(ART);
+            s.ev(Ev::Quarantine { id: ART.into() });
+            let from = s.cmds.len();
+            s.ev(Ev::GoBack { id: ART.into() });
+            check(
+                matches!(order(&s.since(from)), (Some(r), Some(l)) if r < l),
+                "Go back didn't roll back then start",
+            )
+        }
+        "supervisor/state-update-busy.json" => {
+            s.staged(None);
+            check(
+                has(&s.since(0), |c| {
+                    matches!(c, Cmd::Drain { force: false, .. })
+                }),
+                "no drain",
+            )?;
+            let busy = |s: &mut Sim| {
+                s.ev(Ev::Drained {
+                    id: ART.into(),
+                    busy: Some("a flash running".into()),
+                })
+            };
+            busy(&mut s);
+            check(
+                published_states(doc) == vec![s.state().unwrap_or_default().to_string()],
+                "state fact",
+            )?;
+            let said = doc["steps"][2]["msg"]["params"]["value"].as_str();
+            check(s.fact(ART, "reason") == said, "reason line")?;
+            names(&ex, words::UPDATE_READY, &[words::FORCE, words::NOT_NOW])?;
+            // Never a timer: drained again only on module.idle or Force (UX6).
+            let from = s.cmds.len();
+            s.at(3_600_000);
+            check(s.since(from).is_empty(), "drained on a timer")?;
+            s.ev(Ev::Idle { id: ART.into() });
+            check(
+                has(&s.since(from), |c| {
+                    matches!(c, Cmd::Drain { force: false, .. })
+                }),
+                "not drained on module.idle",
+            )?;
+            busy(&mut s);
+            s.ev(Ev::Force { id: ART.into() });
+            check(
+                has(&s.since(from), |c| {
+                    matches!(c, Cmd::Drain { force: true, .. })
+                }),
+                "Force didn't drain",
+            )?;
+            // A forced drain swaps whatever it answers.
+            busy(&mut s);
+            check(s.state() == Some("updating"), "Force didn't swap")?;
+            // Not now on another busy update keeps the old version running.
+            let mut s = Sim::new();
+            s.staged(None);
+            busy(&mut s);
+            s.ev(Ev::NotNow { id: ART.into() });
+            check(
+                s.state() == Some("running") && s.launches().len() == 1,
+                "Not now",
+            )
+        }
+        "supervisor/state-updating.json" => {
+            s.staged(None);
+            s.at(10_000);
+            let from = s.cmds.len();
+            s.ev(Ev::Drained {
+                id: ART.into(),
+                busy: None,
+            });
+            check(
+                published_states(doc) == vec![s.state().unwrap_or_default().to_string()],
+                "state fact",
+            )?;
+            check(
+                s.fact(ART, "reason") == Some(words::PLACE_KEPT),
+                "reason line",
+            )?;
+            check(
+                has(&s.since(from), |c| matches!(c, Cmd::Exit { .. })),
+                "no module.exit",
+            )?;
+            check(s.launches().len() == 1, "started before the old one exited")?;
+            // The old one exits: the new one starts, still "Updating…", then running.
+            s.at(10_200);
+            s.ev(Ev::Exited {
+                id: ART.into(),
+                instance: s.instances[ART],
+                code: 0,
+            });
+            check(s.launches().len() == 2, "the new version didn't start")?;
+            check(
+                s.state() == Some("updating"),
+                "not updating while it starts",
+            )?;
+            s.at(10_600);
+            s.ready(ART);
+            check(s.state() == Some("running"), "not running after the swap")?;
+            let states: Vec<&str> = s.cmds[from..]
+                .iter()
+                .filter_map(|(_, c)| match c {
+                    Cmd::Publish { key, value } if key.ends_with(".state") => value.as_str(),
+                    _ => None,
+                })
+                .collect();
+            check(
+                states == ["updating", "running"],
+                &format!("states in the swap {states:?}"),
+            )?;
+            check(s.p.crashes(ART, s.now) == 0, "the swap counted a crash")?;
+            names(&ex, words::UPDATING, &[])?;
+            // An old instance that doesn't exit is ended after 5 s: no crash, and the new one
+            // starts on its end.
+            let mut s = Sim::new();
+            s.staged(None);
+            s.ev(Ev::Drained {
+                id: ART.into(),
+                busy: None,
+            });
+            s.at(5_000);
+            check(
+                has(&s.since(0), |c| matches!(c, Cmd::Kill { .. })),
+                "not ended after 5 s",
+            )?;
+            s.ev(Ev::Exited {
+                id: ART.into(),
+                instance: s.instances[ART],
+                code: 1,
+            });
+            check(
+                s.p.crashes(ART, s.now) == 0 && s.launches().len() == 2,
+                "a stuck old instance counted a crash or blocked the start",
+            )
+        }
+        "supervisor/state-update-waiting.json" | "supervisor/update-waiting-permission.json" => {
+            let asks = words::update_asks(Some("see every key you press"), false);
+            s.staged(Some(&asks));
+            if file.ends_with("state-update-waiting.json") {
+                check(
+                    published_states(doc) == vec![s.state().unwrap_or_default().to_string()],
+                    "state fact",
+                )?;
+                names(&ex, words::UPDATE_WAITING, &[words::REVIEW, words::NOT_NOW])?;
+                check(s.fact(ART, "reason") == Some(asks.as_str()), "reason line")?;
+            } else {
+                check(s.state() == ex["state"].as_str(), "state")?;
+            }
+            // The old version keeps running: no drain, stop or start; no modal (notification).
+            let quiet = !has(&s.since(0), |c| {
+                matches!(
+                    c,
+                    Cmd::Drain { .. } | Cmd::Exit { .. } | Cmd::Kill { .. } | Cmd::Notify { .. }
+                )
+            });
+            check(
+                quiet && s.launches().len() == 1,
+                "the old version didn't keep running quietly",
+            )?;
+            check(
+                ex.get("modal_at_signin").is_none_or(|m| m == false) && s.notifies().is_empty(),
+                "a modal",
+            )?;
+            // Not now, then Review from the Modules page: drained, then the swap.
+            s.ev(Ev::NotNow { id: ART.into() });
+            check(s.state() == Some("running"), "Not now")?;
+            s.ev(Ev::Review { id: ART.into() });
+            check(
+                has(&s.since(0), |c| matches!(c, Cmd::Drain { .. })),
+                "Review didn't drain",
+            )?;
+            s.ev(Ev::Drained {
+                id: ART.into(),
+                busy: None,
+            });
+            let after = doc["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|st| st["expect"]["state"].as_str())
+                .unwrap_or("updating");
+            check(s.state() == Some(after), "not updating after Review")
+        }
         other => Err(format!("no scenario for {other}")),
     }
 }
 
 /// Supervisor files with no scenario here, and why.
-const NOT_HERE: &[(&str, &str)] = &[
-    (
-        "supervisor/provider-gone-error-2.json",
-        "router behaviour, run by the router test",
-    ),
-    (
-        "supervisor/root-cause-once.json",
-        "the requires graph and Waiting for (later phase)",
-    ),
-    (
-        "supervisor/state-waiting.json",
-        "the requires graph and Waiting for (later phase)",
-    ),
-    ("supervisor/state-needs-hub.json", "the update step (H2.x)"),
-    (
-        "supervisor/state-quarantined.json",
-        "the panel host's quarantine (§5.5)",
-    ),
-    ("supervisor/state-update-busy.json", "hot swap (§7.6)"),
-    ("supervisor/state-update-waiting.json", "hot swap (§7.6)"),
-    ("supervisor/state-updating.json", "hot swap (§7.6)"),
-    (
-        "supervisor/update-waiting-permission.json",
-        "hot swap and the permission dialog",
-    ),
-];
+const NOT_HERE: &[(&str, &str)] = &[(
+    "supervisor/provider-gone-error-2.json",
+    "router behaviour, run by the router test",
+)];
 
 /// Files from other folders that are the supervisor's.
 const ALSO: &[&str] = &[
@@ -576,7 +1035,7 @@ fn supervisor_transcripts_pass() {
         }
     }
     assert!(failed.is_empty(), "failed:\n{}", failed.join("\n"));
-    assert!(ran >= 14, "only {ran} ran");
+    assert!(ran >= 22, "only {ran} ran");
 }
 
 #[test]

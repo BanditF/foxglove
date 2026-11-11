@@ -14,6 +14,21 @@ design, `review/hideout-modular-design.md` ("the design"); this spec links to it
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.10, clarifications** (#983): the supervisor's last states, made exact. **Waiting** (§4.4, §7.8): a running
+  module whose `requires` or `channel.open:` provider is down reads `waiting` and names the
+  root of the chain in the new fact `module.<id>.waiting` (an id); nothing is restarted or
+  stopped for it, and it reads `running` again once the root is back. **needs-hub** is found at
+  hub start or at a launch; nothing but Go back starts it. **quarantined** (§5.5) stops the
+  module: it doesn't run while its panels are quarantined, and only Start again or Go back
+  starts it. **Hot swap** (§7.6): Force sends `module.drain {reason: "force"}` and swaps
+  whatever it answers; an error answer to a drain counts as done; the old instance has 5 s to
+  exit after `module.exit` before its job is ended (not a crash); both `swap` modes stop the
+  old instance before the new one starts for now; a crash while an update waits for Review
+  restarts into the new version with the old grants and shows Update waiting for you again.
+  No message, manifest key or error id is new; it adds one hub fact and stays `hub` 1.2. Vectors: the supervisor
+  transcripts `state-waiting`, `root-cause-once`, `state-needs-hub`, `state-quarantined`,
+  `state-update-busy`, `state-update-waiting`, `state-updating` and
+  `update-waiting-permission` now run.
 - **1.10** (#983): resource limits and activation events. A manifest's new `[limits]` table
   (`memory_mb`, `cpu_percent`) sets the module's Job Object caps; the supervisor clamps each to
   the hub's maximum (4,096 MiB and 50 % today), and a module without it gets the maximum, as
@@ -523,6 +538,13 @@ name = "Next art"
   `lifecycle.required-by`, naming the dependents, unless they are disabled too.
 - The dependency graph for root-cause states (§7.8) is `requires` plus `channel.open:`
   permissions.
+- **Who waits (v1.10).** A provider is *down* while its state is `off`, `restarting`,
+  `crash-stopped`, `install-failed`, `revoked`, `needs-hub` or `quarantined`; not while it is
+  `starting`, `updating`, waiting for a call (no state) or itself `waiting`. A module that is
+  `running` with a down module anywhere along what it needs reads `waiting`; one in any other
+  state keeps that state. The root it names is the first down module on the way, or, if that
+  one needs a down module itself, the deepest such one (Lights opens a channel on Art, Art
+  requires Link, Link crashed: both Lights and Art name Link).
 - A `public` module MUST NOT require a `private` one (§13.2).
 
 ### 4.5 `provides`
@@ -912,6 +934,10 @@ Some nodes take a `stream` prop naming one of the module's channels (§8.4):
 - The hub keeps a breadcrumb of the panel being drawn. Two hub restarts within a minute with the
   same breadcrumb start the hub with that module's panels **quarantined**, offering Start again
   or Go back to <previous version>.
+- (v1.10) A module whose panels are quarantined is stopped and not started by anything (hub
+  start, activation, a restart) until **Start again** (panels released, the module started
+  with a fresh crash count) or **Go back** (the rollback, then the start). Its stop is not a
+  crash; its state is `quarantined` (§7.8).
 
 ### 5.6 Live rebuild
 
@@ -1206,6 +1232,25 @@ An upgrade, a rollback, a reload or a dev rebuild. Four steps (design §4.5):
   sign-in or with the hub's own update, never mid-session.
 - During a planned swap the header says "Updating…" (blue) for at most a second, and input is held
   and replayed after `module.ready`. Only an unplanned exit shows "Restarting".
+
+**Clarifications (v1.10, #983):**
+- **Force** sends `module.drain {reason: "force"}` once and the swap goes on whatever it
+  answers. **Not now** keeps the old version running; the new one runs at the module's next
+  start, or when Review (for an update that adds permissions) is pressed later.
+- An error answer to `module.drain` (no handler, the module gone, the call timed out) counts as
+  `done`: there is nothing to wait for.
+- After `module.exit` the old instance has 5 s to exit; then its Job Object is ended. Neither
+  is a crash, and the new instance starts on its exit. The state stays `updating` from drain
+  `done` until the new instance's `module.ready`; it reads `starting` at no point.
+- Both `swap` modes stop the old instance before the new one starts for now (the supervisor
+  runs one instance per module); `overlap` starting the new one beside the old is a later
+  step. `handover`'s `state.export` / `state.import` is the router's.
+- A crash while an update waits (for Review, a busy drain or Not now) restarts into the
+  installed (new) version, which connects with the grants already given. For an update that
+  adds permissions, the module reads Update waiting for you again once it is ready, and Review
+  swaps it once more so it connects with the new grants.
+- The game check in "when a swap may run" is the caller's: the update step calls the
+  supervisor only once no game runs.
 - The dev loop runs only in isolated lab hubs. A hub in developer mode shows a warning bar with
   **Leave developer mode**.
 
@@ -1262,6 +1307,9 @@ supervisor beside the state:
   main button, then Copy diagnostics. `null` once the module starts again.
 - **`module.<id>.previous`:** beside `recovery`, the version "Go back to <version>" names, or
   `null` when none is kept (#983).
+- **`module.<id>.waiting` (v1.10):** while the module is `waiting`, the id of the root module
+  its Waiting for <module> names and its **Go to <module>** opens (§4.4). `null` once it isn't
+  waiting.
 - **`module.<id>.failed`:** `launch` while the module is `install-failed` because launching it
   failed (the file check, or the pid or exe-hash check at `initialize`): it then reads "Couldn't
   start <Module>". `null` once it starts again (#983).
@@ -1318,6 +1366,14 @@ Rules:
   back to the previous version by itself and says so.
 - **Root cause once:** a state caused by another module says "Waiting for <module>" and links
   there. The tray shows only the root.
+- (v1.10) The tray draws no status line for a `waiting` module: the root's own line (its
+  `restarting`, `crash-stopped` and so on) is the one. The `waiting` reason line names the
+  root ("Example Link is not running."); the UI name is "Waiting for <root's name>".
+- (v1.10) **needs-hub** is found at hub start (the installed manifest's `hub` isn't served, so
+  it is read as `manifest.hub`) or at a launch. Nothing starts it: not hub start, an
+  activation, Start again or Turn on. **Update Hideout** is the hub's own update (a newer hub
+  starts it as usual); **Go back to <previous>** rolls back, then starts it, and is offered
+  only with a previous version kept (`module.<id>.previous`).
 
 ### 7.9 When the hub goes
 

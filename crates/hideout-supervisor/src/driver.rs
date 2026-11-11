@@ -81,6 +81,43 @@ fn known_event(
     (entry, ev)
 }
 
+/// An installed manifest as the supervisor reads it: the module (`None`: unreadable), or one
+/// whose `hub` this hub doesn't serve (§7.8 needs-hub), with the `Known` it is learnt by.
+// Short-lived, once per module read: the size difference doesn't matter.
+#[allow(clippy::large_enum_variant)]
+enum Read {
+    Module(Option<hideout_contract::module::Module>),
+    NeedsHub(Vec<Ev>),
+}
+
+fn read_manifest(reg: &Registry, id: &str) -> Read {
+    match reg.manifest_checked(id) {
+        Err(e) if e.id() == Some(NEEDS_HUB) => {
+            // The hub went back a version, or the module joined needing a newer one: known, so
+            // its row and card read Needs a newer Hideout (§7.8), never started.
+            log::warn!("supervisor: {id}: {e}; needs a newer hub");
+            Read::NeedsHub(vec![Ev::Known {
+                id: id.into(),
+                name: id.into(),
+                enabled: reg.hub.enabled(id),
+                at_enable: false,
+                previous: reg
+                    .inventory
+                    .modules
+                    .get(id)
+                    .and_then(|m| m.previous.clone()),
+            }])
+        }
+        m => Read::Module(m.ok()),
+    }
+}
+
+/// The root-cause graph's edges from `id` (§4.4), when it has any.
+fn depends_event(id: &str, m: Option<&hideout_contract::module::Module>) -> Option<Ev> {
+    let on = depends_on(m?);
+    (!on.is_empty()).then(|| Ev::Depends { id: id.into(), on })
+}
+
 /// `run\withdrawn-notified.json`: the withdrawn versions already notified (`id@version`), so a
 /// later sign-in shows the card and the dot but no second notification (decision 3, 11/10).
 fn notified_path(home: &Path) -> PathBuf {
@@ -218,6 +255,42 @@ struct Inner {
     /// Notifications made before the shell's notifier was set (a withdrawal found at hub start):
     /// delivered by [`Supervisor::set_notifier`]. At most [`EARLY_NOTES`].
     early: Mutex<Vec<EarlyNote>>,
+    /// Hub calls the supervisor made (`module.drain`, `module.exit`), by tag: the module and
+    /// whether its answer is a drain's. Tags stay below the panel feed's (`1 << 40`).
+    calls: Mutex<BTreeMap<u64, (String, bool)>>,
+    next_tag: AtomicU64,
+}
+
+/// What [`Supervisor::launch`] answers when the manifest's `hub` isn't served (§7.8 needs-hub).
+const NEEDS_HUB: &str = "manifest.hub";
+
+/// The modules a manifest needs (§4.4): its `requires` ids and its `channel.open:` providers.
+fn depends_on(m: &hideout_contract::module::Module) -> BTreeSet<String> {
+    use hideout_contract::capability::Capability;
+    let required = m
+        .requires
+        .iter()
+        .map(|r| r.split(">=").next().unwrap_or(r).trim().to_string());
+    let opened = m.permissions.iter().filter_map(|c| match c {
+        Capability::ChannelOpen { module, .. } => Some(module.clone()),
+        _ => None,
+    });
+    required
+        .chain(opened)
+        .filter(|d| !d.is_empty() && *d != m.id)
+        .collect()
+}
+
+/// The `update-waiting` reason for the permissions an update adds (§6.4): the first in plain
+/// words, when it has them.
+fn asks_words(pending: &[String]) -> Option<String> {
+    use hideout_contract::capability::Capability;
+    let first = pending.first()?;
+    let plain = match Capability::parse(first) {
+        Ok(Capability::Kept(p)) => Some(p.describe()),
+        _ => None,
+    };
+    Some(words::update_asks(plain.as_deref(), pending.len() > 1))
 }
 
 /// A notification held for the notifier: module id, title, body, buttons.
@@ -291,6 +364,8 @@ impl Supervisor {
             refresh: Mutex::new(None),
             withdrawals: Mutex::new(BTreeMap::new()),
             early: Mutex::new(Vec::new()),
+            calls: Mutex::new(BTreeMap::new()),
+            next_tag: AtomicU64::new(1),
         }));
         hub.act(|r| {
             r.set_launch_check(Box::new(move |id, pid| launch_check(&expected, id, pid)));
@@ -326,10 +401,19 @@ impl Supervisor {
             }
         };
         let mut known = Vec::new();
+        let mut later = Vec::new();
         let mut runnable = BTreeSet::new();
         if let Some(reg) = &reg {
             for id in reg.inventory.modules.keys() {
-                let manifest = reg.manifest(id);
+                let manifest = match read_manifest(reg, id) {
+                    Read::NeedsHub(evs) => {
+                        known.extend(evs.into_iter().take(1));
+                        later.push(Ev::NeedsHub { id: id.clone() });
+                        continue;
+                    }
+                    Read::Module(m) => m,
+                };
+                later.extend(depends_event(id, manifest.as_ref()));
                 let (entry, ev) = known_event(reg, id, manifest.as_ref());
                 if let Some(e) = entry.filter(|e| e.activate_on_call || e.name != *id) {
                     hub.act(|r| {
@@ -414,6 +498,9 @@ impl Supervisor {
             } else {
                 sup.feed(ev);
             }
+        }
+        for ev in later {
+            sup.feed(ev);
         }
         for ev in adopted {
             sup.feed(ev);
@@ -633,8 +720,19 @@ impl Supervisor {
             }
             return Some(None);
         }
-        let manifest = reg.manifest(id);
+        let manifest = match read_manifest(reg, id) {
+            Read::NeedsHub(evs) => {
+                // A late module that needs a newer hub reads so, as at a start (§7.8).
+                for ev in evs {
+                    self.feed(ev);
+                }
+                self.feed(Ev::NeedsHub { id: id.into() });
+                return Some(None);
+            }
+            Read::Module(m) => m,
+        };
         let (entry, ev) = known_event(reg, id, manifest.as_ref());
+        let depends = depends_event(id, manifest.as_ref());
         let m = manifest.clone();
         self.0.hub.act(|r| {
             if let Some(e) = entry {
@@ -653,6 +751,11 @@ impl Supervisor {
                     if on { "on" } else { "off" }
                 );
                 self.feed(ev);
+                // Its place in the Waiting graph (§4.4): it may need, or be needed by, a
+                // module already running.
+                if let Some(d) = depends {
+                    self.feed(d);
+                }
                 self.0.hub.act(|r| r.activation_due(Some(id)));
             }
             None => log::info!("supervisor: {id} joined the inventory (nothing to run)"),
@@ -688,9 +791,101 @@ impl Supervisor {
             Out::Ready(id) => Ev::Ready { id: id.clone() },
             Out::Refused(id) => Ev::Refused { id: id.clone() },
             Out::Activate(id) => Ev::Activate { id: id.clone() },
+            Out::Idle(id) => Ev::Idle { id: id.clone() },
+            Out::HubResult { tag, result } => {
+                let Some((id, drain)) = self.0.calls.lock().unwrap().remove(tag) else {
+                    return; // the panel feed's
+                };
+                if !drain {
+                    return; // module.exit: its exit is what counts
+                }
+                let busy = match result {
+                    Ok(v) if v["state"] == "busy" => Some(
+                        v["reason"]
+                            .as_str()
+                            .filter(|r| !r.trim().is_empty())
+                            .unwrap_or("what it is doing")
+                            .to_string(),
+                    ),
+                    Ok(_) => None,
+                    Err(e) => {
+                        // No drain handler, gone or timed out: nothing to wait for (§7.6).
+                        log::info!("supervisor: {id}: module.drain answered {e}; swapping");
+                        None
+                    }
+                };
+                Ev::Drained { id, busy }
+            }
             _ => return,
         };
         self.feed(ev);
+    }
+
+    /// One hub call to `id` (`module.drain`, `module.exit`); the answer comes back through
+    /// [`Supervisor::on_router`].
+    fn call(&self, id: &str, method: &str, params: Value, drain: bool) {
+        let tag = self.0.next_tag.fetch_add(1, Ordering::Relaxed);
+        self.0
+            .calls
+            .lock()
+            .unwrap()
+            .insert(tag, (id.to_string(), drain));
+        let id = id.to_string();
+        let method = method.to_string();
+        self.0
+            .hub
+            .act(|r| r.call_module(&id, &method, params, tag, Instant::now()));
+    }
+
+    /// The update step's last half (§7.4): call after a new version of `id` was installed
+    /// beside the running one. With permissions to approve it shows Update waiting for you
+    /// (never a modal); else it drains and swaps when the module says done.
+    pub fn update_staged(&self, id: &str) {
+        let Ok(reg) = Registry::open_from_env(&self.0.home) else {
+            return;
+        };
+        let Some(m) = reg.inventory.modules.get(id) else {
+            return;
+        };
+        let Some(previous) = m.previous.clone() else {
+            log::warn!("supervisor: {id}: update staged with no previous version; nothing to swap");
+            return;
+        };
+        self.feed(Ev::UpdateStaged {
+            id: id.into(),
+            version: m.version.clone(),
+            previous,
+            asks: asks_words(&m.pending_permissions),
+        });
+    }
+
+    /// **Review** on Update waiting for you, after the user approved the permission dialog:
+    /// the grants are recorded (`inventory.json`), then the swap runs.
+    pub fn review_approved(&self, id: &str) -> Result<(), String> {
+        let never = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|mut r| r.approve(id).map_err(|e| format!("{e:?}")))?;
+        for e in never {
+            log::warn!("supervisor: {id}: not granted: {e}");
+        }
+        self.feed(Ev::Review { id: id.into() });
+        Ok(())
+    }
+
+    /// **Not now** on Update waiting for you or Update ready.
+    pub fn not_now(&self, id: &str) {
+        self.feed(Ev::NotNow { id: id.into() });
+    }
+
+    /// **Force** on Update ready.
+    pub fn force_update(&self, id: &str) {
+        self.feed(Ev::Force { id: id.into() });
+    }
+
+    /// The panel host started `id`'s panels quarantined (§5.5): it stops and reads
+    /// quarantined until Start again or Go back.
+    pub fn quarantine(&self, id: &str) {
+        self.feed(Ev::Quarantine { id: id.into() });
     }
 
     /// `<user>` plus the hub's folder suffix for Job Object names (#1010), so a lab hub never
@@ -919,14 +1114,31 @@ impl Supervisor {
                         self.withdraw(&reg, &id, r);
                         continue;
                     }
-                    if let Err(reason) = self.launch(&id) {
-                        log::warn!("supervisor: {id} not started: {reason}");
-                        self.feed(Ev::LaunchFailed {
-                            id,
-                            reason: words::DIDNT_START.into(),
-                        });
+                    match self.launch(&id) {
+                        Ok(()) => {}
+                        Err(r) if r == NEEDS_HUB => {
+                            log::warn!("supervisor: {id} not started: needs a newer hub");
+                            self.feed(Ev::NeedsHub { id });
+                        }
+                        Err(reason) => {
+                            log::warn!("supervisor: {id} not started: {reason}");
+                            self.feed(Ev::LaunchFailed {
+                                id,
+                                reason: words::DIDNT_START.into(),
+                            });
+                        }
                     }
                 }
+                Cmd::Drain { id, force } => {
+                    let reason = if force { "force" } else { "update" };
+                    self.call(
+                        &id,
+                        "module.drain",
+                        serde_json::json!({ "reason": reason }),
+                        true,
+                    );
+                }
+                Cmd::Exit { id } => self.call(&id, "module.exit", serde_json::json!({}), false),
                 Cmd::Kill { id } => {
                     if let Some(l) = self.0.live.lock().unwrap().get(&id) {
                         l.kill(1);
@@ -994,7 +1206,10 @@ impl Supervisor {
     /// The file check, then the exe in a new Job Object with the launch token (§7.5).
     fn launch(&self, id: &str) -> Result<(), String> {
         let reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
-        let l = reg.pre_launch(id).map_err(|e| format!("{e:?}"))?;
+        let l = reg.pre_launch(id).map_err(|e| match e.id() {
+            Some(NEEDS_HUB) => NEEDS_HUB.to_string(),
+            _ => format!("{e:?}"),
+        })?;
         let run = l.run.clone().ok_or("no run in the manifest")?;
         let exe = {
             let p = PathBuf::from(&run[0]);

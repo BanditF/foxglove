@@ -50,6 +50,21 @@ pub enum State {
     /// Its publisher withdrew the installed version (a catalog revoked it, §12.4): stopped, not
     /// started again until another version is installed or gone back to (§7.8 v1.9, #1026).
     Revoked,
+    /// Running, but a module it needs (`requires` or a `channel.open:` provider, §4.4) is
+    /// down: "Waiting for <root>" (§7.8). Nothing is restarted or stopped for it.
+    Waiting,
+    /// Its manifest's `hub` isn't served by this hub (§7.8): not started until Hideout is
+    /// updated or the previous version is gone back to.
+    NeedsHub,
+    /// The panel guard's breadcrumb rule (§5.5): two hub restarts while drawing its panel.
+    /// Not started until Start again or Go back.
+    Quarantined,
+    /// A planned swap (§7.6): drain answered done; the new instance is starting.
+    Updating,
+    /// An update waits because drain answered busy (§7.6): Force or Not now.
+    UpdateBusy,
+    /// An update that adds permissions waits for Review (§6.4); the old version keeps running.
+    UpdateWaiting,
 }
 
 impl State {
@@ -63,7 +78,28 @@ impl State {
             State::CrashStopped => "crash-stopped",
             State::InstallFailed => "install-failed",
             State::Revoked => "revoked",
+            State::Waiting => "waiting",
+            State::NeedsHub => "needs-hub",
+            State::Quarantined => "quarantined",
+            State::Updating => "updating",
+            State::UpdateBusy => "update-busy",
+            State::UpdateWaiting => "update-waiting",
         })
+    }
+
+    /// Down for its dependents (§4.4 "provider gone"): they read Waiting for it. A module
+    /// starting, updating or waiting for a call (idle) is not down.
+    pub fn down(self) -> bool {
+        matches!(
+            self,
+            State::Off
+                | State::Restarting
+                | State::CrashStopped
+                | State::InstallFailed
+                | State::Revoked
+                | State::NeedsHub
+                | State::Quarantined
+        )
     }
 }
 
@@ -176,6 +212,73 @@ pub enum Ev {
     Round {
         on: Option<BTreeSet<String>>,
     },
+    /// The modules `id` needs (§4.4): its `requires` ids and the modules its `channel.open:`
+    /// permissions name. The root-cause graph for Waiting (§7.8).
+    Depends {
+        id: String,
+        on: BTreeSet<String>,
+    },
+    /// The launch found that its manifest's `hub` isn't served (`manifest.hub`, §7.8).
+    NeedsHub {
+        id: String,
+    },
+    /// The panel host started its panels quarantined (§5.5 breadcrumb rule).
+    Quarantine {
+        id: String,
+    },
+    /// The update step installed `version` beside the running `previous` (§7.4). `asks`: the
+    /// permissions it adds, in plain words (`None`: it adds none).
+    UpdateStaged {
+        id: String,
+        version: String,
+        previous: String,
+        asks: Option<String>,
+    },
+    /// **Review** on Update waiting for you, approved (the grants are already recorded).
+    Review {
+        id: String,
+    },
+    /// **Not now** on Update waiting for you or Update ready: the old version keeps running.
+    NotNow {
+        id: String,
+    },
+    /// **Force** on Update ready.
+    Force {
+        id: String,
+    },
+    /// The answer to [`Cmd::Drain`]: `busy` with its reason, or done (`None`). An error answer
+    /// (no drain handler, disconnected, timed out) counts as done.
+    Drained {
+        id: String,
+        busy: Option<String>,
+    },
+    /// `module.idle` (§7.6): the work a busy drain waited for has ended.
+    Idle {
+        id: String,
+    },
+}
+
+/// Where a waiting update is (§7.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// Update waiting for you: Review or Not now.
+    Review,
+    /// Not now: the old version keeps running; the next start runs the new one.
+    Deferred,
+    /// `module.drain` sent.
+    Draining,
+    /// `module.drain` sent again by Force: the swap goes on whatever it answers.
+    Forced,
+    /// Drain answered busy: waits for `module.idle` or Force (never a timer, UX6).
+    Busy,
+    /// The old instance was asked to exit; the new one starts on its exit.
+    Swapping,
+}
+
+#[derive(Clone, Debug)]
+struct Update {
+    asks: Option<String>,
+    phase: Phase,
 }
 
 /// What the driver must do.
@@ -206,6 +309,12 @@ pub enum Cmd {
     /// Remember that the withdrawal of `id@version` was notified, in the hub's own state, so
     /// no later sign-in notifies it again (decision 3, 11/10).
     RememberNotified { id: String, version: String },
+    /// Send `module.drain {reason}` (§7.6): `"update"`, or `"force"` after Force. Answer with
+    /// [`Ev::Drained`].
+    Drain { id: String, force: bool },
+    /// Send `module.exit` (§7.6): the old instance finishes and exits; its exit starts the new
+    /// one. Ended through its job after [`EXIT_AFTER_PIPE`] if it doesn't.
+    Exit { id: String },
 }
 
 #[derive(Debug)]
@@ -240,6 +349,16 @@ struct Slot {
     withdrawn: Option<String>,
     /// The version the withdrawn card's Go back names (kept, not withdrawn itself).
     go_back: Option<String>,
+    /// The modules it needs (§4.4): `requires` and `channel.open:` providers.
+    deps: BTreeSet<String>,
+    /// The root module its Waiting names (`module.<id>.waiting`).
+    waiting_for: Option<String>,
+    /// Its panels are quarantined (§5.5): it doesn't start until Start again or Go back.
+    quarantined: bool,
+    /// Its manifest needs a newer hub (§7.8): it doesn't start until Go back.
+    needs_hub: bool,
+    /// An update waiting to be swapped in (§7.6).
+    update: Option<Update>,
 }
 
 /// The supervisor's state for every module.
@@ -377,6 +496,9 @@ impl Policy {
             return;
         };
         s.state = state;
+        if state != State::Waiting && s.waiting_for.take().is_some() {
+            publish(out, format!("module.{id}.waiting"), Value::Null);
+        }
         publish(
             out,
             format!("module.{id}.state"),
@@ -403,12 +525,28 @@ impl Policy {
             }
             return;
         }
+        if s.quarantined || s.needs_hub {
+            // Only Start again (quarantined) or Go back starts it (§5.5, §7.8).
+            s.restart_at = None;
+            s.then_launch = false;
+            if s.enabled {
+                self.show_blocked(id, out);
+            }
+            return;
+        }
         s.restart_at = None;
         s.exit_by = None;
         s.adopt_by = None;
         s.then_launch = false;
         let reset = std::mem::take(&mut s.reset_first);
-        self.set_state(id, State::Starting, None, out);
+        let swapping = s
+            .update
+            .as_ref()
+            .is_some_and(|u| u.phase == Phase::Swapping);
+        if !swapping {
+            // A planned swap keeps "Updating…" until the new instance is ready (§7.6).
+            self.set_state(id, State::Starting, None, out);
+        }
         // The stopped card's and the launch failure's facts end with the stop.
         for k in ["recovery", "previous", "failed"] {
             publish(out, format!("module.{id}.{k}"), Value::Null);
@@ -421,6 +559,57 @@ impl Policy {
 
     /// One event; returns what to do.
     pub fn handle(&mut self, ev: Ev, now: Instant) -> Vec<Cmd> {
+        let mut out = self.handle_one(ev, now);
+        self.refresh_waiting(&mut out);
+        out
+    }
+
+    /// The first module down on the way from `id` through what it needs (§4.4), and below that
+    /// the deepest one down: the root cause, named once (§7.8). `None`: nothing it needs is
+    /// down.
+    fn root(&self, id: &str, seen: &mut BTreeSet<String>) -> Option<String> {
+        if !seen.insert(id.to_string()) {
+            return None; // cycles are refused at enable; never loop on one anyway
+        }
+        let deps = &self.slots.get(id)?.deps;
+        let down = deps
+            .iter()
+            .find(|d| self.slots.get(*d).is_some_and(|s| s.state.down()));
+        if let Some(d) = down {
+            return Some(self.root(d, seen).unwrap_or_else(|| d.clone()));
+        }
+        deps.iter().find_map(|d| self.root(d, seen))
+    }
+
+    /// Running modules with something they need down read Waiting for its root; once it is
+    /// back they read running again. Nothing is started, stopped or counted (§4.4).
+    fn refresh_waiting(&mut self, out: &mut Vec<Cmd>) {
+        let ids: Vec<String> = self
+            .slots
+            .iter()
+            .filter(|(_, s)| !s.deps.is_empty())
+            .filter(|(_, s)| matches!(s.state, State::Running | State::Waiting))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let root = self.root(&id, &mut BTreeSet::new());
+            let s = &self.slots[&id];
+            match root {
+                Some(r) if s.state != State::Waiting || s.waiting_for.as_ref() != Some(&r) => {
+                    let name = self.slots[&r].name.clone();
+                    self.set_state(&id, State::Waiting, Some(words::waiting_reason(&name)), out);
+                    self.slots.get_mut(&id).unwrap().waiting_for = Some(r.clone());
+                    publish(out, format!("module.{id}.waiting"), json!(r));
+                }
+                None if s.state == State::Waiting => {
+                    self.set_state(&id, State::Running, None, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn handle_one(&mut self, ev: Ev, now: Instant) -> Vec<Cmd> {
         let mut out = Vec::new();
         if let Some((id, line)) = history_line(&ev, self) {
             self.note(&id, now, line);
@@ -454,6 +643,11 @@ impl Policy {
                     reset_first: false,
                     withdrawn: None,
                     go_back: None,
+                    deps: BTreeSet::new(),
+                    waiting_for: None,
+                    quarantined: false,
+                    needs_hub: false,
+                    update: None,
                 });
                 s.name = name;
                 s.enabled = enabled;
@@ -497,7 +691,26 @@ impl Policy {
                     }
                     s.ready_by = None;
                     s.adopt_by = None;
-                    self.set_state(&id, State::Running, None, &mut out);
+                    match s.update.take() {
+                        // Restarted (a crash) before Review: the new version runs on the old
+                        // grants; Update waiting for you again, and Review swaps it once more
+                        // so it connects with the new ones.
+                        Some(u) if u.asks.is_some() && u.phase != Phase::Swapping => {
+                            let asks = u.asks.clone();
+                            s.update = Some(Update {
+                                phase: Phase::Review,
+                                ..u
+                            });
+                            self.set_state(&id, State::UpdateWaiting, asks, &mut out);
+                        }
+                        u => {
+                            if u.is_some_and(|u| u.phase != Phase::Swapping) {
+                                // A restart ran the new version: the update happened now.
+                                s.updated_at = Some(now);
+                            }
+                            self.set_state(&id, State::Running, None, &mut out);
+                        }
+                    }
                 }
             }
             Ev::Exited { id, instance, code } => {
@@ -587,14 +800,105 @@ impl Policy {
             }
             Ev::GoBack { id } => {
                 let stopped = self.slots.get(&id).is_some_and(|s| {
-                    s.state == State::CrashStopped && s.ended && s.previous.is_some()
+                    matches!(
+                        s.state,
+                        State::CrashStopped | State::NeedsHub | State::Quarantined
+                    ) && s.ended
+                        && s.previous.is_some()
                 });
                 if stopped {
                     // The rolled-back-from version isn't offered again: the ladder ends at
                     // its last step if this one stops too.
-                    self.slots.get_mut(&id).unwrap().previous = None;
+                    let s = self.slots.get_mut(&id).unwrap();
+                    s.previous = None;
+                    s.needs_hub = false;
+                    s.quarantined = false;
                     out.push(Cmd::RollBack { id: id.clone() });
-                    self.start_by_hand(&id, false, &mut out);
+                    self.fresh_start(&id, false, &mut out);
+                }
+            }
+            Ev::Depends { id, on } => {
+                if let Some(s) = self.slots.get_mut(&id) {
+                    s.deps = on;
+                    s.deps.remove(&id);
+                }
+            }
+            Ev::NeedsHub { id } => {
+                if let Some(s) = self.slots.get_mut(&id) {
+                    s.needs_hub = true;
+                    s.restart_at = None;
+                    s.ready_by = None;
+                    s.then_launch = false;
+                    s.update = None;
+                    self.show_blocked(&id, &mut out);
+                }
+            }
+            Ev::Quarantine { id } => {
+                if let Some(s) = self.slots.get_mut(&id) {
+                    s.quarantined = true;
+                    s.restart_at = None;
+                    s.ready_by = None;
+                    s.adopt_by = None;
+                    s.exit_by = None;
+                    s.then_launch = false;
+                    s.update = None;
+                    if !s.ended {
+                        // Its panels come with its instance: it doesn't run while they are
+                        // quarantined (not a crash).
+                        s.ended = true;
+                        out.push(Cmd::Kill { id: id.clone() });
+                    }
+                    if s.enabled {
+                        self.show_blocked(&id, &mut out);
+                    }
+                }
+            }
+            Ev::UpdateStaged {
+                id,
+                version,
+                previous,
+                asks,
+            } => self.update_staged(&id, version, previous, asks, now, &mut out),
+            Ev::Review { id } => {
+                if let Some(u) = self.waiting_update(&id, &[Phase::Review, Phase::Deferred]) {
+                    u.asks = None;
+                    u.phase = Phase::Draining;
+                    out.push(Cmd::Drain { id, force: false });
+                }
+            }
+            Ev::NotNow { id } => {
+                if let Some(u) = self.waiting_update(&id, &[Phase::Review, Phase::Busy]) {
+                    u.phase = Phase::Deferred;
+                    self.set_state(&id, State::Running, None, &mut out);
+                }
+            }
+            Ev::Force { id } => {
+                if let Some(u) = self.waiting_update(&id, &[Phase::Busy]) {
+                    u.phase = Phase::Forced;
+                    out.push(Cmd::Drain { id, force: true });
+                }
+            }
+            Ev::Idle { id } => {
+                if let Some(u) = self.waiting_update(&id, &[Phase::Busy]) {
+                    u.phase = Phase::Draining;
+                    out.push(Cmd::Drain { id, force: false });
+                }
+            }
+            Ev::Drained { id, busy } => {
+                let Some(u) = self.waiting_update(&id, &[Phase::Draining, Phase::Forced]) else {
+                    return out;
+                };
+                match busy {
+                    Some(reason) if u.phase == Phase::Draining => {
+                        u.phase = Phase::Busy;
+                        self.set_state(
+                            &id,
+                            State::UpdateBusy,
+                            Some(words::update_busy(&reason)),
+                            &mut out,
+                        );
+                    }
+                    _ => self.swap(&id, now, &mut out),
                 }
             }
             Ev::Updated {
@@ -630,6 +934,7 @@ impl Policy {
                     s.adopt_by = None;
                     s.exit_by = None;
                     s.then_launch = false;
+                    s.update = None;
                     if !s.ended {
                         s.ended = true;
                         out.push(Cmd::Kill { id: id.clone() });
@@ -717,6 +1022,7 @@ impl Policy {
         s.exit_by = None;
         s.then_launch = false;
         s.reset_first = false;
+        s.update = None;
         if !s.ended {
             s.ended = true;
             out.push(Cmd::Kill { id: id.into() });
@@ -803,6 +1109,104 @@ impl Policy {
         }
     }
 
+    /// The update of a running module that hasn't been swapped in yet, in one of `phases`.
+    fn waiting_update(&mut self, id: &str, phases: &[Phase]) -> Option<&mut Update> {
+        let s = self.slots.get_mut(id)?;
+        if s.ended {
+            return None;
+        }
+        s.update.as_mut().filter(|u| phases.contains(&u.phase))
+    }
+
+    /// The update step installed a new version beside the running one (§7.4): it waits for
+    /// Review if it adds permissions (§6.4, never a modal), else drains and swaps (§7.6). A
+    /// module that isn't running runs the new version at its next start.
+    fn update_staged(
+        &mut self,
+        id: &str,
+        version: String,
+        previous: String,
+        asks: Option<String>,
+        now: Instant,
+        out: &mut Vec<Cmd>,
+    ) {
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        s.previous = Some(previous);
+        s.updated_to = version;
+        let live = !s.ended && matches!(s.state, State::Running | State::Waiting);
+        if !live {
+            s.update = None;
+            s.updated_at = Some(now);
+            return;
+        }
+        match asks {
+            Some(a) => {
+                s.update = Some(Update {
+                    asks: Some(a.clone()),
+                    phase: Phase::Review,
+                });
+                self.set_state(id, State::UpdateWaiting, Some(a), out);
+            }
+            None => {
+                s.update = Some(Update {
+                    asks: None,
+                    phase: Phase::Draining,
+                });
+                out.push(Cmd::Drain {
+                    id: id.into(),
+                    force: false,
+                });
+            }
+        }
+    }
+
+    /// Drain said done (or Force): "Updating…", the old instance exits, its exit starts the
+    /// new version (stop then start, for both `swap` modes; see §7.6 v1.10).
+    fn swap(&mut self, id: &str, now: Instant, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        if let Some(u) = s.update.as_mut() {
+            u.phase = Phase::Swapping;
+        }
+        s.updated_at = Some(now);
+        s.then_launch = true;
+        s.exit_by = Some(now + EXIT_AFTER_PIPE);
+        self.set_state(id, State::Updating, Some(words::PLACE_KEPT.into()), out);
+        out.push(Cmd::Exit { id: id.into() });
+    }
+
+    /// NeedsHub or Quarantined with their facts: the card's Go back version, and the crash
+    /// bar's, ladder's and launch failure's facts cleared.
+    fn show_blocked(&mut self, id: &str, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get(id) else {
+            return;
+        };
+        let (state, reason) = if s.needs_hub {
+            (State::NeedsHub, None)
+        } else {
+            (
+                State::Quarantined,
+                Some(words::QUARANTINED_LINE.to_string()),
+            )
+        };
+        if s.state == state {
+            return;
+        }
+        let previous = s.previous.clone();
+        self.set_state(id, state, reason, out);
+        for k in ["restart", "recovery", "failed"] {
+            publish(out, format!("module.{id}.{k}"), Value::Null);
+        }
+        publish(
+            out,
+            format!("module.{id}.previous"),
+            previous.map_or(Value::Null, Value::String),
+        );
+    }
+
     /// "Start again" / "Start with default settings": the count starts fresh (§7.8, UX ladder).
     fn start_by_hand(&mut self, id: &str, defaults: bool, out: &mut Vec<Cmd>) {
         let Some(s) = self.slots.get_mut(id) else {
@@ -810,10 +1214,24 @@ impl Policy {
         };
         if !matches!(
             s.state,
-            State::CrashStopped | State::InstallFailed | State::Idle | State::Restarting
+            State::CrashStopped
+                | State::InstallFailed
+                | State::Idle
+                | State::Restarting
+                | State::Quarantined
         ) {
             return;
         }
+        s.quarantined = false;
+        self.fresh_start(id, defaults, out);
+    }
+
+    /// Starts `id` with a fresh count, after its instance is gone.
+    fn fresh_start(&mut self, id: &str, defaults: bool, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        s.update = None;
         s.crashes.clear();
         s.run_restarts = 0;
         s.reset_first = defaults;
@@ -833,6 +1251,13 @@ impl Policy {
         s.ended = true;
         s.ready_by = None;
         s.exit_by = None;
+        if s.update
+            .as_ref()
+            .is_some_and(|u| u.phase == Phase::Swapping)
+        {
+            // The new version crashed: the swap is over; the crash path takes it from here.
+            s.update = None;
+        }
         s.crashes.retain(|t| now - *t < WINDOW);
         if s.crashes.is_empty() {
             s.run_restarts = 0;
@@ -846,6 +1271,7 @@ impl Policy {
         };
         if k >= CRASH_LIMIT {
             s.restart_at = None;
+            s.update = None;
             s.stops += 1;
             let rollback = s.previous.is_some()
                 && s.updated_at
@@ -939,6 +1365,13 @@ impl Policy {
                 }
                 continue;
             }
+            if s.then_launch && s.exit_by.is_some_and(|t| t <= now) {
+                // Asked to exit for a swap or Start again and still there: ended through its
+                // job, not a crash; its exit starts the next instance.
+                s.exit_by = None;
+                out.push(Cmd::Kill { id: id.clone() });
+                continue;
+            }
             if s.ready_by.is_some_and(|t| t <= now) || s.exit_by.is_some_and(|t| t <= now) {
                 // No module.ready in 30 s (§7.5), or the pipe closed and it didn't exit: a crash.
                 let line = if s.ready_by.is_some_and(|t| t <= now) {
@@ -966,6 +1399,7 @@ impl Policy {
                 }
             }
         }
+        self.refresh_waiting(&mut out);
         out
     }
 }
@@ -1026,9 +1460,46 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
                 "check for updates: couldn't reach the source".into()
             },
         ),
-        Ev::Known { .. } | Ev::Activate { .. } | Ev::StartNormally | Ev::Round { .. } => {
-            return None
-        }
+        Ev::NeedsHub { id } => (
+            id.clone(),
+            "not started: its manifest needs a newer hub (manifest.hub)".into(),
+        ),
+        Ev::Quarantine { id } => (
+            id.clone(),
+            "panels quarantined: two hub restarts while drawing them".into(),
+        ),
+        Ev::UpdateStaged {
+            id,
+            version,
+            previous,
+            asks,
+        } => (
+            id.clone(),
+            format!(
+                "update {previous} -> {version} staged{}",
+                if asks.is_some() {
+                    "; adds permissions, waits for Review"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        Ev::Review { id } => (id.clone(), "update reviewed and approved".into()),
+        Ev::NotNow { id } => (id.clone(), "update: not now".into()),
+        Ev::Force { id } => (id.clone(), "update: forced".into()),
+        Ev::Drained { id, busy } => (
+            id.clone(),
+            match busy {
+                Some(r) => format!("drain: busy ({r})"),
+                None => "drain: done".into(),
+            },
+        ),
+        Ev::Idle { id } => (id.clone(), "module.idle".into()),
+        Ev::Known { .. }
+        | Ev::Activate { .. }
+        | Ev::StartNormally
+        | Ev::Round { .. }
+        | Ev::Depends { .. } => return None,
     })
 }
 

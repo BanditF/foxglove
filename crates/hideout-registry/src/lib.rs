@@ -655,6 +655,17 @@ impl Registry {
         Ok(())
     }
 
+    /// [`Registry::manifest`] with why it couldn't be read: a manifest whose `hub` this hub
+    /// doesn't serve fails with `manifest.hub` (the supervisor's `needs-hub`, §7.8).
+    pub fn manifest_checked(&self, id: &str) -> Result<Module, Failure> {
+        let m = self
+            .inventory
+            .modules
+            .get(id)
+            .ok_or_else(|| Failure::NotInstalled(id.into()))?;
+        self.read_manifest(&self.module_dir(id, &m.version))
+    }
+
     /// The installed manifest of `id` (its current version), without the file check.
     pub fn manifest(&self, id: &str) -> Option<Module> {
         let m = self.inventory.modules.get(id)?;
