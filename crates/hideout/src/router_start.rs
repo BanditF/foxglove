@@ -49,6 +49,22 @@ impl hideout_shell::TabHooks for Hooks {
         self.0.check_for_updates(module);
     }
 
+    fn update_hub(&mut self) {
+        hideout_shell::open_update_page();
+    }
+
+    fn force_update(&mut self, module: &str) {
+        self.0.force_update(module);
+    }
+
+    fn not_now(&mut self, module: &str) {
+        self.0.not_now(module);
+    }
+
+    fn quarantine(&mut self, module: &str) {
+        self.0.quarantine(module);
+    }
+
     fn diagnostics(&mut self, module: &str) -> Option<String> {
         Some(self.0.diagnostics(module, env!("CARGO_PKG_VERSION")))
     }

@@ -193,6 +193,8 @@ pub struct PanelHost {
     latest: HashMap<(PanelKey, String), u64>,
     next_seq: u64,
     quarantined: HashSet<String>,
+    /// Quarantined since the last [`PanelHost::take_quarantined`].
+    quarantined_out: Vec<String>,
     pub(crate) breadcrumb: Option<PanelKey>,
     /// The last `ui.visibility` queued per page panel (sent on change only, 5.9).
     sent_visibility: HashMap<PanelKey, Visibility>,
@@ -341,6 +343,7 @@ impl PanelHost {
             latest: HashMap::new(),
             next_seq: 1,
             quarantined: HashSet::new(),
+            quarantined_out: Vec::new(),
             breadcrumb: None,
             sent_visibility: HashMap::new(),
             closed: HashSet::new(),
@@ -1158,12 +1161,20 @@ impl PanelHost {
         self.streams.sync(&self.panels, &self.shown, now);
     }
 
-    /// Starts `module`'s panels quarantined (§5.5) until [`PanelHost::release`].
+    /// Starts `module`'s panels quarantined (§5.5) until [`PanelHost::release`]. The hub hears of
+    /// it from [`PanelHost::take_quarantined`], so the supervisor stops the module (v1.10).
     pub fn quarantine(&mut self, module: &str) {
-        self.quarantined.insert(module.to_string());
+        if self.quarantined.insert(module.to_string()) {
+            self.quarantined_out.push(module.to_string());
+        }
         for p in self.panels.iter_mut().filter(|p| p.key.module == module) {
             p.state = PanelState::Quarantined;
         }
+    }
+
+    /// The modules quarantined since the last call, for the supervisor's `quarantine`.
+    pub fn take_quarantined(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.quarantined_out)
     }
 
     /// "Start again" on a quarantined module.
@@ -1193,6 +1204,11 @@ impl PanelHost {
             .strip_prefix("module.")
             .and_then(|r| r.rsplit_once('.'))
             .map(|(m, k)| (m.to_string(), k.to_string()));
+        let was = self
+            .facts
+            .get(name)
+            .and_then(|v| v.as_str())
+            .map(String::from);
         if value.is_null() {
             self.facts.remove(name);
         } else {
@@ -1202,8 +1218,23 @@ impl PanelHost {
             // A module that isn't running greys its panels (§7.8); `running` and `starting`
             // wait for its `ui.register`, which makes them live again.
             Some((m, "state")) => {
+                // Leaving `quarantined` (Start again or Go back, from any surface): the panels
+                // are released, so the next instance's draw live again (§5.5).
+                if was.as_deref() == Some("quarantined") && value.as_str() != Some("quarantined") {
+                    self.release(m);
+                    // Greyed with the new state until its next `ui.register`.
+                    if let Some(s) = value.as_str().filter(|s| *s != "running") {
+                        for p in self.panels.iter_mut().filter(|p| p.key.module == m) {
+                            if p.state == PanelState::Live {
+                                p.state = PanelState::Greyed(s.to_string());
+                            }
+                        }
+                    }
+                }
                 match value.as_str() {
-                    Some("running") | None => {}
+                    // Still running (§7.8, v1.10): waiting for another module, or an update
+                    // that waits (busy, or for Review). Its page stays live.
+                    Some("running" | "waiting" | "update-busy" | "update-waiting") | None => {}
                     Some("starting") => {
                         for p in self.panels.iter_mut().filter(|p| p.key.module == m) {
                             if matches!(p.state, PanelState::Greyed(_)) {

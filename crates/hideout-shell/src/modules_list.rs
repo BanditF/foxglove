@@ -46,6 +46,14 @@ pub enum Does {
     TryAgain,
     /// Withdrawn by its publisher (#1026), on or off: Check for updates.
     CheckUpdates,
+    /// Waiting for another module (§7.8): Go to <module>, the root named by
+    /// `module.<id>.waiting`.
+    GoTo,
+    /// Update ready (`update-busy`, §7.6): Force.
+    Force,
+    /// Update waiting for you (`update-waiting`): Review, which opens the module's page (the
+    /// permission dialog isn't built; its card says so).
+    Review,
 }
 
 /// A row's one main button (never two on a row).
@@ -164,9 +172,21 @@ impl Restarts {
 }
 
 /// The row for a module from its facts (`fact` takes the full fact name). `restart` is
-/// [`Restarts::left`]'s answer for it.
+/// [`Restarts::left`]'s answer for it. A waiting module's root isn't named without the list
+/// ([`row_in`]).
 pub fn row(
     m: &Installed,
+    fact: &dyn Fn(&str) -> Option<Value>,
+    restart: Option<(u64, usize)>,
+) -> Row {
+    row_in(m, &[], fact, restart)
+}
+
+/// [`row`] with the installed list, so "Waiting for <module>" names the root by its name (never
+/// its id; a root not in the list reads "Waiting for another module").
+pub fn row_in(
+    m: &Installed,
+    all: &[Installed],
     fact: &dyn Fn(&str) -> Option<Value>,
     restart: Option<(u64, usize)>,
 ) -> Row {
@@ -203,7 +223,36 @@ pub fn row(
         None if safe_mode => ("On \u{b7} not started in safe mode".into(), false, None),
         None | Some("running") => ("On".into(), false, None),
         Some("starting") => ("Starting\u{2026}".into(), false, None),
-        Some("updating") => ("Updating\u{2026}".into(), false, None),
+        Some("updating") => (words::UPDATING.into(), false, None),
+        // Root cause once (§7.8): the root's name and Go to it; never red, never first.
+        Some("waiting") => {
+            let root = get("waiting")
+                .and_then(|r| all.iter().find(|i| i.id == r))
+                .map(|i| i.name.clone());
+            match root {
+                Some(r) => (
+                    words::waiting_for(&r),
+                    false,
+                    primary(&words::go_to(&r), Does::GoTo),
+                ),
+                None => (state_words("waiting").to_string(), false, None),
+            }
+        }
+        Some("update-busy") => (
+            words::UPDATE_READY.into(),
+            false,
+            primary(words::FORCE, Does::Force),
+        ),
+        Some("update-waiting") => (
+            words::UPDATE_WAITING.into(),
+            false,
+            primary(words::REVIEW, Does::Review),
+        ),
+        Some("quarantined") => (
+            words::quarantined_title(&m.name),
+            true,
+            primary(words::START_AGAIN, Does::StartAgain),
+        ),
         Some("restarting") => {
             let (secs, k) = restart.unwrap_or((0, 1));
             (words::restarting_row(secs, k), false, None)
@@ -238,7 +287,12 @@ pub fn row(
         id: m.id.clone(),
         name: m.name.clone(),
         version: m.version.clone(),
-        label: words::row_label(&m.name, &words),
+        // "Art's page couldn't be shown" already names the module.
+        label: if state.as_deref() == Some("quarantined") {
+            words.clone()
+        } else {
+            words::row_label(&m.name, &words)
+        },
         off: words == "Off" || words.starts_with("Off \u{b7}"),
         state: words,
         stopped,

@@ -28,6 +28,8 @@ pub trait Actions {
     fn turn_on(&self, id: &str) -> Result<(), String>;
     /// A withdrawn module's Check for updates (#1026).
     fn check_for_updates(&self, id: &str);
+    /// Update ready's Force (§7.6).
+    fn force_update(&self, id: &str);
 }
 
 #[cfg(windows)]
@@ -52,6 +54,9 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     }
     fn check_for_updates(&self, id: &str) {
         hideout_supervisor::driver::Supervisor::check_for_updates(self, id)
+    }
+    fn force_update(&self, id: &str) {
+        hideout_supervisor::driver::Supervisor::force_update(self, id)
     }
 }
 
@@ -151,6 +156,24 @@ impl ModulesPage {
                     hideout_shell::open_update_page();
                     false
                 }
+                // Go to <module>: the root's page (root cause once, §7.8).
+                (Does::GoTo, _) => {
+                    let root = self
+                        .facts
+                        .as_ref()
+                        .and_then(|f| f(&format!("module.{id}.waiting")))
+                        .and_then(|v| v.as_str().map(String::from));
+                    if let Some(r) = root {
+                        hideout_shell::open_module(&r);
+                    }
+                    false
+                }
+                // The page's card has the new permission and Not now.
+                (Does::Review, _) => true,
+                (Does::Force, Some(a)) => {
+                    a.force_update(&id);
+                    false
+                }
                 (_, None) => true,
                 (Does::StartAgain | Does::TryAgain, Some(a)) => {
                     a.start_again(&id);
@@ -200,7 +223,7 @@ impl ModulesPage {
     /// The rows for this frame, in the page's order, and whether a countdown is running
     /// (repaint in a second).
     fn rows(&mut self) -> (Vec<hideout_shell::modules_list::Row>, bool) {
-        use hideout_shell::modules_list::row;
+        use hideout_shell::modules_list::row_in;
         if let Some(list) = self.fresh.as_ref().and_then(Fresh::take) {
             self.installed = list;
         }
@@ -220,7 +243,7 @@ impl ModulesPage {
                 let fact = facts(&format!("module.{}.restart", m.id)).filter(|_| restarting);
                 let left = self.restarts.left(&m.id, fact.as_ref(), now);
                 counting |= left.is_some_and(|(s, _)| s > 0);
-                row(m, facts, left)
+                row_in(m, &self.installed, facts, left)
             })
             .collect();
         // A search's words (#1033): on or off for this round, or not part of it.
@@ -492,6 +515,69 @@ mod tests {
         fn check_for_updates(&self, id: &str) {
             self.0.borrow_mut().push(format!("check {id}"));
         }
+        fn force_update(&self, id: &str) {
+            self.0.borrow_mut().push(format!("force {id}"));
+        }
+    }
+
+    /// The states #1086 publishes (#983): Waiting names the root by its name with Go to it;
+    /// Update ready's Force reaches the supervisor; Update waiting for you's Review opens the
+    /// page; a quarantined row is red with Start again.
+    #[test]
+    fn the_waiting_update_and_quarantine_rows() {
+        use hideout_shell::modules_list::{Click, Does};
+        let facts: Facts = Box::new(|k| match k {
+            "module.m.a.state" => Some(json!("waiting")),
+            "module.m.a.waiting" => Some(json!("m.l")),
+            "module.m.l.state" => Some(json!("crash-stopped")),
+            "module.m.b.state" => Some(json!("update-busy")),
+            "module.m.c.state" => Some(json!("update-waiting")),
+            "module.m.q.state" => Some(json!("quarantined")),
+            _ => None,
+        });
+        let inst = |id: &str, name: &str| Installed {
+            id: id.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            enabled: true,
+        };
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![
+                inst("m.a", "Art"),
+                inst("m.l", "Link"),
+                inst("m.b", "Beat"),
+                inst("m.c", "Chat"),
+                inst("m.q", "Quill"),
+            ],
+            facts: Some(facts),
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            finder: None,
+            fresh: None,
+        };
+        let (rows, _) = page.rows();
+        let get = |id: &str| rows.iter().find(|r| r.id == id).unwrap().clone();
+        let a = get("m.a");
+        assert_eq!(a.state, "Waiting for Link");
+        assert!(!a.stopped, "only the root is red");
+        let p = a.primary.unwrap();
+        assert_eq!((p.label.as_str(), p.does), ("Go to Link", Does::GoTo));
+        let b = get("m.b");
+        assert_eq!(b.state, "Update ready");
+        assert_eq!(b.primary.unwrap().does, Does::Force);
+        let c = get("m.c");
+        assert_eq!(c.state, "Update waiting for you");
+        assert_eq!(c.primary.unwrap().label, "Review");
+        let q = get("m.q");
+        assert_eq!(q.state, "Quill's page couldn't be shown");
+        assert_eq!(q.label, "Quill's page couldn't be shown");
+        assert!(q.stopped);
+        assert_eq!(q.primary.unwrap().does, Does::StartAgain);
+        page.on_click(Click::Primary("m.b".into(), Does::Force));
+        page.on_click(Click::Primary("m.q".into(), Does::StartAgain));
+        assert_eq!(*log.0.borrow(), ["force m.b", "start-again m.q"]);
     }
 
     /// A withdrawn module's row (#1026): "Withdrawn · 0.5.0" with Check for updates, which

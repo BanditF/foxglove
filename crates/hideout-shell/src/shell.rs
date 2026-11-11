@@ -115,6 +115,15 @@ pub trait TabHooks {
     fn turn_off(&mut self, _module: &str) {}
     /// **Check for updates** on a withdrawn module's card (#1026): its source's catalog now.
     fn check_for_updates(&mut self, _module: &str) {}
+    /// **Update Hideout** on a Needs a newer Hideout card: the hub's own update (today the
+    /// releases page).
+    fn update_hub(&mut self) {}
+    /// **Force** on Update ready (§7.6).
+    fn force_update(&mut self, _module: &str) {}
+    /// **Not now** on Update ready or Update waiting for you: the old version keeps running.
+    fn not_now(&mut self, _module: &str) {}
+    /// The panel host quarantined the module's panels (§5.5): the supervisor stops it.
+    fn quarantine(&mut self, _module: &str) {}
     /// The text **Copy diagnostics** copies (the supervisor's: exit codes, crash times, steps
     /// tried, versions, log tail). `None`: the shell copies the module, state and step only.
     fn diagnostics(&mut self, _module: &str) -> Option<String> {
@@ -1377,6 +1386,10 @@ impl Hub {
                     if self.panels.module_state(&key.module) == Some("revoked") {
                         look.state = TabState::Stopped(words::WITHDRAWN_TAB.into());
                     }
+                    // Waiting, needs a newer Hideout, quarantined, updating (#983).
+                    if let Some(s) = self.state_look(&key.module) {
+                        look.state = s;
+                    }
                     // Restarting: "Restarting… (2 of 5)", which changes once per crash and so
                     // needs no repaint (the live countdown is the crash bar's).
                     if self.panels.module_state(&key.module) == Some("restarting") {
@@ -2335,10 +2348,16 @@ impl Hub {
                         self.off_withdrawn_card_ui(ui, t, &key, &name);
                         true
                     }
+                    // #983: the states #1086 publishes (states.rs).
+                    Some(s) => self.state_surface_ui(ui, t, &key, &name, s),
                     _ => false,
                 };
                 // A card that comes back focuses its main button again.
-                if !own || fact_state.as_deref() == Some("restarting") {
+                if !own
+                    || fact_state
+                        .as_deref()
+                        .is_some_and(|s| s == "restarting" || states::header_line(s))
+                {
                     self.card_focus.remove(&key);
                 }
                 match &look.state {
@@ -2746,6 +2765,13 @@ impl Hub {
         }
         for (module, name) in self.panels.take_removed() {
             self.module_removed(&module, &name);
+        }
+        // The panel host quarantined a module's panels (§5.5): the supervisor stops it (v1.10).
+        for module in self.panels.take_quarantined() {
+            log::warn!("{module}: panels quarantined; asking the supervisor to stop it");
+            if let Some(h) = self.hooks.as_mut() {
+                h.quarantine(&module);
+            }
         }
         self.capture_keys(ctx);
         self.notice_tick(ctx);
@@ -3727,6 +3753,10 @@ const QUIT_IN_OWN_WINDOW: &str = "in its own window";
 #[path = "shell_drag.rs"]
 mod drag_windows;
 use drag_windows::OverlayWin;
+
+// The supervisor's waiting, needs-hub, quarantined and update states (#983, #1049).
+#[path = "shell_states.rs"]
+mod states;
 
 #[cfg(test)]
 #[path = "shell_tests.rs"]

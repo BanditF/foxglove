@@ -1338,6 +1338,18 @@ impl TabHooks for Asked {
     fn check_for_updates(&mut self, m: &str) {
         self.0.lock().unwrap().push(format!("check {m}"));
     }
+    fn update_hub(&mut self) {
+        self.0.lock().unwrap().push("update-hub".into());
+    }
+    fn force_update(&mut self, m: &str) {
+        self.0.lock().unwrap().push(format!("force {m}"));
+    }
+    fn not_now(&mut self, m: &str) {
+        self.0.lock().unwrap().push(format!("not-now {m}"));
+    }
+    fn quarantine(&mut self, m: &str) {
+        self.0.lock().unwrap().push(format!("quarantine {m}"));
+    }
 }
 
 const SUP: &str = "mod.art";
@@ -2282,6 +2294,10 @@ mod popouts;
 
 #[path = "drag_tests.rs"]
 mod drags;
+
+// Waiting, needs-hub, quarantined and the update states on every surface (#983, #1049).
+#[path = "states_tests.rs"]
+mod states_surfaces;
 
 /// Lab control (#1003) through the real hub frame, window-free: `state` lists the tabs and the
 /// active page as drawn, `key ctrl+tab` goes through the hub's own shortcut code, and
