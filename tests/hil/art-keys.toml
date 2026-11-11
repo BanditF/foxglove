@@ -68,27 +68,16 @@ steps = [
 
 [[cases]]
 name = "art-keys-board-visits-all-kept"
-description = "#851: with Foxglove quit, the board's own step visits the emblem and every kept place in order, then wraps. Needs the emblem (set 0) plus exactly 4 kept places in slots 0-3 (sets 1-4; Screens shows Kept: 4 of 8), no app opt-in, and #851's step fix on the left. From the emblem: P lands on 1, 2, 3, 4, 0, 1 (the step after the wrap), then O lands on 0, 4, 3, 2, 1, 0. A press that lands anywhere else names the set it got"
+description = "#851: with Foxglove quit, the board's own step visits the built-ins and every kept place in order, then wraps, whatever the board has. Each art_key step reads the right's status first and builds the board's order from it (built-ins, then the kept slots in slot order); BLOCKED only with no kept places. From the art showing now, P goes two full laps forward and O two back, every landing checked (a press that lands anywhere else names the set it got); two full laps end where they started, and a failure selects the start art again. Keeps and removes nothing. Needs no app opt-in and #851's step fix on the left"
 tags = ["art-keys"]
 requires = ["art_keys", "position_press"]
 steps = [
-  { art_select = { set = 0, restore = false } },
   { press_position = { pos = 43, state = "down" } },
   { press_position = { pos = 46, state = "down" } },
   { press_position = { pos = 0, state = "down" } },
   { expect_layer = { active_contains = [6], retrigger = 0 } },
-  { art_key = { pos = 11, lands_on = 1 } },
-  { art_key = { pos = 11, lands_on = 2 } },
-  { art_key = { pos = 11, lands_on = 3 } },
-  { art_key = { pos = 11, lands_on = 4 } },
-  { art_key = { pos = 11, lands_on = 0 } },
-  { art_key = { pos = 11, lands_on = 1 } },
-  { art_key = { pos = 10, lands_on = 0 } },
-  { art_key = { pos = 10, lands_on = 4 } },
-  { art_key = { pos = 10, lands_on = 3 } },
-  { art_key = { pos = 10, lands_on = 2 } },
-  { art_key = { pos = 10, lands_on = 1 } },
-  { art_key = { pos = 10, lands_on = 0 } },
+  { art_key = { pos = 11, laps = 2 } },
+  { art_key = { pos = 10, laps = 2 } },
   { expect_layer = { active_contains = [6], within_ms = 3000, retrigger = 0 } },
   { press_position = { pos = 0, state = "up" } },
   { press_position = { pos = 46, state = "up" } },

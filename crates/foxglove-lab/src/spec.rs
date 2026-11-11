@@ -386,6 +386,13 @@ pub struct ArtKey {
     /// then kept slots, in order and round the wrap). Unset: any change passes.
     #[serde(default)]
     pub lands_on: Option<i8>,
+    /// Without `subscribed` (#851): press `laps` full laps of whatever the board has, checking
+    /// every landing. The step reads the right's status first and builds the board's order from
+    /// it (the built-ins, then the kept slots in slot order, then the wrap); BLOCKED when there
+    /// are no kept places. A full lap ends where it started; on a failure the step selects the
+    /// start set again. 0: one press.
+    #[serde(default)]
+    pub laps: u8,
 }
 /// PANEL RELEASE: the firmware draws its own panel again.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -685,6 +692,11 @@ impl Step {
                 ensure!(
                     k.lands_on.is_none_or(|s| s >= 0),
                     "art_key lands_on is a built-in or kept set (0 or more)"
+                );
+                ensure!(
+                    k.laps <= 4 && (k.laps == 0 || !k.subscribed && k.lands_on.is_none()),
+                    "art_key laps is 0-4, for steps without subscribed or lands_on (the board's \
+                     order says where each press lands)"
                 );
             }
             Self::IdleCpu(i) => {

@@ -1085,19 +1085,181 @@ fn board_steps_hand_the_art_keys_back_first() {
     assert!(long.iter().all(|k| !k.subscribed && !k.keep_found_opt_in));
     let bad = case("[{art_key={pos=11,subscribed=true,keep_found_opt_in=true}}]");
     assert!(bad.steps[0].validate().is_err());
-    // #851: every kept place in order on the emblem plus 4, round both wraps, on the board.
-    let lands: Vec<Option<i8>> = art_keys("art-keys-board-visits-all-kept")
+    // #851: every kept place the board has, in order, two laps each way, on the board.
+    let visits: Vec<(u8, u8, Option<i8>)> = art_keys("art-keys-board-visits-all-kept")
         .iter()
-        .map(|k| k.lands_on)
+        .map(|k| (k.pos, k.laps, k.lands_on))
         .collect();
-    let want = [1, 2, 3, 4, 0, 1, 0, 4, 3, 2, 1, 0].map(Some);
-    assert_eq!(lands, want);
+    assert_eq!(visits, [(11, 2, None), (10, 2, None)]);
+    let visit_case = suite
+        .cases
+        .iter()
+        .find(|c| c.name == "art-keys-board-visits-all-kept")
+        .unwrap();
+    assert!(
+        !visit_case
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::ArtSelect(_) | Step::ArtSlot(_))),
+        "the case changes no art itself: no select, keep or remove"
+    );
     for bad in [
         "[{art_key={pos=11,subscribed=true,lands_on=1}}]",
         "[{art_key={pos=11,lands_on=-1}}]",
+        "[{art_key={pos=11,laps=2,lands_on=1}}]",
+        "[{art_key={pos=11,laps=2,subscribed=true}}]",
+        "[{art_key={pos=11,laps=5}}]",
     ] {
         assert!(case(bad).steps[0].validate().is_err(), "{bad}");
     }
+}
+
+/// A right status version 3 art reply: `count` built-ins, kept slots `used` (bit n) of 8.
+fn art_kept(cmd: u8, set: i8, count: u8, used: u8) -> [u8; REPORT] {
+    let mut r = art(cmd, set, count);
+    r[9] = 3; // right status version
+    r[24] = 8; // flash slots
+    r[25] = used;
+    r
+}
+
+fn kept_status(count: u8, used: u8) -> foxglove_link::protocol::ArtStatus {
+    foxglove_link::protocol::ArtStatus::parse(&art_kept(5, 0, count, used))
+}
+
+#[test]
+fn art_step_order_follows_whatever_the_board_has() {
+    use foxglove_lab::runner::{art_step_landings, art_step_order};
+    let order = |used: u8| art_step_order(&kept_status(1, used));
+    // The emblem alone, then 1, 4 and 6 kept places in slots from 0.
+    assert_eq!(order(0), [0]);
+    assert_eq!(order(0b1), [0, 1]);
+    assert_eq!(order(0b1111), [0, 1, 2, 3, 4]);
+    assert_eq!(order(0b11_1111), [0, 1, 2, 3, 4, 5, 6]);
+    // Gaps: slots 0, 2 and 5 are sets 1, 3 and 6, in slot order.
+    assert_eq!(order(0b10_0101), [0, 1, 3, 6]);
+    // More built-ins move the kept sets up; a right before status version 3 has none.
+    assert_eq!(art_step_order(&kept_status(3, 0b101)), [0, 1, 2, 3, 5]);
+    let mut old = art_kept(5, 0, 1, 0b1111);
+    old[9] = 2;
+    assert_eq!(
+        art_step_order(&foxglove_link::protocol::ArtStatus::parse(&old)),
+        [0]
+    );
+
+    // Two laps each way end where they started, round the wrap both ways.
+    let o = order(0b10_0101);
+    assert_eq!(
+        art_step_landings(&o, 0, 1, 2 * o.len()).unwrap(),
+        [1, 3, 6, 0, 1, 3, 6, 0]
+    );
+    assert_eq!(
+        art_step_landings(&o, 0, -1, 2 * o.len()).unwrap(),
+        [6, 3, 1, 0, 6, 3, 1, 0]
+    );
+    // From a kept set, as the board may be showing one.
+    assert_eq!(art_step_landings(&o, 3, 1, 4).unwrap(), [6, 0, 1, 3]);
+    assert_eq!(art_step_landings(&o, 3, -1, 4).unwrap(), [1, 0, 6, 3]);
+    // Six kept (the emblem plus 6): forward from the last kept set wraps to the emblem.
+    let six = order(0b11_1111);
+    assert_eq!(art_step_landings(&six, 6, 1, 2).unwrap(), [0, 1]);
+    // A set that isn't in the order (an empty slot's number) has no landings.
+    assert_eq!(art_step_landings(&o, 2, 1, 4), None);
+    assert_eq!(art_step_landings(&[], 0, 1, 4), None);
+}
+
+/// One board-step press of P: HELLO for the right-half position, its down and up, then the
+/// fresh status pair showing `lands` (with the same kept slots).
+fn lap_press(lands: i8, used: u8) -> [[u8; REPORT]; 5] {
+    [
+        hello(2, 4),
+        position(0, 11),
+        position(0, 11),
+        art_kept(5, lands, 1, used),
+        art_kept(5, lands, 1, used),
+    ]
+}
+
+#[test]
+fn art_key_laps_check_every_landing_and_leave_the_start_art() {
+    // The emblem plus slot 1 (set 2; slot 0 empty): one lap forward lands on 2, then 0.
+    let used = 0b10;
+    let fake = ArtKeysFake(Fake::default());
+    let mut replies = vec![
+        hello(2, 4),
+        reply(&[0xd7, 0x8d, 0, 0]), // ART_KEYS off
+        art_kept(5, 0, 1, used),
+        art_kept(5, 0, 1, used),
+    ];
+    replies.extend(lap_press(2, used));
+    replies.extend(lap_press(0, used));
+    fake.0.replies.borrow_mut().extend(replies);
+    let result = run_with(&fake, &case("[{art_key={pos=11,laps=1}}]"), TEST_HOOKS);
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    let actual = &result.steps[0].actual;
+    assert!(actual.contains("order [0, 2]"), "{actual}");
+    assert!(actual.contains("landed on [2, 0]"), "{actual}");
+    assert!(actual.contains("back on set 0"), "{actual}");
+    let requests = fake.0.requests.borrow();
+    assert!(
+        !requests.iter().any(|r| r[0] == 0xd6 && r[1] != 0x05),
+        "only STATUS reads on the art relay: no select, keep or remove: {requests:02x?}"
+    );
+    drop(requests);
+
+    // No kept places: BLOCKED, and nothing is pressed.
+    let fake = ArtKeysFake(Fake::default());
+    fake.0.replies.borrow_mut().extend([
+        hello(2, 4),
+        reply(&[0xd7, 0x8d, 0, 0]),
+        art_kept(5, 0, 1, 0),
+        art_kept(5, 0, 1, 0),
+    ]);
+    let result = run_with(&fake, &case("[{art_key={pos=11,laps=2}}]"), TEST_HOOKS);
+    assert_eq!(result.status, Status::Blocked, "{}", result.message);
+    assert!(
+        result.message.contains("no kept places"),
+        "{}",
+        result.message
+    );
+    assert!(!fake
+        .0
+        .requests
+        .borrow()
+        .iter()
+        .any(|r| r[..2] == [0xd7, 0x05]));
+
+    // A wrong landing fails, names the set it got, and selects the start set again.
+    let fake = ArtKeysFake(Fake::default());
+    let mut replies = vec![
+        hello(2, 4),
+        reply(&[0xd7, 0x8d, 0, 0]),
+        art_kept(5, 0, 1, used),
+        art_kept(5, 0, 1, used),
+    ];
+    replies.extend(lap_press(1, used));
+    replies.extend([
+        art_kept(foxglove_link::protocol::art::SELECT, 1, 1, used),
+        art_kept(5, 0, 1, used),
+    ]);
+    fake.0.replies.borrow_mut().extend(replies);
+    let result = run_with(&fake, &case("[{art_key={pos=11,laps=1}}]"), TEST_HOOKS);
+    assert_eq!(result.status, Status::Fail, "{}", result.message);
+    assert!(
+        result.message.contains("stepped to set 1 (wanted 2)"),
+        "{}",
+        result.message
+    );
+    assert!(
+        result.message.contains("set 0 selected again"),
+        "{}",
+        result.message
+    );
+    assert!(fake
+        .0
+        .requests
+        .borrow()
+        .contains(&foxglove_link::protocol::art_select(0)));
 }
 
 #[test]

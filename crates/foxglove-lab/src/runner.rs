@@ -184,6 +184,42 @@ pub fn is_art_status(r: &[u8; 32]) -> bool {
         .contains(&(r[1] & 0x7f))
 }
 
+/// #851: the sets the board's own art step visits, in order, as the left builds its list
+/// (art_relay_central.c): the built-ins 0..set_count, then set_count + n for each kept slot n
+/// that holds a set (flash_used bit n; a right before status version 3 reports none), below
+/// INT8_MAX. The step wraps from the last back to the first.
+pub fn art_step_order(s: &protocol::ArtStatus) -> Vec<i8> {
+    let count = u16::from(s.right_set_count);
+    let built_in = 0..count;
+    let kept = (0..8u16)
+        .filter(|n| s.flash_used & (1 << n) != 0)
+        .map(|n| count + n);
+    built_in
+        .chain(kept)
+        .filter(|&set| set < i8::MAX as u16)
+        .map(|set| set as i8)
+        .collect()
+}
+
+/// Where `presses` steps in direction `dir` (1 next, -1 previous) land, one set a press, going
+/// round `order` from `start`. None when `start` isn't in it.
+pub fn art_step_landings(order: &[i8], start: i8, dir: i8, presses: usize) -> Option<Vec<i8>> {
+    let n = order.len();
+    let mut i = order.iter().position(|&s| s == start)?;
+    Some(
+        (0..presses)
+            .map(|_| {
+                i = if dir > 0 {
+                    (i + 1) % n
+                } else {
+                    (i + n - 1) % n
+                };
+                order[i]
+            })
+            .collect(),
+    )
+}
+
 /// Whether the left's relay is in the middle of another job: a SELECT now would be refused
 /// (PUSHING, -EBUSY in art_relay_select, with no error in the reply) or would cut another
 /// client's blob short (RECEIVING).
@@ -593,6 +629,13 @@ impl<'a, D: Device> Runner<'a, D> {
             .device
             .art_key_events()
             .ok_or_else(|| anyhow::anyhow!("this device can't deliver unsolicited reports"))?;
+        if k.laps > 0 {
+            let laps = self.art_key_laps(k, before, &events)?;
+            return Ok(format!(
+                "{}{laps}",
+                if cleared { "D7 0D 00 sent first; " } else { "" }
+            ));
+        }
         if k.subscribed {
             // Set first: a D7 0D 01 that wasn't answered may still have turned it on.
             self.art_keys_on = !k.keep_opt_in;
@@ -634,36 +677,123 @@ impl<'a, D: Device> Runner<'a, D> {
                 events.rx.try_recv().is_err(),
                 "an art-key event arrived without the opt-in"
             );
-            let end = Instant::now() + Duration::from_secs(6);
-            loop {
-                let after = fresh(self)?;
-                if after.right_set != before.right_set {
-                    if let Some(want) = k.lands_on {
-                        ensure!(
-                            after.right_set == want,
-                            "the board stepped to set {} (wanted {want}) from {}: {after}",
-                            after.right_set,
-                            before.right_set
-                        );
-                    }
-                    return Ok(format!(
-                        "{}the board stepped the art: set {} -> {} ({after})",
-                        if cleared { "D7 0D 00 sent first; " } else { "" },
-                        before.right_set,
-                        after.right_set
-                    ));
-                }
-                ensure!(
-                    Instant::now() < end,
-                    "the art didn't step within 6 s: {after}"
-                );
-            }
+            let after = self.board_landing(&before, k.lands_on)?;
+            Ok(format!(
+                "{}the board stepped the art: set {} -> {} ({after})",
+                if cleared { "D7 0D 00 sent first; " } else { "" },
+                before.right_set,
+                after.right_set
+            ))
         })();
         if k.subscribed && !k.keep_opt_in {
             subscribe(self, false)?;
             self.art_keys_on = false;
         }
         outcome
+    }
+    /// After a board-step press: waits up to 6 s for the right's set to change from `before`'s
+    /// and, with `want`, checks it landed there.
+    fn board_landing(
+        &self,
+        before: &protocol::ArtStatus,
+        want: Option<i8>,
+    ) -> Result<protocol::ArtStatus> {
+        let end = Instant::now() + Duration::from_secs(6);
+        loop {
+            art::status(self.device)?;
+            std::thread::sleep(Duration::from_millis(300));
+            let after = art::status(self.device)?;
+            if after.right_set != before.right_set {
+                if let Some(want) = want {
+                    ensure!(
+                        after.right_set == want,
+                        "the board stepped to set {} (wanted {want}) from {}: {after}",
+                        after.right_set,
+                        before.right_set
+                    );
+                }
+                return Ok(after);
+            }
+            ensure!(
+                Instant::now() < end,
+                "the art didn't step within 6 s: {after}"
+            );
+        }
+    }
+    /// #851: `k.laps` full laps of the board's own order from the set the right shows now, every
+    /// landing checked. Changes no kept place; a full lap ends on the start set, and a failure
+    /// selects it again before it's reported.
+    fn art_key_laps(
+        &mut self,
+        k: &crate::spec::ArtKey,
+        before: protocol::ArtStatus,
+        events: &Events,
+    ) -> Result<String> {
+        let start = before.right_set;
+        if start < 0 {
+            return Err(Blocked(format!(
+                "the right shows pushed art, which the step would lose (RAM only); run with \
+                 built-in or kept art showing ({before})"
+            ))
+            .into());
+        }
+        let order = art_step_order(&before);
+        let built_in = usize::from(before.right_set_count);
+        if order.len() <= built_in {
+            return Err(Blocked(format!(
+                "the right has no kept places (Screens: Kept: 0), so the step has nothing past \
+                 the built-ins to visit; keep one first ({before})"
+            ))
+            .into());
+        }
+        let dir: i8 = if k.pos == 11 { 1 } else { -1 };
+        let presses = usize::from(k.laps) * order.len();
+        let Some(want) = art_step_landings(&order, start, dir, presses) else {
+            bail!("the right is on set {start}, which isn't in the board's order {order:?}");
+        };
+        let tap = crate::spec::Position {
+            pos: k.pos,
+            state: "tap".into(),
+            hold_ms: 30,
+            expect_status: "ok".into(),
+        };
+        let (key, mut at, mut landed) = (if dir > 0 { "P" } else { "O" }, before, Vec::new());
+        let mut failure = None;
+        for (i, &w) in want.iter().enumerate() {
+            let step = (|| -> Result<protocol::ArtStatus> {
+                self.press(&tap)?;
+                ensure!(
+                    events.rx.try_recv().is_err(),
+                    "an art-key event arrived without the opt-in"
+                );
+                self.board_landing(&at, Some(w))
+            })();
+            match step {
+                Ok(s) => {
+                    at = s;
+                    landed.push(s.right_set);
+                }
+                Err(e) => {
+                    failure = Some(format!("{key} press {} of {presses}: {e}", i + 1));
+                    break;
+                }
+            }
+        }
+        let kept: Vec<i8> = order[built_in..].to_vec();
+        let what = format!(
+            "order {order:?} ({built_in} built-in, kept sets {kept:?}); {} laps of {key} \
+             ({presses} presses) from set {start} landed on {landed:?}",
+            k.laps
+        );
+        let Some(failure) = failure else {
+            return Ok(format!("{what}; back on set {start}, where it started"));
+        };
+        // Put the start art back (a SELECT works for kept sets too: set_count + slot).
+        let restored = match self.select_built_in(start, before.right_set_count, 5000, true) {
+            Ok(_) => format!("set {start} selected again"),
+            Err(e) => format!("putting set {start} back failed too: {e}"),
+        };
+        bail!("{failure}; {what}; {restored}")
     }
     fn panel_flood(&mut self, f: &crate::spec::PanelFlood) -> Result<String> {
         use crate::spec::Layer;
