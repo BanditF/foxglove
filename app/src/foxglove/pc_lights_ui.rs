@@ -334,6 +334,19 @@ pub fn not_yet_text(effects: &[String]) -> String {
     }
 }
 
+/// The zone chip's hover on a device Foxglove can't drive yet (#614): its zones are how its
+/// lights are divided, not something Foxglove sets.
+pub const ZONES_NOT_YET_TIP: &str =
+    "How the device's lights are divided. Foxglove can't set them yet.";
+
+/// The zone chip's (and the open row's light line's) hover.
+pub fn zones_tip(row: &Row) -> &'static str {
+    match row.control {
+        Control::NotYet => ZONES_NOT_YET_TIP,
+        _ => super::light_zones::TIP,
+    }
+}
+
 /// What the card is for: its title's hover (#795 O1).
 pub const ABOUT: &str =
     "Case lights, screens and other lighting devices on this PC, and what each can do.";
@@ -874,7 +887,7 @@ fn light_line(ui: &mut egui::Ui, row: &Row) {
     let mut open = false;
     ui.horizontal_wrapped(|ui| {
         ui.add(egui::Label::new(RichText::new(summary).color(p.text)).wrap())
-            .on_hover_text(super::light_zones::TIP);
+            .on_hover_text(zones_tip(row));
         if offers_zones(row) {
             open = super::zones_ui::toggle(ui, &row.key, caps.kind(false));
         }
@@ -969,7 +982,7 @@ fn device(
                 note.on_hover_text(not_yet_text(&row.caps.effects));
             }
             if let Some(chip) = light_chip(row) {
-                theme::hint_chip(ui, &chip, Some(super::light_zones::TIP), None);
+                theme::hint_chip(ui, &chip, Some(zones_tip(row)), None);
             }
             match row.caps.summary(false) {
                 None if row.caps.screen_chips().is_empty() => {
@@ -2051,6 +2064,13 @@ pub mod tests {
             not_yet_text(&other.caps.effects),
             "Lights not controllable yet: it keeps its own effect."
         );
+        // Its zone chip says the zones are how its lights are divided, not what Foxglove sets.
+        assert_eq!(
+            zones_tip(&cooler),
+            "How the device's lights are divided. Foxglove can't set them yet."
+        );
+        let case = users_desk::catalog_row(users_desk::CASE);
+        assert_eq!(zones_tip(&case), super::super::light_zones::TIP);
     }
 
     /// What a click on a device's thumbnail asks for (#804): two frames, the press and the

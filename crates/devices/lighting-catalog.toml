@@ -115,12 +115,12 @@ images = true
 animations = true
 # HP's LCD helper holds the cap and re-claims it about once a second.
 [[device.conflict]]
-app = "OMEN Gaming Hub (LCD helper)"
+app = "OMEN LCD helper"
 processes = ["OMENLCDDisplayHelper.exe"]
 hint = "It puts the picture on the pump's screen. OMEN Gaming Hub starts it; leave it running while you use the screen."
 
 [[device]]
-name = "HP OMEN LCD liquid cooler"
+name = "HP OMEN liquid cooler"
 vid = 0x03F0
 pid = 0x02BE
 # Unconfirmed: HP's LCD helper looks for this second LCD cooler (#614); no unit seen yet, and
