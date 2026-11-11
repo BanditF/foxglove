@@ -21,6 +21,8 @@ use crate::drag;
 const GHOST_TITLE: &str = "Hideout \u{b7} Let go to open in its own window";
 /// The ghost card's words (the plan's wording table).
 pub(super) const GHOST_LINE: &str = "Let go to open in its own window";
+/// Its line over Hideout's own window, where letting go does nothing (UX review of #1073).
+pub(super) const GHOST_LINE_HUB: &str = "Drag outside Hideout to pop out";
 pub(super) const GHOST_ESC: &str = "Esc cancels";
 
 /// The dock bar's window title: never shown either.
@@ -319,8 +321,13 @@ pub(super) fn ghost_card(ui: &mut egui::Ui, t: &Tokens, look: &Look, over_hub: b
         );
     });
     ui.add_space(6.0);
-    let line = if over_hub { t.text_muted } else { t.text };
-    ui.label(egui::RichText::new(GHOST_LINE).color(c(line)));
+    // Over Hideout letting go does nothing: the line says how to pop out instead (dimmed).
+    let (text, line) = if over_hub {
+        (GHOST_LINE_HUB, t.text_muted)
+    } else {
+        (GHOST_LINE, t.text)
+    };
+    ui.label(egui::RichText::new(text).color(c(line)));
     ui.label(
         egui::RichText::new(GHOST_ESC)
             .size(12.0)

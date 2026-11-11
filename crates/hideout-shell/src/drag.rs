@@ -212,6 +212,27 @@ pub struct WindowDrag {
     pub ended: bool,
 }
 
+/// The end of a pop-out's move loop (`WM_EXITSIZEMOVE`): the drop with the pointer at `cursor`,
+/// or `None` when the move was cancelled. Esc in Windows' move loop puts the window back where
+/// it was and still ends the loop with the pointer wherever it is (over the strip, say), so a
+/// window back at its rectangle from the start of the move (`start`; `now` at the end) means
+/// "nothing happens", as Esc does for any window.
+pub fn end_move(
+    d: WindowDrag,
+    start: Option<Rect>,
+    now: Option<Rect>,
+    cursor: Option<(i32, i32)>,
+) -> Option<WindowDrag> {
+    if start.is_some() && start == now {
+        return None;
+    }
+    Some(WindowDrag {
+        cursor: cursor.unwrap_or(d.cursor),
+        ended: true,
+        ..d
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +402,39 @@ mod tests {
             ((788, 50), (5, 54))
         );
         assert_eq!(bar_rect((0, 0), 10.0, (0.0, 36.0), 0.0), ((9, 0), (3, 36)));
+    }
+
+    #[test]
+    fn esc_in_the_move_loop_cancels_the_drop() {
+        let d = WindowDrag {
+            hwnd: 7,
+            cursor: (500, 20),
+            ended: false,
+        };
+        let start = Rect {
+            x: 900,
+            y: 300,
+            w: 640,
+            h: 480,
+        };
+        let moved = Rect {
+            x: 380,
+            y: 5,
+            ..start
+        };
+        // Let go where it was moved to: the drop, at the pointer now.
+        let got = end_move(d, Some(start), Some(moved), Some((510, 22))).unwrap();
+        assert!(got.ended);
+        assert_eq!((got.hwnd, got.cursor), (7, (510, 22)));
+        // Esc: Windows put it back at its rectangle from the start; no drop.
+        assert_eq!(end_move(d, Some(start), Some(start), Some((510, 22))), None);
+        // No pointer at the end (a keyboard move): the last one seen.
+        assert_eq!(
+            end_move(d, Some(start), Some(moved), None).unwrap().cursor,
+            (500, 20)
+        );
+        // A rectangle that couldn't be read never cancels.
+        assert!(end_move(d, None, None, None).is_some());
     }
 
     #[test]

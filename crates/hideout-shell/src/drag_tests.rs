@@ -7,7 +7,9 @@
 use super::popouts::{blit, chat, chat_hub, frame, render_popout};
 use super::*;
 use crate::drag::{self, WindowDrag};
-use crate::shell::drag_windows::{ghost_card, ghost_frame, GHOST_ESC, GHOST_LINE, PROBE};
+use crate::shell::drag_windows::{
+    ghost_card, ghost_frame, GHOST_ESC, GHOST_LINE, GHOST_LINE_HUB, PROBE,
+};
 use eframe::egui::Pos2;
 
 const W: f32 = 1100.0;
@@ -88,18 +90,39 @@ fn a_tab_dragged_out_of_the_window_pops_out_where_it_is_let_go() {
     assert_eq!(hub.strip.ghost(), Some((i, true)));
     // (Drawn on top of the window here, as an egui area: shown from its second frame.)
     let shown = step(&ctx, &mut hub, egui::pos2(602.0, 300.0));
-    assert!(shown.iter().any(|s| s == GHOST_LINE), "{shown:?}");
+    // Over Hideout letting go does nothing: the card says how to pop out instead.
+    assert!(shown.iter().any(|s| s == GHOST_LINE_HUB), "{shown:?}");
+    assert!(!shown.iter().any(|s| s == GHOST_LINE), "{shown:?}");
     assert!(shown.iter().any(|s| s == GHOST_ESC));
     // On, out of the window: the ghost, not over Hideout; letting go pops Chat out.
     let out = egui::pos2(W + 200.0, 300.0);
     step(&ctx, &mut hub, out);
     assert_eq!(hub.strip.ghost(), Some((i, false)));
+    // (Off the canvas here, so read the card as its own window draws it.)
+    let words = card_words(&hub, i, false);
+    assert!(words.iter().any(|s| s == GHOST_LINE), "{words:?}");
+    assert!(!words.iter().any(|s| s == GHOST_LINE_HUB));
+    assert!(card_words(&hub, i, true)
+        .iter()
+        .any(|s| s == GHOST_LINE_HUB));
     frame(&ctx, &mut hub, vec![press(out, false)]);
     assert_eq!(hub.strip.ghost(), None, "the ghost goes with the drag");
     assert!(hub.tabs.tabs()[i].popped, "Chat is in its own window");
     assert_eq!(hub.popouts.len(), 1);
     assert!(saved_popped(&dir, "mod.chat/chat"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The strings the ghost card of tab `i` draws in its own window.
+fn card_words(hub: &Hub, i: usize, over_hub: bool) -> Vec<String> {
+    let t = theme::tokens(true);
+    let look = hub.look(i);
+    let out = ctx().run(input(300.0, 92.0, vec![]), |c| {
+        egui::CentralPanel::default()
+            .frame(ghost_frame(&t, over_hub))
+            .show(c, |ui| ghost_card(ui, &t, &look, over_hub));
+    });
+    drawn(&out)
 }
 
 fn saved_popped(dir: &std::path::Path, key: &str) -> bool {
@@ -221,6 +244,34 @@ fn a_pop_out_dragged_onto_the_strip_shows_the_bar_and_docks_there() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn a_pop_out_dropped_on_the_strip_after_esc_stays_out() {
+    let dir = temp_dir("drag-dock-esc");
+    let (mut hub, _router, ctx) = chat_hub(&dir);
+    hub.apply(Action::PopOut(1));
+    frame(&ctx, &mut hub, vec![]);
+    hub.popouts[0].hwnd = Some(4242);
+    let (_, spans) = hub.strip.layout().unwrap();
+    let end = egui::pos2(spans[2].right - 4.0, 18.0);
+    probe_frame(&ctx, &mut hub, Some((window(4242, false), Some(end))));
+    assert_eq!(hub.strip.dock_slot, Some(3));
+    // Esc: Windows puts the window back where the move started and still ends the loop with
+    // the pointer over the strip; the subclass's end of the move reports no drop.
+    let start = placement::Rect {
+        x: 900,
+        y: 300,
+        w: 640,
+        h: 480,
+    };
+    let ended = drag::end_move(window(4242, false), Some(start), Some(start), Some((0, 0)));
+    assert_eq!(ended, None);
+    probe_frame(&ctx, &mut hub, ended.map(|d| (d, Some(end))));
+    assert!(hub.tabs.tabs()[1].popped, "still in its own window");
+    assert_eq!(hub.popouts.len(), 1);
+    assert_eq!(hub.strip.dock_slot, None, "the bar goes");
+    assert!(saved_popped(&dir, "mod.chat/chat"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
 #[test]
 fn a_pop_out_let_go_off_the_strip_stays_out() {
     let dir = temp_dir("drag-dock-off");

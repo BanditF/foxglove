@@ -696,6 +696,20 @@ struct PopoutHooks {
     /// The last `WM_MOVING` had the pointer over the main window: the next one wakes the frame
     /// even when it leaves, so the bar goes away.
     drag_near: bool,
+    /// Each moving pop-out's rectangle at `WM_ENTERSIZEMOVE`.
+    move_start: Vec<(isize, Rect)>,
+}
+
+/// A window's rectangle on screen.
+fn window_rect(h: isize) -> Option<Rect> {
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd(h), &mut r).ok()? };
+    Some(Rect {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
+    })
 }
 
 thread_local! {
@@ -855,14 +869,23 @@ unsafe extern "system" fn popout_proc(
     HOOKS.with(|k| {
         let mut k = k.borrow_mut();
         match msg {
-            WM_ENTERSIZEMOVE => k.moving.push(id),
+            WM_ENTERSIZEMOVE => {
+                k.moving.push(id);
+                // Where it starts from: a move that ends back here was cancelled (Esc).
+                k.move_start.retain(|(m, _)| *m != id);
+                if let Some(r) = window_rect(id) {
+                    k.move_start.push((id, r));
+                }
+            }
             WM_EXITSIZEMOVE => {
                 k.moving.retain(|&m| m != id);
                 k.ended.push(id);
-                if let Some(d) = k.drag.as_mut().filter(|d| d.hwnd == id) {
-                    // The drop: where the pointer is now (a keyboard move ends without one).
-                    d.cursor = cursor_pos().unwrap_or(d.cursor);
-                    d.ended = true;
+                let start = k.move_start.iter().find(|(m, _)| *m == id).map(|(_, r)| *r);
+                k.move_start.retain(|(m, _)| *m != id);
+                if let Some(d) = k.drag.filter(|d| d.hwnd == id) {
+                    // The drop at the pointer now, or none when Esc put the window back (the
+                    // frame still wakes and takes the bar away).
+                    k.drag = crate::drag::end_move(d, start, window_rect(id), cursor_pos());
                 }
                 k.drag_near = false;
                 wake = true;
@@ -904,6 +927,7 @@ unsafe extern "system" fn popout_proc(
             WM_NCDESTROY => {
                 k.moving.retain(|&m| m != id);
                 k.ended.retain(|&m| m != id);
+                k.move_start.retain(|(m, _)| *m != id);
                 if k.drag.is_some_and(|d| d.hwnd == id) {
                     k.drag = None;
                 }

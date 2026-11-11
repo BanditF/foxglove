@@ -111,8 +111,8 @@ tabs plan's close rule). If no other tab is open, the page area shows "Nothing o
 - Closing a pop-out loses nothing: the page goes back to its tab with its view state. So **closing
   never asks**, even with unsaved work. Only **Close page** asks, with the tabs plan's dialog
   ("Close Chat?" / "Your changes in Chat aren't saved." / **Keep open** · Close anyway).
-- Dropping a dragged window on another pop-out does nothing (no tab groups); the pointer shows
-  "no drop" and the window stays where it was let go.
+- Dropping a dragged window on another pop-out does nothing (no tab groups); the window stays
+  where it was let go (Windows' move cursor stays; Windows owns it during a move).
 
 ## The hub while a page is out
 
@@ -207,7 +207,7 @@ From §5.9, with pop-outs spelt out (spec gap 1):
 |---|---|
 | Tab menu, palette | "Pop out" (palette: "Pop out <page>") |
 | Strip button tooltip | "Pop out (Ctrl+Shift+O)" |
-| Drag ghost | "Let go to open in its own window" / "Esc cancels" |
+| Drag ghost | Outside Hideout: "Let go to open in its own window" / "Esc cancels"; over Hideout (plain border): "Drag outside Hideout to pop out" / "Esc cancels" |
 | Window title | "Hideout · <page>" |
 | Title row | Keep on top (tooltip "Keep on top" / "Keep on top: on"), "Dock back", More |
 | More menu | Dock back, Keep on top, Show Hideout, Close page |
@@ -297,8 +297,8 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
     focus (a tool window: not in Alt+Tab or the taskbar), moved to the pointer with
     `SetWindowPos` on each frame of the drag. The pointer sits on the page's icon. The card
     reads the plan's words. Over Hideout's own window (its caption and frame included) the card
-    keeps the words but loses its orange edge and dims its line, because letting go there does
-    nothing (a designer check: the plan doesn't say what the card shows over the page area).
+    loses its orange edge and its line reads "Drag outside Hideout to pop out" (dimmed), because
+    letting go there does nothing.
     Letting go outside Hideout pops the page out with its title row under the pointer
     (`popout::at_pointer`: its usual size, the pointer 120 units in and halfway down the title
     row below Windows' caption, pulled fully onto the screen under the pointer) and gives it the
@@ -318,7 +318,10 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
     target itself). `WM_EXITSIZEMOVE` is the drop: on the strip
     the page docks at the bar as the active tab, its window closes, and its saved place stays
     the one from before the drag. Anywhere else the window stays where Windows put it and its
-    place is saved as for any move.
+    place is saved as for any move. **Esc** in the move loop puts the window back and still ends
+    the loop with the pointer where it is, maybe over the strip; so the subclass notes the
+    window's rectangle at `WM_ENTERSIZEMOVE`, and a window back at it on `WM_EXITSIZEMOVE` is a
+    cancelled move: no drop, the bar goes (`drag::end_move`).
   - **The title row moves the window too.** The empty part of Hideout's own title row starts
     Windows' move loop (`ViewportCommand::StartDrag`), so a pop-out can be dragged by either
     row; its buttons keep their clicks.
@@ -331,7 +334,9 @@ Same verbs as the tabs plan: "Pop out" and "Dock back", never "detach", "undock"
     leaves the bar a step behind, the drop still lands), that winit keeps reporting the pointer
     outside the window while a tab drag holds the mouse capture (the card follows the pointer
     only on those frames), the card's offset on a 150 % screen and across screens of different
-    scaling, and the 24/12-point reaches.
+    scaling, the 24/12-point reaches, that Esc while a pop-out is dragged over the strip puts
+    it back and docks nothing, and that the focus lands on the page in Hideout after a dock by
+    drag.
   Checked against egui 0.33.3, egui-winit 0.33.3 and winit 0.30.13, what egui can't do itself:
   - What works: a press on a tab keeps its drag outside the window (winit captures the mouse on
     the press and goes on reporting positions outside; egui keeps a drag through `PointerGone`),
