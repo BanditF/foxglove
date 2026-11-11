@@ -240,7 +240,8 @@ The hub MUST NOT contain:
   catalogs\<source>\      last accepted root, catalogs and signatures, per source (§12, §13)
   run\instances.json      live instance tokens, for taking modules back after a hub restart (§7.9)
   run\hub-run.json        the running hub's mark and its last 3 unclean closes (§7.10)
-  apps-seen.txt           (v1.7) the apps the app watch has seen run, one label a line (§4.6)
+  apps-seen.txt           (v1.7) the apps the app watch has seen run, one label a line (§4.6);
+                          Settings' Forget seen apps clears it and the running watch's list
   logs\                   hub and module logs (stderr captured per module)
 %APPDATA%\Hideout\modules\<id>\settings\   the module's settings folder, assigned by the hub
 ```
@@ -642,6 +643,11 @@ v1.1).
   `[[actions]]` (those whose `when` is true) gets a generated **Keys** section after the module's
   tree, like the settings form: one row per action with its `name` and the bound key, or
   **Set key**. A module MUST NOT draw its own key list.
+- **Bound keys (#991, hub behaviour, no wire change):** a key is F13 to F24 (modifiers
+  allowed), or any other key with two of Ctrl, Alt and Shift; a chord that types a character
+  on the current keyboard layout (AltGr) and the chords Windows keeps are refused. The hub keeps them in `hideout.toml`'s `[keys]` table
+  (`"<module>/<action>" = "Ctrl+Alt+M"`), registers them system-wide, and a press sends
+  `action.invoke {action, source: "key"}` (§8.8), with the window in the tray too.
 
 **`[[secrets]]`:** as plugin.toml.
 

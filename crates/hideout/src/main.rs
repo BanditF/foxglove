@@ -22,6 +22,7 @@ mod modules_page;
 mod panel_feed;
 #[cfg(windows)]
 mod router_start;
+mod settings_page;
 
 /// What runs beside the shell: kept alive for the life of the process.
 #[cfg(windows)]
@@ -308,7 +309,7 @@ fn main() {
     if let Some(f) = &started.finder {
         watch_search(f, start_in_tray);
     }
-    let pages = modules_page::pages(
+    let mut pages = modules_page::pages(
         modules_page::installed(&paths.root),
         started.facts.take(),
         started.actions.take(),
@@ -316,6 +317,11 @@ fn main() {
         started.finder.clone(),
         started.fresh.take(),
     );
+    // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
+    pages.push(Box::new(settings_page::SettingsPage::new(
+        paths.root.clone(),
+        env!("CARGO_PKG_VERSION"),
+    )));
     let opts = hideout_shell::ShellOptions {
         paths,
         pages,

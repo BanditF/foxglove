@@ -20,8 +20,11 @@ use std::path::{Path, PathBuf};
 use hideout_contract::module::app_label;
 use serde_json::{json, Value};
 
+mod names;
 #[cfg(windows)]
 mod win;
+
+pub use names::{clean_program_name, pick_program_name, program_name};
 
 /// The file in the hub's home that keeps the apps seen (`apps.seen.<name>`), one label a line.
 pub const SEEN_FILE: &str = "apps-seen.txt";
@@ -81,15 +84,25 @@ impl Watch {
         &self.seen
     }
 
+    /// Forgets the apps seen (About's Forget seen apps, #991), except those running now: they
+    /// have run, and their next window would say so again.
+    pub fn forget_seen(&mut self) {
+        let running: BTreeSet<&String> = self.running.values().collect();
+        self.seen.retain(|s| running.contains(s));
+    }
+
     /// The facts that changed since the last call: every watched app's `apps.running.<name>`,
-    /// and `apps.seen.<name>` for each one seen.
+    /// and `apps.seen.<name>` for each one seen. A seen app that was forgotten reads `false`.
     pub fn changes(&mut self) -> Changes {
         let mut now = BTreeMap::new();
         for n in &self.names {
             let up = self.running.values().any(|l| l == n);
             now.insert(format!("apps.running.{n}"), json!(up));
+            let key = format!("apps.seen.{n}");
             if self.seen.contains(n) {
-                now.insert(format!("apps.seen.{n}"), json!(true));
+                now.insert(key, json!(true));
+            } else if self.published.contains_key(&key) {
+                now.insert(key, json!(false));
             }
         }
         let out: Changes = now
@@ -151,6 +164,21 @@ pub fn start(
     {
         let _ = (watch, file, sink);
         None
+    }
+}
+
+/// Forgets the apps the watch has seen (#991): `home`'s [`SEEN_FILE`] goes, and a running
+/// watch clears its list and publishes `apps.seen.<name> = false` for them (a message to its
+/// thread, no wait). Apps running now stay seen.
+pub fn forget_seen(home: &Path) {
+    #[cfg(windows)]
+    if win::post_forget(&home.join(SEEN_FILE)) {
+        return;
+    }
+    match std::fs::remove_file(home.join(SEEN_FILE)) {
+        Ok(()) => log::info!("appwatch: seen apps forgotten"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("appwatch: {SEEN_FILE} not removed: {e}"),
     }
 }
 
@@ -218,6 +246,33 @@ mod tests {
         write_seen(&f, &names(&["b", "a"]));
         assert_eq!(read_seen(&f), names(&["a", "b"]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn forgetting_keeps_running_apps_and_says_false_for_the_rest() {
+        let mut w = Watch::new(names(&["a", "b", "c"]), names(&["a", "b"]));
+        w.started(7, "b");
+        let _ = w.changes();
+        w.forget_seen();
+        assert_eq!(w.seen(), &names(&["b"]));
+        assert_eq!(w.changes(), vec![("apps.seen.a".into(), json!(false))]);
+        assert!(w.changes().is_empty(), "said once");
+    }
+
+    #[test]
+    fn forgetting_with_no_watch_removes_the_file() {
+        let dir = std::env::temp_dir().join(format!("hideout-appwatch-f{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(SEEN_FILE),
+            "a
+",
+        )
+        .unwrap();
+        forget_seen(&dir);
+        assert!(!dir.join(SEEN_FILE).exists());
+        forget_seen(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

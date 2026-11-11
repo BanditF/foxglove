@@ -16,12 +16,14 @@
 //!   and text rules; [`stream_io`] reads the channels.
 //! - [`tray`]: the tray panel's tile grid in the hub's frame (v1.4), with Edit tiles.
 //! - [`sections`]: the Keys and Settings sections the hub adds to a module's page (§4.7).
+//! - [`keys`]: key capture for the Keys section (Set key, #991): the bindable chords.
 //!
 //! Clean-room: written from `docs/hideout-contract.md`, the Hideout design doc and the MIT crates
 //! in `crates/`. It knows no module ids and no device code.
 
 pub mod assets;
 pub mod feed;
+pub mod keys;
 pub mod model;
 pub mod render;
 pub mod sections;
@@ -34,7 +36,7 @@ pub mod tree;
 pub mod view;
 
 pub use egui;
-pub use feed::{Inbound, Outbound, PanelFeed};
+pub use feed::{Inbound, KeyInvoker, Outbound, PanelFeed};
 pub use hideout_contract::messages::{Badge, Visibility};
 pub use hideout_contract::module::Slot;
 pub use model::{

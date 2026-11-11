@@ -178,6 +178,15 @@ impl Watcher {
                         }
                         return;
                     }
+                    if msg.message == WM_FORGET {
+                        // About's Forget seen apps (#991): the list and the file go; an app
+                        // that runs now has run, so it stays.
+                        self.watch.forget_seen();
+                        write_seen(&self.file, self.watch.seen());
+                        log::info!("appwatch: seen apps forgotten");
+                        changed = true;
+                        continue;
+                    }
                     unsafe { DispatchMessageW(&msg) };
                 }
                 let pids = NEW_WINDOWS.with(|w| std::mem::take(&mut *w.borrow_mut()));
@@ -200,6 +209,111 @@ impl Watcher {
     }
 }
 
+/// The running watches' threads with their seen files, for [`post_forget`].
+static WATCHES: std::sync::Mutex<Vec<(u32, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+
+/// The message that tells the watch to forget the apps seen (`crate::forget_seen`).
+const WM_FORGET: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+
+/// Asks the watch that keeps `file` to forget the apps seen. Returns false when none runs.
+pub(crate) fn post_forget(file: &std::path::Path) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+    let watches = WATCHES.lock().unwrap_or_else(|e| e.into_inner());
+    watches
+        .iter()
+        .filter(|(_, f)| f == file)
+        .any(|(t, _)| unsafe { PostThreadMessageW(*t, WM_FORGET, 0, 0) } != 0)
+}
+
+/// The exe path of a running process named `<label>.exe`, when one runs and can be read.
+pub(crate) fn running_exe(label: &str) -> Option<String> {
+    let want = format!("{label}.exe");
+    processes()
+        .into_iter()
+        .filter(|(_, exe)| exe.eq_ignore_ascii_case(&want))
+        .find_map(|(pid, _)| exe_of(pid))
+}
+
+/// The exe path from the app's App Paths entry (`<label>.exe`'s default value), the current
+/// user's first, then the machine's. Quotes around the path go.
+pub(crate) fn app_path(label: &str) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
+    };
+    let key: Vec<u16> = format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{label}.exe")
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let mut buf = [0u16; 1024];
+        let mut len = std::mem::size_of_val(&buf) as u32;
+        let r = unsafe {
+            RegGetValueW(
+                root,
+                key.as_ptr(),
+                std::ptr::null(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        if r == 0 {
+            let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            let path = String::from_utf16_lossy(&buf[..n]);
+            let path = path.trim().trim_matches('"').trim().to_string();
+            if !path.is_empty() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// `FileDescription` and `ProductName` from the version info of the file at `path`, in its
+/// first listed language, else US English (Unicode, then Western).
+pub(crate) fn version_names(path: &str) -> (Option<String>, Option<String>) {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+    let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
+    let size = unsafe { GetFileVersionInfoSizeW(wide.as_ptr(), std::ptr::null_mut()) };
+    if size == 0 {
+        return (None, None);
+    }
+    let mut data = vec![0u8; size as usize];
+    if unsafe { GetFileVersionInfoW(wide.as_ptr(), 0, size, data.as_mut_ptr().cast()) } == 0 {
+        return (None, None);
+    }
+    let query = |sub: &str| -> Option<(*const u8, u32)> {
+        let w: Vec<u16> = sub.encode_utf16().chain([0]).collect();
+        let mut p: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        let ok = unsafe { VerQueryValueW(data.as_ptr().cast(), w.as_ptr(), &mut p, &mut len) };
+        (ok != 0 && !p.is_null() && len > 0).then_some((p as *const u8, len))
+    };
+    let mut langs = Vec::new();
+    if let Some((p, len)) = query(r"\VarFileInfo\Translation") {
+        // Pairs of (language, code page), each a u16.
+        for i in 0..(len as usize / 4) {
+            let pair = unsafe { std::ptr::read_unaligned(p.cast::<[u16; 2]>().add(i)) };
+            langs.push(format!("{:04x}{:04x}", pair[0], pair[1]));
+        }
+    }
+    langs.extend(["040904b0".to_string(), "040904e4".to_string()]);
+    let text = |name: &str| -> Option<String> {
+        langs.iter().find_map(|l| {
+            let (p, len) = query(&format!(r"\StringFileInfo\{l}\{name}"))?;
+            // `len` counts UTF-16 units, with the closing zero.
+            let units = unsafe { std::slice::from_raw_parts(p.cast::<u16>(), len as usize) };
+            let n = units.iter().position(|&c| c == 0).unwrap_or(units.len());
+            let s = String::from_utf16_lossy(&units[..n]).trim().to_string();
+            (!s.is_empty()).then_some(s)
+        })
+    };
+    (text("FileDescription"), text("ProductName"))
+}
+
 pub(crate) fn spawn(
     watch: Watch,
     file: PathBuf,
@@ -208,6 +322,11 @@ pub(crate) fn spawn(
     std::thread::Builder::new()
         .name("hideout-appwatch".into())
         .spawn(move || {
+            let me = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+            WATCHES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((me, file.clone()));
             Watcher {
                 watch,
                 file,
@@ -278,6 +397,13 @@ mod tests {
         assert_eq!(next, vec![(format!("apps.running.{label}"), json!(false))]);
         assert!(std::fs::read_to_string(dir.join(crate::SEEN_FILE))
             .unwrap()
+            .contains(&label));
+        // Forget seen apps reaches the running watch by its message queue (#991).
+        crate::forget_seen(&dir);
+        let forgot = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(forgot, vec![(format!("apps.seen.{label}"), json!(false))]);
+        assert!(!std::fs::read_to_string(dir.join(crate::SEEN_FILE))
+            .unwrap_or_default()
             .contains(&label));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -21,7 +21,7 @@ use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use foxglove_plugin::ui::Panels;
+use foxglove_plugin::ui::{Panels, UiIn};
 use foxglove_plugin::{Hsb, Lease, LeasePriority, NetEvent, Plugin};
 
 /// E1.31 6.7.1: a stream is lost after 2.5 s without data.
@@ -122,6 +122,32 @@ fn take_over(plugin: &Arc<Plugin>, color: Hsb) -> Vec<Lease> {
         .collect()
 }
 
+/// What wakes the loop: a datagram (or the listen ending), or one of Hideout's panel messages.
+enum Wake {
+    Net(NetEvent),
+    /// Foxglove's side of the listen is gone.
+    NetGone,
+    Ui(UiIn),
+}
+
+/// The frames and Hideout's panel messages in one queue, each forwarded by its own thread.
+fn wakes(
+    frames: std::sync::mpsc::Receiver<NetEvent>,
+    ui: Option<std::sync::mpsc::Receiver<UiIn>>,
+) -> std::sync::mpsc::Receiver<Wake> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let net = tx.clone();
+    std::thread::spawn(move || {
+        if frames.into_iter().all(|e| net.send(Wake::Net(e)).is_ok()) {
+            let _ = net.send(Wake::NetGone);
+        }
+    });
+    if let Some(ui) = ui {
+        std::thread::spawn(move || ui.into_iter().all(|m| tx.send(Wake::Ui(m)).is_ok()));
+    }
+    rx
+}
+
 fn send_test(args: &[String], universe: u16, port: u16) -> std::io::Result<()> {
     let at = args.iter().position(|a| a == "--send-test").unwrap_or(0);
     let v: Vec<u8> = args[at + 1..]
@@ -208,8 +234,17 @@ fn main() {
             }
         }
     };
+    let wake = wakes(frames, ui);
     let mut ever = false;
-    panels.show(module_ui::panels(&module_ui::Feed::Waiting { ever }));
+    // Since when nothing came, for the quiet caption ("Last colours 3 min ago").
+    let mut quiet_since: Option<Instant> = None;
+    // Hideout's panels on screen (`ui.visibility`): the caption's age moves only while one is.
+    let mut visible: std::collections::HashMap<String, bool> = Default::default();
+    let waiting = |ever: bool, since: Option<Instant>| module_ui::Feed::Waiting {
+        ever,
+        ago: since.map(|t| t.elapsed()),
+    };
+    panels.show(module_ui::panels(&waiting(ever, quiet_since)));
     let period = Duration::from_millis(1000 / u64::from(opts.max_hz));
     // The last sequence number per sender (E1.31 numbers frames per source).
     let mut last_seq: Option<([u8; 16], u8)> = None;
@@ -225,32 +260,51 @@ fn main() {
             return;
         }
         let mut stop = false;
-        // Idle: block until a frame comes (#281). Showing: wake also when the stream counts as
-        // lost, or when a held-back colour may go out (one-shot deadlines).
-        let deadline = leases.is_some().then(|| {
+        // Idle: block until a frame or a panel message comes (#281). Showing: wake also when
+        // the stream counts as lost, or when a held-back colour may go out. Quiet with a panel
+        // on screen: wake when the caption's age next reads differently (one-shot deadlines).
+        let deadline = if leases.is_some() {
             let lost = last_data + LOSS_TIMEOUT;
-            if wanted.is_some() && wanted != sent {
+            Some(if wanted.is_some() && wanted != sent {
                 lost.min(next_send)
             } else {
                 lost
-            }
-        });
+            })
+        } else {
+            quiet_since
+                .filter(|_| ever && visible.values().any(|v| *v))
+                .map(|t| Instant::now() + module_ui::next_change(t.elapsed()))
+        };
         let event = match deadline {
-            Some(at) => frames.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => frames
+            Some(at) => wake.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => wake
                 .recv()
                 .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
         };
         let received = match event {
-            Ok(NetEvent::Data(bytes, from)) => Some((bytes, from.unwrap_or_default())),
+            Ok(Wake::Net(NetEvent::Data(bytes, from))) => Some((bytes, from.unwrap_or_default())),
             // Foxglove stopped listening, or went away.
-            Ok(NetEvent::Closed(why)) => {
+            Ok(Wake::Net(NetEvent::Closed(why))) => {
                 eprintln!("openrgb-e131: Foxglove stopped listening: {why}");
                 return;
             }
+            Ok(Wake::NetGone) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            Ok(Wake::Ui(m)) => {
+                if let Some(v) = m.visible() {
+                    visible.insert(m.panel().to_string(), v);
+                }
+                if let Some(id) = &m.id {
+                    // Its only button opens the page; nothing else sends a click.
+                    let _ = plugin.reply(id, Ok(()));
+                }
+                None
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
         };
+        if leases.is_none() && received.is_none() {
+            // Quiet: the caption shows the age now (a no-op when it reads the same).
+            panels.show(module_ui::panels(&waiting(ever, quiet_since)));
+        }
         if let Some((buf, from)) = received {
             if let Some(p) = e131::parse(&buf).filter(|p| p.universe == opts.universe && !p.preview)
             {
@@ -270,6 +324,7 @@ fn main() {
                         eprintln!("openrgb-e131: first frame from {from} (universe {}): taking the lights", p.universe);
                         leases = Some(take_over(&plugin, color));
                         ever = true;
+                        quiet_since = None;
                         panels.show(module_ui::panels(&module_ui::Feed::Following));
                         sent = Some(color);
                         next_send = Instant::now() + period;
@@ -282,7 +337,8 @@ fn main() {
         if leases.is_some() && (stop || now.duration_since(last_data) > LOSS_TIMEOUT) {
             // The leases end; Foxglove puts the lights back (and confirms them).
             (leases, wanted, sent, last_seq) = (None, None, None, None);
-            panels.show(module_ui::panels(&module_ui::Feed::Waiting { ever }));
+            quiet_since = Some(last_data);
+            panels.show(module_ui::panels(&waiting(ever, quiet_since)));
             continue;
         }
         if let (Some(held), Some(color)) = (&leases, wanted) {
