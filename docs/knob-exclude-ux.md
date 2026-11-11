@@ -247,6 +247,11 @@ Engineering design (research 11/10, Hub 11/10):
   - Foxglove's own writes are recognised by their event context and ignored.
   - So the knob, Windows' slider and the volume keys all move the same master.
 - Master mute mutes the apps and marks them; unmute unmutes only the marked ones.
+  - Turned off or quit while master is muted (#1070): the marked apps stay muted, and the device
+    stays muted. A device that ignores its volume may ignore its mute too, so unmuting the apps
+    would be louder; keeping them muted is the quieter choice. When Foxglove sees the device
+    unmuted (at once while it runs, else at its next start) it unmutes the marked apps, as
+    master's unmute would have. The user's own mutes stay.
 
 This replaces the earlier hint-only plan: when master works, there is nothing to hint.
 
@@ -299,6 +304,15 @@ slider cannot show the real master. The Hub's minimum is that it respects the dr
     level Windows last reported are key presses. A drag is applied once it settles, and a drag
     down never raises master. The words say "near the top", with no number: the step depends on
     the device.
+  - Follow-ups (#1070):
+    - A key press is applied once no other change follows it for 120 ms (shorter than Windows'
+      shortest key-repeat delay, longer than a drag's sample gap), with no polling: the
+      notification starts a one-shot deadline. A drag whose first sample is one whole step is a
+      drag, not a key press. Further whole steps the same way before then add up (a key repeat).
+    - A device that reports a step coarser than Windows' default 2 % (10 %, say) while its keys
+      move it less: a smaller whole-percent change from the hold is one key press, and master
+      steps by what the key moved, from then on (within the 1-10 % clamp). The hold stays where
+      it is, so no change makes the device louder. Up and down stay alike.
   - Engineering picks one and states it in the PR. The user sees only: keys work both ways, and a
     drag sets the level where it's dropped.
 - Explained in three places: the card's row (§1), the setting's first while-on line (§3), and one
@@ -363,9 +377,16 @@ one way this gets loud. Foxglove can't see those streams without polling, so it 
   health view counts it.
 - **Apps that closed while Foxglove was down** may start quieter (Windows remembers the lower level).
   Foxglove fixes each one the first time it plays, while its journal entry is kept (30 days).
-- **Uninstall, or Foxglove not started again:** nothing restores from the journal yet (an
-  uninstaller step is a follow-up, not in #1069). Foxglove's next start restores it; otherwise the
-  user guide's fallback is Windows' **Settings > System > Sound > Volume mixer > Reset**.
+- **Uninstall, or Foxglove not started again:** nothing restores from the journal. Foxglove's
+  next start restores it; otherwise the user guide's fallback is Windows' **Settings > System >
+  Sound > Volume mixer > Reset**. An uninstaller step was looked at in #1070 and left out: the
+  MSI's `--uninstall-cleanup` hook would have to open the audio sessions in a one-shot process
+  without starting master volume, and race a running Foxglove; and a normal uninstall closes
+  Foxglove first, which already puts everything back. Only a crash followed by an uninstall is
+  left to the Volume mixer reset.
+- **A journal that can't be read** (a read error, not only a broken file, #1070) is kept and
+  never written over: master volume doesn't start until it can be read, and the log says so. A
+  broken one is moved aside as before.
 
 ### 7. Data (for app-engineer)
 

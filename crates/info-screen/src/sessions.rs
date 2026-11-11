@@ -1375,6 +1375,8 @@ mod imp {
                 }
             } else {
                 soft.recover_off(&mut audio, &dev.endpoint);
+                // Apps a muted master left muted when it stopped, if the device isn't muted now.
+                soft.unmute_left(&mut audio);
             }
             master::publish_device(self.device.clone());
         }
@@ -1701,6 +1703,17 @@ mod imp {
                         return;
                     }
                     if !own {
+                        // Unmuted while Foxglove doesn't set its volume: the apps a muted master
+                        // left muted when it stopped are unmuted too (#1070).
+                        if !muted {
+                            if let Some(soft) = self.soft.as_mut() {
+                                let mut audio = Com {
+                                    endpoint: self.endpoint.as_ref(),
+                                    sessions: &mut self.sessions,
+                                };
+                                soft.unmute_left(&mut audio);
+                            }
+                        }
                         (self.notify)(Change::Master)
                     }
                 }

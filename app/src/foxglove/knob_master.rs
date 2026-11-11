@@ -96,21 +96,32 @@ fn journal_path() -> Option<PathBuf> {
 pub struct StoreHost;
 
 impl Host for StoreHost {
-    fn journal(&self) -> Option<Journal> {
-        let path = journal_path()?;
-        let text = std::fs::read_to_string(&path).ok()?;
+    fn journal(&self) -> Result<Option<Journal>, String> {
+        let Some(path) = journal_path() else {
+            return Ok(None);
+        };
+        // Only a missing file is no journal: any other read error keeps it, and the engine
+        // writes nothing over it until a later read works.
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
         match serde_json::from_str(&text) {
-            Ok(j) => Some(j),
+            Ok(j) => Ok(Some(j)),
             Err(e) => {
                 // Kept for a person to read: the next write would replace it.
-                let aside = set_aside(&path);
-                eprintln!(
-                    "Foxglove: master volume: the journal can't be read ({e}); kept as {}",
-                    aside
-                        .as_deref()
-                        .map_or("(it couldn't be moved)".into(), |p| p.display().to_string())
-                );
-                None
+                match set_aside(&path) {
+                    Some(aside) => {
+                        eprintln!(
+                            "Foxglove: master volume: the journal can't be read ({e}); kept as {}",
+                            aside.display()
+                        );
+                        Ok(None)
+                    }
+                    // Not moved: it stays where it is, and so isn't written over either.
+                    None => Err(format!("{e}, and it couldn't be moved aside")),
+                }
             }
         }
     }
@@ -355,10 +366,7 @@ pub fn part(ui: &mut egui::Ui) {
             after_off,
         } => {
             let mut checked = *on;
-            let toggle = ui
-                .checkbox(&mut checked, TOGGLE)
-                .on_hover_text(description(name, *listed));
-            if toggle.changed() {
+            if toggle(ui, &mut checked, name, *listed).changed() {
                 choose(&d.endpoint, name, checked);
                 *TURNED_OFF.lock().unwrap_or_else(|e| e.into_inner()) =
                     (!checked).then(|| d.endpoint.clone());
@@ -384,6 +392,16 @@ pub fn part(ui: &mut egui::Ui) {
             }
         }
     }
+}
+
+/// The toggle: its name is [`TOGGLE`], and its accessible description (what a screen reader
+/// reads after the name) is the row title plus the second line, as is its tooltip.
+fn toggle(ui: &mut egui::Ui, checked: &mut bool, name: &str, listed: bool) -> egui::Response {
+    let words = description(name, listed);
+    let r = ui.checkbox(checked, TOGGLE);
+    ui.ctx()
+        .accesskit_node_builder(r.id, |node| node.set_description(words.clone()));
+    r.on_hover_text(words)
 }
 
 /// Windows' Sound panel (Playback tab), where the device's Advanced tab has the exclusive-control
@@ -527,6 +545,35 @@ mod tests {
     }
 
     #[test]
+    fn the_toggle_has_the_row_title_and_second_line_as_its_accessible_description() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut on = true;
+            toggle(ui, &mut on, "Headphones (Xbox Controller)", true);
+        });
+        // Nothing paints here: the font atlas's upload is dropped on purpose.
+        out.textures_delta.clear();
+        let update = out
+            .platform_output
+            .accesskit_update
+            .expect("an accessibility tree");
+        let node = update
+            .nodes
+            .iter()
+            .map(|(_, n)| n)
+            .find(|n| n.label() == Some(TOGGLE))
+            .expect("the toggle's node, named by its label");
+        assert_eq!(
+            node.description(),
+            Some(concat!(
+                "Headphones (Xbox Controller). ",
+                "On by default: this device often ignores Windows volume."
+            ))
+        );
+    }
+
+    #[test]
     fn the_choice_and_level_survive_a_restart() {
         super::super::store::test_config_dir();
         let ep = "{0.0.0.00000000}.{choice-1064}";
@@ -548,14 +595,18 @@ mod tests {
             },
         );
         h.write_journal(&j).unwrap();
-        assert_eq!(h.journal(), Some(j));
+        assert_eq!(h.journal(), Ok(Some(j)));
         h.write_journal(&Journal::default()).unwrap();
-        assert_eq!(h.journal(), None);
+        assert_eq!(h.journal(), Ok(None));
         assert!(!journal_path().unwrap().exists());
-        // An unreadable journal is set aside, never overwritten.
+        // A journal that can't be read (here: a folder in its place) is not "no journal".
         let path = journal_path().unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(h.journal().is_err());
+        std::fs::remove_dir(&path).unwrap();
+        // An unparsable journal is set aside, never overwritten.
         std::fs::write(&path, "{ not json").unwrap();
-        assert_eq!(h.journal(), None);
+        assert_eq!(h.journal(), Ok(None));
         assert!(!path.exists());
         let dir = path.parent().unwrap();
         let kept: Vec<_> = std::fs::read_dir(dir)

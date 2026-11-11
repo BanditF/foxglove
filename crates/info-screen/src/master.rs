@@ -14,9 +14,14 @@
 //! - takes a change from outside (Windows' flyout, the volume keys) as the new master and holds
 //!   the device again in the handling of that same notification. Whole key steps from the level
 //!   Windows last reported are key presses ([`Soft::endpoint_event`]): that is why the hold is
-//!   one step below the top (at the top, "volume up" sends no event at all). Anything else is a
-//!   drag on Windows' slider, applied once it settles, and a drag down never raises master;
-//! - mutes master by muting the device and the apps, marked, and unmutes only the marked ones;
+//!   one step below the top (at the top, "volume up" sends no event at all). They are applied
+//!   once no other change follows for [`KEY_SETTLE`] (a drag's first sample can look like one).
+//!   A device whose keys move less than the step it reports is stepped by what its keys move.
+//!   Anything else is a drag on Windows' slider, applied once it settles, and a drag down never
+//!   raises master;
+//! - mutes master by muting the device and the apps, marked, and unmutes only the marked ones.
+//!   Stopped while muted, the marked apps stay muted until the device is unmuted (a device that
+//!   ignores its volume may ignore its mute too, so unmuting them then would be louder);
 //! - takes an app's own write (a game's slider) as that app's own level and scales it again, at
 //!   most every [`COALESCE`]; an app that puts its own level back after Foxglove scaled it more
 //!   than [`FIGHT_WRITES`] times in [`FIGHT_WINDOW`] is left alone.
@@ -24,8 +29,8 @@
 //! The pure core ([`Soft`]) runs over [`Audio`] (Windows' endpoint and sessions, or a test's) and
 //! a [`Host`] (where the journal and the per-device choice live). Polling: none. Every call is
 //! one event's handling; the only waits are one-shot deadlines ([`Soft::next_due`]): an app's
-//! coalesced re-apply (started by its write) and a slider drag's settle (started by the drag's
-//! notification), each ended by the deadline or the next event.
+//! coalesced re-apply (started by its write), a key press's settle and a slider drag's settle
+//! (started by the device's notification), each ended by the deadline or the next event.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -52,6 +57,10 @@ pub const MIN_STEP: f32 = 0.01;
 pub const MAX_STEP: f32 = 0.10;
 /// A drag on Windows' slider is applied once it has been still this long.
 pub const DRAG_SETTLE: Duration = Duration::from_millis(500);
+/// A key press is applied once no other change of the device has followed it for this long: a
+/// drag on Windows' slider sends its next sample sooner, and a key's own repeat starts later
+/// (Windows' shortest repeat delay is 250 ms).
+pub const KEY_SETTLE: Duration = Duration::from_millis(120);
 /// Most key steps one notification can carry (a key repeat that outran Foxglove's hold).
 pub const MAX_KEY_STEPS: f32 = 3.0;
 /// An app's write counts towards [`FIGHT_WRITES`] only when it puts back its own level this soon
@@ -191,8 +200,9 @@ impl Journal {
 
 /// Where the journal and the per-device facts live (the app's config folder; a test's memory).
 pub trait Host: Send {
-    /// The journal as last written (`None`: none).
-    fn journal(&self) -> Option<Journal>;
+    /// The journal as last written (`Ok(None)`: none). `Err`: there is one, but it can't be read
+    /// (it is kept, and never written over while so).
+    fn journal(&self) -> Result<Option<Journal>, String>;
     /// Writes it (an empty one removes the file).
     fn write_journal(&mut self, journal: &Journal) -> Result<(), String>;
     /// The user's choice for a device (`None`: the default).
@@ -295,9 +305,21 @@ struct On {
     /// The device's level as Windows last said it (its events, Foxglove's own included): key
     /// steps are counted from here.
     seen: f32,
+    /// Key presses waiting for [`KEY_SETTLE`]: applied at their deadline.
+    press: Option<Press>,
     /// A drag on Windows' slider in progress: applied at its deadline.
     drag: Option<Drag>,
     apps: HashMap<String, App>,
+}
+
+/// Key presses not applied yet: where they started, how many steps of `step` they moved, and
+/// when they are applied.
+#[derive(Clone, Copy, Debug)]
+struct Press {
+    start: f32,
+    steps: f32,
+    step: f32,
+    due: Instant,
 }
 
 /// A drag on Windows' slider: where it started and where it is now.
@@ -311,12 +333,23 @@ struct Drag {
 impl On {
     /// How close two device levels must be to be one, for this device's step.
     fn tolerance(&self) -> f32 {
-        (self.step / 4.0).min(SAME)
+        tolerance(self.step)
     }
 
     fn factor(&self) -> f32 {
         amp(self.level)
     }
+}
+
+/// How close two device levels must be to be one, for a key step of `step`.
+fn tolerance(step: f32) -> f32 {
+    (step / 4.0).min(SAME)
+}
+
+/// The whole number of key steps of `step` a change of `off` is (up to [`MAX_KEY_STEPS`]).
+fn key_steps(off: f32, step: f32) -> Option<f32> {
+    let n = (off / step).round();
+    (n != 0.0 && n.abs() <= MAX_KEY_STEPS && (off - n * step).abs() <= tolerance(step)).then_some(n)
 }
 
 fn near(a: f32, b: f32) -> bool {
@@ -340,19 +373,58 @@ pub struct Soft {
     on: Option<On>,
     /// Today, in days since 1970 (records' age).
     today: i64,
+    /// The journal's file is there but can't be read (why): it is kept, nothing writes over it,
+    /// and nothing starts until a later read works.
+    unread: Option<String>,
 }
 
 impl Soft {
-    /// Reads the journal; drops closed apps' records older than [`KEEP_DAYS`].
+    /// Reads the journal; drops closed apps' records older than [`KEEP_DAYS`]. A journal that
+    /// can't be read is not "no journal": it is kept, and read again before anything is written.
     pub fn new(host: Box<dyn Host>, today: i64) -> Soft {
-        let mut journal = host.journal().unwrap_or_default();
-        journal.apps.retain(|_, r| today - r.day <= KEEP_DAYS);
-        Soft {
+        let mut s = Soft {
             host,
-            journal,
+            journal: Journal::default(),
             on: None,
             today,
+            unread: Some(String::new()),
+        };
+        s.readable();
+        s
+    }
+
+    /// Whether the journal has been read (reads it again if it couldn't be before).
+    fn readable(&mut self) -> bool {
+        let Some(before) = self.unread.take() else {
+            return true;
+        };
+        match self.host.journal() {
+            Ok(j) => {
+                let mut j = j.unwrap_or_default();
+                let today = self.today;
+                j.apps.retain(|_, r| today - r.day <= KEEP_DAYS);
+                self.journal = j;
+                if !before.is_empty() {
+                    eprintln!("Foxglove: master volume: the journal can be read again");
+                }
+                true
+            }
+            Err(e) => {
+                if before.is_empty() {
+                    eprintln!(
+                        "Foxglove: master volume: the journal can't be read ({e}); it is kept \
+                         and not written over, and master volume waits until it can be read"
+                    );
+                }
+                self.unread = Some(e);
+                false
+            }
         }
+    }
+
+    /// Whether the journal on disk couldn't be read (tests, the log).
+    pub fn journal_unread(&self) -> bool {
+        self.unread.is_some()
     }
 
     pub fn set_today(&mut self, today: i64) {
@@ -404,6 +476,9 @@ impl Soft {
     }
 
     fn save_journal(&mut self) -> Result<(), String> {
+        if !self.readable() {
+            return Err("the journal on disk can't be read, so it isn't written over".into());
+        }
         let r = self.host.write_journal(&self.journal);
         if let Err(e) = &r {
             eprintln!("Foxglove: master volume: the journal can't be written: {e}");
@@ -461,6 +536,9 @@ impl Soft {
         if self.on.as_ref().is_some_and(|o| o.endpoint == endpoint) {
             return Ok(());
         }
+        if !self.readable() {
+            return Err("the journal can't be read, so not started (it is kept)".into());
+        }
         let (scalar, muted) = audio.endpoint()?;
         let hold = hold_for(step);
         let crash = self.journal.devices.get(endpoint).cloned();
@@ -480,6 +558,7 @@ impl Soft {
             step,
             hold,
             seen: scalar,
+            press: None,
             drag: None,
             apps: HashMap::new(),
         };
@@ -588,6 +667,10 @@ impl Soft {
     /// Stops (the setting off, the default device changed away, Foxglove quits): the device back
     /// to master's level first, then every app to its own level, then the journal. A failure
     /// leaves the apps quieter, never louder; if the device can't be set, nothing changes.
+    ///
+    /// While master is muted, the apps its mute muted stay muted (and marked in the journal):
+    /// the device stays muted, but one that ignores its volume may ignore that too, so unmuting
+    /// them would be louder. They are unmuted when the device is ([`Soft::unmute_left`]).
     pub fn disengage(&mut self, audio: &mut dyn Audio) -> Result<(), String> {
         let Some(on) = self.on.take() else {
             return Ok(());
@@ -597,9 +680,23 @@ impl Soft {
             return Err(format!("the device's level can't be set back: {e}"));
         }
         let mut failed = 0;
+        let mut kept = 0;
         for (id, a) in &on.apps {
             if audio.set_level(id, a.own).is_err() {
                 failed += 1;
+                continue;
+            }
+            if a.by_master && on.muted {
+                self.journal.apps.insert(
+                    a.sid.clone(),
+                    Record {
+                        own: a.own,
+                        applied: a.own,
+                        by_master: true,
+                        day: self.today,
+                    },
+                );
+                kept += 1;
                 continue;
             }
             if a.by_master {
@@ -622,7 +719,48 @@ impl Soft {
                 String::new()
             }
         );
+        if kept > 0 {
+            eprintln!(
+                "Foxglove: master volume: master was muted: {kept} apps stay muted until the device is unmuted"
+            );
+        }
         Ok(())
+    }
+
+    /// The device isn't muted (now, or as Foxglove starts) while Foxglove doesn't set its volume:
+    /// the apps master's mute left muted when it stopped are unmuted, as master's unmute would
+    /// have. Nothing while the device is muted or can't be read. The number unmuted.
+    pub fn unmute_left(&mut self, audio: &mut dyn Audio) -> usize {
+        if self.on.is_some() || !matches!(audio.endpoint(), Ok((_, false))) || !self.readable() {
+            return 0;
+        }
+        let mut n = 0;
+        let mut changed = false;
+        for s in audio.sessions() {
+            let left = self
+                .journal
+                .apps
+                .get(&s.sid)
+                .is_some_and(|r| r.by_master && near(r.applied, r.own));
+            if !left {
+                continue;
+            }
+            if s.muted {
+                if audio.set_mute(&s.id, false).is_err() {
+                    continue;
+                }
+                n += 1;
+            }
+            self.journal.apps.remove(&s.sid);
+            changed = true;
+        }
+        if changed {
+            let _ = self.save_journal();
+        }
+        if n > 0 {
+            eprintln!("Foxglove: master volume: the device was unmuted: {n} apps unmuted");
+        }
+        n
     }
 
     /// The device went before it could be put back (unplugged): forgotten here, kept in the
@@ -635,13 +773,16 @@ impl Soft {
     /// the apps back as the journal had them, and the journal's device record goes. The number
     /// of apps put back.
     pub fn recover_off(&mut self, audio: &mut dyn Audio, endpoint: &str) -> usize {
+        if self.on.is_some() || !self.readable() {
+            return 0;
+        }
         let Some(a) = self.journal.devices.get(endpoint).cloned() else {
             return 0;
         };
-        if self.on.is_some() {
-            return 0;
-        }
-        if let Ok((scalar, _)) = audio.endpoint() {
+        let read = audio.endpoint();
+        // Muted (or unreadable): the apps master muted stay muted, as on a clean stop.
+        let device_muted = read.as_ref().map_or(true, |(_, m)| *m);
+        if let Ok((scalar, _)) = read {
             if near(scalar, a.hold) && audio.set_endpoint(a.level).is_err() {
                 return 0;
             }
@@ -651,8 +792,23 @@ impl Soft {
             let Some(r) = self.journal.apps.get(&s.sid).cloned() else {
                 continue;
             };
-            if near(s.level, r.applied) && audio.set_level(&s.id, r.own).is_ok() {
-                n += 1;
+            let at_own = if near(s.level, r.applied) {
+                let ok = audio.set_level(&s.id, r.own).is_ok();
+                n += usize::from(ok);
+                ok
+            } else {
+                true
+            };
+            if r.by_master && s.muted && device_muted && at_own {
+                self.journal.apps.insert(
+                    s.sid.clone(),
+                    Record {
+                        applied: r.own,
+                        day: self.today,
+                        ..r
+                    },
+                );
+                continue;
             }
             if r.by_master && s.muted {
                 let _ = audio.set_mute(&s.id, false);
@@ -673,11 +829,29 @@ impl Soft {
         // Master muted it before it closed, and Windows started it muted again.
         let stale = self.journal.apps.get(&s.sid).is_some_and(|r| r.by_master) && s.muted;
         let Some(on) = &self.on else {
+            if !self.readable() {
+                return;
+            }
             let Some(r) = self.journal.apps.get(&s.sid).cloned() else {
                 return;
             };
-            if near(s.level, r.applied) && !near(r.applied, r.own) {
-                let _ = audio.set_level(&s.id, r.own);
+            let at_own = if near(s.level, r.applied) && !near(r.applied, r.own) {
+                audio.set_level(&s.id, r.own).is_ok()
+            } else {
+                true
+            };
+            // The device is muted (or can't be read): master's mark stays until it is unmuted.
+            if stale && at_own && audio.endpoint().map_or(true, |(_, m)| m) {
+                self.journal.apps.insert(
+                    s.sid.clone(),
+                    Record {
+                        applied: r.own,
+                        day: self.today,
+                        ..r
+                    },
+                );
+                let _ = self.save_journal();
+                return;
             }
             if stale {
                 let _ = audio.set_mute(&s.id, false);
@@ -806,20 +980,23 @@ impl Soft {
         None
     }
 
-    /// The earliest deadline waiting: an app's coalesced re-apply, or a drag that settles.
+    /// The earliest deadline waiting: an app's coalesced re-apply, or a key press or a drag
+    /// that settles.
     pub fn next_due(&self) -> Option<Instant> {
         let on = self.on.as_ref()?;
         on.apps
             .values()
             .filter_map(|a| a.due)
+            .chain(on.press.map(|p| p.due))
             .chain(on.drag.map(|d| d.due))
             .min()
     }
 
-    /// Runs what is due by `now`: a settled drag on Windows' slider (whether master was taken
-    /// from it: Foxglove shows its card), then the apps' coalesced re-applies.
+    /// Runs what is due by `now`: settled key presses or a settled drag on Windows' slider
+    /// (whether master was taken from them: Foxglove shows its card), then the apps' coalesced
+    /// re-applies.
     pub fn run_due(&mut self, audio: &mut dyn Audio, now: Instant) -> bool {
-        let adopted = self.settle_drag(audio, now);
+        let adopted = self.settle_press(audio, now) | self.settle_drag(audio, now);
         let Some(on) = self.on.as_mut() else {
             return adopted;
         };
@@ -840,6 +1017,39 @@ impl Soft {
             }
         }
         adopted
+    }
+
+    /// Key presses no other change followed for [`KEY_SETTLE`]: master moves by their steps
+    /// (down never raises it), and the device is held again. Steps of another size than the
+    /// device's are what its keys move: master steps by that from now on.
+    fn settle_press(&mut self, audio: &mut dyn Audio, now: Instant) -> bool {
+        let Some(on) = self.on.as_mut() else {
+            return false;
+        };
+        let Some(p) = on.press.filter(|p| p.due <= now) else {
+            return false;
+        };
+        on.press = None;
+        if (p.step - on.step).abs() > f32::EPSILON {
+            eprintln!(
+                "Foxglove: master volume: {}'s keys move {} %, not the {} % it reports; master steps by {} %",
+                on.name,
+                percent(p.step),
+                percent(on.step),
+                percent(p.step)
+            );
+            on.step = p.step;
+        }
+        let new = (on.level + p.steps * p.step).clamp(0.0, 1.0);
+        // Snap to Windows' grid, as its own keys leave it; a step down never ends higher.
+        let new = (new * 100.0).round() / 100.0;
+        on.level = if p.steps < 0.0 {
+            new.min(on.level)
+        } else {
+            new
+        };
+        self.hold_again(audio);
+        true
     }
 
     /// A drag that has been still for [`DRAG_SETTLE`]: down, master goes to where it was
@@ -932,12 +1142,19 @@ impl Soft {
     /// again here:
     ///
     /// - a change of a whole number of key steps (up to [`MAX_KEY_STEPS`]) from the level last
-    ///   seen is that many key presses: master moves that many steps from where it is. Counting
-    ///   from the level last seen, not the hold, reads a key repeat that outran the hold right;
+    ///   seen is that many key presses: master moves that many steps from where it is, once no
+    ///   other change has followed for [`KEY_SETTLE`] ([`Soft::run_due`]). Counting from the
+    ///   level last seen, not the hold, reads a key repeat that outran the hold right. Further
+    ///   whole steps the same way before then add to them; any other change makes them the
+    ///   start of a drag (a drag's first sample can be one whole step);
+    /// - from the hold, on a device that reports a step coarser than [`DEFAULT_STEP`], a change
+    ///   smaller than that step (at least [`MIN_STEP`], whole percent) is one key press on a
+    ///   device whose keys move less than it reports: master
+    ///   steps by that, then and from then on, so up and down stay alike;
     /// - anything else is a drag on Windows' slider: applied once it has been still for
     ///   [`DRAG_SETTLE`] ([`Soft::run_due`]), never raising master on the way down.
     ///
-    /// Whether master changed now (Foxglove shows its card).
+    /// Whether master changed now (a mute; a level change shows when it settles).
     pub fn endpoint_event(
         &mut self,
         audio: &mut dyn Audio,
@@ -973,13 +1190,39 @@ impl Soft {
         if off.abs() <= tol {
             return changed;
         }
-        let n = (off / on.step).round();
-        if n != 0.0 && n.abs() <= MAX_KEY_STEPS && (off - n * on.step).abs() <= tol {
-            let new = (on.level + n * on.step).clamp(0.0, 1.0);
-            // Snap to Windows' grid, as its own keys leave it.
-            on.level = (new * 100.0).round() / 100.0;
-            self.hold_again(audio);
-            return true;
+        if let Some(p) = on.press.as_mut() {
+            match key_steps(off, p.step) {
+                Some(n) if n.signum() == p.steps.signum() => p.steps += n,
+                // Not a key: the presses were a drag's first samples.
+                _ => {
+                    on.drag = Some(Drag {
+                        start: p.start,
+                        to: level,
+                        due: now + DRAG_SETTLE,
+                    });
+                    on.press = None;
+                }
+            }
+            return changed;
+        }
+        let key = key_steps(off, on.step).map(|n| (n, on.step)).or_else(|| {
+            // A device whose keys move less than the step it reports (one press, from the hold).
+            let size = (off.abs() * 100.0).round() / 100.0;
+            (on.step > DEFAULT_STEP + tol
+                && near(from, on.hold)
+                && size >= MIN_STEP
+                && size < on.step - tol
+                && (off.abs() - size).abs() <= tolerance(size))
+            .then(|| (off.signum(), size))
+        });
+        if let Some((steps, step)) = key {
+            on.press = Some(Press {
+                start: from,
+                steps,
+                step,
+                due: now + KEY_SETTLE,
+            });
+            return changed;
         }
         on.drag = Some(Drag {
             start: from,
@@ -1168,6 +1411,8 @@ mod tests {
     #[derive(Default)]
     struct Disk {
         journal: Option<Journal>,
+        /// The file is there but can't be read (a sharing violation, its rights).
+        unreadable: bool,
         writes: usize,
         choices: HashMap<String, bool>,
         saved: HashMap<String, (f32, bool)>,
@@ -1177,8 +1422,12 @@ mod tests {
     struct MemHost(Arc<Mutex<Disk>>);
 
     impl Host for MemHost {
-        fn journal(&self) -> Option<Journal> {
-            self.0.lock().unwrap().journal.clone()
+        fn journal(&self) -> Result<Option<Journal>, String> {
+            let d = self.0.lock().unwrap();
+            if d.unreadable {
+                return Err("access denied".into());
+            }
+            Ok(d.journal.clone())
         }
         fn write_journal(&mut self, j: &Journal) -> Result<(), String> {
             let mut d = self.0.lock().unwrap();
@@ -1250,7 +1499,7 @@ mod tests {
         assert_eq!(before, after, "bit-exact");
         assert_eq!(a.w().endpoint, 0.35);
         assert!(
-            host.journal().is_none(),
+            host.journal().unwrap().is_none(),
             "the journal goes after a clean restore"
         );
     }
@@ -1355,41 +1604,51 @@ mod tests {
         assert!(!s.endpoint_event(a, level, false, true, now));
     }
 
+    /// One key press, as Windows sends it: the change, nothing else for [`KEY_SETTLE`], then
+    /// Foxglove's hold lands. Whether master changed (its card shows).
+    fn key(s: &mut Soft, a: &mut Fake, level: f32, t: &mut Instant) -> bool {
+        assert!(!outside(s, a, level, *t), "nothing before it settles");
+        *t += KEY_SETTLE;
+        let changed = s.run_due(a, *t);
+        echo(s, a, *t);
+        *t += Duration::from_millis(300);
+        changed
+    }
+
     #[test]
     fn t5_an_outside_change_is_master_and_the_device_is_held_again() {
         let host = MemHost::default();
         let mut s = soft(&host);
         let mut a = the_three();
         s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
-        let t = Instant::now();
+        let mut t = Instant::now();
         echo(&mut s, &mut a, t);
-        // Volume up from the hold: one step; the device held again at once.
-        assert!(outside(&mut s, &mut a, 1.0, t));
+        // Volume up from the hold: one step once nothing else follows; the device held again.
+        assert!(!outside(&mut s, &mut a, 1.0, t));
+        assert_eq!(s.master(), Some((35, false)), "not before it settles");
+        assert_eq!(s.next_due(), Some(t + KEY_SETTLE));
+        t += KEY_SETTLE;
+        assert!(s.run_due(&mut a, t));
         assert_eq!(s.master(), Some((37, false)));
         assert_eq!(a.level("tarkov"), 0.84 * amp(0.37));
         assert_eq!(a.w().endpoint, 0.98, "held again");
         echo(&mut s, &mut a, t);
-        assert!(outside(&mut s, &mut a, 0.96, t));
+        assert!(key(&mut s, &mut a, 0.96, &mut t));
         assert_eq!(s.master(), Some((35, false)));
-        echo(&mut s, &mut a, t);
         // From the top and from the bottom: keys work both ways.
         for _ in 0..40 {
-            outside(&mut s, &mut a, 1.0, t);
-            echo(&mut s, &mut a, t);
+            key(&mut s, &mut a, 1.0, &mut t);
         }
         assert_eq!(s.master(), Some((100, false)));
-        outside(&mut s, &mut a, 0.96, t);
-        echo(&mut s, &mut a, t);
+        key(&mut s, &mut a, 0.96, &mut t);
         assert_eq!(s.master(), Some((98, false)));
         for _ in 0..60 {
-            outside(&mut s, &mut a, 0.96, t);
-            echo(&mut s, &mut a, t);
+            key(&mut s, &mut a, 0.96, &mut t);
         }
         assert_eq!(s.master(), Some((0, false)));
-        outside(&mut s, &mut a, 1.0, t);
-        echo(&mut s, &mut a, t);
+        key(&mut s, &mut a, 1.0, &mut t);
         assert_eq!(s.master(), Some((2, false)));
-        // The mute key: the apps muted and marked; no level change.
+        // The mute key: the apps muted and marked at once; no level change.
         assert!(s.endpoint_event(&mut a, 0.98, true, false, t));
         assert!(a.muted("tarkov"));
         assert_eq!(s.master(), Some((2, true)));
@@ -1402,29 +1661,106 @@ mod tests {
         let mut s = soft(&host);
         let mut a = the_three();
         s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
-        let t = Instant::now();
+        let mut t = Instant::now();
         echo(&mut s, &mut a, t);
-        let mut loudest = a.level("tarkov");
+        let before = a.level("tarkov");
         for level in [0.96, 0.94, 0.92] {
-            assert!(s.endpoint_event(&mut a, level, false, false, t));
-            assert!(a.level("tarkov") <= loudest, "down never louder");
-            loudest = a.level("tarkov");
+            assert!(!s.endpoint_event(&mut a, level, false, false, t));
+            assert_eq!(a.level("tarkov"), before, "down never louder");
+            t += Duration::from_millis(30);
         }
+        assert!(s.run_due(&mut a, t - Duration::from_millis(90) + KEY_SETTLE));
         assert_eq!(
             s.master(),
             Some((29, false)),
             "three steps down, not a drag to 92 %"
         );
-        // The holds land afterwards: nothing more.
-        for _ in 0..3 {
-            echo(&mut s, &mut a, t);
-        }
+        // The hold lands afterwards: nothing more.
+        echo(&mut s, &mut a, t);
         assert_eq!(s.master(), Some((29, false)));
         // A repeat whose middle notifications Windows folded: 98 % to 92 % at once is 3 steps.
-        assert!(outside(&mut s, &mut a, 0.92, t));
+        t += Duration::from_secs(1);
+        assert!(key(&mut s, &mut a, 0.92, &mut t));
         assert_eq!(s.master(), Some((23, false)));
-        echo(&mut s, &mut a, t);
         assert_eq!(a.level("tarkov"), 0.84 * amp(0.23));
+    }
+
+    #[test]
+    fn a_drag_whose_first_sample_is_one_whole_step_is_a_drag() {
+        // #1070 (5): from the hold, a drag's first sample can be exactly one key step.
+        for first in [1.0, 0.96] {
+            let host = MemHost::default();
+            let mut s = soft(&host);
+            let mut a = the_three();
+            s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+            let mut t = Instant::now();
+            echo(&mut s, &mut a, t);
+            a.w().log.clear();
+            let before = a.level("tarkov");
+            for p in [first, 0.90, 0.70, 0.60] {
+                assert!(!outside(&mut s, &mut a, p, t));
+                assert!(!s.run_due(&mut a, t), "not settled ({p})");
+                assert_eq!(s.master(), Some((35, false)), "no key step ({p})");
+                t += Duration::from_millis(30);
+            }
+            assert!(a.w().log.is_empty(), "nothing written while it moves");
+            assert!(!s.run_due(&mut a, t + KEY_SETTLE), "still a drag");
+            assert!(s.run_due(&mut a, t + DRAG_SETTLE));
+            assert_eq!(
+                s.master(),
+                Some((35, false)),
+                "dropped above master: a drag down never raises it ({first})"
+            );
+            assert!(a.level("tarkov") <= before);
+            assert_eq!(a.w().endpoint, 0.98);
+        }
+    }
+
+    #[test]
+    fn a_device_whose_keys_move_less_than_its_step_steps_both_ways_alike() {
+        // #1070 (3): the device reports 10 % steps; Windows' keys move it 2 %.
+        let coarse = step_for(11);
+        assert_eq!(coarse, 0.10);
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", coarse).unwrap();
+        assert_eq!(a.w().endpoint, hold_for(coarse));
+        let mut t = Instant::now();
+        echo(&mut s, &mut a, t);
+        assert!(key(&mut s, &mut a, 0.92, &mut t));
+        assert_eq!(s.master(), Some((37, false)), "up by what the key moved");
+        assert_eq!(a.w().endpoint, 0.9, "held where it was");
+        let mut loudest = a.level("tarkov");
+        assert!(key(&mut s, &mut a, 0.88, &mut t));
+        assert_eq!(s.master(), Some((35, false)), "and down by the same");
+        assert!(a.level("tarkov") <= loudest);
+        for _ in 0..5 {
+            key(&mut s, &mut a, 0.92, &mut t);
+        }
+        assert_eq!(s.master(), Some((45, false)));
+        for _ in 0..5 {
+            key(&mut s, &mut a, 0.88, &mut t);
+        }
+        assert_eq!(s.master(), Some((35, false)), "symmetric");
+        // Down never louder, every press.
+        for _ in 0..20 {
+            loudest = a.level("tarkov");
+            key(&mut s, &mut a, 0.88, &mut t);
+            assert!(a.level("tarkov") <= loudest, "down never louder");
+        }
+        assert_eq!(s.master(), Some((0, false)));
+        // A device whose keys do move its own step still steps by it.
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", coarse).unwrap();
+        let mut t = Instant::now();
+        echo(&mut s, &mut a, t);
+        assert!(key(&mut s, &mut a, 1.0, &mut t));
+        assert_eq!(s.master(), Some((45, false)));
+        assert!(key(&mut s, &mut a, 0.8, &mut t));
+        assert_eq!(s.master(), Some((35, false)));
     }
 
     #[test]
@@ -1595,13 +1931,13 @@ mod tests {
         let mut s = soft(&host);
         let mut b = Fake::new(0.5, &[("speakers-app", 1.0)]);
         s.engage(&mut b, "{speakers}", "Speakers", STEP).unwrap();
-        let j = host.journal().unwrap();
+        let j = host.journal().unwrap().unwrap();
         assert!(j.devices.contains_key(DEV) && j.devices.contains_key("{speakers}"));
         s.disengage(&mut b).unwrap();
         assert_eq!(s.recover_off(&mut a, DEV), 3);
         assert_eq!(a.w().endpoint, 0.35, "A back at its level, not left held");
         assert_eq!(a.level("tarkov"), 0.84);
-        assert!(host.journal().is_none());
+        assert!(host.journal().unwrap().is_none());
     }
 
     #[test]
@@ -1644,7 +1980,10 @@ mod tests {
         assert_eq!(s.own("chat"), Some(0.3), "set meanwhile: that is its own");
         assert_eq!(a.level("tarkov"), 0.84 * f);
         s.disengage(&mut a).unwrap();
-        assert!(host.journal().is_none(), "deleted after the restore");
+        assert!(
+            host.journal().unwrap().is_none(),
+            "deleted after the restore"
+        );
         assert_eq!(a.level("tarkov"), 0.84);
 
         // Crash, then the setting is off at the next start: restored, not engaged.
@@ -1657,7 +1996,7 @@ mod tests {
         assert_eq!(s.recover_off(&mut a, DEV), 3);
         assert_eq!(a.level("tarkov"), 0.84);
         assert_eq!(a.w().endpoint, 0.35);
-        assert!(host.journal().is_none());
+        assert!(host.journal().unwrap().is_none());
 
         // An app that closed while scaled starts at Windows' saved, scaled level: its own back.
         let host = MemHost::default();
@@ -1667,11 +2006,16 @@ mod tests {
         a.w().sessions.retain(|x| x.id != "tarkov");
         s.gone("tarkov");
         s.disengage(&mut a).unwrap();
-        assert!(host.journal().unwrap().apps.contains_key("sid-tarkov"));
+        assert!(host
+            .journal()
+            .unwrap()
+            .unwrap()
+            .apps
+            .contains_key("sid-tarkov"));
         let back = a.add("tarkov-2", "sid-tarkov", 0.84 * f);
         s.created(&mut a, &back);
         assert_eq!(a.level("tarkov-2"), 0.84);
-        assert!(host.journal().is_none());
+        assert!(host.journal().unwrap().is_none());
     }
 
     #[test]
@@ -1700,6 +2044,103 @@ mod tests {
         s.step_master(&mut a, 1).unwrap();
         assert_eq!(s.master(), Some((37, false)));
         assert!(!a.muted("tarkov") && a.muted("chat"));
+    }
+
+    #[test]
+    fn stopping_while_master_is_muted_keeps_its_apps_muted_until_the_device_is_unmuted() {
+        // #1070 (2): a device that ignores its volume may ignore its mute: unmuting the apps on
+        // quit or switch-off would be louder. They stay muted until the device is unmuted.
+        for restart in [false, true] {
+            let host = MemHost::default();
+            let mut s = soft(&host);
+            let mut a = the_three();
+            a.w().sessions[2].muted = true; // the user muted chat
+            s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+            s.toggle_mute(&mut a).unwrap();
+            s.disengage(&mut a).unwrap();
+            assert!(a.w().endpoint_muted, "the device stays muted");
+            for id in ["vivaldi", "tarkov", "chat"] {
+                assert!(a.muted(id), "{id} stays muted");
+                assert_eq!(
+                    a.out(id, false),
+                    0.0,
+                    "silent where the mute is ignored: {id}"
+                );
+            }
+            assert_eq!(a.level("tarkov"), 0.84, "at its own level");
+            let j = host.journal().unwrap().unwrap();
+            assert!(j.devices.is_empty(), "nothing to recover");
+            assert!(j.apps["sid-tarkov"].by_master && !j.apps.contains_key("sid-chat"));
+            if restart {
+                s = soft(&host);
+            }
+            // Still muted: nothing changes, also not for an app that starts again.
+            assert_eq!(s.unmute_left(&mut a), 0);
+            assert_eq!(s.recover_off(&mut a, DEV), 0);
+            a.w().sessions.retain(|x| x.id != "vivaldi");
+            let mut back = a.add("vivaldi-2", "sid-vivaldi", 1.0);
+            a.w().sessions.last_mut().unwrap().muted = true;
+            back.muted = true;
+            s.created(&mut a, &back);
+            assert!(a.muted("vivaldi-2") && a.muted("tarkov"));
+            // The user unmutes the device: the apps master muted follow; the user's mute stays.
+            a.w().endpoint_muted = false;
+            assert_eq!(s.unmute_left(&mut a), 2, "restart: {restart}");
+            assert!(!a.muted("vivaldi-2") && !a.muted("tarkov"));
+            assert!(a.muted("chat"), "the user's own mute stays");
+            assert!(host.journal().unwrap().is_none(), "nothing left to do");
+            assert_eq!(s.unmute_left(&mut a), 0);
+        }
+        // Switched on again while still muted: master is muted, and its unmute frees them.
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        s.toggle_mute(&mut a).unwrap();
+        s.disengage(&mut a).unwrap();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        assert_eq!(s.master(), Some((35, true)));
+        assert!(a.muted("tarkov"));
+        s.toggle_mute(&mut a).unwrap();
+        assert!(!a.muted("tarkov") && !a.w().endpoint_muted);
+    }
+
+    #[test]
+    fn a_journal_that_cant_be_read_is_kept_and_not_written_over() {
+        // #1070 (4): a read error is not "no journal".
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        drop(s); // a crash: the apps scaled, the device held
+        let crashed = host.journal().unwrap().unwrap();
+        host.0.lock().unwrap().unreadable = true;
+        let writes = host.0.lock().unwrap().writes;
+        let mut s = soft(&host);
+        assert!(s.journal_unread());
+        a.w().log.clear();
+        assert!(s.engage(&mut a, DEV, "Headphones", STEP).is_err());
+        assert_eq!(s.engaged(), None);
+        assert_eq!(s.recover_off(&mut a, DEV), 0);
+        assert_eq!(s.unmute_left(&mut a), 0);
+        let new = a.add("game", "sid-game", 0.7);
+        s.created(&mut a, &new);
+        assert!(a.w().log.is_empty(), "nothing changed: {:?}", a.w().log);
+        let d = host.0.lock().unwrap();
+        assert_eq!(d.writes, writes, "never written over");
+        assert_eq!(d.journal.as_ref(), Some(&crashed));
+        drop(d);
+        // Readable again: the next start reads it and puts the crash right.
+        host.0.lock().unwrap().unreadable = false;
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        assert!(!s.journal_unread());
+        assert_eq!(
+            s.own("tarkov"),
+            Some(0.84),
+            "the crash's own level, from the journal"
+        );
+        s.disengage(&mut a).unwrap();
+        assert_eq!(a.level("tarkov"), 0.84);
     }
 
     #[test]
@@ -1782,15 +2223,15 @@ mod tests {
         let mut s = soft(&host);
         let mut a = the_three();
         s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
-        let j = host.journal().unwrap();
+        let j = host.journal().unwrap().unwrap();
         assert_eq!(j.devices[DEV].endpoint, DEV);
         assert_eq!(j.apps["sid-tarkov"].own, 0.84);
         let n = host.0.lock().unwrap().writes;
         s.step_master(&mut a, 1).unwrap();
         assert!(host.0.lock().unwrap().writes > n);
-        assert_eq!(host.journal().unwrap().devices[DEV].level, 0.37);
+        assert_eq!(host.journal().unwrap().unwrap().devices[DEV].level, 0.37);
         // Old closed apps' records go after 30 days.
-        let mut j = host.journal().unwrap();
+        let mut j = host.journal().unwrap().unwrap();
         j.apps.insert(
             "old".into(),
             Record {
