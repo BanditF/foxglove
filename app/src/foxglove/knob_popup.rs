@@ -358,7 +358,13 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
         ),
         Card::MasterTab => unreachable!(),
     };
-    round_icon(p, pos2(s.left() + 24.0, s.center().y), fill, &glyph);
+    // On the 48 pt row with the title and bar (the tall card's third row is below it).
+    round_icon(
+        p,
+        pos2(s.left() + 24.0, s.top() + SIZE.y / 2.0),
+        fill,
+        &glyph,
+    );
     let left = s.left() + 46.0;
     let title_w = p
         .layout_no_wrap(title.clone(), FontId::proportional(13.0), TEXT)
@@ -498,8 +504,7 @@ mod tests {
         assert_eq!(tall.bottom(), plain.bottom(), "grows upwards");
         assert!(plain.bottom() < flyout.top(), "above Windows' flyout");
         assert_eq!(plain.center().x, flyout.center().x);
-        // The row fits 212 pt: at 10 pt, or at the size that fits (the plan's words are about
-        // 223 pt at 10 pt in Foxglove's font).
+        // The row fits 212 pt at a full 10 pt (about 176 pt); `row_size` stays as a guard.
         let row = super::super::knob_master::SLIDER_ROW;
         let ctx = super::super::pc_lights_ui::tests::test_ctx();
         let mut width = 0.0;
@@ -514,6 +519,16 @@ mod tests {
         });
         frame.textures_delta.clear();
         assert!(width <= ROW_WIDTH + 0.5, "{width} pt");
+        let mut at_10 = 0.0;
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+            at_10 = ui
+                .painter()
+                .layout_no_wrap(row.to_string(), FontId::proportional(10.0), DIM)
+                .size()
+                .x;
+        });
+        frame.textures_delta.clear();
+        assert_eq!(row_size(at_10), 10.0, "{at_10} pt at 10 pt");
         assert_eq!(row_size(200.0), 10.0);
         assert!((row_size(224.0) - 10.0 * 212.0 / 224.0).abs() < 1e-4);
     }

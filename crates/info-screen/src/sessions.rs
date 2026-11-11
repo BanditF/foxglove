@@ -608,8 +608,9 @@ mod imp {
         MasterLevel(SyncSender<std::result::Result<(u8, bool), String>>),
         MasterStep(i32, SyncSender<std::result::Result<u8, String>>),
         MasterMute(SyncSender<std::result::Result<bool, String>>),
-        /// The device's level and mute changed, not by Foxglove.
-        Master(f32, bool),
+        /// The device's level and mute changed, and whether Foxglove changed them (#1064: key
+        /// steps are counted from the level Windows last reported, Foxglove's own included).
+        Master(f32, bool, bool),
         Created(Control),
         State(String, AudioSessionState),
         /// A session's level and mute, from its own event (#1060: the mirror test's input), and
@@ -691,13 +692,12 @@ mod imp {
             let Some(d) = (unsafe { data.as_ref() }) else {
                 return Ok(());
             };
-            // Foxglove's own master steps (#855) show its own card: no tab over it; and its own
-            // holds of a device it sets the volume of (#1064) are no change.
-            if d.guidEventContext != OWN_CHANGES {
-                let _ = self
-                    .0
-                    .send(Req::Master(d.fMasterVolume, d.bMuted.as_bool()));
-            }
+            // Foxglove's own master steps (#855) show its own card: no tab over it; its own holds
+            // of a device it sets the volume of (#1064) are only noted there.
+            let own = d.guidEventContext == OWN_CHANGES;
+            let _ = self
+                .0
+                .send(Req::Master(d.fMasterVolume, d.bMuted.as_bool(), own));
             Ok(())
         }
     }
@@ -1290,6 +1290,8 @@ mod imp {
         soft: Option<Soft>,
         /// The default output device's facts (#1064).
         device: Option<Device>,
+        /// Foxglove is quitting: the device was put back, and nothing starts it again.
+        stopped: bool,
     }
 
     impl Worker {
@@ -1346,6 +1348,9 @@ mod imp {
         /// Whether Foxglove sets the default device's volume now (#1064): on, it starts (or
         /// recovers from the last run's journal); off, it stops, or puts back what a crash left.
         fn evaluate(&mut self) {
+            if self.stopped {
+                return;
+            }
             let (Some(soft), Some(dev)) = (self.soft.as_mut(), self.device.as_mut()) else {
                 master::publish_device(self.device.clone());
                 return;
@@ -1625,6 +1630,7 @@ mod imp {
                 }
                 Req::Stop(reply) => {
                     self.release();
+                    self.stopped = true;
                     let _ = reply.send(());
                 }
                 Req::Level(id, reply) => {
@@ -1681,7 +1687,7 @@ mod imp {
                     };
                     let _ = reply.send(r);
                 }
-                Req::Master(level, muted) => {
+                Req::Master(level, muted, own) => {
                     // On a device Foxglove sets the volume of (#1064): master's new level, and
                     // the device held again, here in this notification's handling.
                     if let Some(soft) = self.soft.as_mut().filter(|s| s.engaged().is_some()) {
@@ -1689,12 +1695,14 @@ mod imp {
                             endpoint: self.endpoint.as_ref(),
                             sessions: &mut self.sessions,
                         };
-                        if soft.endpoint_event(&mut audio, level, muted) {
+                        if soft.endpoint_event(&mut audio, level, muted, own, Instant::now()) {
                             (self.notify)(Change::Adopted);
                         }
                         return;
                     }
-                    (self.notify)(Change::Master)
+                    if !own {
+                        (self.notify)(Change::Master)
+                    }
                 }
                 Req::Created(Control(c)) => {
                     let before = self.sessions.len();
@@ -1735,7 +1743,9 @@ mod imp {
                     endpoint: self.endpoint.as_ref(),
                     sessions: &mut self.sessions,
                 };
-                soft.run_due(&mut audio, Instant::now());
+                if soft.run_due(&mut audio, Instant::now()) {
+                    (self.notify)(Change::Adopted);
+                }
             }
         }
 
@@ -1921,6 +1931,7 @@ mod imp {
                     descriptions: HashMap::new(),
                     soft: host.map(|h| Soft::new(h, today())),
                     device: None,
+                    stopped: false,
                 };
                 w.open();
                 loop {

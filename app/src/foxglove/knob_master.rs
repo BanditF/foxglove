@@ -97,11 +97,19 @@ pub struct StoreHost;
 
 impl Host for StoreHost {
     fn journal(&self) -> Option<Journal> {
-        let text = std::fs::read_to_string(journal_path()?).ok()?;
+        let path = journal_path()?;
+        let text = std::fs::read_to_string(&path).ok()?;
         match serde_json::from_str(&text) {
             Ok(j) => Some(j),
             Err(e) => {
-                eprintln!("Foxglove: master volume: the journal can't be read: {e}");
+                // Kept for a person to read: the next write would replace it.
+                let aside = set_aside(&path);
+                eprintln!(
+                    "Foxglove: master volume: the journal can't be read ({e}); kept as {}",
+                    aside
+                        .as_deref()
+                        .map_or("(it couldn't be moved)".into(), |p| p.display().to_string())
+                );
                 None
             }
         }
@@ -116,9 +124,15 @@ impl Host for StoreHost {
             };
         }
         let text = serde_json::to_string(journal).map_err(|e| e.to_string())?;
-        // Written whole, then moved over the old one: a crash leaves one or the other.
+        // Written whole and flushed to the disk, then moved over the old one: a crash or a power
+        // cut leaves one or the other, never an empty file.
         let part = path.with_extension("json.part");
-        std::fs::write(&part, text).map_err(|e| e.to_string())?;
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+            f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+            f.sync_all().map_err(|e| e.to_string())?;
+        }
         std::fs::rename(&part, &path).map_err(|e| e.to_string())
     }
 
@@ -146,6 +160,15 @@ impl Host for StoreHost {
             eprintln!("Foxglove: master volume: the level can't be saved: {e}");
         }
     }
+}
+
+/// Moves an unreadable journal aside (`master-volume-journal.unreadable-<seconds>.json`).
+fn set_aside(path: &std::path::Path) -> Option<PathBuf> {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let aside = path.with_file_name(format!("master-volume-journal.unreadable-{secs}.json"));
+    std::fs::rename(path, &aside).ok().map(|()| aside)
 }
 
 fn entry<'a>(s: &'a mut Settings, endpoint: &str, name: &str) -> &'a mut DeviceChoice {
@@ -197,7 +220,7 @@ pub const TOGGLE: &str = "Foxglove sets this device's volume";
 pub const LISTED_LINE: &str = "On by default: this device often ignores Windows volume.";
 pub const OTHER_LINE: &str = "Turn on if the volume number moves but the sound stays the same.";
 pub const ON_LINES: [&str; 3] = [
-    "Windows' slider goes back to 100 % for this device; the sound follows the knob, the slider and the volume keys.",
+    "Windows' slider goes back near the top for this device; the sound follows the knob, the slider and the volume keys.",
     "Foxglove turns each app down instead. Volume mixer shows those lower levels; the knob shows each app's own.",
     "Apps that take exclusive control of this device play at full volume.",
 ];
@@ -205,7 +228,10 @@ pub const NOT_ELIGIBLE: &str = "Windows sets this device's volume itself.";
 pub const AFTER_OFF: &str = "Windows sets this device's volume again.";
 pub const OPEN_SOUND: &str = "Open Sound settings";
 /// The master card's third row, on the first outside change of a run (§1).
-pub const SLIDER_ROW: &str = "Windows' slider goes back to 100 % on this device.";
+pub const SLIDER_ROW: &str = "Windows' slider goes back near the top.";
+/// Open Sound settings' tooltip: where the switch is in the panel it opens.
+pub const OPEN_SOUND_HOVER: &str =
+    "Opens Windows' Sound panel. The setting is on this device's Properties > Advanced tab.";
 
 /// The toggle's second line.
 pub fn second_line(listed: bool) -> &'static str {
@@ -343,7 +369,12 @@ pub fn part(ui: &mut egui::Ui) {
                 ui.label(RichText::new(ON_LINES[1]).color(p.text));
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(ON_LINES[2]).color(p.text));
-                    if *open_sound && ui.button(OPEN_SOUND).clicked() {
+                    if *open_sound
+                        && ui
+                            .button(OPEN_SOUND)
+                            .on_hover_text(OPEN_SOUND_HOVER)
+                            .clicked()
+                    {
                         open_sound_settings();
                     }
                 });
@@ -476,9 +507,17 @@ mod tests {
             AFTER_OFF,
             OPEN_SOUND,
             SLIDER_ROW,
+            OPEN_SOUND_HOVER,
         ]
         .into_iter()
         .chain(ON_LINES);
+        // UX review #1069: "near the top", no number (the hold depends on the device's steps).
+        assert_eq!(SLIDER_ROW, "Windows' slider goes back near the top.");
+        assert_eq!(
+            ON_LINES[0],
+            "Windows' slider goes back near the top for this device; the sound follows the \
+             knob, the slider and the volume keys."
+        );
         for s in all {
             let l = s.to_lowercase();
             for word in ["session", "mirror", "endpoint", "journal", "{"] {
@@ -513,5 +552,25 @@ mod tests {
         h.write_journal(&Journal::default()).unwrap();
         assert_eq!(h.journal(), None);
         assert!(!journal_path().unwrap().exists());
+        // An unreadable journal is set aside, never overwritten.
+        let path = journal_path().unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+        assert_eq!(h.journal(), None);
+        assert!(!path.exists());
+        let dir = path.parent().unwrap();
+        let kept: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("master-volume-journal.unreadable-")
+            })
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(kept[0].path()).unwrap(),
+            "{ not json"
+        );
     }
 }

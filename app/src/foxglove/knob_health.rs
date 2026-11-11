@@ -93,7 +93,7 @@ pub fn master_row(
     let mut words = match (device, master) {
         (None, _) => "no output device read yet".to_string(),
         (Some(d), Some((level, muted))) => format!(
-            "Foxglove sets {}'s volume: master {level} %{}, the device held one step below the top",
+            "{}: Foxglove sets its volume · master {level} %{}, held one step below the top",
             d.name,
             if muted { " (muted)" } else { "" }
         ),
@@ -103,10 +103,10 @@ pub fn master_row(
         (Some(d), None) if d.on => format!("{}: on, but not started (see the log)", d.name),
         (Some(d), None) => format!("{}: Windows' own volume (the setting is off)", d.name),
     };
-    if restored > 0 {
-        words.push_str(&format!(
-            "; {restored} apps restored from a crashed run's journal"
-        ));
+    match restored {
+        0 => {}
+        1 => words.push_str("; 1 app restored from a crashed run's journal"),
+        n => words.push_str(&format!("; {n} apps restored from a crashed run's journal")),
     }
     let level = match (device, master) {
         (Some(d), None) if d.on && d.eligible => Level::Warn,
@@ -323,6 +323,17 @@ mod tests {
         let r = master_row(Some(&d), Some((35, false)), 3);
         assert!(r.detail.contains("master 35 %"), "{}", r.detail);
         assert!(r.detail.contains("3 apps restored"), "{}", r.detail);
+        assert!(
+            r.detail.starts_with(
+                "Headphones (Xbox Controller): Foxglove sets its volume · master 35 %"
+            ),
+            "{}",
+            r.detail
+        );
+        let one = master_row(Some(&d), Some((35, false)), 1);
+        assert!(one
+            .detail
+            .ends_with("; 1 app restored from a crashed run's journal"));
         let r = master_row(Some(&d), None, 0);
         assert_eq!(r.level, Level::Warn, "on but not started");
         let r = master_row(

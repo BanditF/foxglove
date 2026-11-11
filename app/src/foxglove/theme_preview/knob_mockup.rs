@@ -729,6 +729,33 @@ fn knob_master_855_renders() {
     );
 }
 
+/// #1064: master's card above Windows' flyout after the flyout or the volume keys moved master
+/// on a device Foxglove sets the volume of: the first time in a run with the slider row, after
+/// that without, and muted.
+#[test]
+fn knob_master_1064_renders() {
+    use crate::foxglove::knob_popup::Card;
+    let outside = |level: u8, muted: bool, first: bool| Card::Outside {
+        level: Some(level),
+        muted,
+        first,
+    };
+    let cards: Vec<(&str, Card)> = vec![
+        (
+            "Flyout or keys, first time this run: the slider row",
+            outside(40, false, true),
+        ),
+        ("After that: the card alone", outside(38, false, false)),
+        ("Mute key", outside(38, true, false)),
+        ("Mute key, first time this run", outside(38, true, true)),
+    ];
+    cards_sheet(
+        "knob-1064-outside.png",
+        "Knob (#1064): master's card above Windows' flyout",
+        &cards,
+    );
+}
+
 /// The work area each card of [`cards_sheet`] is drawn on (a 1080p display's bottom strip).
 const CARDS_WORK: egui::Vec2 = vec2(480.0, 150.0);
 
@@ -773,7 +800,13 @@ fn cards_sheet(
                         0.0,
                         TASKBAR,
                     );
-                    if *card == Card::MasterTab {
+                    if matches!(card, Card::MasterTab | Card::Outside { .. }) {
+                        // On a handled device (#1064) Windows' slider rests near the top.
+                        let shown: u8 = if matches!(card, Card::Outside { .. }) {
+                            98
+                        } else {
+                            66
+                        };
                         // Windows' own flyout, as Windows draws it (a stand-in).
                         let s = spot(w);
                         p.rect_filled(s, 8.0, CARD);
@@ -790,13 +823,13 @@ fn cards_sheet(
                                 pos2(s.left() + 44.0, s.center().y - 2.0),
                                 vec2(110.0, 4.0),
                             ),
-                            66,
+                            shown,
                             ACCENT,
                         );
                         p.text(
                             pos2(s.right() - 12.0, s.center().y),
                             Align2::RIGHT_CENTER,
-                            "66",
+                            shown.to_string(),
                             FontId::proportional(13.0),
                             TEXT,
                         );
