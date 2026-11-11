@@ -1,5 +1,5 @@
 {
-  "hub": "1.2",
+  "hub": "1.3",
   "icons": [
     "module",
     "battery",
@@ -46,11 +46,20 @@
     "table_rows": 10000,
     "text_bytes": 16384
   },
+  "net": {
+    "backlog_bytes": 8388608,
+    "datagram": 65536,
+    "open_deadline_s": 20,
+    "read_chunk": 16384,
+    "streams_per_connection": 16,
+    "streams_per_hub": 256,
+    "timeout_s": 10
+  },
   "scalings": [
     "smooth",
     "pixel"
   ],
-  "spec": "1.11",
+  "spec": "1.12",
   "streams": {
     "nodes": [
       "canvas",
@@ -1658,6 +1667,213 @@
         "url"
       ],
       "title": "HubRelease",
+      "type": "object"
+    },
+    "services.MicState": {
+      "description": "`mic.state`'s values (§8.11).",
+      "oneOf": [
+        {
+          "enum": [
+            "muted",
+            "unmuted"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "No active capture endpoint.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "It couldn't be read; never shown as muted.",
+          "type": "string"
+        }
+      ],
+      "title": "MicState"
+    },
+    "services.NetAccepted": {
+      "description": "`net.accepted` (H → C): a listener accepted a connection, the new `stream`.",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "listener": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stream": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "listener",
+        "stream",
+        "from"
+      ],
+      "title": "NetAccepted",
+      "type": "object"
+    },
+    "services.NetClosed": {
+      "description": "`net.closed` (H → C): a stream ended other than by `net.close`.",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "stream": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stream",
+        "reason"
+      ],
+      "title": "NetClosed",
+      "type": "object"
+    },
+    "services.NetData": {
+      "description": "`net.data` (H → C): bytes that arrived, base64; `from` is the sender for `udp`.",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stream": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stream",
+        "data"
+      ],
+      "title": "NetData",
+      "type": "object"
+    },
+    "services.NetKind": {
+      "description": "The kind of stream `net.open` makes (§8.10).",
+      "oneOf": [
+        {
+          "const": "tcp",
+          "description": "A TCP connection to `host`:`port`.",
+          "type": "string"
+        },
+        {
+          "const": "udp",
+          "description": "Datagrams sent to 127.0.0.1:`port`, received only.",
+          "type": "string"
+        },
+        {
+          "const": "tcp-listen",
+          "description": "Accepts TCP connections on 127.0.0.1:`port`.",
+          "type": "string"
+        }
+      ],
+      "title": "NetKind"
+    },
+    "services.NetOpen": {
+      "$defs": {
+        "NetKind": {
+          "description": "The kind of stream `net.open` makes (§8.10).",
+          "oneOf": [
+            {
+              "const": "tcp",
+              "description": "A TCP connection to `host`:`port`.",
+              "type": "string"
+            },
+            {
+              "const": "udp",
+              "description": "Datagrams sent to 127.0.0.1:`port`, received only.",
+              "type": "string"
+            },
+            {
+              "const": "tcp-listen",
+              "description": "Accepts TCP connections on 127.0.0.1:`port`.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "description": "`net.open` (C → H).",
+      "properties": {
+        "host": {
+          "description": "For `udp` and `tcp-listen`, only `127.0.0.1`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/NetKind"
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "host",
+        "port"
+      ],
+      "title": "NetOpen",
+      "type": "object"
+    },
+    "services.NetSend": {
+      "description": "`net.send` (C → H): bytes, base64.",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "stream": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stream",
+        "data"
+      ],
+      "title": "NetSend",
+      "type": "object"
+    },
+    "services.NetStream": {
+      "description": "`net.open`'s result, and `net.close`'s params.",
+      "properties": {
+        "stream": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stream"
+      ],
+      "title": "NetStream",
+      "type": "object"
+    },
+    "services.SetMute": {
+      "description": "`audio.inputs.set_mute` (C → H, §8.11).",
+      "properties": {
+        "muted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "muted"
+      ],
+      "title": "SetMute",
       "type": "object"
     }
   }

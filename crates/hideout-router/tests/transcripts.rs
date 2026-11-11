@@ -69,6 +69,10 @@ const NOT_ROUTER: &[(&str, &str)] = &[
     ),
     ("transcripts/ui/badge.json", "the panel host's tab badges"),
     (
+        "transcripts/net/stream-refused.json",
+        "the network broker answers net.stream: run by crates/hideout-services/tests/net.rs",
+    ),
+    (
         "transcripts/ui/visibility.json",
         "the panel host's tab visibility",
     ),
@@ -405,10 +409,22 @@ impl Replay {
         let (w, g) = (want.pointer(path).unwrap(), got.pointer(path));
         match (w, g) {
             (Value::Object(wm), Some(Value::Object(gm))) => {
-                // Message text and refusal reasons are free.
+                // Message text and refusal reasons are free; a refusal's §15 id (`data.id`) is
+                // checked when the transcript names one (v1.12).
                 let free = |k: &str| path.ends_with("/error") && (k == "message" || k == "data");
                 for k in wm.keys().chain(gm.keys()) {
                     if free(k) {
+                        if k == "data" {
+                            let id = format!("{path}/data/id");
+                            if let Some(w) = want.pointer(&id) {
+                                if got.pointer(&id) != Some(w) {
+                                    return Err(format!(
+                                        "{id}: want {w}, got {:?}",
+                                        got.pointer(&id)
+                                    ));
+                                }
+                            }
+                        }
                         continue;
                     }
                     let sub = format!("{path}/{k}");
@@ -491,6 +507,24 @@ impl Replay {
 fn setup(name: &str) -> Replay {
     match name {
         "initialize-tool" => Replay::new(vec!["facts.read:keyboard.*"]),
+        // The host services' refusals (§8.10, §8.11, v1.12): the router checks the grant.
+        "open-refused" | "set-mute-refused" => {
+            let mut r = Replay::new(vec![]);
+            let mut a = art();
+            a.granted.extend(
+                [
+                    "net.connect:127.0.0.1:4455",
+                    "net.connect:*.example.test:*",
+                    "net.listen:udp:127.0.0.1:5568",
+                    "facts.write:mic.*",
+                ]
+                .map(String::from),
+            );
+            r.router.add_module(a);
+            r.router.serve(&hideout_router::host_methods());
+            r.module("module", ART, None);
+            r
+        }
         "channel-open-denied" => {
             let mut r = Replay::new(vec![]);
             r.router.add_module(other(

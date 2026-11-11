@@ -16,6 +16,6 @@ pub mod server;
 
 pub mod secrets;
 pub use router::{
-    fresh_secret, Approver, ConnId, LaunchCheck, ModuleEntry, Origin, Out, Router, Settings,
-    Triggers, CALL_TIMEOUT, HOST_CONSUMER,
+    fresh_secret, host_methods, Approver, ConnId, LaunchCheck, ModuleEntry, Origin, Out, Router,
+    ServiceCall, ServiceError, Settings, Triggers, CALL_TIMEOUT, HOST_CONSUMER,
 };

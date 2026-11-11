@@ -64,7 +64,7 @@
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-          "hub": "1.2",
+          "hub": "1.3",
           "api": {
             "foxglove": "1.13"
           },

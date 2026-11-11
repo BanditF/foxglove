@@ -1,0 +1,65 @@
+{
+  "name": "set-mute-refused",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.11",
+    "8.3",
+    "15"
+  ],
+  "description": "audio.inputs.set_mute without audio.inputs.mute answers error 5 audio.denied, and the hub owns mic.*: a module's facts.set on mic.state is refused (error 5) even with facts.write:mic.*.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "audio.inputs.set_mute",
+        "params": {
+          "muted": true
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": 5,
+          "message": "denied",
+          "data": {
+            "id": "audio.denied",
+            "reason": "Example Art needs permission audio.inputs.mute to mute the microphone. Allow it in Hideout's permissions for Example Art."
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "facts.set",
+        "params": {
+          "key": "mic.state",
+          "value": "muted"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": 5,
+          "message": "denied"
+        }
+      }
+    }
+  ]
+}

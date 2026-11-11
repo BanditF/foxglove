@@ -1,0 +1,152 @@
+{
+  "name": "stream-refused",
+  "module": "foxglove.example-art",
+  "spec": [
+    "8.10",
+    "15"
+  ],
+  "description": "Stream ids are per connection: net.send to a stream the caller never opened answers -32602 net.stream, and so does a send to a udp stream, which only receives; bad base64 answers -32602 net.argument; net.close of a stream that isn't there answers {} (the SDK closes on drop). The module holds net.listen:udp:127.0.0.1:<port>; the hub's stream id is bound, not fixed.",
+  "steps": [
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "net.send",
+        "params": {
+          "stream": 7,
+          "data": "aGk="
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "error": {
+          "code": -32602,
+          "message": "invalid params",
+          "data": {
+            "id": "net.stream",
+            "reason": "no stream 7 on this connection"
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "net.open",
+        "params": {
+          "kind": "udp",
+          "host": "127.0.0.1",
+          "port": 0
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "error": {
+          "code": -32602,
+          "message": "invalid params",
+          "data": {
+            "id": "net.argument",
+            "reason": "net.open: port 0 is not a port"
+          }
+        }
+      }
+    },
+    {
+      "event": "the module opens its granted udp port (set up outside the transcript); its stream is 1"
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "net.send",
+        "params": {
+          "stream": 1,
+          "data": "aGk="
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "error": {
+          "code": -32602,
+          "message": "invalid params",
+          "data": {
+            "id": "net.stream",
+            "reason": "a udp stream only receives"
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "net.send",
+        "params": {
+          "stream": 1,
+          "data": "not base64!"
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "error": {
+          "code": -32602,
+          "message": "invalid params",
+          "data": {
+            "id": "net.argument",
+            "reason": "bad base64: Invalid symbol 32, offset 3."
+          }
+        }
+      }
+    },
+    {
+      "from": "module",
+      "to": "hub",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "net.close",
+        "params": {
+          "stream": 7
+        }
+      }
+    },
+    {
+      "from": "hub",
+      "to": "module",
+      "msg": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {}
+      }
+    }
+  ]
+}

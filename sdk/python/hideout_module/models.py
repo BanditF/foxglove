@@ -10,8 +10,8 @@ from typing import Any, ClassVar, Literal, Optional, Union
 
 from ._model import Model
 
-HUB = '1.2'
-SPEC = '1.11'
+HUB = '1.3'
+SPEC = '1.12'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -855,6 +855,107 @@ module version, and the page it is on."""
         'version': ('version', 'str'),
     }
 
+
+MicState = Any
+MICSTATE_SPEC = 'any'
+
+
+@dataclass(kw_only=True)
+class NetAccepted(Model):
+    """`net.accepted` (H → C): a listener accepted a connection, the new `stream`."""
+
+    from_: str
+    listener: int
+    stream: int
+
+    FIELDS: ClassVar[dict] = {
+        'from_': ('from', 'str'),
+        'listener': ('listener', 'int'),
+        'stream': ('stream', 'int'),
+    }
+
+
+@dataclass(kw_only=True)
+class NetClosed(Model):
+    """`net.closed` (H → C): a stream ended other than by `net.close`."""
+
+    reason: str
+    stream: int
+
+    FIELDS: ClassVar[dict] = {
+        'reason': ('reason', 'str'),
+        'stream': ('stream', 'int'),
+    }
+
+
+@dataclass(kw_only=True)
+class NetData(Model):
+    """`net.data` (H → C): bytes that arrived, base64; `from` is the sender for `udp`."""
+
+    data: str
+    from_: Optional[str] = None
+    stream: int
+
+    FIELDS: ClassVar[dict] = {
+        'data': ('data', 'str'),
+        'from_': ('from', ('opt', 'str')),
+        'stream': ('stream', 'int'),
+    }
+
+
+NetKind = Literal['tcp', 'udp', 'tcp-listen']
+NETKIND_SPEC = ('enum', ('tcp', 'udp', 'tcp-listen'))
+
+
+@dataclass(kw_only=True)
+class NetOpen(Model):
+    """`net.open` (C → H)."""
+
+    host: str
+    kind: NetKind
+    port: int
+
+    FIELDS: ClassVar[dict] = {
+        'host': ('host', 'str'),
+        'kind': ('kind', ('ref', 'NetKind')),
+        'port': ('port', 'int'),
+    }
+
+
+@dataclass(kw_only=True)
+class NetSend(Model):
+    """`net.send` (C → H): bytes, base64."""
+
+    data: str
+    stream: int
+
+    FIELDS: ClassVar[dict] = {
+        'data': ('data', 'str'),
+        'stream': ('stream', 'int'),
+    }
+
+
+@dataclass(kw_only=True)
+class NetStream(Model):
+    """`net.open`'s result, and `net.close`'s params."""
+
+    stream: int
+
+    FIELDS: ClassVar[dict] = {
+        'stream': ('stream', 'int'),
+    }
+
+
+@dataclass(kw_only=True)
+class SetMute(Model):
+    """`audio.inputs.set_mute` (C → H, §8.11)."""
+
+    muted: bool
+
+    FIELDS: ClassVar[dict] = {
+        'muted': ('muted', 'bool'),
+    }
+
 # The schema's top-level types by their schema key.
 TYPES = {
     'config.Config': Config,
@@ -897,4 +998,13 @@ TYPES = {
     'panel.Register': Register,
     'panel.Rejected': Rejected,
     'release.HubRelease': HubRelease,
+    'services.MicState': MicState,
+    'services.NetAccepted': NetAccepted,
+    'services.NetClosed': NetClosed,
+    'services.NetData': NetData,
+    'services.NetKind': NetKind,
+    'services.NetOpen': NetOpen,
+    'services.NetSend': NetSend,
+    'services.NetStream': NetStream,
+    'services.SetMute': SetMute,
 }

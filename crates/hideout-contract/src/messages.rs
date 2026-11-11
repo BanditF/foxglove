@@ -447,6 +447,14 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         "channel.open" => typed::<ChannelOpen>(params),
         "channel.create" => typed::<ChannelCreate>(params),
         "modules.enable" | "modules.disable" | "modules.reload" => typed::<ModuleIdParams>(params),
+        // The host services (§8.10, §8.11, v1.12).
+        "net.open" => typed::<crate::services::NetOpen>(params),
+        "net.send" => typed::<crate::services::NetSend>(params),
+        "net.close" => typed::<crate::services::NetStream>(params),
+        "net.data" => typed::<crate::services::NetData>(params),
+        "net.accepted" => typed::<crate::services::NetAccepted>(params),
+        "net.closed" => typed::<crate::services::NetClosed>(params),
+        "audio.inputs.set_mute" => typed::<crate::services::SetMute>(params),
         _ => Ok(()),
     }
 }

@@ -7,11 +7,14 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
-use crate::router::{ConnId, Origin, Out, Router, MAX_MESSAGE};
+use serde_json::Value;
+
+use crate::router::{ConnId, Origin, Out, Router, ServiceCall, ServiceError, MAX_MESSAGE};
 
 /// `<user>` for the pipe names (§8.2): `%USERNAME%` keeping ASCII letters, digits, `-`, `_`.
 pub fn user() -> String {
@@ -72,9 +75,102 @@ fn fnv1a(s: &str) -> u64 {
     })
 }
 
+/// One connection's writer: its queue and how many bytes wait in it (the backlog cap of the
+/// network broker, contract §8.10).
+#[derive(Clone)]
+struct Writer {
+    tx: Sender<Option<String>>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl Writer {
+    fn send(&self, line: String) -> bool {
+        let n = line.len() + 1;
+        self.queued.fetch_add(n, Ordering::Relaxed);
+        if self.tx.send(Some(line)).is_err() {
+            self.queued.fetch_sub(n, Ordering::Relaxed);
+            return false;
+        }
+        true
+    }
+}
+
+/// The hub's host services (contract §8.3, §8.10, §8.11, v1.12): what answers
+/// [`Out::Service`]. Set with [`Hub::set_services`].
+pub trait Services: Send + Sync {
+    /// The host-service methods it serves (the router answers the others -32601).
+    fn methods(&self) -> Vec<&'static str>;
+    /// A call the router already checked. Answer it, now or later, with [`Sink::answer`]. It
+    /// runs on the caller's reader thread: anything slow (a connect) goes to a thread of its own.
+    fn call(&self, call: ServiceCall, sink: &Sink);
+    /// Connection `conn` ended: drop everything it held.
+    fn gone(&self, conn: ConnId);
+}
+
+/// What a host service sends back through: answers, events to one connection, and hub facts.
+/// It holds the hub weakly, so a service never keeps a hub alive.
+#[derive(Clone)]
+pub struct Sink(Weak<Shared>);
+
+/// What became of an event a host service sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Queued for the connection.
+    Sent,
+    /// The connection (or the hub) is gone.
+    Gone,
+    /// More than the backlog cap already waits for the connection: not queued (§8.10).
+    Backlogged,
+}
+
+impl Sink {
+    /// Answers [`Out::Service`] call `call`. False when nobody waited for it any more (the
+    /// call timed out, or its connection ended): whatever it opened should be undone.
+    pub fn answer(&self, call: u64, result: Result<Value, ServiceError>) -> bool {
+        let Some(shared) = self.0.upgrade() else {
+            return false;
+        };
+        let mut waited = false;
+        Hub(shared).act(|r| {
+            waited = r.waits_for(call);
+            r.service_answer(call, result)
+        });
+        waited
+    }
+
+    /// Sends notification `method` to connection `conn` alone, unless more than `backlog`
+    /// bytes already wait for it.
+    pub fn event(&self, conn: ConnId, method: &str, params: Value, backlog: usize) -> Delivery {
+        let Some(shared) = self.0.upgrade() else {
+            return Delivery::Gone;
+        };
+        let Some(w) = shared.writers.lock().unwrap().get(&conn).cloned() else {
+            return Delivery::Gone;
+        };
+        if w.queued.load(Ordering::Relaxed) > backlog {
+            return Delivery::Backlogged;
+        }
+        let line = serde_json::json!({"jsonrpc": "2.0", "method": method, "params": params});
+        if w.send(line.to_string()) {
+            Delivery::Sent
+        } else {
+            Delivery::Gone
+        }
+    }
+
+    /// Sets (or with `null` removes) hub fact `key`, as any hub fact (§8.3).
+    pub fn publish(&self, key: &str, value: Value) {
+        if let Some(shared) = self.0.upgrade() {
+            Hub(shared).act(|r| r.publish(key, value));
+        }
+    }
+}
+
 struct Shared {
     router: Mutex<Router>,
-    writers: Mutex<HashMap<ConnId, Sender<Option<String>>>>,
+    writers: Mutex<HashMap<ConnId, Writer>>,
+    /// The host services (§8.3, v1.12), once set.
+    services: Mutex<Option<Arc<dyn Services>>>,
     events: Mutex<Sender<Out>>,
     nudge: Mutex<Sender<()>>,
     /// The hub folder's [`folder_suffix`]; empty for the default folder.
@@ -108,6 +204,7 @@ impl Hub {
         let hub = Hub(Arc::new(Shared {
             router: Mutex::new(router),
             writers: Mutex::new(HashMap::new()),
+            services: Mutex::new(None),
             events: Mutex::new(events),
             nudge: Mutex::new(nudge),
             suffix: Mutex::new(String::new()),
@@ -142,6 +239,18 @@ impl Hub {
         alias_pipe_name_for(&self.folder_suffix())
     }
 
+    /// The hub's host services (§8.3, v1.12): the router serves the methods they name.
+    pub fn set_services(&self, services: Arc<dyn Services>) {
+        let methods = services.methods();
+        self.0.router.lock().unwrap().serve(&methods);
+        *self.0.services.lock().unwrap() = Some(services);
+    }
+
+    /// What a host service answers and sends through.
+    pub fn sink(&self) -> Sink {
+        Sink(Arc::downgrade(&self.0))
+    }
+
     /// Runs `f` on the router and carries out what it returns.
     pub fn act(&self, f: impl FnOnce(&mut Router) -> Vec<Out>) {
         let out = {
@@ -161,16 +270,35 @@ impl Hub {
         for o in out {
             match o {
                 Out::Send(c, v) => {
-                    if let Some(w) = self.0.writers.lock().unwrap().get(&c) {
-                        let _ = w.send(Some(v.to_string()));
+                    let w = self.0.writers.lock().unwrap().get(&c).cloned();
+                    if let Some(w) = w {
+                        w.send(v.to_string());
                     }
                 }
                 Out::Close(c) => {
                     if let Some(w) = self.0.writers.lock().unwrap().remove(&c) {
-                        let _ = w.send(None);
+                        let _ = w.tx.send(None);
                     }
                     let more = self.0.router.lock().unwrap().disconnect(c);
                     self.dispatch(more);
+                }
+                Out::Service(call) => {
+                    let services = self.0.services.lock().unwrap().clone();
+                    match services {
+                        Some(s) => s.call(call, &self.sink()),
+                        None => self.act(|r| {
+                            r.service_answer(
+                                call.call,
+                                Err(ServiceError::new(-32601, "", "method not found")),
+                            )
+                        }),
+                    }
+                }
+                Out::ServiceGone(conn) => {
+                    let services = self.0.services.lock().unwrap().clone();
+                    if let Some(s) = services {
+                        s.gone(conn);
+                    }
                 }
                 other => {
                     let _ = self.0.events.lock().unwrap().send(other);
@@ -224,16 +352,23 @@ impl Hub {
             conn
         };
         let (tx, rx) = mpsc::channel::<Option<String>>();
-        self.0.writers.lock().unwrap().insert(conn, tx);
+        let queued = Arc::new(AtomicUsize::new(0));
+        self.0.writers.lock().unwrap().insert(
+            conn,
+            Writer {
+                tx,
+                queued: queued.clone(),
+            },
+        );
         std::thread::Builder::new()
             .name(format!("hideout-router-w{conn}"))
             .spawn(move || {
                 while let Ok(Some(line)) = rx.recv() {
-                    if writer
+                    let written = writer
                         .write_all(format!("{line}\n").as_bytes())
-                        .and_then(|_| writer.flush())
-                        .is_err()
-                    {
+                        .and_then(|_| writer.flush());
+                    queued.fetch_sub(line.len() + 1, Ordering::Relaxed);
+                    if written.is_err() {
                         break;
                     }
                 }

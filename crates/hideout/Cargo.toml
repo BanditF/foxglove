@@ -14,6 +14,7 @@ hideout-appwatch = { path = "../hideout-appwatch" }
 hideout-contract = { path = "../hideout-contract" }
 hideout-registry = { path = "../hideout-registry" }
 hideout-router = { path = "../hideout-router" }
+hideout-services = { path = "../hideout-services" }
 hideout-shell = { path = "../hideout-shell" }
 hideout-supervisor = { path = "../hideout-supervisor" }
 log = "0.4"
