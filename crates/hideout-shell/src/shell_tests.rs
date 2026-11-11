@@ -2217,6 +2217,9 @@ fn a_rendered_frame_goes_through_the_capture_png_writer() {
 #[path = "popout_tests.rs"]
 mod popouts;
 
+#[path = "drag_tests.rs"]
+mod drags;
+
 /// Lab control (#1003) through the real hub frame, window-free: `state` lists the tabs and the
 /// active page as drawn, `key ctrl+tab` goes through the hub's own shortcut code, and
 /// `focus <tab>` (an AccessKit click on the tab) switches back.

@@ -7,12 +7,12 @@ use super::*;
 
 const CHAT: (&str, &str) = ("mod.chat", "chat");
 
-fn chat() -> TabId {
+pub(super) fn chat() -> TabId {
     TabId::panel(CHAT.0, CHAT.1)
 }
 
 /// Modules, Chat, Art open (in that order), Chat active, the router's end to read messages.
-fn chat_hub(dir: &std::path::Path) -> (Hub, RouterEnd, egui::Context) {
+pub(super) fn chat_hub(dir: &std::path::Path) -> (Hub, RouterEnd, egui::Context) {
     let (router, feed) = channel();
     let mut hub = hub_in(dir, Some(Box::new(feed)));
     let ctx = ctx();
@@ -27,7 +27,7 @@ fn chat_hub(dir: &std::path::Path) -> (Hub, RouterEnd, egui::Context) {
     (hub, router, ctx)
 }
 
-fn frame(ctx: &egui::Context, hub: &mut Hub, events: Vec<Event>) {
+pub(super) fn frame(ctx: &egui::Context, hub: &mut Hub, events: Vec<Event>) {
     let _ = ctx.run(input(1100.0, 640.0, events), |c| hub.frame(c));
 }
 
@@ -417,7 +417,7 @@ fn caption(ctx: &egui::Context, title: &str) {
 }
 
 /// A pop-out window of `hub`'s tab `id`, with its caption, `events` per frame.
-fn render_popout(
+pub(super) fn render_popout(
     hub: &mut Hub,
     id: &TabId,
     w: u32,
@@ -434,7 +434,7 @@ fn render_popout(
 }
 
 /// Copies `src` (w × h) onto `dst` (dw wide) at (x, y), with a 1 px window border.
-fn blit(dst: &mut [u8], dw: u32, src: &[u8], (w, h): (u32, u32), (x, y): (u32, u32)) {
+pub(super) fn blit(dst: &mut [u8], dw: u32, src: &[u8], (w, h): (u32, u32), (x, y): (u32, u32)) {
     for r in 0..h {
         for col in 0..w {
             let s = ((r * w + col) * 4) as usize;
