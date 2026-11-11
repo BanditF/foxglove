@@ -934,3 +934,134 @@ fn renders_the_state_tray_for_review() {
     let (w, h, img) = stack(parts);
     save_png("built-states-sheet-tray.png", w, h, img);
 }
+
+// ---- The sidebar draws the tab's ring (#1094) -------------------------------------------------
+
+/// The open-arc rings in a frame: (in the sidebar, in the tab strip). Both draw the same shape
+/// from `strip::ring_points`; the sidebar is the left 200 px.
+fn rings(out: &egui::FullOutput) -> (usize, usize) {
+    fn walk(s: &epaint::Shape, v: &mut Vec<f32>) {
+        match s {
+            epaint::Shape::Path(p) if p.points.len() == 25 && !p.closed => v.push(p.points[0].x),
+            epaint::Shape::Vec(all) => all.iter().for_each(|s| walk(s, v)),
+            _ => {}
+        }
+    }
+    let mut xs = Vec::new();
+    for c in &out.shapes {
+        walk(&c.shape, &mut xs);
+    }
+    let side = xs.iter().filter(|x| **x < 200.0).count();
+    (side, xs.len() - side)
+}
+
+fn labels(out: &egui::FullOutput) -> Vec<String> {
+    out.platform_output
+        .accesskit_update
+        .clone()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter_map(|(_, n)| n.label().map(String::from))
+        .collect()
+}
+
+/// The hubs of the sidebar cases: (label, hub, ring?, the tab's accessible name).
+fn sidebar_cases(dir: &std::path::Path) -> Vec<(&'static str, Hub, bool, &'static str)> {
+    let with = |state: &str| supervised(dir, &[("state", serde_json::json!(state))]).0;
+    let gone = |state: &str| {
+        let mut hub = with("running");
+        hub.panels.module_gone(SUP, state);
+        hub
+    };
+    vec![
+        (
+            "Waiting for Link",
+            waiting(dir).0,
+            true,
+            "Art, waiting for Link",
+        ),
+        ("Updating", updating(dir).0, true, "Art, updating\u{2026}"),
+        ("Starting", gone("starting"), true, "Art, starting\u{2026}"),
+        (
+            "Restarting (2 of 5)",
+            restarting(dir, 8, 2, Duration::ZERO).0,
+            true,
+            "Art, restarting\u{2026} (2 of 5)",
+        ),
+        (
+            "Stopped after 5 crashes (mark wins, no ring)",
+            stopped(dir, "start-again", None).0,
+            false,
+            "Art, stopped after 5 crashes",
+        ),
+        (
+            "Needs a newer Hideout (mark wins, no ring)",
+            needs_hub(dir, None).0,
+            false,
+            "Art, needs a newer Hideout",
+        ),
+        ("Running (nothing)", with("running"), false, "Art"),
+    ]
+}
+
+/// A module in each ring state shows the ring in the sidebar and on its tab; the stopped mark
+/// wins over it; the sidebar entry has the tab's tooltip and accessible name (waiting has no
+/// ellipsis, updating has one).
+#[test]
+fn the_sidebar_draws_the_tabs_ring_with_its_words() {
+    let ctx = ctx();
+    ctx.enable_accesskit();
+    let dir = temp_dir("st-sidebar-ring");
+    for (label, mut hub, ring, name) in sidebar_cases(&dir) {
+        // The Modules page is active, so the Art entry is unselected like most.
+        hub.open(TabId::page("modules"));
+        let out = frames(&ctx, &mut hub, vec![]);
+        let tab = art_tab(&hub);
+        assert_eq!(tab.busy(), ring, "{label}");
+        assert_eq!(rings(&out), (ring as usize, ring as usize), "{label}");
+        assert_eq!(
+            labels(&out).iter().filter(|n| *n == name).count(),
+            2, // the sidebar entry and the tab
+            "{label}: {:?}",
+            labels(&out)
+        );
+        assert_eq!(
+            tab.accessible_name().to_lowercase(),
+            name.to_lowercase(),
+            "{label}"
+        );
+    }
+    let (_, hub, _, _) = sidebar_cases(&dir).remove(0);
+    assert_eq!(art_tab(&hub).tooltip(), "Art\nWaiting for Link");
+    assert!(!art_tab(&hub).accessible_name().contains('\u{2026}'));
+    let (_, hub, _, _) = sidebar_cases(&dir).remove(1);
+    assert_eq!(art_tab(&hub).tooltip(), "Art\nUpdating\u{2026}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The sidebar sheet: each state's sidebar entry beside its tab, with the words.
+#[test]
+fn renders_the_state_sidebar_for_review() {
+    let dir = temp_dir("png-st-sidebar");
+    let mut parts = Vec::new();
+    for (label, mut hub, _, _) in sidebar_cases(&dir) {
+        hub.open(TabId::page("modules"));
+        let l = art_tab(&hub);
+        let text = format!(
+            "{label}: tooltip \u{201C}{}\u{201D} \u{b7} name \u{201C}{}\u{201D}",
+            l.tooltip().replace('\n', " / "),
+            l.accessible_name()
+        );
+        let Some(c) = caption(&text, 760) else {
+            eprintln!("no system font; state review skipped");
+            return;
+        };
+        parts.push(c);
+        let px = render(&mut hub, 760, 200, |_| {}).unwrap();
+        parts.push((760, 200, px));
+    }
+    let (w, h, img) = stack(parts);
+    save_png("built-states-sheet-sidebar.png", w, h, img);
+    let _ = std::fs::remove_dir_all(&dir);
+}

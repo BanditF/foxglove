@@ -1365,6 +1365,39 @@ impl Hub {
         }
     }
 
+    /// A module panel's look with every state this window draws on top of the host's own
+    /// (launch failure, withdrawn, waiting, needs-hub, quarantined, updating, restarting). The
+    /// tab and the sidebar entry both take it, so they never disagree (#1094).
+    fn panel_look(&self, p: &hideout_panels::HostedPanel, popped: bool) -> Look {
+        let key = &p.key;
+        let mut look = strip::panel_look(p, popped);
+        // A failure from launching reads "Couldn't start <Module>" (#983).
+        if self.launch_failed(&key.module) {
+            look.state = TabState::Stopped(words::couldnt_start_title(&p.module_name));
+        }
+        // A withdrawn version (#1026): "Art, withdrawn by its publisher".
+        if self.panels.module_state(&key.module) == Some("revoked") {
+            look.state = TabState::Stopped(words::WITHDRAWN_TAB.into());
+        }
+        // Waiting, needs a newer Hideout, quarantined, updating (#983).
+        if let Some(s) = self.state_look(&key.module) {
+            look.state = s;
+        }
+        // Restarting: "Restarting… (2 of 5)", which changes once per crash and so
+        // needs no repaint (the live countdown is the crash bar's).
+        if self.panels.module_state(&key.module) == Some("restarting") {
+            let crash = self
+                .panels
+                .fact(&format!("module.{}.restart", key.module))
+                .and_then(|f| f.get("crash"))
+                .and_then(|v| v.as_u64());
+            if let Some(k) = crash {
+                look.state = TabState::Busy(words::restarting_row(0, k as usize));
+            }
+        }
+        look
+    }
+
     fn look(&self, i: usize) -> Look {
         let tab = &self.tabs.tabs()[i];
         match self.target(&tab.id) {
@@ -1376,34 +1409,7 @@ impl Hub {
                 popped: tab.popped,
             },
             Some(Target::Panel(key)) => match self.panels.panel(&key) {
-                Some(p) => {
-                    let mut look = strip::panel_look(p, tab.popped);
-                    // A failure from launching reads "Couldn't start <Module>" (#983).
-                    if self.launch_failed(&key.module) {
-                        look.state = TabState::Stopped(words::couldnt_start_title(&p.module_name));
-                    }
-                    // A withdrawn version (#1026): "Art, withdrawn by its publisher".
-                    if self.panels.module_state(&key.module) == Some("revoked") {
-                        look.state = TabState::Stopped(words::WITHDRAWN_TAB.into());
-                    }
-                    // Waiting, needs a newer Hideout, quarantined, updating (#983).
-                    if let Some(s) = self.state_look(&key.module) {
-                        look.state = s;
-                    }
-                    // Restarting: "Restarting… (2 of 5)", which changes once per crash and so
-                    // needs no repaint (the live countdown is the crash bar's).
-                    if self.panels.module_state(&key.module) == Some("restarting") {
-                        let crash = self
-                            .panels
-                            .fact(&format!("module.{}.restart", key.module))
-                            .and_then(|f| f.get("crash"))
-                            .and_then(|v| v.as_u64());
-                        if let Some(k) = crash {
-                            look.state = TabState::Busy(words::restarting_row(0, k as usize));
-                        }
-                    }
-                    look
-                }
+                Some(p) => self.panel_look(p, tab.popped),
                 // Restored before its module registered again (§2.4): "Starting".
                 None => Look {
                     title: tab.title.clone(),
@@ -2055,24 +2061,19 @@ impl Hub {
                         .color(c(t.text)),
                 );
                 ui.add_space(14.0);
-                // (target, title, attention dot, the red mark's accessible name when stopped)
-                let mut entries: Vec<(TabId, String, bool, Option<String>)> = self
+                // (target, title, attention dot, a module's look: the tab's state, words and ring)
+                let mut entries: Vec<(TabId, String, bool, Option<Look>)> = self
                     .pages
                     .iter()
                     .filter(|p| !p.at_bottom())
                     .map(|p| (TabId::page(p.id()), p.title().to_string(), false, None))
                     .collect();
                 entries.extend(self.panels.in_slot(Slot::Page).map(|p| {
-                    let mut look = strip::panel_look(p, false);
-                    if self.launch_failed(&p.key.module) {
-                        look.state = TabState::Stopped(words::couldnt_start_title(&p.module_name));
-                    }
-                    let stopped = matches!(look.state, TabState::Stopped(_));
                     (
                         TabId::panel(&p.key.module, &p.key.panel),
                         p.title.clone(),
                         p.badge == hideout_panels::Badge::Attention,
-                        stopped.then(|| look.accessible_name()),
+                        Some(self.panel_look(p, false)),
                     )
                 }));
                 entries.extend(
@@ -2082,7 +2083,7 @@ impl Hub {
                         .map(|p| (TabId::page(p.id()), p.title().to_string(), false, None)),
                 );
                 let active = self.tabs.active_id().cloned();
-                for (target, title, attention, stopped) in entries {
+                for (target, title, attention, look) in entries {
                     let selected = active.as_ref() == Some(&target);
                     // Off for this round of a search (#1033): muted, and its name says so.
                     let off = match &target {
@@ -2104,9 +2105,13 @@ impl Hub {
                         resp = resp.on_hover_text(said.clone());
                         ui.ctx()
                             .accesskit_node_builder(resp.id, |n| n.set_label(said));
-                    } else if let Some(said) = stopped {
+                    } else if let Some(look) = look
+                        .as_ref()
+                        .filter(|l| matches!(l.state, TabState::Stopped(_)))
+                    {
                         // The red warning mark, as on its tab (docs/hideout-supervisor-ux.md, S
                         // and T); its words are in the entry's accessible name.
+                        let said = look.accessible_name();
                         let at = egui::pos2(resp.rect.right() - 14.0, resp.rect.center().y);
                         ui.painter().text(
                             at,
@@ -2115,14 +2120,28 @@ impl Hub {
                             egui::FontId::proportional(14.0),
                             c(theme::nav_mark(t, selected)),
                         );
+                        resp = resp.on_hover_text(look.tooltip());
                         ui.ctx()
                             .accesskit_node_builder(resp.id, |n| n.set_label(said));
-                    } else if attention {
-                        // The attention dot on the sidebar entry too; the tab's accessible name
-                        // says "something new", so colour is not the only signal.
+                    } else {
                         let at = egui::pos2(resp.rect.right() - 12.0, resp.rect.center().y);
                         let fill = if selected { t.on_accent } else { t.accent };
-                        ui.painter().circle_filled(at, 4.0, c(fill));
+                        if let Some(look) = look.as_ref().filter(|l| l.busy()) {
+                            // The orange ring of its tab (starting, restarting, updating,
+                            // waiting), with the tab's tooltip and accessible name.
+                            let ring = egui::Stroke::new(1.5_f32, c(fill));
+                            ui.painter()
+                                .add(egui::Shape::line(strip::ring_points(at, 8.5), ring));
+                            let said = look.accessible_name();
+                            resp = resp.on_hover_text(look.tooltip());
+                            ui.ctx()
+                                .accesskit_node_builder(resp.id, |n| n.set_label(said));
+                        }
+                        if attention {
+                            // The attention dot on the sidebar entry too; the tab's accessible
+                            // name says "something new", so colour is not the only signal.
+                            ui.painter().circle_filled(at, 4.0, c(fill));
+                        }
                     }
                     let out = self
                         .tabs
