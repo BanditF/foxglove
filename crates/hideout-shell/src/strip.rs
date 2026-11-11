@@ -105,6 +105,17 @@ fn c(rgb: Rgb) -> Color32 {
     Color32::from_rgb(rgb.0, rgb.1, rgb.2)
 }
 
+/// The open arc of the "working on it" ring round `centre`: the tab strip and the sidebar draw
+/// the same shape (docs/hideout-supervisor-ux.md, S and T).
+pub fn ring_points(centre: Pos2, radius: f32) -> Vec<Pos2> {
+    (0..=24)
+        .map(|k| {
+            let a = 0.6 + k as f32 * (5.2 / 24.0);
+            centre + Vec2::angled(a) * radius
+        })
+        .collect()
+}
+
 /// A module panel's look from the panel host: its title, its state in §7.8 words, its badge.
 pub fn panel_look(p: &HostedPanel, popped: bool) -> Look {
     use crate::tabs::Mark;
@@ -525,13 +536,7 @@ fn tab_ui(
     if l.busy() {
         // A thin ring round the icon: "working on it".
         let ring = Stroke::new(1.5_f32, c(t.accent));
-        let pts: Vec<Pos2> = (0..=24)
-            .map(|k| {
-                let a = 0.6 + k as f32 * (5.2 / 24.0);
-                mc + Vec2::angled(a) * 9.5
-            })
-            .collect();
-        p.add(egui::Shape::line(pts, ring));
+        p.add(egui::Shape::line(ring_points(mc, 9.5), ring));
     }
     if shown == Shown::Attention {
         // The orange dot on the icon's top-right corner, ringed in the tab's fill so it reads
