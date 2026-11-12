@@ -1453,7 +1453,7 @@ impl Hub {
                 .panels
                 .fact(&format!("module.{module}.failed"))
                 .and_then(|v| v.as_str())
-                == Some("launch")
+                .is_some_and(|f| matches!(f, "launch" | "missing" | "version"))
     }
 
     /// The module's log (`logs\<id>.log`), in the app Windows opens `.log` files with.

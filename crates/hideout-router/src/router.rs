@@ -79,6 +79,14 @@ pub enum Out {
     /// A module's `initialize` had a good token but failed the launch check (pid or exe hash,
     /// §7.5, §8.2 v1.3): refused with error 5; the supervisor shows `install-failed`.
     Refused(String),
+    /// Right after [`Out::Refused`] for an adopted module whose `initialize` said another
+    /// version than its registration (`trust.mismatch`): the supervisor words it ("<Name> is
+    /// version X but was registered as Y"). `said` is `None` when it named none.
+    VersionMismatch {
+        module: String,
+        said: Option<String>,
+        registered: String,
+    },
     /// A module's channel broke the wire rules (a frame over 256 KiB, §8.1): one crash toward
     /// the crash bar (§7.7). Also counted in [`Router::module_faults`].
     ModuleFault(String),
@@ -1355,7 +1363,12 @@ impl Router {
                         "router: {mid}: trust.mismatch: registered {want}, it says {}",
                         said.unwrap_or("nothing")
                     );
-                    out.push(Out::Refused(mid));
+                    out.push(Out::Refused(mid.clone()));
+                    out.push(Out::VersionMismatch {
+                        module: mid,
+                        said: said.map(String::from),
+                        registered: want.clone(),
+                    });
                     return refuse(out, code::DENIED, "denied", "trust.mismatch");
                 }
             }

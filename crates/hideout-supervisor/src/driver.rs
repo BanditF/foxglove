@@ -271,6 +271,8 @@ pub mod lab;
 
 /// What [`Supervisor::launch`] answers when the manifest's `hub` isn't served (§7.8 needs-hub).
 const NEEDS_HUB: &str = "manifest.hub";
+/// A launch error that is the program missing: the text after it is its path.
+const NOT_INSTALLED: &str = "not installed: ";
 /// How [`Supervisor::launch`]'s answer starts when containment is on and the module may not
 /// run without one (§7.7).
 const NO_SANDBOX: &str = "no sandbox";
@@ -828,6 +830,15 @@ impl Supervisor {
             Out::ModuleFault(id) => Ev::Fault { id: id.clone() },
             Out::Ready(id) => Ev::Ready { id: id.clone() },
             Out::Refused(id) => Ev::Refused { id: id.clone() },
+            Out::VersionMismatch {
+                module,
+                said,
+                registered,
+            } => Ev::VersionMismatch {
+                id: module.clone(),
+                said: said.clone(),
+                registered: registered.clone(),
+            },
             Out::Activate(id) => Ev::Activate { id: id.clone() },
             Out::Idle(id) => Ev::Idle { id: id.clone() },
             Out::HubResult { tag, result } => {
@@ -1168,6 +1179,13 @@ impl Supervisor {
                                 reason: words::NO_SANDBOX.into(),
                             });
                         }
+                        Err(r) if r.starts_with(NOT_INSTALLED) => {
+                            log::warn!("supervisor: {id} not started: {r}");
+                            self.feed(Ev::NotInstalled {
+                                id,
+                                path: r[NOT_INSTALLED.len()..].to_string(),
+                            });
+                        }
                         Err(reason) => {
                             log::warn!("supervisor: {id} not started: {reason}");
                             self.feed(Ev::LaunchFailed {
@@ -1273,6 +1291,11 @@ impl Supervisor {
             Some(d) if PathBuf::from(&run[0]).is_absolute() => d.to_path_buf(),
             _ => l.dir.clone(),
         };
+        // The program isn't there (an adopted install that was moved or uninstalled): one plain
+        // line naming where it was registered from, not a generic failure.
+        if !exe.exists() {
+            return Err(format!("{NOT_INSTALLED}{}", exe.display()));
+        }
         let sha256 = sha256_file(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
         let caps = self.caps_of(Some(&reg), id);

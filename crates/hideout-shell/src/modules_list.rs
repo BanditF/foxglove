@@ -212,6 +212,10 @@ pub fn row_in(
             does,
         })
     };
+    // The adopted failures with their one sentence (missing program, another version).
+    let sentence = state.as_deref() == Some("install-failed")
+        && matches!(get("failed").as_deref(), Some("missing" | "version"))
+        && get("reason").is_some();
     let (words, stopped, main) = match state.as_deref() {
         Some("revoked") => (
             words::withdrawn_row(withdrawn.as_deref().unwrap_or(&m.version)),
@@ -279,6 +283,14 @@ pub fn row_in(
             let label = step.button(&m.name, previous.as_deref());
             (words::STOPPED.into(), true, primary(&label, does))
         }
+        // An adopted module whose program is missing, or that says another version than it was
+        // registered as: the supervisor's one sentence (`module.<id>.reason`), not a bare
+        // "Couldn't start". Rows that need the user keep Try again, as for any launch failure.
+        Some("install-failed") if sentence => (
+            get("reason").unwrap_or_default(),
+            true,
+            primary(words::TRY_AGAIN, Does::TryAgain),
+        ),
         Some("install-failed") if get("failed").as_deref() == Some("launch") => (
             words::COULDNT_START.into(),
             true,
@@ -305,9 +317,13 @@ pub fn row_in(
         } else {
             format!("version {}", m.version)
         },
-        // "Art's page couldn't be shown" already names the module.
-        label: if state.as_deref() == Some("quarantined") {
+        // "Art's page couldn't be shown" and the adopted failures' sentences already name the
+        // module. An adopted module's name carries the marker, so a screen reader says
+        // "Example AI, installed separately, on" (the visible version text is a separate node).
+        label: if state.as_deref() == Some("quarantined") || sentence {
             words.clone()
+        } else if m.adopted {
+            words::row_label(&format!("{}, {ADOPTED}", m.name), &words)
         } else {
             words::row_label(&m.name, &words)
         },
@@ -859,6 +875,77 @@ mod tests {
         let r = row(&a, &failed, None);
         assert!(r.stopped);
         assert_eq!(r.state, words::COULDNT_START);
+    }
+
+    /// The row's accessible name says "installed separately" (the visible version text is a
+    /// separate node a reader may skip), and the two adopted failures read as one sentence.
+    #[test]
+    fn an_adopted_row_is_named_and_its_failures_are_one_sentence() {
+        let mut a = m("vulpes", true);
+        a.name = "Example AI".into();
+        a.version = "0.4.0".into();
+        a.adopted = true;
+        let r = row(&a, &|_: &str| None, None);
+        assert_eq!(r.label, "Example AI, installed separately, on");
+        // In the accessibility tree, too.
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let t = crate::theme::tokens(true);
+        let rows = [r];
+        let out = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let _ = page_ui(ui, &t, &rows, None);
+                });
+            },
+        );
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        assert!(
+            nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Example AI, installed separately, on")),
+            "no row name with the marker"
+        );
+        // The program is gone.
+        let missing = |k: &str| match k {
+            "module.vulpes.state" => Some(json!("install-failed")),
+            "module.vulpes.failed" => Some(json!("missing")),
+            "module.vulpes.reason" => {
+                Some(json!(words::not_installed("Example AI", "C:/x/ai.exe")))
+            }
+            _ => None,
+        };
+        let r = row(&a, &missing, None);
+        assert!(r.stopped);
+        assert_eq!(
+            r.state,
+            "Example AI isn't installed on this PC \u{2014} it was registered from C:/x/ai.exe"
+        );
+        assert_eq!(r.label, r.state, "the sentence already names the module");
+        // Another version than it was registered as.
+        let other = |k: &str| match k {
+            "module.vulpes.state" => Some(json!("install-failed")),
+            "module.vulpes.failed" => Some(json!("version")),
+            "module.vulpes.reason" => Some(json!(words::version_differs(
+                "Example AI",
+                Some("0.5.0"),
+                "0.4.0"
+            ))),
+            _ => None,
+        };
+        let r = row(&a, &other, None);
+        assert!(r.stopped);
+        assert_eq!(
+            r.state,
+            "Example AI is version 0.5.0 but was registered as 0.4.0 \u{2014} register it again"
+        );
     }
 
     #[test]

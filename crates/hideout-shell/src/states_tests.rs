@@ -1165,3 +1165,69 @@ fn renders_the_state_sidebar_for_review() {
     save_png("built-states-sheet-sidebar.png", w, h, img);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review images for the adopted row (#1136): the running row, the program gone, another
+/// version than it was registered as. Dark theme; `HIDEOUT_REVIEW_DIR` says where they go.
+#[test]
+fn renders_adopted_row_states_for_review() {
+    let mk = |id: &str, name: &str, v: &str, adopted: bool| Installed {
+        adopted,
+        id: id.into(),
+        name: name.into(),
+        version: v.into(),
+        enabled: true,
+    };
+    let all = vec![
+        mk("m.art", "Art", "0.5.0", false),
+        mk("vulpes", "Example AI", "0.4.0", true),
+    ];
+    let states: [(&str, Vec<(&str, serde_json::Value)>); 3] = [
+        ("running", vec![("state", serde_json::json!("running"))]),
+        (
+            "not-installed",
+            vec![
+                ("state", serde_json::json!("install-failed")),
+                ("failed", serde_json::json!("missing")),
+                (
+                    "reason",
+                    serde_json::json!(words::not_installed(
+                        "Example AI",
+                        "C:/Program Files/Example AI/example-ai.exe"
+                    )),
+                ),
+            ],
+        ),
+        (
+            "version-differs",
+            vec![
+                ("state", serde_json::json!("install-failed")),
+                ("failed", serde_json::json!("version")),
+                (
+                    "reason",
+                    serde_json::json!(words::version_differs("Example AI", Some("0.5.0"), "0.4.0")),
+                ),
+            ],
+        ),
+    ];
+    for (name, adopted_facts) in states {
+        let mut facts: HashMap<String, serde_json::Value> = HashMap::new();
+        facts.insert("module.m.art.state".into(), serde_json::json!("running"));
+        for (k, v) in adopted_facts {
+            facts.insert(format!("module.vulpes.{k}"), v);
+        }
+        let fact = |k: &str| facts.get(k).cloned();
+        let mut rows: Vec<Row> = all.iter().map(|m| row_in(m, &all, &fact, None)).collect();
+        crate::modules_list::order(&mut rows);
+        let (w, h) = (1000u32, 260u32);
+        let Some(px) = rasterise(w, h, |c| {
+            let t = theme::tokens(true);
+            egui::CentralPanel::default().show(c, |ui| {
+                let _ = page_ui(ui, &t, &rows, None);
+            });
+        }) else {
+            eprintln!("no system font");
+            return;
+        };
+        save_png(&format!("adopted-row-a11y-{name}.png"), w, h, px);
+    }
+}
