@@ -78,3 +78,34 @@ lines, from the facts file only), `monthly-driver-check`, `weekly-repo-janitor` 
 share `game-check.ps1` (exit 3 while a game runs; the list is `games.json`), run at below-normal
 priority under a hard time limit, launch no GUI, and write one summary line to
 `%LOCALAPPDATA%\Foxglove\ops\summary.log`. Tests: `scripts/ops/test-ops.ps1` (part of `check.ps1`).
+
+## The queue script: `tools/local-queue.ps1` (#1128)
+One batch per run (no loop, no timer). It reads `gh issue list -l compute:local-llm --state open`,
+runs each runnable issue through `tools\local-llm.ps1`, posts ONE comment of at most 20 lines headed
+`Local LLM draft (needs review): <model>` and adds `local-review`. It never closes an issue, merges or
+edits code. Run it at the "hand over" event above, never on a timer:
+`powershell -File tools\local-queue.ps1` (`-List` prints the queue, `-DryRun` / `-WhatIf` also shows the
+game state and does nothing else).
+
+**Tag an issue** with `compute:local-llm` and put these markers on their own lines in the body:
+```
+type: log-triage          (or pr-body-draft, release-notes, test-vectors, docs-prescreen)
+input: C:\...\gate.log    (a file inside the repo, the sibling worktrees folder or _logs)
+prompt: one-line extra instruction
+```
+`log-triage` needs `input:` (the last 24,000 characters of a gate or lab log; the model lists failures
+and causes quoted from it). The other types need `input:` or `prompt:` and pass them through a thin
+template. Skipped with a note: no or unknown `type:`, a path outside the allowed folders, and issues
+already labelled `local-review` or `needs-claude`.
+
+**Limits:** a game running holds the whole batch (exit 0, `held: game running`), checked at the start and
+between jobs; BelowNormal priority; 10 minutes per job (`-JobTimeoutSec`), 45 minutes per batch
+(`-BatchTimeoutSec`), 5 jobs (`-MaxJobs`). A job that overruns is killed by exact PID and the model is
+unloaded with `lms.exe` (the server stopped if the run found it down), so nothing stays resident. The
+wrapper writes the `local-llm-usage.csv` row (task `local-queue:<type>`). The summary line goes to
+`%LOCALAPPDATA%\Foxglove\ops\summary.log` like the other ops scripts. Tests: `scripts/ops/test-local-queue.ps1`
+(stubs only, part of `test-ops.ps1`).
+
+**Review step:** a Sonnet agent at low effort reads every `local-review` comment against its input
+before anything is used or posted outward; then the Planner closes the issue or relabels it
+`compute:claude` as above. Update the accept-rate table after each batch.
