@@ -111,6 +111,53 @@ try {
     . (Join-Path $here 'lab-health.ps1')
     Check 'lab status words' ((Get-LabStatus 0) -eq 'ok' -and (Get-LabStatus 1) -eq 'FAIL' -and (Get-LabStatus -1) -eq 'timeout')
 
+    # --- gc-targets (fake tree: real git worktrees, tiny files, test hooks for PR states and free space) ---
+    $g = Join-Path $tmp 'gc'; $gm = Join-Path $g 'foxglove'; $gw = Join-Path $g 'worktrees'; $gt = Join-Path $gw '_targets'
+    New-Item -ItemType Directory $gm, $gt | Out-Null
+    git -C $gm init -q -b main; git -C $gm -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+    git -C $gm update-ref refs/remotes/origin/main HEAD
+    foreach ($b in 'live', 'merged', 'mid') { git -C $gm worktree add -q (Join-Path $gw $b) -b $b }
+    function New-Tgt($n, $mb, $ageH) {
+        $d = Join-Path $gt $n; New-Item -ItemType Directory $d, "$d\debug" -Force | Out-Null
+        [IO.File]::WriteAllBytes("$d\debug\f.bin", (New-Object byte[] ($mb * 1MB)))
+        (Get-Item $d).LastWriteTime = (Get-Date).AddHours(-$ageH); (Get-Item "$d\debug").LastWriteTime = (Get-Date).AddHours(-$ageH)
+    }
+    New-Tgt 'live' 1 3; New-Tgt 'gate-merged' 1 3; New-Tgt 'gate-gone' 1 3; New-Tgt 'mid' 1 30; New-Tgt 'fresh-gone' 1 0
+    New-Tgt 'busy-gone' 1 5; New-Tgt 'ops-main' 1 90
+    $pr = Join-Path $tmp 'prs.json'; Set-Content $pr '{"merged":"MERGED","live":"OPEN"}'
+    $gcs = Join-Path $here 'gc-targets.ps1'; $gl = Join-Path $g 'review\gc-targets.log'
+    $gcArgs = @('-NoProfile', '-File', $gcs, '-Repo', $gm, '-Root', $g, '-PrStatesFile', $pr, '-FreeGB', '500', '-RunningText', "rustc --out-dir $gt\busy-gone\debug")
+    & $ps @gcArgs -DryRun | Out-Null
+    Check 'gc: dry run deletes nothing' ((Get-ChildItem $gt).Count -eq 7)
+    & $ps @gcArgs | Out-Null
+    $left = (Get-ChildItem $gt).Name
+    Check 'gc: worktree gone -> removed' ($left -notcontains 'gate-gone')
+    Check 'gc: merged branch -> removed' ($left -notcontains 'gate-merged')
+    Check 'gc: untouched over 24 h -> removed' ($left -notcontains 'mid')
+    Check 'gc: open PR, recent -> kept' ($left -contains 'live')
+    Check 'gc: under the min idle -> kept' ($left -contains 'fresh-gone')
+    Check 'gc: cargo/rustc running there -> kept' ($left -contains 'busy-gone')
+    Check 'gc: protected name -> kept' ($left -contains 'ops-main')
+    Check 'gc: log has sizes' ((Get-Content $gl -Raw) -match 'removed gate-gone \(0\.0 GB\): worktree gone')
+    # size cap: three 1 MB targets, cap 2.5 MB -> evict the least recently used until under 1.5 MB
+    Remove-Item -Recurse -Force $gt; New-Item -ItemType Directory $gt | Out-Null
+    New-Tgt 'p1' 1 5; New-Tgt 'p2' 1 4; New-Tgt 'p3' 1 3; foreach ($n in 'p1', 'p2', 'p3', 'q1', 'q2') { New-Item -ItemType Directory (Join-Path $gw $n) -Force | Out-Null }
+    $capArgs = @('-NoProfile', '-File', $gcs, '-Repo', $gm, '-Root', $g, '-PrStatesFile', $pr, '-RunningText', 'none', '-StaleHours', '999')
+    & $ps @capArgs -FreeGB 500 -CapGB 0.0025 -TargetGB 0.0015 | Out-Null
+    $left = (Get-ChildItem $gt).Name
+    Check 'gc: cap evicts the oldest first' ($left -notcontains 'p1' -and $left -contains 'p3' -and @($left).Count -eq 1)
+    # floor: free 50 GB < 100 GB -> the 60 GB floor cap, shrunk here to 0.0015 GB
+    New-Tgt 'q1' 1 5; New-Tgt 'q2' 1 4
+    & $ps @capArgs -FreeGB 50 -FloorCapGB 0.0015 | Out-Null
+    Check 'gc: low free space applies the floor cap' (@(Get-ChildItem $gt).Count -eq 1 -and (Get-ChildItem $gt).Name -eq 'p3')
+    Check 'gc: candidate report written, no worktree removed' ((Test-Path (Join-Path $g 'review\gc-worktree-candidates.md')) -and (Test-Path (Join-Path $gw 'merged')))
+    # worktree removal needs the switch, keeps dirty ones
+    Set-Content (Join-Path $gw 'mid\dirty.txt') 'x'
+    (Get-Item (Join-Path (git -C (Join-Path $gw 'merged') rev-parse --path-format=absolute --git-dir) 'index')).LastWriteTime = (Get-Date).AddDays(-3)
+    & $ps -NoProfile -File $gcs -Repo $gm -Root $g -PrStatesFile $pr -RunningText none -FreeGB 500 -RemoveWorktrees | Out-Null
+    Check 'gc: -RemoveWorktrees keeps a dirty tree' (Test-Path (Join-Path $gw 'mid'))
+    Check 'gc: -RemoveWorktrees removes a clean merged one' (-not (Test-Path (Join-Path $gw 'merged')))
+
     # --- the local-compute queue (#1128), on stubs ---
     & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-local-queue.ps1')
     Check 'local-queue tests' ($LASTEXITCODE -eq 0)

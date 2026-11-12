@@ -27,7 +27,8 @@ param(
     [int]$MainLimitGB = 8,
     # The Planner's merge worktrees, and On-call's sitting worktrees (0.1 re-check; drop them
     # from this list when On-call is done with them).
-    [string[]]$Skip = @('fox-mm', 'fox-rm', 'fmain', 'lamp-lab', 'rel01')
+    # One list for both cleanup scripts: scripts\protected-worktrees.txt (ops-main, app-main, _tools, ...).
+    [string[]]$Skip = @(Get-Content (Join-Path $PSScriptRoot 'protected-worktrees.txt') | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notlike '#*' })
 )
 $ErrorActionPreference = 'Stop'
 
