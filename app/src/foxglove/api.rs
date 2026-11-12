@@ -355,13 +355,18 @@ fn with_device<R>(
     if let Some(d) = keyboard().filter(|d| d.info().id.to_string() == id) {
         return f(d.as_ref());
     }
-    super::via_host::with_device(id, f).unwrap_or_else(|| {
+    let no_device = || {
         Err(Error {
             code: code::DISCONNECTED,
             message: format!("no device {id}"),
             data: None,
         })
-    })
+    };
+    if super::via_host::with_device(id, |_| ()).is_some() {
+        return super::via_host::with_device(id, f).unwrap_or_else(no_device);
+    }
+    // The other lighting classes registered with the arbiter (LampArrays, catalog boards).
+    super::lighting_sources::with_device(id, f).unwrap_or_else(no_device)
 }
 
 impl Devices for AppDevices {

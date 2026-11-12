@@ -35,6 +35,11 @@ pub trait LampDevice: Send {
     fn available(&self) -> bool;
     /// One colour per lamp in index order, or one colour for every lamp.
     fn set(&self, colours: &[[u8; 3]]) -> Result<(), String>;
+    /// The colour the first lamp shows now, when the device can say (the lighting arbiter's
+    /// read-back, `lighting_sources`). Windows' LampArray can't: the default.
+    fn current(&self) -> Option<[u8; 3]> {
+        None
+    }
 }
 
 /// Calls back (from any thread) when Windows changes who may drive a device.
