@@ -427,8 +427,8 @@ fn run_inner(
             let ui_wake = UiWake::from_ctx(&cc.egui_ctx);
             let settings_requested = Arc::new(AtomicBool::new(false));
             crate::foxglove::battery::set_wake(ui_wake.clone()); // Foxglove (#373): tray tooltip
-            // Foxglove (#1143 P5): the hub's module (`--module`) has no tray, and so no
-            // taskbar watch: the hub draws the one tray.
+                                                                 // Foxglove (#1143 P5): the hub's module (`--module`) has no tray, and so no
+                                                                 // taskbar watch: the hub draws the one tray.
             let in_hub = crate::foxglove::hub_link::module_mode();
             let tray_icon = if in_hub {
                 crate::tray::Tray::none()

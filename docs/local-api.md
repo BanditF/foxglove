@@ -440,3 +440,19 @@ com.example.weather-1.2.0.zip
 
 **Getting into the catalog:** open an issue on BanditF/foxglove with the source and a release asset. A maintainer packs and signs it (see Publishing above). Signed, it installs and runs without developer mode.
 
+
+## Through the Hideout hub (module mode, #1143 P6)
+
+Off by default: only `foxglove.exe --module` (started by `hideout.exe`, registered with `--adopt`) does
+this. The app then serves no `foxglove-<user>` pipe; the hub serves that alias and routes calls.
+
+- The router checks the caller's permission (the table above) before the app is asked; the app
+  answers only the names in `SERVED` (`app/src/foxglove/hub_link.rs`) and treats everything else as
+  -32601. The answers are the standalone handlers' answers (a test compares them).
+- Served: `health.read`, `lights.page`, `scenes.page`, `overlay.window|restore|shown|set_shown`,
+  `tray.panel|set_panel`, `pc_lighting.list|set_zone`. The user grants each as `provide:<method>`.
+- Not served, because the contract gives an adopted module no first-party area (§6.3): `devices.*`
+  (so `foxglove-cli status` still needs the standalone pipe), `lighting.*`, `art.*`, `screens.*`,
+  `behaviors.*`, `profiles.*`, `focus.*`. Not served for lease reasons: `wallpaper-engine.*` (the lease
+  belongs to the calling connection, which a provider behind the router cannot see). Facts come from
+  the hub's cache (`keyboard.*` is published by the module).

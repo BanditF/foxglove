@@ -312,7 +312,8 @@ impl WaylandApp {
         // Honor egui's requested repaint cadence (e.g. the overlay fade-out animation).
         if let Some(viewport) = full_output
             .viewport_output
-            .get(&crate::foxglove::overlay_viewport::overlay_viewport_id()) {
+            .get(&crate::foxglove::overlay_viewport::overlay_viewport_id())
+        {
             let delay = viewport.repaint_delay;
             if delay.is_zero() {
                 self.needs_redraw = true;

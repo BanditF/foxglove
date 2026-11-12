@@ -21,6 +21,15 @@
 //! - **Facts.** The `keyboard.*` facts the app already keeps (`keyboard_facts`, `keyboard.game_mode`
 //!   included) are mirrored to the hub through `facts.set`, on change only: a snapshot when the
 //!   module is ready, then one call per change. Nothing polls.
+//! - **Methods (P6).** The v1 methods in [`SERVED`] come through the router: the module declares
+//!   them (`method:` in the manifest, `provide:` in its permissions), registers them, and the
+//!   hub's router checks the caller's permission *before* forwarding a call, so the module's
+//!   handler only ever runs for a call the router let through. The module acts for the caller
+//!   and holds no authority of its own to lend: [`Hub`] answers only the names in [`SERVED`]
+//!   (each of which carries a permission in the API's method table, tested), everything else is
+//!   -32601, and the `lighting.*`, `art.*`, `screens.*`, `devices.*`, `behaviors.*`, `profiles.*`
+//!   and `focus.*` areas stay out because the contract gives an adopted module no first-party
+//!   area (§6.3). See [`SERVED`] for what is left out and why.
 //! - **No tray, no pipe.** The tray is not created ([`crate::tray::Tray::none`]) and the app
 //!   serves no `foxglove-<user>` pipe (the hub owns that alias, §8.6); every device duty stays.
 //!   The self-restarts that would start a plain copy (GPU reset, identity registration, the
@@ -60,6 +69,41 @@ const GRANT: &str = "facts.write:keyboard.*";
 const API: &str = "1.13";
 /// How long a lost hub is waited for (§7.9).
 const GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The v1 methods this module serves through the router (contract §4.5 `method:`, §6.3).
+///
+/// Exactly the app's v1 methods that lie outside the areas the contract keeps for first-party
+/// catalogs (`lighting.*`, `screens.*`, `art.*`, `devices.*`, `behaviors.*`, `profiles.*`,
+/// `focus.*`, `gpu.*` ...: `hideout_router::checks::FIRST_PARTY_AREAS`) and the names the hub
+/// answers itself (`facts.*`, `initialize`, `ping` ...). Every entry has a permission in the
+/// API's method table, so the router refuses a caller without it before the module is asked
+/// (tests pin both).
+///
+/// Left out on purpose:
+/// - the first-party areas above (so `devices.list`, which `foxglove-cli status` calls, and the
+///   art/lights/screens/behaviors/profiles/focus methods stay with the standalone pipe until a
+///   legacy module can be granted those areas: follow-up issue);
+/// - `wallpaper-engine.*`: its lease is tied to the calling connection, which a provider behind
+///   the router cannot see, so a dead caller would leave Wallpaper Engine paused;
+/// - `lighting.lease/update/release`, `key.event`, `behaviors.invoke` and everything of the
+///   contract's never-list: not served, so unreachable here whatever a caller holds.
+pub const SERVED: &[&str] = &[
+    "health.read",
+    "lights.page",
+    "scenes.page",
+    "overlay.window",
+    "overlay.restore",
+    "overlay.shown",
+    "overlay.set_shown",
+    "tray.panel",
+    "tray.set_panel",
+    "pc_lighting.list",
+    "pc_lighting.set_zone",
+];
+
+/// The connection number the module hands the app's handlers for a routed call. Plugin-host
+/// connections count from 1, so 0 is nobody's; no served method keeps anything per connection.
+const ROUTED_CONN: u64 = 0;
 
 /// The manifest `hideout.exe --adopt` reads, with `@VERSION@` and `@EXE@` to fill ([`manifest`]).
 #[cfg_attr(not(test), allow(dead_code))] // read by tests and by the lab, which copies the file
@@ -199,6 +243,10 @@ pub fn enter() -> Result<bool, String> {
 #[derive(Default)]
 struct Hub {
     exit: bool,
+    /// The app's v1 handlers; `None` answers every routed call with "disconnected".
+    devices: Option<std::sync::Arc<dyn foxglove_plugin_host::Devices>>,
+    /// The hub has the module (registered and ready): calls are answered only then.
+    live: bool,
 }
 
 impl Handler for Hub {
@@ -207,6 +255,27 @@ impl Handler for Hub {
     }
     fn exit(&mut self) {
         self.exit = true;
+    }
+    /// A routed v1 call. The router has already checked the caller's permission; the name is
+    /// checked again here against [`SERVED`], so a hub that routes more than the manifest names
+    /// still reaches nothing else.
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
+        if !SERVED.contains(&method) {
+            return Err(RpcError::new(
+                code::METHOD_NOT_FOUND,
+                format!("no method {method}"),
+            ));
+        }
+        let Some(devices) = self.devices.as_ref().filter(|_| self.live) else {
+            return Err(RpcError::new(2, "disconnected"));
+        };
+        devices
+            .call_from(ROUTED_CONN, method, params)
+            .map_err(|e| RpcError {
+                code: i64::from(e.code),
+                message: e.message,
+                data: e.data,
+            })
     }
 }
 
@@ -257,6 +326,15 @@ impl<W: Write> Link<W> {
             said: false,
             log: Vec::new(),
         }
+    }
+
+    /// Gives the module the app's v1 handlers to answer routed calls with.
+    pub fn with_devices(
+        mut self,
+        devices: std::sync::Arc<dyn foxglove_plugin_host::Devices>,
+    ) -> Self {
+        self.hub.devices = Some(devices);
+        self
     }
 
     /// The writer (in tests: what the module sent).
@@ -321,6 +399,7 @@ impl<W: Write> Link<W> {
                 }
                 self.session.register(&ModuleRegister {
                     facts: vec![FACTS.into()],
+                    methods: SERVED.iter().map(|m| m.to_string()).collect(),
                     apis: [("foxglove".to_string(), API.to_string())].into(),
                     ..Default::default()
                 })?;
@@ -334,14 +413,20 @@ impl<W: Write> Link<W> {
             ("module.register", Ok(result)) => {
                 let result: RegisterResult = serde_json::from_value(result)
                     .map_err(|e| SessionError::Protocol(e.to_string()))?;
-                for r in &result.rejected {
+                if !result.rejected.is_empty() {
+                    let items: Vec<String> = result
+                        .rejected
+                        .iter()
+                        .map(|r| format!("{} ({})", r.item, r.error))
+                        .collect();
                     self.say(format!(
-                        "Foxglove: the hub refused to register {} ({})",
-                        r.item, r.error
+                        "Foxglove: the hub refused to register {}",
+                        items.join(", ")
                     ));
                 }
                 self.session.ready(&self.launch.instance)?;
                 self.phase = Phase::Live;
+                self.hub.live = true;
                 Ok(Step::Ready)
             }
             ("module.register", Err(e)) => Ok(Step::Refused(format!(
@@ -736,7 +821,8 @@ mod runner {
         pending: &Pending,
         facts: &foxglove_devices::facts::Facts,
     ) -> (Ended, bool) {
-        let mut link = Link::new(conn, launch.clone());
+        let mut link = Link::new(conn, launch.clone())
+            .with_devices(Arc::new(crate::foxglove::api::AppDevices));
         let mut live = false;
         let lost = |e: SessionError, live| (Ended::Lost(e.to_string()), live);
         if let Err(e) = link.start() {

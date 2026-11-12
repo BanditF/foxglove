@@ -1,8 +1,9 @@
 # Foxglove as the hub's legacy module (v3 H3.1, #1143 P5). `hideout.exe --adopt <folder>` reads
 # this file with `run[0]` set to this PC's foxglove.exe; the hub then starts it with `--module`
 # and the HIDEOUT_* launch values (contract §7.5). `adopted`, not `service`: the MSI made this
-# install, not the hub (contract §3). Nothing but the keyboard's facts is provided yet; the v1
-# methods come through the router in P6.
+# install, not the hub (contract §3). It provides the keyboard's facts and the v1 methods outside
+# the areas the contract keeps for first-party catalogs (P6; `SERVED` in hub_link.rs lists them,
+# a test keeps this file and that list equal). Each `method:` needs the user's `provide:` grant.
 id = "foxglove"
 name = "Foxglove"
 version = "@VERSION@"
@@ -12,5 +13,31 @@ hub = "1.0"
 description = "The keyboard and its lights, until they are modules of their own."
 api = { foxglove = "1.13" }
 run = ["@EXE@", "--module"]
-provides = ["facts:keyboard.*"]
-permissions = ["facts.write:keyboard.*"]
+provides = [
+  "facts:keyboard.*",
+  "method:health.read",
+  "method:lights.page",
+  "method:scenes.page",
+  "method:overlay.window",
+  "method:overlay.restore",
+  "method:overlay.shown",
+  "method:overlay.set_shown",
+  "method:tray.panel",
+  "method:tray.set_panel",
+  "method:pc_lighting.list",
+  "method:pc_lighting.set_zone",
+]
+permissions = [
+  "facts.write:keyboard.*",
+  "provide:health.read",
+  "provide:lights.page",
+  "provide:scenes.page",
+  "provide:overlay.window",
+  "provide:overlay.restore",
+  "provide:overlay.shown",
+  "provide:overlay.set_shown",
+  "provide:tray.panel",
+  "provide:tray.set_panel",
+  "provide:pc_lighting.list",
+  "provide:pc_lighting.set_zone",
+]
