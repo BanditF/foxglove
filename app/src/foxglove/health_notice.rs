@@ -95,14 +95,16 @@ pub fn due(
 pub fn check(rows: &[HealthRow]) {
     let mut before = BEFORE.lock().unwrap_or_else(|e| e.into_inner());
     // Only this section, read just now and written back on its own.
-    let mut sent: Sent = super::store::try_load(SECTION).unwrap_or_default();
+    let mut sent: Sent = super::store::section(STORE_OWNER, SECTION)
+        .try_load()
+        .unwrap_or_default();
     let (notify, now) = due(before.as_ref(), rows, &mut sent, &today());
     *before = Some(now);
     drop(before);
     if notify.is_empty() {
         return;
     }
-    if let Err(e) = super::store::save(SECTION, &sent) {
+    if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(&sent) {
         eprintln!("Foxglove: can't keep the health notices' days: {e}");
     }
     for r in &notify {
@@ -140,6 +142,9 @@ pub(super) fn today() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     format!("{:04}-{m:02}-{d:02}", yoe + era * 400 + i64::from(m <= 2))
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.link";
 
 #[cfg(test)]
 mod tests {

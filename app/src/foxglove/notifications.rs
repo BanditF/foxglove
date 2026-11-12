@@ -76,11 +76,11 @@ impl NotifySettings {
 
     /// The settings as saved now, or `None` while the store can't be read.
     pub fn try_load() -> Option<Self> {
-        super::store::try_load::<Self>(SECTION)
+        super::store::section(STORE_OWNER, SECTION).try_load::<Self>()
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        super::store::save(SECTION, self)
+        super::store::section(STORE_OWNER, SECTION).save(self)
     }
 
     pub fn shown_for(&self) -> Duration {
@@ -595,6 +595,9 @@ fn run() {
         service.read_if_due();
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.screens";
 
 #[cfg(test)]
 mod tests {

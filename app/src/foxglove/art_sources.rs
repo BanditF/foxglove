@@ -31,12 +31,14 @@ static CACHE: Mutex<Option<LibrarySettings>> = Mutex::new(None);
 pub fn load() -> LibrarySettings {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache
-        .get_or_insert_with(|| super::store::load_or_migrate("art_library", || None))
+        .get_or_insert_with(|| {
+            super::store::section(STORE_OWNER, "art_library").load_or_migrate(|| None)
+        })
         .clone()
 }
 
 pub fn save(settings: LibrarySettings) {
-    if let Err(e) = super::store::save("art_library", &settings) {
+    if let Err(e) = super::store::section(STORE_OWNER, "art_library").save(&settings) {
         eprintln!("Foxglove: can't save the art library settings: {e}");
     }
     *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some(settings);
@@ -93,6 +95,9 @@ pub fn sets_in(source: &std::path::Path) -> Vec<PathBuf> {
     sets.sort();
     sets
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.art";
 
 #[cfg(test)]
 mod tests {

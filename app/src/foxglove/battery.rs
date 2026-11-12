@@ -161,7 +161,8 @@ pub fn notices_on() -> bool {
     use std::sync::atomic::Ordering;
     match NOTICES.load(Ordering::Relaxed) {
         0 => {
-            let on = super::store::try_load::<BatterySettings>("battery")
+            let on = super::store::section(STORE_OWNER, "battery")
+                .try_load::<BatterySettings>()
                 .unwrap_or_default()
                 .low_battery_notice;
             NOTICES.store(if on { 2 } else { 1 }, Ordering::Relaxed);
@@ -183,7 +184,8 @@ pub fn device_notices_on() -> bool {
     use std::sync::atomic::Ordering;
     match DEVICE_NOTICES.load(Ordering::Relaxed) {
         0 => {
-            let on = super::store::try_load::<BatterySettings>("battery")
+            let on = super::store::section(STORE_OWNER, "battery")
+                .try_load::<BatterySettings>()
                 .unwrap_or_default()
                 .device_notice;
             DEVICE_NOTICES.store(if on { 2 } else { 1 }, Ordering::Relaxed);
@@ -205,7 +207,8 @@ pub fn logitech_on() -> bool {
     use std::sync::atomic::Ordering;
     match LOGITECH.load(Ordering::Relaxed) {
         0 => {
-            let on = super::store::try_load::<BatterySettings>("battery")
+            let on = super::store::section(STORE_OWNER, "battery")
+                .try_load::<BatterySettings>()
                 .unwrap_or_default()
                 .logitech;
             LOGITECH.store(if on { 2 } else { 1 }, Ordering::Relaxed);
@@ -222,9 +225,11 @@ pub fn set_logitech(on: bool) -> std::io::Result<()> {
 
 /// Changes one switch and keeps the other as stored.
 fn save_with(change: impl FnOnce(&mut BatterySettings)) -> std::io::Result<()> {
-    let mut s = super::store::try_load::<BatterySettings>("battery").unwrap_or_default();
+    let mut s = super::store::section(STORE_OWNER, "battery")
+        .try_load::<BatterySettings>()
+        .unwrap_or_default();
     change(&mut s);
-    super::store::save("battery", &s)
+    super::store::section(STORE_OWNER, "battery").save(&s)
 }
 
 /// A heads-up's level: `warn` at the last threshold (it switches off soon), else `info`.
@@ -324,6 +329,9 @@ pub fn start() {
         }
     });
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.link";
 
 #[cfg(test)]
 mod tests {

@@ -48,11 +48,13 @@ impl Place {
 }
 
 pub fn load() -> Place {
-    super::store::try_load(SECTION).unwrap_or_default()
+    super::store::section(STORE_OWNER, SECTION)
+        .try_load()
+        .unwrap_or_default()
 }
 
 pub fn save(place: &Place) {
-    if let Err(e) = super::store::save(SECTION, place) {
+    if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(place) {
         eprintln!("Foxglove: can't save where the overlay is: {e}");
     }
 }
@@ -135,6 +137,9 @@ pub fn in_window(point: [i32; 2], origin: [i32; 2], ppp: f32) -> egui::Pos2 {
         (point[1] - origin[1]) as f32 / ppp,
     )
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.overlay";
 
 #[cfg(test)]
 mod tests {

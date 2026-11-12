@@ -67,25 +67,28 @@ impl ScreensSettings {
 
     /// The saved settings; on first run the ones imported from `screens.ini` or hostpanel.
     pub fn load() -> Self {
-        super::store::load_or_migrate("screens", || {
-            if let Some(ini) = Self::ini_path().filter(|p| p.exists()) {
-                return Self::load_from_file(&ini).map(|s| (s, vec![ini]));
-            }
-            hostpanel_config_path()
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .and_then(|text| Self::from_hostpanel(&text))
-                .map(|s| (s, vec![]))
-        })
-        .normalized()
+        super::store::section(STORE_OWNER, "screens")
+            .load_or_migrate(|| {
+                if let Some(ini) = Self::ini_path().filter(|p| p.exists()) {
+                    return Self::load_from_file(&ini).map(|s| (s, vec![ini]));
+                }
+                hostpanel_config_path()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .and_then(|text| Self::from_hostpanel(&text))
+                    .map(|s| (s, vec![]))
+            })
+            .normalized()
     }
 
     /// The settings as saved now, or `None` while the store can't be read (keep the current ones).
     pub fn try_load() -> Option<Self> {
-        super::store::try_load::<Self>("screens").map(Self::normalized)
+        super::store::section(STORE_OWNER, "screens")
+            .try_load::<Self>()
+            .map(Self::normalized)
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        super::store::save("screens", self)
+        super::store::section(STORE_OWNER, "screens").save(self)
     }
 
     pub fn load_from_file(path: impl AsRef<Path>) -> Option<Self> {
@@ -139,6 +142,9 @@ fn hostpanel_config_path() -> Option<PathBuf> {
     }
     directories::BaseDirs::new().map(|d| d.config_dir().join("hostpanel").join("config.toml"))
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.screens";
 
 #[cfg(test)]
 mod tests {

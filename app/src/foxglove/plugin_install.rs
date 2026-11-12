@@ -73,11 +73,15 @@ pub struct PluginRecord {
 const RECORDS: &str = "plugins.installed";
 
 fn records() -> BTreeMap<String, PluginRecord> {
-    super::store::try_load(RECORDS).unwrap_or_default()
+    super::store::section(STORE_OWNER, RECORDS)
+        .try_load()
+        .unwrap_or_default()
 }
 
 fn save_records(records: &BTreeMap<String, PluginRecord>) -> Result<(), String> {
-    super::store::save(RECORDS, records).map_err(|e| e.to_string())
+    super::store::section(STORE_OWNER, RECORDS)
+        .save(records)
+        .map_err(|e| e.to_string())
 }
 
 /// `plugins\` next to the settings store; a `kits\` folder from before #87 is renamed to it.
@@ -515,6 +519,9 @@ pub fn remove(id: &str) -> Result<(), String> {
     all.remove(id);
     save_records(&all)
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.plugins";
 
 #[cfg(test)]
 mod tests {

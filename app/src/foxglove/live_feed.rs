@@ -94,7 +94,7 @@ static SETTINGS: Mutex<Option<LiveSettings>> = Mutex::new(None);
 pub fn settings() -> LiveSettings {
     cached(
         &mut SETTINGS.lock().unwrap_or_else(|e| e.into_inner()),
-        || super::store::load(SECTION),
+        || super::store::section(STORE_OWNER, SECTION).load(),
     )
 }
 
@@ -114,7 +114,9 @@ fn cached(
 }
 
 fn save(s: &LiveSettings) -> Result<(), String> {
-    super::store::save(SECTION, s).map_err(|e| e.to_string())?;
+    super::store::section(STORE_OWNER, SECTION)
+        .save(s)
+        .map_err(|e| e.to_string())?;
     *SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
     Ok(())
 }
@@ -560,7 +562,7 @@ pub fn start() {
     if super::repaint_trace::disabled("live") {
         return;
     }
-    if let Ok(saved) = super::store::load::<LiveSettings>(SECTION) {
+    if let Ok(saved) = super::store::section(STORE_OWNER, SECTION).load::<LiveSettings>() {
         return start_with(saved.unwrap_or_default());
     }
     // The settings can't be read yet (#741): no feed and no token until they can. Tried again
@@ -571,7 +573,7 @@ pub fn start() {
             let mut last = String::new();
             for wait in super::app_log::BACKOFF {
                 std::thread::sleep(wait);
-                match super::store::load::<LiveSettings>(SECTION) {
+                match super::store::section(STORE_OWNER, SECTION).load::<LiveSettings>() {
                     Ok(saved) => return start_with(saved.unwrap_or_default()),
                     Err(e) => last = e,
                 }
@@ -1544,7 +1546,11 @@ fn change(
 }
 
 fn apply(what: Change) -> Result<(), String> {
-    let (s, why) = change(what, || super::store::load(SECTION), save)?;
+    let (s, why) = change(
+        what,
+        || super::store::section(STORE_OWNER, SECTION).load(),
+        save,
+    )?;
     if let Some(why) = why {
         eprintln!("{}", token_line(why));
     }
@@ -1648,6 +1654,9 @@ pub fn group(ui: &mut egui::Ui) {
         }
     });
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "wallpaper-engine";
 
 #[cfg(test)]
 mod tests {

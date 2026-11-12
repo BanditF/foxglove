@@ -234,7 +234,7 @@ pub fn save() -> std::io::Result<()> {
             "the saved calibration is from a newer Foxglove or damaged, so it isn't overwritten",
         ));
     }
-    super::store::save(SECTION, &calibration::global().all())
+    super::store::section(STORE_OWNER, SECTION).save(&calibration::global().all())
 }
 
 /// Sets (or forgets) one device's calibration and saves it.
@@ -251,7 +251,8 @@ pub fn load() {
 }
 
 fn load_into(registry: &calibration::Registry) {
-    let Some(section) = super::store::try_load::<toml::Table>(SECTION) else {
+    let Some(section) = super::store::section(STORE_OWNER, SECTION).try_load::<toml::Table>()
+    else {
         return;
     };
     match read(section) {
@@ -279,6 +280,9 @@ fn read(section: toml::Table) -> Result<Calibrations, String> {
         .try_into::<Calibrations>()
         .map_err(|e| e.to_string())
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.lights";
 
 #[cfg(test)]
 mod tests {

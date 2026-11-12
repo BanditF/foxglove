@@ -5,8 +5,8 @@
 //! `start_order_is_todays` pins it. Nothing starts or stops differently by default.
 //!
 //! - [`FEATURES`] says, per feature, its `FOXGLOVE_DISABLE` keys, the pages and tray tiles it
-//!   draws and the store sections it owns. That part is documentation data for now: nothing
-//!   enforces it (P10 does), so features can later be switched off or handed to modules.
+//!   draws and the store sections it owns. The sections are enforced (#1143, P10):
+//!   [`section_owner`] answers `store::section`, so a feature opens only its own.
 //! - [`STEPS`] is the ordered list of start functions, each tied to a feature. A step with a
 //!   `gate` is skipped at the table when that `FOXGLOVE_DISABLE` key is set (`screens`, `art`:
 //!   the two `main` gated itself). Every other start still checks its own key inside, as before,
@@ -18,7 +18,7 @@
 //! reset, away, calibration, settings, device discovery) stay in `main` because they decide
 //! whether the app runs at all.
 
-// The ownership data is read only by tests until P10 enforces it (#1143).
+// Pages and tiles are read only by tests until the modules use them (#1143).
 #![allow(dead_code)]
 
 /// A feature: what it is called, how it is switched off and what it owns.
@@ -32,6 +32,19 @@ pub struct Feature {
     pub tiles: &'static [&'static str],
     /// Store sections it owns.
     pub store_sections: &'static [&'static str],
+}
+
+/// The feature that owns store section `name`, if any (#1143, P10).
+pub fn section_owner(name: &str) -> Option<&'static str> {
+    FEATURES
+        .iter()
+        .find(|f| f.store_sections.contains(&name))
+        .map(|f| f.id)
+}
+
+/// Whether `id` is a feature in the table.
+pub fn is_feature(id: &str) -> bool {
+    FEATURES.iter().any(|f| f.id == id)
 }
 
 /// One start function, in start-up order.
@@ -67,7 +80,7 @@ pub static FEATURES: &[Feature] = &[
         &["api", "apps-watch", "identity", "away"],
         &["App"],
         &["tile:profile"],
-        &["autostart"],
+        &["autostart", "gpu_resets", "settings_window"],
     ),
     f(
         "foxglove.link",
@@ -83,56 +96,102 @@ pub static FEATURES: &[Feature] = &[
         ],
         &[],
         &["tile:batteries", "tile:knob"],
-        &["connection", "battery"],
+        &[
+            "connection",
+            "battery",
+            "health_notices",
+            "knob",
+            "master_volume",
+            "focus",
+        ],
     ),
     f(
         "foxglove.overlay",
         &["foreground", "accent"],
         &[],
         &[],
-        &["overlay", "window", "ui"],
+        &["overlay", "overlay_place", "overlay_shown", "window", "ui"],
     ),
     f(
         "foxglove.screens",
         &["screens", "providers", "notifications"],
         &["Screens"],
         &["tile:screens", "tile:screen-glow"],
-        &["screens"],
+        &["screens", "screen_glow", "notifications"],
     ),
     f(
         "foxglove.art",
         &["art"],
         &[],
         &[],
-        &["art", "art.cycle", "art.seen", "art_library"],
+        &[
+            "art",
+            "art.cycle",
+            "art.seen",
+            "art.polarity",
+            "art_library",
+            "art_pushed",
+        ],
     ),
     f(
         "foxglove.lights",
         &["lamp-hold"],
         &["Lights"],
         &["tile:lights"],
-        &["lighting"],
+        &["lighting", "lights_palette", "led_map", "calibration"],
     ),
-    f("foxglove.keymap", &[], &["Keyboard"], &[], &["layers"]),
+    f(
+        "foxglove.keymap",
+        &[],
+        &["Keyboard"],
+        &[],
+        &["layers", "layout_files"],
+    ),
     f("foxglove.firmware", &[], &[], &[], &["flash", "updates"]),
     f(
         "foxglove.plugins",
         &["plugins", "kits", "actions", "catalog"],
         &["Plugins"],
         &[],
-        &["plugins"],
+        &[
+            "plugins.installed",
+            "plugins.refresh",
+            "plugins.bindings",
+            "plugins.settings",
+            "plugins.trust",
+            "plugins.dev",
+            "plugins.grandfather",
+        ],
     ),
-    f("hideout.scenes", &[], &["Scenes"], &[], &["scenes"]),
+    f(
+        "hideout.scenes",
+        &[],
+        &["Scenes"],
+        &[],
+        &[
+            "scenes",
+            "scene_presets",
+            "scene_resume",
+            "scene_keyboard",
+            "scene",
+        ],
+    ),
     f(
         "hideout.pclights",
         &["pc-lights"],
         &[],
         &[],
-        &["pc_lighting"],
+        &["pc_lighting", "openrgb"],
     ),
     f("hideout.peripherals", &[], &[], &[], &[]),
     f("qmk.via", &["via"], &[], &[], &["via"]),
-    f("wallpaper-engine", &["wallpaper", "live"], &[], &[], &[]),
+    f(
+        "wallpaper-engine",
+        &["wallpaper", "live"],
+        &[],
+        &[],
+        &["live_wallpaper", "wallpaper_engine"],
+    ),
 ];
 
 macro_rules! step {

@@ -126,7 +126,7 @@ impl Cycle {
     /// The hotlist (the active profile's, else the base), from the store's `[art.cycle]`.
     /// Imported once from the `art-cycle.json` of earlier builds.
     pub fn load() -> Self {
-        let cycle: Cycle = super::store::load_or_migrate("art.cycle", || {
+        let cycle: Cycle = super::store::section(STORE_OWNER, "art.cycle").load_or_migrate(|| {
             let json =
                 crate::settings::Settings::config_file_path()?.with_file_name("art-cycle.json");
             let cycle = serde_json::from_slice(&std::fs::read(&json).ok()?).ok()?;
@@ -150,7 +150,7 @@ impl Cycle {
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        super::store::save("art.cycle", self)
+        super::store::section(STORE_OWNER, "art.cycle").save(self)
     }
 
     pub fn steps_on(&self, step: Step) -> bool {
@@ -247,6 +247,9 @@ pub fn resolve_with(
         Item::File(p) => p.exists().then(|| Choice::File(p.clone())),
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.art";
 
 #[cfg(test)]
 mod tests {

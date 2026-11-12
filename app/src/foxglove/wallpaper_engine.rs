@@ -135,7 +135,11 @@ impl Places {
             .map(PathBuf::from)
             .into_iter()
             .collect();
-        custom.extend(super::store::try_load::<Section>("wallpaper_engine").and_then(|s| s.folder));
+        custom.extend(
+            super::store::section(STORE_OWNER, "wallpaper_engine")
+                .try_load::<Section>()
+                .and_then(|s| s.folder),
+        );
         Places {
             custom,
             steam: steam_path(),
@@ -348,6 +352,9 @@ fn vdf_block(toks: &[VdfTok], at: &mut usize, depth: usize) -> Vec<(String, Vdf)
     }
     out
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "wallpaper-engine";
 
 #[cfg(test)]
 mod tests {

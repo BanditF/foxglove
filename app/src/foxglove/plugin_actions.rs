@@ -24,7 +24,9 @@ pub struct Binding {
 pub type Bindings = BTreeMap<String, Binding>;
 
 pub fn bindings() -> Bindings {
-    super::store::try_load("plugins.bindings").unwrap_or_default()
+    super::store::section(STORE_OWNER, "plugins.bindings")
+        .try_load()
+        .unwrap_or_default()
 }
 
 /// The key bound to a plugin's action, if any.
@@ -53,7 +55,9 @@ pub fn rebind(all: &mut Bindings, plugin: &str, action: &str, key: Option<&str>)
 pub fn bind(plugin: &str, action: &str, key: Option<&str>) -> Result<(), String> {
     let mut all = bindings();
     rebind(&mut all, plugin, action, key);
-    super::store::save("plugins.bindings", &all).map_err(|e| e.to_string())?;
+    super::store::section(STORE_OWNER, "plugins.bindings")
+        .save(&all)
+        .map_err(|e| e.to_string())?;
     imp::reload();
     Ok(())
 }
@@ -153,6 +157,9 @@ mod imp {
     pub fn start() {}
     pub fn reload() {}
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.plugins";
 
 #[cfg(test)]
 mod tests {

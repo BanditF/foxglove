@@ -88,7 +88,9 @@ struct FlashSettings {
 }
 
 fn known() -> Known {
-    let s = super::store::try_load::<FlashSettings>("flash").unwrap_or_default();
+    let s = super::store::section(STORE_OWNER, "flash")
+        .try_load::<FlashSettings>()
+        .unwrap_or_default();
     Known {
         left: s.left_serial,
         right: s.right_serial,
@@ -100,7 +102,7 @@ fn save_known(k: &Known) {
         left_serial: k.left.clone(),
         right_serial: k.right.clone(),
     };
-    if let Err(e) = super::store::save("flash", &s) {
+    if let Err(e) = super::store::section(STORE_OWNER, "flash").save(&s) {
         eprintln!("Foxglove: can't save the halves' bootloader serials: {e}");
     }
 }
@@ -1077,6 +1079,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     }
     out
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.firmware";
 
 #[cfg(test)]
 pub mod tests {

@@ -633,17 +633,27 @@ pub fn init_profiles() {
 
 /// A section, or `None` when it isn't there or the store can't be read right now (keep what
 /// you have). A caller that caches the result should use [`load`], so a failed read isn't kept.
+///
+/// Internal (#1143, P10): features reach their sections through [`section`]; this takes any
+/// name, and is kept for the store itself and for tests.
+#[cfg_attr(not(test), allow(dead_code))] // only tests use it now
 pub fn try_load<T: DeserializeOwned>(section: &str) -> Option<T> {
     load(section).ok().flatten()
 }
 
 /// A section: `Ok(None)` when it isn't there (defaults are right), `Err` when the store can't be
 /// read (don't keep defaults in its place; saves of the section are refused meanwhile).
+///
+/// Internal (#1143, P10): features reach their sections through [`section`]; this takes any
+/// name, and is kept for the store itself and for tests.
 pub fn load<T: DeserializeOwned>(section: &str) -> Result<Option<T>, String> {
     try_load_at(&path().ok_or("no settings folder")?, section)
 }
 
 /// Saves one section, leaving the others as they are.
+///
+/// Internal (#1143, P10): features reach their sections through [`section`]; this takes any
+/// name, and is kept for the store itself and for tests.
 pub fn save<T: Serialize>(section: &str, value: &T) -> std::io::Result<()> {
     let path = path().ok_or_else(|| std::io::Error::other("no settings directory"))?;
     save_at(&path, section, value, false)
@@ -653,6 +663,9 @@ pub fn save<T: Serialize>(section: &str, value: &T) -> std::io::Result<()> {
 /// `change` gets the section as it is on disk now (its defaults when missing), and what it
 /// leaves is saved, so two writers of different keys in the section can't lose each other's
 /// change. A store that can't be read is left alone (`Err`): defaults never overwrite it.
+///
+/// Internal (#1143, P10): features reach their sections through [`section`]; this takes any
+/// name, and is kept for the store itself and for tests.
 pub fn update<T: DeserializeOwned + Serialize + Default>(
     section: &str,
     change: impl FnOnce(&mut T),
@@ -693,6 +706,9 @@ fn update_at<T: DeserializeOwned + Serialize + Default>(
 /// A feature's section. The first time it's missing, `migrate` imports the feature's old
 /// settings and names the files it read; they're saved here and renamed `*.migrated`. With
 /// nothing to import, the defaults.
+///
+/// Internal (#1143, P10): features reach their sections through [`section`]; this takes any
+/// name, and is kept for the store itself and for tests.
 pub fn load_or_migrate<T: DeserializeOwned + Serialize + Default>(
     section: &str,
     migrate: impl FnOnce() -> Option<(T, Vec<PathBuf>)>,
@@ -734,6 +750,110 @@ fn load_or_migrate_at<T: DeserializeOwned + Serialize + Default>(
             eprintln!("Foxglove: {e}; using default [{section}] settings");
             T::default()
         }
+    }
+}
+
+/// One store section, opened by the feature that owns it (#1143, P10; H2.5).
+///
+/// [`section`] checks the feature table ([`super::features::FEATURES`]): a section has exactly
+/// one owner, and only that feature gets a working handle. A handle for a section the feature
+/// doesn't own is refused at open time (an error on the console, then every use of it fails
+/// with the same message and the file is never touched), so one feature can't read or
+/// overwrite another's settings. The file and its format are unchanged; a handle calls the
+/// same code as the free functions below.
+#[derive(Clone, Debug)]
+pub struct Section {
+    name: &'static str,
+    /// `Err` with the reason when the owner check failed at open time.
+    access: Result<(), String>,
+}
+
+/// Opens `name` for `feature_id`. Never panics: a refused section is reported (see [`Section`])
+/// and its uses fail, so a wrong id can't take the app down, and a test of the feature table
+/// (`every_section_opens_for_its_owner`) keeps the call sites honest.
+pub fn section(feature_id: &str, name: &'static str) -> Section {
+    let access = check_owner(feature_id, name);
+    if let Err(e) = &access {
+        eprintln!("Foxglove: {e}");
+    }
+    Section { name, access }
+}
+
+fn check_owner(feature_id: &str, name: &str) -> Result<(), String> {
+    use super::features;
+    if !features::is_feature(feature_id) {
+        return Err(format!(
+            "settings: [{name}] opened by `{feature_id}`, which isn't a feature in the table"
+        ));
+    }
+    match features::section_owner(name) {
+        Some(owner) if owner == feature_id => Ok(()),
+        Some(owner) => Err(format!(
+            "settings: [{name}] belongs to `{owner}`; `{feature_id}` can't open it"
+        )),
+        None => Err(format!(
+            "settings: [{name}] has no owner in the feature table; add it to `{feature_id}`'s store_sections"
+        )),
+    }
+}
+
+/// A handle on a section of a test's own (tests share one settings folder, so a test that
+/// saves keeps to a section of its own); skips the owner table but not the sandbox.
+#[cfg(test)]
+pub fn test_section(name: &'static str) -> Section {
+    test_config_dir();
+    Section {
+        name,
+        access: Ok(()),
+    }
+}
+
+impl Section {
+    /// The section's name, as it is in the file.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Whether this handle may be used (the open-time owner check).
+    pub fn check(&self) -> Result<(), String> {
+        self.access.clone()
+    }
+
+    /// Like [`try_load`]; `None` too when the handle isn't allowed.
+    pub fn try_load<T: DeserializeOwned>(&self) -> Option<T> {
+        self.load().ok().flatten()
+    }
+
+    /// Like [`load`]; `Err` when the handle isn't allowed.
+    pub fn load<T: DeserializeOwned>(&self) -> Result<Option<T>, String> {
+        self.check()?;
+        load(self.name)
+    }
+
+    /// Like [`save`]; refused when the handle isn't allowed.
+    pub fn save<T: Serialize>(&self, value: &T) -> std::io::Result<()> {
+        self.check().map_err(std::io::Error::other)?;
+        save(self.name, value)
+    }
+
+    /// Like [`update`]; refused when the handle isn't allowed.
+    pub fn update<T: DeserializeOwned + Serialize + Default>(
+        &self,
+        change: impl FnOnce(&mut T),
+    ) -> std::io::Result<T> {
+        self.check().map_err(std::io::Error::other)?;
+        update(self.name, change)
+    }
+
+    /// Like [`load_or_migrate`]; the defaults (and no import) when the handle isn't allowed.
+    pub fn load_or_migrate<T: DeserializeOwned + Serialize + Default>(
+        &self,
+        migrate: impl FnOnce() -> Option<(T, Vec<PathBuf>)>,
+    ) -> T {
+        if self.check().is_err() {
+            return T::default();
+        }
+        load_or_migrate(self.name, migrate)
     }
 }
 
@@ -1174,5 +1294,109 @@ keep = true
     #[should_panic(expected = "outside the test settings folder")]
     fn a_store_read_outside_the_test_folder_panics() {
         let _ = try_load_at::<Demo>(&fake_appdata().join("foxglove.toml"), "guard_probe");
+    }
+
+    // --- Section handles (#1143, P10) ---
+
+    #[test]
+    fn a_feature_opens_its_own_section() {
+        assert_eq!(section("foxglove.art", "art.cycle").check(), Ok(()));
+        assert_eq!(section("hideout.pclights", "openrgb").name(), "openrgb");
+    }
+
+    #[test]
+    fn a_feature_cannot_open_another_features_section() {
+        let err = section("foxglove.screens", "art.cycle")
+            .check()
+            .unwrap_err();
+        assert!(
+            err.contains("[art.cycle] belongs to `foxglove.art`"),
+            "{err}"
+        );
+        assert!(err.contains("`foxglove.screens` can't open it"), "{err}");
+    }
+
+    #[test]
+    fn an_unowned_section_and_an_unknown_feature_are_refused() {
+        let err = section("foxglove.art", "nobody_owns_this")
+            .check()
+            .unwrap_err();
+        assert!(err.contains("no owner"), "{err}");
+        let err = section("not.a.feature", "art").check().unwrap_err();
+        assert!(err.contains("isn't a feature"), "{err}");
+    }
+
+    #[test]
+    fn a_refused_handle_never_reads_or_writes_the_file() {
+        test_config_dir();
+        let file = path().unwrap();
+        let before = std::fs::read(&file).ok();
+        let wrong = section("foxglove.screens", "art.polarity");
+        assert_eq!(wrong.try_load::<Demo>(), None);
+        assert!(wrong.load::<Demo>().is_err());
+        assert!(wrong.save(&Demo { on: true, n: 9 }).is_err());
+        assert!(wrong.update(|d: &mut Demo| d.n = 9).is_err());
+        let migrated: Demo = wrong.load_or_migrate(|| panic!("a refused handle must not import"));
+        assert_eq!(migrated, Demo::default());
+        assert_eq!(std::fs::read(&file).ok(), before, "the file was touched");
+    }
+
+    #[test]
+    fn every_section_opens_for_its_owner_and_for_no_one_else() {
+        for feat in super::super::features::FEATURES {
+            for name in feat.store_sections {
+                assert_eq!(section(feat.id, name).check(), Ok(()), "{name}");
+                for other in super::super::features::FEATURES
+                    .iter()
+                    .filter(|o| o.id != feat.id)
+                {
+                    assert!(
+                        section(other.id, name).check().is_err(),
+                        "{name} / {}",
+                        other.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_handle_writes_the_same_file_an_older_build_reads() {
+        // A file as the last release wrote it: `schema` and one table per section, dotted
+        // sections nested. This is the read path an older build runs.
+        let fixture = "schema = 1
+[screens]
+on = true
+n = 3
+[art.cycle]
+on = false
+n = 7
+";
+        let dir = temp("older-build");
+        let old = dir.join("foxglove.toml");
+        std::fs::write(&old, fixture).unwrap();
+        assert_eq!(
+            try_load_at::<Demo>(&old, "screens").unwrap(),
+            Some(Demo { on: true, n: 3 })
+        );
+        assert_eq!(
+            try_load_at::<Demo>(&old, "art.cycle").unwrap(),
+            Some(Demo { on: false, n: 7 })
+        );
+        // A handle's save is the same bytes as the free save, so the format is unchanged.
+        let by_handle = test_section("p10-fixture-handle");
+        by_handle.save(&Demo { on: true, n: 5 }).unwrap();
+        let text = std::fs::read_to_string(path().unwrap()).unwrap();
+        let table: Table = text.parse().unwrap();
+        assert_eq!(table.get("schema"), Some(&Value::Integer(SCHEMA)));
+        let want = Value::try_from(&Demo { on: true, n: 5 }).unwrap();
+        assert_eq!(table.get("p10-fixture-handle"), Some(&want));
+        // And what the handle wrote reads back through the unchanged path.
+        assert_eq!(
+            try_load_at::<Demo>(&path().unwrap(), "p10-fixture-handle").unwrap(),
+            Some(Demo { on: true, n: 5 })
+        );
+        assert_eq!(by_handle.try_load::<Demo>(), Some(Demo { on: true, n: 5 }));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

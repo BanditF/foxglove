@@ -44,7 +44,7 @@ impl Layers {
 
 fn names() -> &'static Mutex<Vec<Option<String>>> {
     NAMES.get_or_init(|| {
-        let layers: Layers = super::store::load_or_migrate("layers", || {
+        let layers: Layers = super::store::section(STORE_OWNER, "layers").load_or_migrate(|| {
             let ini = crate::settings::Settings::config_file_path()?.with_file_name("layers.ini");
             let conf = Ini::load_from_file(&ini).ok()?;
             let names = conf
@@ -65,7 +65,7 @@ pub fn remember(new: &[Option<String>]) {
         return;
     }
     *names = new.to_vec();
-    if let Err(e) = super::store::save("layers", &Layers::from_names(new)) {
+    if let Err(e) = super::store::section(STORE_OWNER, "layers").save(&Layers::from_names(new)) {
         eprintln!("Foxglove: can't save the layer names: {e}");
     }
 }
@@ -74,6 +74,9 @@ pub fn remember(new: &[Option<String>]) {
 pub fn remembered() -> Vec<Option<String>> {
     names().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.keymap";
 
 #[cfg(test)]
 mod tests {

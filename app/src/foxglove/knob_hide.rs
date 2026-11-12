@@ -132,7 +132,8 @@ impl Hidden {
     /// The list as saved now (the shipped list alone when the settings can't be read).
     pub fn load() -> Hidden {
         Hidden {
-            user: super::store::try_load::<Settings>(SECTION)
+            user: super::store::section(STORE_OWNER, SECTION)
+                .try_load::<Settings>()
                 .unwrap_or_default()
                 .apps,
             seed: seed().to_vec(),
@@ -225,7 +226,7 @@ pub fn restore_in(apps: &mut Vec<Choice>, path: &str, before: Option<Choice>) {
 /// Saves a change to the user's list and tells the knob. The choice before it (for an Undo).
 fn change(path: &str, f: impl FnOnce(&mut Vec<Choice>)) -> Option<Option<Choice>> {
     let mut before = None;
-    let r = super::store::update::<Settings>(SECTION, |s| {
+    let r = super::store::section(STORE_OWNER, SECTION).update::<Settings>(|s| {
         before = Some(choice_in(&s.apps, path));
         f(&mut s.apps);
     });
@@ -517,6 +518,9 @@ pub fn page_left() {
     // The next visit looks for running programs again (#981).
     *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.link";
 
 #[cfg(test)]
 mod tests {

@@ -773,7 +773,9 @@ pub fn uninstall_entry() -> bool {
 static ON: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 fn settings() -> AutostartSettings {
-    super::store::try_load::<AutostartSettings>("autostart").unwrap_or_default()
+    super::store::section(STORE_OWNER, "autostart")
+        .try_load::<AutostartSettings>()
+        .unwrap_or_default()
 }
 
 fn remember(s: &AutostartSettings, before: &AutostartSettings) {
@@ -782,7 +784,7 @@ fn remember(s: &AutostartSettings, before: &AutostartSettings) {
         std::sync::atomic::Ordering::Relaxed,
     );
     if s != before {
-        if let Err(e) = super::store::save("autostart", s) {
+        if let Err(e) = super::store::section(STORE_OWNER, "autostart").save(s) {
             eprintln!("Foxglove: Start with Windows: couldn't save the switch: {e}");
         }
     }
@@ -839,7 +841,9 @@ pub fn start() {
         };
         // Unreadable settings (#741): the switch's saved state is unknown, so the startup entry
         // isn't repaired or changed on defaults.
-        let before = match super::store::load::<AutostartSettings>("autostart") {
+        let before = match super::store::section(STORE_OWNER, "autostart")
+            .load::<AutostartSettings>()
+        {
             Ok(s) => s.unwrap_or_default(),
             Err(e) => {
                 eprintln!("Foxglove: Start with Windows: settings unreadable ({e}); nothing done");
@@ -907,6 +911,9 @@ pub fn checkbox(ui: &mut egui::Ui) {
         ui.colored_label(super::theme::palette(ui).danger, m);
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "core";
 
 #[cfg(test)]
 mod tests;

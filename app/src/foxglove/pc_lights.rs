@@ -1845,10 +1845,13 @@ pub fn start() {
     let rx = Mutex::new(rx);
     let _ = super::services::spawn_supervised("pc-lights", move || {
         let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
-        let settings = super::store::try_load::<Settings>("pc_lighting").unwrap_or_default();
+        let settings = super::store::section(STORE_OWNER, "pc_lighting")
+            .try_load::<Settings>()
+            .unwrap_or_default();
         // Off unless the user turned it on (#471).
-        let openrgb_settings =
-            super::store::try_load::<openrgb::Settings>(OPENRGB_SECTION).unwrap_or_default();
+        let openrgb_settings = super::store::section(STORE_OWNER, OPENRGB_SECTION)
+            .try_load::<openrgb::Settings>()
+            .unwrap_or_default();
         #[cfg(target_os = "windows")]
         let _watch = {
             let tx = tx.clone();
@@ -1927,7 +1930,9 @@ pub fn start() {
                 worker.relist(&mut |names| process_running(names), super::pause::paused());
             }
             if std::mem::take(&mut worker.openrgb_dirty) {
-                if let Err(e) = super::store::save(OPENRGB_SECTION, worker.openrgb_settings()) {
+                if let Err(e) = super::store::section(STORE_OWNER, OPENRGB_SECTION)
+                    .save(worker.openrgb_settings())
+                {
                     eprintln!("Foxglove: can't save the OpenRGB settings: {e}");
                 }
             }
@@ -1941,7 +1946,9 @@ pub fn start() {
                 });
             }
             if std::mem::take(&mut worker.dirty) {
-                if let Err(e) = super::store::save("pc_lighting", &worker.settings) {
+                if let Err(e) =
+                    super::store::section(STORE_OWNER, "pc_lighting").save(&worker.settings)
+                {
                     eprintln!("Foxglove: can't save the PC lighting settings: {e}");
                 }
             }
@@ -2200,6 +2207,9 @@ pub(crate) fn any_process_running(names: &[&str]) -> bool {
 fn process_running(_names: &[&str]) -> bool {
     false
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "hideout.pclights";
 
 #[cfg(test)]
 mod tests {

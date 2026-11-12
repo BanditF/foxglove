@@ -96,11 +96,15 @@ pub fn recognise(
 }
 
 pub fn settings() -> ViaSettings {
-    super::store::try_load("via").unwrap_or_default()
+    super::store::section(STORE_OWNER, "via")
+        .try_load()
+        .unwrap_or_default()
 }
 
 pub fn save(s: &ViaSettings) -> Result<(), String> {
-    super::store::save("via", s).map_err(|e| e.to_string())?;
+    super::store::section(STORE_OWNER, "via")
+        .save(s)
+        .map_err(|e| e.to_string())?;
     rescan();
     Ok(())
 }
@@ -407,7 +411,7 @@ pub fn rescan() {
         if !learned.is_empty() {
             let mut s = settings();
             s.known.extend(learned);
-            if let Err(e) = super::store::save("via", &s) {
+            if let Err(e) = super::store::section(STORE_OWNER, "via").save(&s) {
                 eprintln!("Foxglove: remembering VIA keyboards: {e}");
             }
         }
@@ -557,6 +561,9 @@ pub fn start() {
         rescan();
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "qmk.via";
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -738,14 +745,12 @@ pub(crate) mod tests {
             name: a.2.clone(),
             model: a.1.clone(),
         };
-        super::super::store::save(
-            "via",
-            &ViaSettings {
+        super::super::store::section(STORE_OWNER, "via")
+            .save(&ViaSettings {
                 known: vec![known_a.clone()],
                 ..Default::default()
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         set_paused(&a.0, true).unwrap();
         same_keyboard(&moved.0, &moved.2, &moved.1, Some(&known_a)).unwrap();
         let s = settings();

@@ -157,7 +157,8 @@ struct WindowSettings {
 
 fn current() -> Page {
     CURRENT.get().unwrap_or_else(|| {
-        let page = super::store::try_load::<WindowSettings>("window")
+        let page = super::store::section(STORE_OWNER, "window")
+            .try_load::<WindowSettings>()
             .unwrap_or_default()
             .page;
         CURRENT.set(Some(page));
@@ -188,7 +189,7 @@ pub fn set_page(page: Page) {
         super::program_name::page_left();
     }
     CURRENT.set(Some(page));
-    if let Err(e) = super::store::save("window", &WindowSettings { page }) {
+    if let Err(e) = super::store::section(STORE_OWNER, "window").save(&WindowSettings { page }) {
         eprintln!("Foxglove: can't save the settings page: {e}");
     }
 }
@@ -834,6 +835,9 @@ fn chip(ui: &mut egui::Ui, c: &Chip) -> egui::Rect {
     }
     rect
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.overlay";
 
 #[cfg(test)]
 mod tests {

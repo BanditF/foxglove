@@ -46,12 +46,12 @@ thread_local! {
     pub static PREVIEW: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
-fn section() -> &'static str {
+fn section() -> super::store::Section {
     #[cfg(test)]
     if let Some(s) = TEST_SECTION.get() {
-        return s;
+        return super::store::test_section(s);
     }
-    SECTION
+    super::store::section("foxglove.overlay", SECTION)
 }
 
 /// The saved value, read once per section: the overlay asks every frame.
@@ -65,7 +65,8 @@ pub fn on() -> bool {
     if let Some(on) = PREVIEW.get() {
         return on;
     }
-    let section = section();
+    let handle = section();
+    let section = handle.name();
     let mut read = READ.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((s, on)) = *read {
         if s == section {
@@ -73,7 +74,7 @@ pub fn on() -> bool {
         }
     }
     // A store that can't be read right now isn't kept: the next call reads again.
-    match super::store::load::<Saved>(section) {
+    match handle.load::<Saved>() {
         Ok(saved) => {
             let on = saved.unwrap_or_default().on;
             *read = Some((section, on));
@@ -87,8 +88,9 @@ pub fn on() -> bool {
 /// What it is now, as saved.
 pub fn set(on: bool) -> std::io::Result<bool> {
     let before = self::on();
-    let section = section();
-    let saved = super::store::update(section, |s: &mut Saved| s.on = on)?;
+    let handle = section();
+    let section = handle.name();
+    let saved = handle.update(|s: &mut Saved| s.on = on)?;
     *READ.lock().unwrap_or_else(|e| e.into_inner()) = Some((section, saved.on));
     if before != saved.on {
         eprintln!(

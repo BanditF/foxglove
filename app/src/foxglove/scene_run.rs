@@ -137,11 +137,13 @@ pub struct KeyboardKeep {
 
 /// The keep setting as stored (defaults when the store can't be read).
 pub fn keep() -> KeyboardKeep {
-    super::store::try_load(KEEP_SECTION).unwrap_or_default()
+    super::store::section(STORE_OWNER, KEEP_SECTION)
+        .try_load()
+        .unwrap_or_default()
 }
 
 fn save_keep(k: KeyboardKeep) {
-    if let Err(e) = super::store::save(KEEP_SECTION, &k) {
+    if let Err(e) = super::store::section(STORE_OWNER, KEEP_SECTION).save(&k) {
         eprintln!("Foxglove: can't save [{KEEP_SECTION}]: {e}");
     }
 }
@@ -1742,6 +1744,9 @@ impl KeyboardLights for AppKeyboard {
         self.tapped = None;
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "hideout.scenes";
 
 #[cfg(test)]
 mod tests {
