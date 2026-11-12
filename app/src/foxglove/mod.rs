@@ -40,6 +40,7 @@ pub mod device_thumb;
 pub mod devices;
 pub mod diagnostics;
 pub mod effect_controls;
+pub mod features;
 pub mod firmware_update;
 #[cfg(test)]
 pub(crate) mod fixtures;
