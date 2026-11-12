@@ -185,3 +185,43 @@ fn an_installed_id_is_not_adopted_over() {
         Err(Failure::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists
     ));
 }
+
+#[test]
+fn a_second_adopted_provide_grant_for_the_same_area_is_refused() {
+    use hideout_contract::capability::Capability;
+    let home = temp("two-provide-home");
+    let mut reg = Registry::open(&home, false).unwrap();
+    let (_, a) = external("two-a", "0.1.0");
+    reg.register_adopted(&a, NOW).unwrap();
+    // A second adopted module under another id.
+    let install = temp("two-b-install");
+    std::fs::write(install.join("hub.exe"), b"x").unwrap();
+    let b = temp("two-b-manifest");
+    let exe = install
+        .join("hub.exe")
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    std::fs::write(
+        b.join("module.toml"),
+        format!(
+            "id = \"other.adopted\"\nname = \"B\"\nversion = \"0.1.0\"\nkind = \"adopted\"\n\
+             family = \"third-party\"\nhub = \"1.0\"\nrun = ['{exe}']\n"
+        ),
+    )
+    .unwrap();
+    reg.register_adopted(&b, NOW).unwrap();
+    let gpu = [Capability::parse("provide:gpu.*").unwrap()];
+    let one = reg.inventory.grant(ID, &gpu).unwrap();
+    assert!(one.is_empty());
+    let two = reg.inventory.grant("other.adopted", &gpu).unwrap();
+    assert_eq!(two.len(), 1, "{two:?}");
+    assert_eq!(two[0].id.to_string(), "permission.provider");
+    assert!(reg.inventory.modules["other.adopted"].granted.is_empty());
+    // A narrower name inside the held area overlaps too.
+    let inner = [Capability::parse("provide:gpu.request").unwrap()];
+    assert_eq!(
+        reg.inventory.grant("other.adopted", &inner).unwrap().len(),
+        1
+    );
+}

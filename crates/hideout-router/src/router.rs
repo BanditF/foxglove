@@ -1505,6 +1505,33 @@ impl Router {
             })
     }
 
+    /// Whether another adopted module also qualifies for `pattern` (it declares it and holds the
+    /// `provide:` grant): then neither gets it. No id or start order decides who is the GPU
+    /// broker (§6.3, #1118); the user must leave one candidate.
+    fn rival_adopted(&self, module: &str, pattern: &str) -> bool {
+        self.modules.values().any(|m| {
+            m.id != module
+                && m.registered_version.is_some()
+                && self
+                    .methods_decl
+                    .get(&m.id)
+                    .is_some_and(|d| d.iter().any(|d| overlap(d, pattern)))
+                && Caps::parse(&m.granted)
+                    .0
+                    .iter()
+                    .any(|c| matches!(c, Capability::Provide(g) if overlap(g, pattern)))
+        })
+    }
+
+    /// Who a connection is for the queue cap: its module id or tool name, else the connection.
+    fn caller_key(&self, conn: ConnId) -> String {
+        match self.conns.get(&conn).map(|c| &c.who) {
+            Some(Who::Module { id, .. }) => format!("module:{id}"),
+            Some(Who::Tool { name, .. }) => format!("tool:{name}"),
+            _ => format!("conn:{conn}"),
+        }
+    }
+
     /// The one authority check for providing a method pattern (§6.3), used by `module.register`,
     /// by the routing fallback and when the registry reloads: the grant `provide:`, never a
     /// hub-owned name; a module with a catalog entry only what it lists, and a third-party one
@@ -1524,7 +1551,8 @@ impl Router {
                 .get(module)
                 .is_some_and(|d| d.iter().any(|d| covers(d, pattern)))
                 && adopted_area_ok(pattern)
-                && !self.assigned_elsewhere(module, pattern);
+                && !self.assigned_elsewhere(module, pattern)
+                && !self.rival_adopted(module, pattern);
         }
         let first_party = matches!(entry.holder, Holder::FirstParty | Holder::ModulesModule);
         entry
@@ -1644,6 +1672,8 @@ impl Router {
                 }
             }
         }
+        // A rival adopted candidate for an area drops this module's route too (fail closed).
+        self.revalidate_adopted_routes();
         ok(id, json!({ "rejected": rejected }))
     }
 
@@ -1893,11 +1923,20 @@ impl Router {
         };
         let entry = &self.modules[&owner];
         if entry.activate_on_call {
+            // The cap first: a capped caller starts nothing. Counted per caller module (or
+            // tool), not per connection, so more connections buy no more room.
+            let who = self.caller_key(conn);
+            if self
+                .queue
+                .iter()
+                .filter(|q| self.caller_key(q.caller) == who)
+                .count()
+                >= MAX_QUEUED_PER_CALLER
+            {
+                return out.push(Out::Send(conn, error(&id, code::BUSY, "busy", None)));
+            }
             if self.module_conn(&owner).is_none() && !self.queue.iter().any(|q| q.module == owner) {
                 out.push(Out::Activate(owner.clone()));
-            }
-            if self.queue.iter().filter(|q| q.caller == conn).count() >= MAX_QUEUED_PER_CALLER {
-                return out.push(Out::Send(conn, error(&id, code::BUSY, "busy", None)));
             }
             self.queue.push_back(Queued {
                 module: owner,

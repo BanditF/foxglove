@@ -380,20 +380,69 @@ fn a_later_catalog_assignment_drops_the_adopted_route() {
 }
 
 #[test]
-fn a_second_adopted_module_cannot_take_an_overlapping_area() {
+fn two_adopted_gpu_qualifiers_are_both_refused_and_an_existing_route_goes() {
     let now = Instant::now();
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
     r.add_module(adopted(ARETE, GPU));
     r.apply_manifest(&manifest(ARETE, ARETE_PROVIDES, ""));
+    let a = module(&mut r, ARETE, now);
+    assert_eq!(
+        register(&mut r, a, &["gpu.*"], &[], now),
+        json!([]),
+        "alone it qualifies"
+    );
+    r.add_module(entry(
+        CALLER,
+        Holder::FirstParty,
+        &["gpu.request:chat"],
+        Some(&[]),
+    ));
+    let c = module(&mut r, CALLER, now);
+    // A second adopted module declares gpu.* and holds the grant: Arete's route goes (on
+    // reload), and neither can register it again.
     r.add_module(adopted("other.adopted", &["provide:gpu.*"]));
     r.apply_manifest(&manifest("other.adopted", r#""method:gpu.*""#, ""));
-    let a = module(&mut r, ARETE, now);
-    assert_eq!(register(&mut r, a, &["gpu.*"], &[], now), json!([]));
+    r.set_root_areas(vec![]);
+    let out = call(&mut r, c, 1, "gpu.request", json!({"class":"chat"}), now);
+    assert!(sends(&out, a).is_empty(), "{out:?}");
+    assert_eq!(code(&sends(&out, c)[0]), -32601);
+    let want = json!([{"item":"gpu.*","error":"permission.provider"}]);
+    assert_eq!(register(&mut r, a, &["gpu.*"], &[], now)[0], want[0]);
     let b = module(&mut r, "other.adopted", now);
-    let rejected = register(&mut r, b, &["gpu.*"], &[], now);
-    assert_eq!(
-        rejected,
-        json!([{"item":"gpu.*","error":"permission.provider"}])
+    assert_eq!(register(&mut r, b, &["gpu.*"], &[], now), want);
+}
+
+#[test]
+fn an_id_that_sorts_first_cannot_win_the_gpu_area() {
+    let now = Instant::now();
+    // Both down, both declare and hold gpu.*: no one is started or queued for, whatever the ids.
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    for id in ["aaa.squat", ARETE] {
+        let mut e = adopted(id, &["provide:gpu.*"]);
+        e.activate_on_call = true;
+        r.add_module(e);
+        r.apply_manifest(&manifest(id, r#""method:gpu.*""#, ON_CALL));
+    }
+    r.add_module(entry(
+        CALLER,
+        Holder::FirstParty,
+        &["gpu.request:chat"],
+        Some(&[]),
+    ));
+    let c = module(&mut r, CALLER, now);
+    let out = call(&mut r, c, 1, "gpu.request", json!({"class":"chat"}), now);
+    assert!(
+        !out.iter().any(|o| matches!(o, Out::Activate(_))),
+        "{out:?}"
+    );
+    assert_eq!(code(&sends(&out, c)[0]), -32601);
+    // With only the squatter's declaration removed, the other one is the sole qualifier again.
+    r.add_module(adopted("aaa.squat", &[]));
+    let out = call(&mut r, c, 2, "gpu.request", json!({"class":"chat"}), now);
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, Out::Activate(id) if id == ARETE)),
+        "{out:?}"
     );
 }
 
@@ -470,4 +519,33 @@ fn a_sideloaded_service_module_still_cannot_take_gpu() {
         rejected,
         json!([{"item":"gpu.*","error":"permission.provider"}])
     );
+}
+
+#[test]
+fn the_queue_cap_is_checked_before_a_module_is_started() {
+    let now = Instant::now();
+    let (mut r, a, c) = rig(&["gpu.request:chat", "gpu.status"], now);
+    r.apply_manifest(&manifest("arete.hub", ARETE_PROVIDES, ON_CALL));
+    r.disconnect(a);
+    for i in 0..64 {
+        call(
+            &mut r,
+            c,
+            100 + i,
+            "gpu.request",
+            json!({"class":"chat"}),
+            now,
+        );
+    }
+    // A second, down provider of another area: the capped caller starts nothing.
+    let mut e = adopted("other.adopted", &["provide:other.*"]);
+    e.activate_on_call = true;
+    r.add_module(e);
+    r.apply_manifest(&manifest("other.adopted", r#""method:other.*""#, ON_CALL));
+    let out = call(&mut r, c, 900, "other.x", json!({}), now);
+    assert!(
+        !out.iter().any(|o| matches!(o, Out::Activate(_))),
+        "{out:?}"
+    );
+    assert_eq!(code(&sends(&out, c)[0]), 3);
 }

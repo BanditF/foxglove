@@ -1163,8 +1163,13 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   `module.register`, routing and a registry reload: a reload drops an adopted route the catalog
   now assigns elsewhere. A call waiting for a started module is forwarded only once a registered
   route points at it, else it ends with error 2. While the provider is down, calls to its
-  allowed methods answer 2 (or wait for activation by `call`), not -32601. A caller may have 64
-  calls waiting at once; more answer error 3.
+  allowed methods answer 2 (or wait for activation by `call`), not -32601. A caller module (or
+  tool) may have 64 calls waiting at once, checked before any module is started; more answer
+  error 3.
+- (#1118) Only one adopted module may provide an area: if two adopted modules both declare an
+  area and hold its `provide:` grant, neither gets it (no id or start order decides), a route
+  already held is dropped, and the registry refuses a second adopted `provide:` grant that
+  overlaps one already granted (`permission.provider`).
 
 ### 6.4 Approval
 
