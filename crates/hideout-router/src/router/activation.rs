@@ -71,6 +71,20 @@ impl Router {
         }
     }
 
+    /// A key is bound to one of `module`'s actions (§4.6: such a module MUST be started at
+    /// enable, whatever `activation.on` says), or one of those keys was just pressed while it
+    /// had no connection: starts it when it isn't connected. The press itself is not queued, so
+    /// a key must not be the thing that starts an on-demand module for the first time; the
+    /// hub arms bound keys at start and when a key is bound. No timer.
+    pub fn key_bound(&mut self, module: &str) -> Vec<Out> {
+        if self.cold(module) {
+            log::info!("router: {module}: activated by a bound key");
+            vec![Out::Activate(module.into())]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Modules (`id`, or every module for `None`) whose activation fact is already set, true by
     /// the `when` rule: for the moment a module is armed (hub start, after the supervisor knows
     /// its modules; Turn on). A fact set while it was off counts once it is on.

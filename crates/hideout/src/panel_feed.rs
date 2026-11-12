@@ -300,7 +300,13 @@ impl PanelFeed for HubFeed {
                 },
             );
             let params = key_params(action);
-            hub.act(|r| r.call_module(module, "action.invoke", params, tag, Instant::now()));
+            // The press goes first; a module with no connection answers "disconnected" and
+            // is started for the next one (the keys are armed at start, so this is a late join).
+            hub.act(|r| {
+                let mut out = r.call_module(module, "action.invoke", params, tag, Instant::now());
+                out.extend(r.key_bound(module));
+                out
+            });
         }))
     }
 
@@ -376,6 +382,13 @@ impl PanelFeed for HubFeed {
     /// when the module waits for `open` and isn't connected.
     fn opened(&mut self, module: &str) {
         self.hub.act(|r| r.panel_opened(module));
+    }
+
+    /// Bound keys (§4.6): each module with one starts when it isn't running.
+    fn keys_bound(&mut self, modules: &[String]) {
+        for m in modules {
+            self.hub.act(|r| r.key_bound(m));
+        }
     }
 
     fn streams(&mut self, streams: &mut Streams, now: Instant) {

@@ -1028,6 +1028,22 @@ impl Hub {
         if let Some(h) = &self.hotkeys {
             h.set(self.panels.bound_keys());
         }
+        self.start_bound_modules();
+    }
+
+    /// A module with a bound key must be running for the key to work (§4.6): the feed starts
+    /// the ones that aren't, as it would at enable.
+    fn start_bound_modules(&mut self) {
+        let mut modules: Vec<String> = self
+            .panels
+            .bound_keys()
+            .into_iter()
+            .map(|(m, _, _)| m)
+            .collect();
+        modules.dedup();
+        if let Some(f) = self.feed.as_mut() {
+            f.keys_bound(&modules);
+        }
     }
 
     /// While a Keys row waits for a key (Set key), this frame's key presses are its and nobody
@@ -1113,6 +1129,7 @@ impl Hub {
             if let Some(h) = &self.hotkeys {
                 h.set(list);
             }
+            self.start_bound_modules();
         }
         let Some(refused) = self.hotkeys.as_ref().and_then(|h| h.take_refused()) else {
             return;
