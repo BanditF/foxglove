@@ -74,6 +74,15 @@ impl Installed {
     }
 }
 
+/// Whether two `provide:` method patterns (a name or a prefix ending in `.*`) overlap.
+fn provide_overlap(a: &str, b: &str) -> bool {
+    let covers = |outer: &str, inner: &str| match outer.strip_suffix('*') {
+        Some(prefix) => inner.starts_with(prefix),
+        None => outer == inner,
+    };
+    covers(a, b) || covers(b, a)
+}
+
 /// What a grant left out: never-list items (§6.6), each with its `permission.never` error.
 pub type Refused = Vec<Error>;
 
@@ -151,11 +160,32 @@ impl Inventory {
     /// Grants `asked` to `id`: never-list items are left out and returned (§6.6); the rest join
     /// `granted` in canonical form. The caller shows the dialog first where §6.4 needs one.
     pub fn grant(&mut self, id: &str, asked: &[Capability]) -> Option<Refused> {
+        // Another adopted module's `provide:` grants (#1118): an adopted module is refused a
+        // `provide:` that overlaps one, so two never hold the same method area (the GPU broker).
+        let others: Vec<String> = self
+            .modules
+            .iter()
+            .filter(|(k, o)| k.as_str() != id && o.source == ADOPTED)
+            .flat_map(|(_, o)| o.granted.iter())
+            .filter_map(|g| g.strip_prefix("provide:").map(String::from))
+            .collect();
         let m = self.modules.get_mut(id)?;
         let holder = m.holder();
+        let adopted = m.source == ADOPTED;
         let mut refused = Vec::new();
         let mut keep = m.granted.clone();
         for cap in asked {
+            if let (true, Capability::Provide(p)) = (adopted, cap) {
+                if others.iter().any(|o| provide_overlap(o, p)) {
+                    refused.push(Error::new(
+                        hideout_contract::ErrorId::PermissionProvider,
+                        format!(
+                            "{cap}: another adopted module already holds an overlapping provide"
+                        ),
+                    ));
+                    continue;
+                }
+            }
             match check_grantable(cap, holder) {
                 Ok(()) => keep.push(cap.to_string()),
                 Err(e) => refused.push(e),

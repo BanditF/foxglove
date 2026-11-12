@@ -13,8 +13,12 @@ use serde_json::{json, Map, Value};
 
 use crate::checks::HUB_OWNED;
 use crate::checks::{
-    covers, event_permission, may_call, overlap, watches_app, Caps, FIRST_PARTY_AREAS,
+    adopted_area_ok, covers, event_permission, may_call, overlap, watches_app, Caps,
+    FIRST_PARTY_AREAS,
 };
+
+/// Calls one connection may have waiting for a provider to start (§4.6); more answer error 3.
+pub const MAX_QUEUED_PER_CALLER: usize = 64;
 
 /// A call with no answer fails after this long on the caller's side (§8.1, error 4).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -39,6 +43,7 @@ mod code {
     pub const INVALID_PARAMS: i64 = -32602;
     pub const DISCONNECTED: i64 = 2;
     pub const TIMEOUT: i64 = 4;
+    pub const BUSY: i64 = 3;
     pub const DENIED: i64 = 5;
     pub const VERSION: i64 = 7;
 }
@@ -334,6 +339,12 @@ pub struct Router {
     /// Each module's `provides = ["channel:<name>"]` names from its manifest (§4.5, §8.4): the
     /// declaration is the module's `channel.offer:<name>` for its own `<id>/<name>` (#1013).
     channels_decl: HashMap<String, Vec<String>>,
+    /// Each module's `provides = ["method:<pattern>"]` from its manifest (§4.5): for an adopted
+    /// module (no catalog entry) the only methods it may register (§6.3, #1118).
+    methods_decl: HashMap<String, Vec<String>>,
+    /// Method areas the accepted root-signed catalogs assign, with the module id (§6.3, §13.6):
+    /// an adopted module never provides one of another module's, installed or not (#1118).
+    root_areas: Vec<(String, String)>,
     secret_store: Box<dyn crate::secrets::SecretStore>,
     /// Module calls waiting for the panel host's answer, by call number.
     host_calls: HashMap<u64, HostCall>,
@@ -394,6 +405,8 @@ impl Router {
             settings_decl: HashMap::new(),
             secrets_decl: HashMap::new(),
             channels_decl: HashMap::new(),
+            methods_decl: HashMap::new(),
+            root_areas: Vec::new(),
             secret_store: crate::secrets::default_store(),
             host_calls: HashMap::new(),
             next_host_call: 1,
@@ -429,6 +442,23 @@ impl Router {
                 }
             }
         }
+        let areas = reg
+            .trust
+            .catalogs
+            .iter()
+            .filter(|a| a.anchor == hideout_registry::trust::ROOT_ANCHOR)
+            .flat_map(|a| a.catalog.modules.iter())
+            .flat_map(|e| e.provide.iter().map(|p| (e.id.clone(), p.clone())))
+            .collect();
+        self.set_root_areas(areas);
+    }
+
+    /// The method areas the accepted root-signed catalogs assign, `(module id, pattern)` (§6.3):
+    /// an adopted module never provides one, and a route it already holds that one covers is
+    /// dropped now (the catalog's module wins).
+    pub fn set_root_areas(&mut self, areas: Vec<(String, String)>) {
+        self.root_areas = areas;
+        self.revalidate_adopted_routes();
     }
 
     /// Fills a known module's entry from its manifest (§4.7, §4.10): the name people read, the
@@ -455,6 +485,13 @@ impl Router {
             .map(String::from)
             .collect();
         self.channels_decl.insert(m.id.clone(), channels);
+        let methods = m
+            .provides
+            .iter()
+            .filter_map(|p| p.strip_prefix("method:"))
+            .map(String::from)
+            .collect();
+        self.methods_decl.insert(m.id.clone(), methods);
     }
 
     /// Where module secrets live (Windows Credential Manager by default; tests use memory).
@@ -947,6 +984,7 @@ impl Router {
         self.settings_decl.remove(id);
         self.secrets_decl.remove(id);
         self.channels_decl.remove(id);
+        self.methods_decl.remove(id);
         self.triggers.remove(id);
         self.routes.retain(|r| r.module != id);
         self.fact_owners.retain(|r| r.module != id);
@@ -1454,6 +1492,95 @@ impl Router {
         }
     }
 
+    /// Whether a root-signed catalog assigns `pattern` (or part of it) to a module other than
+    /// `module` (§6.3, §13.6): installed or not. No id is exempt: a root-listed id an adopted
+    /// module happens to carry gives it nothing (§6.5, signing is provenance, not permission).
+    fn assigned_elsewhere(&self, module: &str, pattern: &str) -> bool {
+        self.root_areas.iter().any(|(_, a)| overlap(a, pattern))
+            || self.modules.values().any(|m| {
+                m.id != module
+                    && m.catalog_provide
+                        .as_ref()
+                        .is_some_and(|c| c.iter().any(|c| overlap(c, pattern)))
+            })
+    }
+
+    /// Whether another adopted module also qualifies for `pattern` (it declares it and holds the
+    /// `provide:` grant): then neither gets it. No id or start order decides who is the GPU
+    /// broker (§6.3, #1118); the user must leave one candidate.
+    fn rival_adopted(&self, module: &str, pattern: &str) -> bool {
+        self.modules.values().any(|m| {
+            m.id != module
+                && m.registered_version.is_some()
+                && self
+                    .methods_decl
+                    .get(&m.id)
+                    .is_some_and(|d| d.iter().any(|d| overlap(d, pattern)))
+                && Caps::parse(&m.granted)
+                    .0
+                    .iter()
+                    .any(|c| matches!(c, Capability::Provide(g) if overlap(g, pattern)))
+        })
+    }
+
+    /// Who a connection is for the queue cap: its module id or tool name, else the connection.
+    fn caller_key(&self, conn: ConnId) -> String {
+        match self.conns.get(&conn).map(|c| &c.who) {
+            Some(Who::Module { id, .. }) => format!("module:{id}"),
+            Some(Who::Tool { name, .. }) => format!("tool:{name}"),
+            _ => format!("conn:{conn}"),
+        }
+    }
+
+    /// The one authority check for providing a method pattern (§6.3), used by `module.register`,
+    /// by the routing fallback and when the registry reloads: the grant `provide:`, never a
+    /// hub-owned name; a module with a catalog entry only what it lists, and a third-party one
+    /// never a first-party area; an adopted module (no catalog entry) only what its registered
+    /// manifest declares, no first-party area but [`ADOPTED_AREAS`], and never an area a catalog
+    /// assigns to another module.
+    fn may_provide(&self, module: &str, caps: &Caps, pattern: &str) -> bool {
+        let Some(entry) = self.modules.get(module) else {
+            return false;
+        };
+        if HUB_OWNED.iter().any(|a| overlap(a, pattern)) || !caps.provides(pattern) {
+            return false;
+        }
+        if entry.registered_version.is_some() {
+            return self
+                .methods_decl
+                .get(module)
+                .is_some_and(|d| d.iter().any(|d| covers(d, pattern)))
+                && adopted_area_ok(pattern)
+                && !self.assigned_elsewhere(module, pattern)
+                && !self.rival_adopted(module, pattern);
+        }
+        let first_party = matches!(entry.holder, Holder::FirstParty | Holder::ModulesModule);
+        entry
+            .catalog_provide
+            .as_ref()
+            .is_none_or(|c| c.iter().any(|c| covers(c, pattern)))
+            && (first_party || !FIRST_PARTY_AREAS.iter().any(|a| overlap(a, pattern)))
+    }
+
+    /// Drops the routes of an adopted module that the registry now disallows (a catalog install
+    /// or an accepted catalog assigned the area to another module): the catalog's module wins.
+    fn revalidate_adopted_routes(&mut self) {
+        let routes = std::mem::take(&mut self.routes);
+        self.routes = routes
+            .into_iter()
+            .filter(|r| {
+                let adopted = self
+                    .modules
+                    .get(&r.module)
+                    .is_some_and(|m| m.registered_version.is_some());
+                !adopted || {
+                    let caps = Caps::parse(&self.modules[&r.module].granted);
+                    self.may_provide(&r.module, &caps, &r.pattern)
+                }
+            })
+            .collect();
+    }
+
     fn register(&mut self, module: &str, caps: &Caps, id: &Value, params: &Value) -> Value {
         let Some(entry) = self.modules.get(module).cloned() else {
             return denied(id, None);
@@ -1476,17 +1603,12 @@ impl Router {
         let others = |r: &Route| r.module != module;
         let mut methods = Vec::new();
         for p in list("methods") {
-            let catalog_ok = entry
-                .catalog_provide
-                .as_ref()
-                .is_none_or(|c| c.iter().any(|c| covers(c, &p)));
-            let reserved = HUB_OWNED.iter().any(|a| overlap(a, &p))
-                || (!first_party && FIRST_PARTY_AREAS.iter().any(|a| overlap(a, &p)));
+            let allowed = self.may_provide(module, caps, &p);
             let taken = self
                 .routes
                 .iter()
                 .any(|r| others(r) && overlap(&r.pattern, &p));
-            if !caps.provides(&p) || !catalog_ok || reserved || taken {
+            if !allowed || taken {
                 reject(&p, "permission.provider");
             } else {
                 methods.push(p);
@@ -1550,6 +1672,8 @@ impl Router {
                 }
             }
         }
+        // A rival adopted candidate for an area drops this module's route too (fail closed).
+        self.revalidate_adopted_routes();
         ok(id, json!({ "rejected": rejected }))
     }
 
@@ -1592,6 +1716,21 @@ impl Router {
         let mut keep = VecDeque::new();
         while let Some(q) = self.queue.pop_front() {
             if q.module == module {
+                // Only a live, accepted route to this module gets the call (§6.3): a module
+                // whose registration was refused never sees what it could not provide.
+                let routed = self
+                    .routes
+                    .iter()
+                    .filter(|r| covers(&r.pattern, &q.method))
+                    .max_by_key(|r| r.pattern.len())
+                    .is_some_and(|r| r.module == module);
+                if !routed {
+                    out.push(Out::Send(
+                        q.caller,
+                        error(&q.id, code::DISCONNECTED, "disconnected", None),
+                    ));
+                    continue;
+                }
                 self.forward(
                     conn,
                     Waiter::Caller(q.caller, q.id),
@@ -1751,17 +1890,31 @@ impl Router {
                 return;
             }
         }
-        // Not live: a module whose catalog entry provides it, or the last registration.
-        let owner = live.or_else(|| {
-            self.modules
-                .values()
-                .find(|m| {
-                    m.catalog_provide
-                        .as_ref()
-                        .is_some_and(|c| c.iter().any(|c| covers(c, method)))
-                })
-                .map(|m| m.id.clone())
-        });
+        // Not live: a module whose catalog entry provides it, an adopted module whose manifest
+        // declares it (it has no catalog entry), or the last registration.
+        let owner = live
+            .or_else(|| {
+                self.modules
+                    .values()
+                    .find(|m| {
+                        m.catalog_provide
+                            .as_ref()
+                            .is_some_and(|c| c.iter().any(|c| covers(c, method)))
+                    })
+                    .map(|m| m.id.clone())
+            })
+            .or_else(|| {
+                // The same check as `module.register`, so an adopted module is never queued
+                // calls it could not provide; the lowest id wins, never a hash order.
+                self.modules
+                    .values()
+                    .filter(|m| {
+                        m.registered_version.is_some()
+                            && self.may_provide(&m.id, &Caps::parse(&m.granted), method)
+                    })
+                    .map(|m| m.id.clone())
+                    .min()
+            });
         let Some(owner) = owner else {
             return out.push(Out::Send(
                 conn,
@@ -1770,6 +1923,18 @@ impl Router {
         };
         let entry = &self.modules[&owner];
         if entry.activate_on_call {
+            // The cap first: a capped caller starts nothing. Counted per caller module (or
+            // tool), not per connection, so more connections buy no more room.
+            let who = self.caller_key(conn);
+            if self
+                .queue
+                .iter()
+                .filter(|q| self.caller_key(q.caller) == who)
+                .count()
+                >= MAX_QUEUED_PER_CALLER
+            {
+                return out.push(Out::Send(conn, error(&id, code::BUSY, "busy", None)));
+            }
             if self.module_conn(&owner).is_none() && !self.queue.iter().any(|q| q.module == owner) {
                 out.push(Out::Activate(owner.clone()));
             }

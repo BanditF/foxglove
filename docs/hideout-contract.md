@@ -1155,6 +1155,21 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   other registration: `module.register` lists it under `rejected` with `permission.provider`.
 - A third-party or private module MUST NOT provide a method area a first-party catalog assigns
   (`lighting.*`, `screens.*`, `art.*`, `gpu.*` …), so it can't capture other modules' calls.
+- (#1118) An `adopted` module has no catalog entry; registering it is the user's act (§7.4). It
+  may provide only the `method:` patterns of its registered manifest that its `provide:` grant
+  covers, and never a first-party area (the list above) except `gpu.*` (Arete's hub is the GPU
+  broker, §8.9), and never an area any root-signed catalog assigns to another module (§13.6),
+  installed or not, whatever id the adopted module carries (§6.5). One check serves
+  `module.register`, routing and a registry reload: a reload drops an adopted route the catalog
+  now assigns elsewhere. A call waiting for a started module is forwarded only once a registered
+  route points at it, else it ends with error 2. While the provider is down, calls to its
+  allowed methods answer 2 (or wait for activation by `call`), not -32601. A caller module (or
+  tool) may have 64 calls waiting at once, checked before any module is started; more answer
+  error 3.
+- (#1118) Only one adopted module may provide an area: if two adopted modules both declare an
+  area and hold its `provide:` grant, neither gets it (no id or start order decides), a route
+  already held is dropped, and the registry refuses a second adopted `provide:` grant that
+  overlaps one already granted (`permission.provider`).
 
 ### 6.4 Approval
 
