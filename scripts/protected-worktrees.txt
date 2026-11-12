@@ -1,0 +1,18 @@
+# Worktree and folder names no cleanup script may remove or empty (scripts/clean-worktrees.ps1 and
+# scripts/ops/gc-targets.ps1 both read this). One name per line. A worktree with an open PR is also
+# kept by both scripts (its folder stays; clean-worktrees drops only its idle targets).
+ops-main
+app-main
+rel-main
+_tools
+_targets
+_logs
+_lab
+_gate
+_review
+# Planner merge worktrees and On-call sitting worktrees
+fox-mm
+fox-rm
+fmain
+lamp-lab
+rel01
