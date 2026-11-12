@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 
 use crate::checks::HUB_OWNED;
 use crate::checks::{
-    adopted_area_ok, covers, event_permission, may_call, overlap, watches_app, Caps,
+    adopted_area_ok, covers, event_permission, may_call, overlap, watches_app, Caps, ADOPTED_AREAS,
     FIRST_PARTY_AREAS,
 };
 
@@ -350,6 +350,8 @@ pub struct Router {
     /// Each module's `provides = ["method:<pattern>"]` from its manifest (§4.5): for an adopted
     /// module (no catalog entry) the only methods it may register (§6.3, #1118).
     methods_decl: HashMap<String, Vec<String>>,
+    /// The `facts:<pattern>` each module's manifest provides (§4.5): what it may register.
+    facts_decl: HashMap<String, Vec<String>>,
     /// Method areas the accepted root-signed catalogs assign, with the module id (§6.3, §13.6):
     /// an adopted module never provides one of another module's, installed or not (#1118).
     root_areas: Vec<(String, String)>,
@@ -414,6 +416,7 @@ impl Router {
             secrets_decl: HashMap::new(),
             channels_decl: HashMap::new(),
             methods_decl: HashMap::new(),
+            facts_decl: HashMap::new(),
             root_areas: Vec::new(),
             secret_store: crate::secrets::default_store(),
             host_calls: HashMap::new(),
@@ -500,6 +503,13 @@ impl Router {
             .map(String::from)
             .collect();
         self.methods_decl.insert(m.id.clone(), methods);
+        let facts = m
+            .provides
+            .iter()
+            .filter_map(|p| p.strip_prefix("facts:"))
+            .map(String::from)
+            .collect();
+        self.facts_decl.insert(m.id.clone(), facts);
     }
 
     /// Where module secrets live (Windows Credential Manager by default; tests use memory).
@@ -993,6 +1003,7 @@ impl Router {
         self.secrets_decl.remove(id);
         self.channels_decl.remove(id);
         self.methods_decl.remove(id);
+        self.facts_decl.remove(id);
         self.triggers.remove(id);
         self.routes.retain(|r| r.module != id);
         self.fact_owners.retain(|r| r.module != id);
@@ -1592,6 +1603,89 @@ impl Router {
                 }
             })
             .collect();
+        let owners = std::mem::take(&mut self.fact_owners);
+        self.fact_owners = owners
+            .into_iter()
+            .filter(|r| self.may_own_fact(&r.module, &r.pattern))
+            .collect();
+    }
+
+    /// Whether a module may hold the facts pattern `pattern` (§4.5, §6.1, §8.3, #1150): never
+    /// `*` or a hub-owned area (`module.*`, `hub.*`, `apps.*`, `mic.*`, bare names included),
+    /// `device.*` only first-party. Any module that isn't first-party needs its manifest read and
+    /// its `provides facts:` to cover the pattern. One with no catalog entry (adopted, sideloaded,
+    /// private) also gets no first-party area but `gpu.*`, and that only while it is the
+    /// user-granted GPU broker (`may_provide`); nothing a catalog assigns to another module; and
+    /// nothing another such candidate would also qualify for (both refused, no order decides). A
+    /// module with a catalog entry may not take a first-party area or another entry's area.
+    fn may_own_fact(&self, module: &str, pattern: &str) -> bool {
+        self.may_own_fact_in(module, pattern, true)
+    }
+
+    fn may_own_fact_in(&self, module: &str, pattern: &str, rivals: bool) -> bool {
+        let Some(entry) = self.modules.get(module) else {
+            return false;
+        };
+        let first_party = matches!(entry.holder, Holder::FirstParty | Holder::ModulesModule);
+        // A bare name is its area (`apps` is `apps.*`).
+        let area = if pattern.contains('.') || pattern.ends_with('*') {
+            pattern.to_string()
+        } else {
+            format!("{pattern}.*")
+        };
+        if pattern == "*"
+            || ["module.*", "hub.*", "apps.*", "mic.*"]
+                .iter()
+                .any(|a| overlap(a, &area))
+            || (!first_party && overlap("device.*", &area))
+        {
+            return false;
+        }
+        if first_party {
+            return self
+                .facts_decl
+                .get(module)
+                .is_none_or(|d| d.iter().any(|d| covers(d, pattern)));
+        }
+        if !self
+            .facts_decl
+            .get(module)
+            .is_some_and(|d| d.iter().any(|d| covers(d, pattern)))
+        {
+            return false;
+        }
+        let other_catalog = |m: &&ModuleEntry| {
+            m.id != module
+                && m.catalog_provide
+                    .as_ref()
+                    .is_some_and(|c| c.iter().any(|c| overlap(c, &area)))
+        };
+        if entry.catalog_provide.is_some() {
+            return !FIRST_PARTY_AREAS.iter().any(|a| overlap(a, &area))
+                && !self.modules.values().any(|m| other_catalog(&m));
+        }
+        let caps = Caps::parse(&entry.granted);
+        adopted_area_ok(&area)
+            && ADOPTED_AREAS
+                .iter()
+                .filter(|a| overlap(a, &area))
+                .all(|a| self.may_provide(module, &caps, a))
+            && !self.assigned_elsewhere(module, &area)
+            && !(rivals && self.rival_fact(module, &area))
+    }
+
+    /// Whether another candidate (no catalog entry, not first-party) that would itself qualify
+    /// also declares an overlap with the facts `area`: a bare declaration counts for nothing.
+    fn rival_fact(&self, module: &str, area: &str) -> bool {
+        self.modules.values().any(|m| {
+            m.id != module
+                && m.catalog_provide.is_none()
+                && !matches!(m.holder, Holder::FirstParty | Holder::ModulesModule)
+                && self.facts_decl.get(&m.id).is_some_and(|d| {
+                    d.iter()
+                        .any(|d| overlap(d, area) && self.may_own_fact_in(&m.id, d, false))
+                })
+        })
     }
 
     fn register(&mut self, module: &str, caps: &Caps, id: &Value, params: &Value) -> Value {
@@ -1612,7 +1706,6 @@ impl Router {
         let mut reject = |item: &str, error: &str| {
             rejected.push(json!({"item": item, "error": error}));
         };
-        let first_party = matches!(entry.holder, Holder::FirstParty | Holder::ModulesModule);
         let others = |r: &Route| r.module != module;
         let mut methods = Vec::new();
         for p in list("methods") {
@@ -1629,12 +1722,7 @@ impl Router {
         }
         let mut facts = Vec::new();
         for p in list("facts") {
-            // Device facts come from a first-party module (the link); nobody else writes them.
-            let bad = p == "*"
-                || ["module.*", "hub.*", "apps.*"]
-                    .iter()
-                    .any(|a| overlap(a, &p))
-                || (!first_party && overlap("device.*", &p))
+            let bad = !self.may_own_fact(module, &p)
                 || self
                     .fact_owners
                     .iter()
@@ -2033,10 +2121,21 @@ impl Router {
             }
             _ => {
                 let key = s("key");
+                // §8.8: `facts.write:<pattern>`, or `facts:` in `provides` (the registered pattern
+                // the manifest declares): registering alone writes nothing (#1150).
                 let owned = module.is_some_and(|m| {
                     self.fact_owners
                         .iter()
                         .any(|r| r.module == m && key_matches(&r.pattern, &key))
+                        && (self
+                            .facts_decl
+                            .get(m)
+                            .is_some_and(|d| d.iter().any(|d| key_matches(d, &key)))
+                            // The first-party link owns `device.*`, which `facts.write` never
+                            // covers (§6.6); its registration was checked by `may_own_fact`.
+                            || self.modules.get(m).is_some_and(|e| {
+                                matches!(e.holder, Holder::FirstParty | Holder::ModulesModule)
+                            }))
                 });
                 // The app watch's facts are the hub's too (§4.6, v1.7).
                 // (v1.12) So are the microphone's `mic.*` (§8.11).

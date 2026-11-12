@@ -1691,7 +1691,21 @@ Rules:
   (`lighting.*` → `hideout.lights`, `screens.*` → `foxglove.screens`, `art.*` → `foxglove.art`),
   so existing plugins and `foxglove-cli` work unchanged.
 - **Facts** go through the hub's cache: modules publish with `facts.set`, subscribers and panels
-  get `facts.changed`.
+  get `facts.changed`. Fact patterns are owned like method areas (#1150): a module that isn't
+  first-party registers a `facts` pattern only when its manifest (which the hub has read)
+  `provides` a covering `facts:<pattern>` (§4.5); `module.*`, `hub.*`, `apps.*`, `mic.*` (a bare
+  `apps` too) and `*` are never registered and `device.*` only by a first-party module. A module
+  with no catalog entry (adopted, sideloaded or private) also gets no first-party area but
+  `gpu.*`, and that only while it holds the user-granted `provide:gpu.*` (§8.9); nothing a
+  root-signed catalog assigns to another module (first registration does not win); and nothing
+  another such module would also qualify for (both are refused, `permission.provider`; a
+  bare declaration without the grant counts for nothing). A registry reload drops a fact route
+  no longer allowed. A `facts.write:<pattern>` grant is the user's own and still writes into an
+  area whose route was refused or revoked (v1 semantics); the route only decides who is the
+  registered owner. `facts.set` needs `facts.write:<pattern>` covering the key, or a registered
+  pattern the manifest's `facts:` provide covers (§8.8); registering alone writes nothing,
+  except that a first-party module owns the patterns it registered (the link's `device.*`, which
+  `facts.write` never covers, §6.6).
 - The hub carries control and status only. Fast data uses channels.
 - **Host services (v1.12)** are methods the hub answers itself: the network broker `net.*`
   (§8.10) and the microphone `audio.inputs.*` (§8.11); (v1.13) also the app watch's

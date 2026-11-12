@@ -391,11 +391,23 @@ fn a_bad_token_is_refused_and_the_module_ends() {
 
 #[test]
 fn another_owner_of_the_facts_is_logged_and_the_grant_still_decides() {
-    // `keyboard.*` already belongs to another module: the registration is refused for it.
+    // Another adopted module also declares `keyboard.*`: neither gets the area, so the
+    // registration is refused for it (#1150).
     let mut rig = Rig::new(&[GRANT]);
     let mut other = adopted_entry(&[GRANT]);
     other.id = "example.keys".into();
     rig.router.add_module(other);
+    let text = "id = \"example.keys\"
+name = \"Keys\"
+version = \"0.1.0\"
+kind = \"adopted\"
+family = \"arete\"
+hub = \"1.0\"
+run = [\"C:/x/k.exe\"]
+provides = [\"facts:keyboard.*\"]
+";
+    let m = Module::parse(text, &Context::default()).unwrap();
+    rig.router.apply_manifest(&m);
     rig.router.set_token("example.keys", "k");
     let c = rig.router.connect(Origin::Pipe);
     let init = json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{

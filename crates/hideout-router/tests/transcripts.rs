@@ -647,6 +647,25 @@ fn setup(name: &str) -> Replay {
                 Some(json!({"methods":[],"facts":["example.art.*"],"channels":[],"apis":{}})),
             );
             r.tool("tool", "example-cli", &["facts.read:example.art.*"]);
+            // §8.8: `facts.set` needs `facts.write:` or `facts:` in `provides` (#1150); this
+            // module's manifest provides the facts it sets.
+            let text = format!(
+                "id = \"{ART}\"
+name = \"Example Art\"
+version = \"0.4.0\"
+kind = \"service\"
+family = \"foxglove\"
+hub = \"1.0\"
+run = [\"example-art.exe\"]
+provides = [\"facts:example.art.*\"]
+"
+            );
+            let m = hideout_contract::module::Module::parse(
+                &text,
+                &hideout_contract::module::Context::default(),
+            )
+            .expect("manifest");
+            r.router.apply_manifest(&m);
             r
         }
         "set-denied" | "channel-offer-rejected" | "register-undeclared-panel" => {
