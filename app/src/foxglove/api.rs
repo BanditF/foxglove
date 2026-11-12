@@ -19,6 +19,13 @@ pub fn start() {
     if super::repaint_trace::disabled("api") {
         return;
     }
+    // The hub's module (`--module`, #1143 P5) serves no `foxglove-<user>` pipe: the hub owns
+    // that alias (contract §8.6). The restore of a reconnecting keyboard's lights is a device
+    // duty and stays; the v1 methods come through the router in P6.
+    if super::hub_link::module_mode() {
+        restore_on_connect();
+        return;
+    }
     // Who is on the pipe name, for the log only (#1143 P4): no behaviour changes.
     #[cfg(windows)]
     super::one_owner::check();

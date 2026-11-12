@@ -21,6 +21,9 @@ pub struct Tray {
     /// Foxglove: the tooltip shown, with the battery (#373).
     #[cfg(not(target_os = "linux"))]
     tooltip: String,
+    /// Foxglove (#1143 P5): the hub's module has no tray; nothing is ever made or updated.
+    #[cfg(not(target_os = "linux"))]
+    none: bool,
 }
 
 // Windows convention is a glyph matching the taskbar theme. Foxglove (#403): the fox drawn
@@ -154,14 +157,49 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
             icon,
             glyph: crate::foxglove::tray::Glyph::Disconnected,
             tooltip: "Foxglove".into(),
+            none: false,
         }
     }
 }
 
 impl Tray {
+    /// Foxglove (#1143 P5): no tray at all, for `--module`: the hub draws the one tray. No icon,
+    /// menu or thread is made, and a taskbar restart makes none.
+    pub fn none() -> Tray {
+        #[cfg(target_os = "linux")]
+        {
+            Tray {}
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Tray {
+                icon: crate::foxglove::taskbar::Slot::empty(),
+                glyph: crate::foxglove::tray::Glyph::Disconnected,
+                tooltip: String::new(),
+                none: true,
+            }
+        }
+    }
+
+    /// Whether an icon exists (tests: the hub's module never makes one).
+    #[cfg(test)]
+    pub fn has_icon(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            false
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.icon.is_some()
+        }
+    }
+
     pub fn update(&mut self) {
         #[cfg(not(target_os = "linux"))]
         {
+            if self.none {
+                return;
+            }
             // Foxglove: the taskbar started (sign-in, Explorer restart): make a missing icon.
             let taskbar_started = crate::foxglove::taskbar::take();
             if taskbar_started {

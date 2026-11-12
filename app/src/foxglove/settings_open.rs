@@ -27,7 +27,10 @@ pub const TRAY_ARG: &str = "--tray";
 /// Whether these arguments (the program first, as `std::env::args_os`) ask for a start in the
 /// tray ([`TRAY_ARG`]).
 pub fn tray_start_in<S: AsRef<std::ffi::OsStr>>(args: impl IntoIterator<Item = S>) -> bool {
-    args.into_iter().skip(1).any(|a| a.as_ref() == TRAY_ARG)
+    // The hub's module (`--module`, #1143 P5) starts quiet too: it has no tray to open from.
+    args.into_iter()
+        .skip(1)
+        .any(|a| a.as_ref() == TRAY_ARG || a.as_ref() == super::hub_link::FLAG)
 }
 
 /// This process was started in the tray ([`TRAY_ARG`]).

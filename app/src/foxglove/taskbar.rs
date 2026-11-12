@@ -29,6 +29,17 @@ fn created(wake: &dyn Fn()) {
 pub struct Slot<T>(Option<T>);
 
 impl<T> Slot<T> {
+    /// Whether an icon is held.
+    #[cfg(test)]
+    pub fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// A slot that never holds an icon (the hub's module has no tray, #1143 P5).
+    pub fn empty() -> Self {
+        Self(None)
+    }
+
     /// Makes the icon now; a failure is logged and leaves the slot empty.
     pub fn new(build: impl FnOnce() -> Result<T, String>) -> Self {
         match build() {

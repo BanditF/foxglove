@@ -1,0 +1,16 @@
+# Foxglove as the hub's legacy module (v3 H3.1, #1143 P5). `hideout.exe --adopt <folder>` reads
+# this file with `run[0]` set to this PC's foxglove.exe; the hub then starts it with `--module`
+# and the HIDEOUT_* launch values (contract §7.5). `adopted`, not `service`: the MSI made this
+# install, not the hub (contract §3). Nothing but the keyboard's facts is provided yet; the v1
+# methods come through the router in P6.
+id = "foxglove"
+name = "Foxglove"
+version = "@VERSION@"
+kind = "adopted"
+family = "foxglove"
+hub = "1.0"
+description = "The keyboard and its lights, until they are modules of their own."
+api = { foxglove = "1.13" }
+run = ["@EXE@", "--module"]
+provides = ["facts:keyboard.*"]
+permissions = ["facts.write:keyboard.*"]

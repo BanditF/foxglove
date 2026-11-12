@@ -301,6 +301,34 @@ pub fn connect_to(pipe: &str, nonce: &str, server: Option<u32>) -> io::Result<Ch
     Ok(conn)
 }
 
+/// Opens the router pipe the hub named (`HIDEOUT_PIPE`) for a module that writes while it
+/// reads (#1143 P5): overlapped I/O, so one thread blocks in `read` while another writes, which
+/// [`crate::hideout::open_pipe`]'s synchronous handle would serialise. The same rights and
+/// identification level as `open_pipe`. Nothing is sent, the token least of all, unless the
+/// pipe's server is process `hub` (`PermissionDenied` otherwise). Only a local `\.\pipe\`
+/// name is opened (never a UNC share). The returned connection is `Clone`; the last clone
+/// dropped closes it.
+pub fn connect_router(pipe: &str, hub: u32) -> io::Result<ChannelConn> {
+    if !stays_a_local_pipe(pipe) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a local named pipe",
+        ));
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .access_mode(hideout_acl::PIPE_CLIENT_ACCESS)
+        .custom_flags(FILE_FLAG_OVERLAPPED)
+        .security_qos_flags(SECURITY_IDENTIFICATION)
+        .open(pipe)?;
+    crate::hideout::check_server(&file, hub)?;
+    Ok(ChannelConn {
+        pipe: PipeConn(std::sync::Arc::new(Owned(file.into_raw_handle() as HANDLE))),
+        deadline: None,
+    })
+}
+
 /// A connected channel, either end: `Read` and `Write` on the pipe. Clones share it, so one
 /// thread reads while another writes; the last one dropped closes the channel.
 #[derive(Clone)]
@@ -627,6 +655,43 @@ mod tests {
         EqualSid, GetAce, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION,
     };
     use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, PSID};
+
+    /// #1143 P5: the module's router connection reads and writes at once, and sends nothing to a
+    /// server that is not the hub's process.
+    #[test]
+    fn connect_router_checks_the_server_and_writes_while_a_read_waits() {
+        use std::io::BufRead;
+        let me = std::process::id();
+        // Not this process: refused before anything is written, and never a UNC share.
+        let other = unique_pipe_name("test.router", "p5-other");
+        let wrong = ServerPipe::create(&other, true).unwrap();
+        let wrong = std::thread::spawn(move || wrong.accept());
+        let err = connect_router(&other, me.wrapping_add(1))
+            .err()
+            .expect("refused");
+        let _ = wrong.join();
+        let name = unique_pipe_name("test.router", "p5");
+        let server = ServerPipe::create(&name, true).unwrap();
+        let accept = std::thread::spawn(move || server.accept().unwrap());
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        assert!(connect_router(r"\\host\pipe\x", me).is_err());
+        let conn = connect_router(&name, me).unwrap();
+        let mut hub = accept.join().unwrap();
+        let mut writer = conn.clone();
+        let reader = std::thread::spawn(move || {
+            let mut lines = io::BufReader::new(conn);
+            let mut line = String::new();
+            lines.read_line(&mut line).unwrap(); // blocks until the hub speaks
+            line
+        });
+        // The read above is blocked; this write must still go through.
+        writer.write_all(b"from-module\n").unwrap();
+        let mut got = [0u8; 12];
+        io::Read::read_exact(&mut hub, &mut got).unwrap();
+        assert_eq!(&got, b"from-module\n");
+        hub.write_all(b"from-hub\n").unwrap();
+        assert_eq!(reader.join().unwrap(), "from-hub\n");
+    }
 
     #[test]
     fn current_user_only_pipe_connects_and_closes() {

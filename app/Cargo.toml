@@ -186,6 +186,10 @@ auto_link_exclude_list = [
 ]
 
 [dev-dependencies]
+# Foxglove (#1143 P5): the hub's own router and contract (MIT, no egui) to test the module link
+# against, in process: no pipe, no window.
+hideout-router = { path = "../crates/hideout-router" }
+hideout-contract = { path = "../crates/hideout-contract" }
 # Foxglove: the devices crate's fakes (the scripted HID++ device, #505; the in-process OpenRGB
 # server, #471) for window- and
 # device-free tests.
