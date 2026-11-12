@@ -864,8 +864,13 @@ impl Soft {
             if stale {
                 let _ = audio.set_mute(&s.id, false);
             }
-            self.journal.apps.remove(&s.sid);
-            let _ = self.save_journal();
+            // The level couldn't be put back: the record stays, so the next start still knows
+            // the app's own level (without it, the scaled level would be taken as its own and
+            // scaled again, each time).
+            if at_own {
+                self.journal.apps.remove(&s.sid);
+                let _ = self.save_journal();
+            }
             return;
         };
         if on.apps.contains_key(&s.id) {
@@ -1992,6 +1997,33 @@ mod tests {
         assert!(a.muted("tarkov-2"));
         s.toggle_mute(&mut a).unwrap();
         assert!(!a.muted("tarkov-2"));
+    }
+
+    #[test]
+    fn a_returning_app_whose_level_cant_be_put_back_keeps_its_record() {
+        // An app closed while master was on comes back at the scaled level Windows saved. If
+        // its own level can't be written back, the record stays; otherwise the next start takes
+        // the scaled level as its own and scales it again (1.0 -> 0.46 -> 0.21 -> 0.1 ...).
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        a.w().sessions.retain(|x| x.id != "tarkov");
+        s.gone("tarkov");
+        s.disengage(&mut a).unwrap();
+        let scaled = 0.84 * amp(0.35);
+        let back = a.add("tarkov-2", "sid-tarkov", scaled);
+        a.w().fail_after = Some(0);
+        s.created(&mut a, &back);
+        a.w().fail_after = None;
+        assert!(
+            s.journal().apps.contains_key("sid-tarkov"),
+            "the record is kept"
+        );
+        // Engaged and stopped again, it ends at its own level, not at the scaled one.
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        s.disengage(&mut a).unwrap();
+        assert!((a.level("tarkov-2") - 0.84).abs() < 0.001);
     }
 
     #[test]
