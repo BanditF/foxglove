@@ -110,11 +110,21 @@ pub const SERVED: &[&str] = &[
 /// contract section 8.1 "busy") at once, before anything runs.
 pub const MAX_QUEUED_CALLS: usize = 16;
 
-/// How long a routed call may wait for the worker before it is dropped unrun. The router
-/// answers its caller TIMEOUT after `CALL_TIMEOUT` (30 s) and forgets the call; running it
-/// after that would land side effects for a caller that was told it failed. 20 s keeps the
-/// drop well inside the router's clock (the module is not told the deadline).
+/// How long a routed call may wait for a worker when the router did not say (an older hub):
+/// the router answers its caller TIMEOUT after `CALL_TIMEOUT` (30 s) and forgets the call, and
+/// running it after that would land side effects for a caller that was told it failed.
 pub const CALL_EXPIRY: Duration = Duration::from_secs(20);
+
+/// The router puts the time left before its deadline into a forwarded call's params as
+/// `_deadline_ms` (hideout-router `forward_counted`); the module takes it out before the
+/// handler sees the params and drops the call this long before that deadline.
+const DEADLINE_KEY: &str = "_deadline_ms";
+const EXPIRY_MARGIN: Duration = Duration::from_secs(2);
+
+/// Workers per connection: one slow call (a 5-10 s device wait) cannot hold every other
+/// caller's call behind it. With the router's provider-wide cap (12 of the queue's 16) and its
+/// per-caller cap (4), one caller can occupy at most 3 workers' worth of time only briefly.
+pub const CALL_WORKERS: usize = 3;
 
 /// The connection number the module hands the app's handlers for a routed call. Plugin-host
 /// connections count from 1, so 0 is nobody's; no served method keeps anything per connection.
@@ -308,7 +318,8 @@ pub(super) struct Job {
     id: Value,
     method: String,
     params: Value,
-    queued: Instant,
+    /// Past this the router has timed the call out (or is about to): never run it.
+    expires: Instant,
 }
 
 /// What the worker made of a [`Job`]: the answer for the hub.
@@ -373,7 +384,7 @@ impl CallQueue {
 }
 
 fn expired(job: &Job, now: Instant) -> bool {
-    now.saturating_duration_since(job.queued) >= CALL_EXPIRY
+    now >= job.expires
 }
 
 /// Runs one job unless it expired while queued (then `None`: dropped, never run).
@@ -385,8 +396,20 @@ pub(super) fn execute(
     if expired(&job, now) {
         return None;
     }
+    // A handler that panics answers an internal error: the caller is not left to the router's
+    // timeout and the worker lives on (#1156 review).
+    let (method, params) = (job.method, job.params);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_handler(devices, &method, params)
+    }))
+    .unwrap_or_else(|_| {
+        crate::foxglove::app_log::line(&format!(
+            "Foxglove: the handler of {method} panicked; answered an internal error"
+        ));
+        Err(RpcError::new(code::INTERNAL, "internal error"))
+    });
     Some(Reply {
-        outcome: run_handler(devices, &job.method, job.params),
+        outcome,
         id: job.id,
     })
 }
@@ -403,6 +426,25 @@ pub(super) fn work(
         if let Some(reply) = execute(devices, job, Instant::now()) {
             deliver(reply);
         }
+    }
+}
+
+/// [`work`] that cannot end quietly: when the worker dies (a panic outside the handler, which
+/// `execute` already answers), the queue is closed and `lost` runs, so the link ends the
+/// connection instead of keeping a link whose calls nobody runs.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn run_worker(
+    queue: &CallQueue,
+    devices: &dyn foxglove_plugin_host::Devices,
+    deliver: impl FnMut(Reply),
+    lost: impl FnOnce(),
+) {
+    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        work(queue, devices, deliver)
+    }));
+    if ended.is_err() {
+        queue.close();
+        lost();
     }
 }
 
@@ -503,9 +545,19 @@ impl<W: Write> Link<W> {
     /// full (BUSY, error 3), else queued for the worker (or run inline without one).
     fn submit(
         &mut self,
-        (id, method, params): (Value, String, Value),
+        (id, method, mut params): (Value, String, Value),
         now: Instant,
     ) -> Result<(), SessionError> {
+        // The router's remaining time, out of the params the handler sees.
+        let left = params
+            .as_object_mut()
+            .and_then(|m| m.remove(DEADLINE_KEY))
+            .and_then(|v| v.as_u64())
+            .map(Duration::from_millis);
+        let expires = now
+            + left
+                .map(|l| l.saturating_sub(EXPIRY_MARGIN))
+                .unwrap_or(CALL_EXPIRY);
         let live = self.hub.devices.is_some() && self.hub.live;
         let outcome = match (&self.queue, live) {
             (_, false) => Err(RpcError::new(code::DISCONNECTED, "disconnected")),
@@ -515,8 +567,13 @@ impl<W: Write> Link<W> {
                     id: id.clone(),
                     method,
                     params,
-                    queued: now,
+                    expires,
                 };
+                // Already past what the router allows: it has answered the caller or is about
+                // to, and nothing may run.
+                if expired(&job, now) {
+                    return Ok(());
+                }
                 if q.push(job, now) {
                     return Ok(());
                 }
@@ -870,6 +927,8 @@ mod runner {
         Facts,
         /// The worker answered a routed call of connection `.0`.
         Reply(u64, super::Reply),
+        /// A call worker of connection `.0` died: the connection ends.
+        WorkerLost(u64),
     }
 
     /// Why a connection ended.
@@ -1037,12 +1096,25 @@ mod runner {
         // Routed calls run on one worker of this connection (it ends when the link drops and
         // closes the queue), never on the link thread.
         let queue = link.with_worker();
-        let wtx = tx.clone();
-        crate::foxglove::services::spawn_named("hub-link-calls", move || {
-            work(&queue, devices.as_ref(), |r| {
-                let _ = wtx.send(Msg::Reply(generation, r));
-            })
-        });
+        for _ in 0..CALL_WORKERS {
+            let (queue, devices, wtx) = (queue.clone(), devices.clone(), tx.clone());
+            crate::foxglove::services::spawn_named("hub-link-calls", move || {
+                // However the worker ends (a panic outside the handler included) the queue
+                // closes and the link thread is told, so the connection ends and is rebuilt
+                // rather than silently losing its workers.
+                let (rtx, ltx) = (wtx.clone(), wtx);
+                run_worker(
+                    &queue,
+                    devices.as_ref(),
+                    |r| {
+                        let _ = rtx.send(Msg::Reply(generation, r));
+                    },
+                    || {
+                        let _ = ltx.send(Msg::WorkerLost(generation));
+                    },
+                );
+            });
+        }
         let mut live = false;
         let lost = |e: SessionError, live| (Ended::Lost(e.to_string()), live);
         if let Err(e) = link.start() {
@@ -1078,6 +1150,9 @@ mod runner {
                     Ok(()) => Step::Nothing,
                     Err(e) => return lost(e, live),
                 },
+                Msg::WorkerLost(g) if g == generation => {
+                    return (Ended::Lost("a call worker died".into()), live)
+                }
                 Msg::Facts => {
                     for change in pending.take() {
                         if let Err(e) = link.change(&change) {

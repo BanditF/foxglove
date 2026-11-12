@@ -24,6 +24,10 @@ pub const MAX_QUEUED_PER_CALLER: usize = 64;
 /// #1133 bound for the activation queue, applied to live routes). A slow handler (a 5-10 s
 /// window or device wait) then holds at most this many of one caller's calls, not 100.
 pub const MAX_INFLIGHT_PER_CALLER: usize = 4;
+/// Calls all callers together may have unanswered at one provider (#1156 review): below the
+/// provider's own queue (hub_link's 16) so one caller's slow calls cannot fill it and starve the
+/// rest, and so a queue that is full never needs the provider to answer BUSY itself.
+pub const MAX_INFLIGHT_PER_PROVIDER: usize = 12;
 
 /// A call with no answer fails after this long on the caller's side (§8.1, error 4).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -280,11 +284,18 @@ enum Waiter {
         nonce: String,
     },
     Hub(u64),
+    /// The caller disconnected, but the provider still holds the call: a tombstone that keeps
+    /// counting against the in-flight caps until the provider answers or the deadline passes,
+    /// so a reconnect buys no fresh room (#1156 review). Nobody is told anything.
+    Gone,
 }
 
 struct Pending {
     waiter: Waiter,
     deadline: Instant,
+    /// The caller key this call counts against in the in-flight caps (a routed or held call);
+    /// `None` for calls the caps do not cover.
+    slot: Option<String>,
 }
 
 /// A call waiting for its provider to start (activation by `call`).
@@ -332,6 +343,12 @@ pub struct Router {
     subs: BTreeMap<u64, (ConnId, String)>,
     next_sub: u64,
     pending: HashMap<(ConnId, i64), Pending>,
+    /// Counted calls per (provider, caller key) and per provider: the in-flight caps read these
+    /// in O(1); only `add_pending` and `take_pending` touch them.
+    slots: HashMap<(ConnId, String), usize>,
+    provider_load: HashMap<ConnId, usize>,
+    /// The latest clock the router was given, for the remaining deadline a forward carries.
+    last_now: Instant,
     next_call: i64,
     queue: VecDeque<Queued>,
     faults: HashMap<String, u32>,
@@ -413,6 +430,9 @@ impl Router {
             leases: HashMap::new(),
             launch_check: None,
             pending: HashMap::new(),
+            slots: HashMap::new(),
+            provider_load: HashMap::new(),
+            last_now: Instant::now(),
             next_call: 1,
             queue: VecDeque::new(),
             actions: HashMap::new(),
@@ -807,6 +827,51 @@ impl Router {
                 .any(|h| h.caller == conn && h.id == *id)
     }
 
+    /// Records a call the provider now holds, counting it when it has a slot.
+    fn add_pending(&mut self, key: (ConnId, i64), p: Pending) {
+        if let Some(who) = &p.slot {
+            *self.slots.entry((key.0, who.clone())).or_default() += 1;
+            *self.provider_load.entry(key.0).or_default() += 1;
+        }
+        self.pending.insert(key, p);
+    }
+
+    /// Takes a pending call out, releasing its slot. Every removal goes through here.
+    fn take_pending(&mut self, key: &(ConnId, i64)) -> Option<Pending> {
+        let p = self.pending.remove(key)?;
+        if let Some(who) = &p.slot {
+            let k = (key.0, who.clone());
+            if let Some(n) = self.slots.get_mut(&k) {
+                *n -= 1;
+                if *n == 0 {
+                    self.slots.remove(&k);
+                }
+            }
+            if let Some(n) = self.provider_load.get_mut(&key.0) {
+                *n -= 1;
+                if *n == 0 {
+                    self.provider_load.remove(&key.0);
+                }
+            }
+        }
+        Some(p)
+    }
+
+    /// Whether `method` from caller `who` may be forwarded to `provider` now (#1156): under the
+    /// per-caller and the provider-wide in-flight caps. A `.release` is exempt: giving a lease
+    /// back must never be refused, and it is cheap (§8.5).
+    fn admits(&self, provider: ConnId, who: &str, method: &str) -> bool {
+        method.ends_with(".release")
+            || (self
+                .slots
+                .get(&(provider, who.to_string()))
+                .copied()
+                .unwrap_or(0)
+                < MAX_INFLIGHT_PER_CALLER
+                && self.provider_load.get(&provider).copied().unwrap_or(0)
+                    < MAX_INFLIGHT_PER_PROVIDER)
+    }
+
     /// The earliest deadline of a pending call, for the driver's timer.
     pub fn next_deadline(&self) -> Option<Instant> {
         let p = self.pending.values().map(|p| p.deadline);
@@ -817,6 +882,7 @@ impl Router {
 
     /// Fails every call past its deadline with error 4 (§8.1).
     pub fn tick(&mut self, now: Instant) -> Vec<Out> {
+        self.last_now = now;
         let mut out = Vec::new();
         let late: Vec<(ConnId, i64)> = self
             .pending
@@ -825,7 +891,7 @@ impl Router {
             .map(|(k, _)| *k)
             .collect();
         for k in late {
-            if let Some(p) = self.pending.remove(&k) {
+            if let Some(p) = self.take_pending(&k) {
                 self.fail(p.waiter, code::TIMEOUT, "timeout", None, &mut out);
             }
         }
@@ -902,6 +968,7 @@ impl Router {
                 tag,
                 result: Err(e(&Value::Null)["error"].clone()),
             }),
+            Waiter::Gone => {}
         }
     }
 
@@ -935,12 +1002,18 @@ impl Router {
         let keys: Vec<(ConnId, i64)> = self.pending.keys().copied().collect();
         for k in keys {
             if k.0 == conn {
-                let p = self.pending.remove(&k).unwrap();
+                let p = self.take_pending(&k).unwrap();
                 self.fail(p.waiter, code::DISCONNECTED, "disconnected", None, &mut out);
             } else if matches!(&self.pending[&k].waiter,
                 Waiter::Caller(c, _) | Waiter::Channel { caller: c, .. } if *c == conn)
             {
-                self.pending.remove(&k);
+                // The provider still runs it: a counted call stays as a tombstone until the
+                // provider answers or the deadline passes (#1156 review).
+                if self.pending[&k].slot.is_some() {
+                    self.pending.get_mut(&k).unwrap().waiter = Waiter::Gone;
+                } else {
+                    self.take_pending(&k);
+                }
             }
         }
         if let Who::Module { id, .. } = c.who {
@@ -1060,6 +1133,7 @@ impl Router {
     /// One line from a connection.
     pub fn receive(&mut self, conn: ConnId, line: &str, now: Instant) -> Vec<Out> {
         let mut out = Vec::new();
+        self.last_now = now;
         if !self.conns.contains_key(&conn) {
             return out;
         }
@@ -1595,7 +1669,17 @@ impl Router {
             // user's `provide:` for it (checked above). Never the id string alone; a root
             // catalog or a first-party module that is assigned the area still wins, and no
             // rival can qualify (the reserved areas are closed to every other adopted module).
-            if declared && entry.catalog_provide.is_none() && legacy_foxglove_ok(module, pattern) {
+            // The grant must name the method exactly: a wildcard `provide:overlay.*` does not
+            // carry the exception (it would be a grant for the whole area).
+            let exact = caps
+                .0
+                .iter()
+                .any(|c| matches!(c, Capability::Provide(g) if g == pattern));
+            if declared
+                && exact
+                && entry.catalog_provide.is_none()
+                && legacy_foxglove_ok(module, pattern)
+            {
                 return !self.assigned_elsewhere_by(module, pattern, true);
             }
             return declared
@@ -1857,14 +1941,14 @@ impl Router {
                     ));
                     continue;
                 }
-                self.forward(
-                    conn,
-                    Waiter::Caller(q.caller, q.id),
-                    &q.method,
-                    q.params,
-                    q.deadline,
-                    out,
-                );
+                // The same caps as a live route (#1156 review): a burst held while the module
+                // started does not go out all at once; what is over the caps gets BUSY.
+                let who = self.caller_key(q.caller);
+                if !self.admits(conn, &who, &q.method) {
+                    out.push(Out::Send(q.caller, error(&q.id, code::BUSY, "busy", None)));
+                    continue;
+                }
+                self.forward_counted(conn, q.caller, q.id, &q.method, q.params, q.deadline, out);
             } else {
                 keep.push_back(q);
             }
@@ -1916,7 +2000,7 @@ impl Router {
 
     fn response(&mut self, conn: ConnId, id: Value, msg: &Map<String, Value>, out: &mut Vec<Out>) {
         let Some(n) = id.as_i64() else { return };
-        let Some(p) = self.pending.remove(&(conn, n)) else {
+        let Some(p) = self.take_pending(&(conn, n)) else {
             log::debug!("router: an answer nobody waits for (late or unknown id {n})");
             return;
         };
@@ -1959,6 +2043,7 @@ impl Router {
                 result: crate::channels::grant(result, &nonce, &self.provider(conn)),
             }),
             Waiter::Hub(tag) => out.push(Out::HubResult { tag, result }),
+            Waiter::Gone => {}
         }
     }
 
@@ -1972,10 +2057,61 @@ impl Router {
         deadline: Instant,
         out: &mut Vec<Out>,
     ) {
+        self.forward_slot(provider, waiter, None, method, params, deadline, out);
+    }
+
+    /// A caller's call to a provider, counted in the in-flight caps (the caller checked
+    /// [`Self::admits`]). The params carry `_deadline_ms`, the time left before the router fails
+    /// the call with error 4, so the provider can drop a call that is already dead (#1156).
+    #[allow(clippy::too_many_arguments)]
+    fn forward_counted(
+        &mut self,
+        provider: ConnId,
+        caller: ConnId,
+        id: Value,
+        method: &str,
+        params: Value,
+        deadline: Instant,
+        out: &mut Vec<Out>,
+    ) {
+        let who = self.caller_key(caller);
+        let mut params = params;
+        if let Value::Object(m) = &mut params {
+            let left = deadline.saturating_duration_since(self.last_now);
+            m.insert("_deadline_ms".into(), json!(left.as_millis() as u64));
+        }
+        self.forward_slot(
+            provider,
+            Waiter::Caller(caller, id),
+            Some(who),
+            method,
+            params,
+            deadline,
+            out,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_slot(
+        &mut self,
+        provider: ConnId,
+        waiter: Waiter,
+        slot: Option<String>,
+        method: &str,
+        params: Value,
+        deadline: Instant,
+        out: &mut Vec<Out>,
+    ) {
         let n = self.next_call;
         self.next_call += 1;
-        self.pending
-            .insert((provider, n), Pending { waiter, deadline });
+        self.add_pending(
+            (provider, n),
+            Pending {
+                waiter,
+                deadline,
+                slot,
+            },
+        );
         out.push(Out::Send(
             provider,
             json!({"jsonrpc": "2.0", "id": n, "method": method, "params": params}),
@@ -1992,6 +2128,7 @@ impl Router {
         now: Instant,
         out: &mut Vec<Out>,
     ) {
+        self.last_now = now;
         let deadline = now + self.settings.call_timeout;
         let live = self
             .routes
@@ -2005,15 +2142,7 @@ impl Router {
                 // unanswered at this provider gets BUSY and nothing is forwarded (#1156 M2).
                 // Counted per caller module or tool, not per connection.
                 let who = self.caller_key(conn);
-                let inflight = self
-                    .pending
-                    .iter()
-                    .filter(|((prov, _), pend)| {
-                        *prov == p
-                            && matches!(&pend.waiter, Waiter::Caller(c, _) if self.caller_key(*c) == who)
-                    })
-                    .count();
-                if inflight >= MAX_INFLIGHT_PER_CALLER {
+                if !self.admits(p, &who, method) {
                     return out.push(Out::Send(conn, error(&id, code::BUSY, "busy", None)));
                 }
                 // The holder gives a lease back: the provider is told it ended (§8.5).
@@ -2023,7 +2152,7 @@ impl Router {
                     .flatten()
                     .map(|l| (m.clone(), l.to_string()))
                     .filter(|k| self.leases.get(k).is_some_and(|l| l.holder == conn));
-                self.forward(p, Waiter::Caller(conn, id), method, params, deadline, out);
+                self.forward_counted(p, conn, id, method, params, deadline, out);
                 if let Some(k) = released {
                     self.leases.remove(&k);
                     self.lease_closed(&k.0, &k.1, "released", out);

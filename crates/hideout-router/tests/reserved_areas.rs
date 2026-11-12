@@ -194,6 +194,7 @@ fn the_legacy_module_gets_nothing_beyond_the_11() {
             "provide:overlay.*",
             "provide:lights.set",
             "provide:health.*",
+            "provide:health.read",
         ],
     ));
     r.apply_manifest(&manifest(
@@ -385,4 +386,220 @@ fn one_caller_gets_busy_beyond_its_in_flight_cap_and_others_are_unaffected() {
     r.receive(f, &ans.to_string(), now);
     let out = call(&mut r, c, 201, "overlay.window", now);
     assert_eq!(sends(&out, f).len(), 1, "{out:?}");
+}
+
+fn add_caller(r: &mut Router, id: &str, now: Instant) -> ConnId {
+    r.add_module(entry(
+        id,
+        Holder::FirstParty,
+        &["app.windows", "devices.read"],
+        Some(&[]),
+    ));
+    module(r, id, now)
+}
+
+#[test]
+fn a_disconnected_caller_still_counts_until_the_provider_answers() {
+    use hideout_router::MAX_INFLIGHT_PER_CALLER as CAP;
+    let now = Instant::now();
+    let (mut r, f, c) = rig(now);
+    let mut held = Vec::new();
+    for i in 0..CAP {
+        held.extend(sends(
+            &call(&mut r, c, 10 + i as u64, "overlay.window", now),
+            f,
+        ));
+    }
+    assert_eq!(held.len(), CAP);
+    // Reconnecting buys no fresh room: the provider still runs the old calls.
+    r.disconnect(c);
+    let c2 = module(&mut r, CALLER, now);
+    let out = call(&mut r, c2, 1, "overlay.window", now);
+    assert!(sends(&out, f).is_empty(), "{out:?}");
+    assert_eq!(code(&sends(&out, c2)[0]), 3);
+    // The provider's answer to a dead caller is dropped and frees the slot.
+    let out = r.receive(
+        f,
+        &json!({"jsonrpc":"2.0","id":held[0]["id"],"result":{}}).to_string(),
+        now,
+    );
+    assert!(
+        sends(&out, c2).is_empty(),
+        "nothing reaches the new connection"
+    );
+    let out = call(&mut r, c2, 2, "overlay.window", now);
+    assert_eq!(sends(&out, f).len(), 1, "{out:?}");
+}
+
+#[test]
+fn a_tombstone_ends_at_the_deadline() {
+    use hideout_router::MAX_INFLIGHT_PER_CALLER as CAP;
+    let now = Instant::now();
+    let (mut r, f, c) = rig(now);
+    for i in 0..CAP {
+        call(&mut r, c, 10 + i as u64, "overlay.window", now);
+    }
+    r.disconnect(c);
+    let c2 = module(&mut r, CALLER, now);
+    let out = call(&mut r, c2, 1, "overlay.window", now);
+    assert_eq!(code(&sends(&out, c2)[0]), 3);
+    let late = now + hideout_router::CALL_TIMEOUT + std::time::Duration::from_secs(1);
+    let out = r.tick(late);
+    assert!(sends(&out, c2).is_empty(), "a dead caller is told nothing");
+    let out = call(&mut r, c2, 2, "overlay.window", late);
+    assert_eq!(sends(&out, f).len(), 1, "{out:?}");
+}
+
+#[test]
+fn the_provider_wide_cap_stops_callers_from_filling_the_provider() {
+    use hideout_router::{MAX_INFLIGHT_PER_CALLER as CAP, MAX_INFLIGHT_PER_PROVIDER as ALL};
+    let now = Instant::now();
+    let (mut r, f, c) = rig(now);
+    let mut callers = vec![c];
+    for i in 0..ALL.div_ceil(CAP) {
+        callers.push(add_caller(&mut r, &format!("example.c{i}"), now));
+    }
+    let mut got = 0;
+    let mut id = 100;
+    'fill: for c in &callers {
+        for _ in 0..CAP {
+            id += 1;
+            got += sends(&call(&mut r, *c, id, "overlay.window", now), f).len();
+            if got == ALL {
+                break 'fill;
+            }
+        }
+    }
+    assert_eq!(got, ALL);
+    // One more caller, with nothing of its own in flight, is still refused: the provider is full.
+    let last = add_caller(&mut r, "example.late", now);
+    let out = call(&mut r, last, 1, "overlay.window", now);
+    assert!(sends(&out, f).is_empty());
+    assert_eq!(code(&sends(&out, last)[0]), 3);
+}
+
+#[test]
+fn a_release_is_exempt_from_the_caps() {
+    use hideout_router::MAX_INFLIGHT_PER_CALLER as CAP;
+    let now = Instant::now();
+    let (mut r, _f, c) = rig(now);
+    r.add_module(entry(
+        "example.slow",
+        Holder::FirstParty,
+        &["provide:slow.*"],
+        Some(&["slow.*"]),
+    ));
+    let s = module(&mut r, "example.slow", now);
+    assert_eq!(register(&mut r, s, &["slow.*"], &[], now), json!([]));
+    for i in 0..CAP {
+        call(&mut r, c, 10 + i as u64, "slow.job", now);
+    }
+    let out = call(&mut r, c, 50, "slow.job", now);
+    assert_eq!(code(&sends(&out, c)[0]), 3);
+    let out = call(&mut r, c, 51, "slow.release", now);
+    assert_eq!(sends(&out, s).len(), 1, "{out:?}");
+}
+
+#[test]
+fn a_forwarded_call_carries_the_time_left_before_the_router_deadline() {
+    let now = Instant::now();
+    let (mut r, f, c) = rig(now);
+    let first = sends(&call(&mut r, c, 1, "overlay.window", now), f);
+    let full = first[0]["params"]["_deadline_ms"]
+        .as_u64()
+        .expect("a deadline");
+    assert_eq!(full, hideout_router::CALL_TIMEOUT.as_millis() as u64);
+}
+
+#[test]
+fn calls_held_for_a_starting_module_are_capped_when_it_becomes_ready() {
+    use hideout_router::MAX_INFLIGHT_PER_CALLER as CAP;
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    let mut slow = entry(
+        "example.slow",
+        Holder::FirstParty,
+        &["provide:slow.*"],
+        Some(&["slow.*"]),
+    );
+    slow.activate_on_call = true;
+    r.add_module(slow);
+    let c = add_caller(&mut r, "example.held", now);
+    for i in 0..CAP + 3 {
+        let out = call(&mut r, c, 10 + i as u64, "slow.job", now);
+        assert!(sends(&out, c).is_empty(), "held, not answered: {out:?}");
+    }
+    let s = module(&mut r, "example.slow", now);
+    r.receive(
+        s,
+        &json!({"jsonrpc":"2.0","id":1,"method":"module.register","params":
+            {"methods":["slow.*"],"facts":[],"channels":[],"apis":{}}})
+        .to_string(),
+        now,
+    );
+    let out = r.receive(
+        s,
+        r#"{"jsonrpc":"2.0","method":"module.ready","params":{"instance":"i"}}"#,
+        now,
+    );
+    assert_eq!(sends(&out, s).len(), CAP, "only the cap goes out");
+    let busy: Vec<_> = sends(&out, c).iter().map(code).collect();
+    assert_eq!(busy, vec![3, 3, 3], "the rest answer BUSY");
+}
+
+#[test]
+fn case_variants_and_partial_wildcards_never_reach_a_reserved_area() {
+    let now = Instant::now();
+    let (mut r, f, c) = rig(now);
+    r.add_module(entry(
+        "example.third",
+        Holder::ThirdParty(Source::Sideload),
+        &[
+            "provide:Overlay.window",
+            "provide:overlay.x*",
+            "provide:OVERLAY.*",
+        ],
+        Some(&["Overlay.window", "overlay.x*", "OVERLAY.*"]),
+    ));
+    let t = module(&mut r, "example.third", now);
+    let rejected = register(
+        &mut r,
+        t,
+        &["Overlay.window", "overlay.x*", "OVERLAY.*"],
+        &[],
+        now,
+    );
+    let rejected = rejected.as_array().unwrap();
+    assert!(
+        rejected
+            .iter()
+            .any(|v| v.to_string().contains("overlay.x*")),
+        "a partial wildcard inside a reserved area is refused: {rejected:?}"
+    );
+    // Whatever a case variant did register, the reserved name still goes to its holder only.
+    let out = call(&mut r, c, 1, "overlay.window", now);
+    assert_eq!(sends(&out, f).len(), 1, "{out:?}");
+    assert!(sends(&out, t).is_empty());
+}
+
+#[test]
+fn the_exception_needs_an_exact_provide_grant_not_a_wildcard() {
+    let now = Instant::now();
+    // A wildcard grant over the area does not carry the exception.
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(adopted(FOX, &["provide:overlay.*"]));
+    r.apply_manifest(&manifest(FOX, &strs(&method_decls())));
+    let f = module(&mut r, FOX, now);
+    let rejected = register(&mut r, f, &["overlay.window"], &[], now);
+    assert_eq!(rejected.as_array().unwrap().len(), 1, "{rejected:?}");
+    // The exact grant does.
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(adopted(FOX, &["provide:overlay.window"]));
+    r.apply_manifest(&manifest(FOX, &strs(&method_decls())));
+    let f = module(&mut r, FOX, now);
+    let rejected = register(&mut r, f, &["overlay.window"], &[], now);
+    assert_eq!(rejected, json!([]));
+    // And only for that name: the same grant does not give overlay.restore.
+    let rejected = register(&mut r, f, &["overlay.restore"], &[], now);
+    assert_eq!(rejected.as_array().unwrap().len(), 1, "{rejected:?}");
 }

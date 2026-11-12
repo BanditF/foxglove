@@ -20,5 +20,5 @@ pub mod secrets;
 pub use router::{
     fresh_secret, host_methods, Approver, ConnId, LaunchCheck, ModuleEntry, Origin, Out, Router,
     ServiceCall, ServiceError, Settings, Triggers, CALL_TIMEOUT, HOST_CONSUMER,
-    MAX_INFLIGHT_PER_CALLER,
+    MAX_INFLIGHT_PER_CALLER, MAX_INFLIGHT_PER_PROVIDER,
 };

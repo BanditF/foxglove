@@ -1329,3 +1329,180 @@ fn a_call_before_ready_is_refused_even_with_a_worker() {
     assert_eq!(out["error"]["code"], json!(2));
     assert!(queue.try_pop().is_none());
 }
+
+/// A routed request line carrying the router's remaining time.
+fn routed_with_deadline(id: u64, method: &str, left_ms: u64) -> String {
+    json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"_deadline_ms":left_ms,"k":1}})
+        .to_string()
+}
+
+#[test]
+fn a_call_expires_against_the_router_deadline_not_its_own_clock() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    let t0 = Instant::now();
+    // 6 s left at the router: it is dropped once less than the margin remains.
+    rig.link
+        .line_at(&routed_with_deadline(1, "tray.set_panel", 6000), t0)
+        .unwrap();
+    let job = queue.try_pop().unwrap();
+    assert!(execute(counting.as_ref(), job, t0 + Duration::from_secs(5)).is_none());
+    rig.link
+        .line_at(&routed_with_deadline(2, "tray.set_panel", 6000), t0)
+        .unwrap();
+    let job = queue.try_pop().unwrap();
+    assert!(execute(counting.as_ref(), job, t0 + Duration::from_secs(3)).is_some());
+    // The key never reaches the handler.
+    let seen = counting.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].1, json!({"k": 1}));
+}
+
+#[test]
+fn a_call_that_arrives_with_no_time_left_is_dropped_at_once() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    rig.link
+        .line_at(&routed_with_deadline(1, "tray.panel", 1500), Instant::now())
+        .unwrap();
+    assert!(queue.try_pop().is_none(), "never queued");
+    assert!(written(&mut rig).is_empty(), "the caller was told by the router");
+    assert!(counting.seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_deadline_key_is_taken_out_of_the_params() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    // Inline (no worker): the handler is called with the key removed.
+    rig.link
+        .line(&routed_with_deadline(1, "overlay.restore", 30000))
+        .unwrap();
+    let out = written(&mut rig);
+    assert_eq!(out.len(), 1, "{out:?}");
+    let seen = counting.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].1, json!({"k": 1}));
+}
+
+/// A handler that panics.
+struct Boom;
+
+impl foxglove_plugin_host::Devices for Boom {
+    fn call_from(
+        &self,
+        _conn: u64,
+        _method: &str,
+        _params: Value,
+    ) -> Result<Value, foxglove_plugin_api::rpc::Error> {
+        panic!("a handler bug");
+    }
+}
+
+#[test]
+fn a_panicking_handler_answers_an_internal_error_and_the_worker_lives() {
+    let mut rig = Rig::with_devices(&granted_all(), std::sync::Arc::new(Boom));
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    let now = Instant::now();
+    rig.link
+        .line_at(&routed_line(1, "overlay.restore"), now)
+        .unwrap();
+    rig.link
+        .line_at(&routed_line(2, "overlay.restore"), now)
+        .unwrap();
+    let boom = Boom;
+    while let Some(job) = queue.try_pop() {
+        let reply = execute(&boom, job, now).expect("answered, not dropped");
+        rig.link.respond(reply).unwrap();
+    }
+    let out = written(&mut rig);
+    assert_eq!(out.len(), 2);
+    assert_eq!(error_code(&out[0]), -32603);
+    assert_eq!(error_code(&out[1]), -32603);
+}
+
+#[test]
+fn a_dead_worker_closes_the_queue_and_tells_the_link() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let queue = CallQueue::default();
+    let now = Instant::now();
+    assert!(queue.push(
+        Job {
+            id: json!(1),
+            method: "tray.panel".into(),
+            params: json!({}),
+            expires: now + CALL_EXPIRY,
+        },
+        now
+    ));
+    let lost = std::cell::Cell::new(false);
+    // Delivering the answer panics (outside the handler): the worker dies.
+    run_worker(
+        &queue,
+        counting.as_ref(),
+        |_| panic!("deliver failed"),
+        || lost.set(true),
+    );
+    assert!(lost.get(), "the link is told");
+    assert!(queue.wait().is_none(), "the queue is closed");
+}
+
+#[test]
+fn a_slow_call_does_not_hold_the_other_workers() {
+    use std::sync::mpsc;
+    // The first call blocks until released; the pool still answers the next one.
+    struct Gate(std::sync::Mutex<Option<mpsc::Receiver<()>>>);
+    impl foxglove_plugin_host::Devices for Gate {
+        fn call_from(
+            &self,
+            _conn: u64,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value, foxglove_plugin_api::rpc::Error> {
+            if method == "pc_lighting.set_zone" {
+                let rx = self.0.lock().unwrap().take();
+                if let Some(rx) = rx {
+                    let _ = rx.recv_timeout(Duration::from_secs(10));
+                }
+            }
+            Ok(json!({"served": method}))
+        }
+    }
+    let (release, hold) = mpsc::channel();
+    let devices = std::sync::Arc::new(Gate(std::sync::Mutex::new(Some(hold))));
+    let queue = std::sync::Arc::new(CallQueue::default());
+    let (rtx, rrx) = mpsc::channel::<Reply>();
+    let mut threads = Vec::new();
+    for _ in 0..CALL_WORKERS {
+        let (q, d, tx) = (queue.clone(), devices.clone(), rtx.clone());
+        threads.push(std::thread::spawn(move || {
+            work(&q, d.as_ref(), |r| {
+                let _ = tx.send(r);
+            })
+        }));
+    }
+    let now = Instant::now();
+    let job = |id: u64, m: &str| Job {
+        id: json!(id),
+        method: m.into(),
+        params: json!({}),
+        expires: now + Duration::from_secs(60),
+    };
+    assert!(queue.push(job(1, "pc_lighting.set_zone"), now));
+    assert!(queue.push(job(2, "health.read"), now));
+    let quick = rrx.recv_timeout(Duration::from_secs(5)).expect("not held up");
+    assert_eq!(quick.id, json!(2));
+    let _ = release.send(());
+    let slow = rrx.recv_timeout(Duration::from_secs(5)).expect("released");
+    assert_eq!(slow.id, json!(1));
+    queue.close();
+    for t in threads {
+        t.join().unwrap();
+    }
+}
