@@ -928,7 +928,7 @@ impl Pending {
 #[cfg(windows)]
 mod runner {
     use std::io::{BufRead, BufReader, Read};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -1049,7 +1049,10 @@ mod runner {
 
     /// Ends the reader: cancels its blocked read until it has gone, so no thread or handle
     /// outlives the connection (bounded: 40 tries of 50 ms).
-    fn stop_reader(conn: &ChannelConn, done: &Receiver<()>) {
+    fn stop_reader(conn: &ChannelConn, done: &Receiver<()>, stop: &AtomicBool) {
+        // A hub that floods lines can have the reader between two reads when a cancel lands,
+        // which then cancels nothing: the flag ends it at the next line instead.
+        stop.store(true, Ordering::SeqCst);
         for _ in 0..40 {
             conn.cancel();
             match done.recv_timeout(Duration::from_millis(50)) {
@@ -1076,12 +1079,17 @@ mod runner {
         let reader = conn.clone();
         let canceller = conn.clone();
         let ltx = tx.clone();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let reader_stop = stop.clone();
         READERS.fetch_add(1, Ordering::SeqCst);
         crate::foxglove::services::spawn_named("hub-link-read", move || {
             let _done = done_tx;
             let mut reader = BufReader::new(reader);
             loop {
                 let mut line = String::new();
+                if reader_stop.load(Ordering::SeqCst) {
+                    break;
+                }
                 match (&mut reader)
                     .take(MAX_MESSAGE as u64 + 2)
                     .read_line(&mut line)
@@ -1099,7 +1107,7 @@ mod runner {
             READERS.fetch_sub(1, Ordering::SeqCst);
         });
         let (ended, live) = converse(launch, conn, generation, tx, rx, pending, facts);
-        stop_reader(&canceller, &done_rx);
+        stop_reader(&canceller, &done_rx, &stop);
         (ended, live)
     }
 
