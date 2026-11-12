@@ -19,6 +19,9 @@ pub fn start() {
     if super::repaint_trace::disabled("api") {
         return;
     }
+    // Who is on the pipe name, for the log only (#1143 P4): no behaviour changes.
+    #[cfg(windows)]
+    super::one_owner::check();
     restore_on_connect();
     // Supervised (#587): a restart opens the pipe again.
     #[cfg(windows)]
