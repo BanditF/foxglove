@@ -97,7 +97,8 @@ const ARETE_PROVIDES: &str = r#""method:gpu.*", "method:vulpes.*", "facts:gpu.*"
 fn rig(grants: &[&str], now: Instant) -> (Router, ConnId, ConnId) {
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
     r.add_module(adopted(ARETE, GPU));
-    r.apply_manifest(&manifest(ARETE, ARETE_PROVIDES, ""));
+    // The manifest says `arete.hub`; the reader writes `vulpes.hub` (§4.3), the id used here.
+    r.apply_manifest(&manifest("arete.hub", ARETE_PROVIDES, ""));
     r.add_module(entry(CALLER, Holder::FirstParty, grants, Some(&[])));
     let a = module(&mut r, ARETE, now);
     let rejected = register(&mut r, a, &["gpu.*", "vulpes.*"], &["gpu.*"], now);
@@ -236,16 +237,32 @@ fn a_down_provider_with_activation_on_call_is_started_and_the_call_waits() {
     assert!(sends(&out, c).is_empty(), "queued, not refused");
 }
 
+/// The first-party areas (checks.rs) but `gpu.*`, which an adopted module may take.
+const CLOSED: &[&str] = &[
+    "lighting.*",
+    "screens.*",
+    "art.*",
+    "ai.*",
+    "image.*",
+    "devices.*",
+    "behaviors.*",
+    "profiles.*",
+    "focus.*",
+    "modules.*",
+];
+const ON_CALL: &str = "[activation]\non = [\"call\"]\n";
+
 #[test]
 fn an_adopted_module_provides_only_what_its_manifest_declares() {
     let now = Instant::now();
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
     r.add_module(adopted(
         ARETE,
-        &["provide:gpu.*", "provide:art.*", "provide:lighting.*"],
+        &["provide:gpu.*", "provide:art.*", "provide:lighting.set"],
     ));
     r.apply_manifest(&manifest(ARETE, r#""method:gpu.*""#, ""));
     let a = module(&mut r, ARETE, now);
+    // art.* is granted but not declared; `*` is neither.
     let rejected = register(
         &mut r,
         a,
@@ -253,18 +270,151 @@ fn an_adopted_module_provides_only_what_its_manifest_declares() {
         &[],
         now,
     );
-    let items: Vec<&str> = rejected
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|x| x["item"].as_str().unwrap())
-        .collect();
-    assert_eq!(items, ["art.*", "lighting.set", "*"], "{rejected}");
-    assert!(rejected
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|x| x["error"] == "permission.provider"));
+    assert_eq!(rejected.as_array().unwrap().len(), 3, "{rejected}");
+}
+
+#[test]
+fn an_adopted_module_never_provides_a_first_party_area_declared_and_granted() {
+    let now = Instant::now();
+    // Declared in the manifest AND granted, with no root catalog and with one that lists none
+    // of them: every closed area is still refused (§6.3).
+    for root in [false, true] {
+        for area in CLOSED {
+            let grant = format!("provide:{area}");
+            let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+            r.add_module(adopted(ARETE, &[&grant, "provide:gpu.*"]));
+            r.apply_manifest(&manifest(
+                ARETE,
+                &format!(r#""method:{area}", "method:gpu.*""#),
+                "",
+            ));
+            if root {
+                r.set_root_areas(vec![("foxglove.other".into(), "other.*".into())]);
+            }
+            let a = module(&mut r, ARETE, now);
+            let rejected = register(&mut r, a, &[area, "gpu.*"], &[], now);
+            assert_eq!(
+                rejected,
+                json!([{"item": area, "error": "permission.provider"}]),
+                "{area} root={root}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_refused_adopted_module_is_never_queued_a_call_nor_started() {
+    let now = Instant::now();
+    // Declares art.* with activation on call: ungranted, then granted but closed. A caller
+    // calls art.x: nothing is started, nothing queued (-32601).
+    for grants in [&[][..], &["provide:art.*"][..]] {
+        let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+        let mut e = adopted(ARETE, grants);
+        e.activate_on_call = true;
+        r.add_module(e);
+        r.apply_manifest(&manifest(ARETE, r#""method:art.*""#, ON_CALL));
+        r.add_module(entry(CALLER, Holder::FirstParty, &[], Some(&[])));
+        let c = module(&mut r, CALLER, now);
+        let out = call(&mut r, c, 5, "art.x", json!({}), now);
+        assert!(
+            !out.iter().any(|o| matches!(o, Out::Activate(_))),
+            "{out:?}"
+        );
+        assert_eq!(code(&sends(&out, c)[0]), -32601);
+    }
+}
+
+#[test]
+fn a_queued_call_is_dropped_when_the_started_module_has_no_accepted_route() {
+    let now = Instant::now();
+    // May provide gpu.* (queued and started), but the module registers nothing: on
+    // module.ready the queued call ends with error 2 and the module never sees it.
+    let (mut r, a, c) = rig(&["gpu.request:chat"], now);
+    r.apply_manifest(&manifest("arete.hub", ARETE_PROVIDES, ON_CALL));
+    r.disconnect(a);
+    let out = call(&mut r, c, 6, "gpu.request", json!({"class":"chat"}), now);
+    assert!(out.iter().any(|o| matches!(o, Out::Activate(_))), "{out:?}");
+    let a2 = module(&mut r, ARETE, now);
+    let out = r.receive(
+        a2,
+        r#"{"jsonrpc":"2.0","method":"module.ready","params":{"instance":"i"}}"#,
+        now,
+    );
+    assert!(
+        sends(&out, a2).is_empty(),
+        "the provider saw the call: {out:?}"
+    );
+    assert_eq!(code(&sends(&out, c)[0]), 2);
+}
+
+#[test]
+fn a_root_catalog_area_is_not_inherited_by_an_adopted_module_with_that_id() {
+    let now = Instant::now();
+    // The root catalog lists gpu.* for vulpes.hub, which is not installed; the adopted module
+    // carrying that id (through `arete.hub`) gets nothing from it (§6.5).
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(adopted(ARETE, GPU));
+    r.apply_manifest(&manifest("arete.hub", ARETE_PROVIDES, ""));
+    r.set_root_areas(vec![(ARETE.into(), "gpu.*".into())]);
+    let a = module(&mut r, ARETE, now);
+    let rejected = register(&mut r, a, &["gpu.*", "vulpes.*"], &[], now);
+    assert_eq!(
+        rejected,
+        json!([{"item":"gpu.*","error":"permission.provider"}])
+    );
+}
+
+#[test]
+fn a_later_catalog_assignment_drops_the_adopted_route() {
+    let now = Instant::now();
+    let (mut r, a, c) = rig(&["gpu.request:chat"], now);
+    let out = call(&mut r, c, 1, "gpu.request", json!({"class":"chat"}), now);
+    assert_eq!(sends(&out, a).len(), 1, "routed before the catalog");
+    // A catalog now gives gpu.* to Vulpes: the route goes, vulpes.* stays.
+    r.set_root_areas(vec![(VULPES.into(), "gpu.*".into())]);
+    let out = call(&mut r, c, 2, "gpu.request", json!({"class":"chat"}), now);
+    assert!(sends(&out, a).is_empty(), "{out:?}");
+    assert_eq!(code(&sends(&out, c)[0]), -32601);
+    let out = call(&mut r, c, 3, "vulpes.x", json!({}), now);
+    assert_eq!(sends(&out, a).len(), 1);
+}
+
+#[test]
+fn a_second_adopted_module_cannot_take_an_overlapping_area() {
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(adopted(ARETE, GPU));
+    r.apply_manifest(&manifest(ARETE, ARETE_PROVIDES, ""));
+    r.add_module(adopted("other.adopted", &["provide:gpu.*"]));
+    r.apply_manifest(&manifest("other.adopted", r#""method:gpu.*""#, ""));
+    let a = module(&mut r, ARETE, now);
+    assert_eq!(register(&mut r, a, &["gpu.*"], &[], now), json!([]));
+    let b = module(&mut r, "other.adopted", now);
+    let rejected = register(&mut r, b, &["gpu.*"], &[], now);
+    assert_eq!(
+        rejected,
+        json!([{"item":"gpu.*","error":"permission.provider"}])
+    );
+}
+
+#[test]
+fn a_caller_cannot_queue_without_limit_for_a_provider_that_is_down() {
+    let now = Instant::now();
+    let (mut r, a, c) = rig(&["gpu.request:chat"], now);
+    r.apply_manifest(&manifest("arete.hub", ARETE_PROVIDES, ON_CALL));
+    r.disconnect(a);
+    let mut last = vec![];
+    for i in 0..=64 {
+        last = call(
+            &mut r,
+            c,
+            100 + i,
+            "gpu.request",
+            json!({"class":"chat"}),
+            now,
+        );
+    }
+    assert_eq!(code(&sends(&last, c)[0]), 3);
 }
 
 #[test]

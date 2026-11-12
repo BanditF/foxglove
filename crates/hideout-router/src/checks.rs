@@ -42,6 +42,17 @@ pub const FIRST_PARTY_AREAS: &[&str] = &[
     "modules.*",
 ];
 
+/// The first-party areas an adopted module may still provide when no catalog gives them to
+/// another module: Arete's hub is the GPU broker (§8.9). Every other first-party area is closed
+/// to it, with or without a root catalog (§6.3).
+pub const ADOPTED_AREAS: &[&str] = &["gpu.*"];
+
+/// Whether an adopted module may provide `pattern` as far as the first-party areas go.
+pub fn adopted_area_ok(pattern: &str) -> bool {
+    !FIRST_PARTY_AREAS.iter().any(|a| overlap(a, pattern))
+        || ADOPTED_AREAS.iter().any(|a| covers(a, pattern))
+}
+
 /// Whether pattern `outer` (`a.b.*`, `*` or an exact name) covers `inner` (a name or a pattern).
 pub fn covers(outer: &str, inner: &str) -> bool {
     if outer == inner {
