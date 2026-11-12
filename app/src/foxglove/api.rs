@@ -11,6 +11,9 @@ use foxglove_plugin_api::rpc::{code, Error};
 use foxglove_plugin_host::{Client, Context, Devices, Limits};
 use serde_json::{json, Value};
 
+use super::wallpaper_leases::Fail;
+use super::wallpaper_sync;
+
 /// Starts the pipe listener (Windows; `FOXGLOVE_DISABLE=api` leaves it out).
 pub fn start() {
     if super::repaint_trace::disabled("api") {
@@ -94,6 +97,37 @@ fn params<T: serde::de::DeserializeOwned>(p: Value) -> Result<T, Error> {
         message: e.to_string(),
         data: None,
     })
+}
+
+/// The longest `reason` of a `wallpaper-engine.pause`.
+const WALLPAPER_REASON_MAX: usize = 64;
+
+/// A lease call that failed, as the API says it (#1120): 1 not installed, 2 not running, 6 the
+/// command failed or timed out, -32602 not a lease of this connection, 8 too many leases.
+fn wallpaper_error(e: Fail) -> Error {
+    let (code, message) = match e {
+        Fail::NotInstalled => (code::UNSUPPORTED, "Wallpaper Engine isn't installed".into()),
+        Fail::NotRunning => (code::DISCONNECTED, "Wallpaper Engine isn't running".into()),
+        Fail::Command(m) => (code::BACKEND, m),
+        Fail::Unknown => (
+            code::INVALID_PARAMS,
+            "not a lease of this connection".into(),
+        ),
+        Fail::TooMany => (
+            code::RATE_LIMITED,
+            "too many pause leases on this connection".into(),
+        ),
+    };
+    Error {
+        code,
+        message,
+        data: None,
+    }
+}
+
+/// [`params`] where a call has an argument of that name.
+fn parse_params<T: serde::de::DeserializeOwned>(p: Value) -> Result<T, Error> {
+    params(p)
 }
 
 fn unsupported() -> Error {
@@ -443,6 +477,36 @@ impl Devices for AppDevices {
                 end_leases(|l| l.id == p.lease && l.conn == conn);
                 Ok(json!({}))
             }
+            "wallpaper-engine.pause" => {
+                let p: methods::WallpaperPauseParams = parse_params(params)?;
+                if p.reason.chars().count() > WALLPAPER_REASON_MAX {
+                    return Err(Error {
+                        code: code::INVALID_PARAMS,
+                        message: format!("reason is longer than {WALLPAPER_REASON_MAX} characters"),
+                        data: None,
+                    });
+                }
+                let (lease, paused) =
+                    wallpaper_sync::pause(conn, &p.reason).map_err(wallpaper_error)?;
+                Ok(json!(methods::WallpaperPaused { lease, paused }))
+            }
+            "wallpaper-engine.release" => {
+                let p: methods::WallpaperReleaseParams = parse_params(params)?;
+                let ended = wallpaper_sync::release(conn, p.lease).map_err(wallpaper_error)?;
+                Ok(json!(methods::WallpaperReleased {
+                    played: ended.played,
+                    why: ended.why.map(str::to_string),
+                }))
+            }
+            "wallpaper-engine.status" => {
+                let (running, leases, paused_by_lease) = wallpaper_sync::status();
+                Ok(json!(methods::WallpaperStatus {
+                    running,
+                    owner: "foxglove".into(),
+                    leases,
+                    paused_by_lease,
+                }))
+            }
             "screens.panel_override" | "screens.info_override" => {
                 use base64::Engine;
                 let p: methods::PanelOverrideParams =
@@ -490,6 +554,8 @@ impl Devices for AppDevices {
 
     fn closed(&self, conn: u64) {
         end_leases(|l| l.conn == conn);
+        // Its Wallpaper Engine pause leases end too; the last one plays (#1120).
+        wallpaper_sync::connection_closed(conn);
         super::screens::clear_override(conn);
     }
 
@@ -1587,6 +1653,61 @@ mod parity_tests {
         assert_eq!(need("lights.page"), Some("devices.read"));
         // API 1.10 (#618 batch H): so is what the Scenes page's Presets card lists.
         assert_eq!(need("scenes.page"), Some("devices.read"));
+    }
+
+    /// #1120 (API 1.15): the Wallpaper Engine lease calls need `wallpaper.control`, which a tool
+    /// is approved for once like any other that is not sensitive; the calls refuse bad input and
+    /// say why they fail with the codes the Arete side relies on.
+    #[test]
+    fn wallpaper_engine_calls_use_wallpaper_control() {
+        let need = |m: &str| methods::find(m).and_then(|m| m.permission);
+        for m in [
+            "wallpaper-engine.pause",
+            "wallpaper-engine.release",
+            "wallpaper-engine.status",
+        ] {
+            assert_eq!(need(m), Some("wallpaper.control"), "{m}");
+        }
+        assert!(!Permission::WallpaperControl.sensitive());
+        let client = ClientInfo {
+            name: "t".into(),
+            version: "1".into(),
+        };
+        assert_eq!(
+            approve(&client, &[Permission::WallpaperControl]),
+            vec![Permission::WallpaperControl]
+        );
+
+        let long = "x".repeat(WALLPAPER_REASON_MAX + 1);
+        let e = AppDevices
+            .call_from(1, "wallpaper-engine.pause", json!({"reason": long}))
+            .unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS);
+        let e = AppDevices
+            .call_from(1, "wallpaper-engine.pause", json!({}))
+            .unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS);
+        let e = AppDevices
+            .call_from(1, "wallpaper-engine.release", json!({"lease": 99}))
+            .unwrap_err();
+        assert_eq!(
+            e.code,
+            code::INVALID_PARAMS,
+            "not a lease of this connection"
+        );
+        let code_of = |f| wallpaper_error(f).code;
+        assert_eq!(code_of(Fail::NotInstalled), code::UNSUPPORTED);
+        assert_eq!(code_of(Fail::NotRunning), code::DISCONNECTED);
+        assert_eq!(code_of(Fail::Command("x".into())), code::BACKEND);
+        assert_eq!(code_of(Fail::TooMany), code::RATE_LIMITED);
+        let status: methods::WallpaperStatus = serde_json::from_value(
+            AppDevices
+                .call_from(1, "wallpaper-engine.status", json!({}))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!((status.owner.as_str(), status.leases), ("foxglove", 0));
+        assert!(!status.paused_by_lease);
     }
 
     /// `scenes.page` answers with the Presets card's rows, in the card's order and words.

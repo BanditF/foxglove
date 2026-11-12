@@ -1009,6 +1009,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
         if let Some(crc) = art.take_read(watched) {
             super::art_service::read_kept(crc);
         }
+        ANY_PAUSED.store(clients.iter().any(|c| c.paused), Ordering::Relaxed);
         let n = clients.len();
         if CONNECTED.swap(n, Ordering::Relaxed) != n {
             super::tray_panel::wake();
@@ -1430,6 +1431,14 @@ fn showing_name(s: &super::art_service::Snapshot) -> Option<String> {
 /// Tests stand in for the program in front.
 #[cfg(test)]
 static FAKE_FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
+/// A connected wallpaper reports itself paused: Wallpaper Engine is paused, by the user or
+/// otherwise (#1120: a lease's `play` never goes over it).
+pub(super) fn wallpaper_paused() -> bool {
+    ANY_PAUSED.load(Ordering::Relaxed)
+}
+
+static ANY_PAUSED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 pub(super) fn fullscreen_now() -> bool {

@@ -1,5 +1,5 @@
 {
-  "api": "1.14",
+  "api": "1.15",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -2984,6 +2984,122 @@
           "open"
         ],
         "title": "TrayPanel",
+        "type": "object"
+      }
+    },
+    "wallpaper-engine.pause": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Holds Wallpaper Engine paused until released (#1120, API 1.15). The first lease pauses it; play\ngoes out only when the last one ends, and never over the user's own pause or with a\nfull-screen program in front. Leases end with the connection.",
+        "properties": {
+          "reason": {
+            "description": "Why, at most 64 characters (shown as the fact `wallpaper_engine.paused_by`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "WallpaperPauseParams",
+        "type": "object"
+      },
+      "permission": "wallpaper.control",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "lease": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paused": {
+            "description": "`false`: Wallpaper Engine was paused already (the user's pause), so this lease will not\nplay it.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "lease",
+          "paused"
+        ],
+        "title": "WallpaperPaused",
+        "type": "object"
+      }
+    },
+    "wallpaper-engine.release": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "lease": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lease"
+        ],
+        "title": "WallpaperReleaseParams",
+        "type": "object"
+      },
+      "permission": "wallpaper.control",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "played": {
+            "description": "`play` was sent.",
+            "type": "boolean"
+          },
+          "why": {
+            "description": "Why not: `user-paused`, `fullscreen` or `held` (other leases remain).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "played"
+        ],
+        "title": "WallpaperReleased",
+        "type": "object"
+      }
+    },
+    "wallpaper-engine.status": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "wallpaper.control",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "leases": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "owner": {
+            "description": "Always `\"foxglove\"`: the app sends every Wallpaper Engine command.",
+            "type": "string"
+          },
+          "paused_by_lease": {
+            "type": "boolean"
+          },
+          "running": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "running",
+          "owner",
+          "leases",
+          "paused_by_lease"
+        ],
+        "title": "WallpaperStatus",
         "type": "object"
       }
     }

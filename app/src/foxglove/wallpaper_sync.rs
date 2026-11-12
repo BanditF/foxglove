@@ -60,8 +60,12 @@ use std::time::{Duration, Instant};
 
 use foxglove_scene::{Clock, Effect, Rect, RoomMap, WallpaperScene};
 
+use super::wallpaper_leases::{Ended, Fail, Leases};
 pub use super::wallpaper_manifest::Supports;
 use super::wallpaper_sync_health::{self as health, Reason};
+
+/// The reasons of the live leases, as a fact (#1120).
+pub const PAUSED_BY: &str = "wallpaper_engine.paused_by";
 
 /// The properties a wallpaper declares in its `project.json` to receive them (each one its
 /// manifest's `supports` names: `layer`, `gamemode`, `clock`, `foxglove_live`).
@@ -229,6 +233,8 @@ pub trait Apply: Send {
     /// Whether anything may be sent now (Wallpaper Engine runs).
     fn ready(&mut self) -> bool;
     fn apply(&mut self, location: &str, props: &str) -> Result<(), String>;
+    /// Wallpaper Engine's `-control pause` or `-control play` (#1120): the local API's leases.
+    fn control(&mut self, command: &str) -> Result<(), String>;
     /// Each Windows display's interface path, for [`monitor_rect`].
     fn interfaces(&mut self) -> Vec<(String, String)>;
 }
@@ -374,6 +380,11 @@ impl<A: Apply> Pusher<A> {
         out
     }
 
+    /// The sender, for the lease commands that run between pushes (#1120).
+    pub fn apply_mut(&mut self) -> &mut A {
+        &mut self.apply
+    }
+
     /// Quitting: the monitors that were sent something are told Foxglove has gone.
     pub fn quit(&mut self) {
         let told = std::mem::take(&mut self.sent);
@@ -402,7 +413,43 @@ enum Wake {
     Reinstalled,
     /// A wallpaper connected to the live feed: it just loaded.
     Reconnected,
+    /// A lease call of the local API (#1120), run between pushes.
+    Control(Ctl),
     Quit(Sender<()>),
+}
+
+/// What a lease call needs from the worker (#1120, `wallpaper-engine.*`).
+pub enum Ctl {
+    Pause {
+        conn: u64,
+        reason: String,
+        /// A paired wallpaper reports itself paused: the user's own pause.
+        user_paused: bool,
+        reply: Sender<Reply>,
+    },
+    Release {
+        conn: u64,
+        lease: u64,
+        reply: Sender<Reply>,
+    },
+    Status(Sender<Reply>),
+    /// A connection closed: its leases end.
+    Closed(u64),
+}
+
+/// The worker's answer to a [`Ctl`].
+pub enum Reply {
+    Paused {
+        lease: u64,
+        paused: bool,
+    },
+    Released(Ended),
+    Status {
+        running: bool,
+        leases: u32,
+        paused_by_lease: bool,
+    },
+    Failed(Fail),
 }
 
 /// How long a layer change waits for the next, and a run of them at most; the same with a
@@ -442,6 +489,11 @@ impl<F: FnMut() -> bool> Screen<F> {
     }
 
     /// Reads it again; `true` when a full-screen program has just left the front.
+    /// Whether a full-screen program is in front right now, without taking the edge.
+    fn now(&mut self) -> bool {
+        (self.read)()
+    }
+
     fn left(&mut self) -> bool {
         let was = std::mem::replace(&mut self.full, (self.read)());
         was && !self.full
@@ -458,6 +510,8 @@ enum Next {
         reconnected: bool,
     },
     Quit(Sender<()>),
+    /// A lease call; the run in progress (if any) goes on after it.
+    Control(Ctl, Option<Run>),
     /// Every sender has gone.
     Closed,
 }
@@ -515,8 +569,18 @@ impl Run {
 /// else comes, and so does a wallpaper reinstalled (from its last change, at most
 /// `settle.game_max` from its first); quitting wins. A foreground change that isn't such an edge sends nothing. The
 /// waits are one-shot deadlines on the channel: nothing wakes without a change.
+#[cfg(test)]
 fn next<F: FnMut() -> bool>(rx: &Receiver<Wake>, settle: Settle, screen: &mut Screen<F>) -> Next {
-    let mut run: Option<Run> = None;
+    next_from(rx, settle, screen, None)
+}
+
+/// [`next`], continuing the run `run` that a lease call interrupted.
+fn next_from<F: FnMut() -> bool>(
+    rx: &Receiver<Wake>,
+    settle: Settle,
+    screen: &mut Screen<F>,
+    mut run: Option<Run>,
+) -> Next {
     loop {
         let got = match &run {
             None => match rx.recv() {
@@ -539,6 +603,10 @@ fn next<F: FnMut() -> bool>(rx: &Receiver<Wake>, settle: Settle, screen: &mut Sc
         if let Wake::Quit(ack) = got {
             return Next::Quit(ack);
         }
+        // A lease call goes first, ahead of any push; the run waits for it.
+        if let Wake::Control(ctl) = got {
+            return Next::Control(ctl, run);
+        }
         let now = Instant::now();
         // Read on every wake, so the edge is seen even without a foreground event.
         if screen.left() {
@@ -548,7 +616,7 @@ fn next<F: FnMut() -> bool>(rx: &Receiver<Wake>, settle: Settle, screen: &mut Sc
             r.reason = Reason::Reload;
         }
         match got {
-            Wake::Quit(_) => unreachable!("handled above"),
+            Wake::Quit(_) | Wake::Control(_) => unreachable!("handled above"),
             Wake::Foreground => {}
             Wake::Layer => {
                 let (wait, max) = if screen.full {
@@ -755,18 +823,29 @@ pub fn quit() {
     }
 }
 
+/// Takes the one worker slot for `tx`: `false` when a worker has it already or Foxglove is
+/// quitting. The check and the claim are one step under the lock, so two callers at once (a
+/// wallpaper change and an API pause) never start two workers (#1120).
+fn claim_worker(s: &mut Shared, tx: &Sender<Wake>) -> bool {
+    if s.wake.is_some() || s.quitting {
+        return false;
+    }
+    s.workers += 1;
+    s.wake = Some((s.workers, tx.clone()));
+    true
+}
+
 fn start_worker() {
     let (tx, rx) = mpsc::channel::<Wake>();
+    if !with(|s| claim_worker(s, &tx)) {
+        return;
+    }
     // Seed the layer from the facts the keyboard already reported, then follow its changes.
     let facts = super::devices::bus().facts();
     let layers = facts.subscribe("keyboard.layers");
     set_layers(match facts.get("keyboard.layers") {
         Some(foxglove_devices::facts::Value::Bytes(b)) => Some(b),
         _ => None,
-    });
-    with(|s| {
-        s.workers += 1;
-        s.wake = Some((s.workers, tx.clone()));
     });
     // The program in front (`foreground.rs`): a full-screen one leaving starts Wallpaper
     // Engine's reload (#586).
@@ -843,22 +922,49 @@ fn run(
     let mut last_scene: Option<(String, i64)> = None;
     // A reload under Stop that hasn't been answered yet (the program came back first).
     let mut resend = false;
+    let mut leases = Leases::default();
+    // A run a lease call interrupted, and the quiet after a play.
+    let mut carry: Option<Run> = None;
     loop {
-        let (mut reason, left_full, reconnected) = match next(rx, settle, &mut screen) {
-            Next::Sync {
-                reason,
-                left_full,
-                reconnected,
-            } => (reason, left_full, reconnected),
-            Next::Quit(ack) => {
-                pusher.quit();
-                let _ = ack.send(());
-                return;
-            }
-            Next::Closed => return,
-        };
+        let (mut reason, left_full, reconnected) =
+            match next_from(rx, settle, &mut screen, carry.take()) {
+                Next::Control(ctl, run) => {
+                    carry = run;
+                    let full = screen.now();
+                    if serve(ctl, &mut leases, pusher.apply_mut(), full) {
+                        // Wallpaper Engine resumes: a `-control` command meanwhile lands in it.
+                        let now = Instant::now();
+                        let r =
+                            carry.get_or_insert_with(|| Run::new(Reason::Wallpapers, None, now));
+                        let until = now + settle.reload;
+                        r.quiet_until = Some(r.quiet_until.map_or(until, |q| q.max(until)));
+                    }
+                    announce(&leases);
+                    continue;
+                }
+                Next::Sync {
+                    reason,
+                    left_full,
+                    reconnected,
+                } => (reason, left_full, reconnected),
+                Next::Quit(ack) => {
+                    // Play first (when it is ours to play), then tell the wallpapers we've gone.
+                    let full = screen.now();
+                    if leases.end_all(pusher.apply_mut(), full).is_some() {
+                        announce(&leases);
+                    }
+                    pusher.quit();
+                    let _ = ack.send(());
+                    return;
+                }
+                Next::Closed => return,
+            };
         let (state, targets, reloads) = read();
         resend |= left_full && reloads;
+        if leases.paused_by_lease() {
+            // Paused for a lease: the newest state goes once it plays (the sent state is kept).
+            continue;
+        }
         let resent = resend && !screen.full;
         if resent {
             // The reloaded wallpaper starts from its saved properties: everything goes once.
@@ -918,6 +1024,156 @@ fn run(
     }
 }
 
+/// Runs one lease call; `true` when it sent `play`.
+fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> bool {
+    let reply = |to: Sender<Reply>, r: Reply| {
+        let _ = to.send(r);
+    };
+    match ctl {
+        Ctl::Pause {
+            conn,
+            reason,
+            user_paused,
+            reply: to,
+        } => {
+            match leases.pause(apply, conn, &reason, user_paused) {
+                Ok((lease, paused)) => {
+                    if to.send(Reply::Paused { lease, paused }).is_err() {
+                        // The caller gave up (timed out): nobody holds this lease and nobody
+                        // knows its id, so it ends now; the play follows when it was the last.
+                        return leases
+                            .release(apply, conn, lease, full)
+                            .is_ok_and(|ended| ended.played);
+                    }
+                }
+                Err(e) => reply(to, Reply::Failed(e)),
+            }
+            false
+        }
+        Ctl::Release {
+            conn,
+            lease,
+            reply: to,
+        } => match leases.release(apply, conn, lease, full) {
+            Ok(ended) => {
+                reply(to, Reply::Released(ended));
+                ended.played
+            }
+            Err(e) => {
+                reply(to, Reply::Failed(e));
+                false
+            }
+        },
+        Ctl::Status(to) => {
+            let running = apply.ready();
+            reply(
+                to,
+                Reply::Status {
+                    running,
+                    leases: leases.count(),
+                    paused_by_lease: leases.paused_by_lease(),
+                },
+            );
+            false
+        }
+        Ctl::Closed(conn) => leases
+            .drop_conn(apply, conn, full)
+            .is_some_and(|ended| ended.played),
+    }
+}
+
+/// The `wallpaper_engine.paused_by` fact and the health counts, after the leases changed.
+fn announce(leases: &Leases) {
+    let facts = super::devices::bus().facts();
+    match leases.reasons() {
+        r if r.is_empty() => {
+            facts.remove(PAUSED_BY);
+        }
+        r => facts.set(PAUSED_BY, foxglove_devices::facts::Value::Text(r)),
+    }
+    health::note(|h| {
+        h.lease_pauses = leases.paused;
+        h.lease_plays = leases.played;
+        h.lease_dropped = leases.dropped;
+    });
+}
+
+/// How long a lease call waits for the worker, which may be in a push (5 s each).
+const CONTROL_WAIT: Duration = Duration::from_secs(20);
+
+/// A lease call of the local API (#1120): `make` builds the request around the reply channel.
+/// `Pause` (`start`) starts the worker when Wallpaper Engine runs and none does; the others
+/// need one.
+fn control(make: impl FnOnce(Sender<Reply>) -> Ctl, start: bool) -> Result<Reply, Fail> {
+    if start {
+        if super::wallpaper_engine::cli_exe(&super::wallpaper_engine::presence()).is_none() {
+            return Err(Fail::NotInstalled);
+        }
+        if !super::wallpaper_engine::running_now() {
+            return Err(Fail::NotRunning);
+        }
+        if with(|s| s.wake.is_none() && !s.quitting) {
+            start_worker();
+        }
+    }
+    let Some((_, tx)) = with(|s| s.wake.clone()) else {
+        return Err(if start {
+            Fail::NotRunning
+        } else {
+            Fail::Unknown
+        });
+    };
+    let (reply, answer) = mpsc::channel();
+    tx.send(Wake::Control(make(reply)))
+        .map_err(|_| Fail::NotRunning)?;
+    answer
+        .recv_timeout(CONTROL_WAIT)
+        .map_err(|_| Fail::Command("Wallpaper Engine did not answer in time".into()))
+}
+
+/// `wallpaper-engine.pause`: a lease; the first one pauses Wallpaper Engine.
+pub fn pause(conn: u64, reason: &str) -> Result<(u64, bool), Fail> {
+    let user_paused = super::live_feed::wallpaper_paused();
+    let reason = reason.to_string();
+    let ask = |reply| Ctl::Pause {
+        conn,
+        reason,
+        user_paused,
+        reply,
+    };
+    match control(ask, true)? {
+        Reply::Paused { lease, paused } => Ok((lease, paused)),
+        Reply::Failed(e) => Err(e),
+        _ => Err(Fail::Unknown),
+    }
+}
+
+/// `wallpaper-engine.release`: ends a lease; the last one plays.
+pub fn release(conn: u64, lease: u64) -> Result<Ended, Fail> {
+    match control(|reply| Ctl::Release { conn, lease, reply }, false)? {
+        Reply::Released(e) => Ok(e),
+        Reply::Failed(e) => Err(e),
+        _ => Err(Fail::Unknown),
+    }
+}
+
+/// `wallpaper-engine.status`: no worker means no leases.
+pub fn status() -> (bool, u32, bool) {
+    match control(Ctl::Status, false) {
+        Ok(Reply::Status {
+            running,
+            leases,
+            paused_by_lease,
+        }) => (running, leases, paused_by_lease),
+        _ => (super::wallpaper_engine::running_now(), 0, false),
+    }
+}
+
+/// A connection of the local API closed: its leases end (no answer is waited for).
+pub fn connection_closed(conn: u64) {
+    wake(Wake::Control(Ctl::Closed(conn)));
+}
+
 /// Wallpaper Engine's command line.
 #[derive(Default)]
 struct Cli {
@@ -946,6 +1202,18 @@ impl Apply for Cli {
         run_cli(&exe, &args, &raw)
     }
 
+    fn control(&mut self, command: &str) -> Result<(), String> {
+        // Only these two; the same running check as a push.
+        if !matches!(command, "pause" | "play") {
+            return Err(format!("not a control command: {command}"));
+        }
+        if !super::wallpaper_engine::running_now() {
+            return Err("Wallpaper Engine isn't running".into());
+        }
+        let exe = self.exe.clone().ok_or("no Wallpaper Engine program")?;
+        run_cli(&exe, &["-control".into(), command.into()], "")
+    }
+
     fn interfaces(&mut self) -> Vec<(String, String)> {
         interfaces()
     }
@@ -958,9 +1226,12 @@ fn run_cli(exe: &std::path::Path, args: &[String], raw: &str) -> Result<(), Stri
     use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
     use windows::Win32::System::Threading::{WaitForSingleObject, CREATE_NO_WINDOW};
 
-    let mut child = std::process::Command::new(exe)
-        .args(args)
-        .raw_arg(raw)
+    let mut command = std::process::Command::new(exe);
+    command.args(args);
+    if !raw.is_empty() {
+        command.raw_arg(raw);
+    }
+    let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1091,6 +1362,7 @@ mod tests {
         pushes: Vec<(String, String)>,
         interface_reads: usize,
         fail: bool,
+        controls: Vec<String>,
     }
 
     impl Apply for &mut Fake {
@@ -1102,6 +1374,10 @@ mod tests {
                 return Err("refused".into());
             }
             self.pushes.push((location.into(), props.into()));
+            Ok(())
+        }
+        fn control(&mut self, command: &str) -> Result<(), String> {
+            self.controls.push(command.into());
             Ok(())
         }
         fn interfaces(&mut self) -> Vec<(String, String)> {
@@ -1511,6 +1787,10 @@ mod tests {
             let _ = self.0.send(props.to_string());
             Ok(())
         }
+        fn control(&mut self, command: &str) -> Result<(), String> {
+            let _ = self.0.send(format!("control {command}"));
+            Ok(())
+        }
         fn interfaces(&mut self) -> Vec<(String, String)> {
             ifaces()
         }
@@ -1579,6 +1859,256 @@ mod tests {
         acked.recv_timeout(wait).expect("quit answers");
         assert_eq!(pushes.recv_timeout(wait).unwrap(), gone(Supports::ALL));
         worker.join().unwrap();
+    }
+
+    /// Wallpaper Engine's command line as a shared log; a push waits at `gate` while it is shut.
+    #[derive(Clone)]
+    struct Logged {
+        log: std::sync::Arc<Mutex<Vec<String>>>,
+        gate: std::sync::Arc<(Mutex<bool>, std::sync::Condvar)>,
+        pushing: Sender<()>,
+    }
+
+    impl Logged {
+        fn new(open: bool) -> (Logged, Receiver<()>) {
+            let (pushing, seen) = mpsc::channel();
+            let one = Logged {
+                log: Default::default(),
+                gate: std::sync::Arc::new((Mutex::new(open), std::sync::Condvar::new())),
+                pushing,
+            };
+            (one, seen)
+        }
+        fn open(&self) {
+            *self.gate.0.lock().unwrap() = true;
+            self.gate.1.notify_all();
+        }
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    impl Apply for Logged {
+        fn ready(&mut self) -> bool {
+            true
+        }
+        fn apply(&mut self, _: &str, props: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push("apply start".into());
+            let _ = self.pushing.send(());
+            let mut open = self.gate.0.lock().unwrap();
+            while !*open {
+                open = self.gate.1.wait(open).unwrap();
+            }
+            drop(open);
+            let what = if props.contains("\"B\"") {
+                "B"
+            } else {
+                "other"
+            };
+            self.log.lock().unwrap().push(format!("apply end {what}"));
+            Ok(())
+        }
+        fn control(&mut self, command: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(command.to_string());
+            Ok(())
+        }
+        fn interfaces(&mut self) -> Vec<(String, String)> {
+            ifaces()
+        }
+    }
+
+    fn pause_ctl(conn: u64, user_paused: bool) -> (Wake, Receiver<Reply>) {
+        let (reply, got) = mpsc::channel();
+        let ctl = Ctl::Pause {
+            conn,
+            reason: "model loaded".into(),
+            user_paused,
+            reply,
+        };
+        (Wake::Control(ctl), got)
+    }
+
+    fn release_ctl(conn: u64, lease: u64) -> (Wake, Receiver<Reply>) {
+        let (reply, got) = mpsc::channel();
+        (Wake::Control(Ctl::Release { conn, lease, reply }), got)
+    }
+
+    fn layer_state(layer: &str) -> std::sync::Arc<Mutex<State>> {
+        std::sync::Arc::new(Mutex::new(State {
+            layer: Some(layer.into()),
+            ..State::default()
+        }))
+    }
+
+    type Flag = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
+    fn spawn_worker(
+        apply: Logged,
+        state: &std::sync::Arc<Mutex<State>>,
+        full: &Flag,
+    ) -> (Sender<Wake>, std::thread::JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel();
+        let (state, full) = (state.clone(), full.clone());
+        let worker = std::thread::spawn(move || {
+            let read = move || {
+                (
+                    state.lock().unwrap().clone(),
+                    vec![target(WE_LEFT, "hud")],
+                    false,
+                )
+            };
+            run(&rx, apply, read, gaming(), screen(&full));
+        });
+        (tx, worker)
+    }
+
+    fn quit(tx: &Sender<Wake>, worker: std::thread::JoinHandle<()>) {
+        let (ack, acked) = mpsc::channel();
+        tx.send(Wake::Quit(ack)).unwrap();
+        acked
+            .recv_timeout(Duration::from_secs(5))
+            .expect("quit answers");
+        worker.join().unwrap();
+    }
+
+    /// #1120: a pause asked for during a push waits for it (one Wallpaper Engine process at a
+    /// time); pushes during the pause hold, and the newest goes once, after the play and the
+    /// reload quiet.
+    #[test]
+    fn a_pause_during_a_push_is_serialised_and_pushes_wait_for_the_play() {
+        let wait = Duration::from_secs(5);
+        let (apply, pushing) = Logged::new(false);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_worker(apply.clone(), &state, &full);
+        tx.send(Wake::Changed(Reason::Scene)).unwrap();
+        pushing.recv_timeout(wait).expect("the push starts");
+
+        let (pause, paused) = pause_ctl(1, false);
+        tx.send(pause).unwrap();
+        assert!(
+            paused.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the pause waits while the push runs"
+        );
+        assert_eq!(apply.log(), ["apply start"], "no second process meanwhile");
+        apply.open();
+        assert!(matches!(
+            paused.recv_timeout(wait).unwrap(),
+            Reply::Paused { paused: true, .. }
+        ));
+        assert_eq!(apply.log(), ["apply start", "apply end other", "pause"]);
+
+        // A change while paused: held, not sent.
+        state.lock().unwrap().layer = Some("B".into());
+        tx.send(Wake::Changed(Reason::Layer)).unwrap();
+        assert!(pushing.recv_timeout(Duration::from_millis(400)).is_err());
+
+        let (release, released) = release_ctl(1, 1);
+        tx.send(release).unwrap();
+        assert!(matches!(
+            released.recv_timeout(wait).unwrap(),
+            Reply::Released(Ended { played: true, .. })
+        ));
+        pushing
+            .recv_timeout(wait)
+            .expect("the newest state goes after the play");
+        quit(&tx, worker);
+        assert_eq!(
+            apply.log()[3..],
+            [
+                "play",
+                "apply start",
+                "apply end B",
+                "apply start",
+                "apply end other"
+            ],
+            "play, the held push once, then the quit's `gone`"
+        );
+    }
+
+    /// #1120: a connection that ends ends its lease, but with a full-screen program in front the
+    /// play is left to Wallpaper Engine.
+    #[test]
+    fn a_closed_connection_ends_its_lease_and_a_full_screen_program_defers_the_play() {
+        let wait = Duration::from_secs(5);
+        let (apply, _pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_worker(apply.clone(), &state, &full);
+        for (conn, in_front) in [(1, false), (2, true)] {
+            full.store(in_front, std::sync::atomic::Ordering::SeqCst);
+            let (pause, paused) = pause_ctl(conn, false);
+            tx.send(pause).unwrap();
+            paused.recv_timeout(wait).unwrap();
+            tx.send(Wake::Control(Ctl::Closed(conn))).unwrap();
+            let (status, answer) = mpsc::channel();
+            tx.send(Wake::Control(Ctl::Status(status))).unwrap();
+            assert!(matches!(
+                answer.recv_timeout(wait).unwrap(),
+                Reply::Status {
+                    leases: 0,
+                    paused_by_lease: false,
+                    ..
+                }
+            ));
+        }
+        quit(&tx, worker);
+        assert_eq!(
+            apply.log(),
+            ["pause", "play", "pause"],
+            "the second play is Wallpaper Engine's"
+        );
+    }
+
+    /// #1120: quitting with a lease plays first (when it is ours to play), then says `gone`.
+    #[test]
+    fn quitting_with_a_lease_plays_then_says_gone() {
+        let wait = Duration::from_secs(5);
+        let (apply, pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_worker(apply.clone(), &state, &full);
+        tx.send(Wake::Changed(Reason::Scene)).unwrap();
+        pushing.recv_timeout(wait).unwrap();
+        let (pause, paused) = pause_ctl(1, false);
+        tx.send(pause).unwrap();
+        paused.recv_timeout(wait).unwrap();
+        quit(&tx, worker);
+        assert_eq!(
+            apply.log(),
+            [
+                "apply start",
+                "apply end other",
+                "pause",
+                "play",
+                "apply start",
+                "apply end other"
+            ]
+        );
+    }
+
+    /// #1120: the user's own pause is reported, not played over.
+    #[test]
+    fn the_users_own_pause_is_not_played_over_by_the_worker() {
+        let wait = Duration::from_secs(5);
+        let (apply, _pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_worker(apply.clone(), &state, &full);
+        let (pause, paused) = pause_ctl(1, true);
+        tx.send(pause).unwrap();
+        assert!(matches!(
+            paused.recv_timeout(wait).unwrap(),
+            Reply::Paused { paused: false, .. }
+        ));
+        let (release, released) = release_ctl(1, 1);
+        tx.send(release).unwrap();
+        match released.recv_timeout(wait).unwrap() {
+            Reply::Released(e) => assert_eq!((e.played, e.why), (false, Some("user-paused"))),
+            _ => panic!("a release answers Released"),
+        }
+        quit(&tx, worker);
+        assert!(
+            apply.log().is_empty(),
+            "no pause, no play: {:?}",
+            apply.log()
+        );
     }
 
     /// A full-screen program in front, as a switch the test flips.
@@ -1805,6 +2335,72 @@ mod tests {
         forget(7);
         assert!(with(|s| s.wake.as_ref().is_some_and(|(n, _)| *n == 8)));
         with(|s| s.wake = None);
+    }
+
+    /// #1120: two callers at once get one worker slot, and none while quitting.
+    #[test]
+    fn only_one_worker_slot_is_ever_taken() {
+        let shared = std::sync::Arc::new(Mutex::new(Shared::default()));
+        let won: usize = (0..8)
+            .map(|_| {
+                let shared = shared.clone();
+                std::thread::spawn(move || {
+                    let (tx, _rx) = mpsc::channel::<Wake>();
+                    let got = claim_worker(&mut shared.lock().unwrap(), &tx);
+                    // Keep the slot's sender alive, as the worker does.
+                    usize::from(got)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .sum();
+        assert_eq!(won, 1);
+        assert_eq!(shared.lock().unwrap().workers, 1);
+
+        let mut quitting = Shared {
+            quitting: true,
+            ..Shared::default()
+        };
+        let (tx, _rx) = mpsc::channel::<Wake>();
+        assert!(!claim_worker(&mut quitting, &tx));
+    }
+
+    /// #1120: a pause whose caller has timed out (nobody reads the answer) takes no lease that
+    /// nobody holds: it ends at once, and plays only when nothing else holds one.
+    #[test]
+    fn a_pause_nobody_waits_for_is_undone() {
+        let mut fake = Fake {
+            running: true,
+            ..Fake::default()
+        };
+        let mut leases = Leases::default();
+        let late = |conn| {
+            let (reply, gone) = mpsc::channel();
+            drop(gone);
+            Ctl::Pause {
+                conn,
+                reason: "late".into(),
+                user_paused: false,
+                reply,
+            }
+        };
+        assert!(serve(late(1), &mut leases, &mut &mut fake, false));
+        assert_eq!(leases.count(), 0);
+        assert_eq!(fake.controls, ["pause", "play"]);
+
+        // Another connection holds the pause: the orphan joins and leaves, sending nothing.
+        let (reply, _held) = mpsc::channel();
+        let hold = Ctl::Pause {
+            conn: 2,
+            reason: "real".into(),
+            user_paused: false,
+            reply,
+        };
+        assert!(!serve(hold, &mut leases, &mut &mut fake, false));
+        assert!(!serve(late(1), &mut leases, &mut &mut fake, false));
+        assert_eq!(leases.count(), 1);
+        assert_eq!(fake.controls, ["pause", "play", "pause"]);
     }
 
     fn version(secs: u64, entries: u64) -> Option<Version> {

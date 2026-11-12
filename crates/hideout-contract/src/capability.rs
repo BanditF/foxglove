@@ -228,6 +228,10 @@ pub fn check_grantable(cap: &Capability, holder: Holder) -> Result<(), Error> {
     {
         return never("only hideout.modules and the hideout CLI manage modules");
     }
+    // Pausing the user's wallpaper is for the user's own tools and modules, not an agent's (#1120).
+    if *cap == Capability::Kept(Permission::WallpaperControl) && holder == Holder::Mcp {
+        return never("never over MCP");
+    }
     if cap.is_key_level() {
         match holder {
             Holder::Mcp => return never("never over MCP"),
@@ -266,5 +270,19 @@ mod tests {
             Capability::parse("facts.write:*").unwrap_err().id,
             ErrorId::PermissionNever
         );
+    }
+
+    /// #1120: `wallpaper.control` is for the user's own tools, never an MCP client's.
+    #[test]
+    fn wallpaper_control_is_never_over_mcp() {
+        let cap = Capability::parse("wallpaper.control").unwrap();
+        assert!(!cap.sensitive());
+        assert_eq!(
+            check_grantable(&cap, Holder::Mcp).unwrap_err().id,
+            ErrorId::PermissionNever
+        );
+        for holder in [Holder::OutsideTool, Holder::FirstParty, Holder::HideoutCli] {
+            assert!(check_grantable(&cap, holder).is_ok());
+        }
     }
 }

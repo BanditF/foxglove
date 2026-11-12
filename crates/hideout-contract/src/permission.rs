@@ -55,6 +55,9 @@ pub enum Permission {
     Secrets,
     /// Open and close Foxglove's tray panel and bring its overlay window back (API 1.6, #618).
     AppWindows,
+    /// Hold Wallpaper Engine paused through Foxglove, which sends the commands (API 1.15,
+    /// #1120). Never over MCP (`check_grantable`).
+    WallpaperControl,
     /// Be told when a program's windows open and close (`apps.watch:<name>.exe`, API 1.3), so a
     /// plugin waits for an app instead of polling for it (#277).
     AppsWatch(String),
@@ -113,6 +116,7 @@ impl Permission {
                 format!("see whether {} is running", watched_name(exe, names))
             }
             Permission::AppWindows => "open and close Foxglove's tray panel and overlay".into(),
+            Permission::WallpaperControl => "pause and resume your live wallpaper".into(),
         }
     }
 }
@@ -280,6 +284,7 @@ impl TryFrom<String> for Permission {
                 "audio.inputs.mute" => Permission::AudioInputsMute,
                 "secrets" => Permission::Secrets,
                 "app.windows" => Permission::AppWindows,
+                "wallpaper.control" => Permission::WallpaperControl,
                 _ => return Err(format!("unknown permission {text:?}")),
             },
         })
@@ -315,6 +320,7 @@ impl From<Permission> for String {
             Permission::Secrets => "secrets".into(),
             Permission::AppsWatch(exe) => format!("apps.watch:{exe}"),
             Permission::AppWindows => "app.windows".into(),
+            Permission::WallpaperControl => "wallpaper.control".into(),
         }
     }
 }
@@ -437,6 +443,7 @@ mod tests {
             "files",
             "audio.inputs.read",
             "audio.inputs.mute",
+            "wallpaper.control",
             "secrets",
             "app.windows",
             "apps.watch:ExampleApp.exe",
@@ -511,6 +518,7 @@ mod tests {
             "audio.inputs.read",
             "audio.inputs.mute",
             "apps.watch:obs64.exe",
+            "wallpaper.control",
         ] {
             assert_eq!(String::from(p(s).unwrap()), s);
         }

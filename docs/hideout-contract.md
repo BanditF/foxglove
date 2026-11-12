@@ -1119,7 +1119,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   `lighting.lease`, `behaviors.invoke`, `screens.write`, `art.write`, `key.events`, `hid.raw`,
   `profiles.write`, `focus.write`, `net`, `net.connect:<host>:<port|*>`,
   `net.listen:udp|tcp:127.0.0.1:<port>`, `files`, `audio.inputs.read`, `audio.inputs.mute`,
-  `secrets`, `app.windows`, `apps.watch:<name>.exe`.
+  `secrets`, `app.windows`, `wallpaper.control`, `apps.watch:<name>.exe`.
 - **New:**
 
 | Permission | Lets the holder |
@@ -1197,6 +1197,7 @@ tool or MCP:
 - another module's secrets;
 - starting or ending a gaming reservation (only the user's own click, §8.9);
 - `key.events`, `hid.raw` and `keys`-class channels **over MCP**, always;
+- `wallpaper.control` **over MCP**, always (#1120);
 - `modules.manage`, except to `hideout.modules` and the first-party `hideout` CLI.
 
 `facts.write:*` and `facts.write:device.*` (§6.1) are never-list items: asked for in a manifest or
@@ -1808,6 +1809,10 @@ Rules:
   forwards that call first, then sends `lease.closed`) or `"revoked"` (the hub ended it, for
   example when the holder's permission was withdrawn). Each lease sends it once. A provider
   whose own connection ended gets nothing and its leases are forgotten with it.
+- **Wallpaper Engine's pause (#1120).** Foxglove serves `wallpaper-engine.pause`,
+  `wallpaper-engine.release` and `wallpaper-engine.status` on its pipe (permission
+  `wallpaper.control`, never over MCP) with the lease rules above; the `wallpaper-engine` service
+  module (H6.2) later serves the same methods through the router with no change for callers.
 - **Revoked holders (v1.6).** When an accepted catalog revokes the running version of a module
   that holds leases, the hub ends each of them with `reason: "revoked"` before it stops the
   module; the disconnect that follows sends nothing more for them.
