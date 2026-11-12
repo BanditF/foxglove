@@ -696,6 +696,13 @@ mod reconnect {
                     "{took:?}"
                 );
             }
+            // READERS is process-wide and tests run in parallel: another test's reader may be
+            // alive at this instant. Ours was joined by `serve`, so the count must reach zero;
+            // give the others a bounded moment to finish theirs.
+            let gone = Instant::now();
+            while READERS.load(Ordering::SeqCst) != 0 && gone.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             assert_eq!(
                 READERS.load(Ordering::SeqCst),
                 0,
