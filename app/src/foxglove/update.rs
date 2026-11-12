@@ -102,6 +102,10 @@ fn folder() -> Result<PathBuf> {
     std::fs::create_dir_all(&p)?;
     Ok(p)
 }
+/// The helper's last argument in the hub's module mode: install, but don't start the app.
+#[cfg(windows)]
+const NO_RESTART: &str = "--no-restart";
+
 pub fn start() {
     if let Ok(p) = folder() {
         if let Ok(error) = std::fs::read_to_string(p.join("error.txt")) {
@@ -256,14 +260,23 @@ pub fn group(ui: &mut egui::Ui) {
                     let exe = std::env::current_exe()?;
                     let helper = folder()?.join("foxglove-update-helper.exe");
                     std::fs::copy(&exe, &helper)?;
-                    std::process::Command::new(helper)
-                        .arg("--apply-update")
+                    // In the hub's module mode the helper doesn't start a plain copy: the exit
+                    // below is planned and the supervisor starts the module again (#1143 P7).
+                    let module = super::hub_link::module_mode();
+                    let mut cmd = std::process::Command::new(helper);
+                    cmd.arg("--apply-update")
                         .arg(p)
                         .arg("--pid")
                         .arg(std::process::id().to_string())
                         .arg("--restart")
-                        .arg(exe)
-                        .spawn()?;
+                        .arg(exe);
+                    if module {
+                        cmd.arg(NO_RESTART);
+                    }
+                    cmd.spawn()?;
+                    if module {
+                        super::hub_link::planned_exit("an update is being installed");
+                    }
                     std::process::exit(0);
                 });
             }
@@ -289,7 +302,9 @@ pub fn helper_entry() -> bool {
             },
             UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
         };
-        if args.len() != 7 || args[3] != "--pid" || args[5] != "--restart" {
+        let plain = args.len() == 7;
+        let no_restart = args.len() == 8 && args[7] == NO_RESTART;
+        if !(plain || no_restart) || args[3] != "--pid" || args[5] != "--restart" {
             return Err("Invalid update helper arguments".into());
         }
         let pid: u32 = args[4].to_str().ok_or("Invalid PID")?.parse()?;
@@ -338,8 +353,11 @@ pub fn helper_entry() -> bool {
             let _ = std::fs::write(p.join("error.txt"), format!("Update failed: {e}"));
         }
     }
-    if let Some(exe) = args.get(6) {
-        let _ = std::process::Command::new(exe).spawn();
+    // Module mode (#1143 P7): the supervisor restarts the module; no plain copy starts here.
+    if args.len() != 8 {
+        if let Some(exe) = args.get(6) {
+            let _ = std::process::Command::new(exe).spawn();
+        }
     }
     true
 }

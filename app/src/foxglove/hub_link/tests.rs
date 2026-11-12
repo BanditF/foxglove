@@ -457,11 +457,14 @@ fn module_mode_makes_no_tray_and_serves_no_pipe() {
         "the foxglove-<user> pipe is claimed only outside module mode"
     );
     // The self-restarts that would start a plain copy.
+    assert!(include_str!("../identity.rs").contains("hub_link::module_mode()"));
+    // The GPU reset and the updater take the planned exit in module mode instead (#1143 P7).
     for src in [
         include_str!("../gpu_reset.rs"),
-        include_str!("../identity.rs"),
+        include_str!("../update.rs"),
     ] {
         assert!(src.contains("hub_link::module_mode()"));
+        assert!(src.contains("hub_link::planned_exit("));
     }
 }
 

@@ -19,6 +19,13 @@
 //!
 //! A restart budget (3 in 10 minutes, passed to the copy in `FOXGLOVE_GPU_RESETS`) stops a
 //! loop if the GPU keeps failing.
+//!
+//! In the hub's module mode (`--module`, #1143 P7) no copy is started: the reset is a planned
+//! exit. The module hands everything back and ends with `PLANNED_EXIT_CODE` (contract crate);
+//! the supervisor restarts it without counting a crash, and it registers again. The same budget
+//! applies, kept in the settings store (`[gpu_resets]`) because no parent hands it down; once it
+//! is spent the module doesn't exit planned, so the failure ends as a real crash and the
+//! supervisor's own stop at five applies.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -43,9 +50,48 @@ pub fn frame_drawn() {
     WINDOW_UP.store(true, Ordering::Relaxed);
 }
 
-/// The earlier restarts this process was started with.
+/// The earlier restarts this process was started with (standalone: the environment; module
+/// mode: the settings store, the recent ones).
 fn history() -> Vec<u64> {
+    if super::hub_link::module_mode() {
+        let now = now();
+        return stored_history()
+            .into_iter()
+            .filter(|&t| t <= now && now - t < WINDOW_SECS)
+            .collect();
+    }
     parse_history(std::env::var(ENV).ok().as_deref())
+}
+
+/// Module mode's record of earlier planned resets (the store section `[gpu_resets]`).
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Stored {
+    at: Vec<u64>,
+}
+
+const SECTION: &str = "gpu_resets";
+
+fn stored_history() -> Vec<u64> {
+    super::store::try_load::<Stored>(SECTION)
+        .map(|s| s.at)
+        .unwrap_or_default()
+}
+
+/// How a reset ends this process.
+#[derive(Debug, PartialEq, Eq)]
+enum Exit {
+    /// Standalone: start a fresh copy of the exe and end this one.
+    Respawn,
+    /// Module mode: a planned exit; the hub's supervisor starts the module again.
+    Planned,
+}
+
+fn exit_plan(module_mode: bool) -> Exit {
+    if module_mode {
+        Exit::Planned
+    } else {
+        Exit::Respawn
+    }
 }
 
 fn parse_history(value: Option<&str>) -> Vec<u64> {
@@ -134,16 +180,24 @@ fn restart(reason: &str) {
         );
         return;
     };
-    imp::restart(&format_history(&next));
+    match exit_plan(super::hub_link::module_mode()) {
+        Exit::Respawn => imp::restart(&format_history(&next)),
+        Exit::Planned => {
+            if let Err(e) = super::store::save(SECTION, &Stored { at: next }) {
+                // The budget can't be kept: a loop would be unbounded here, so end as a crash
+                // (the supervisor's stop at five) rather than planned.
+                eprintln!("Foxglove: can't record the GPU reset, not exiting planned: {e}");
+                return;
+            }
+            super::hub_link::planned_exit("the graphics driver was reset");
+        }
+    }
 }
 
 /// Watches for the GPU being reset under this process. Windows only; elsewhere a no-op.
 pub fn start() {
-    // The hub's module (`--module`, #1143 P5) must not start a plain copy of itself: the copy
-    // would draw a tray and serve the pipe beside the hub. P7 makes a reset a planned exit.
-    if super::hub_link::module_mode() {
-        return;
-    }
+    // The hub's module (`--module`) never starts a plain copy of itself (it would draw a tray
+    // and serve the pipe beside the hub): `restart` takes the planned exit instead (#1143 P7).
     imp::start();
 }
 
@@ -321,6 +375,32 @@ mod tests {
             None,
             "a first start that fails is reported as before"
         );
+    }
+
+    #[test]
+    fn a_reset_in_module_mode_is_a_planned_exit_and_standalone_respawns() {
+        assert_eq!(exit_plan(true), Exit::Planned);
+        assert_eq!(exit_plan(false), Exit::Respawn);
+        // The planned path is the one wired in `restart`, and `start` no longer skips module
+        // mode (the watch is what notices the reset).
+        let src = include_str!("gpu_reset.rs");
+        assert!(src.contains("hub_link::planned_exit("));
+        let start = &src[src.find("pub fn start()").unwrap()..];
+        let start = &start[..start.find("imp::start();").unwrap()];
+        assert!(!start.contains("module_mode()"), "{start}");
+    }
+
+    #[test]
+    fn the_module_budget_is_the_same_three_in_ten_minutes() {
+        // Module mode reads its history from the store but spends it with the same function.
+        let now = 50_000;
+        let one = next_history(&[], now).unwrap();
+        let two = next_history(&one, now + 1).unwrap();
+        let three = next_history(&two, now + 2).unwrap();
+        assert_eq!(next_history(&three, now + 3), None);
+        let text = toml::to_string(&Stored { at: three.clone() }).unwrap();
+        let back: Stored = toml::from_str(&text).unwrap();
+        assert_eq!(back.at, three);
     }
 
     #[test]
