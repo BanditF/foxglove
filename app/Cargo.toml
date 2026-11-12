@@ -14,6 +14,9 @@ edition = "2021"
 # Even in a build with it, writes stay off unless the hidden dev switch FOXGLOVE_VIA_WRITES=1 is
 # set, for the real-board test (docs/test-lab/via-writes-real-board.md).
 via-writes = ["foxglove-via/via-writes"]
+# Lab builds only (#1143): FOXGLOVE_LAB_PANIC=<key> makes a page or tray tile's draw panic, to
+# prove the page guard on the real app. Off by default and never in a release build.
+lab-hooks = []
 
 [dependencies]
 foxglove-update = { path = "../crates/foxglove-update" }

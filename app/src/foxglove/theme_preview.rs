@@ -3119,6 +3119,48 @@ fn copy_diagnostics_renders() {
     }
 }
 
+/// A page whose draw panicked (#1143): the notice in the page's place, and the same notice as a
+/// tray tile, in dark and light.
+#[test]
+fn guarded_page_notice_renders() {
+    use crate::foxglove::page_guard;
+    use crate::foxglove::theme::Choice;
+    for (choice, name) in [(Choice::Dark, "dark"), (Choice::Light, "light")] {
+        let ctx = preview_ctx();
+        crate::foxglove::theme::apply_choice(&ctx, choice);
+        let p = if matches!(choice, Choice::Dark) {
+            &*crate::foxglove::theme::DARK
+        } else {
+            &*crate::foxglove::theme::LIGHT
+        };
+        let img = render_ui(&ctx, egui::vec2(760.0, 330.0), p.ground, |ui| {
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(p.ground)
+                        .inner_margin(egui::Margin::same(22)),
+                )
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new("Lights")
+                            .font(crate::foxglove::theme::hud(24.0))
+                            .color(p.text_strong),
+                    );
+                    ui.add_space(10.0);
+                    page_guard::page(ui, &format!("preview:page-{name}"), "Lights", |_| {
+                        panic!("index out of bounds: the len is 3 but the index is 7")
+                    });
+                    ui.add_space(18.0);
+                    ui.set_max_width(380.0);
+                    page_guard::tile(ui, &format!("preview:tile-{name}"), "Tray: Screens", |_| {
+                        panic!("called `Option::unwrap()` on a `None` value")
+                    });
+                });
+        });
+        keep(&format!("ui-1143-guarded-page-{name}.png"), &img);
+    }
+}
+
 /// The Keyboard page's Firmware card with the low-battery switch (#372).
 #[test]
 fn battery_notice_switch_renders() {

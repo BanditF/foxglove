@@ -113,13 +113,18 @@ pub fn lock_or_reset<T: Default>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
-    let message = payload
+/// The message a panic carried.
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
         .downcast_ref::<String>()
         .map(String::as_str)
         .or_else(|| payload.downcast_ref::<&str>().copied())
-        .unwrap_or("non-string panic payload");
-    format!("Panicked: {message}")
+        .unwrap_or("non-string panic payload")
+        .to_string()
+}
+
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    format!("Panicked: {}", panic_message(payload))
 }
 
 /// Runs a one-shot job (a request or a check) behind a panic boundary on the calling thread:
