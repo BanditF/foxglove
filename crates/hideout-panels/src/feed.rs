@@ -110,6 +110,10 @@ pub trait PanelFeed: Send {
     /// A page of `module` came on screen (the `open` activation event, §4.6 v1.10): the hub
     /// starts the module when it waits for `open`. A feed without a supervisor does nothing.
     fn opened(&mut self, _module: &str) {}
+    /// These modules have a key bound to one of their actions (§4.6): the hub starts each one
+    /// that isn't running, as at enable. Called when the hotkeys start and when the bound keys
+    /// change. A feed without a supervisor does nothing.
+    fn keys_bound(&mut self, _modules: &[String]) {}
     /// Sends `action.invoke {action, source: "key"}` for a bound key (#991), from any thread:
     /// the hub's hotkeys call it, so a key works while the window is in the tray. A feed
     /// without a router has none.

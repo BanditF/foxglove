@@ -3,6 +3,9 @@
 //!
 //! - `keyboard.connected` (Bool)
 //! - `keyboard.layer` (Int, the highest active layer) and `keyboard.layers` (Bytes, all of them)
+//! - `keyboard.game_mode` (Bool, #1121): any active layer is named GAME... (GAME, GAME+), by the
+//!   remembered layer names, as the wallpaper sync reads it. A shared fact only: nothing here
+//!   acts on `gpu.reserved`, and a GPU reservation never follows it (contract §8.9)
 //! - `keyboard.right.battery` (Int, percent; `keyboard.<part>.battery` for any part reported)
 //! - `keyboard.link` (Text, `usb` or `ble`), `keyboard.profile` (Int, 1-based Bluetooth profile)
 //!   and `keyboard.profile_connected` (Bool)
@@ -101,11 +104,7 @@ fn publish_with(facts: &Facts, sources: &mut Sources, event: &DeviceEvent) {
             super::scene_room::changed();
         }
         DeviceEvent::LayerChanged { active } => {
-            facts.set("keyboard.layers", Value::Bytes(active.clone()));
-            facts.set(
-                "keyboard.layer",
-                Value::Int(active.iter().copied().max().unwrap_or(0).into()),
-            );
+            layers(facts, active, &super::layer_names::remembered());
         }
         DeviceEvent::Battery { part, percent } => facts.set(
             format!("keyboard.{part}.battery"),
@@ -130,6 +129,19 @@ fn publish_with(facts: &Facts, sources: &mut Sources, event: &DeviceEvent) {
         }
         DeviceEvent::Key { .. } => {}
     }
+}
+
+/// The layer facts for `active`, with game mode read from the layers' `names`.
+fn layers(facts: &Facts, active: &[u8], names: &[Option<String>]) {
+    facts.set("keyboard.layers", Value::Bytes(active.to_vec()));
+    facts.set(
+        "keyboard.layer",
+        Value::Int(active.iter().copied().max().unwrap_or(0).into()),
+    );
+    facts.set(
+        "keyboard.game_mode",
+        Value::Bool(super::wallpaper_sync::game_mode(active, names)),
+    );
 }
 
 /// The lights as the facts give them: what [`lighting`] sets.
@@ -346,6 +358,39 @@ fn set_look(facts: &Facts, look: &Look) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1121: game mode follows the GAME layers by name, is cleared on a disconnect with the
+    /// other layer facts, and is only a fact (nothing here reaches a GPU reservation).
+    #[test]
+    fn game_mode_is_a_fact_of_the_game_layers() {
+        let facts = Facts::default();
+        let names: Vec<Option<String>> = ["QWERTY", "NUMBER", "SYMBOL", "GAME", "GAME+"]
+            .iter()
+            .map(|n| Some(n.to_string()))
+            .collect();
+        layers(&facts, &[0], &names);
+        assert_eq!(facts.get("keyboard.game_mode"), Some(Value::Bool(false)));
+        layers(&facts, &[0, 3], &names);
+        assert_eq!(facts.get("keyboard.game_mode"), Some(Value::Bool(true)));
+        layers(&facts, &[0, 3, 4], &names);
+        assert_eq!(facts.get("keyboard.game_mode"), Some(Value::Bool(true)));
+        layers(&facts, &[0, 1], &names);
+        assert_eq!(facts.get("keyboard.game_mode"), Some(Value::Bool(false)));
+        // Unnamed layers are not game mode.
+        layers(&facts, &[0, 3], &[]);
+        assert_eq!(facts.get("keyboard.game_mode"), Some(Value::Bool(false)));
+        assert_eq!(facts.get("gpu.reserved"), None);
+        // A disconnect forgets it with the other layer facts: unknown, not "off".
+        let mut s = Sources::default();
+        publish_with(
+            &facts,
+            &mut s,
+            &DeviceEvent::Disconnected {
+                reason: "unplugged".into(),
+            },
+        );
+        assert_eq!(facts.get("keyboard.game_mode"), None);
+    }
 
     #[test]
     fn events_become_keyboard_facts_and_a_disconnect_clears_them() {

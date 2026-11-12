@@ -666,7 +666,9 @@ Each entry is `<what>:<argument>`. Unknown `<what>` is refused (`manifest.provid
 
 Rules:
 - A module with a key bound to one of its actions, or a pinned quick action, MUST be started at
-  enable, whatever `on` says (UX3).
+  enable, whatever `on` says (UX3). (#1121) The hub starts such a module when the hotkeys start
+  and when a key is bound (an `Activate`, not a timer); a press on a module with no connection
+  is not queued, it answers "disconnected" and starts the module for the next one.
 - Activation is by events only, never timers.
 - A module started by an event stops by its own decision (exit code 0); the hub does not stop
   idle modules.
@@ -1949,6 +1951,10 @@ Provided by the Vulpes module.
   Free GPU action or panel button (`action.invoke` or `ui.event` with a user source).
 - Gaming is a shared signal: Vulpes publishes `gpu.reserved`, the link publishes
   `keyboard.game_mode`; neither acts on the other's alone.
+- (#1121) Foxglove's app sets `keyboard.game_mode` in its own fact store (a GAME or GAME+ layer is
+  active). The hub does not receive it until the link and the hub share facts; until then the
+  hub-side half of the rule holds trivially (it cannot act on a fact it does not see) and is
+  tested with the fact published into the router's cache.
 
 ### 8.10 The network broker (v1.12, #1102)
 

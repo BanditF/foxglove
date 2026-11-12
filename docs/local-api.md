@@ -63,6 +63,7 @@ The params and results are in the schema. Notes:
 - **Facts are the main surface.** Device state appears under `device.<id>.*` (connected, layers,
   battery.right, link.*, lighting.*). The keyboard with Foxglove's link is also under short names
   (#17): `keyboard.connected`, `keyboard.layer` (the highest active layer), `keyboard.layers`,
+  `keyboard.game_mode` (a GAME or GAME+ layer is active, by the layer names; #1121),
   `keyboard.right.battery`, `keyboard.link` (`usb`/`ble`), `keyboard.profile` (1-based),
   `keyboard.profile_connected`, and the keyboard's lights (#40): `keyboard.lighting.on`,
   `keyboard.lighting.color` (`#rrggbb`, the chosen colour at full brightness),
