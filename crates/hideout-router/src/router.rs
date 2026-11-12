@@ -13,12 +13,17 @@ use serde_json::{json, Map, Value};
 
 use crate::checks::HUB_OWNED;
 use crate::checks::{
-    adopted_area_ok, covers, event_permission, may_call, overlap, watches_app, Caps, ADOPTED_AREAS,
-    FIRST_PARTY_AREAS,
+    adopted_area_ok, covers, event_permission, legacy_foxglove_ok, may_call, overlap, watches_app,
+    Caps, ADOPTED_AREAS, FIRST_PARTY_AREAS,
 };
 
 /// Calls one connection may have waiting for a provider to start (§4.6); more answer error 3.
 pub const MAX_QUEUED_PER_CALLER: usize = 64;
+/// Calls one caller (module or tool) may have forwarded to a live provider and unanswered at a
+/// time (#1156 M2): beyond it the call is answered BUSY (error 3, contract §8.1 "busy"; the
+/// #1133 bound for the activation queue, applied to live routes). A slow handler (a 5-10 s
+/// window or device wait) then holds at most this many of one caller's calls, not 100.
+pub const MAX_INFLIGHT_PER_CALLER: usize = 4;
 
 /// A call with no answer fails after this long on the caller's side (§8.1, error 4).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1520,9 +1525,18 @@ impl Router {
     /// `module` (§6.3, §13.6): installed or not. No id is exempt: a root-listed id an adopted
     /// module happens to carry gives it nothing (§6.5, signing is provenance, not permission).
     fn assigned_elsewhere(&self, module: &str, pattern: &str) -> bool {
+        self.assigned_elsewhere_by(module, pattern, false)
+    }
+
+    /// [`Router::assigned_elsewhere`]; with `first_party_only`, only a root-signed catalog area
+    /// or a first-party holder's entry counts. A third-party entry that lists a reserved area
+    /// can't provide it (`may_provide`), so it must not block the legacy module either.
+    fn assigned_elsewhere_by(&self, module: &str, pattern: &str, first_party_only: bool) -> bool {
         self.root_areas.iter().any(|(_, a)| overlap(a, pattern))
             || self.modules.values().any(|m| {
                 m.id != module
+                    && (!first_party_only
+                        || matches!(m.holder, Holder::FirstParty | Holder::ModulesModule))
                     && m.catalog_provide
                         .as_ref()
                         .is_some_and(|c| c.iter().any(|c| overlap(c, pattern)))
@@ -1570,10 +1584,21 @@ impl Router {
             return false;
         }
         if entry.registered_version.is_some() {
-            return self
+            let declared = self
                 .methods_decl
                 .get(module)
-                .is_some_and(|d| d.iter().any(|d| covers(d, pattern)))
+                .is_some_and(|d| d.iter().any(|d| covers(d, pattern)));
+            // TEMPORARY (#1155): the legacy adopted module `foxglove` keeps the 11 v1 methods
+            // it serves through the router (#1143 P6) although they lie in reserved areas.
+            // Bound to what the registry knows: an adopted module (registered manifest, no
+            // catalog entry) that declares exactly that name in its manifest and holds the
+            // user's `provide:` for it (checked above). Never the id string alone; a root
+            // catalog or a first-party module that is assigned the area still wins, and no
+            // rival can qualify (the reserved areas are closed to every other adopted module).
+            if declared && entry.catalog_provide.is_none() && legacy_foxglove_ok(module, pattern) {
+                return !self.assigned_elsewhere_by(module, pattern, true);
+            }
+            return declared
                 && adopted_area_ok(pattern)
                 && !self.assigned_elsewhere(module, pattern)
                 && !self.rival_adopted(module, pattern);
@@ -1976,6 +2001,21 @@ impl Router {
             .map(|r| r.module.clone());
         if let Some(m) = &live {
             if let Some(p) = self.ready_conn(m) {
+                // The per-caller bound first: a caller with MAX_INFLIGHT_PER_CALLER calls
+                // unanswered at this provider gets BUSY and nothing is forwarded (#1156 M2).
+                // Counted per caller module or tool, not per connection.
+                let who = self.caller_key(conn);
+                let inflight = self
+                    .pending
+                    .iter()
+                    .filter(|((prov, _), pend)| {
+                        *prov == p
+                            && matches!(&pend.waiter, Waiter::Caller(c, _) if self.caller_key(*c) == who)
+                    })
+                    .count();
+                if inflight >= MAX_INFLIGHT_PER_CALLER {
+                    return out.push(Out::Send(conn, error(&id, code::BUSY, "busy", None)));
+                }
                 // The holder gives a lease back: the provider is told it ended (§8.5).
                 let released = method
                     .ends_with(".release")
@@ -1998,9 +2038,13 @@ impl Router {
                 self.modules
                     .values()
                     .find(|m| {
-                        m.catalog_provide
-                            .as_ref()
-                            .is_some_and(|c| c.iter().any(|c| covers(c, method)))
+                        // A reserved area is only ever a first-party module's: a third-party
+                        // entry that lists one is never queued its calls (#1156).
+                        (matches!(m.holder, Holder::FirstParty | Holder::ModulesModule)
+                            || !FIRST_PARTY_AREAS.iter().any(|a| covers(a, method)))
+                            && m.catalog_provide
+                                .as_ref()
+                                .is_some_and(|c| c.iter().any(|c| covers(c, method)))
                     })
                     .map(|m| m.id.clone())
             })

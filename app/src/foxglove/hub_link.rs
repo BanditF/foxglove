@@ -41,9 +41,11 @@
 //! The wire is the SDK's [`Session`]; the state machine here ([`Link`]) is generic over the
 //! writer so the tests drive it against the hub's own `Router` with no pipe and no window.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::sync::OnceLock;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use foxglove_devices::facts::{Change, Value as Fact};
 use foxglove_plugin::hideout::{
@@ -100,6 +102,19 @@ pub const SERVED: &[&str] = &[
     "pc_lighting.list",
     "pc_lighting.set_zone",
 ];
+
+/// Routed calls waiting for the worker, all callers together (#1156 M2). The router already
+/// caps one caller at `hideout_router::MAX_INFLIGHT_PER_CALLER` forwarded and unanswered calls
+/// (the module never sees who calls, so the per-caller bound lives there); this is the module's
+/// own bound on what its one worker has queued. A call over it is answered BUSY (error 3,
+/// contract section 8.1 "busy") at once, before anything runs.
+pub const MAX_QUEUED_CALLS: usize = 16;
+
+/// How long a routed call may wait for the worker before it is dropped unrun. The router
+/// answers its caller TIMEOUT after `CALL_TIMEOUT` (30 s) and forgets the call; running it
+/// after that would land side effects for a caller that was told it failed. 20 s keeps the
+/// drop well inside the router's clock (the module is not told the deadline).
+pub const CALL_EXPIRY: Duration = Duration::from_secs(20);
 
 /// The connection number the module hands the app's handlers for a routed call. Plugin-host
 /// connections count from 1, so 0 is nobody's; no served method keeps anything per connection.
@@ -267,15 +282,127 @@ impl Handler for Hub {
             ));
         }
         let Some(devices) = self.devices.as_ref().filter(|_| self.live) else {
-            return Err(RpcError::new(2, "disconnected"));
+            return Err(RpcError::new(code::DISCONNECTED, "disconnected"));
         };
-        devices
-            .call_from(ROUTED_CONN, method, params)
-            .map_err(|e| RpcError {
-                code: i64::from(e.code),
-                message: e.message,
-                data: e.data,
-            })
+        run_handler(devices.as_ref(), method, params)
+    }
+}
+
+/// The app's handler for one routed call (it may block for seconds).
+fn run_handler(
+    devices: &dyn foxglove_plugin_host::Devices,
+    method: &str,
+    params: Value,
+) -> Result<Value, RpcError> {
+    devices
+        .call_from(ROUTED_CONN, method, params)
+        .map_err(|e| RpcError {
+            code: i64::from(e.code),
+            message: e.message,
+            data: e.data,
+        })
+}
+
+/// One routed call waiting for the worker.
+pub(super) struct Job {
+    id: Value,
+    method: String,
+    params: Value,
+    queued: Instant,
+}
+
+/// What the worker made of a [`Job`]: the answer for the hub.
+pub(super) struct Reply {
+    id: Value,
+    outcome: Result<Value, RpcError>,
+}
+
+/// The bounded queue between the link thread and the worker. Closed with its connection: a
+/// call queued for a link that has gone is never run.
+#[derive(Default)]
+pub(super) struct CallQueue {
+    state: Mutex<(VecDeque<Job>, bool)>,
+    wake: Condvar,
+}
+
+impl CallQueue {
+    fn lock(&self) -> std::sync::MutexGuard<'_, (VecDeque<Job>, bool)> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queues a job; `false` when the queue is full (or closed). Jobs already past
+    /// [`CALL_EXPIRY`] are dropped first: their callers were answered TIMEOUT by the router.
+    fn push(&self, job: Job, now: Instant) -> bool {
+        let mut g = self.lock();
+        g.0.retain(|j| !expired(j, now));
+        if g.1 || g.0.len() >= MAX_QUEUED_CALLS {
+            return false;
+        }
+        g.0.push_back(job);
+        self.wake.notify_one();
+        true
+    }
+
+    /// The next job without waiting (tests; the worker uses [`CallQueue::wait`]).
+    #[cfg(test)]
+    fn try_pop(&self) -> Option<Job> {
+        self.lock().0.pop_front()
+    }
+
+    /// Waits for the next job; `None` when the queue is closed.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn wait(&self) -> Option<Job> {
+        let mut g = self.lock();
+        loop {
+            if g.1 {
+                return None;
+            }
+            if let Some(j) = g.0.pop_front() {
+                return Some(j);
+            }
+            g = self.wake.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn close(&self) {
+        let mut g = self.lock();
+        g.1 = true;
+        g.0.clear();
+        self.wake.notify_all();
+    }
+}
+
+fn expired(job: &Job, now: Instant) -> bool {
+    now.saturating_duration_since(job.queued) >= CALL_EXPIRY
+}
+
+/// Runs one job unless it expired while queued (then `None`: dropped, never run).
+pub(super) fn execute(
+    devices: &dyn foxglove_plugin_host::Devices,
+    job: Job,
+    now: Instant,
+) -> Option<Reply> {
+    if expired(&job, now) {
+        return None;
+    }
+    Some(Reply {
+        outcome: run_handler(devices, &job.method, job.params),
+        id: job.id,
+    })
+}
+
+/// The worker: runs queued jobs one at a time until the queue closes, handing each answer to
+/// `deliver` (which wakes the link thread; the link thread alone writes to the hub).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn work(
+    queue: &CallQueue,
+    devices: &dyn foxglove_plugin_host::Devices,
+    mut deliver: impl FnMut(Reply),
+) {
+    while let Some(job) = queue.wait() {
+        if let Some(reply) = execute(devices, job, Instant::now()) {
+            deliver(reply);
+        }
     }
 }
 
@@ -313,6 +440,16 @@ pub struct Link<W: Write> {
     said: bool,
     /// Log lines for the caller (kept apart so tests can read them).
     log: Vec<String>,
+    /// Where routed calls go to run off the link thread; `None` runs them inline (tests).
+    queue: Option<Arc<CallQueue>>,
+}
+
+impl<W: Write> Drop for Link<W> {
+    fn drop(&mut self) {
+        if let Some(q) = &self.queue {
+            q.close();
+        }
+    }
 }
 
 impl<W: Write> Link<W> {
@@ -325,7 +462,68 @@ impl<W: Write> Link<W> {
             publishing: false,
             said: false,
             log: Vec::new(),
+            queue: None,
         }
+    }
+
+    /// Runs routed calls on a worker instead of inline (#1156 M2): the link thread only reads
+    /// lines and writes answers, so a 5-10 s handler cannot hold up the keyboard facts or
+    /// `module.exit`. Returns the queue for the worker ([`work`]).
+    pub(super) fn with_worker(&mut self) -> Arc<CallQueue> {
+        let q = Arc::new(CallQueue::default());
+        self.queue = Some(q.clone());
+        q
+    }
+
+    /// Sends the worker's answer to the hub.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(super) fn respond(&mut self, reply: Reply) -> Result<(), SessionError> {
+        self.session.respond(reply.id, reply.outcome)
+    }
+
+    /// A routed request for a served name, taken apart; `None` for anything else (the SDK
+    /// handles those, `-32601` for a name that is not served included).
+    fn routed(text: &str) -> Option<(Value, String, Value)> {
+        let msg: Value = serde_json::from_str(text).ok()?;
+        if msg.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            return None;
+        }
+        let method = msg.get("method")?.as_str()?;
+        let id = msg.get("id")?.clone();
+        SERVED.contains(&method).then(|| {
+            (
+                id,
+                method.to_string(),
+                msg.get("params").cloned().unwrap_or_else(|| json!({})),
+            )
+        })
+    }
+
+    /// A routed call: refused at once when the hub does not have the module or the queue is
+    /// full (BUSY, error 3), else queued for the worker (or run inline without one).
+    fn submit(
+        &mut self,
+        (id, method, params): (Value, String, Value),
+        now: Instant,
+    ) -> Result<(), SessionError> {
+        let live = self.hub.devices.is_some() && self.hub.live;
+        let outcome = match (&self.queue, live) {
+            (_, false) => Err(RpcError::new(code::DISCONNECTED, "disconnected")),
+            (None, true) => self.hub.call(&method, params),
+            (Some(q), true) => {
+                let job = Job {
+                    id: id.clone(),
+                    method,
+                    params,
+                    queued: now,
+                };
+                if q.push(job, now) {
+                    return Ok(());
+                }
+                Err(RpcError::new(code::BUSY, "busy"))
+            }
+        };
+        self.session.respond(id, outcome)
     }
 
     /// Gives the module the app's v1 handlers to answer routed calls with.
@@ -375,6 +573,15 @@ impl<W: Write> Link<W> {
 
     /// One line from the hub.
     pub fn line(&mut self, text: &str) -> Result<Step, SessionError> {
+        self.line_at(text, Instant::now())
+    }
+
+    /// [`Link::line`] with the clock given (tests use a fake one).
+    pub(super) fn line_at(&mut self, text: &str, now: Instant) -> Result<Step, SessionError> {
+        if let Some(call) = Self::routed(text) {
+            self.submit(call, now)?;
+            return Ok(Step::Nothing);
+        }
         let got = self.session.handle_line(text, &mut self.hub)?;
         if self.hub.exit {
             return Ok(Step::Exit);
@@ -661,6 +868,8 @@ mod runner {
         Closed(u64),
         /// Changes are waiting in [`Pending`].
         Facts,
+        /// The worker answered a routed call of connection `.0`.
+        Reply(u64, super::Reply),
     }
 
     /// Why a connection ended.
@@ -808,7 +1017,7 @@ mod runner {
             let _ = ltx.send(Msg::Closed(generation));
             READERS.fetch_sub(1, Ordering::SeqCst);
         });
-        let (ended, live) = converse(launch, conn, generation, rx, pending, facts);
+        let (ended, live) = converse(launch, conn, generation, tx, rx, pending, facts);
         stop_reader(&canceller, &done_rx);
         (ended, live)
     }
@@ -817,12 +1026,23 @@ mod runner {
         launch: &Launch,
         conn: ChannelConn,
         generation: u64,
+        tx: &Sender<Msg>,
         rx: &Receiver<Msg>,
         pending: &Pending,
         facts: &foxglove_devices::facts::Facts,
     ) -> (Ended, bool) {
-        let mut link = Link::new(conn, launch.clone())
-            .with_devices(Arc::new(crate::foxglove::api::AppDevices));
+        let devices: Arc<dyn foxglove_plugin_host::Devices> =
+            Arc::new(crate::foxglove::api::AppDevices);
+        let mut link = Link::new(conn, launch.clone()).with_devices(devices.clone());
+        // Routed calls run on one worker of this connection (it ends when the link drops and
+        // closes the queue), never on the link thread.
+        let queue = link.with_worker();
+        let wtx = tx.clone();
+        crate::foxglove::services::spawn_named("hub-link-calls", move || {
+            work(&queue, devices.as_ref(), |r| {
+                let _ = wtx.send(Msg::Reply(generation, r));
+            })
+        });
         let mut live = false;
         let lost = |e: SessionError, live| (Ended::Lost(e.to_string()), live);
         if let Err(e) = link.start() {
@@ -854,6 +1074,10 @@ mod runner {
                 Msg::Closed(g) if g == generation => {
                     return (Ended::Lost("the hub closed the pipe".into()), live)
                 }
+                Msg::Reply(g, reply) if g == generation => match link.respond(reply) {
+                    Ok(()) => Step::Nothing,
+                    Err(e) => return lost(e, live),
+                },
                 Msg::Facts => {
                     for change in pending.take() {
                         if let Err(e) = link.change(&change) {

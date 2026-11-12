@@ -12,7 +12,7 @@
 mod alias;
 pub use alias::{plan as alias_plan, AliasOutcome, AliasPlan};
 mod channels;
-mod checks;
+pub mod checks;
 mod router;
 pub mod server;
 
@@ -20,4 +20,5 @@ pub mod secrets;
 pub use router::{
     fresh_secret, host_methods, Approver, ConnId, LaunchCheck, ModuleEntry, Origin, Out, Router,
     ServiceCall, ServiceError, Settings, Triggers, CALL_TIMEOUT, HOST_CONSUMER,
+    MAX_INFLIGHT_PER_CALLER,
 };
