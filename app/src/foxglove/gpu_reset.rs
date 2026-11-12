@@ -139,6 +139,11 @@ fn restart(reason: &str) {
 
 /// Watches for the GPU being reset under this process. Windows only; elsewhere a no-op.
 pub fn start() {
+    // The hub's module (`--module`, #1143 P5) must not start a plain copy of itself: the copy
+    // would draw a tray and serve the pipe beside the hub. P7 makes a reset a planned exit.
+    if super::hub_link::module_mode() {
+        return;
+    }
     imp::start();
 }
 

@@ -158,8 +158,9 @@ pub fn missing_assets(dir: &std::path::Path) -> Vec<&'static str> {
 /// Registers the identity package in the background when this build wants it and the process
 /// has no identity yet, then starts a fresh copy once so the identity applies.
 pub fn start() {
+    // Registering relaunches a copy without `--module` (#1143 P5): not in the hub's module.
     #[cfg(windows)]
-    if ENABLED && !super::repaint_trace::disabled("identity") {
+    if ENABLED && !super::repaint_trace::disabled("identity") && !super::hub_link::module_mode() {
         super::services::spawn_named("identity", || {
             let sandboxed = std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some()
                 || super::store::test_sandbox().is_some();

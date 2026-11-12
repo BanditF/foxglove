@@ -1615,6 +1615,9 @@ dependencies = [
  "getrandom 0.3.4",
  "gtk",
  "hidapi",
+ "hideout-acl",
+ "hideout-contract",
+ "hideout-router",
  "image",
  "khronos-egl",
  "lzma-rs",
@@ -2388,6 +2391,33 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "hideout-registry"
+version = "0.1.0"
+dependencies = [
+ "foxglove-plugin-api",
+ "foxglove-plugin-trust",
+ "hideout-acl",
+ "hideout-contract",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "hideout-router"
+version = "0.1.0"
+dependencies = [
+ "foxglove-plugin",
+ "foxglove-plugin-api",
+ "hideout-acl",
+ "hideout-contract",
+ "hideout-registry",
+ "log",
+ "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

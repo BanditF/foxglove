@@ -132,7 +132,7 @@ fn publish_with(facts: &Facts, sources: &mut Sources, event: &DeviceEvent) {
 }
 
 /// The layer facts for `active`, with game mode read from the layers' `names`.
-fn layers(facts: &Facts, active: &[u8], names: &[Option<String>]) {
+pub(super) fn layers(facts: &Facts, active: &[u8], names: &[Option<String>]) {
     facts.set("keyboard.layers", Value::Bytes(active.to_vec()));
     facts.set(
         "keyboard.layer",

@@ -55,6 +55,21 @@ pub fn probe(pipe: &str, expect: Expect, timeout: Duration) -> Probe {
     }
 }
 
+/// The full image path of process `pid`, or `None` when it is not running (or not readable).
+/// Used to tell a hub still alive from one that is gone, and to compare a new server's exact
+/// path with a recorded one (#1143 P5).
+pub fn image_of(pid: u32) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        win::image_of(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// The file-name rule, apart from Windows so it is testable anywhere.
 pub fn image_matches(image: &std::path::Path, expect: Expect) -> bool {
     image
@@ -156,6 +171,31 @@ mod win {
             }
             other => other,
         }
+    }
+
+    pub fn image_of(pid: u32) -> Option<PathBuf> {
+        // SAFETY: plain Win32 calls; the handle is closed by `Owned`.
+        let proc = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if proc.is_null() {
+            return None;
+        }
+        let proc = Owned(proc);
+        let mut code = 0u32;
+        // A process that exited but whose handle is still open elsewhere is not "alive".
+        if unsafe { windows_sys::Win32::System::Threading::GetExitCodeProcess(proc.0, &mut code) }
+            == 0
+            || code != 259
+        {
+            return None;
+        }
+        let mut buf = vec![0u16; 1024];
+        let mut len = buf.len() as u32;
+        if unsafe { QueryFullProcessImageNameW(proc.0, 0, buf.as_mut_ptr(), &mut len) } == 0 {
+            return None;
+        }
+        Some(PathBuf::from(std::ffi::OsString::from_wide(
+            &buf[..len as usize],
+        )))
     }
 
     fn verify(pid: u32, expect: Expect) -> io::Result<PathBuf> {

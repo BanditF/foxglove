@@ -25,8 +25,17 @@ use device_discovery::discover_devices;
 use settings::Settings;
 
 fn main() {
+    // Foxglove (#1143 P5): `--module` (the hub starts the app so) keeps the hub's launch values in
+    // memory and clears them from the environment, before any thread exists. Without the flag
+    // this does nothing.
+    let module = foxglove::hub_link::enter();
     // Foxglove (#370): stderr and panics to logs\foxglove.log, first, so an early exit is seen.
     foxglove::app_log::start();
+    if let Err(why) = module {
+        // Never a fallback to the user's own pipe or a tray: say why and stop.
+        foxglove::app_log::early(&why);
+        std::process::exit(2);
+    }
     if foxglove::update::helper_entry() {
         return;
     }
@@ -50,6 +59,7 @@ fn main() {
     let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
     let available_devices = discover_devices();
     foxglove::features::start_all(); // Foxglove (#1143): every feature's start, in the table's order
+    foxglove::hub_link::start(); // Foxglove (#1143 P5): with --module, the keyboard's facts to the hub (a no-op otherwise; after the table, whose order is unchanged)
     let result = platform::run(settings, available_devices);
     // Foxglove (#618): an exit through the window loop (not the tray's Quit) says so, so a
     // test app that ended is told apart from one that crashed.

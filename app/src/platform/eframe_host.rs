@@ -427,23 +427,32 @@ fn run_inner(
             let ui_wake = UiWake::from_ctx(&cc.egui_ctx);
             let settings_requested = Arc::new(AtomicBool::new(false));
             crate::foxglove::battery::set_wake(ui_wake.clone()); // Foxglove (#373): tray tooltip
-            let tray_icon = crate::tray::create_tray_icon({
-                let settings_requested = settings_requested.clone();
-                let ui_wake = ui_wake.clone();
-                Arc::new(move || {
-                    // Foxglove: logged, woken on the root viewport, and shown at once if known.
-                    crate::foxglove::settings_open::request(
-                        crate::foxglove::settings_open::Source::TrayMenu,
-                        &settings_requested,
-                        &|| ui_wake.request_repaint(),
-                    );
+            // Foxglove (#1143 P5): the hub's module (`--module`) has no tray, and so no
+            // taskbar watch: the hub draws the one tray.
+            let in_hub = crate::foxglove::hub_link::module_mode();
+            let tray_icon = if in_hub {
+                crate::tray::Tray::none()
+            } else {
+                crate::tray::create_tray_icon({
+                    let settings_requested = settings_requested.clone();
+                    let ui_wake = ui_wake.clone();
+                    Arc::new(move || {
+                        // Foxglove: logged, woken on the root viewport, and shown at once if known.
+                        crate::foxglove::settings_open::request(
+                            crate::foxglove::settings_open::Source::TrayMenu,
+                            &settings_requested,
+                            &|| ui_wake.request_repaint(),
+                        );
+                    })
                 })
-            });
+            };
             // Foxglove: a frame when the taskbar starts, to add a tray icon missing at sign-in.
-            crate::foxglove::taskbar::watch({
-                let ui_wake = ui_wake.clone();
-                move || ui_wake.request_repaint()
-            });
+            if !in_hub {
+                crate::foxglove::taskbar::watch({
+                    let ui_wake = ui_wake.clone();
+                    move || ui_wake.request_repaint()
+                });
+            }
             // Foxglove (#345): a second launch opens the settings here and focuses their window
             // (the Settings window focuses itself; the overlay never takes the focus for it).
             crate::foxglove::single_instance::on_show({

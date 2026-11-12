@@ -34,6 +34,8 @@ foxglove-plugin-api = { path = "../crates/plugin-api" }
 foxglove-plugin-trust = { path = "../crates/plugin-trust" }
 # Foxglove (#499): the live wallpaper feed's WebSocket side (MIT) and its pairing token.
 foxglove-plugin = { path = "../crates/plugin-sdk" }
+# Foxglove (#1143 P5): a hub peer's integrity level and AppContainer (MIT).
+hideout-acl = { path = "../crates/hideout-acl" }
 getrandom = "0.3"
 # Foxglove: unpacking plugins in the Plugins tab.
 zip = { version = "9", default-features = false, features = ["deflate"] }
@@ -186,6 +188,10 @@ auto_link_exclude_list = [
 ]
 
 [dev-dependencies]
+# Foxglove (#1143 P5): the hub's own router and contract (MIT, no egui) to test the module link
+# against, in process: no pipe, no window.
+hideout-router = { path = "../crates/hideout-router" }
+hideout-contract = { path = "../crates/hideout-contract" }
 # Foxglove: the devices crate's fakes (the scripted HID++ device, #505; the in-process OpenRGB
 # server, #471) for window- and
 # device-free tests.
