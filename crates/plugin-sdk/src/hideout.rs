@@ -467,12 +467,22 @@ impl<R: BufRead, W: Write> Session<R, W> {
             return Ok(Incoming::Notified { method });
         };
         let outcome = dispatch(handler, &method, params);
+        self.respond(id, outcome)?;
+        Ok(Incoming::Answered { method })
+    }
+
+    /// Answers the hub's request `id`. [`Session::handle`] does this itself; a module that
+    /// runs a call elsewhere (a worker, so the link stays free) sends the answer here later.
+    pub fn respond(
+        &mut self,
+        id: Value,
+        outcome: std::result::Result<Value, RpcError>,
+    ) -> Result<()> {
         let reply = match outcome {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err(e) => json!({"jsonrpc": "2.0", "id": id, "error": e.to_value()}),
         };
-        self.write(&reply)?;
-        Ok(Incoming::Answered { method })
+        self.write(&reply)
     }
 
     /// Reads the next line from the hub; `None` when the pipe closed.

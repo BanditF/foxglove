@@ -1084,3 +1084,430 @@ fn module_mode_is_off_by_default_and_the_standalone_pipe_stays() {
     let at = |s: &str| api.find(s).unwrap_or_else(|| panic!("{s}"));
     assert!(at("if super::hub_link::module_mode()") < at("pipe::listen"));
 }
+
+// ---- #1156: the legacy list, connection-bound arms, and the bounded worker ----
+
+#[test]
+fn served_is_exactly_the_routers_legacy_exception_list() {
+    // The router lets exactly these names through the reserved areas for the adopted module
+    // `foxglove` (#1155: temporary); the module serves exactly the same names.
+    let mut served: Vec<&str> = SERVED.to_vec();
+    let mut legacy: Vec<&str> = hideout_router::checks::LEGACY_FOXGLOVE_METHODS.to_vec();
+    served.sort();
+    legacy.sort();
+    assert_eq!(served, legacy);
+    assert_eq!(ID, hideout_router::checks::LEGACY_FOXGLOVE_ID);
+}
+
+/// The names of the arms of `call_from` that use the connection number (leases, wallpaper
+/// pause, screens overrides), read from api.rs.
+fn connection_bound_arms() -> Vec<String> {
+    let api = include_str!("../api.rs");
+    let start = api
+        .find("fn call_from(&self, conn: u64")
+        .expect("call_from");
+    let end = start + api[start..].find("fn closed(&self").expect("closed");
+    let mut arms: Vec<(Vec<String>, bool)> = Vec::new();
+    for line in api[start..end].lines().skip(1) {
+        let t = line.trim_start();
+        if t.starts_with('"') && t.contains("=>") {
+            let head = t.split("=>").next().unwrap();
+            let names = head
+                .split('"')
+                .skip(1)
+                .step_by(2)
+                .map(String::from)
+                .collect();
+            arms.push((names, false));
+        }
+        if let Some(last) = arms.last_mut() {
+            if line
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|w| w == "conn")
+            {
+                last.1 = true;
+            }
+        }
+    }
+    arms.into_iter()
+        .filter(|(_, uses)| *uses)
+        .flat_map(|(names, _)| names)
+        .collect()
+}
+
+#[test]
+fn no_served_name_reaches_a_connection_bound_arm() {
+    // All routed calls share ROUTED_CONN (0) and `closed(0)` never runs, so a served name that
+    // kept anything per connection would share it between callers and never release it.
+    let bound = connection_bound_arms();
+    for must in [
+        "lighting.lease",
+        "lighting.update",
+        "lighting.release",
+        "wallpaper-engine.pause",
+        "screens.panel_override",
+    ] {
+        assert!(
+            bound.iter().any(|b| b == must),
+            "{must} not found in {bound:?}"
+        );
+    }
+    for m in SERVED {
+        assert!(
+            !bound.iter().any(|b| b == m),
+            "{m} uses the connection: {bound:?}"
+        );
+    }
+}
+
+/// A routed request line.
+fn routed_line(id: u64, method: &str) -> String {
+    json!({"jsonrpc":"2.0","id":id,"method":method,"params":{}}).to_string()
+}
+
+fn written(rig: &mut Rig) -> Vec<Value> {
+    let bytes = std::mem::take(rig.link.writer_mut());
+    String::from_utf8(bytes)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn calls_over_the_queue_bound_are_busy_and_nothing_runs_on_the_link_thread() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    let now = Instant::now();
+    for i in 0..MAX_QUEUED_CALLS as u64 {
+        let step = rig
+            .link
+            .line_at(&routed_line(i, "overlay.restore"), now)
+            .unwrap();
+        assert_eq!(step, Step::Nothing);
+    }
+    assert!(written(&mut rig).is_empty(), "queued, not answered");
+    assert!(
+        counting.seen.lock().unwrap().is_empty(),
+        "nothing ran inline"
+    );
+    rig.link
+        .line_at(&routed_line(99, "health.read"), now)
+        .unwrap();
+    let out = written(&mut rig);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["id"], json!(99));
+    assert_eq!(error_code(&out[0]), 3, "BUSY (contract section 8.1)");
+    assert!(counting.seen.lock().unwrap().is_empty());
+    // The worker drains in order and the answers go out through the link.
+    let mut n = 0;
+    while let Some(job) = queue.try_pop() {
+        let reply = execute(counting.as_ref(), job, now).expect("fresh");
+        rig.link.respond(reply).unwrap();
+        n += 1;
+    }
+    assert_eq!(n, MAX_QUEUED_CALLS);
+    let out = written(&mut rig);
+    assert_eq!(out.len(), MAX_QUEUED_CALLS);
+    assert_eq!(out[0]["id"], json!(0));
+    assert_eq!(out[0]["result"]["served"], "overlay.restore");
+}
+
+#[test]
+fn a_call_the_router_already_timed_out_is_dropped_not_run() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    let t0 = Instant::now();
+    rig.link
+        .line_at(&routed_line(1, "tray.set_panel"), t0)
+        .unwrap();
+    let job = queue.try_pop().unwrap();
+    // The worker got to it only after the expiry: no handler, no answer.
+    let late = t0 + CALL_EXPIRY + Duration::from_secs(1);
+    assert!(execute(counting.as_ref(), job, late).is_none());
+    assert!(counting.seen.lock().unwrap().is_empty());
+    // Just inside the expiry it still runs.
+    rig.link
+        .line_at(&routed_line(2, "tray.set_panel"), t0)
+        .unwrap();
+    let job = queue.try_pop().unwrap();
+    let ok = t0 + CALL_EXPIRY - Duration::from_secs(1);
+    assert!(execute(counting.as_ref(), job, ok).is_some());
+    assert_eq!(counting.seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn expired_jobs_do_not_hold_the_queue_full() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting);
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    let t0 = Instant::now();
+    for i in 0..MAX_QUEUED_CALLS as u64 {
+        rig.link
+            .line_at(&routed_line(i, "overlay.restore"), t0)
+            .unwrap();
+    }
+    let later = t0 + CALL_EXPIRY + Duration::from_secs(1);
+    rig.link
+        .line_at(&routed_line(500, "health.read"), later)
+        .unwrap();
+    assert!(written(&mut rig).is_empty(), "accepted, not BUSY");
+    let job = queue.try_pop().unwrap();
+    assert_eq!(job.id, json!(500));
+    assert!(queue.try_pop().is_none(), "the stale ones are gone");
+}
+
+/// Stands for a 5-10 s device wait: it must never run on the link thread.
+struct Stuck;
+
+impl foxglove_plugin_host::Devices for Stuck {
+    fn call_from(
+        &self,
+        _conn: u64,
+        _method: &str,
+        _params: Value,
+    ) -> Result<Value, foxglove_plugin_api::rpc::Error> {
+        panic!("a slow handler must not run on the link thread");
+    }
+}
+
+#[test]
+fn a_slow_handler_cannot_hold_up_facts_or_exit() {
+    let mut rig = Rig::with_devices(&granted_all(), std::sync::Arc::new(Stuck));
+    let facts = keyboard();
+    rig.connect(&facts);
+    let _queue = rig.link.with_worker();
+    let now = Instant::now();
+    for i in 0..3 {
+        rig.link
+            .line_at(&routed_line(i, "pc_lighting.set_zone"), now)
+            .unwrap();
+    }
+    // Facts still go out at once...
+    rig.link.writer_mut().clear();
+    rig.link
+        .change(&Change {
+            key: "keyboard.game_mode".into(),
+            value: Some(Fact::Bool(true)),
+        })
+        .unwrap();
+    let out = written(&mut rig);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0]["method"], "facts.set");
+    // ...and the hub's exit is taken at once.
+    let exit = json!({"jsonrpc":"2.0","method":"module.exit","params":{}});
+    assert_eq!(rig.link.line(&exit.to_string()).unwrap(), Step::Exit);
+}
+
+#[test]
+fn a_dropped_link_closes_its_queue_and_runs_nothing_more() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    rig.link
+        .line_at(&routed_line(1, "overlay.restore"), Instant::now())
+        .unwrap();
+    drop(rig);
+    assert!(queue.wait().is_none(), "closed: the worker ends");
+    assert!(counting.seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_call_before_ready_is_refused_even_with_a_worker() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut link = Link::new(Vec::new(), launch()).with_devices(counting);
+    let queue = link.with_worker();
+    link.line_at(&routed_line(5, "tray.panel"), Instant::now())
+        .unwrap();
+    let out: Value = serde_json::from_slice(link.writer_mut()).unwrap();
+    assert_eq!(out["error"]["code"], json!(2));
+    assert!(queue.try_pop().is_none());
+}
+
+/// A routed request line carrying the router's remaining time.
+fn routed_with_deadline(id: u64, method: &str, left_ms: u64) -> String {
+    json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"_deadline_ms":left_ms,"k":1}})
+        .to_string()
+}
+
+#[test]
+fn a_call_expires_against_the_router_deadline_not_its_own_clock() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    let t0 = Instant::now();
+    // 6 s left at the router: it is dropped once less than the margin remains.
+    rig.link
+        .line_at(&routed_with_deadline(1, "tray.set_panel", 6000), t0)
+        .unwrap();
+    let job = queue.try_pop().unwrap();
+    assert!(execute(counting.as_ref(), job, t0 + Duration::from_secs(5)).is_none());
+    rig.link
+        .line_at(&routed_with_deadline(2, "tray.set_panel", 6000), t0)
+        .unwrap();
+    let job = queue.try_pop().unwrap();
+    assert!(execute(counting.as_ref(), job, t0 + Duration::from_secs(3)).is_some());
+    // The key never reaches the handler.
+    let seen = counting.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].1, json!({"k": 1}));
+}
+
+#[test]
+fn a_call_that_arrives_with_no_time_left_is_dropped_at_once() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    rig.link
+        .line_at(&routed_with_deadline(1, "tray.panel", 1500), Instant::now())
+        .unwrap();
+    assert!(queue.try_pop().is_none(), "never queued");
+    assert!(
+        written(&mut rig).is_empty(),
+        "the caller was told by the router"
+    );
+    assert!(counting.seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_deadline_key_is_taken_out_of_the_params() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    // Inline (no worker): the handler is called with the key removed.
+    rig.link
+        .line(&routed_with_deadline(1, "overlay.restore", 30000))
+        .unwrap();
+    let out = written(&mut rig);
+    assert_eq!(out.len(), 1, "{out:?}");
+    let seen = counting.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].1, json!({"k": 1}));
+}
+
+/// A handler that panics.
+struct Boom;
+
+impl foxglove_plugin_host::Devices for Boom {
+    fn call_from(
+        &self,
+        _conn: u64,
+        _method: &str,
+        _params: Value,
+    ) -> Result<Value, foxglove_plugin_api::rpc::Error> {
+        panic!("a handler bug");
+    }
+}
+
+#[test]
+fn a_panicking_handler_answers_an_internal_error_and_the_worker_lives() {
+    let mut rig = Rig::with_devices(&granted_all(), std::sync::Arc::new(Boom));
+    rig.connect(&keyboard());
+    let queue = rig.link.with_worker();
+    let now = Instant::now();
+    rig.link
+        .line_at(&routed_line(1, "overlay.restore"), now)
+        .unwrap();
+    rig.link
+        .line_at(&routed_line(2, "overlay.restore"), now)
+        .unwrap();
+    let boom = Boom;
+    while let Some(job) = queue.try_pop() {
+        let reply = execute(&boom, job, now).expect("answered, not dropped");
+        rig.link.respond(reply).unwrap();
+    }
+    let out = written(&mut rig);
+    assert_eq!(out.len(), 2);
+    assert_eq!(error_code(&out[0]), -32603);
+    assert_eq!(error_code(&out[1]), -32603);
+}
+
+#[test]
+fn a_dead_worker_closes_the_queue_and_tells_the_link() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let queue = CallQueue::default();
+    let now = Instant::now();
+    assert!(queue.push(
+        Job {
+            id: json!(1),
+            method: "tray.panel".into(),
+            params: json!({}),
+            expires: now + CALL_EXPIRY,
+        },
+        now
+    ));
+    let lost = std::cell::Cell::new(false);
+    // Delivering the answer panics (outside the handler): the worker dies.
+    run_worker(
+        &queue,
+        counting.as_ref(),
+        |_| panic!("deliver failed"),
+        || lost.set(true),
+    );
+    assert!(lost.get(), "the link is told");
+    assert!(queue.wait().is_none(), "the queue is closed");
+}
+
+#[test]
+fn a_slow_call_does_not_hold_the_other_workers() {
+    use std::sync::mpsc;
+    // The first call blocks until released; the pool still answers the next one.
+    struct Gate(std::sync::Mutex<Option<mpsc::Receiver<()>>>);
+    impl foxglove_plugin_host::Devices for Gate {
+        fn call_from(
+            &self,
+            _conn: u64,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value, foxglove_plugin_api::rpc::Error> {
+            if method == "pc_lighting.set_zone" {
+                let rx = self.0.lock().unwrap().take();
+                if let Some(rx) = rx {
+                    let _ = rx.recv_timeout(Duration::from_secs(10));
+                }
+            }
+            Ok(json!({"served": method}))
+        }
+    }
+    let (release, hold) = mpsc::channel();
+    let devices = std::sync::Arc::new(Gate(std::sync::Mutex::new(Some(hold))));
+    let queue = std::sync::Arc::new(CallQueue::default());
+    let (rtx, rrx) = mpsc::channel::<Reply>();
+    let mut threads = Vec::new();
+    for _ in 0..CALL_WORKERS {
+        let (q, d, tx) = (queue.clone(), devices.clone(), rtx.clone());
+        threads.push(std::thread::spawn(move || {
+            work(&q, d.as_ref(), |r| {
+                let _ = tx.send(r);
+            })
+        }));
+    }
+    let now = Instant::now();
+    let job = |id: u64, m: &str| Job {
+        id: json!(id),
+        method: m.into(),
+        params: json!({}),
+        expires: now + Duration::from_secs(60),
+    };
+    assert!(queue.push(job(1, "pc_lighting.set_zone"), now));
+    assert!(queue.push(job(2, "health.read"), now));
+    let quick = rrx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("not held up");
+    assert_eq!(quick.id, json!(2));
+    let _ = release.send(());
+    let slow = rrx.recv_timeout(Duration::from_secs(5)).expect("released");
+    assert_eq!(slow.id, json!(1));
+    queue.close();
+    for t in threads {
+        t.join().unwrap();
+    }
+}

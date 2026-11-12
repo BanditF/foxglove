@@ -40,7 +40,48 @@ pub const FIRST_PARTY_AREAS: &[&str] = &[
     "profiles.*",
     "focus.*",
     "modules.*",
+    // Every other area of Foxglove's v1 method table (`foxglove_plugin_api::methods`, #1156):
+    // the app serves these, so no third-party or other adopted module may provide them, as
+    // methods or as facts. A test derives the area list from the table, so it cannot drift.
+    "key.*",
+    "secrets.*",
+    "lights.*",
+    "scenes.*",
+    "pc_lighting.*",
+    "health.*",
+    "tray.*",
+    "overlay.*",
+    "wallpaper-engine.*",
 ];
+
+/// The 11 v1 methods the legacy adopted module `foxglove` serves through the router today
+/// (#1143 P6). TEMPORARY (#1155): until the user can grant the legacy module its first-party
+/// areas explicitly, [`legacy_foxglove_ok`] lets exactly these names through the reserved
+/// areas above, and only for the adopted module `foxglove` holding the user's `provide:` for
+/// each. `hub_link::SERVED` must equal this list (a test pins it).
+pub const LEGACY_FOXGLOVE_METHODS: &[&str] = &[
+    "health.read",
+    "lights.page",
+    "scenes.page",
+    "overlay.window",
+    "overlay.restore",
+    "overlay.shown",
+    "overlay.set_shown",
+    "tray.panel",
+    "tray.set_panel",
+    "pc_lighting.list",
+    "pc_lighting.set_zone",
+];
+
+/// The id of the legacy module (#1155).
+pub const LEGACY_FOXGLOVE_ID: &str = "foxglove";
+
+/// Whether `pattern` is one of the legacy methods, exactly (never a wildcard or a longer
+/// pattern that merely covers one). The caller must also have checked that `module` is the
+/// adopted module with that id; the id alone grants nothing (#1155, #1156).
+pub fn legacy_foxglove_ok(module: &str, pattern: &str) -> bool {
+    module == LEGACY_FOXGLOVE_ID && LEGACY_FOXGLOVE_METHODS.contains(&pattern)
+}
 
 /// The first-party areas an adopted module may still provide when no catalog gives them to
 /// another module: Arete's hub is the GPU broker (§8.9). Every other first-party area is closed
@@ -164,6 +205,13 @@ pub fn may_call(caps: &Caps, method: &str, params: &Value) -> bool {
         }
         "image.generate" => caps.has(&Capability::ImageGenerate),
         m if m.starts_with("modules.") => caps.has(&Capability::ModulesManage),
+        // A routed name with no row in the method table, or a row without a permission, is open
+        // to every caller (#1156 LOW, left as is on purpose): it is how a module's own methods
+        // (outside the v1 table) are callable at all, and the contract has no caller grant for
+        // them yet. It reaches nobody it should not: every v1 area is reserved
+        // ([`FIRST_PARTY_AREAS`], [`HUB_OWNED`]), so a name outside the table can only be routed
+        // to a module that is allowed to provide it, and a test pins that every v1 method is
+        // covered by a reserved area. Gating module-defined methods per caller is future work.
         m => match methods::find(m).and_then(|row| row.permission) {
             Some(p) => Capability::parse(p).is_ok_and(|c| caps.has(&c)),
             None => true,

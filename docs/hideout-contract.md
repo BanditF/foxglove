@@ -1157,6 +1157,14 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   other registration: `module.register` lists it under `rejected` with `permission.provider`.
 - A third-party or private module MUST NOT provide a method area a first-party catalog assigns
   (`lighting.*`, `screens.*`, `art.*`, `gpu.*` …), so it can't capture other modules' calls.
+  (#1156) Every area of Foxglove's v1 method table is reserved this way (`lights.*`, `overlay.*`,
+  `tray.*`, `health.*`, `scenes.*`, `pc_lighting.*`, `wallpaper-engine.*`, `key.*`, `secrets.*`
+  as well), as methods and as facts; a test derives the list from the table. Temporary
+  exception (#1155 replaces it with an explicit user grant): the adopted module `foxglove`
+  keeps the 11 v1 methods it serves today, each exact name, only with its manifest declaring it
+  and the user's `provide:` naming that method exactly (a wildcard grant does not carry it);
+  the id alone grants nothing. Open item for #1155: the exception (and its replacement) should
+  also require the publisher or exe path of the registered module to match, not only the id.
 - (#1118) An `adopted` module has no catalog entry; registering it is the user's act (§7.4). It
   may provide only the `method:` patterns of its registered manifest that its `provide:` grant
   covers, and never a first-party area (the list above) except `gpu.*` (Arete's hub is the GPU
@@ -1167,7 +1175,14 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   route points at it, else it ends with error 2. While the provider is down, calls to its
   allowed methods answer 2 (or wait for activation by `call`), not -32601. A caller module (or
   tool) may have 64 calls waiting at once, checked before any module is started; more answer
-  error 3.
+  error 3. (#1156) A caller may also have 4 calls forwarded to a provider and not yet
+  answered, and all callers together 12 at one provider; a call over either answers error 3 and
+  is not forwarded (a `*.release` is exempt). A call counts until the provider answers it or its
+  deadline passes, even when the caller has disconnected meanwhile, so reconnecting buys no
+  room. Calls held for a starting module count the same once it is ready (the extras answer
+  error 3). A forwarded call's params MAY carry `_deadline_ms` (a reserved, optional key), the
+  time left before the hub fails it with error 4; a provider SHOULD drop a call it has not
+  started by then and MUST ignore the key otherwise. Conformance transcripts ignore it.
 - (#1118) Only one adopted module may provide an area: if two adopted modules both declare an
   area and hold its `provide:` grant, neither gets it (no id or start order decides), a route
   already held is dropped, and the registry refuses a second adopted `provide:` grant that
