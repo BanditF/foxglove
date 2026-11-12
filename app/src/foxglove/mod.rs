@@ -111,6 +111,7 @@ pub mod overlay_place;
 pub mod overlay_profile;
 pub mod overlay_restore;
 pub mod overlay_shown;
+pub mod overlay_viewport;
 pub mod page_guard;
 mod palette_file;
 mod panel_polarity_ui;
