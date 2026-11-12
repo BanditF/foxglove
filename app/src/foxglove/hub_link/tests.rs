@@ -1370,7 +1370,10 @@ fn a_call_that_arrives_with_no_time_left_is_dropped_at_once() {
         .line_at(&routed_with_deadline(1, "tray.panel", 1500), Instant::now())
         .unwrap();
     assert!(queue.try_pop().is_none(), "never queued");
-    assert!(written(&mut rig).is_empty(), "the caller was told by the router");
+    assert!(
+        written(&mut rig).is_empty(),
+        "the caller was told by the router"
+    );
     assert!(counting.seen.lock().unwrap().is_empty());
 }
 
@@ -1496,7 +1499,9 @@ fn a_slow_call_does_not_hold_the_other_workers() {
     };
     assert!(queue.push(job(1, "pc_lighting.set_zone"), now));
     assert!(queue.push(job(2, "health.read"), now));
-    let quick = rrx.recv_timeout(Duration::from_secs(5)).expect("not held up");
+    let quick = rrx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("not held up");
     assert_eq!(quick.id, json!(2));
     let _ = release.send(());
     let slow = rrx.recv_timeout(Duration::from_secs(5)).expect("released");
