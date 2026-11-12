@@ -113,6 +113,11 @@ pub struct Cycle {
 pub const LISTEN_EVERY: Duration = Duration::from_millis(250);
 /// For how long after the last knob event it keeps reading them.
 pub const LISTEN_FOR: Duration = Duration::from_secs(30);
+/// While the knob is on master it still learns which apps play sound (a game that starts after
+/// Foxglove did must be offered by the next click): one read this often, for this long after
+/// start-up, a knob event or a change of Windows' sessions.
+pub const SCAN_EVERY: Duration = Duration::from_secs(1);
+pub const SCAN_FOR: Duration = Duration::from_secs(600);
 
 impl Cycle {
     /// The target as the keyboard knows it.
@@ -837,16 +842,21 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
     // The keyboard on `current` lets Foxglove hold master volume (#855).
     let mut volume_ok = false;
     // While an app is the target: when to stop reading the peaks (#854).
-    let mut listen_until: Option<Instant> = None;
+    let mut listen_until: Option<Instant> = Some(Instant::now() + SCAN_FOR);
     loop {
         let work = match listen_until {
             Some(until) => {
                 let left = until.saturating_duration_since(Instant::now());
-                if left.is_zero() || cycle.target.is_none() || super::pause::paused() {
+                if left.is_zero() || super::pause::paused() {
                     listen_until = None;
                     continue;
                 }
-                match rx.recv_timeout(LISTEN_EVERY.min(left)) {
+                let every = if cycle.target.is_some() {
+                    LISTEN_EVERY
+                } else {
+                    SCAN_EVERY
+                };
+                match rx.recv_timeout(every.min(left)) {
                     Ok(work) => work,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         cycle.listen(sessions);
@@ -960,7 +970,12 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                 if let Tell::Target(t) = cycle.event(sessions, ev.kind) {
                     tell(&weak, true, t);
                 }
-                listen_until = cycle.target.is_some().then(|| Instant::now() + LISTEN_FOR);
+                let window = if cycle.target.is_some() {
+                    LISTEN_FOR
+                } else {
+                    SCAN_FOR
+                };
+                listen_until = Some(Instant::now() + window);
                 if matches!(ev.kind, EventKind::HandedBack) {
                     held_link(None);
                     knob_health::note(|h| h.held = false);
@@ -977,6 +992,10 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                 // The apps with sound now, for the Knob card's Add an app (#952), and a new
                 // session of the target's app (#1061).
                 cycle.changed(sessions);
+                // A session came or went: read the peaks for a while, so an app that starts
+                // playing now is heard even if no click lands while it is loud.
+                let until = Instant::now() + SCAN_FOR;
+                listen_until = Some(listen_until.map_or(until, |u| u.max(until)));
             }
             Work::Hidden => {
                 let paused = super::pause::paused();
@@ -1650,6 +1669,18 @@ mod tests {
         c.gone("b");
         assert!(!c.heard.has("b"));
         assert_eq!(names(&mut c, &s, 2), ["Spotify", "master"]);
+    }
+
+    #[test]
+    fn listening_while_on_master_finds_a_game_that_started_after_foxglove() {
+        let s = FakeSessions::with(&[]);
+        let mut c = Cycle::default();
+        assert!(c.target.is_none());
+        s.start("g", "Game");
+        // The service's scan while the knob is on master (SCAN_EVERY).
+        c.listen(&s);
+        s.silent("g", true); // a loading screen when the click comes
+        assert_eq!(names(&mut c, &s, 2), ["Game", "master"]);
     }
 
     #[test]
