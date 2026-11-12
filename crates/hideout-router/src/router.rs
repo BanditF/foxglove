@@ -334,6 +334,12 @@ pub struct Router {
     /// Each module's `provides = ["channel:<name>"]` names from its manifest (§4.5, §8.4): the
     /// declaration is the module's `channel.offer:<name>` for its own `<id>/<name>` (#1013).
     channels_decl: HashMap<String, Vec<String>>,
+    /// Each module's `provides = ["method:<pattern>"]` from its manifest (§4.5): for an adopted
+    /// module (no catalog entry) the only methods it may register (§6.3, #1118).
+    methods_decl: HashMap<String, Vec<String>>,
+    /// Method areas the accepted root-signed catalogs assign, with the module id (§6.3, §13.6):
+    /// an adopted module never provides one of another module's, installed or not (#1118).
+    root_areas: Vec<(String, String)>,
     secret_store: Box<dyn crate::secrets::SecretStore>,
     /// Module calls waiting for the panel host's answer, by call number.
     host_calls: HashMap<u64, HostCall>,
@@ -394,6 +400,8 @@ impl Router {
             settings_decl: HashMap::new(),
             secrets_decl: HashMap::new(),
             channels_decl: HashMap::new(),
+            methods_decl: HashMap::new(),
+            root_areas: Vec::new(),
             secret_store: crate::secrets::default_store(),
             host_calls: HashMap::new(),
             next_host_call: 1,
@@ -420,6 +428,14 @@ impl Router {
     /// Every installed module from the registry, with what its manifest declares (its name,
     /// `[[ui.panels]]` and `[[actions]]`), so `ui.register` is checked against them live.
     pub fn load_registry(&mut self, reg: &Registry) {
+        self.root_areas = reg
+            .trust
+            .catalogs
+            .iter()
+            .filter(|a| a.anchor == hideout_registry::trust::ROOT_ANCHOR)
+            .flat_map(|a| a.catalog.modules.iter())
+            .flat_map(|e| e.provide.iter().map(|p| (e.id.clone(), p.clone())))
+            .collect();
         for id in reg.inventory.modules.keys() {
             if let Some(m) = ModuleEntry::from_registry(reg, id) {
                 self.add_module(m);
@@ -455,6 +471,13 @@ impl Router {
             .map(String::from)
             .collect();
         self.channels_decl.insert(m.id.clone(), channels);
+        let methods = m
+            .provides
+            .iter()
+            .filter_map(|p| p.strip_prefix("method:"))
+            .map(String::from)
+            .collect();
+        self.methods_decl.insert(m.id.clone(), methods);
     }
 
     /// Where module secrets live (Windows Credential Manager by default; tests use memory).
@@ -947,6 +970,7 @@ impl Router {
         self.settings_decl.remove(id);
         self.secrets_decl.remove(id);
         self.channels_decl.remove(id);
+        self.methods_decl.remove(id);
         self.triggers.remove(id);
         self.routes.retain(|r| r.module != id);
         self.fact_owners.retain(|r| r.module != id);
@@ -1454,6 +1478,20 @@ impl Router {
         }
     }
 
+    /// Whether a root-signed catalog assigns `pattern` (or part of it) to a module other than
+    /// `module` (§6.3, §13.6): installed or not.
+    fn assigned_elsewhere(&self, module: &str, pattern: &str) -> bool {
+        self.root_areas
+            .iter()
+            .any(|(id, a)| id != module && overlap(a, pattern))
+            || self.modules.values().any(|m| {
+                m.id != module
+                    && m.catalog_provide
+                        .as_ref()
+                        .is_some_and(|c| c.iter().any(|c| overlap(c, pattern)))
+            })
+    }
+
     fn register(&mut self, module: &str, caps: &Caps, id: &Value, params: &Value) -> Value {
         let Some(entry) = self.modules.get(module).cloned() else {
             return denied(id, None);
@@ -1480,8 +1518,23 @@ impl Router {
                 .catalog_provide
                 .as_ref()
                 .is_none_or(|c| c.iter().any(|c| covers(c, &p)));
+            // An adopted module has no catalog entry; its registered manifest's `method:`
+            // provides, which the user approved as `provide:`, are all it may register, and
+            // never an area a root-signed catalog assigns to another module (§6.3, §13.6).
+            let adopted = entry.registered_version.is_some();
+            let declared = !adopted
+                || self
+                    .methods_decl
+                    .get(module)
+                    .is_some_and(|d| d.iter().any(|d| covers(d, &p)));
+            let assigned_elsewhere = adopted && self.assigned_elsewhere(module, &p);
             let reserved = HUB_OWNED.iter().any(|a| overlap(a, &p))
-                || (!first_party && FIRST_PARTY_AREAS.iter().any(|a| overlap(a, &p)));
+                || !declared
+                || if adopted {
+                    assigned_elsewhere
+                } else {
+                    !first_party && FIRST_PARTY_AREAS.iter().any(|a| overlap(a, &p))
+                };
             let taken = self
                 .routes
                 .iter()
@@ -1751,17 +1804,32 @@ impl Router {
                 return;
             }
         }
-        // Not live: a module whose catalog entry provides it, or the last registration.
-        let owner = live.or_else(|| {
-            self.modules
-                .values()
-                .find(|m| {
-                    m.catalog_provide
-                        .as_ref()
-                        .is_some_and(|c| c.iter().any(|c| covers(c, method)))
-                })
-                .map(|m| m.id.clone())
-        });
+        // Not live: a module whose catalog entry provides it, an adopted module whose manifest
+        // declares it (it has no catalog entry), or the last registration.
+        let owner = live
+            .or_else(|| {
+                self.modules
+                    .values()
+                    .find(|m| {
+                        m.catalog_provide
+                            .as_ref()
+                            .is_some_and(|c| c.iter().any(|c| covers(c, method)))
+                    })
+                    .map(|m| m.id.clone())
+            })
+            .or_else(|| {
+                self.modules
+                    .values()
+                    .find(|m| {
+                        m.registered_version.is_some()
+                            && self
+                                .methods_decl
+                                .get(&m.id)
+                                .is_some_and(|d| d.iter().any(|d| covers(d, method)))
+                            && !self.assigned_elsewhere(&m.id, method)
+                    })
+                    .map(|m| m.id.clone())
+            });
         let Some(owner) = owner else {
             return out.push(Out::Send(
                 conn,

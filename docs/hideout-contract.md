@@ -1155,6 +1155,12 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   other registration: `module.register` lists it under `rejected` with `permission.provider`.
 - A third-party or private module MUST NOT provide a method area a first-party catalog assigns
   (`lighting.*`, `screens.*`, `art.*`, `gpu.*` …), so it can't capture other modules' calls.
+- (#1118) An `adopted` module has no catalog entry; registering it is the user's act (§7.4). It
+  may provide only the `method:` patterns of its registered manifest, and only those no
+  root-signed catalog assigns to another module (installed or not), the rule of §13.6's
+  user-signed catalogs. So Arete's `gpu.*` and `vulpes.*` register while no catalog gives them to
+  Vulpes, and `art.*` or `lighting.*` never. While the provider is down, calls to its declared
+  methods answer 2 (or wait for activation by `call`), not −32601.
 
 ### 6.4 Approval
 
