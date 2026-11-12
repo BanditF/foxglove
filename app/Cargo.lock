@@ -1615,6 +1615,7 @@ dependencies = [
  "getrandom 0.3.4",
  "gtk",
  "hidapi",
+ "hideout-acl",
  "hideout-contract",
  "hideout-router",
  "image",

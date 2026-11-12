@@ -469,3 +469,221 @@ fn the_backoff_is_bounded_and_inside_the_grace_period() {
     );
     assert_eq!(GRACE.as_secs(), 30, "contract §7.9");
 }
+
+// ---- reconnect trust, grace, queue and reader cleanup (the review's M1, M2, L1, L2) ----
+
+#[cfg(windows)]
+mod reconnect {
+    use std::io::{BufRead, Write};
+    use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use foxglove_plugin::channel::{connect_router, unique_pipe_name, ServerPipe};
+    use foxglove_plugin::owner::Probe;
+    use hideout_acl::Peer;
+
+    use super::super::runner::{self, Ended, Msg, READERS};
+    use super::super::{pick, Grace, HubId, Pending, Pick};
+    use super::*;
+
+    const HUB_EXE: &str = r"C:\Program Files\Hideout\hideout.exe";
+
+    fn hub() -> HubId {
+        HubId {
+            pid: 100,
+            path: Some(PathBuf::from(HUB_EXE)),
+        }
+    }
+
+    fn medium() -> std::io::Result<Peer> {
+        Ok(Peer {
+            integrity: hideout_acl::MEDIUM_RID,
+            app_container: None,
+        })
+    }
+
+    fn verified(pid: u32, image: &str) -> Probe {
+        Probe::Verified {
+            pid,
+            image: PathBuf::from(image),
+        }
+    }
+
+    #[test]
+    fn while_the_original_hub_lives_only_its_pid_is_allowed_and_the_probe_is_never_asked() {
+        let alive = |pid| (pid == 100).then(|| PathBuf::from(HUB_EXE));
+        let picked = pick(
+            &hub(),
+            || panic!("no name-only downgrade"),
+            alive,
+            |_| panic!("not asked"),
+        );
+        assert_eq!(picked, Pick::Connect(100));
+        // Pid 100 reused by another program: that is not the hub, so the new-hub rules apply.
+        let reused = |pid| (pid == 100).then(|| PathBuf::from(r"C:\x\other.exe"));
+        let picked = pick(&hub(), || Probe::Free, reused, |_| medium());
+        assert!(matches!(picked, Pick::Wait(_)), "{picked:?}");
+    }
+
+    #[test]
+    fn an_impostor_with_the_right_name_but_another_path_is_refused() {
+        let gone = |_| None;
+        let a = pick(
+            &hub(),
+            || verified(666, r"C:\Users\x\AppData\hideout.exe"),
+            gone,
+            |_| medium(),
+        );
+        assert!(matches!(a, Pick::Refuse(_)), "{a:?}");
+        let b = pick(
+            &hub(),
+            || Probe::Foreign {
+                pid: Some(7),
+                why: "pid 7 runs another.exe".into(),
+            },
+            gone,
+            |_| medium(),
+        );
+        assert!(matches!(b, Pick::Refuse(_)), "{b:?}");
+        // The right path but low integrity, in an AppContainer, or unreadable: refused.
+        for p in [
+            Ok(Peer {
+                integrity: 0x1000,
+                app_container: None,
+            }),
+            Ok(Peer {
+                integrity: hideout_acl::MEDIUM_RID,
+                app_container: Some("S-1-15-2-1".into()),
+            }),
+            Err(std::io::Error::other("no")),
+        ] {
+            let c = std::cell::RefCell::new(Some(p));
+            let got = pick(
+                &hub(),
+                || verified(300, HUB_EXE),
+                gone,
+                |_| c.borrow_mut().take().unwrap(),
+            );
+            assert!(matches!(got, Pick::Refuse(_)), "{got:?}");
+        }
+    }
+
+    #[test]
+    fn the_original_hub_gone_and_a_new_hub_at_the_recorded_path_is_accepted() {
+        let gone = |_| None;
+        // Case differences in a Windows path are not a different file.
+        let got = pick(
+            &hub(),
+            || verified(300, &HUB_EXE.to_uppercase()),
+            gone,
+            |_| medium(),
+        );
+        assert_eq!(got, Pick::Connect(300));
+        // Nothing serving yet: wait, inside the grace period.
+        let nothing = pick(&hub(), || Probe::Free, gone, |_| medium());
+        assert!(matches!(nothing, Pick::Wait(_)));
+        // A hub whose path was never read can't be replaced by a guess.
+        let unknown = HubId {
+            pid: 100,
+            path: None,
+        };
+        let got = pick(&unknown, || verified(300, HUB_EXE), gone, |_| medium());
+        assert!(matches!(got, Pick::Wait(_)), "{got:?}");
+    }
+
+    #[test]
+    fn the_grace_restarts_only_when_a_connection_was_live() {
+        let t0 = Instant::now();
+        let g = Grace::new(t0);
+        // Connections that opened and sent garbage never call lost_live: it runs out.
+        assert!(!g.expired(t0 + Duration::from_secs(29)));
+        assert!(g.expired(t0 + GRACE));
+        let mut g = Grace::new(t0);
+        g.lost_live(t0 + Duration::from_secs(20));
+        assert!(!g.expired(t0 + Duration::from_secs(40)));
+        assert!(g.expired(t0 + Duration::from_secs(50)));
+    }
+
+    #[test]
+    fn queued_fact_changes_are_bounded_by_the_keys_and_the_latest_wins() {
+        let p = Pending::default();
+        let set = |k: &str, v: i64| Change {
+            key: k.into(),
+            value: Some(Fact::Int(v)),
+        };
+        assert!(
+            p.push(set("keyboard.layer", 0)),
+            "the first change wakes the link"
+        );
+        for i in 1..10_000 {
+            assert!(
+                !p.push(set("keyboard.layer", i)),
+                "no second wake while one waits"
+            );
+        }
+        p.push(Change {
+            key: "keyboard.layers".into(),
+            value: None,
+        });
+        let got = p.take();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].value, Some(Fact::Int(9_999)));
+        assert!(
+            p.push(set("keyboard.layer", 1)),
+            "taken: the next change wakes again"
+        );
+    }
+
+    /// A hub that answers with garbage, and one that never answers: each connection ends, its
+    /// reader thread and handle go with it, and the handshake has a deadline.
+    #[test]
+    fn a_hub_sending_bad_lines_or_silence_leaves_no_reader_behind() {
+        let facts = foxglove_devices::facts::Facts::default();
+        let (tx, rx) = mpsc::channel::<Msg>();
+        let pending = Pending::default();
+        let me = std::process::id();
+        for round in 0..6u64 {
+            let name = unique_pipe_name("test.garbage", &format!("r{round}"));
+            let server = ServerPipe::create(&name, true).unwrap();
+            let silent = round == 5;
+            let hub = std::thread::spawn(move || {
+                let mut conn = server.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(conn.clone())
+                    .read_line(&mut line)
+                    .unwrap();
+                assert!(line.contains("\"initialize\""), "{line}");
+                if !silent {
+                    // Keeps sending bad lines; the write ends when the app closes the pipe.
+                    while conn.write_all(b"this is not json\n").is_ok() {}
+                } else {
+                    std::thread::sleep(Duration::from_secs(6));
+                }
+            });
+            let conn = connect_router(&name, me).unwrap();
+            let t = Instant::now();
+            let (ended, live) =
+                runner::serve(&launch(), conn, round + 1, &tx, &rx, &pending, &facts);
+            match ended {
+                Ended::Lost(why) => assert!(!why.is_empty()),
+                _ => panic!("a bad hub does not end the module cleanly"),
+            }
+            assert!(!live, "never reached ready");
+            if silent {
+                let took = t.elapsed();
+                assert!(
+                    took >= Duration::from_secs(4) && took < Duration::from_secs(8),
+                    "{took:?}"
+                );
+            }
+            assert_eq!(
+                READERS.load(Ordering::SeqCst),
+                0,
+                "round {round}: the reader is gone"
+            );
+            hub.join().unwrap();
+        }
+    }
+}

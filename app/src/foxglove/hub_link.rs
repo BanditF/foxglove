@@ -265,6 +265,12 @@ impl<W: Write> Link<W> {
         self.session.writer_mut()
     }
 
+    /// Whether the hub has the module (registered, `module.ready` sent).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn registered(&self) -> bool {
+        self.phase == Phase::Live
+    }
+
     /// Whether facts are going to the hub.
     pub fn live(&self) -> bool {
         self.phase == Phase::Live && self.publishing
@@ -424,34 +430,164 @@ pub fn start() {
     }
 }
 
+/// How long the hub has to answer `initialize` and `module.register` (L1 of the review).
+#[cfg_attr(not(windows), allow(dead_code))]
+const HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Who the hub is, for a reconnect (M1 of the review): the process the launch named and the
+/// full path of its image, recorded while that process was alive.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct HubId {
+    pub pid: u32,
+    pub path: Option<std::path::PathBuf>,
+}
+
+/// What to do about a reconnect.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Pick {
+    /// Open the pipe, requiring the server to be this process.
+    Connect(u32),
+    /// Nothing to connect to yet: try again within the grace period.
+    Wait(String),
+    /// A server that must not get the token.
+    Refuse(String),
+}
+
+/// Chooses the server pid a reconnect may send the token to. While the original hub process is
+/// alive it is the only one allowed (a different server on the pipe is refused by the pid check
+/// in `connect_router`, never downgraded to a name check). Once it is gone, a new hub is taken
+/// only if its image is exactly the recorded path, it runs as this user (the probe checks) at
+/// Medium integrity or above, and it is no AppContainer.
+#[cfg(windows)]
+pub(super) fn pick(
+    hub: &HubId,
+    probe: impl FnOnce() -> foxglove_plugin::owner::Probe,
+    image_of: impl Fn(u32) -> Option<std::path::PathBuf>,
+    peer: impl Fn(u32) -> std::io::Result<hideout_acl::Peer>,
+) -> Pick {
+    use foxglove_plugin::owner::Probe;
+    if let Some(image) = image_of(hub.pid) {
+        if hub.path.as_ref().is_none_or(|p| same_path(p, &image)) {
+            return Pick::Connect(hub.pid);
+        }
+    }
+    let Some(path) = &hub.path else {
+        return Pick::Wait("the hub is gone and its path was never known".into());
+    };
+    match probe() {
+        Probe::Free => Pick::Wait("the hub's pipe is not there".into()),
+        Probe::Foreign { why, .. } => {
+            Pick::Refuse(format!("the pipe's server is not the hub: {why}"))
+        }
+        Probe::Verified { pid, image } => {
+            if !same_path(path, &image) {
+                return Pick::Refuse(format!(
+                    "pid {pid} serves the pipe from {}, not the hub's {}",
+                    image.display(),
+                    path.display()
+                ));
+            }
+            match peer(pid) {
+                Ok(p) if p.app_container.is_none() && p.integrity >= hideout_acl::MEDIUM_RID => {
+                    Pick::Connect(pid)
+                }
+                Ok(_) => Pick::Refuse(format!(
+                    "pid {pid} is below Medium integrity or in an AppContainer"
+                )),
+                Err(e) => Pick::Refuse(format!("pid {pid}: its token is unreadable ({e})")),
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+}
+
+/// The grace period: it starts when the app starts and restarts only after a connection reached
+/// `module.ready`, so a server that accepts and sends garbage cannot keep the app waiting.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) struct Grace {
+    since: std::time::Instant,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl Grace {
+    pub fn new(now: std::time::Instant) -> Grace {
+        Grace { since: now }
+    }
+    /// A connection reached ready and was then lost.
+    pub fn lost_live(&mut self, now: std::time::Instant) {
+        self.since = now;
+    }
+    pub fn expired(&self, now: std::time::Instant) -> bool {
+        now.saturating_duration_since(self.since) >= GRACE
+    }
+}
+
+/// Fact changes waiting for the link, by key: the latest value wins, so the queue is never
+/// longer than the set of keys, whatever the hub does.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Default)]
+pub(super) struct Pending {
+    inner: std::sync::Mutex<(std::collections::BTreeMap<String, Option<Fact>>, bool)>,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl Pending {
+    /// Records a change; true when the link needs waking (nothing was waiting).
+    pub fn push(&self, c: Change) -> bool {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.0.insert(c.key, c.value);
+        !std::mem::replace(&mut g.1, true)
+    }
+    pub fn take(&self) -> Vec<Change> {
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.1 = false;
+        std::mem::take(&mut g.0)
+            .into_iter()
+            .map(|(key, value)| Change { key, value })
+            .collect()
+    }
+}
+
 #[cfg(windows)]
 mod runner {
     use std::io::{BufRead, BufReader, Read};
-    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use foxglove_plugin::channel::{connect_router, ChannelConn};
     use foxglove_plugin::hideout::MAX_MESSAGE;
-    use foxglove_plugin::owner::{self, Expect, Probe};
+    use foxglove_plugin::owner::{self, Expect};
 
     use super::*;
 
     /// What the link thread waits on: the one place hub lines and fact changes meet.
-    enum Msg {
+    pub(super) enum Msg {
         /// A line from connection `.0`.
         Line(u64, String),
         /// Connection `.0` ended.
         Closed(u64),
-        Fact(Change),
+        /// Changes are waiting in [`Pending`].
+        Facts,
     }
 
     /// Why a connection ended.
-    enum Ended {
-        /// The pipe closed or broke after the handshake began.
+    pub(super) enum Ended {
+        /// The pipe closed, broke or went quiet.
         Lost(String),
         Exit,
         Refused(String),
     }
+
+    /// Reader threads running now (tests: none is left behind after a connection ends).
+    pub(super) static READERS: AtomicUsize = AtomicUsize::new(0);
 
     /// Backoff between attempts: 0.5 s doubling to 8 s, within [`GRACE`] of the last time the
     /// hub was there.
@@ -462,40 +598,50 @@ mod runner {
     pub fn run(launch: Launch) {
         let facts = crate::foxglove::devices::bus().facts().clone();
         let (tx, rx) = mpsc::channel::<Msg>();
-        // Changes are forwarded for the life of the process; while no hub is connected they
-        // wait here and are dropped on reconnect (the snapshot has the current values).
+        // Changes are forwarded for the life of the process, coalesced by key; while no hub is
+        // connected they wait and are dropped on reconnect (the snapshot has the values).
+        let pending = Arc::new(Pending::default());
         let changes = facts.subscribe(FACTS);
-        let ftx = tx.clone();
+        let (ftx, fpending) = (tx.clone(), pending.clone());
         crate::foxglove::services::spawn_named("hub-link-facts", move || {
             for c in changes {
-                if ftx.send(Msg::Fact(c)).is_err() {
+                if fpending.push(c) && ftx.send(Msg::Facts).is_err() {
                     break;
                 }
             }
         });
+        // Recorded while the hub's process is alive: a restarted hub must run this exact image.
+        let mut hub = HubId {
+            pid: launch.hub_pid,
+            path: owner::image_of(launch.hub_pid),
+        };
         let mut generation = 0u64;
-        let mut first = true;
-        let mut lost_since = Instant::now();
+        let mut grace = Grace::new(Instant::now());
         let mut attempt = 0u32;
         loop {
             generation += 1;
-            // The first connection is to the pid the hub named; later ones (the hub may have
-            // restarted, §7.9) to a hideout.exe of this user, whose pid is read from the pipe.
-            let conn = server_pid(&launch, first)
-                .and_then(|pid| connect_router(&launch.pipe, pid).map_err(|e| e.to_string()));
-            let ended = match conn {
-                Ok(conn) => {
-                    let ended = serve(&launch, conn, generation, &tx, &rx, &facts);
-                    if let Ended::Lost(_) = &ended {
-                        // The hub was there: the grace period starts now.
-                        lost_since = Instant::now();
-                        attempt = 0;
+            let picked = pick(
+                &hub,
+                || owner::probe(&launch.pipe, Expect::HIDEOUT, owner::TIMEOUT),
+                owner::image_of,
+                hideout_acl::peer,
+            );
+            let ended = match picked {
+                Pick::Connect(pid) => match connect_router(&launch.pipe, pid) {
+                    Ok(conn) => {
+                        let (ended, live) =
+                            serve(&launch, conn, generation, &tx, &rx, &pending, &facts);
+                        if live {
+                            hub.pid = pid;
+                            grace.lost_live(Instant::now());
+                            attempt = 0;
+                        }
+                        ended
                     }
-                    ended
-                }
-                Err(e) => Ended::Lost(e),
+                    Err(e) => Ended::Lost(e.to_string()),
+                },
+                Pick::Wait(why) | Pick::Refuse(why) => Ended::Lost(why),
             };
-            first = false;
             match ended {
                 Ended::Exit => finish("the hub asked the module to exit", 0),
                 Ended::Refused(why) => {
@@ -503,7 +649,7 @@ mod runner {
                     finish("the hub refused the module", 1)
                 }
                 Ended::Lost(why) => {
-                    if lost_since.elapsed() >= GRACE {
+                    if grace.expired(Instant::now()) {
                         crate::foxglove::app_log::early(&format!(
                             "Foxglove: no hub for {} s ({why}); handing everything back and exiting",
                             GRACE.as_secs()
@@ -520,38 +666,44 @@ mod runner {
         }
     }
 
-    fn server_pid(launch: &Launch, first: bool) -> Result<u32, String> {
-        if first {
-            return Ok(launch.hub_pid);
-        }
-        match owner::probe(&launch.pipe, Expect::HIDEOUT, owner::TIMEOUT) {
-            Probe::Verified { pid, .. } => Ok(pid),
-            Probe::Free => Err("the hub's pipe is not there".into()),
-            Probe::Foreign { why, .. } => {
-                Err(format!("the pipe's server is not hideout.exe: {why}"))
-            }
-        }
-    }
-
     /// Hands the app's devices back and ends the process, as the tray's Quit does.
     fn finish(why: &str, code: i32) -> ! {
         crate::foxglove::quit::hand_back(why);
         std::process::exit(code)
     }
 
-    fn serve(
+    /// Ends the reader: cancels its blocked read until it has gone, so no thread or handle
+    /// outlives the connection (bounded: 40 tries of 50 ms).
+    fn stop_reader(conn: &ChannelConn, done: &Receiver<()>) {
+        for _ in 0..40 {
+            conn.cancel();
+            match done.recv_timeout(Duration::from_millis(50)) {
+                Err(RecvTimeoutError::Timeout) => continue,
+                _ => break,
+            }
+        }
+    }
+
+    /// One connection. The flag says whether it reached ready.
+    pub(super) fn serve(
         launch: &Launch,
         conn: ChannelConn,
         generation: u64,
         tx: &Sender<Msg>,
         rx: &Receiver<Msg>,
+        pending: &Pending,
         facts: &foxglove_devices::facts::Facts,
-    ) -> Ended {
-        // Changes that piled up while no hub was there are stale: the snapshot says it all.
+    ) -> (Ended, bool) {
+        // Changes and lines from before are stale: the snapshot says it all.
         for _ in rx.try_iter() {}
+        pending.take();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
         let reader = conn.clone();
+        let canceller = conn.clone();
         let ltx = tx.clone();
+        READERS.fetch_add(1, Ordering::SeqCst);
         crate::foxglove::services::spawn_named("hub-link-read", move || {
+            let _done = done_tx;
             let mut reader = BufReader::new(reader);
             loop {
                 let mut line = String::new();
@@ -563,33 +715,64 @@ mod runner {
                     Ok(_) if !line.ends_with('\n') => break, // over the wire limit: end it
                     Ok(_) => {
                         if ltx.send(Msg::Line(generation, line)).is_err() {
-                            return;
+                            break;
                         }
                     }
                 }
             }
             let _ = ltx.send(Msg::Closed(generation));
+            READERS.fetch_sub(1, Ordering::SeqCst);
         });
+        let (ended, live) = converse(launch, conn, generation, rx, pending, facts);
+        stop_reader(&canceller, &done_rx);
+        (ended, live)
+    }
+
+    fn converse(
+        launch: &Launch,
+        conn: ChannelConn,
+        generation: u64,
+        rx: &Receiver<Msg>,
+        pending: &Pending,
+        facts: &foxglove_devices::facts::Facts,
+    ) -> (Ended, bool) {
         let mut link = Link::new(conn, launch.clone());
-        let lost = |e: SessionError| Ended::Lost(e.to_string());
+        let mut live = false;
+        let lost = |e: SessionError, live| (Ended::Lost(e.to_string()), live);
         if let Err(e) = link.start() {
-            return lost(e);
+            return lost(e, live);
         }
+        let started = Instant::now();
         loop {
-            let Ok(msg) = rx.recv() else {
-                return Ended::Lost("the link's queue closed".into());
+            // Until the hub has the module it has HANDSHAKE to answer; after that, no clock.
+            let msg = if link.registered() {
+                rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            } else {
+                rx.recv_timeout(HANDSHAKE.saturating_sub(started.elapsed()))
+            };
+            let msg = match msg {
+                Ok(m) => m,
+                Err(RecvTimeoutError::Timeout) => {
+                    return (
+                        Ended::Lost("the hub did not answer the handshake in time".into()),
+                        live,
+                    )
+                }
+                Err(_) => return (Ended::Lost("the link's queue closed".into()), live),
             };
             let step = match msg {
                 Msg::Line(g, line) if g == generation => match link.line(&line) {
                     Ok(step) => step,
-                    Err(e) => return lost(e),
+                    Err(e) => return lost(e, live),
                 },
                 Msg::Closed(g) if g == generation => {
-                    return Ended::Lost("the hub closed the pipe".into())
+                    return (Ended::Lost("the hub closed the pipe".into()), live)
                 }
-                Msg::Fact(change) => {
-                    if let Err(e) = link.change(&change) {
-                        return lost(e);
+                Msg::Facts => {
+                    for change in pending.take() {
+                        if let Err(e) = link.change(&change) {
+                            return lost(e, live);
+                        }
                     }
                     Step::Nothing
                 }
@@ -600,12 +783,13 @@ mod runner {
             }
             match step {
                 Step::Nothing => {}
-                Step::Exit => return Ended::Exit,
-                Step::Refused(why) => return Ended::Refused(why),
+                Step::Exit => return (Ended::Exit, live),
+                Step::Refused(why) => return (Ended::Refused(why), live),
                 Step::Ready => {
+                    live = true;
                     crate::foxglove::app_log::line("Foxglove: registered with the hub as a module");
                     if let Err(e) = link.snapshot(facts.list(FACTS)) {
-                        return lost(e);
+                        return lost(e, live);
                     }
                 }
             }
