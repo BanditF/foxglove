@@ -31,6 +31,7 @@ use foxglove_plugin_api::rpc::{Error, Id, Outcome, Request, Response};
 pub mod channel;
 pub mod hideout;
 mod net;
+pub mod owner;
 pub use net::{NetEvent, TcpListener, TcpStream};
 pub mod ui;
 pub mod ws;

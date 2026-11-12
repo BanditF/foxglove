@@ -103,6 +103,7 @@ pub mod notice;
 pub mod notifications;
 pub mod notifications_ui;
 mod notify_windows;
+pub mod one_owner;
 pub mod other_keyboards;
 pub mod overlay_grab;
 pub mod overlay_opacity;

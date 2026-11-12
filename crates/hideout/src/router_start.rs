@@ -233,11 +233,18 @@ pub fn start(
             Ok(_) => log::info!("router: serving {name}"),
             Err(e) => log::error!("router: {name}: {e}"),
         }
-        // §8.2, §8.6: the alias only once foxglove.exe no longer owns the name.
+        // §8.2, §8.6: the alias only once foxglove.exe no longer owns the name. A probe checks the
+        // server's process first (#1143 P4): a live foxglove.exe keeps the name, and so does an
+        // unverified server (ignored, never trusted).
         let alias = hub.alias_pipe();
-        match hub.serve_pipe(&alias) {
-            Ok(_) => log::info!("router: serving the alias {alias}"),
-            Err(e) => log::info!("router: alias {alias} not served (owned elsewhere): {e}"),
+        match hub.serve_alias(&alias) {
+            hideout_router::AliasOutcome::Served => {
+                log::info!("router: serving the alias {alias}")
+            }
+            hideout_router::AliasOutcome::Left(why) => log::warn!("router: alias: {why}"),
+            hideout_router::AliasOutcome::Failed(e) => {
+                log::info!("router: alias {alias} not served (owned elsewhere): {e}")
+            }
         }
     }
     // After the pipe is served, so modules it starts or takes back can connect. Router events

@@ -5,6 +5,11 @@
 //! Both names live in the session's `Local\` namespace, so they are per user. A run with
 //! `FOXGLOVE_CONFIG_DIR` (tests, the Test lab) gets names of its own for that folder, so it never
 //! hands off to, or blocks, the user's own Foxglove.
+//!
+//! Asymmetry (#1143): `hideout.exe` guards itself with `Local\BanditF.Hideout.Hub{suffix}`, a
+//! different name, so neither program sees the other's mutex and both can run at once. That is
+//! deliberate for now (the hub is a preview beside Foxglove); what they share is the pipe
+//! `foxglove-<user>`, so `one_owner` probes it, verifies who serves it and logs the coexistence.
 
 /// The names for a settings folder: the shared one, or one per `FOXGLOVE_CONFIG_DIR`.
 fn names(config_dir: Option<&std::ffi::OsStr>) -> (String, String) {
@@ -19,6 +24,11 @@ fn names(config_dir: Option<&std::ffi::OsStr>) -> (String, String) {
         format!("Local\\BanditF.Foxglove.{scope}.instance"),
         format!("Local\\BanditF.Foxglove.{scope}.show"),
     )
+}
+
+#[cfg(test)]
+pub fn names_for_tests(config_dir: Option<&std::ffi::OsStr>) -> (String, String) {
+    names(config_dir)
 }
 
 /// FNV-1a: stable across builds and Rust versions, unlike `DefaultHasher`.
