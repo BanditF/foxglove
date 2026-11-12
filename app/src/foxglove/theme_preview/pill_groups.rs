@@ -303,11 +303,13 @@ fn the_tray_panel_rows_are_radio_groups() {
 /// they say; `pill_button` stays inside the theme.
 #[test]
 fn no_pill_row_is_drawn_outside_a_group() {
-    const LONE: [(&str, &str); 2] = [
+    const LONE: [(&str, &str); 3] = [
         // Pause / Resume: one toggle.
         ("tray_panel.rs", "theme::pill(ui, v.paused, label)"),
         // The theme review's sample of a pill beside a chip.
         ("theme_preview.rs", "theme::pill(ui, true, \"Solid\")"),
+        // The stopped-page notice's one primary action.
+        ("page_guard.rs", "theme::pill(ui, true, \"Try again\")"),
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/foxglove");
     let mut bad = Vec::new();

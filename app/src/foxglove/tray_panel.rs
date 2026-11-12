@@ -836,11 +836,11 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             });
             // #496: Screen glow first, while it runs.
             if let Some(row) = &v.screen {
-                screen_glow_row(ui, row, out);
+                super::page_guard::tile(ui, "tile:screen-glow", "Tray: Screen glow", |ui| screen_glow_row(ui, row, out));
             }
             // #504: the other devices' batteries, only when one reports.
             if !v.devices.is_empty() {
-                part(ui, "Batteries", |_| {}, |ui| {
+                super::page_guard::tile(ui, "tile:batteries", "Tray: Batteries", |ui| part(ui, "Batteries", |_| {}, |ui| {
                     for (name, level, low) in &v.devices {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(name).color(p.text));
@@ -849,9 +849,9 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                             });
                         });
                     }
-                });
+                }));
             }
-            part(ui, "Profile", |_| {}, |ui| {
+            super::page_guard::tile(ui, "tile:profile", "Tray: Profile", |ui| part(ui, "Profile", |_| {}, |ui| {
                 ui.horizontal_wrapped(|ui| theme::pill_group(ui, "Profile", |ui, g| {
                     if g.pill(ui, v.active_profile.is_none(), "Default").clicked() && v.active_profile.is_some() {
                         out.push(Intent::Profile(None));
@@ -863,14 +863,14 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                         }
                     }
                 }));
-            });
+            }));
             if let Some(row) = &v.knob {
-                knob(ui, row, out);
+                super::page_guard::tile(ui, "tile:knob", "Tray: Knob", |ui| knob(ui, row, out));
             }
-            lights(ui, v, draft, out);
+            super::page_guard::tile(ui, "tile:lights", "Tray: Lights", |ui| lights(ui, v, draft, out));
             // The two screens (#519): the left one's line with its pause, the right one's
             // piece with ‹ / Next › through Rotation, Art… to the page, and the strip.
-            part(ui, "Screens", |_| {}, |ui| {
+            super::page_guard::tile(ui, "tile:screens", "Tray: Screens", |ui| part(ui, "Screens", |_| {}, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{}: {}", super::screen_roles::name(super::screen_roles::Role::Info), v.left_name)).color(p.text));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -914,7 +914,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                         out.push(Intent::ArtStrip(b));
                     }
                 }
-            });
+            }));
             let (line, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), Sense::hover());
             ui.painter().rect_filled(line, 0.0, p.line);
             egui::Frame::new().fill(p.well).inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {

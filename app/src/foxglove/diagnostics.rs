@@ -330,7 +330,10 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         screen_glow: super::screen_glow::diagnostics()
             .trim_start_matches("Screen glow: ")
             .to_string(),
-        services: super::services::problems(),
+        services: super::services::problems()
+            .into_iter()
+            .chain(super::page_guard::problems())
+            .collect(),
         health: super::health::diagnostics_lines(&super::health::all_rows()),
         log: super::app_log::recent(LOG_LINES),
     }

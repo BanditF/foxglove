@@ -267,52 +267,62 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
                     let _showing = Showing;
                     SHOWING.set(Some(page));
                     DREW.set(false);
-                    if page == Page::Keyboard {
-                        // The board and the keyboard's cards lead the page; the layer overlay's
-                        // card and Other keyboards follow them (#386, #534).
-                        go = super::keyboard_page::top(ui);
-                    }
-                    if page == Page::Scenes {
-                        // The room map, the effect and the presets (#487).
-                        super::scenes_ui::page(ui);
-                    }
-                    if page == Page::Screens {
-                        // Showing now, On the keyboard, On this PC, the left screen (#516).
-                        super::screens_ui::page(ui);
-                    }
-                    // A grid of cards (#390): each column draws only its own sections. The left one
-                    // holds Profiles, whose rules need about 460 points; narrower windows stack
-                    // the cards.
-                    const GAP: f32 = 16.0;
-                    let width = ui.available_width();
-                    let left = (width * 0.55).max(460.0);
-                    let right = width - left - GAP;
-                    if page == Page::Keyboard {
-                        for part in 0..KEYBOARD_PARTS {
-                            COLUMN.set(Some(part));
-                            add(ui);
-                        }
-                        COLUMN.set(None);
-                    } else if page == Page::Settings && right >= 300.0 {
-                        ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = GAP;
-                            for (i, w) in [left, right].into_iter().enumerate() {
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(w, 0.0),
-                                    Layout::top_down(Align::Min),
-                                    |ui| {
-                                        ui.set_width(w);
-                                        COLUMN.set(Some(i));
-                                        add(ui);
-                                    },
-                                );
+                    // One panic boundary around the page body (#1143): a draw that panics
+                    // disables this page with a notice; the sidebar and the other pages go on.
+                    super::page_guard::page(
+                        ui,
+                        &format!("page:{}", page.label()),
+                        page.label(),
+                        |ui| {
+                            if page == Page::Keyboard {
+                                // The board and the keyboard's cards lead the page; the layer overlay's
+                                // card and Other keyboards follow them (#386, #534).
+                                go = super::keyboard_page::top(ui);
                             }
-                        });
-                        COLUMN.set(None);
-                    } else {
-                        add(ui);
-                    }
-                    if !DREW.get() {
+                            if page == Page::Scenes {
+                                // The room map, the effect and the presets (#487).
+                                super::scenes_ui::page(ui);
+                            }
+                            if page == Page::Screens {
+                                // Showing now, On the keyboard, On this PC, the left screen (#516).
+                                super::screens_ui::page(ui);
+                            }
+                            // A grid of cards (#390): each column draws only its own sections. The left one
+                            // holds Profiles, whose rules need about 460 points; narrower windows stack
+                            // the cards.
+                            const GAP: f32 = 16.0;
+                            let width = ui.available_width();
+                            let left = (width * 0.55).max(460.0);
+                            let right = width - left - GAP;
+                            if page == Page::Keyboard {
+                                for part in 0..KEYBOARD_PARTS {
+                                    COLUMN.set(Some(part));
+                                    add(ui);
+                                }
+                                COLUMN.set(None);
+                            } else if page == Page::Settings && right >= 300.0 {
+                                ui.horizontal_top(|ui| {
+                                    ui.spacing_mut().item_spacing.x = GAP;
+                                    for (i, w) in [left, right].into_iter().enumerate() {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(w, 0.0),
+                                            Layout::top_down(Align::Min),
+                                            |ui| {
+                                                ui.set_width(w);
+                                                COLUMN.set(Some(i));
+                                                add(ui);
+                                            },
+                                        );
+                                    }
+                                });
+                                COLUMN.set(None);
+                            } else {
+                                add(ui);
+                            }
+                        },
+                    );
+                    if !DREW.get() && !super::page_guard::stopped(&format!("page:{}", page.label()))
+                    {
                         ui.add_space(8.0);
                         ui.weak(page.empty_hint());
                     }
