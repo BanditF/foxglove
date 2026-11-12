@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 
 use crate::checks::HUB_OWNED;
 use crate::checks::{
-    adopted_area_ok, covers, event_permission, may_call, overlap, watches_app, Caps,
+    adopted_area_ok, covers, event_permission, may_call, overlap, watches_app, Caps, ADOPTED_AREAS,
     FIRST_PARTY_AREAS,
 };
 
@@ -1606,64 +1606,85 @@ impl Router {
         let owners = std::mem::take(&mut self.fact_owners);
         self.fact_owners = owners
             .into_iter()
-            .filter(|r| {
-                let adopted = self
-                    .modules
-                    .get(&r.module)
-                    .is_some_and(|m| m.registered_version.is_some());
-                !adopted || self.may_own_fact(&r.module, &r.pattern)
-            })
+            .filter(|r| self.may_own_fact(&r.module, &r.pattern))
             .collect();
     }
 
-    /// Whether a module may hold the facts pattern `pattern` (§4.5, §6.1, §8.3): never `*` or a
-    /// hub-owned area (`module.*`, `hub.*`, `apps.*`, `mic.*`), `device.*` only first-party. A
-    /// module whose manifest is known only what its `provides facts:` lists. An adopted module
-    /// (no catalog entry) also gets no first-party area but
-    /// [`ADOPTED_AREAS`], nothing a catalog assigns to another module, and nothing another
-    /// adopted candidate also qualifies for (neither gets it, as for methods, #1150). Another
-    /// module with a catalog entry may not take a first-party area unless it is first-party.
+    /// Whether a module may hold the facts pattern `pattern` (§4.5, §6.1, §8.3, #1150): never
+    /// `*` or a hub-owned area (`module.*`, `hub.*`, `apps.*`, `mic.*`, bare names included),
+    /// `device.*` only first-party. Any module that isn't first-party needs its manifest read and
+    /// its `provides facts:` to cover the pattern. One with no catalog entry (adopted, sideloaded,
+    /// private) also gets no first-party area but `gpu.*`, and that only while it is the
+    /// user-granted GPU broker (`may_provide`); nothing a catalog assigns to another module; and
+    /// nothing another such candidate would also qualify for (both refused, no order decides). A
+    /// module with a catalog entry may not take a first-party area or another entry's area.
     fn may_own_fact(&self, module: &str, pattern: &str) -> bool {
+        self.may_own_fact_in(module, pattern, true)
+    }
+
+    fn may_own_fact_in(&self, module: &str, pattern: &str, rivals: bool) -> bool {
         let Some(entry) = self.modules.get(module) else {
             return false;
         };
         let first_party = matches!(entry.holder, Holder::FirstParty | Holder::ModulesModule);
+        // A bare name is its area (`apps` is `apps.*`).
+        let area = if pattern.contains('.') || pattern.ends_with('*') {
+            pattern.to_string()
+        } else {
+            format!("{pattern}.*")
+        };
         if pattern == "*"
             || ["module.*", "hub.*", "apps.*", "mic.*"]
                 .iter()
-                .any(|a| overlap(a, pattern))
-            || (!first_party && overlap("device.*", pattern))
+                .any(|a| overlap(a, &area))
+            || (!first_party && overlap("device.*", &area))
         {
             return false;
         }
-        let declared = self.facts_decl.get(module);
-        if declared.is_some_and(|d| !d.iter().any(|d| covers(d, pattern))) {
+        if first_party {
+            return self
+                .facts_decl
+                .get(module)
+                .is_none_or(|d| d.iter().any(|d| covers(d, pattern)));
+        }
+        if !self
+            .facts_decl
+            .get(module)
+            .is_some_and(|d| d.iter().any(|d| covers(d, pattern)))
+        {
             return false;
         }
-        if entry.registered_version.is_some() {
-            return declared.is_some()
-                && adopted_area_ok(pattern)
-                && !self.assigned_elsewhere(module, pattern)
-                && !self.rival_adopted_fact(module, pattern);
+        let other_catalog = |m: &&ModuleEntry| {
+            m.id != module
+                && m.catalog_provide
+                    .as_ref()
+                    .is_some_and(|c| c.iter().any(|c| overlap(c, &area)))
+        };
+        if entry.catalog_provide.is_some() {
+            return !FIRST_PARTY_AREAS.iter().any(|a| overlap(a, &area))
+                && !self.modules.values().any(|m| other_catalog(&m));
         }
-        (first_party || !FIRST_PARTY_AREAS.iter().any(|a| overlap(a, pattern)))
-            && !self.modules.values().any(|m| {
-                m.id != module
-                    && m.catalog_provide
-                        .as_ref()
-                        .is_some_and(|c| c.iter().any(|c| overlap(c, pattern)))
-            })
+        let caps = Caps::parse(&entry.granted);
+        adopted_area_ok(&area)
+            && ADOPTED_AREAS
+                .iter()
+                .filter(|a| overlap(a, &area))
+                .all(|a| self.may_provide(module, &caps, a))
+            && !self.assigned_elsewhere(module, &area)
+            && !(rivals && self.rival_fact(module, &area))
     }
 
-    /// Whether another adopted module also qualifies for the facts `pattern`.
-    fn rival_adopted_fact(&self, module: &str, pattern: &str) -> bool {
+    /// Whether another candidate (no catalog entry, not first-party) that would itself qualify
+    /// also declares an overlap with the facts `area`: a bare declaration counts for nothing.
+    fn rival_fact(&self, module: &str, area: &str) -> bool {
         self.modules.values().any(|m| {
             m.id != module
-                && m.registered_version.is_some()
-                && self
-                    .facts_decl
-                    .get(&m.id)
-                    .is_some_and(|d| d.iter().any(|d| overlap(d, pattern)))
+                && m.catalog_provide.is_none()
+                && !matches!(m.holder, Holder::FirstParty | Holder::ModulesModule)
+                && self.facts_decl.get(&m.id).is_some_and(|d| {
+                    d.iter()
+                        .any(|d| overlap(d, area) && self.may_own_fact_in(&m.id, d, false))
+                })
         })
     }
 

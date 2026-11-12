@@ -13,6 +13,7 @@ use hideout_router::{ConnId, ModuleEntry, Origin, Out, Router, Settings};
 use serde_json::{json, Value};
 
 const FOX: &str = "foxglove";
+const ARETE: &str = "example.hub";
 
 fn entry(id: &str, holder: Holder, granted: &[&str], catalog: Option<&[&str]>) -> ModuleEntry {
     ModuleEntry {
@@ -144,9 +145,9 @@ fn the_foxglove_module_owns_keyboard_and_writes_only_it() {
 }
 
 #[test]
-fn registering_alone_writes_nothing_without_a_declared_provide_or_a_grant() {
+fn registering_alone_writes_nothing_and_an_unread_manifest_registers_nothing() {
     let now = Instant::now();
-    // A module the router has no manifest for (a legacy one): the owner has no `facts:` provide.
+    // A third-party module the router has no manifest for registers no fact (L1).
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
     r.add_module(entry(
         "example.weather",
@@ -155,9 +156,15 @@ fn registering_alone_writes_nothing_without_a_declared_provide_or_a_grant() {
         None,
     ));
     let c = module(&mut r, "example.weather", now);
-    assert_eq!(register(&mut r, c, &["weather.*"], now), json!([]));
+    assert_eq!(
+        register(&mut r, c, &["weather.*", "keyboard.*"], now)
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(code(&set(&mut r, c, "weather.temp", now)), 5);
-    // The `facts.write:` grant alone writes (v1), owner or not.
+    // The `facts.write:` grant alone writes (v1), registered or not.
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
     r.add_module(entry(
         "example.weather",
@@ -192,9 +199,153 @@ fn a_hub_owned_or_first_party_fact_area_is_refused_to_an_adopted_module() {
     // `*` has no manifest spelling and is never registered.
     let (mut r, c) = rig_one("example.adopted", r#""facts:art.*""#, now);
     assert_eq!(register(&mut r, c, &["*"], now), json!([rej("*")]));
-    // gpu.* stays the adopted GPU broker's, like the methods (§8.9).
-    let (mut r, c) = rig_one("example.gpu", r#""facts:gpu.*""#, now);
-    assert_eq!(register(&mut r, c, &["gpu.*"], now), json!([]));
+    // Bare names are their area.
+    for area in ["apps", "mic", "device", "gpu", "module", "hub"] {
+        let provides = format!(r#""facts:{area}""#);
+        let (mut r, c) = rig_one("example.adopted", &provides, now);
+        assert_eq!(
+            register(&mut r, c, &[area], now),
+            json!([rej(area)]),
+            "{area}"
+        );
+    }
+}
+
+/// An adopted GPU broker as the registry grants it: `provide:gpu.*` and its manifest.
+fn broker(r: &mut Router, id: &str, provides: &str, granted: &[&str]) {
+    r.add_module(adopted(id, granted));
+    r.apply_manifest(&manifest(id, provides));
+}
+
+#[test]
+fn gpu_facts_follow_the_user_granted_broker_only_and_a_decl_only_rival_counts_for_nothing() {
+    let now = Instant::now();
+    let both = r#""method:gpu.*", "facts:gpu.*""#;
+    // M2: a lone adopted module that merely declares `facts:gpu.*` has no user grant.
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    broker(&mut r, "example.fake", both, &[]);
+    let f = module(&mut r, "example.fake", now);
+    assert_eq!(register(&mut r, f, &["gpu.*"], now), json!([rej("gpu.*")]));
+    assert_eq!(code(&set(&mut r, f, "gpu.reserved", now)), 5);
+    // The granted broker registers; a decl-only rival of one key does not drop it, nor the
+    // reverse start order.
+    for rival_first in [false, true] {
+        let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+        broker(&mut r, ARETE, both, &["provide:gpu.*"]);
+        let b = module(&mut r, ARETE, now);
+        if rival_first {
+            broker(&mut r, "example.rival", r#""facts:gpu.reserved""#, &[]);
+        }
+        assert_eq!(register(&mut r, b, &["gpu.*"], now), json!([]));
+        if !rival_first {
+            broker(&mut r, "example.rival", r#""facts:gpu.reserved""#, &[]);
+            r.set_root_areas(vec![]);
+        }
+        assert!(set(&mut r, b, "gpu.reserved", now)["result"].is_object());
+        let v = module(&mut r, "example.rival", now);
+        assert_eq!(
+            register(&mut r, v, &["gpu.reserved"], now),
+            json!([rej("gpu.reserved")])
+        );
+    }
+    // A sideloaded (not adopted) module never gets gpu.* facts, grant or not.
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry(
+        "example.side",
+        Holder::ThirdParty(Source::Sideload),
+        &["provide:gpu.*"],
+        None,
+    ));
+    r.apply_manifest(&manifest("example.side", both));
+    let s = module(&mut r, "example.side", now);
+    assert_eq!(register(&mut r, s, &["gpu.*"], now), json!([rej("gpu.*")]));
+}
+
+#[test]
+fn a_sideloaded_module_cannot_squat_keyboard_before_or_beside_foxglove() {
+    let now = Instant::now();
+    let kb = r#""facts:keyboard.*""#;
+    for side_first in [false, true] {
+        let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+        r.add_module(entry(
+            "example.side",
+            Holder::ThirdParty(Source::Sideload),
+            &[],
+            None,
+        ));
+        r.apply_manifest(&manifest("example.side", kb));
+        r.add_module(adopted(FOX, &["facts.write:keyboard.*"]));
+        r.apply_manifest(&manifest(FOX, kb));
+        let order = if side_first {
+            ["example.side", FOX]
+        } else {
+            [FOX, "example.side"]
+        };
+        for id in order {
+            let c = module(&mut r, id, now);
+            // Neither holds the area: no registration order decides.
+            assert_eq!(
+                register(&mut r, c, &["keyboard.*"], now),
+                json!([rej("keyboard.*")]),
+                "{id}"
+            );
+        }
+        let side = module(&mut r, "example.side", now);
+        assert_eq!(code(&set(&mut r, side, "keyboard.game_mode", now)), 5);
+    }
+    // A root catalog assigning keyboard.* elsewhere refuses a sideload too, and a reload revokes.
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry(
+        "example.side",
+        Holder::ThirdParty(Source::Sideload),
+        &[],
+        None,
+    ));
+    r.apply_manifest(&manifest("example.side", kb));
+    let c = module(&mut r, "example.side", now);
+    assert_eq!(register(&mut r, c, &["keyboard.*"], now), json!([]));
+    r.set_root_areas(vec![("foxglove.keys".into(), "keyboard.*".into())]);
+    assert_eq!(
+        register(&mut r, c, &["keyboard.*"], now),
+        json!([rej("keyboard.*")])
+    );
+}
+
+#[test]
+fn foxglove_with_its_real_grant_keeps_writing_under_a_rival_or_a_catalog_assignment() {
+    let now = Instant::now();
+    let kb = r#""facts:keyboard.*""#;
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(adopted(FOX, &["facts.write:keyboard.*"]));
+    r.apply_manifest(&manifest(FOX, kb));
+    let c = module(&mut r, FOX, now);
+    assert_eq!(register(&mut r, c, &["keyboard.*"], now), json!([]));
+    // A rival arrives: the route goes, the explicit grant (v1 semantics, §8.3) still writes,
+    // and the rival writes nothing.
+    r.add_module(entry(
+        "example.side",
+        Holder::ThirdParty(Source::Sideload),
+        &[],
+        None,
+    ));
+    r.apply_manifest(&manifest("example.side", kb));
+    r.set_root_areas(vec![]);
+    assert!(set(&mut r, c, "keyboard.game_mode", now)["result"].is_object());
+    let side = module(&mut r, "example.side", now);
+    assert_eq!(
+        register(&mut r, side, &["keyboard.*"], now),
+        json!([rej("keyboard.*")])
+    );
+    assert_eq!(code(&set(&mut r, side, "keyboard.game_mode", now)), 5);
+    // A catalog assignment elsewhere: the same.
+    r.set_root_areas(vec![("foxglove.keys".into(), "keyboard.*".into())]);
+    assert!(set(&mut r, c, "keyboard.game_mode", now)["result"].is_object());
+    assert_eq!(
+        register(&mut r, c, &["keyboard.*"], now),
+        json!([rej("keyboard.*")])
+    );
+    assert!(set(&mut r, c, "keyboard.layer", now)["result"].is_object());
+    assert_eq!(code(&set(&mut r, c, "gpu.reserved", now)), 5);
 }
 
 #[test]
