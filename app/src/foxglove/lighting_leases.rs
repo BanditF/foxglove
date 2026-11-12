@@ -293,6 +293,13 @@ impl Arbiter {
                 self.wrote_look(device, look);
                 shown
             }
+            // Lights that can't be read back (a LampArray) go back to their owner, not to a
+            // snapshot written over it.
+            Target::Restore(_) if light.restores_by_release() => {
+                light.release()?;
+                self.forget_restore(device);
+                Ok(())
+            }
             // Giving the lights back waits for both halves of a split keyboard.
             Target::Restore(s) => {
                 let want = Want::restore(&s);
@@ -883,7 +890,17 @@ fn with_light<R>(id: &str, f: impl FnOnce(&dyn Lighting) -> R) -> Option<R> {
     if let Some(d) = super::devices::device().filter(|d| d.info().id.to_string() == id) {
         return d.lighting().map(f);
     }
-    super::via_host::with_device(id, |d| d.lighting().map(f)).flatten()
+    if super::via_host::with_device(id, |_| ()).is_some() {
+        return super::via_host::with_device(id, |d| d.lighting().map(f)).flatten();
+    }
+    // Any other lighting class registered with the arbiter (LampArrays, catalog boards).
+    super::lighting_sources::with_device(id, |d| d.lighting().map(f)).flatten()
+}
+
+/// Whether the arbiter can reach `id`'s lights (a seam test for `lighting_sources`).
+#[cfg(test)]
+pub fn with_light_for_test(id: &str) -> Option<bool> {
+    with_light(id, |_| true)
 }
 
 pub static ARBITER: Mutex<Option<Arbiter>> = Mutex::new(None);

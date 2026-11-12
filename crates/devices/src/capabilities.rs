@@ -238,6 +238,13 @@ pub trait Lighting {
     fn release(&self) -> Result<()> {
         Err(DeviceError::Unsupported)
     }
+
+    /// True for lights that can't be read back as they were (a LampArray: the OS or another app
+    /// owns the lamps' colours and shows no way to read them). A lease's end then hands the
+    /// lights back with [`Lighting::release`] instead of writing a snapshot over them.
+    fn restores_by_release(&self) -> bool {
+        false
+    }
 }
 
 /// Color in: colors computed elsewhere (vendor software, an E1.31 sender) that Foxglove can
