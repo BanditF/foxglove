@@ -79,17 +79,23 @@ const DEV_SECTION: &str = "plugins.dev";
 
 /// Developer mode as it stands: the setting, or the environment's override.
 pub fn dev_mode() -> DevMode {
-    let mut dev: DevMode = super::store::try_load(DEV_SECTION).unwrap_or_default();
+    let mut dev: DevMode = super::store::section(STORE_OWNER, DEV_SECTION)
+        .try_load()
+        .unwrap_or_default();
     dev.on |= dev_env();
     dev
 }
 
 fn saved_dev() -> DevMode {
-    super::store::try_load(DEV_SECTION).unwrap_or_default()
+    super::store::section(STORE_OWNER, DEV_SECTION)
+        .try_load()
+        .unwrap_or_default()
 }
 
 fn save_dev(dev: &DevMode) -> Result<(), String> {
-    super::store::save(DEV_SECTION, dev).map_err(|e| e.to_string())
+    super::store::section(STORE_OWNER, DEV_SECTION)
+        .save(dev)
+        .map_err(|e| e.to_string())
 }
 
 /// Turns developer mode on or off. The allowed builds are kept either way.
@@ -173,7 +179,7 @@ const GRANDFATHER: &str = "plugins.grandfather";
 
 /// The grandfathered plugins; the first time, the `installed` ones (id, version) are taken.
 pub fn grandfather(installed: &[(String, String)]) -> Grandfather {
-    let g: Grandfather = match super::store::load(GRANDFATHER) {
+    let g: Grandfather = match super::store::section(STORE_OWNER, GRANDFATHER).load() {
         Ok(g) => g.unwrap_or_default(),
         // Unreadable (#741): grandfather nothing rather than take every installed plugin as
         // a list that was never saved.
@@ -187,7 +193,7 @@ pub fn grandfather(installed: &[(String, String)]) -> Grandfather {
         plugins: installed.iter().cloned().collect(),
         notice_shown: false,
     };
-    if let Err(e) = super::store::save(GRANDFATHER, &g) {
+    if let Err(e) = super::store::section(STORE_OWNER, GRANDFATHER).save(&g) {
         eprintln!("Foxglove: can't keep the plugins installed before #381: {e}");
     }
     g
@@ -195,11 +201,15 @@ pub fn grandfather(installed: &[(String, String)]) -> Grandfather {
 
 /// A plugin installed again from a file, or removed, isn't grandfathered any more.
 pub fn ungrandfather(id: &str) -> Result<(), String> {
-    let mut g: Grandfather = super::store::try_load(GRANDFATHER).unwrap_or_default();
+    let mut g: Grandfather = super::store::section(STORE_OWNER, GRANDFATHER)
+        .try_load()
+        .unwrap_or_default();
     if g.plugins.remove(id).is_none() {
         return Ok(());
     }
-    super::store::save(GRANDFATHER, &g).map_err(|e| e.to_string())
+    super::store::section(STORE_OWNER, GRANDFATHER)
+        .save(&g)
+        .map_err(|e| e.to_string())
 }
 
 /// `trust`, grandfathered when the key is still the placeholder and this exact version was
@@ -304,15 +314,15 @@ pub fn signing_notice(g: &Grandfather, key_missing: bool) -> Option<&'static str
 
 /// The line was shown: never again.
 pub fn notice_shown() -> Result<(), String> {
-    let g: Grandfather = super::store::try_load(GRANDFATHER).unwrap_or_default();
-    super::store::save(
-        GRANDFATHER,
-        &Grandfather {
+    let g: Grandfather = super::store::section(STORE_OWNER, GRANDFATHER)
+        .try_load()
+        .unwrap_or_default();
+    super::store::section(STORE_OWNER, GRANDFATHER)
+        .save(&Grandfather {
             notice_shown: true,
             ..g
-        },
-    )
-    .map_err(|e| e.to_string())
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// An installed plugin's trust against `catalog` (`None`: no signed catalog).
@@ -453,7 +463,9 @@ fn newest(
 }
 
 fn load_seen() -> Seen {
-    super::store::try_load("plugins.trust").unwrap_or_default()
+    super::store::section(STORE_OWNER, "plugins.trust")
+        .try_load()
+        .unwrap_or_default()
 }
 
 /// Records what was accepted; an error means it couldn't be, and the caller must not go on.
@@ -462,9 +474,11 @@ fn record(seen: &Seen, root: &Root, catalog: &Catalog) -> Result<(), String> {
     if next == *seen {
         return Ok(());
     }
-    super::store::save("plugins.trust", &next).map_err(|e| {
-        format!("can't record the plugin catalog's sequence, so no plugin is trusted: {e}")
-    })
+    super::store::section(STORE_OWNER, "plugins.trust")
+        .save(&next)
+        .map_err(|e| {
+            format!("can't record the plugin catalog's sequence, so no plugin is trusted: {e}")
+        })
 }
 
 /// The signed catalog, verified through the pinned root key.
@@ -536,6 +550,9 @@ pub fn entry_in(catalog: &Catalog, archive: &[u8]) -> Result<Option<Entry>, Stri
         Err(_) => Ok(None),
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.plugins";
 
 #[cfg(test)]
 pub mod tests {

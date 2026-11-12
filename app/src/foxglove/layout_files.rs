@@ -168,7 +168,7 @@ fn with_loaded<R>(f: impl FnOnce(&mut BTreeMap<String, DefinitionFormat>) -> R) 
 /// Hands every saved layout to `key_layout`, once at start: each keyboard is drawn from its
 /// loaded layout as soon as it connects. A store that can't be read hands nothing over.
 pub fn start() {
-    match super::store::load::<Saved>(SECTION) {
+    match super::store::section(STORE_OWNER, SECTION).load::<Saved>() {
         Ok(saved) => hand_over_all(&saved.unwrap_or_default()),
         Err(e) => eprintln!("Foxglove: can't read the loaded layouts: {e}"),
     }
@@ -205,10 +205,11 @@ pub fn load(vid: u16, pid: u16, path: &Path) -> Result<(), String> {
         .supplied()
         .ok_or_else(|| one_line("it has no keys Foxglove can draw".into()))?;
     let format = definition_format(&entry.format).unwrap_or(DefinitionFormat::Via);
-    super::store::update::<Saved>(SECTION, |s| {
-        s.keyboards.insert(id(vid, pid), entry);
-    })
-    .map_err(|e| format!("Couldn't save the layout: {e}."))?;
+    super::store::section(STORE_OWNER, SECTION)
+        .update::<Saved>(|s| {
+            s.keyboards.insert(id(vid, pid), entry);
+        })
+        .map_err(|e| format!("Couldn't save the layout: {e}."))?;
     with_loaded(|l| l.insert(id(vid, pid), format));
     key_layout::from_file(vid, pid, supplied);
     eprintln!(
@@ -221,10 +222,11 @@ pub fn load(vid: u16, pid: u16, path: &Path) -> Result<(), String> {
 /// Forgets keyboard (vid, pid)'s loaded layout: out of `[layout_files]` and withdrawn, so a
 /// scanned VIA definition, else the next source down, draws it again.
 pub fn forget(vid: u16, pid: u16) -> Result<(), String> {
-    super::store::update::<Saved>(SECTION, |s| {
-        s.keyboards.remove(&id(vid, pid));
-    })
-    .map_err(|e| format!("Couldn't forget the layout: {e}."))?;
+    super::store::section(STORE_OWNER, SECTION)
+        .update::<Saved>(|s| {
+            s.keyboards.remove(&id(vid, pid));
+        })
+        .map_err(|e| format!("Couldn't forget the layout: {e}."))?;
     with_loaded(|l| l.remove(&id(vid, pid)));
     key_layout::forget_file(vid, pid);
     Ok(())
@@ -373,3 +375,6 @@ pub fn message_for(target: (u16, u16)) -> Option<String> {
 #[cfg(test)]
 #[path = "layout_files_tests.rs"]
 mod tests;
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.keymap";

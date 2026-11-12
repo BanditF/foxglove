@@ -390,7 +390,9 @@ pub fn apply_choice(ctx: &egui::Context, choice: Choice) {
 /// Startup: the saved theme choice (dark when none is saved). The app then follows Windows'
 /// app mode while the choice is System.
 pub fn apply(ctx: &egui::Context) {
-    let saved = super::store::try_load::<UiSettings>("ui").unwrap_or_default();
+    let saved = super::store::section(STORE_OWNER, "ui")
+        .try_load::<UiSettings>()
+        .unwrap_or_default();
     apply_choice(ctx, saved.theme);
     let _ = APP.set(ctx.clone());
 }
@@ -1059,7 +1061,9 @@ pub fn picker(ui: &mut egui::Ui) {
                         .then(super::windows_theme::current)
                         .flatten();
                     set_choice(ui.ctx(), choice, windows);
-                    if let Err(e) = super::store::save("ui", &UiSettings { theme: choice }) {
+                    if let Err(e) =
+                        super::store::section(STORE_OWNER, "ui").save(&UiSettings { theme: choice })
+                    {
                         eprintln!("Foxglove: can't save the theme: {e}");
                     }
                 }
@@ -1163,6 +1167,9 @@ pub mod headless {
             .collect()
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.overlay";
 
 #[cfg(test)]
 mod widget_tests {

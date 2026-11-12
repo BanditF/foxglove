@@ -72,7 +72,8 @@ struct Stored {
 const SECTION: &str = "gpu_resets";
 
 fn stored_history() -> Vec<u64> {
-    super::store::try_load::<Stored>(SECTION)
+    super::store::section(STORE_OWNER, SECTION)
+        .try_load::<Stored>()
         .map(|s| s.at)
         .unwrap_or_default()
 }
@@ -183,7 +184,7 @@ fn restart(reason: &str) {
     match exit_plan(super::hub_link::module_mode()) {
         Exit::Respawn => imp::restart(&format_history(&next)),
         Exit::Planned => {
-            if let Err(e) = super::store::save(SECTION, &Stored { at: next }) {
+            if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(&Stored { at: next }) {
                 // The budget can't be kept: a loop would be unbounded here, so end as a crash
                 // (the supervisor's stop at five) rather than planned.
                 eprintln!("Foxglove: can't record the GPU reset, not exiting planned: {e}");
@@ -321,6 +322,9 @@ mod imp {
     pub fn start() {}
     pub fn restart(_history: &str) {}
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "core";
 
 #[cfg(test)]
 mod tests {

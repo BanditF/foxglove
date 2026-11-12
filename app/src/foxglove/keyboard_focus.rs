@@ -52,12 +52,12 @@ thread_local! {
 }
 
 /// The store section the focus is kept in: [`SECTION`] (a test's own one in tests).
-fn section() -> &'static str {
+fn section() -> super::store::Section {
     #[cfg(test)]
     if let Some(s) = TEST_SECTION.get() {
-        return s;
+        return super::store::test_section(s);
     }
-    SECTION
+    super::store::section("foxglove.link", SECTION)
 }
 
 /// Where a keyboard was found, which says what Foxglove can do with it.
@@ -508,7 +508,7 @@ fn with<R>(f: impl FnOnce(&mut Model) -> R) -> R {
 /// The saved `[focus]`, or the defaults when there is none or the store can't be read now
 /// (nothing is saved until the user picks).
 fn loaded() -> Model {
-    Model::new(&super::store::try_load::<Saved>(section()).unwrap_or_default())
+    Model::new(&section().try_load::<Saved>().unwrap_or_default())
 }
 
 /// Each keyboard's board profile, looked up once when it is first reported (on the reporting
@@ -680,7 +680,7 @@ pub fn pin(view: View, key: Option<&str>) -> Result<(), String> {
 
 /// Read-modify-write of `[focus]`, so a pick and a pin can't undo each other.
 fn save(change: impl FnOnce(&mut Saved)) {
-    if let Err(e) = super::store::update(section(), change) {
+    if let Err(e) = section().update(change) {
         eprintln!("Foxglove: can't save the keyboard focus: {e}");
     }
 }

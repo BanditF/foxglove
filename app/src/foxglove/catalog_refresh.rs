@@ -150,7 +150,9 @@ pub fn start() {
     if super::repaint_trace::disabled("catalog") {
         return;
     }
-    let state: State = super::store::try_load("plugins.refresh").unwrap_or_default();
+    let state: State = super::store::section(STORE_OWNER, "plugins.refresh")
+        .try_load()
+        .unwrap_or_default();
     if state.unavailable && status() == Status::Idle {
         set_status(Status::NotAvailable);
     }
@@ -167,7 +169,9 @@ pub fn request(trigger: Trigger) {
     if status() == Status::Checking {
         return;
     }
-    let state: State = super::store::try_load("plugins.refresh").unwrap_or_default();
+    let state: State = super::store::section(STORE_OWNER, "plugins.refresh")
+        .try_load()
+        .unwrap_or_default();
     if due(trigger, now(), &state) {
         set_status(Status::Checking);
         super::services::spawn_named("catalog-refresh", move || run_guarded(trigger));
@@ -183,7 +187,9 @@ fn run_guarded(trigger: Trigger) {
 }
 
 fn run(trigger: Trigger) {
-    let state: State = super::store::try_load("plugins.refresh").unwrap_or_default();
+    let state: State = super::store::section(STORE_OWNER, "plugins.refresh")
+        .try_load()
+        .unwrap_or_default();
     if !due(trigger, now(), &state) {
         return;
     }
@@ -203,7 +209,7 @@ fn run(trigger: Trigger) {
     );
     let (state, status) = settle(state, result, now());
     set_status(status);
-    if let Err(e) = super::store::save("plugins.refresh", &state) {
+    if let Err(e) = super::store::section(STORE_OWNER, "plugins.refresh").save(&state) {
         set_status(Status::Failed(format!("can't save the refresh state: {e}")));
     }
 }
@@ -363,6 +369,9 @@ fn fetch(
         .map_err(|_| Error::from("incomplete catalog".to_string()))?;
     Ok(Fetched::New(Signed::from_files(files), new_etags))
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.plugins";
 
 #[cfg(test)]
 mod tests {

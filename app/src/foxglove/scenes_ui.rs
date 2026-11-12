@@ -290,10 +290,10 @@ fn save_resume(running: bool) {
     let r = Resume {
         running: Some(running),
     };
-    if super::store::try_load::<Resume>(RESUME_SECTION) == Some(r) {
+    if super::store::section(STORE_OWNER, RESUME_SECTION).try_load::<Resume>() == Some(r) {
         return;
     }
-    if let Err(e) = super::store::save(RESUME_SECTION, &r) {
+    if let Err(e) = super::store::section(STORE_OWNER, RESUME_SECTION).save(&r) {
         eprintln!("Foxglove: can't save [{RESUME_SECTION}]: {e}");
     }
 }
@@ -307,7 +307,9 @@ pub fn resume_at_launch(saved: Option<bool>, look_saved: bool) -> bool {
 
 /// The store has a chosen look (`[scenes] look`, the active profile's or the base's).
 fn look_saved() -> bool {
-    super::store::try_load::<toml::Table>(looks::SECTION).is_some_and(|t| t.contains_key("look"))
+    super::store::section(STORE_OWNER, looks::SECTION)
+        .try_load::<toml::Table>()
+        .is_some_and(|t| t.contains_key("look"))
 }
 
 #[cfg(test)]
@@ -753,7 +755,9 @@ fn tell_unseen(chosen: &Chosen) {
 /// scene starts when it has "Start with this profile" on, or when a look the user started was
 /// still running when Foxglove closed (`[scene_resume]`).
 pub fn startup() {
-    let saved = super::store::try_load::<Resume>(RESUME_SECTION).unwrap_or_default();
+    let saved = super::store::section(STORE_OWNER, RESUME_SECTION)
+        .try_load::<Resume>()
+        .unwrap_or_default();
     let resume = resume_at_launch(saved.running, look_saved());
     if resume {
         eprintln!("Foxglove: the last look ran when Foxglove closed; starting it again");
@@ -908,7 +912,7 @@ fn stop_scene() {
 }
 
 fn save_layout(st: &mut State, layout: &foxglove_scene::Layout) {
-    if let Err(e) = super::store::save(super::scene_room::SECTION, layout) {
+    if let Err(e) = super::store::section(STORE_OWNER, super::scene_room::SECTION).save(layout) {
         eprintln!("Foxglove: can't save the room map: {e}");
     }
     // A running scene places the devices again too.
@@ -2104,6 +2108,9 @@ fn preset_row(
     }
 }
 
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "hideout.scenes";
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -2700,10 +2707,14 @@ pub(crate) mod tests {
         crate::foxglove::store::test_config_dir();
         assert!(!crate::foxglove::store::PROFILED.contains(&RESUME_SECTION));
         save_resume(true);
-        let r: Resume = crate::foxglove::store::try_load(RESUME_SECTION).unwrap();
+        let r: Resume = crate::foxglove::store::section(STORE_OWNER, RESUME_SECTION)
+            .try_load()
+            .unwrap();
         assert_eq!(r.running, Some(true));
         save_resume(false);
-        let r: Resume = crate::foxglove::store::try_load(RESUME_SECTION).unwrap();
+        let r: Resume = crate::foxglove::store::section(STORE_OWNER, RESUME_SECTION)
+            .try_load()
+            .unwrap();
         assert_eq!(r.running, Some(false));
         // An old store has no key: `None`, so the look decides.
         let old: Resume = toml::from_str("").unwrap();

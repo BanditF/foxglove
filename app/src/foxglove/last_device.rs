@@ -38,7 +38,7 @@ impl Last {
 }
 
 fn load() -> Connection {
-    super::store::load_or_migrate("connection", || {
+    super::store::section(STORE_OWNER, "connection").load_or_migrate(|| {
         let ini = crate::settings::Settings::config_file_path()?.with_file_name("connection.ini");
         let conf = Ini::load_from_file(&ini).ok()?;
         let s = conf.section(Some("last"))?;
@@ -73,7 +73,9 @@ pub fn remember(spec: &ConnectionSpec) {
         id: id.clone(),
     };
     if load().last.as_ref() != Some(&last) {
-        if let Err(e) = super::store::save("connection", &Connection { last: Some(last) }) {
+        if let Err(e) =
+            super::store::section(STORE_OWNER, "connection").save(&Connection { last: Some(last) })
+        {
             eprintln!("Foxglove: can't remember the keyboard: {e}");
         }
     }
@@ -84,6 +86,9 @@ pub fn remember(spec: &ConnectionSpec) {
 pub fn remembered() -> Option<ConnectionSpec> {
     load().last?.spec()
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.link";
 
 #[cfg(test)]
 mod tests {

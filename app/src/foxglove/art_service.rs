@@ -833,7 +833,8 @@ pub fn animate_epaper() -> bool {
 /// The Screens page's switch was clicked: `[art] animate_epaper` read, changed and saved with
 /// the section's other keys as they are. Off is the default and isn't written.
 pub fn set_animate_epaper(on: bool) -> Result<(), String> {
-    super::store::save("art", &with_animate_epaper(load_art_settings(), on))
+    super::store::section(STORE_OWNER, "art")
+        .save(&with_animate_epaper(load_art_settings(), on))
         .map_err(|e| format!("saving the e-paper switch: {e}"))
 }
 
@@ -898,15 +899,13 @@ fn save_pin(h: &Handle, choice: &Choice) -> Result<(), String> {
         s.pinned = Some(choice.clone());
         s.pinned_name = built_in.clone();
     });
-    super::store::save(
-        "art",
-        &ArtSettings {
+    super::store::section(STORE_OWNER, "art")
+        .save(&ArtSettings {
             pinned: Some(choice.clone()),
             built_in,
             ..load_art_settings()
-        },
-    )
-    .map_err(|e| format!("saving pinned art: {e}"))
+        })
+        .map_err(|e| format!("saving pinned art: {e}"))
 }
 
 /// Remembers what the keyboard holds; on a connect, first says what changed since (#521), and
@@ -1031,7 +1030,7 @@ fn load_pinned() -> (Option<Choice>, Option<String>) {
 }
 
 fn load_art_settings() -> ArtSettings {
-    super::store::load_or_migrate::<ArtSettings>("art", || {
+    super::store::section(STORE_OWNER, "art").load_or_migrate::<ArtSettings>(|| {
         let json = crate::settings::Settings::config_file_path()?.with_file_name("art.json");
         let pinned = serde_json::from_slice::<Choice>(&std::fs::read(&json).ok()?).ok()?;
         Some((
@@ -1227,10 +1226,14 @@ fn remember_pushed(path: &std::path::Path, hash: u64) {
         path: path.to_path_buf(),
         hash: format!("{hash:016x}"),
     };
-    if super::store::try_load::<PushedRecord>(PUSHED_SECTION).as_ref() == Some(&record) {
+    if super::store::section(STORE_OWNER, PUSHED_SECTION)
+        .try_load::<PushedRecord>()
+        .as_ref()
+        == Some(&record)
+    {
         return;
     }
-    if let Err(e) = super::store::save(PUSHED_SECTION, &record) {
+    if let Err(e) = super::store::section(STORE_OWNER, PUSHED_SECTION).save(&record) {
         eprintln!("Foxglove: art: remembering the pushed piece failed: {e}");
     }
 }
@@ -1242,7 +1245,7 @@ fn remembered_pushed(st: &ArtStatus) -> Option<(PathBuf, u64)> {
     if super::art_words::showing(st) != super::art_words::Showing::Sent {
         return None;
     }
-    remembered_from(super::store::try_load::<PushedRecord>(PUSHED_SECTION)?)
+    remembered_from(super::store::section(STORE_OWNER, PUSHED_SECTION).try_load::<PushedRecord>()?)
 }
 
 /// The record's piece while its file still makes the bytes it was sent as.
@@ -2350,6 +2353,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         });
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.art";
 
 #[cfg(test)]
 mod tests {

@@ -72,11 +72,13 @@ impl Seen {
 }
 
 pub fn load() -> Option<Seen> {
-    super::store::try_load::<Seen>("art.seen").filter(|s| *s != Seen::default())
+    super::store::section(STORE_OWNER, "art.seen")
+        .try_load::<Seen>()
+        .filter(|s| *s != Seen::default())
 }
 
 pub fn save(seen: &Seen) {
-    if let Err(e) = super::store::save("art.seen", seen) {
+    if let Err(e) = super::store::section(STORE_OWNER, "art.seen").save(seen) {
         eprintln!("Foxglove: can't save what the keyboard holds: {e}");
     }
 }
@@ -206,6 +208,9 @@ pub fn change(before: &Seen, now: &Seen) -> Option<String> {
     }
     Some(out.join(" "))
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.art";
 
 #[cfg(test)]
 mod tests {

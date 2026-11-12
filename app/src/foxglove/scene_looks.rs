@@ -954,13 +954,17 @@ pub fn named<'a>(look: &Look, built_in: &'a [Preset], saved: &'a [Preset]) -> Op
 }
 
 pub fn load_chosen() -> Chosen {
-    let mut c: Chosen = super::store::try_load(SECTION).unwrap_or_default();
+    let mut c: Chosen = super::store::section(STORE_OWNER, SECTION)
+        .try_load()
+        .unwrap_or_default();
     c.look = c.look.clamped();
     c
 }
 
 pub fn load_saved() -> Saved {
-    let mut s: Saved = super::store::try_load(SAVED_SECTION).unwrap_or_default();
+    let mut s: Saved = super::store::section(STORE_OWNER, SAVED_SECTION)
+        .try_load()
+        .unwrap_or_default();
     for p in &mut s.presets {
         p.look = p.look.clone().clamped();
     }
@@ -968,16 +972,19 @@ pub fn load_saved() -> Saved {
 }
 
 pub fn save_chosen(c: &Chosen) {
-    if let Err(e) = super::store::save(SECTION, c) {
+    if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(c) {
         eprintln!("Foxglove: can't save the scene: {e}");
     }
 }
 
 pub fn save_saved(s: &Saved) {
-    if let Err(e) = super::store::save(SAVED_SECTION, s) {
+    if let Err(e) = super::store::section(STORE_OWNER, SAVED_SECTION).save(s) {
         eprintln!("Foxglove: can't save the scene presets: {e}");
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "hideout.scenes";
 
 #[cfg(test)]
 mod tests {

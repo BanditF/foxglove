@@ -156,13 +156,13 @@ impl Host for StoreHost {
     }
 
     fn saved(&self, endpoint: &str) -> Option<(f32, bool)> {
-        let s = super::store::try_load::<Settings>(SECTION)?;
+        let s = super::store::section(STORE_OWNER, SECTION).try_load::<Settings>()?;
         let d = s.devices.into_iter().find(|d| d.endpoint == endpoint)?;
         Some((d.level?, d.muted))
     }
 
     fn remember(&mut self, endpoint: &str, name: &str, level: f32, muted: bool) {
-        let r = super::store::update::<Settings>(SECTION, |s| {
+        let r = super::store::section(STORE_OWNER, SECTION).update::<Settings>(|s| {
             let d = entry(s, endpoint, name);
             d.level = Some(level);
             d.muted = muted;
@@ -202,7 +202,8 @@ fn entry<'a>(s: &'a mut Settings, endpoint: &str, name: &str) -> &'a mut DeviceC
 
 /// The user's choice for a device (`None`: the default).
 pub fn choice_of(endpoint: &str) -> Option<bool> {
-    super::store::try_load::<Settings>(SECTION)?
+    super::store::section(STORE_OWNER, SECTION)
+        .try_load::<Settings>()?
         .devices
         .into_iter()
         .find(|d| d.endpoint == endpoint)?
@@ -211,7 +212,8 @@ pub fn choice_of(endpoint: &str) -> Option<bool> {
 
 /// Stores the user's choice and tells the sessions' thread.
 pub fn choose(endpoint: &str, name: &str, on: bool) {
-    let r = super::store::update::<Settings>(SECTION, |s| entry(s, endpoint, name).on = Some(on));
+    let r = super::store::section(STORE_OWNER, SECTION)
+        .update::<Settings>(|s| entry(s, endpoint, name).on = Some(on));
     match r {
         Ok(_) => {
             eprintln!(
@@ -512,6 +514,9 @@ pub fn page_left() {
     ASKED.store(false, Ordering::Relaxed);
     *TURNED_OFF.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.link";
 
 #[cfg(test)]
 mod tests {

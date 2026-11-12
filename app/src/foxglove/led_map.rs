@@ -113,7 +113,9 @@ impl BoardLeds {
 }
 
 fn load() -> Saved {
-    super::store::try_load(SECTION).unwrap_or_default()
+    super::store::section(STORE_OWNER, SECTION)
+        .try_load()
+        .unwrap_or_default()
 }
 
 /// `[led_map]` is read, changed and written back whole, so writers take turns: two saves (or a
@@ -193,7 +195,7 @@ pub fn save(board: &str, leds: BoardLeds) -> std::io::Result<()> {
         let _edit = edit_lock();
         let mut all = load();
         all.boards.insert(board.to_string(), leds);
-        super::store::save(SECTION, &all)?;
+        super::store::section(STORE_OWNER, SECTION).save(&all)?;
     }
     super::boards::led_map_changed();
     super::scene_run::devices_changed();
@@ -209,7 +211,7 @@ pub fn forget(board: &str) -> std::io::Result<()> {
         if all.boards.remove(board).is_none() {
             return Ok(());
         }
-        super::store::save(SECTION, &all)?;
+        super::store::section(STORE_OWNER, SECTION).save(&all)?;
     }
     super::boards::led_map_changed();
     super::scene_run::devices_changed();
@@ -1038,3 +1040,6 @@ impl Target for AppKeyboard {
 #[cfg(test)]
 #[path = "led_map_tests.rs"]
 mod tests;
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.lights";

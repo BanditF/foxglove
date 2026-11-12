@@ -54,7 +54,7 @@ fn with<T>(f: impl FnOnce(&mut Overrides) -> T) -> T {
     // A failed read isn't kept (#741): the next call reads again, and the store refuses to save
     // the defaults over the real section meanwhile.
     if cache.is_none() {
-        if let Ok(saved) = super::store::load(SECTION) {
+        if let Ok(saved) = super::store::section(STORE_OWNER, SECTION).load() {
             *cache = Some(saved.unwrap_or_default());
         }
     }
@@ -75,7 +75,7 @@ pub fn set(path: &Path, polarity: Polarity) -> bool {
     let changed = with(|o| {
         let changed = o.set(path, polarity);
         if changed {
-            if let Err(e) = super::store::save(SECTION, o) {
+            if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(o) {
                 eprintln!("Foxglove: can't save the art's polarity: {e}");
             }
         }
@@ -91,7 +91,7 @@ pub fn set(path: &Path, polarity: Polarity) -> bool {
 pub fn note(path: &Path, polarity: Polarity) {
     with(|o| {
         if o.set(path, polarity) {
-            if let Err(e) = super::store::save(SECTION, o) {
+            if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(o) {
                 eprintln!("Foxglove: can't save the art's polarity: {e}");
             }
         }
@@ -102,6 +102,9 @@ pub fn note(path: &Path, polarity: Polarity) {
 pub fn blob(path: &Path, bytes: &[u8]) -> Vec<u8> {
     art_encode::normalise_blob(bytes, of(path))
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.art";
 
 #[cfg(test)]
 mod tests {

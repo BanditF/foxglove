@@ -11,7 +11,9 @@ use serde_json::{Map, Value};
 type Stored = BTreeMap<String, Map<String, Value>>;
 
 pub fn stored() -> Stored {
-    super::store::try_load("plugins.settings").unwrap_or_default()
+    super::store::section(STORE_OWNER, "plugins.settings")
+        .try_load()
+        .unwrap_or_default()
 }
 
 /// Every declared setting: the user's value if it still fits the declaration, else the default.
@@ -49,7 +51,9 @@ pub fn set(plugin: &str, decl: &SettingDecl, value: Value) -> Result<(), String>
     all.entry(plugin.to_string())
         .or_default()
         .insert(decl.name.clone(), value);
-    super::store::save("plugins.settings", &all).map_err(|e| e.to_string())?;
+    super::store::section(STORE_OWNER, "plugins.settings")
+        .save(&all)
+        .map_err(|e| e.to_string())?;
     foxglove_plugin_host::settings_changed(plugin);
     Ok(())
 }
@@ -57,6 +61,9 @@ pub fn set(plugin: &str, decl: &SettingDecl, value: Value) -> Result<(), String>
 pub fn start() {
     foxglove_plugin_host::set_settings_source(values);
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.plugins";
 
 #[cfg(test)]
 mod tests {

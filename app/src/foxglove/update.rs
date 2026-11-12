@@ -71,23 +71,24 @@ impl Default for UpdateSettings {
 }
 
 fn startup_enabled() -> bool {
-    super::store::load_or_migrate("updates", || {
-        // The old updates.ini, from before the store.
-        let ini = crate::settings::Settings::config_file_path()?.with_file_name("updates.ini");
-        let on = ini::Ini::load_from_file(&ini)
-            .ok()?
-            .section(Some("updates"))?
-            .get("check_at_startup")?
-            .parse()
-            .ok()?;
-        Some((
-            UpdateSettings {
-                check_at_startup: on,
-            },
-            vec![ini],
-        ))
-    })
-    .check_at_startup
+    super::store::section(STORE_OWNER, "updates")
+        .load_or_migrate(|| {
+            // The old updates.ini, from before the store.
+            let ini = crate::settings::Settings::config_file_path()?.with_file_name("updates.ini");
+            let on = ini::Ini::load_from_file(&ini)
+                .ok()?
+                .section(Some("updates"))?
+                .get("check_at_startup")?
+                .parse()
+                .ok()?;
+            Some((
+                UpdateSettings {
+                    check_at_startup: on,
+                },
+                vec![ini],
+            ))
+        })
+        .check_at_startup
 }
 fn folder() -> Result<PathBuf> {
     let p = match super::store::test_sandbox() {
@@ -229,12 +230,9 @@ pub fn group(ui: &mut egui::Ui) {
             .checkbox(&mut enabled, "Check for updates at startup")
             .changed()
         {
-            let result = super::store::save(
-                "updates",
-                &UpdateSettings {
-                    check_at_startup: enabled,
-                },
-            );
+            let result = super::store::section(STORE_OWNER, "updates").save(&UpdateSettings {
+                check_at_startup: enabled,
+            });
             if let Err(e) = result {
                 state().message = e.to_string();
             }
@@ -361,6 +359,9 @@ pub fn helper_entry() -> bool {
     }
     true
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.firmware";
 
 #[cfg(test)]
 mod tests {

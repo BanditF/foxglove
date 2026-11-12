@@ -114,7 +114,9 @@ static ALLOWED: AtomicU8 = AtomicU8::new(0);
 pub fn allowed() -> bool {
     match ALLOWED.load(Ordering::SeqCst) {
         0 => {
-            let yes = super::store::try_load::<Stored>(SECTION).is_some_and(|s| s.allowed);
+            let yes = super::store::section(STORE_OWNER, SECTION)
+                .try_load::<Stored>()
+                .is_some_and(|s| s.allowed);
             ALLOWED.store(if yes { 2 } else { 1 }, Ordering::SeqCst);
             yes
         }
@@ -124,7 +126,7 @@ pub fn allowed() -> bool {
 
 fn set_allowed(yes: bool) {
     ALLOWED.store(if yes { 2 } else { 1 }, Ordering::SeqCst);
-    if let Err(e) = super::store::save(SECTION, &Stored { allowed: yes }) {
+    if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(&Stored { allowed: yes }) {
         eprintln!("Foxglove: can't save [{SECTION}]: {e}");
     }
     eprintln!(
@@ -864,6 +866,9 @@ pub fn full_screen_now() -> FullScreen {
 pub fn full_screen_now() -> FullScreen {
     FullScreen::Nothing
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.screens";
 
 #[cfg(test)]
 mod tests;

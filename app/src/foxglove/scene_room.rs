@@ -54,7 +54,9 @@ pub fn generation() -> u64 {
 
 /// The user's layout changes, or none.
 pub fn layout() -> Layout {
-    super::store::try_load(SECTION).unwrap_or_default()
+    super::store::section(STORE_OWNER, SECTION)
+        .try_load()
+        .unwrap_or_default()
 }
 
 /// The room as it is now.
@@ -720,6 +722,9 @@ mod imp {
     pub fn watch() {}
 }
 
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "hideout.scenes";
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1294,7 +1299,9 @@ pub(crate) mod tests {
             ..Layout::default()
         };
         layout.nudge("light:103c:84fd", Point::new(-40.0, 12.5));
-        super::super::store::save(SECTION, &layout).unwrap();
+        super::super::store::section(STORE_OWNER, SECTION)
+            .save(&layout)
+            .unwrap();
         // A restart reads the file again.
         assert_eq!(super::layout(), layout);
     }

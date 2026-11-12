@@ -356,7 +356,11 @@ pub struct SettingsWindow {
 impl Default for SettingsWindow {
     fn default() -> Self {
         Self {
-            memory: Memory::new(super::store::try_load(SECTION).unwrap_or_default()),
+            memory: Memory::new(
+                super::store::section(STORE_OWNER, SECTION)
+                    .try_load()
+                    .unwrap_or_default(),
+            ),
             focused: false,
             theme: None,
             #[cfg(target_os = "windows")]
@@ -371,7 +375,7 @@ impl Default for SettingsWindow {
 
 fn save(saved: Option<Saved>) {
     if let Some(saved) = saved {
-        if let Err(e) = super::store::save(SECTION, &saved) {
+        if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(&saved) {
             eprintln!("Foxglove: can't save where the Settings window is: {e}");
         }
     }
@@ -759,6 +763,9 @@ mod imp {
         }
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "core";
 
 #[cfg(test)]
 pub mod tests {
@@ -1227,9 +1234,11 @@ pub mod tests {
     fn the_place_round_trips_through_the_store() {
         crate::foxglove::store::test_config_dir();
         let saved = place(D2, [440.0, 200.0, 1040.0, 660.0]);
-        crate::foxglove::store::save(SECTION, &saved).unwrap();
+        crate::foxglove::store::section(STORE_OWNER, SECTION)
+            .save(&saved)
+            .unwrap();
         assert_eq!(
-            crate::foxglove::store::try_load::<Saved>(SECTION),
+            crate::foxglove::store::section(STORE_OWNER, SECTION).try_load::<Saved>(),
             Some(saved)
         );
     }

@@ -67,7 +67,9 @@ fn from_pairs(values: &BTreeMap<String, String>) -> Option<Settings> {
 
 /// The base settings with the active profile's overlay values on top.
 pub fn effective(base: Settings) -> Settings {
-    let over: Overrides = super::store::try_load("overlay").unwrap_or_default();
+    let over: Overrides = super::store::section(STORE_OWNER, "overlay")
+        .try_load()
+        .unwrap_or_default();
     if over.values.is_empty() {
         return base;
     }
@@ -98,7 +100,7 @@ pub fn save(active: &Settings) -> std::io::Result<()> {
         .into_iter()
         .filter(|(k, v)| !MACHINE.contains(&k.as_str()) && base.get(k) != Some(v))
         .collect();
-    super::store::save("overlay", &Overrides { values })
+    super::store::section(STORE_OWNER, "overlay").save(&Overrides { values })
 }
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -124,6 +126,9 @@ pub fn switched(ctx: &egui::Context, seen: &mut u64) -> bool {
     *seen = now;
     changed
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.overlay";
 
 #[cfg(test)]
 mod tests {

@@ -23,7 +23,8 @@ struct Saved {
 
 /// The chosen palette: a bundled one, else Bandit.
 pub fn chosen() -> &'static PaletteFile {
-    let name = super::store::try_load::<Saved>(SECTION)
+    let name = super::store::section(STORE_OWNER, SECTION)
+        .try_load::<Saved>()
         .unwrap_or_default()
         .name;
     of(&name)
@@ -39,7 +40,7 @@ pub fn set(name: &str) {
     let saved = Saved {
         name: of(name).name.clone(),
     };
-    if let Err(e) = super::store::save(SECTION, &saved) {
+    if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(&saved) {
         eprintln!("Foxglove: the lights' palette wasn't saved: {e}");
     }
 }
@@ -161,6 +162,9 @@ pub fn running(p: &PaletteFile, scene_runs: bool, chosen: &Look) -> Option<Kind>
     }
     effects(p).into_iter().find(|&k| look(p, k) == *chosen)
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.lights";
 
 #[cfg(test)]
 mod tests {

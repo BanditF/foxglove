@@ -201,7 +201,7 @@ fn store(s: LightingSettings) {
 fn change(s: LightingSettings) {
     let before = settings();
     store(s);
-    if let Err(e) = super::store::save("lighting", &s) {
+    if let Err(e) = super::store::section(STORE_OWNER, "lighting").save(&s) {
         eprintln!("Foxglove: can't save the lighting settings: {e}");
     }
     if !recheck(before, s) {
@@ -313,7 +313,7 @@ pub fn hue_sat(r: u8, g: u8, b: u8) -> (u16, u8) {
 
 /// The effective settings (the active profile's, else the base).
 fn load() -> LightingSettings {
-    super::store::load_or_migrate::<LightingSettings>("lighting", || {
+    super::store::section(STORE_OWNER, "lighting").load_or_migrate::<LightingSettings>(|| {
         // The old lighting.ini, from before the store.
         let ini = crate::settings::Settings::config_file_path()?.with_file_name("lighting.ini");
         let on = ini::Ini::load_from_file(&ini)
@@ -481,6 +481,9 @@ mod windows_impl {
         });
     }
 }
+
+/// The feature that owns this file's store sections.
+const STORE_OWNER: &str = "foxglove.lights";
 
 #[cfg(test)]
 mod tests {
