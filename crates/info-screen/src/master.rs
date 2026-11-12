@@ -251,6 +251,13 @@ pub fn restored() -> u32 {
     RESTORED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static RESETS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// "Reset app levels" runs during this run (the health view counts them).
+pub fn resets() -> u32 {
+    RESETS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn note_restored(n: usize) {
     RESTORED.fetch_add(n as u32, std::sync::atomic::Ordering::Relaxed);
 }
@@ -453,6 +460,50 @@ pub struct Soft {
     report: Vec<String>,
     /// The "left scaled" lines last logged (not logged again while they are the same).
     last_left: Vec<String>,
+    /// What the last "Reset app levels" changed, while Undo is offered.
+    undo: Option<Undo>,
+    /// Resets so far; the next undo token.
+    resets: u64,
+}
+
+/// How long the tray offers Undo after a reset.
+pub const UNDO_FOR: Duration = Duration::from_secs(600);
+
+/// An app as it was before a reset.
+#[derive(Clone, Debug)]
+struct Before {
+    own: f32,
+    applied: f32,
+    by_master: bool,
+    self_managed: bool,
+}
+
+/// What a reset changed, kept for [`Soft::undo_reset`] until master or an app's level changes
+/// (or [`UNDO_FOR`]).
+#[derive(Clone, Debug)]
+struct Undo {
+    token: u64,
+    at: Instant,
+    endpoint: String,
+    /// Live apps by session id; the flag: the reset unmuted it (it was master's, stale).
+    live: HashMap<String, (Before, bool)>,
+    /// Closed apps' records as they were.
+    remembered: Vec<(String, Record)>,
+}
+
+/// What a reset (or its undo) did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reset {
+    /// Live apps now at 100 % (own) scaled by master, and closed apps remembered at 100 %.
+    pub apps: usize,
+    pub remembered: usize,
+    /// Live apps whose level couldn't be written: left as they were.
+    pub failed: usize,
+    /// Master's level (percent) and mute.
+    pub master: u8,
+    pub muted: bool,
+    /// The token [`Soft::undo_reset`] takes (`None` for an undo, or when nothing changed).
+    pub undo: Option<u64>,
 }
 
 impl Soft {
@@ -467,6 +518,8 @@ impl Soft {
             unread: Some(String::new()),
             report: Vec::new(),
             last_left: Vec::new(),
+            undo: None,
+            resets: 0,
         };
         s.readable();
         s
@@ -847,6 +900,7 @@ impl Soft {
     /// the device stays muted, but one that ignores its volume may ignore that too, so unmuting
     /// them would be louder. They are unmuted when the device is ([`Soft::unmute_left`]).
     pub fn disengage(&mut self, audio: &mut dyn Audio) -> Result<(), String> {
+        self.undo = None;
         let Some(on) = self.on.take() else {
             return Ok(());
         };
@@ -953,6 +1007,7 @@ impl Soft {
     /// The device went before it could be put back (unplugged): forgotten here, kept in the
     /// journal, so it is put back when it is the default again.
     pub fn abandon(&mut self) {
+        self.undo = None;
         self.on = None;
     }
 
@@ -1125,6 +1180,7 @@ impl Soft {
             }
             return None;
         }
+        self.undo = None;
         // A fight: the app puts its own level back soon after Foxglove scaled it. A drag of its
         // slider in Volume mixer moves the level each time and never counts.
         let fight = near(level, app.own)
@@ -1224,6 +1280,7 @@ impl Soft {
             return false;
         };
         on.press = None;
+        self.undo = None;
         if (p.step - on.step).abs() > f32::EPSILON {
             // Applied by the size it moved; the device's step only after presses in a row agree.
             let n = match on.candidate {
@@ -1269,6 +1326,7 @@ impl Soft {
             return false;
         };
         on.drag = None;
+        self.undo = None;
         let tol = on.tolerance();
         let level = if d.to < d.start - tol {
             on.level.min(d.to)
@@ -1377,6 +1435,7 @@ impl Soft {
         }
         let mut changed = false;
         if muted != on.muted {
+            self.undo = None;
             self.mute_apps(audio, muted);
             changed = true;
         }
@@ -1473,6 +1532,7 @@ impl Soft {
     /// The knob turns master by `steps` detents (2 % each) and unmutes it, as Windows' keys do;
     /// master's new level in percent.
     pub fn step_master(&mut self, audio: &mut dyn Audio, steps: i32) -> Result<u8, String> {
+        self.undo = None;
         let on = self.on.as_mut().ok_or("not on")?;
         on.level = step_level(on.level, steps);
         let level = on.level;
@@ -1484,9 +1544,226 @@ impl Soft {
         Ok(percent(level))
     }
 
+    /// "Reset app levels": every app on the device (live, and closed ones the journal remembers)
+    /// gets its own level back at 100 %, then master scales it at once. Master's level, mute and
+    /// the device's hold are untouched. Self-managed marks are cleared. When master is not
+    /// muted, apps a master mute left muted (stale marks) are unmuted; the user's own mutes and a
+    /// muted master's marks stay. The journal is written before any app is written, and no app
+    /// ends above `amp(master)`. An app whose level can't be set is left exactly as it was
+    /// (counted in `failed`). Undo is offered ([`Soft::undo_ready`]).
+    pub fn reset_levels(&mut self, audio: &mut dyn Audio, now: Instant) -> Result<Reset, String> {
+        if !self.readable() {
+            return Err("the journal can't be read, so nothing is reset".into());
+        }
+        let Some(on) = self.on.as_mut() else {
+            return Err("not on".into());
+        };
+        let factor = on.factor();
+        let master_muted = on.muted;
+        let live_mutes: HashMap<String, bool> = audio
+            .sessions()
+            .into_iter()
+            .map(|s| (s.id, s.muted))
+            .collect();
+        let journal_before = self.journal.clone();
+        let mut live: HashMap<String, (Before, bool)> = HashMap::new();
+        let mut writes: Vec<(String, f32, bool)> = Vec::new();
+        for (id, a) in on.apps.iter_mut() {
+            let before = Before {
+                own: a.own,
+                applied: a.applied,
+                by_master: a.by_master,
+                self_managed: a.self_managed,
+            };
+            // A stale master mark (master isn't muted now) is undone; a muted master's stays.
+            let unmute = !master_muted && a.by_master && live_mutes.get(id) == Some(&true);
+            if !master_muted {
+                a.by_master = false;
+            }
+            a.own = 1.0;
+            a.applied = factor;
+            a.self_managed = false;
+            a.writes.clear();
+            a.last = None;
+            a.due = None;
+            live.insert(id.clone(), (before, unmute));
+            writes.push((id.clone(), factor, unmute));
+        }
+        let live_sids: std::collections::HashSet<String> =
+            on.apps.values().map(|a| a.sid.clone()).collect();
+        let mut remembered = Vec::new();
+        for (sid, r) in self.journal.apps.iter_mut() {
+            if live_sids.contains(sid) {
+                continue;
+            }
+            remembered.push((sid.clone(), r.clone()));
+            r.own = 1.0;
+            r.day = self.today;
+        }
+        // Journal first: a failure here changes nothing.
+        if let Err(e) = self.journal_on() {
+            self.journal = journal_before;
+            if let Some(on) = self.on.as_mut() {
+                for (id, (b, _)) in &live {
+                    if let Some(a) = on.apps.get_mut(id) {
+                        a.own = b.own;
+                        a.applied = b.applied;
+                        a.by_master = b.by_master;
+                        a.self_managed = b.self_managed;
+                    }
+                }
+            }
+            return Err(e);
+        }
+        let mut failed = 0;
+        let mut undone: Vec<String> = Vec::new();
+        for (id, level, unmute) in writes {
+            if let Err(e) = audio.set_level(&id, level) {
+                eprintln!("Foxglove: master volume: an app's level can't be set: {e}");
+                failed += 1;
+                undone.push(id);
+                continue;
+            }
+            if unmute && audio.set_mute(&id, false).is_err() {
+                // Its level is reset; the mark stays so master's unmute still frees it.
+                if let Some(a) = self.on.as_mut().and_then(|o| o.apps.get_mut(&id)) {
+                    a.by_master = true;
+                }
+                if let Some(u) = live.get_mut(&id) {
+                    u.1 = false;
+                }
+            }
+        }
+        // Apps that couldn't be set are as they were (record and journal agree with Windows).
+        if let Some(on) = self.on.as_mut() {
+            for id in &undone {
+                if let (Some(a), Some((b, _))) = (on.apps.get_mut(id), live.get(id)) {
+                    a.own = b.own;
+                    a.applied = b.applied;
+                    a.by_master = b.by_master;
+                    a.self_managed = b.self_managed;
+                }
+            }
+        }
+        for id in &undone {
+            live.remove(id);
+        }
+        let _ = self.journal_on();
+        let on = self.on.as_ref().ok_or("not on")?;
+        let result = Reset {
+            apps: live.len(),
+            remembered: remembered.len(),
+            failed,
+            master: percent(on.level),
+            muted: on.muted,
+            undo: None,
+        };
+        self.resets += 1;
+        RESETS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        eprintln!(
+            "Foxglove: master volume: app levels reset: {} apps to 100 %, master {} %{}",
+            result.apps,
+            result.master,
+            if failed > 0 {
+                format!(", {failed} couldn't be set")
+            } else {
+                String::new()
+            }
+        );
+        let token = self.resets;
+        self.undo = Some(Undo {
+            token,
+            at: now,
+            endpoint: on.endpoint.clone(),
+            live,
+            remembered,
+        });
+        Ok(Reset {
+            undo: Some(token),
+            ..result
+        })
+    }
+
+    /// The token of the reset Undo is offered for now: until master or an app's level changes,
+    /// or [`UNDO_FOR`].
+    pub fn undo_ready(&self, now: Instant) -> Option<u64> {
+        let u = self.undo.as_ref()?;
+        let on = self.on.as_ref()?;
+        (on.endpoint == u.endpoint && now.saturating_duration_since(u.at) < UNDO_FOR)
+            .then_some(u.token)
+    }
+
+    /// Puts each app's previous level and marks back (then scaled by master), and the closed
+    /// apps' records. Fails when `token` isn't the reset Undo is offered for.
+    pub fn undo_reset(
+        &mut self,
+        audio: &mut dyn Audio,
+        token: u64,
+        now: Instant,
+    ) -> Result<Reset, String> {
+        if self.undo_ready(now) != Some(token) {
+            return Err("Undo isn't offered any more".into());
+        }
+        let Some(undo) = self.undo.take() else {
+            return Err("Undo isn't offered any more".into());
+        };
+        let Some(on) = self.on.as_mut() else {
+            return Err("not on".into());
+        };
+        let factor = on.factor();
+        let master_muted = on.muted;
+        let mut writes = Vec::new();
+        let mut restored = 0;
+        for (id, (b, unmuted)) in &undo.live {
+            let Some(a) = on.apps.get_mut(id) else {
+                continue;
+            };
+            a.own = b.own;
+            a.self_managed = b.self_managed;
+            a.by_master = b.by_master;
+            a.applied = if b.self_managed {
+                b.applied
+            } else {
+                b.own * factor
+            };
+            a.writes.clear();
+            a.last = None;
+            a.due = None;
+            writes.push((id.clone(), a.applied, *unmuted && !master_muted));
+            restored += 1;
+        }
+        for (sid, r) in &undo.remembered {
+            if let Some(cur) = self.journal.apps.get_mut(sid) {
+                cur.own = r.own;
+            }
+        }
+        self.journal_on()?;
+        let mut failed = 0;
+        for (id, level, remute) in writes {
+            if audio.set_level(&id, level).is_err() {
+                failed += 1;
+                continue;
+            }
+            if remute {
+                let _ = audio.set_mute(&id, true);
+            }
+        }
+        let on = self.on.as_ref().ok_or("not on")?;
+        eprintln!("Foxglove: master volume: app levels put back: {restored} apps");
+        Ok(Reset {
+            apps: restored,
+            remembered: undo.remembered.len(),
+            failed,
+            master: percent(on.level),
+            muted: on.muted,
+            undo: None,
+        })
+    }
+
     /// The knob's double click on master: mutes or unmutes master (the device and the apps);
     /// whether it is muted now.
     pub fn toggle_mute(&mut self, audio: &mut dyn Audio) -> Result<bool, String> {
+        self.undo = None;
         let muted = !self.on.as_ref().ok_or("not on")?.muted;
         audio.set_endpoint_mute(muted)?;
         self.mute_apps(audio, muted);
@@ -1502,6 +1779,7 @@ impl Soft {
         steps: i32,
         now: Instant,
     ) -> Option<Result<u8, String>> {
+        self.undo = None;
         let on = self.on.as_mut()?;
         let factor = on.factor();
         let app = on.apps.get_mut(id)?;
@@ -2729,5 +3007,189 @@ mod tests {
         // The off path flags it too, without a write.
         s.recover_off(&mut a, DEV);
         assert_eq!(a.level("tarkov"), 0.30);
+    }
+
+    #[test]
+    fn reset_puts_a_drifted_app_back_to_100_scaled_by_master() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        let t0 = Instant::now();
+        // Vivaldi drifted: Windows started it low and 9 % became its own.
+        a.w().sessions[0].level = 0.09;
+        s.volume_event(&mut a, "vivaldi", 0.09, false, t0);
+        assert_eq!(s.own("vivaldi"), Some(0.09));
+        // A closed app, remembered at the scaled level.
+        a.w().sessions.retain(|x| x.id != "chat");
+        s.gone("chat");
+        let master_before = (s.level(), s.master());
+        let r = s.reset_levels(&mut a, t0).unwrap();
+        let f = amp(0.35);
+        assert_eq!((r.apps, r.remembered, r.failed), (2, 1, 0));
+        assert_eq!((r.master, r.muted), (35, false));
+        assert_eq!(s.own("vivaldi"), Some(1.0));
+        assert_eq!(a.level("vivaldi"), f, "scaled from 100 %, not from 9 %");
+        assert_eq!(a.level("tarkov"), f);
+        assert_eq!(s.journal().apps["sid-chat"].own, 1.0);
+        assert_eq!(s.journal().apps["sid-vivaldi"].own, 1.0);
+        // Master untouched, the device still held.
+        assert_eq!((s.level(), s.master()), master_before);
+        assert_eq!(s.journal().devices[DEV].level, 0.35);
+        // The remembered app returns at its saved (scaled) level and gets 100 % own.
+        let back = a.add("chat-2", "sid-chat", 0.50 * f);
+        s.created(&mut a, &back);
+        assert_eq!(s.own("chat-2"), Some(1.0));
+        assert_eq!(a.level("chat-2"), f);
+        assert!(resets() >= 1);
+    }
+
+    #[test]
+    fn reset_clears_a_self_managed_mark() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        let mut t = Instant::now();
+        for _ in 0..12 {
+            a.w().sessions[1].level = 0.9;
+            s.volume_event(&mut a, "tarkov", 0.9, false, t);
+            t += Duration::from_millis(700);
+        }
+        assert_eq!(s.app_volume("tarkov"), Some(AppVolume::SelfManaged));
+        let r = s.reset_levels(&mut a, t).unwrap();
+        assert_eq!(r.failed, 0);
+        assert_eq!(
+            s.app_volume("tarkov"),
+            Some(AppVolume::Scaled {
+                own: 100,
+                applied: percent(amp(0.35)),
+                master: 35
+            })
+        );
+        assert_eq!(a.level("tarkov"), amp(0.35));
+    }
+
+    #[test]
+    fn reset_keeps_a_muted_master_muted_and_unmutes_stale_marks_otherwise() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        // The user muted chat themselves.
+        a.w().sessions[2].muted = true;
+        s.toggle_mute(&mut a).unwrap();
+        assert!(a.muted("vivaldi") && a.muted("tarkov") && a.muted("chat"));
+        let t0 = Instant::now();
+        let r = s.reset_levels(&mut a, t0).unwrap();
+        assert!(r.muted);
+        assert!(a.muted("vivaldi") && a.muted("tarkov"), "master mute stays");
+        assert_eq!(a.level("vivaldi"), amp(0.35));
+        // Master unmuted: its apps come back, the user's own mute stays.
+        s.toggle_mute(&mut a).unwrap();
+        assert!(!a.muted("vivaldi") && !a.muted("tarkov") && a.muted("chat"));
+        // A stale mark: tarkov marked and muted while master is not muted.
+        a.w().sessions[1].muted = true;
+        if let Some(app) = s.on.as_mut().and_then(|o| o.apps.get_mut("tarkov")) {
+            app.by_master = true;
+        }
+        let r = s.reset_levels(&mut a, t0).unwrap();
+        assert!(!r.muted);
+        assert!(!a.muted("tarkov"), "stale mark undone");
+        assert!(a.muted("chat"), "the user's mute stays");
+    }
+
+    #[test]
+    fn undo_restores_levels_and_marks_until_the_next_change() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        let t0 = Instant::now();
+        a.w().sessions[0].level = 0.09;
+        s.volume_event(&mut a, "vivaldi", 0.09, false, t0);
+        let before = bits(&a);
+        let own_before = (s.own("vivaldi"), s.own("tarkov"), s.own("chat"));
+        let r = s.reset_levels(&mut a, t0).unwrap();
+        let token = r.undo.unwrap();
+        assert_eq!(s.undo_ready(t0), Some(token));
+        let u = s
+            .undo_reset(&mut a, token, t0 + Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(u.failed, 0);
+        assert_eq!(
+            (s.own("vivaldi"), s.own("tarkov"), s.own("chat")),
+            own_before
+        );
+        assert_eq!(bits(&a), before);
+        assert_eq!(s.undo_ready(t0), None, "used once");
+        // Expires after ten minutes; a master change or an app's level change ends it.
+        let t = s.reset_levels(&mut a, t0).unwrap().undo.unwrap();
+        assert_eq!(s.undo_ready(t0 + UNDO_FOR), None);
+        assert!(s.undo_reset(&mut a, t, t0 + UNDO_FOR).is_err());
+        let t = s.reset_levels(&mut a, t0).unwrap().undo.unwrap();
+        s.step_master(&mut a, -1).unwrap();
+        assert_eq!(s.undo_ready(t0), None);
+        assert!(s.undo_reset(&mut a, t, t0).is_err());
+        let t = s.reset_levels(&mut a, t0).unwrap().undo.unwrap();
+        let l = a.level("chat") * 0.5;
+        a.w().sessions[2].level = l;
+        s.volume_event(&mut a, "chat", l, false, t0 + Duration::from_secs(30));
+        assert_eq!(s.undo_ready(t0), None);
+        assert!(s.undo_reset(&mut a, t, t0).is_err());
+    }
+
+    #[test]
+    fn undo_brings_back_a_self_managed_mark() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        let mut t = Instant::now();
+        for _ in 0..12 {
+            a.w().sessions[1].level = 0.9;
+            s.volume_event(&mut a, "tarkov", 0.9, false, t);
+            t += Duration::from_millis(700);
+        }
+        let token = s.reset_levels(&mut a, t).unwrap().undo.unwrap();
+        s.undo_reset(&mut a, token, t).unwrap();
+        assert_eq!(s.app_volume("tarkov"), Some(AppVolume::SelfManaged));
+        assert_eq!(a.level("tarkov"), 0.9);
+    }
+
+    #[test]
+    fn reset_reports_failed_writes_and_keeps_the_journal_true() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        let own_before = s.own("tarkov");
+        // Tarkov's session ends when written to: one failure, the others reset.
+        a.w().vanish = Some("tarkov".into());
+        let r = s.reset_levels(&mut a, Instant::now()).unwrap();
+        assert_eq!((r.apps, r.failed), (2, 1));
+        assert_eq!(s.own("tarkov"), own_before, "left as it was");
+        let applied = s.on.as_ref().unwrap().apps["tarkov"].applied;
+        let rec = &s.journal().apps["sid-tarkov"];
+        assert_eq!((rec.own, rec.applied), (0.84, applied));
+        assert_eq!(s.own("vivaldi"), Some(1.0));
+        assert_eq!(s.journal().apps["sid-vivaldi"].own, 1.0);
+        // No write stands above master's amount.
+        let f = amp(0.35);
+        assert!(a.level("vivaldi") <= f + 1e-6 && a.level("chat") <= f + 1e-6);
+    }
+
+    #[test]
+    fn reset_does_nothing_when_off_or_the_journal_cant_be_read() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        assert!(s.reset_levels(&mut a, Instant::now()).is_err());
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        host.0.lock().unwrap().unreadable = true;
+        s.unread = Some("access denied".into());
+        a.w().log.clear();
+        assert!(s.reset_levels(&mut a, Instant::now()).is_err());
+        assert!(a.w().log.is_empty());
     }
 }

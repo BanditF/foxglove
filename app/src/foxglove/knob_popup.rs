@@ -57,6 +57,11 @@ pub enum Card {
         muted: bool,
         first: bool,
     },
+    /// The first hold on master while Foxglove sets the device's volume: master's card with a
+    /// third row asking for a second hold (3 s).
+    ResetAsk { level: Option<u8> },
+    /// "App levels reset" and its second line (done, master muted, some failed).
+    Reset { title: String, note: String },
 }
 
 impl Card {
@@ -90,6 +95,12 @@ impl Card {
             Card::Stopped { name } => format!("{name} stopped · knob: master"),
             Card::Hidden { name, note } => format!("{name} hidden · {note}"),
             Card::MasterTab => "Knob · Master tab".into(),
+            Card::ResetAsk { level } => format!(
+                "Master volume {} % ({})",
+                level.unwrap_or(0),
+                super::knob_master::RESET_ASK
+            ),
+            Card::Reset { title, note } => format!("{title} · {note}"),
             Card::Outside { muted: true, .. } => "Master volume muted (above the flyout)".into(),
             Card::Outside { level, first, .. } => format!(
                 "Master volume {} % (above the flyout{})",
@@ -107,6 +118,9 @@ pub const MASTER: Duration = Duration::from_millis(2000);
 pub const MUTE: Duration = Duration::from_millis(2000);
 pub const STOPPED: Duration = Duration::from_millis(3000);
 pub const TAB: Duration = Duration::from_millis(2000);
+/// The first hold's card and the window for the second hold; the done card.
+pub const RESET_ASK: Duration = Duration::from_millis(3000);
+pub const RESET_DONE: Duration = Duration::from_millis(3000);
 
 struct Shown {
     card: Card,
@@ -171,6 +185,16 @@ pub const SIZE: egui::Vec2 = vec2(236.0, 48.0);
 pub const TALL: f32 = 64.0;
 /// The third row's room: the card less its 12 pt margins (the plan's limit).
 pub const ROW_WIDTH: f32 = 212.0;
+/// Where the tall master card goes when Windows shows no flyout: its bottom where the flyout's is,
+/// grown upwards.
+pub fn tall_spot(work: Rect) -> Rect {
+    let flyout = spot(work);
+    Rect::from_min_size(
+        pos2(flyout.left(), flyout.bottom() - TALL),
+        vec2(SIZE.x, TALL),
+    )
+}
+
 /// Its gap above the taskbar (the work area's bottom), in points.
 pub const GAP: f32 = 12.0;
 
@@ -259,6 +283,7 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
     }
     let s = match card {
         Card::Outside { first, .. } => above(work, *first),
+        Card::ResetAsk { .. } => tall_spot(work),
         _ => s,
     };
     p.rect_filled(s.expand(1.0), 9.0, EDGE);
@@ -277,7 +302,37 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
             DIM,
         );
     }
+    if matches!(card, Card::ResetAsk { .. }) {
+        let row = super::knob_master::RESET_ASK;
+        let at_10 = p
+            .layout_no_wrap(row.to_string(), FontId::proportional(10.0), DIM)
+            .size()
+            .x;
+        p.text(
+            pos2(s.left() + 12.0, s.bottom() - 12.0),
+            Align2::LEFT_CENTER,
+            row,
+            FontId::proportional(row_size(at_10)),
+            super::theme::DARK.accent,
+        );
+    }
     let (glyph, fill, title, note, level, muted) = match card {
+        Card::ResetAsk { level } => (
+            icon::SPEAKER_HIGH.to_string(),
+            GREY,
+            "Master volume".to_string(),
+            String::new(),
+            *level,
+            false,
+        ),
+        Card::Reset { title, note } => (
+            icon::ARROW_COUNTER_CLOCKWISE.to_string(),
+            GREY,
+            title.clone(),
+            note.clone(),
+            None,
+            false,
+        ),
         Card::App {
             name,
             place,

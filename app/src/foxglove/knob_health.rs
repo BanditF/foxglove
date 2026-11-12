@@ -206,6 +206,17 @@ pub fn rows(h: &KnobHealth) -> Vec<HealthRow> {
         },
     );
     let mut out = vec![held, target, level, popup];
+    let resets = foxglove_panel::master::resets();
+    if resets > 0 {
+        out.push(row(
+            "App levels",
+            Level::Ok,
+            format!(
+                "reset {resets} time{} since Foxglove started",
+                if resets == 1 { "" } else { "s" }
+            ),
+        ));
+    }
     if h.lost > 0 {
         out.push(row(
             "Events",

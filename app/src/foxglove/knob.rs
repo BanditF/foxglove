@@ -107,6 +107,12 @@ pub struct Cycle {
     /// The master card above Windows' flyout said why the slider goes back (#1064): its third
     /// row shows on the first outside change of a run only.
     pub told_slider: bool,
+    /// The first hold on master asked for a second one before this (`knob_popup::RESET_ASK`).
+    pub reset_armed: Option<Instant>,
+    /// The last "Reset app levels" this run, for the tray's line and Undo.
+    pub reset_done: Option<foxglove_panel::master::Reset>,
+    /// Undo ran for it.
+    pub put_back: bool,
 }
 
 /// How often the knob reads the peaks while an app is its target.
@@ -469,8 +475,33 @@ impl Cycle {
         }
     }
 
-    /// A hold: back to master.
+    /// A hold: back to master. A hold on master while Foxglove sets this device's volume asks for
+    /// a second one within 3 s, which resets the app levels.
     pub fn hold(&mut self, sessions: &dyn Sessions) -> Tell {
+        self.hold_at(sessions, Instant::now())
+    }
+
+    /// [`Cycle::hold`] at `now`.
+    pub fn hold_at(&mut self, sessions: &dyn Sessions, now: Instant) -> Tell {
+        if self.target.is_none() && sessions.reset_ready() {
+            let armed = self
+                .reset_armed
+                .take()
+                .is_some_and(|t| now.saturating_duration_since(t) < knob_popup::RESET_ASK);
+            if armed {
+                self.reset_levels(sessions);
+            } else {
+                self.reset_armed = Some(now);
+                self.popup = Some((
+                    Card::ResetAsk {
+                        level: sessions.master().ok().map(|m| m.0),
+                    },
+                    knob_popup::RESET_ASK,
+                ));
+            }
+            return Tell::Nothing;
+        }
+        self.reset_armed = None;
         self.popup = Some((
             Card::Master {
                 level: sessions.master().ok().map(|m| m.0),
@@ -480,6 +511,41 @@ impl Cycle {
             knob_popup::MASTER,
         ));
         self.set(None)
+    }
+
+    /// "Reset app levels" (from the second hold or the tray): the done card, and the result for
+    /// the tray.
+    pub fn reset_levels(&mut self, sessions: &dyn Sessions) {
+        self.reset_armed = None;
+        match sessions.reset_levels() {
+            Ok(r) => {
+                let (title, note) = super::knob_master::done_card(&r);
+                self.popup = Some((Card::Reset { title, note }, knob_popup::RESET_DONE));
+                self.reset_done = Some(r);
+                self.put_back = false;
+            }
+            Err(why) => {
+                eprintln!("Foxglove: knob: app levels not reset: {why}");
+                self.popup = Some((
+                    Card::Reset {
+                        title: "App levels not reset".into(),
+                        note: "Master volume is unchanged".into(),
+                    },
+                    knob_popup::RESET_DONE,
+                ));
+            }
+        }
+    }
+
+    /// Undo for the reset that gave `token` (the tray's).
+    pub fn undo_reset(&mut self, sessions: &dyn Sessions, token: u64) {
+        match sessions.undo_reset(token) {
+            Ok(_) => {
+                self.reset_done = None;
+                self.put_back = true;
+            }
+            Err(why) => eprintln!("Foxglove: knob: app levels not put back: {why}"),
+        }
     }
 
     /// Windows says session `id` expired or disconnected: when it was the target's last session,
@@ -514,6 +580,9 @@ impl Cycle {
 
     /// One knob event from the keyboard; what to tell it.
     pub fn event(&mut self, sessions: &dyn Sessions, kind: EventKind) -> Tell {
+        if kind != EventKind::Hold {
+            self.reset_armed = None;
+        }
         match kind {
             EventKind::Turn(steps) => {
                 self.turn(sessions, steps);
@@ -680,6 +749,9 @@ enum Work {
     Lapsed(Weak<Link>),
     /// The hidden list was saved (#952).
     Hidden,
+    /// The tray's "Reset app levels" and its Undo (token).
+    Reset,
+    UndoReset(u64),
 }
 
 static WORK: Mutex<Option<mpsc::Sender<Work>>> = Mutex::new(None);
@@ -704,6 +776,20 @@ fn volume_link(link: Option<Weak<Link>>) -> Option<Weak<Link>> {
 pub fn hidden_changed() {
     if let Some(tx) = WORK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         let _ = tx.send(Work::Hidden);
+    }
+}
+
+/// The tray's "Reset app levels" button.
+pub fn reset_levels() {
+    if let Some(tx) = WORK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(Work::Reset);
+    }
+}
+
+/// The tray's Undo for the reset that gave `token`.
+pub fn undo_reset(token: u64) {
+    if let Some(tx) = WORK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(Work::UndoReset(token));
     }
 }
 
@@ -1005,6 +1091,8 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                     }
                 }
             }
+            Work::Reset => cycle.reset_levels(sessions),
+            Work::UndoReset(token) => cycle.undo_reset(sessions, token),
             Work::Sessions(Change::Master) => {
                 cycle.master_changed(current.is_some() && knob_health::now().held);
             }
@@ -1046,6 +1134,49 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
         }
         publish_panel(cycle.panel_line());
         *TRAY.lock().unwrap_or_else(|e| e.into_inner()) = cycle.tray_line_with(sessions);
+        *TRAY_RESET.lock().unwrap_or_else(|e| e.into_inner()) = Some(cycle.tray_reset(sessions));
+    }
+}
+
+/// What the tray panel shows about "Reset app levels".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrayReset {
+    /// Foxglove sets this device's volume (the button works): master's level then.
+    pub master: Option<u8>,
+    /// The last reset this run while Undo is offered: its words and the token.
+    pub done: Option<(String, u64)>,
+    /// The last reset's words once Undo is gone (a volume change, ten minutes).
+    pub finished: Option<String>,
+    /// Undo ran.
+    pub put_back: bool,
+}
+
+static TRAY_RESET: Mutex<Option<TrayReset>> = Mutex::new(None);
+
+/// The tray's "Reset app levels" state (`None` before the knob service ran).
+pub fn tray_reset() -> Option<TrayReset> {
+    TRAY_RESET.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+impl Cycle {
+    fn tray_reset(&self, sessions: &dyn Sessions) -> TrayReset {
+        let master = sessions
+            .reset_ready()
+            .then(|| sessions.master().ok().map(|m| m.0))
+            .flatten();
+        let words = self.reset_done.as_ref().map(super::knob_master::tray_done);
+        let undo = sessions.undo_ready();
+        let done = match (&self.reset_done, &words, undo) {
+            (Some(r), Some(w), Some(t)) if r.undo == Some(t) => Some((w.clone(), t)),
+            _ => None,
+        };
+        let finished = if done.is_none() { words } else { None };
+        TrayReset {
+            master,
+            done,
+            finished,
+            put_back: self.put_back,
+        }
     }
 }
 
@@ -1128,6 +1259,9 @@ mod tests {
         /// The fake IAudioEndpointVolume (#855): master's level % and mute once Foxglove set
         /// them (`None`: 64 %, unmuted). Tests never touch the system's volume.
         master: Mutex<Option<(i32, bool)>>,
+        /// "Reset app levels" (a device Foxglove sets the volume of): how often it ran.
+        resets: Mutex<u32>,
+        handled: Mutex<bool>,
     }
 
     /// A session of its own program `C:\Apps\<id>.exe`, with a window.
@@ -1211,6 +1345,20 @@ mod tests {
     }
 
     impl Sessions for FakeSessions {
+        fn reset_ready(&self) -> bool {
+            *self.handled.lock().unwrap()
+        }
+
+        fn reset_levels(&self) -> Result<foxglove_panel::master::Reset, String> {
+            *self.resets.lock().unwrap() += 1;
+            Ok(foxglove_panel::master::Reset {
+                apps: 2,
+                master: self.master().map_or(0, |m| m.0),
+                undo: Some(1),
+                ..Default::default()
+            })
+        }
+
         fn active(&self) -> Result<Vec<Session>, String> {
             Ok(self
                 .list
@@ -1300,6 +1448,80 @@ mod tests {
 
     fn popup(c: &mut Cycle) -> Option<(Card, Duration)> {
         c.popup.take()
+    }
+
+    #[test]
+    fn a_second_hold_on_master_within_3_s_resets_the_app_levels() {
+        let s = FakeSessions::with(&[("a", "Spotify", 40)]);
+        *s.handled.lock().unwrap() = true;
+        let mut c = Cycle::default();
+        let t0 = Instant::now();
+        c.hold_at(&s, t0);
+        assert_eq!(
+            popup(&mut c),
+            Some((Card::ResetAsk { level: Some(64) }, knob_popup::RESET_ASK))
+        );
+        assert_eq!(*s.resets.lock().unwrap(), 0);
+        c.hold_at(&s, t0 + Duration::from_millis(2900));
+        assert_eq!(*s.resets.lock().unwrap(), 1);
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::Reset {
+                    title: "App levels reset".into(),
+                    note: "All apps follow master \u{b7} 64 %".into()
+                },
+                knob_popup::RESET_DONE
+            ))
+        );
+        assert!(c.reset_done.is_some());
+        // Used up: the next hold asks again.
+        c.hold_at(&s, t0 + Duration::from_secs(3));
+        assert!(matches!(popup(&mut c), Some((Card::ResetAsk { .. }, _))));
+    }
+
+    #[test]
+    fn the_second_hold_is_too_late_or_cancelled_by_any_other_knob_action() {
+        let s = FakeSessions::with(&[("a", "Spotify", 40)]);
+        *s.handled.lock().unwrap() = true;
+        let t0 = Instant::now();
+        let mut c = Cycle::default();
+        c.hold_at(&s, t0);
+        c.hold_at(&s, t0 + Duration::from_millis(3000));
+        assert_eq!(*s.resets.lock().unwrap(), 0, "3 s is over");
+        for kind in [EventKind::Turn(1), EventKind::Double, EventKind::HandedBack] {
+            let mut c = Cycle::default();
+            c.hold_at(&s, t0);
+            c.event(&s, kind);
+            c.hold_at(&s, t0 + Duration::from_secs(1));
+            assert_eq!(*s.resets.lock().unwrap(), 0, "{kind:?} cancels");
+        }
+        // A click goes to an app: the hold after it is the plain hold back to master.
+        let mut c = Cycle::default();
+        c.hold_at(&s, t0);
+        c.event(&s, EventKind::Click);
+        c.hold_at(&s, t0 + Duration::from_secs(1));
+        assert_eq!(*s.resets.lock().unwrap(), 0);
+        assert!(c.target.is_none());
+    }
+
+    #[test]
+    fn a_hold_on_a_device_foxglove_does_not_handle_changes_nothing() {
+        let s = FakeSessions::with(&[("a", "Spotify", 40)]);
+        let mut c = Cycle::default();
+        c.hold_at(&s, Instant::now());
+        assert!(matches!(
+            popup(&mut c),
+            Some((
+                Card::Master {
+                    note: "held: master",
+                    ..
+                },
+                _
+            ))
+        ));
+        c.hold_at(&s, Instant::now());
+        assert_eq!(*s.resets.lock().unwrap(), 0);
     }
 
     #[test]

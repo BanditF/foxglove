@@ -289,6 +289,9 @@ pub struct View {
     pub keyboard: Option<String>,
     /// The Knob row (#952): only while the knob is on an app, or just after hiding one.
     pub knob: Option<KnobRow>,
+    /// "Reset app levels": while Foxglove sets this device's volume, its button and the last
+    /// reset's line.
+    pub reset: Option<super::knob::TrayReset>,
     /// The Screen glow row (#496): while it runs, with the gate's words while one holds it.
     pub screen: Option<ScreenRow>,
 }
@@ -324,6 +327,9 @@ pub enum KnobRow {
     },
     /// "<app> is hidden from the knob." with Undo and Change in Settings.
     Hidden { name: String },
+    /// The knob is on master and Foxglove sets this device's volume: master's level, with
+    /// Reset app levels.
+    Master { master: u8 },
 }
 
 pub const HIDE: &str = "Hide from knob";
@@ -404,6 +410,9 @@ pub enum Intent {
     },
     /// Undo after a hide.
     UndoHide,
+    /// "Reset app levels" (UX plan ux/reset-levels), and its Undo (the reset's token).
+    ResetLevels,
+    UndoReset(u64),
     /// "Change in Settings": the Keyboard page, with its Knob card.
     KnobSettings,
     /// The Screen glow row's Stop (#496): the Scenes page's Stop.
@@ -482,6 +491,7 @@ fn art(s: &super::art_service::Snapshot, library: &super::art_library::Library) 
 }
 
 fn view(ctx: &egui::Context, hidden: Option<&str>) -> View {
+    let reset = super::knob::tray_reset();
     let (profiles, active_profile) = super::store::cached_profiles();
     let rgb = super::keyboard_settings::rgb_state(ctx);
     let lights = rgb.map(|s| s.left);
@@ -512,7 +522,13 @@ fn view(ctx: &egui::Context, hidden: Option<&str>) -> View {
         update: super::update::available_version().map(|v| format!("Update available: v{v}")),
         devices: devices(&super::peripherals::list()),
         keyboard: super::keyboard_focus::current().map(|k| k.name),
-        knob: knob_row(super::knob::tray_line().as_ref(), hidden),
+        knob: knob_row(super::knob::tray_line().as_ref(), hidden).or_else(|| {
+            reset
+                .as_ref()
+                .and_then(|r| r.master)
+                .map(|master| KnobRow::Master { master })
+        }),
+        reset,
         screen: screen_row(
             &super::screen_glow::status(),
             super::lights_owner::yielded_to(),
@@ -766,6 +782,8 @@ fn act(ctx: &egui::Context, intent: Intent) -> bool {
         Intent::StopScreenGlow => super::scenes_ui::stop_look(),
         // Carried out in `show`, which keeps the Undo.
         Intent::HideFromKnob { .. } | Intent::UndoHide => {}
+        Intent::ResetLevels => super::knob::reset_levels(),
+        Intent::UndoReset(token) => super::knob::undo_reset(token),
     }
     false
 }
@@ -873,7 +891,9 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 }));
             }));
             if let Some(row) = &v.knob {
-                super::page_guard::tile(ui, "tile:knob", "Tray: Knob", |ui| knob(ui, row, out));
+                super::page_guard::tile(ui, "tile:knob", "Tray: Knob", |ui| {
+                    knob(ui, row, v.reset.as_ref(), out)
+                });
             }
             super::page_guard::tile(ui, "tile:lights", "Tray: Lights", |ui| lights(ui, v, draft, out));
             // The two screens (#519): the left one's line with its pause, the right one's
@@ -1001,7 +1021,12 @@ fn screen_glow_row(ui: &mut egui::Ui, row: &ScreenRow, out: &mut Vec<Intent>) {
 }
 
 /// The Knob row (#952): the knob's app with Hide from knob, or the line after hiding it.
-fn knob(ui: &mut egui::Ui, row: &KnobRow, out: &mut Vec<Intent>) {
+fn knob(
+    ui: &mut egui::Ui,
+    row: &KnobRow,
+    reset: Option<&super::knob::TrayReset>,
+    out: &mut Vec<Intent>,
+) {
     let p = theme::palette(ui);
     part(
         ui,
@@ -1041,6 +1066,16 @@ fn knob(ui: &mut egui::Ui, row: &KnobRow, out: &mut Vec<Intent>) {
                         }
                     });
                 });
+                reset_block(ui, reset, out);
+            }
+            KnobRow::Master { master } => {
+                ui.label(RichText::new(super::knob_master::MASTER_TITLE).color(p.text_strong));
+                ui.label(
+                    RichText::new(super::knob_master::tray_master_line(*master))
+                        .small()
+                        .color(p.muted),
+                );
+                reset_block(ui, reset, out);
             }
             KnobRow::Hidden { name } => {
                 ui.label(RichText::new(hidden_line(name)).color(p.text));
@@ -1060,6 +1095,35 @@ fn knob(ui: &mut egui::Ui, row: &KnobRow, out: &mut Vec<Intent>) {
             }
         },
     );
+}
+
+/// "Reset app levels" under the Knob row: the last reset's line with Undo, then the button.
+/// Only while Foxglove sets this device's volume.
+fn reset_block(ui: &mut egui::Ui, reset: Option<&super::knob::TrayReset>, out: &mut Vec<Intent>) {
+    let Some(r) = reset.filter(|r| r.master.is_some()) else {
+        return;
+    };
+    let p = theme::palette(ui);
+    ui.add_space(6.0);
+    if r.put_back {
+        ui.label(RichText::new(super::knob_master::UNDONE).color(p.text));
+    } else if let Some((words, token)) = &r.done {
+        ui.label(RichText::new(words).color(p.text));
+        ui.add_space(4.0);
+        if ui.button(UNDO).clicked() {
+            out.push(Intent::UndoReset(*token));
+        }
+    } else if let Some(words) = &r.finished {
+        ui.label(RichText::new(words).color(p.text));
+    }
+    ui.add_space(4.0);
+    if ui
+        .button(super::knob_master::RESET_BUTTON)
+        .on_hover_text(super::knob_master::RESET_HOVER)
+        .clicked()
+    {
+        out.push(Intent::ResetLevels);
+    }
 }
 
 fn half_chip(ui: &mut egui::Ui, name: &str, tone: Tone, text: &str) {
@@ -1530,6 +1594,7 @@ pub mod tests {
             devices: devices(&super::super::peripherals::tests::sample()),
             keyboard: Some("Eyelash Corne".into()),
             knob: None,
+            reset: None,
             screen: None,
         }
     }
