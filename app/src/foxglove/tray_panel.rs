@@ -568,7 +568,11 @@ pub fn show(ctx: &egui::Context) -> bool {
         });
         // Focus, so a click elsewhere (or Alt+Tab) closes the panel through the focus event.
         // Without faking input (#618, focus.rs): the tray click gave the app the foreground.
-        super::focus::bring_to_front(ctx, egui::ViewportId::ROOT, super::overlay_restore::hwnd());
+        super::focus::bring_to_front(
+            ctx,
+            super::overlay_viewport::overlay_viewport_id(),
+            super::overlay_restore::hwnd(),
+        );
         ctx.request_repaint();
     }
     // The work area the overlay covers, in screen points.
@@ -591,7 +595,7 @@ pub fn show(ctx: &egui::Context) -> bool {
             });
             super::focus::bring_to_front(
                 ctx,
-                egui::ViewportId::ROOT,
+                super::overlay_viewport::overlay_viewport_id(),
                 super::overlay_restore::hwnd(),
             );
         } else if !want {
@@ -612,7 +616,11 @@ pub fn show(ctx: &egui::Context) -> bool {
         // #912: the overlay is never activated by a click (WS_EX_NOACTIVATE), so when opening
         // didn't get the foreground, a press on the panel (the only part of the window that
         // takes clicks while it's open) asks for it, for Esc and closing on a click elsewhere.
-        super::focus::bring_to_front(ctx, egui::ViewportId::ROOT, super::overlay_restore::hwnd());
+        super::focus::bring_to_front(
+            ctx,
+            super::overlay_viewport::overlay_viewport_id(),
+            super::overlay_restore::hwnd(),
+        );
     }
     let lost_focus = open.focused && focused == Some(false);
     if lost_focus {

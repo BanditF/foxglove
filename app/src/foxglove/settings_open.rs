@@ -1,6 +1,6 @@
-//! Opening Settings from outside a frame: the tray menu's "Open Foxglove" (on the tray-menu
+﻿//! Opening Settings from outside a frame: the tray menu's "Open Foxglove" (on the tray-menu
 //! thread) and a second launch (on the single-instance thread). The tray panel's "Open
-//! Foxglove →" runs inside a frame and only logs here.
+//! Foxglove â†’" runs inside a frame and only logs here.
 //!
 //! "Sometimes nothing happens" (tray open): an open request only set a flag and woke the UI,
 //! and the frame that took it showed nothing when Settings was already "open" (its window made,
@@ -40,7 +40,7 @@ pub fn tray_start() -> bool {
 pub enum Source {
     /// The tray menu's "Open Foxglove".
     TrayMenu,
-    /// The tray panel's "Open Foxglove →".
+    /// The tray panel's "Open Foxglove â†’".
     TrayPanel,
     /// A second launch of the app (#345).
     SecondLaunch,
@@ -262,7 +262,7 @@ mod tests {
         );
         let woken = woken.lock().unwrap();
         assert!(
-            woken.contains(&egui::ViewportId::ROOT),
+            woken.contains(&crate::foxglove::overlay_viewport::overlay_viewport_id()),
             "the root viewport is woken: {woken:?}"
         );
         assert!(!woken.contains(&settings), "not the hidden Settings one");

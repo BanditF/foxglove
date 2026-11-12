@@ -9,14 +9,14 @@ impl UiWake {
         Self(wake)
     }
 
-    /// Wakes the root viewport, whose frame runs the app (and draws Settings inside it).
+    /// Wakes the overlay viewport (the root today, overlay_viewport.rs), whose frame runs the app (and draws Settings inside it).
     /// Foxglove: not `ctx.request_repaint()`, which from another thread asks for whichever
     /// viewport the UI thread is drawing at that moment (egui's shared viewport stack), e.g.
     /// the hidden Settings window's, whose repaints are throttled (settings_open.rs).
     pub fn from_ctx(ctx: &egui::Context) -> Self {
         let ctx = ctx.clone();
         Self(Arc::new(move || {
-            ctx.request_repaint_of(egui::ViewportId::ROOT)
+            ctx.request_repaint_of(crate::foxglove::overlay_viewport::overlay_viewport_id())
         }))
     }
 

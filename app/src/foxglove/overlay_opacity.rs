@@ -181,7 +181,8 @@ pub fn slider(
             let dragging = response.is_pointer_button_down_on() || response.dragged();
             if hold(response.id, dragging) || (dragging && *value != before) {
                 // The overlay lives in the main viewport: draw it now, at the new value.
-                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                ui.ctx()
+                    .request_repaint_of(super::overlay_viewport::overlay_viewport_id());
             }
             paint_detent(ui, &response);
         },
