@@ -1,0 +1,1696 @@
+{
+  "actions": [
+    "free-gpu",
+    "release-gpu-reservation"
+  ],
+  "declared": [
+    "tile",
+    "page"
+  ],
+  "module": "vulpes",
+  "name": "AI",
+  "states": [
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "GPU free"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Nothing loaded"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 1.7 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 1700
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "off",
+                      "value": "GPU free"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Nothing loaded"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 1.7 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 1700
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "idle"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "GPU free"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Nothing loaded"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 1.7 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 1700
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "off",
+                      "value": "GPU free"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Nothing loaded"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 1.7 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 1700
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI is running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "idle-web-running"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Chat: daily"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "VRAM 9.8 of 12.0 GiB"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 9.8 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 10035
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "active",
+                      "value": "Chat: daily"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "VRAM 9.8 of 12.0 GiB"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 9.8 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 10035
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI is running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "held-chat"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Chat"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "VRAM 9.8 of 12.0 GiB"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 9.8 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 10035
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "active",
+                      "value": "Chat"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "VRAM 9.8 of 12.0 GiB"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 9.8 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 10035
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "held-chat-unknown"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "LM Studio"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "VRAM 9.8 of 12.0 GiB"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 9.8 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 10035
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "active",
+                      "value": "LM Studio"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "VRAM 9.8 of 12.0 GiB"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 9.8 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 10035
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "held-lmstudio"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Image"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "VRAM 9.8 of 12.0 GiB"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 9.8 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 10035
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "active",
+                      "value": "Image"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "VRAM 9.8 of 12.0 GiB"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 9.8 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 10035
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "held-image"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Two models"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Chat and image share the GPU"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 10.7 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 11000
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Two models"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Chat and image share the GPU"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 10.7 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 11000
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "held-mixed"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Freeing..."
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Waiting for the current job"
+                },
+                "type": "label"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "active",
+                      "value": "Freeing..."
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Waiting for the current job"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "freeing"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Reserved for gaming"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Since 21:04. Nothing loads."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "ok",
+                      "value": "Reserved for gaming"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Since 21:04. Nothing loads."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "release-gpu-reservation",
+                      "label": "Release reservation"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "reserved"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Reserved for gaming"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Since 21:04. Nothing loads."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "release-gpu-reservation",
+                  "label": "Release reservation"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "ok",
+                      "value": "Reserved for gaming"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Since 21:04. Nothing loads."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "release-gpu-reservation",
+                      "label": "Release reservation"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Couldn't open the browser"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "label": "Try again"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "reserved-open-failed"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Can't tell"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Arete couldn't read the GPU"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Try again"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Can't tell"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Arete couldn't read the GPU"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "label": "Try again"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "error"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Couldn't free the GPU"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "the lock is held by another Arete process for a long time, sorry"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Try again"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Couldn't free the GPU"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "the lock is held by another Arete process for a long time, sorry"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "label": "Try again"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "free-failed"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "attention",
+                  "value": "Couldn't release the GPU"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "access denied"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Try again"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "attention",
+                      "value": "Couldn't release the GPU"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "access denied"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "label": "Try again"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Full UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "release-failed"
+    }
+  ]
+}

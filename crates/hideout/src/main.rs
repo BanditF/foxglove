@@ -12,6 +12,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(windows)]
+mod adopt;
+#[cfg(windows)]
 mod catalog_fetch;
 #[cfg(windows)]
 mod https;
@@ -298,6 +300,9 @@ fn main() {
     if let Some(code) = lab_do_client(&paths, std::env::args_os().skip(1)) {
         std::process::exit(code);
     }
+    if let Some(code) = adopt_client(&paths, std::env::args_os().skip(1)) {
+        std::process::exit(code);
+    }
     // Lab control only where the registry allows lab mode (never on the user's folder).
     hideout_shell::lab_control::allow(hideout_registry::lab::lab_mode_from_env(&paths.root).on());
     let mut started = start(&paths);
@@ -386,6 +391,34 @@ fn capture_client(
                 paths.root.display(),
                 capture::ENV
             );
+            Some(1)
+        }
+    }
+}
+
+/// `hideout.exe --adopt <folder>` (#1117): registers the adopted module whose `module.toml` is in
+/// `<folder>` (see `adopt`), prints one line and exits; no window, nothing started. `None` for
+/// any other command line. Exit 0 when registered, 1 when refused, 2 for a missing folder.
+#[cfg(windows)]
+fn adopt_client(
+    paths: &hideout_shell::paths::HubPaths,
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Option<i32> {
+    if args.next()? != "--adopt" {
+        return None;
+    }
+    let Some(folder) = args.next().map(std::path::PathBuf::from) else {
+        eprintln!("hideout: --adopt needs the folder that holds the module's module.toml");
+        return Some(2);
+    };
+    let folder = std::path::absolute(&folder).unwrap_or(folder);
+    match adopt::run(&paths.root, &folder, &hideout_registry::catalogs::now_utc()) {
+        Ok(line) => {
+            println!("{line}");
+            Some(0)
+        }
+        Err(e) => {
+            println!("hideout: {e}");
             Some(1)
         }
     }

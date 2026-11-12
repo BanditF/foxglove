@@ -508,6 +508,9 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
             let v = (f(&p, "value").unwrap_or(0.0) / max).clamp(0.0, 1.0) as f32;
             let mut bar = egui::ProgressBar::new(v);
             if !label.is_empty() {
+                // The meter's name is its words ("VRAM 9.8 of 12.0 GiB"), never a bare percent:
+                // a tile's accessible name carries it (UX plan #1117).
+                d.texts.push(label.clone());
                 bar = bar.text(&label);
             }
             ui.add(bar);
