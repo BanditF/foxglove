@@ -429,6 +429,11 @@ impl Replay {
                         }
                         continue;
                     }
+                    // The hub adds `_deadline_ms` to a forwarded call's params (contract 6.3,
+                    // #1156); it is optional and reserved, so the golden vectors stay without it.
+                    if k == "_deadline_ms" && path.ends_with("/params") {
+                        continue;
+                    }
                     let sub = format!("{path}/{k}");
                     if wm.contains_key(k) != gm.contains_key(k) {
                         return Err(format!("{sub}: want {:?}, got {:?}", wm.get(k), gm.get(k)));

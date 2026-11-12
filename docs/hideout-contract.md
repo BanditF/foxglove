@@ -1180,8 +1180,9 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   is not forwarded (a `*.release` is exempt). A call counts until the provider answers it or its
   deadline passes, even when the caller has disconnected meanwhile, so reconnecting buys no
   room. Calls held for a starting module count the same once it is ready (the extras answer
-  error 3). A forwarded call's params carry `_deadline_ms`, the time left before the hub fails
-  it with error 4; a provider SHOULD drop a call it has not started by then.
+  error 3). A forwarded call's params MAY carry `_deadline_ms` (a reserved, optional key), the
+  time left before the hub fails it with error 4; a provider SHOULD drop a call it has not
+  started by then and MUST ignore the key otherwise. Conformance transcripts ignore it.
 - (#1118) Only one adopted module may provide an area: if two adopted modules both declare an
   area and hold its `provide:` grant, neither gets it (no id or start order decides), a route
   already held is dropped, and the registry refuses a second adopted `provide:` grant that
