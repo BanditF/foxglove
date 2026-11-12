@@ -619,6 +619,46 @@ pub struct LeaseUpdate {
     pub effect: Option<String>,
 }
 
+/// Holds Wallpaper Engine paused until released (#1120, API 1.15). The first lease pauses it; play
+/// goes out only when the last one ends, and never over the user's own pause or with a
+/// full-screen program in front. Leases end with the connection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WallpaperPauseParams {
+    /// Why, at most 64 characters (shown as the fact `wallpaper_engine.paused_by`).
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WallpaperPaused {
+    pub lease: u64,
+    /// `false`: Wallpaper Engine was paused already (the user's pause), so this lease will not
+    /// play it.
+    pub paused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WallpaperReleaseParams {
+    pub lease: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WallpaperReleased {
+    /// `play` was sent.
+    pub played: bool,
+    /// Why not: `user-paused`, `fullscreen` or `held` (other leases remain).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WallpaperStatus {
+    pub running: bool,
+    /// Always `"foxglove"`: the app sends every Wallpaper Engine command.
+    pub owner: String,
+    pub leases: u32,
+    pub paused_by_lease: bool,
+}
+
 /// One of the plugin's own secrets (#213, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SecretName {
@@ -1084,6 +1124,28 @@ pub const METHODS: &[Method] = &[
         permission: Some("lighting.write"),
         params: schema!(LeaseUpdate),
         result: Some(schema!(Empty)),
+    },
+    // One owner for Wallpaper Engine's pause (#1120, API 1.15).
+    Method {
+        name: "wallpaper-engine.pause",
+        kind: Kind::Call,
+        permission: Some("wallpaper.control"),
+        params: schema!(WallpaperPauseParams),
+        result: Some(schema!(WallpaperPaused)),
+    },
+    Method {
+        name: "wallpaper-engine.release",
+        kind: Kind::Call,
+        permission: Some("wallpaper.control"),
+        params: schema!(WallpaperReleaseParams),
+        result: Some(schema!(WallpaperReleased)),
+    },
+    Method {
+        name: "wallpaper-engine.status",
+        kind: Kind::Call,
+        permission: Some("wallpaper.control"),
+        params: schema!(Empty),
+        result: Some(schema!(WallpaperStatus)),
     },
     // A plugin's own secrets; outside tools get none (#213).
     Method {

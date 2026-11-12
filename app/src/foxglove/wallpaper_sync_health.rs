@@ -84,6 +84,11 @@ pub struct SyncHealth {
     pub last: Option<(Reason, Instant)>,
     /// The last push that failed, while no push has gone since.
     pub last_error: Option<String>,
+    /// The local API's pause leases (#1120): `pause` commands sent, `play` commands sent, and
+    /// plays left to Wallpaper Engine (the user's pause, or a full-screen program in front).
+    pub lease_pauses: u64,
+    pub lease_plays: u64,
+    pub lease_dropped: u64,
 }
 
 impl SyncHealth {
@@ -96,6 +101,9 @@ impl SyncHealth {
             resent_after_reload: 0,
             last: None,
             last_error: None,
+            lease_pauses: 0,
+            lease_plays: 0,
+            lease_dropped: 0,
         }
     }
 
@@ -214,7 +222,18 @@ pub fn rows(h: &SyncHealth, now: Instant) -> Vec<HealthRow> {
             ),
         ),
     };
-    vec![pushes, suppressed, last]
+    let mut out = vec![pushes, suppressed, last];
+    if h.lease_pauses + h.lease_plays + h.lease_dropped > 0 {
+        out.push(row(
+            "Pause leases",
+            Level::Ok,
+            format!(
+                "paused {}, played {}, dropped plays {}",
+                h.lease_pauses, h.lease_plays, h.lease_dropped
+            ),
+        ));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -289,6 +308,18 @@ mod tests {
         }
         assert_eq!(rows(&h, t1 + Duration::from_secs(5))[0].level, Level::Warn);
         assert_eq!(rows(&h, t1 + Duration::from_secs(120))[0].level, Level::Ok);
+    }
+
+    #[test]
+    fn pause_leases_show_only_once_used() {
+        let mut h = SyncHealth::new();
+        assert_eq!(rows(&h, Instant::now()).len(), 3);
+        h.lease_pauses = 2;
+        h.lease_plays = 1;
+        h.lease_dropped = 1;
+        let r = rows(&h, Instant::now());
+        assert_eq!(r.len(), 4);
+        assert_eq!(r[3].detail, "paused 2, played 1, dropped plays 1");
     }
 
     #[test]

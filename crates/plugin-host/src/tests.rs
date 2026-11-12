@@ -74,7 +74,7 @@ fn initialize_comes_first_and_reports_the_grant() {
     assert!(err(1, code::INVALID_REQUEST)(&out[0]));
     assert_eq!(
         out[1],
-        json!({"jsonrpc":"2.0","id":0,"result":{"api":"1.14","app":"0.3.0","granted":["facts.read:clock.*"]}})
+        json!({"jsonrpc":"2.0","id":0,"result":{"api":"1.15","app":"0.3.0","granted":["facts.read:clock.*"]}})
     );
     assert_eq!(out[2], json!({"jsonrpc":"2.0","id":2,"result":{}}));
 }
@@ -118,6 +118,38 @@ fn facts_follow_the_grant() {
         facts.get("weather.icon"),
         Some(DeviceValue::Bytes(vec![0, 1]))
     );
+}
+
+/// #1120: the Wallpaper Engine lease calls need `wallpaper.control`; without it the app is never
+/// asked.
+#[test]
+fn wallpaper_engine_calls_need_wallpaper_control() {
+    struct Wallpaper;
+    impl Devices for Wallpaper {
+        fn call(&self, method: &str, _: Value) -> Result<Value, Error> {
+            assert!(method.starts_with("wallpaper-engine."));
+            Ok(json!({}))
+        }
+    }
+    let asks = [
+        call(1, "wallpaper-engine.pause", json!({"reason":"r"})),
+        call(2, "wallpaper-engine.release", json!({"lease":1})),
+        call(3, "wallpaper-engine.status", json!({})),
+    ];
+    let mut denied = plugin(&["lighting.write", "devices.read"]);
+    denied.devices = Arc::new(Wallpaper);
+    let mut input = vec![init()];
+    input.extend(asks.clone());
+    let out = run(denied, &input);
+    for (i, line) in out.iter().enumerate().skip(1) {
+        assert!(err(i as i64, code::DENIED)(line), "{line}");
+    }
+    let mut granted = plugin(&["wallpaper.control"]);
+    granted.devices = Arc::new(Wallpaper);
+    let out = run(granted, &input);
+    for line in out.iter().skip(1) {
+        assert_eq!(line["result"], json!({}));
+    }
 }
 
 #[test]

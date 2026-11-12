@@ -56,6 +56,7 @@ same messages.
 | `scenes.page` | call | `devices.read` (API 1.10) |
 | `focus.get` / `focus.set` | call | `devices.read` / `focus.write` (API 1.12) |
 | `overlay.shown` / `overlay.set_shown` | call | `devices.read` / `app.windows` (API 1.13) |
+| `wallpaper-engine.pause` / `.release` / `.status` | call | `wallpaper.control` (API 1.15, #1120): see below. Never granted over MCP. |
 | `screens.info_override` / `screens.info_release` | call | `screens.write` (API 1.14): the Info screen names of `screens.panel_override` / `screens.panel_release`, which stay as deprecated aliases. SDK: `info_screen_*`, the `panel_*` methods are deprecated. |
 
 The params and results are in the schema. Notes:
@@ -128,6 +129,24 @@ The params and results are in the schema. Notes:
   result. Every change also sets the `focus.*` facts (`focus.keyboard`, `focus.name`,
   `focus.source`, `focus.connected`, `focus.keyboards`, `focus.connected_keyboards`,
   `focus.overlay`, `focus.feed`), so `facts.subscribe` with `focus.*` hears it.
+- **Wallpaper Engine's pause (#1120, API 1.15), one owner:** Foxglove's wallpaper sync is the
+  only program that sends Wallpaper Engine its command line, so a pause never runs beside a
+  push. `wallpaper-engine.pause {reason}` (at most 64 characters) takes a lease and answers
+  `{lease, paused}`: the first lease sends `-control pause`, further ones only join. `paused:
+  false` means Wallpaper Engine was already paused (a paired wallpaper reported it: the user's
+  pause), so this lease will not play it. `wallpaper-engine.release {lease}` answers `{played,
+  why?}`: `play` goes out only when the last lease ends, never over the user's pause
+  (`why: "user-paused"`) and never with a full-screen program in front (`"fullscreen"`; Wallpaper
+  Engine's own full-screen setting brings the wallpaper back), and an earlier release answers
+  `"held"`. A lease ends with its connection; quitting Foxglove plays first (under the same
+  rules), then tells the wallpapers it has gone. Pushes wait while paused; the newest state goes
+  once, `RELOAD_QUIET` after the play. `wallpaper-engine.status {}` answers `{running, owner:
+  "foxglove", leases, paused_by_lease}`. Errors: 1 Wallpaper Engine isn't installed, 2 it isn't
+  running, 6 the command failed or timed out (5 s), 8 more than 16 leases on one connection,
+  -32602 an unknown lease or one of another connection (or a reason over 64 characters), 5 no
+  `wallpaper.control`. The fact `wallpaper_engine.paused_by` holds the live leases' reasons
+  (absent when none), and the health view gains `paused N, played N, dropped plays N`. Wallpaper
+  Engine has no "am I paused" query, so the user's pause is seen only through a paired wallpaper.
 - **Show layer overlay (API 1.13):** `overlay.shown` answers `{on}`, the Keyboard page's
   **Show layer overlay** checkbox; `overlay.set_shown {on}` sets it as the checkbox does (saved
   in the store's `[overlay_shown]`, one `Foxglove: layer overlay on|off` line when it changed)
