@@ -120,6 +120,11 @@ fn an_adopted_module_with_another_version_is_stopped_as_a_trust_mismatch() {
         assert_eq!(a["error"]["code"], 5, "{said:?}");
         assert!(a["error"].to_string().contains("trust.mismatch"), "{a}");
         assert!(out.contains(&Out::Refused("vulpes".into())));
+        assert!(out.contains(&Out::VersionMismatch {
+            module: "vulpes".into(),
+            said: said.map(String::from),
+            registered: "0.4.0".into(),
+        }));
         assert!(out.iter().any(|o| matches!(o, Out::Close(_))));
     }
 }

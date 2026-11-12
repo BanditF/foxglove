@@ -124,6 +124,19 @@ pub enum Ev {
         id: String,
         reason: String,
     },
+    /// The program the registration points to isn't there (an adopted install that moved or was
+    /// uninstalled): "<Name> isn't installed on this PC — it was registered from <path>".
+    NotInstalled {
+        id: String,
+        path: String,
+    },
+    /// An adopted module's `initialize` said another version than its registration (follows
+    /// [`Ev::Refused`]): "<Name> is version X but was registered as Y — register it again".
+    VersionMismatch {
+        id: String,
+        said: Option<String>,
+        registered: String,
+    },
     /// After a hub restart: a recorded instance still runs and passed the pid and exe-hash
     /// check (§7.9). It has [`GRACE`] to reconnect.
     Adopted {
@@ -677,6 +690,27 @@ impl Policy {
                 self.set_state(&id, State::InstallFailed, Some(reason), &mut out);
                 // It came from launching: "Couldn't start <Module>" (UX plan, #983).
                 publish(&mut out, format!("module.{id}.failed"), json!("launch"));
+            }
+            Ev::NotInstalled { id, path } => {
+                if let Some(s) = self.slots.get_mut(&id) {
+                    s.ready_by = None;
+                    let line = words::not_installed(&s.name, &path);
+                    self.set_state(&id, State::InstallFailed, Some(line), &mut out);
+                    publish(&mut out, format!("module.{id}.failed"), json!("missing"));
+                }
+            }
+            Ev::VersionMismatch {
+                id,
+                said,
+                registered,
+            } => {
+                let name = self.slots.get(&id).map(|s| s.name.clone());
+                if let Some(name) = name {
+                    // After Refused: the same install-failed, with the sentence for its reason.
+                    let line = words::version_differs(&name, said.as_deref(), &registered);
+                    self.set_state(&id, State::InstallFailed, Some(line), &mut out);
+                    publish(&mut out, format!("module.{id}.failed"), json!("version"));
+                }
             }
             Ev::Adopted { id, instance } => {
                 if let Some(s) = self.slots.get_mut(&id) {
@@ -1426,6 +1460,18 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
     Some(match ev {
         Ev::Started { id, instance } => (id.clone(), format!("started instance {instance}")),
         Ev::LaunchFailed { id, reason } => (id.clone(), format!("launch failed: {reason}")),
+        Ev::NotInstalled { id, path } => (id.clone(), format!("not installed: {path}")),
+        Ev::VersionMismatch {
+            id,
+            said,
+            registered,
+        } => (
+            id.clone(),
+            format!(
+                "initialize refused: trust.mismatch, registered {registered}, it says {}",
+                said.as_deref().unwrap_or("nothing")
+            ),
+        ),
         Ev::Adopted { id, instance } => (
             id.clone(),
             format!("taken back instance {instance} after a hub restart"),
@@ -1918,6 +1964,56 @@ mod withdrawn_tests {
         let cmds = p.handle(revoked(None), t);
         assert_eq!(p.state(ID), Some(State::Off));
         assert!(cmds.iter().all(|c| !matches!(c, Cmd::Notify { .. })));
+    }
+
+    /// An adopted module whose program is gone, or that says another version than its
+    /// registration: install-failed with the one sentence as its reason and `failed` saying
+    /// which.
+    #[test]
+    fn adopted_failures_carry_their_one_sentence() {
+        let t = Instant::now();
+        let mut p = Policy::new();
+        running(&mut p, t, None);
+        let cmds = p.handle(
+            Ev::NotInstalled {
+                id: ID.into(),
+                path: "C:/Apps/Art/art.exe".into(),
+            },
+            t,
+        );
+        assert_eq!(p.state(ID), Some(State::InstallFailed));
+        assert_eq!(fact(&cmds, "failed"), Some(&json!("missing")));
+        assert_eq!(
+            fact(&cmds, "reason"),
+            Some(&json!(
+                "Art isn't installed on this PC \u{2014} it was registered from C:/Apps/Art/art.exe"
+            ))
+        );
+        let mut p = Policy::new();
+        running(&mut p, t, None);
+        let mut cmds = p.handle(Ev::Refused { id: ID.into() }, t);
+        cmds.extend(p.handle(
+            Ev::VersionMismatch {
+                id: ID.into(),
+                said: Some("0.5.0".into()),
+                registered: "0.4.0".into(),
+            },
+            t,
+        ));
+        assert_eq!(p.state(ID), Some(State::InstallFailed));
+        let last = |k: &str| {
+            cmds.iter().rev().find_map(|c| match c {
+                Cmd::Publish { key, value } if key == &format!("module.{ID}.{k}") => Some(value),
+                _ => None,
+            })
+        };
+        assert_eq!(last("failed"), Some(&json!("version")));
+        assert_eq!(
+            last("reason"),
+            Some(&json!(
+                "Art is version 0.5.0 but was registered as 0.4.0 \u{2014} register it again"
+            ))
+        );
     }
 
     /// Check for updates: checking, then nothing newer or couldn't check; a fixed version

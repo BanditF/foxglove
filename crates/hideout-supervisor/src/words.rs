@@ -20,6 +20,25 @@ pub const DIDNT_START: &str = "It didn't start. Open log to see why.";
 pub const DIDNT_HELP: &str = "Starting again didn't help last time.";
 /// `install-failed` after a failed pid or exe-hash check at `initialize` (#959).
 pub const FILES_DONT_MATCH: &str = "Its files don't match what was installed.";
+/// An adopted module whose program isn't there (`module.<id>.failed` is `missing`): the row's
+/// state words, the page's reason and `module.<id>.reason`. Module-agnostic.
+pub fn not_installed(module: &str, path: &str) -> String {
+    format!("{module} isn't installed on this PC \u{2014} it was registered from {path}")
+}
+
+/// An adopted module that says another version than it was registered as (`trust.mismatch`,
+/// `module.<id>.failed` is `version`): one sentence, with what to do.
+pub fn version_differs(module: &str, said: Option<&str>, registered: &str) -> String {
+    match said {
+        Some(v) => format!(
+            "{module} is version {v} but was registered as {registered} \u{2014} register it again"
+        ),
+        None => format!(
+            "{module} is a different version than the {registered} it was registered as \u{2014} register it again"
+        ),
+    }
+}
+
 /// A Modules row's `install-failed` from launching: the row already has the name (#1029).
 pub const COULDNT_START: &str = "Couldn't start";
 /// A Modules row's buttons (#1029): Open is the secondary one on every row.
@@ -464,6 +483,9 @@ pub fn every_string() -> Vec<String> {
         turn_off("Art"),
         open_module("Art"),
         couldnt_start_title("Art"),
+        not_installed("Art", "C:/Apps/Art/art.exe"),
+        version_differs("Art", Some("0.5.0"), "0.4.0"),
+        version_differs("Art", None, "0.4.0"),
         t,
         m,
         nt,
