@@ -130,6 +130,23 @@ pub trait Sessions: Send + Sync {
     fn app_volume(&self, _id: &str) -> Option<crate::master::AppVolume> {
         None
     }
+    /// Whether "Reset app levels" can run: Foxglove sets this device's volume and its journal
+    /// can be read.
+    fn reset_ready(&self) -> bool {
+        false
+    }
+    /// "Reset app levels" (#1064 follow-up): every app to 100 %, then scaled by master.
+    fn reset_levels(&self) -> Result<crate::master::Reset, String> {
+        Err("master volume isn't on for this device".into())
+    }
+    /// Undo for the reset that gave `token`.
+    fn undo_reset(&self, _token: u64) -> Result<crate::master::Reset, String> {
+        Err("Undo isn't offered any more".into())
+    }
+    /// The token of the reset Undo is offered for now.
+    fn undo_ready(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// One detent: 2 %, the step Windows' own volume keys take.
@@ -620,6 +637,12 @@ mod imp {
         Device,
         /// What the tray row says of an app on a device Foxglove sets the volume of (#1064).
         AppVolume(String, SyncSender<Option<AppVolume>>),
+        /// "Reset app levels": whether it can run, the reset, its Undo, and whether Undo is
+        /// offered.
+        ResetReady(SyncSender<bool>),
+        Reset(SyncSender<std::result::Result<master::Reset, String>>),
+        UndoReset(u64, SyncSender<std::result::Result<master::Reset, String>>),
+        UndoReady(SyncSender<Option<u64>>),
         /// The per-device setting changed, or the Knob card asks for the device's facts again.
         Recheck,
         /// Foxglove quits: the device and the apps back to Windows' own levels.
@@ -1611,6 +1634,46 @@ mod imp {
                 Req::AppVolume(id, reply) => {
                     let _ = reply.send(self.soft.as_ref().and_then(|s| s.app_volume(&id)));
                 }
+                Req::ResetReady(reply) => {
+                    let _ = reply.send(
+                        self.soft
+                            .as_ref()
+                            .is_some_and(|s| s.engaged().is_some() && !s.journal_unread()),
+                    );
+                }
+                Req::UndoReady(reply) => {
+                    let _ = reply.send(
+                        self.soft
+                            .as_ref()
+                            .and_then(|s| s.undo_ready(std::time::Instant::now())),
+                    );
+                }
+                Req::Reset(reply) => {
+                    let r = match self.soft.as_mut() {
+                        Some(soft) => {
+                            let mut audio = Com {
+                                endpoint: self.endpoint.as_ref(),
+                                sessions: &mut self.sessions,
+                            };
+                            soft.reset_levels(&mut audio, std::time::Instant::now())
+                        }
+                        None => Err("master volume isn't on for this device".to_string()),
+                    };
+                    let _ = reply.send(r);
+                }
+                Req::UndoReset(token, reply) => {
+                    let r = match self.soft.as_mut() {
+                        Some(soft) => {
+                            let mut audio = Com {
+                                endpoint: self.endpoint.as_ref(),
+                                sessions: &mut self.sessions,
+                            };
+                            soft.undo_reset(&mut audio, token, std::time::Instant::now())
+                        }
+                        None => Err("master volume isn't on for this device".to_string()),
+                    };
+                    let _ = reply.send(r);
+                }
                 Req::Recheck => {
                     if let Some(soft) = self.soft.as_mut() {
                         soft.set_today(today());
@@ -1896,6 +1959,22 @@ mod imp {
         fn app_volume(&self, id: &str) -> Option<AppVolume> {
             let (reply, answer) = sync_channel(1);
             self.0.send(Req::AppVolume(id.to_string(), reply)).ok()?;
+            answer.recv_timeout(REPLY).ok().flatten()
+        }
+        fn reset_ready(&self) -> bool {
+            let (reply, answer) = sync_channel(1);
+            self.0.send(Req::ResetReady(reply)).is_ok()
+                && answer.recv_timeout(REPLY).unwrap_or(false)
+        }
+        fn reset_levels(&self) -> std::result::Result<master::Reset, String> {
+            self.ask(Req::Reset)
+        }
+        fn undo_reset(&self, token: u64) -> std::result::Result<master::Reset, String> {
+            self.ask(|r| Req::UndoReset(token, r))
+        }
+        fn undo_ready(&self) -> Option<u64> {
+            let (reply, answer) = sync_channel(1);
+            self.0.send(Req::UndoReady(reply)).ok()?;
             answer.recv_timeout(REPLY).ok().flatten()
         }
     }

@@ -230,10 +230,11 @@ pub const CAPTION: &str = "MASTER VOLUME";
 pub const TOGGLE: &str = "Foxglove sets this device's volume";
 pub const LISTED_LINE: &str = "On by default: this device often ignores Windows volume.";
 pub const OTHER_LINE: &str = "Turn on if the volume number moves but the sound stays the same.";
-pub const ON_LINES: [&str; 3] = [
+pub const ON_LINES: [&str; 4] = [
     "Windows' slider goes back near the top for this device; the sound follows the knob, the slider and the volume keys.",
     "Foxglove turns each app down instead. Volume mixer shows those lower levels; the knob shows each app's own.",
     "Apps that take exclusive control of this device play at full volume.",
+    "If an app is too quiet, hold the knob on master twice, or use Reset app levels in the tray.",
 ];
 pub const NOT_ELIGIBLE: &str = "Windows sets this device's volume itself.";
 pub const AFTER_OFF: &str = "Windows sets this device's volume again.";
@@ -246,6 +247,59 @@ pub const AFTER_OFF_MUTED: &str =
 pub const OPEN_SOUND: &str = "Open Sound settings";
 /// The master card's third row, on the first outside change of a run (§1).
 pub const SLIDER_ROW: &str = "Windows' slider goes back near the top.";
+
+// "Reset app levels" (UX plan ux/reset-levels, decision A): the knob's, the popup's and the tray's
+// words.
+
+/// The master card's third row after the first hold (3 s).
+pub const RESET_ASK: &str = "Hold again to reset app levels";
+pub const RESET_DONE: &str = "App levels reset";
+pub const RESET_BUTTON: &str = "Reset app levels";
+pub const RESET_HOVER: &str = "Every app back to 100 %, then turned down by master.";
+pub const MASTER_TITLE: &str = "Master volume";
+pub const UNDONE: &str = "App levels put back.";
+
+/// The tray's master line: "<m> % · Foxglove sets this device's volume".
+pub fn tray_master_line(master: u8) -> String {
+    format!("{master} % · Foxglove sets this device's volume")
+}
+
+/// The popup after a reset: its title and second line.
+pub fn done_card(r: &foxglove_panel::master::Reset) -> (String, String) {
+    if r.failed > 0 {
+        (
+            format!("{RESET_DONE}, except {}", r.failed),
+            if r.muted {
+                "Master volume muted".to_string()
+            } else {
+                format!("All others follow master · {} %", r.master)
+            },
+        )
+    } else {
+        (
+            RESET_DONE.to_string(),
+            if r.muted {
+                "Master volume muted".to_string()
+            } else {
+                format!("All apps follow master · {} %", r.master)
+            },
+        )
+    }
+}
+
+/// The tray's line after a reset (with Undo).
+pub fn tray_done(r: &foxglove_panel::master::Reset) -> String {
+    if r.failed > 0 {
+        format!(
+            "App levels reset, except {} app{}. All others follow master.",
+            r.failed,
+            if r.failed == 1 { "" } else { "s" }
+        )
+    } else {
+        format!("App levels reset. All apps follow master ({} %).", r.master)
+    }
+}
+
 /// Open Sound settings' tooltip: where the switch is in the panel it opens.
 pub const OPEN_SOUND_HOVER: &str =
     "Opens Windows' Sound panel. The setting is on this device's Properties > Advanced tab.";
@@ -404,6 +458,7 @@ pub fn part(ui: &mut egui::Ui) {
             } else if *on {
                 ui.label(RichText::new(ON_LINES[0]).color(p.text));
                 ui.label(RichText::new(ON_LINES[1]).color(p.text));
+                ui.label(RichText::new(ON_LINES[3]).color(p.text));
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(ON_LINES[2]).color(p.text));
                     if *open_sound
