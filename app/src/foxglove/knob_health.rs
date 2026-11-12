@@ -80,7 +80,27 @@ pub fn rows_now() -> Vec<HealthRow> {
         foxglove_panel::master::handled_master(),
         foxglove_panel::master::restored(),
     ));
+    if let Some(row) = apps_row(&foxglove_panel::master::last_report()) {
+        out.push(row);
+    }
     out
+}
+
+/// "Knob · Master volume apps": the last engage or disengage report's summary (every session's
+/// own, applied and Windows level are in the log); a warning when a write failed.
+pub fn apps_row(report: &[String]) -> Option<HealthRow> {
+    let summary = report.first()?;
+    let words = summary
+        .strip_prefix("Foxglove: master volume: ")
+        .unwrap_or(summary);
+    let failed = report.iter().any(|l| l.contains("WRITE FAILED"));
+    let level = if failed { Level::Warn } else { Level::Ok };
+    Some(HealthRow::new(
+        SUBSYSTEM,
+        "Knob · Master volume apps",
+        level,
+        format!("{words} (per-app levels: the log)"),
+    ))
 }
 
 /// "Knob · Master volume" (#1064): whether Foxglove sets the default device's volume, and how

@@ -363,6 +363,72 @@ fn near(a: f32, b: f32) -> bool {
     (a - b).abs() <= SAME
 }
 
+/// The short name of a session for the log: the exe's file name from its session identifier
+/// (`...|\Device\...\vivaldi.exe%b{...}`), else the identifier itself.
+pub fn short_name(sid: &str) -> String {
+    let head = sid.split("%b").next().unwrap_or(sid);
+    let tail = head.rsplit(['\\', '/']).next().unwrap_or(head);
+    if tail.is_empty() { sid } else { tail }.to_string()
+}
+
+/// One session's levels in a report.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    pub name: String,
+    pub own: f32,
+    pub applied: f32,
+    /// Windows' level for it now (`None`: the session is gone).
+    pub windows: Option<f32>,
+    /// A write to it that failed.
+    pub failure: Option<String>,
+}
+
+/// The lines a report prints: the summary, then one per session (every session, with its own
+/// level, the level Foxglove applied, the level Windows has and any failed write).
+pub fn report_lines(summary: String, rows: &[Row]) -> Vec<String> {
+    let mut out = vec![summary];
+    let mut rows = rows.to_vec();
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    for r in rows {
+        out.push(format!(
+            "Foxglove: master volume:   {}: own {} %, applied {} %, Windows {}{}",
+            r.name,
+            percent(r.own),
+            percent(r.applied),
+            r.windows.map_or("(session gone)".to_string(), |w| format!(
+                "{} %",
+                percent(w)
+            )),
+            r.failure
+                .map_or(String::new(), |e| format!(", WRITE FAILED: {e}"))
+        ));
+    }
+    out
+}
+
+static REPORT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The last report's lines (the health view shows them).
+pub fn last_report() -> Vec<String> {
+    REPORT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn rows_of(
+    apps: &HashMap<String, App>,
+    live: &[Live],
+    fails: &HashMap<String, String>,
+) -> Vec<Row> {
+    apps.iter()
+        .map(|(id, a)| Row {
+            name: short_name(&a.sid),
+            own: a.own,
+            applied: a.applied,
+            windows: live.iter().find(|l| &l.id == id).map(|l| l.level),
+            failure: fails.get(id).cloned(),
+        })
+        .collect()
+}
+
 fn percent(level: f32) -> u8 {
     (level.clamp(0.0, 1.0) * 100.0).round() as u8
 }
@@ -383,6 +449,10 @@ pub struct Soft {
     /// The journal's file is there but can't be read (why): it is kept, nothing writes over it,
     /// and nothing starts until a later read works.
     unread: Option<String>,
+    /// The last report's lines (engage, disengage).
+    report: Vec<String>,
+    /// The "left scaled" lines last logged (not logged again while they are the same).
+    last_left: Vec<String>,
 }
 
 impl Soft {
@@ -395,6 +465,8 @@ impl Soft {
             on: None,
             today,
             unread: Some(String::new()),
+            report: Vec::new(),
+            last_left: Vec::new(),
         };
         s.readable();
         s
@@ -445,6 +517,71 @@ impl Soft {
     /// The journal as kept now (tests, the log).
     pub fn journal(&self) -> &Journal {
         &self.journal
+    }
+
+    /// The lines the last engage or disengage printed (tests, the health view).
+    pub fn report(&self) -> &[String] {
+        &self.report
+    }
+
+    /// Prints a report (the log) and keeps it (the health view).
+    fn publish(&mut self, lines: Vec<String>) {
+        for l in &lines {
+            eprintln!("{l}");
+        }
+        *REPORT.lock().unwrap_or_else(|e| e.into_inner()) = lines.clone();
+        self.report = lines;
+    }
+
+    /// Flags live sessions that look left scaled: below a journal record's own level and not at
+    /// it. One the record explains (Windows still has the record's applied level) is "left
+    /// scaled" and, with `restore`, put back to its own level; one no record explains is only
+    /// logged, never guessed at. Logged once while unchanged. The lines.
+    pub fn check_left(&mut self, audio: &mut dyn Audio, restore: bool) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut changed = false;
+        let mut live = audio.sessions();
+        live.sort_by(|a, b| a.sid.cmp(&b.sid));
+        for s in live {
+            let Some(r) = self.journal.apps.get(&s.sid).cloned() else {
+                continue;
+            };
+            if near(s.level, r.own) || s.level >= r.own {
+                continue;
+            }
+            let facts = format!(
+                "{} is at {} % in Windows, its own level is {} % (journal applied {} %)",
+                short_name(&s.sid),
+                percent(s.level),
+                percent(r.own),
+                percent(r.applied)
+            );
+            if !near(s.level, r.applied) {
+                lines.push(format!(
+                    "Foxglove: master volume: left scaled? {facts}; no journal record explains it, so it is left as it is"
+                ));
+            } else if restore && !r.by_master && audio.set_level(&s.id, r.own).is_ok() {
+                lines.push(format!(
+                    "Foxglove: master volume: left scaled: {facts}; the journal explains it, put back to its own level"
+                ));
+                self.journal.apps.remove(&s.sid);
+                changed = true;
+            } else {
+                lines.push(format!(
+                    "Foxglove: master volume: left scaled: {facts}; the journal explains it, its own level is used"
+                ));
+            }
+        }
+        if changed {
+            let _ = self.save_journal();
+        }
+        if lines != self.last_left {
+            for l in &lines {
+                eprintln!("{l}");
+            }
+            self.last_left = lines.clone();
+        }
+        lines
     }
 
     /// The endpoint Foxglove sets the volume of now.
@@ -546,6 +683,7 @@ impl Soft {
         if !self.readable() {
             return Err("the journal can't be read, so not started (it is kept)".into());
         }
+        self.check_left(audio, false);
         let (scalar, muted) = audio.endpoint()?;
         let hold = hold_for(step);
         let crash = self.journal.devices.get(endpoint).cloned();
@@ -606,6 +744,7 @@ impl Soft {
         // The apps, then the device.
         let mut written: Vec<(String, f32)> = Vec::new();
         let mut failed: Option<String> = None;
+        let mut fails: HashMap<String, String> = HashMap::new();
         for s in &live {
             let applied = self
                 .on
@@ -624,6 +763,7 @@ impl Soft {
                 // One still playing that can't be scaled: holding the device would make it
                 // louder on a device that honours its volume, so nothing starts.
                 Err(e) => {
+                    fails.insert(s.id.clone(), e.clone());
                     failed = Some(e);
                     break;
                 }
@@ -636,12 +776,26 @@ impl Soft {
         }
         if let Some(e) = failed {
             // Back as it was: each app at its level before (a failed write leaves it quieter).
+            // A put-back that fails leaves the app scaled: its record keeps saying so.
+            let mut stuck: Vec<String> = Vec::new();
             for (id, before) in written {
-                let _ = audio.set_level(&id, before);
+                if audio.set_level(&id, before).is_err() {
+                    stuck.push(id);
+                }
             }
+            let rows = self
+                .on
+                .as_ref()
+                .map(|o| rows_of(&o.apps, &audio.sessions(), &fails))
+                .unwrap_or_default();
+            let lines = report_lines(
+                format!("Foxglove: master volume: not started for {name}: {e}"),
+                &rows,
+            );
+            self.publish(lines);
             self.on = None;
             self.journal.devices.remove(endpoint);
-            for s in &live {
+            for s in live.iter().filter(|s| !stuck.contains(&s.id)) {
                 if let Some(r) = self.journal.apps.get_mut(&s.sid) {
                     r.applied = s.level;
                 }
@@ -668,6 +822,19 @@ impl Soft {
             if muted { " (muted)" } else { "" },
             percent(hold)
         );
+        let rows = self
+            .on
+            .as_ref()
+            .map(|o| rows_of(&o.apps, &audio.sessions(), &fails))
+            .unwrap_or_default();
+        let lines = report_lines(
+            format!(
+                "Foxglove: master volume: engaged for {name}: {} sessions",
+                rows.len()
+            ),
+            &rows,
+        );
+        self.publish(lines);
         self.host.remember(endpoint, name, level, muted);
         Ok(())
     }
@@ -689,8 +856,10 @@ impl Soft {
         }
         let mut failed = 0;
         let mut kept = 0;
+        let mut fails: HashMap<String, String> = HashMap::new();
         for (id, a) in &on.apps {
-            if audio.set_level(id, a.own).is_err() {
+            if let Err(e) = audio.set_level(id, a.own) {
+                fails.insert(id.clone(), e);
                 failed += 1;
                 continue;
             }
@@ -732,6 +901,16 @@ impl Soft {
                 "Foxglove: master volume: master was muted: {kept} apps stay muted until the device is unmuted"
             );
         }
+        let rows = rows_of(&on.apps, &audio.sessions(), &fails);
+        let lines = report_lines(
+            format!(
+                "Foxglove: master volume: disengaged for {}: {} sessions, {failed} write failures",
+                on.name,
+                rows.len()
+            ),
+            &rows,
+        );
+        self.publish(lines);
         Ok(())
     }
 
@@ -785,8 +964,10 @@ impl Soft {
             return 0;
         }
         let Some(a) = self.journal.devices.get(endpoint).cloned() else {
+            self.check_left(audio, true);
             return 0;
         };
+        self.check_left(audio, false);
         let read = audio.endpoint();
         // Muted (or unreadable): the apps master muted stay muted, as on a clean stop.
         let device_muted = read.as_ref().map_or(true, |(_, m)| *m);
@@ -2379,5 +2560,174 @@ mod tests {
         host.0.lock().unwrap().journal = Some(j);
         let s2 = soft(&host);
         assert!(!s2.journal().apps.contains_key("old"));
+    }
+
+    fn bits(a: &Fake) -> Vec<(String, u32)> {
+        let mut v: Vec<_> = a
+            .sessions()
+            .iter()
+            .map(|s| (s.id.clone(), s.level.to_bits()))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn repeated_cycles_at_63_percent_never_change_an_apps_own_level() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = Fake::new(0.63, &[("vivaldi", 1.0), ("tarkov", 0.84), ("chat", 0.50)]);
+        let before = bits(&a);
+        for cycle in 0..3 {
+            // Engage; an app closes while master is on; stop.
+            s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+            let saved = a.level("tarkov");
+            a.w().sessions.retain(|x| x.id != "tarkov");
+            s.gone("tarkov");
+            s.disengage(&mut a).unwrap();
+            assert_eq!(a.w().endpoint, 0.63);
+            // It comes back at the scaled level Windows saved; on the second cycle the write
+            // back fails (the record must stay).
+            let back = a.add("tarkov", "sid-tarkov", saved);
+            if cycle == 1 {
+                a.w().fail_after = Some(0);
+            }
+            s.created(&mut a, &back);
+            a.w().fail_after = None;
+            // A crash while on: a new Soft over the same journal, the device still held.
+            s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+            let mut s2 = soft(&host);
+            s2.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+            s = s2;
+            s.disengage(&mut a).unwrap();
+            assert_eq!(bits(&a), before, "cycle {cycle}: own levels unchanged");
+            assert_eq!(a.w().endpoint, 0.63);
+        }
+        assert!(host.journal().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_late_session_joins_scaled_and_is_restored() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = Fake::new(0.63, &[("vivaldi", 1.0)]);
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        let game = a.add("game", "sid-game", 0.7);
+        s.created(&mut a, &game);
+        assert_eq!(a.level("game"), 0.7 * amp(0.63));
+        s.disengage(&mut a).unwrap();
+        assert_eq!(a.level("game"), 0.7);
+        assert_eq!(a.level("vivaldi"), 1.0);
+    }
+
+    #[test]
+    fn a_session_that_appears_while_the_setting_is_off_is_scaled_when_it_is_on_again() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = Fake::new(0.63, &[("vivaldi", 1.0)]);
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        s.disengage(&mut a).unwrap();
+        let game = a.add("game", "sid-game", 0.7);
+        s.created(&mut a, &game);
+        assert_eq!(a.level("game"), 0.7, "off: nothing touches it");
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        assert_eq!(a.level("game"), 0.7 * amp(0.63));
+        assert_eq!(s.own("game"), Some(0.7));
+        s.disengage(&mut a).unwrap();
+        assert_eq!(a.level("game"), 0.7);
+        assert_eq!(a.level("vivaldi"), 1.0);
+    }
+
+    #[test]
+    fn the_report_lists_every_session_on_engage_and_disengage() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        let r = s.report().to_vec();
+        assert_eq!(r.len(), 4, "{r:?}");
+        assert!(r[0].contains("engaged for Headphones: 3 sessions"), "{r:?}");
+        assert!(
+            r.iter()
+                .any(|l| l.contains("sid-tarkov: own 84 %, applied 15 %, Windows 15 %")),
+            "{r:?}"
+        );
+        assert_eq!(last_report(), r);
+        s.disengage(&mut a).unwrap();
+        let r = s.report().to_vec();
+        assert_eq!(r.len(), 4, "{r:?}");
+        assert!(r[0].contains("0 write failures"), "{r:?}");
+        assert!(
+            r.iter()
+                .any(|l| l.contains("sid-tarkov: own 84 %, applied 15 %, Windows 84 %")),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn the_report_names_a_failed_write() {
+        let host = MemHost::default();
+        let mut s = soft(&host);
+        let mut a = the_three();
+        a.w().fail_after = Some(1);
+        assert!(s.engage(&mut a, DEV, "Headphones", STEP).is_err());
+        assert!(
+            s.report().iter().any(|l| l.contains("WRITE FAILED")),
+            "{:?}",
+            s.report()
+        );
+        a.w().fail_after = None;
+        s.engage(&mut a, DEV, "Headphones", STEP).unwrap();
+        // The device is set back, then the apps' writes fail.
+        a.w().fail_after = Some(1);
+        s.disengage(&mut a).unwrap();
+        let r = s.report();
+        assert!(r[0].contains("3 write failures"), "{r:?}");
+        assert_eq!(r.iter().filter(|l| l.contains("WRITE FAILED")).count(), 3);
+    }
+
+    fn left_journal(host: &MemHost) {
+        let mut j = Journal::default();
+        j.apps.insert(
+            "sid-tarkov".into(),
+            Record {
+                own: 0.84,
+                applied: 0.15,
+                by_master: false,
+                day: 20_000,
+            },
+        );
+        host.0.lock().unwrap().journal = Some(j);
+    }
+
+    #[test]
+    fn a_session_left_scaled_that_the_journal_explains_is_put_back_when_off() {
+        let host = MemHost::default();
+        left_journal(&host);
+        let mut s = soft(&host);
+        let mut a = Fake::new(0.63, &[("tarkov", 0.15)]);
+        let lines = s.check_left(&mut a, true);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("left scaled: sid-tarkov"), "{lines:?}");
+        assert!(lines[0].contains("put back"), "{lines:?}");
+        assert_eq!(a.level("tarkov"), 0.84);
+        // Through the off path of the app: the same, and nothing logged twice.
+        assert!(s.check_left(&mut a, true).is_empty());
+    }
+
+    #[test]
+    fn a_session_left_scaled_that_no_record_explains_is_only_logged() {
+        let host = MemHost::default();
+        left_journal(&host);
+        let mut s = soft(&host);
+        let mut a = Fake::new(0.63, &[("tarkov", 0.30)]);
+        let lines = s.check_left(&mut a, true);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("left scaled?"), "{lines:?}");
+        assert_eq!(a.level("tarkov"), 0.30, "never guessed at");
+        assert!(a.w().log.is_empty(), "no write at all");
+        // The off path flags it too, without a write.
+        s.recover_off(&mut a, DEV);
+        assert_eq!(a.level("tarkov"), 0.30);
     }
 }
