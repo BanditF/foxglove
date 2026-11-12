@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 760" font-family="Segoe UI, sans-serif">
+  <title>Reset app levels: proposed tray rows and knob popups (drawn mockup, not an egui render)</title>
+  <rect width="1000" height="760" fill="#15171b"/>
+  <text x="24" y="34" fill="#f2f2f2" font-size="18" font-weight="600">Reset app levels (proposed) · drawn mockup, colours approximate</text>
+  <text x="24" y="56" fill="#9aa0a6" font-size="12">Only while "Foxglove sets this device's volume" is on for the default output device. Otherwise nothing here changes.</text>
+
+  <!-- Column 1: tray Knob part -->
+  <text x="24" y="92" fill="#ff8a3d" font-size="13" font-weight="600">TRAY PANEL · Knob part</text>
+
+  <!-- A: knob on master -->
+  <text x="24" y="116" fill="#9aa0a6" font-size="11">A · knob on master (new: the part shows while the device is handled)</text>
+  <rect x="24" y="124" width="440" height="76" rx="8" fill="#1f2228" stroke="#2e323a"/>
+  <text x="40" y="146" fill="#9aa0a6" font-size="11" font-weight="600">Knob</text>
+  <text x="40" y="168" fill="#f2f2f2" font-size="14">Master volume</text>
+  <text x="40" y="186" fill="#9aa0a6" font-size="11">35 % · Foxglove sets this device's volume</text>
+  <rect x="318" y="152" width="132" height="28" rx="5" fill="#2a2e36" stroke="#3a3f48"/>
+  <text x="384" y="171" fill="#f2f2f2" font-size="12" text-anchor="middle">Reset app levels</text>
+
+  <!-- B: knob on an app -->
+  <text x="24" y="226" fill="#9aa0a6" font-size="11">B · knob on an app (today's row + one text button under it)</text>
+  <rect x="24" y="234" width="440" height="100" rx="8" fill="#1f2228" stroke="#2e323a"/>
+  <text x="40" y="256" fill="#9aa0a6" font-size="11" font-weight="600">Knob</text>
+  <rect x="40" y="266" width="28" height="28" rx="6" fill="#3b6fd8"/>
+  <text x="78" y="278" fill="#f2f2f2" font-size="14">Vivaldi</text>
+  <text x="78" y="294" fill="#9aa0a6" font-size="11">2 of 3 · 40 %</text>
+  <rect x="340" y="266" width="110" height="28" rx="5" fill="#2a2e36" stroke="#3a3f48"/>
+  <text x="395" y="285" fill="#f2f2f2" font-size="12" text-anchor="middle">Hide from knob</text>
+  <text x="40" y="322" fill="#ff8a3d" font-size="12">Reset app levels</text>
+  <text x="150" y="322" fill="#6c727a" font-size="11">(tooltip: Every app back to 100 %, then turned down by master.)</text>
+
+  <!-- C: after reset -->
+  <text x="24" y="360" fill="#9aa0a6" font-size="11">C · just reset (from the tray or the knob), until the next volume change or 10 min</text>
+  <rect x="24" y="368" width="440" height="84" rx="8" fill="#1f2228" stroke="#2e323a"/>
+  <text x="40" y="390" fill="#9aa0a6" font-size="11" font-weight="600">Knob</text>
+  <text x="40" y="412" fill="#f2f2f2" font-size="13">App levels reset. All apps follow master (35 %).</text>
+  <rect x="40" y="420" width="62" height="24" rx="5" fill="#2a2e36" stroke="#3a3f48"/>
+  <text x="71" y="437" fill="#f2f2f2" font-size="12" text-anchor="middle">Undo</text>
+
+  <!-- D: partial -->
+  <text x="24" y="478" fill="#9aa0a6" font-size="11">D · one app could not be set (it ended or refused the write)</text>
+  <rect x="24" y="486" width="440" height="84" rx="8" fill="#1f2228" stroke="#2e323a"/>
+  <text x="40" y="508" fill="#9aa0a6" font-size="11" font-weight="600">Knob</text>
+  <text x="40" y="530" fill="#f2f2f2" font-size="13">App levels reset, except 1 app. All others follow master.</text>
+  <rect x="40" y="538" width="62" height="24" rx="5" fill="#2a2e36" stroke="#3a3f48"/>
+  <text x="71" y="555" fill="#f2f2f2" font-size="12" text-anchor="middle">Undo</text>
+
+  <!-- Column 2: knob popups -->
+  <text x="520" y="92" fill="#ff8a3d" font-size="13" font-weight="600">KNOB POPUP · flyout twin (bottom centre)</text>
+
+  <text x="520" y="116" fill="#9aa0a6" font-size="11">1 · hold on master (first hold): asks, 3 s</text>
+  <rect x="520" y="124" width="240" height="64" rx="8" fill="#202329" stroke="#33373f"/>
+  <text x="536" y="146" fill="#f2f2f2" font-size="13">Master volume</text>
+  <text x="744" y="146" fill="#f2f2f2" font-size="13" text-anchor="end">35 %</text>
+  <text x="536" y="174" fill="#ff8a3d" font-size="11">Hold again to reset app levels</text>
+
+  <text x="520" y="214" fill="#9aa0a6" font-size="11">2 · second hold within 3 s: done, 3 s</text>
+  <rect x="520" y="222" width="240" height="64" rx="8" fill="#202329" stroke="#33373f"/>
+  <text x="536" y="244" fill="#f2f2f2" font-size="13">App levels reset</text>
+  <text x="536" y="272" fill="#9aa0a6" font-size="11">All apps follow master · 35 %</text>
+
+  <text x="520" y="312" fill="#9aa0a6" font-size="11">2b · master muted at the time (mute stays)</text>
+  <rect x="520" y="320" width="240" height="64" rx="8" fill="#202329" stroke="#33373f"/>
+  <text x="536" y="342" fill="#f2f2f2" font-size="13">App levels reset</text>
+  <text x="536" y="370" fill="#9aa0a6" font-size="11">Master volume muted</text>
+
+  <text x="520" y="410" fill="#9aa0a6" font-size="11">2c · some app could not be set</text>
+  <rect x="520" y="418" width="240" height="64" rx="8" fill="#202329" stroke="#33373f"/>
+  <text x="536" y="440" fill="#f2f2f2" font-size="13">App levels reset, except 1</text>
+  <text x="536" y="468" fill="#9aa0a6" font-size="11">All others follow master · 35 %</text>
+
+  <text x="520" y="508" fill="#9aa0a6" font-size="11">3 · no second hold within 3 s: card ends, nothing changed</text>
+  <text x="520" y="526" fill="#9aa0a6" font-size="11">4 · device not handled: hold on master does nothing (as today)</text>
+
+  <!-- Behaviour strip -->
+  <rect x="24" y="596" width="952" height="140" rx="8" fill="#1a1d22" stroke="#2e323a"/>
+  <text x="40" y="620" fill="#ff8a3d" font-size="13" font-weight="600">What a reset does (master stays on)</text>
+  <text x="40" y="644" fill="#d6d8db" font-size="12">• Every app on the device, live and remembered (closed): own level 100 %, then scaled by master at once (Volume mixer shows master's amount).</text>
+  <text x="40" y="664" fill="#d6d8db" font-size="12">• Apps that set their own volume: the mark is cleared and they are reset too; if they fight again, the existing rule marks them again.</text>
+  <text x="40" y="684" fill="#d6d8db" font-size="12">• Stale master mutes are cleared when master is not muted; master's level and mute never change. The device stays held near the top.</text>
+  <text x="40" y="704" fill="#d6d8db" font-size="12">• Never louder than master: each app ends at master's amount, at most. No "pause scaling" state (on a device that ignores volume it would be full blast).</text>
+  <text x="40" y="724" fill="#d6d8db" font-size="12">• Undo puts back each app's previous own level and mark (tray only), until the next volume change or 10 min.</text>
+</svg>
