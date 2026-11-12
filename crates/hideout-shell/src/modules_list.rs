@@ -29,12 +29,12 @@ pub struct Installed {
     pub version: String,
     pub enabled: bool,
     /// An `adopted` module (§3): an install the hub registered but did not make. Its row's
-    /// version reads "1.2.0 · adopted".
+    /// version reads "1.2.0 · installed separately" (UX plan #1117: "adopted" is jargon).
     pub adopted: bool,
 }
 
 /// The marker after an adopted module's version.
-pub const ADOPTED: &str = "adopted";
+pub const ADOPTED: &str = "installed separately";
 
 /// What a row's main button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +75,9 @@ pub struct Row {
     pub id: String,
     pub name: String,
     pub version: String,
+    /// What a screen reader says for the version: "version 0.1.0, installed separately" (some
+    /// readers say "dot" for the visible middle dot).
+    pub version_said: String,
     /// The state in plain words (never an id).
     pub state: String,
     /// It needs the user (stopped, couldn't start or install, needs a newer Hideout): the red
@@ -297,6 +300,11 @@ pub fn row_in(
         } else {
             m.version.clone()
         },
+        version_said: if m.adopted {
+            format!("version {}, {ADOPTED}", m.version)
+        } else {
+            format!("version {}", m.version)
+        },
         // "Art's page couldn't be shown" already names the module.
         label: if state.as_deref() == Some("quarantined") {
             words.clone()
@@ -499,7 +507,11 @@ pub fn page_ui_with(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], top: Top) -> Op
                                 let said = r.label.clone();
                                 ui.ctx()
                                     .accesskit_node_builder(name.id, |n| n.set_label(said));
-                                ui.label(RichText::new(&r.version).color(c(t.text_muted)));
+                                let version =
+                                    ui.label(RichText::new(&r.version).color(c(t.text_muted)));
+                                let said = r.version_said.clone();
+                                ui.ctx()
+                                    .accesskit_node_builder(version.id, |n| n.set_label(said));
                             });
                             ui.label(RichText::new(&r.state).color(c(state_col)));
                         });
@@ -757,6 +769,7 @@ mod tests {
             id: name.to_lowercase(),
             name: name.into(),
             version: "1".into(),
+            version_said: String::new(),
             state: String::new(),
             stopped,
             off,
@@ -828,10 +841,15 @@ mod tests {
         a.adopted = true;
         let r = row(&a, &fact, None);
         assert_eq!(r.name, "Example AI");
-        assert_eq!(r.version, "0.4.0 \u{b7} adopted");
+        assert_eq!(r.version, "0.4.0 \u{b7} installed separately");
+        assert_eq!(r.version_said, "version 0.4.0, installed separately");
         assert_eq!(r.state, "On");
         // Any other row keeps its bare version.
         assert_eq!(row(&m("x", true), &fact, None).version, "0.5.0");
+        assert_eq!(
+            row(&m("x", true), &fact, None).version_said,
+            "version 0.5.0"
+        );
         // A path that isn't there is the launch's failure, worded as for any module.
         let failed = |k: &str| match k {
             "module.vulpes.state" => Some(json!("install-failed")),

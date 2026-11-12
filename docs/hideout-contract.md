@@ -483,6 +483,13 @@ plug-ins** (no dylibs, no scripts in the hub).
 
 - There is no `core` and no `builtin` kind.
 - Only `service` and `adopted` modules are processes the hub starts and stops.
+- **Registering an adopted module (#1117).** `hideout.exe --adopt <folder>` reads
+  `<folder>\module.toml` (`kind = "adopted"`, an absolute `run[0]` that exists, `hub`), copies
+  the manifest into the hub's record, prints one line and exits; it opens no window and starts
+  nothing. Any adopted module registers this way; which program and id is the file's data. A
+  running hub picks up the new inventory and shows the module's tile and page. Registering again
+  updates the version and keeps the grants. For Arete: copy its `module.toml` to a folder, set
+  `run[0]` to this PC's `arete.exe`, keep `hub` as the second argument.
 - A `runtime`'s processes belong to the service that launched them, inside that service's Job
   Object (§7.7).
 

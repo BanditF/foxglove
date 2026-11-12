@@ -28,6 +28,10 @@ pub const TILE_UPDATING: &str = "Updating\u{2026}";
 pub fn tile_waiting(root: &str) -> String {
     format!("Waiting for {root}")
 }
+/// A tile of a module that starts on demand (no `enable` in `activation.on`) and has no live
+/// instance: the hub draws this, never the module's last numbers (UX plan #1117). A click on the
+/// tile opens the page, which is the `open` activation that starts the module.
+pub const TILE_NOT_RUNNING: (&str, &str) = ("Not running", "Open to start it");
 /// Tiles per row.
 pub const COLUMNS: usize = 2;
 
@@ -506,7 +510,17 @@ fn tile_ui_keyed(
     if red {
         frame = frame.stroke(Stroke::new(1.5_f32, danger));
     }
+    // The tile's click area is registered before its content, from last frame's rect: egui gives
+    // a click to the topmost widget, so one made after the content would take every press meant
+    // for the tile's button (Free GPU, Unmute) and open the page instead (#1117).
+    let rect_id = Id::new(("hideout.tray.tile-rect", &key.module, &key.panel));
+    let early = ui
+        .data(|d| d.get_temp::<egui::Rect>(rect_id))
+        .map(|r| ui.interact(r, tile_focus_id(key), Sense::click()));
     let inner = frame.show(ui, |ui| {
+        // Text on a tile is not selectable: a selectable label takes the click, and a press on
+        // a tile's words must open the page (5.1).
+        ui.style_mut().interaction.selectable_labels = false;
         ui.set_width(TILE_WIDTH);
         // As tall as the row's tallest tile, content at the top (Quick Settings).
         ui.set_min_height(keys.min_height);
@@ -600,6 +614,21 @@ fn tile_ui_keyed(
                     spoken.push("Restarting".into());
                 }
             }
+            // An on-demand module that is not running (idle: the supervisor publishes no state)
+            // reads "Not running", whatever it last drew: a cached GPU reading is not current.
+            let on_demand = host
+                .manifest(&key.module)
+                .is_some_and(|m| !m.activation_on.iter().any(|e| e == "enable"));
+            let cold = on_demand
+                && fact_state.is_none()
+                && matches!(state, None | Some(PanelState::Greyed(_)));
+            if cold {
+                let (a, b) = TILE_NOT_RUNNING;
+                spoken.push(format!("{a}. {b}"));
+                ui.label(RichText::new(a).strong().size(18.0).weak());
+                ui.label(RichText::new(b).weak());
+                return;
+            }
             if panel.is_none() {
                 let words = match current.as_deref() {
                     Some("updating") => TILE_UPDATING,
@@ -649,7 +678,9 @@ fn tile_ui_keyed(
     report.phase = Some(TilePhase::of(key, &title, &spoken, &report.draw));
     // A click on the tile outside its button opens the module's page (§5.1); so does Enter on
     // the focused tile.
-    let tile = ui.interact(inner.response.rect, tile_focus_id(key), Sense::click());
+    ui.data_mut(|d| d.insert_temp(rect_id, inner.response.rect));
+    let tile = early
+        .unwrap_or_else(|| ui.interact(inner.response.rect, tile_focus_id(key), Sense::click()));
     let name: Vec<String> = std::iter::once(title)
         .chain(spoken)
         // Some readers say "dot" for the middle dot: a comma in the spoken name only.

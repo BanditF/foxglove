@@ -1,0 +1,48 @@
+# The adopted Hideout manifest for Vulpes (Arete), contract 1.13 (foxglove#1116 H4.2, foxglove#1117 H4.3).
+#
+# Arete is an install the hub registers but did not make, so the kind is "adopted" and the hub checks it by path and
+# version only. `run[0]` MUST be an absolute path: the value below is a PLACEHOLDER. Whoever registers Arete with the
+# hub (the Hideout side, not this repo's installer) replaces it with this PC's real arete.exe, for example
+# %LOCALAPPDATA%\Programs\Arete\arete.exe, and keeps `hub` as the second argument. `version` must equal the version
+# Arete sends in `initialize`.
+#
+# Started on demand only: activation is `open` and `call`, never `enable`, so nothing runs at sign-in.
+id = "vulpes"
+name = "AI"
+version = "0.1.0"
+kind = "adopted"
+family = "vulpes"
+hub = "1.1"
+api = { vulpes = "1.0" }
+description = "Local AI on this PC: who holds the GPU, and the gaming reservation."
+run = ["C:/Users/PLACEHOLDER/AppData/Local/Programs/Arete/arete.exe", "hub"]
+transport = "stdio"
+provides = ["method:gpu.*", "method:vulpes.*", "facts:gpu.*"]
+permissions = ["provide:gpu.*", "provide:vulpes.*", "gpu.status", "gpu.request:any"]
+
+[activation]
+on = ["open", "call"]
+
+# The AI page and the tray tile (H4.3, foxglove#1117). The trees come from `ui.register` (panels.py); `tone`, `action` and the
+# tile caps are spec 1.4's, which is hub 1.1. Both panels are shown only while this module has answered; a cold tile is
+# drawn by the hub as "Not running".
+[[ui.panels]]
+id = "tile"
+slot = "tile"
+title = "AI"
+icon = "sparkle"
+
+[[ui.panels]]
+id = "page"
+slot = "page"
+title = "AI"
+icon = "sparkle"
+
+# Reserving the GPU for gaming is never a method (8.9); it changes only through the user's own click on these.
+[[actions]]
+id = "free-gpu"
+name = "Free GPU"
+
+[[actions]]
+id = "release-gpu-reservation"
+name = "Release GPU reservation"
