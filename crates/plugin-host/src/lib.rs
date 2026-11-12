@@ -189,6 +189,12 @@ pub(crate) fn serve_with(
     let (out, rx) = mpsc::channel::<String>();
     ready(out.clone());
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
+    // Whatever way this function ends (a read error, a panic in a handler), the app hears the
+    // connection is over and ends what it held (leases).
+    let mut on_close = Some(CloseGuard {
+        devices: ctx.devices.clone(),
+        conn,
+    });
     let closed = Arc::new(AtomicBool::new(false));
     let writer_closed = closed.clone();
     let writer_thread = std::thread::Builder::new()
@@ -218,9 +224,17 @@ pub(crate) fn serve_with(
         at: Instant::now(),
     };
     let mut lines = reader.lines();
+    let mut read_error = None;
     while !closed.load(Ordering::Relaxed) {
         let Some(line) = lines.next() else { break };
-        let line = line?;
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => {
+                // Not UTF-8, or the pipe broke: clean up below, then report it.
+                read_error = Some(e);
+                break;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -257,7 +271,7 @@ pub(crate) fn serve_with(
             apps::unwatch(plugin);
         }
     }
-    ctx.devices.closed(conn);
+    drop(on_close.take());
     CONN_PLUGINS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -270,7 +284,19 @@ pub(crate) fn serve_with(
     if !forwarding {
         let _ = writer_thread.join();
     }
-    Ok(())
+    read_error.map_or(Ok(()), Err)
+}
+
+/// Tells the app a connection ended, when dropped.
+struct CloseGuard {
+    devices: Arc<dyn Devices>,
+    conn: u64,
+}
+
+impl Drop for CloseGuard {
+    fn drop(&mut self) {
+        self.devices.closed(self.conn);
+    }
 }
 
 fn handle(

@@ -152,6 +152,55 @@ fn wallpaper_engine_calls_need_wallpaper_control() {
     }
 }
 
+/// #1120: the app hears a connection ended on every way out, so what it held (leases) ends: a
+/// line that is not UTF-8, and a handler that panics.
+#[test]
+fn a_connection_ends_for_the_app_whatever_way_it_ends() {
+    #[derive(Default)]
+    struct Counts {
+        closed: Mutex<Vec<u64>>,
+        panic: bool,
+    }
+    struct Watch(Arc<Counts>);
+    impl Devices for Watch {
+        fn call(&self, _: &str, _: Value) -> Result<Value, Error> {
+            assert!(!self.0.panic, "a handler panics");
+            Ok(json!({}))
+        }
+        fn closed(&self, conn: u64) {
+            self.0.closed.lock().unwrap().push(conn);
+        }
+    }
+    let ctx = |counts: &Arc<Counts>| {
+        let mut ctx = plugin(&["lighting.write"]);
+        ctx.devices = Arc::new(Watch(counts.clone()));
+        ctx
+    };
+
+    let counts = Arc::new(Counts::default());
+    let mut bytes = (init().to_string() + "\n").into_bytes();
+    bytes.extend_from_slice(b"\xff\xfe\n");
+    let result = serve(Cursor::new(bytes), Out::default(), ctx(&counts));
+    assert!(result.is_err(), "the read error is still reported");
+    assert_eq!(counts.closed.lock().unwrap().len(), 1, "invalid UTF-8");
+
+    let counts = Arc::new(Counts {
+        panic: true,
+        ..Counts::default()
+    });
+    let text = format!(
+        "{}\n{}\n",
+        init(),
+        call(1, "lighting.set", json!({"device": "d"}))
+    );
+    let ctx = ctx(&counts);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = serve(Cursor::new(text.into_bytes()), Out::default(), ctx);
+    }));
+    assert!(result.is_err());
+    assert_eq!(counts.closed.lock().unwrap().len(), 1, "a panic");
+}
+
 #[test]
 fn device_methods_check_permissions_then_reach_the_app() {
     struct Lights;

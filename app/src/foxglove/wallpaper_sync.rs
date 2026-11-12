@@ -823,18 +823,29 @@ pub fn quit() {
     }
 }
 
+/// Takes the one worker slot for `tx`: `false` when a worker has it already or Foxglove is
+/// quitting. The check and the claim are one step under the lock, so two callers at once (a
+/// wallpaper change and an API pause) never start two workers (#1120).
+fn claim_worker(s: &mut Shared, tx: &Sender<Wake>) -> bool {
+    if s.wake.is_some() || s.quitting {
+        return false;
+    }
+    s.workers += 1;
+    s.wake = Some((s.workers, tx.clone()));
+    true
+}
+
 fn start_worker() {
     let (tx, rx) = mpsc::channel::<Wake>();
+    if !with(|s| claim_worker(s, &tx)) {
+        return;
+    }
     // Seed the layer from the facts the keyboard already reported, then follow its changes.
     let facts = super::devices::bus().facts();
     let layers = facts.subscribe("keyboard.layers");
     set_layers(match facts.get("keyboard.layers") {
         Some(foxglove_devices::facts::Value::Bytes(b)) => Some(b),
         _ => None,
-    });
-    with(|s| {
-        s.workers += 1;
-        s.wake = Some((s.workers, tx.clone()));
     });
     // The program in front (`foreground.rs`): a full-screen one leaving starts Wallpaper
     // Engine's reload (#586).
@@ -1025,11 +1036,18 @@ fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> b
             user_paused,
             reply: to,
         } => {
-            let r = match leases.pause(apply, conn, &reason, user_paused) {
-                Ok((lease, paused)) => Reply::Paused { lease, paused },
-                Err(e) => Reply::Failed(e),
-            };
-            reply(to, r);
+            match leases.pause(apply, conn, &reason, user_paused) {
+                Ok((lease, paused)) => {
+                    if to.send(Reply::Paused { lease, paused }).is_err() {
+                        // The caller gave up (timed out): nobody holds this lease and nobody
+                        // knows its id, so it ends now; the play follows when it was the last.
+                        return leases
+                            .release(apply, conn, lease, full)
+                            .is_ok_and(|ended| ended.played);
+                    }
+                }
+                Err(e) => reply(to, Reply::Failed(e)),
+            }
             false
         }
         Ctl::Release {
@@ -2317,6 +2335,72 @@ mod tests {
         forget(7);
         assert!(with(|s| s.wake.as_ref().is_some_and(|(n, _)| *n == 8)));
         with(|s| s.wake = None);
+    }
+
+    /// #1120: two callers at once get one worker slot, and none while quitting.
+    #[test]
+    fn only_one_worker_slot_is_ever_taken() {
+        let shared = std::sync::Arc::new(Mutex::new(Shared::default()));
+        let won: usize = (0..8)
+            .map(|_| {
+                let shared = shared.clone();
+                std::thread::spawn(move || {
+                    let (tx, _rx) = mpsc::channel::<Wake>();
+                    let got = claim_worker(&mut shared.lock().unwrap(), &tx);
+                    // Keep the slot's sender alive, as the worker does.
+                    usize::from(got)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .sum();
+        assert_eq!(won, 1);
+        assert_eq!(shared.lock().unwrap().workers, 1);
+
+        let mut quitting = Shared {
+            quitting: true,
+            ..Shared::default()
+        };
+        let (tx, _rx) = mpsc::channel::<Wake>();
+        assert!(!claim_worker(&mut quitting, &tx));
+    }
+
+    /// #1120: a pause whose caller has timed out (nobody reads the answer) takes no lease that
+    /// nobody holds: it ends at once, and plays only when nothing else holds one.
+    #[test]
+    fn a_pause_nobody_waits_for_is_undone() {
+        let mut fake = Fake {
+            running: true,
+            ..Fake::default()
+        };
+        let mut leases = Leases::default();
+        let late = |conn| {
+            let (reply, gone) = mpsc::channel();
+            drop(gone);
+            Ctl::Pause {
+                conn,
+                reason: "late".into(),
+                user_paused: false,
+                reply,
+            }
+        };
+        assert!(serve(late(1), &mut leases, &mut &mut fake, false));
+        assert_eq!(leases.count(), 0);
+        assert_eq!(fake.controls, ["pause", "play"]);
+
+        // Another connection holds the pause: the orphan joins and leaves, sending nothing.
+        let (reply, _held) = mpsc::channel();
+        let hold = Ctl::Pause {
+            conn: 2,
+            reason: "real".into(),
+            user_paused: false,
+            reply,
+        };
+        assert!(!serve(hold, &mut leases, &mut &mut fake, false));
+        assert!(!serve(late(1), &mut leases, &mut &mut fake, false));
+        assert_eq!(leases.count(), 1);
+        assert_eq!(fake.controls, ["pause", "play", "pause"]);
     }
 
     fn version(secs: u64, entries: u64) -> Option<Version> {
