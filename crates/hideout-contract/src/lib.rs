@@ -33,6 +33,12 @@ pub mod services;
 
 pub use error::{Error, ErrorId};
 
+/// The exit code of a planned exit (§7.7, #1143 P7): a module that ends itself to be started
+/// again (a GPU reset, the updater's manual install) exits with this code (EX_TEMPFAIL). The
+/// supervisor reads it from the exit of the process it launched and restarts the module
+/// without counting a crash. Nothing a module sends can set it for another module.
+pub const PLANNED_EXIT_CODE: i32 = 75;
+
 /// The contract version this crate reads (`hub` in a manifest, §8.7). 1.1 since spec v1.4 (a
 /// `file` setting kind and its `filter` key); 1.2 since spec v1.10 (`[limits]`); 1.3 since spec
 /// v1.12 (the host services' messages, §8.10, §8.11).

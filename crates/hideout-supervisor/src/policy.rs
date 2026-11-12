@@ -25,6 +25,14 @@ pub const GRACE: Duration = Duration::from_secs(30);
 /// crash and is ended (a clean exit closes the pipe first). Fallback only: the exit event ends
 /// the wait.
 pub const EXIT_AFTER_PIPE: Duration = Duration::from_secs(5);
+/// The exit code of a planned exit (§7.7, #1143 P7), from the contract crate.
+pub use hideout_contract::PLANNED_EXIT_CODE;
+/// The wait before a planned exit's restart.
+pub const PLANNED_DELAY: Duration = Duration::from_secs(2);
+/// Planned exits in [`WINDOW`] the supervisor accepts without counting them. A module's own
+/// budget (3 in 10 minutes for the GPU reset) is under this, so an honest module never reaches
+/// it; one that exits with the code in a loop is counted as crashing from the next exit on.
+pub const PLANNED_LIMIT: usize = 6;
 /// Lines of history kept per module for Copy diagnostics (oldest dropped first).
 pub const HISTORY: usize = 32;
 
@@ -344,6 +352,8 @@ struct Slot {
     /// The current instance's end was already handled (crash counted or clean stop).
     ended: bool,
     crashes: VecDeque<Instant>,
+    /// Planned exits (§7.7, #1143 P7) in the window; not crashes, but bounded by [`PLANNED_LIMIT`].
+    planned: VecDeque<Instant>,
     /// Restarts in this run, for the backoff step.
     run_restarts: u32,
     restart_at: Option<Instant>,
@@ -647,6 +657,7 @@ impl Policy {
                     instance: 0,
                     ended: true,
                     crashes: VecDeque::new(),
+                    planned: VecDeque::new(),
                     run_restarts: 0,
                     restart_at: None,
                     ready_by: None,
@@ -774,6 +785,8 @@ impl Policy {
                     } else if s.state != State::Off {
                         self.set_state(&id, State::Idle, None, &mut out);
                     }
+                } else if code == i64::from(PLANNED_EXIT_CODE) {
+                    self.planned_exit(&id, now, &mut out);
                 } else {
                     self.crash(&id, now, &mut out);
                 }
@@ -1291,6 +1304,35 @@ impl Policy {
             s.then_launch = true;
             out.push(Cmd::Kill { id: id.into() });
         }
+    }
+
+    /// A planned exit (§7.7, #1143 P7): the process the supervisor launched ended with
+    /// [`PLANNED_EXIT_CODE`]. It restarts after [`PLANNED_DELAY`] as `restarting`, with no crash
+    /// counted, no backoff step used and no crash bar. More than [`PLANNED_LIMIT`] in the
+    /// window is a module stuck in a loop and counts as a crash.
+    fn planned_exit(&mut self, id: &str, now: Instant, out: &mut Vec<Cmd>) {
+        let Some(s) = self.slots.get_mut(id) else {
+            return;
+        };
+        s.planned.retain(|t| now - *t < WINDOW);
+        if s.planned.len() >= PLANNED_LIMIT {
+            self.note(id, now, "too many planned exits in 10 min".into());
+            self.crash(id, now, out);
+            return;
+        }
+        s.planned.push_back(now);
+        s.ended = true;
+        s.ready_by = None;
+        s.exit_by = None;
+        if s.update
+            .as_ref()
+            .is_some_and(|u| u.phase == Phase::Swapping)
+        {
+            s.update = None;
+        }
+        s.restart_at = Some(now + PLANNED_DELAY);
+        self.note(id, now, "planned exit; restarting".into());
+        self.set_state(id, State::Restarting, None, out);
     }
 
     /// Counts a crash at `now` and restarts with backoff, or stops after five in ten minutes.
@@ -2124,5 +2166,143 @@ mod withdrawn_tests {
         assert_eq!(p.next_deadline(), None);
         assert!(p.tick(t + Duration::from_secs(120)).is_empty());
         assert!(!p.forget(ID), "forgotten twice");
+    }
+}
+
+/// Planned exits (§7.7, #1143 P7).
+#[cfg(test)]
+mod planned_tests {
+    use super::*;
+
+    const ID: &str = "m.fox";
+
+    fn start(p: &mut Policy, t: Instant, instance: u64) {
+        if instance == 1 {
+            p.handle(
+                Ev::Known {
+                    id: ID.into(),
+                    name: "Foxglove".into(),
+                    enabled: true,
+                    at_enable: true,
+                    previous: None,
+                },
+                t,
+            );
+        }
+        p.handle(
+            Ev::Started {
+                id: ID.into(),
+                instance,
+            },
+            t,
+        );
+        p.handle(Ev::Ready { id: ID.into() }, t);
+    }
+
+    fn exit(p: &mut Policy, t: Instant, instance: u64, code: i64) -> Vec<Cmd> {
+        p.handle(
+            Ev::Exited {
+                id: ID.into(),
+                instance,
+                code,
+            },
+            t,
+        )
+    }
+
+    fn launched(cmds: &[Cmd]) -> bool {
+        cmds.iter().any(|c| matches!(c, Cmd::Launch { .. }))
+    }
+
+    #[test]
+    fn the_code_is_the_documented_one() {
+        assert_eq!(PLANNED_EXIT_CODE, 75);
+    }
+
+    #[test]
+    fn a_planned_exit_restarts_without_counting() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        start(&mut p, t, 1);
+        let cmds = exit(&mut p, t, 1, 75);
+        assert_eq!(p.state(ID), Some(State::Restarting));
+        assert_eq!(p.crashes(ID, t), 0);
+        assert!(!launched(&cmds));
+        assert!(
+            !cmds.iter().any(|c| matches!(c, Cmd::Notify { .. })),
+            "no notification"
+        );
+        assert!(
+            !cmds.iter().any(|c| matches!(c,
+                Cmd::Publish { key, value } if key.ends_with(".restart") && !value.is_null())),
+            "no crash bar fact"
+        );
+        assert_eq!(p.restart_at(ID), Some(t + PLANNED_DELAY));
+        let later = t + PLANNED_DELAY;
+        assert!(launched(&p.tick(later)));
+    }
+
+    #[test]
+    fn planned_exits_do_not_use_the_crash_budget_or_backoff() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        // Four crashes, with a planned exit between each pair: the fifth crash still stops it,
+        // and the planned ones changed neither the count nor the backoff.
+        for n in 1..=4u64 {
+            start(&mut p, t, 2 * n - 1);
+            exit(&mut p, t, 2 * n - 1, 1);
+            assert_eq!(p.crashes(ID, t), n as usize);
+            start(&mut p, t, 2 * n);
+            exit(&mut p, t, 2 * n, 75);
+            assert_eq!(p.crashes(ID, t), n as usize);
+            assert_eq!(p.state(ID), Some(State::Restarting));
+        }
+        start(&mut p, t, 9);
+        exit(&mut p, t, 9, 1);
+        assert_eq!(p.state(ID), Some(State::CrashStopped));
+    }
+
+    #[test]
+    fn a_crash_is_still_counted_and_five_still_stop() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        for n in 1..=5u64 {
+            start(&mut p, t, n);
+            exit(&mut p, t, n, 74);
+            assert_eq!(p.crashes(ID, t), n as usize, "74 is a crash");
+        }
+        assert_eq!(p.state(ID), Some(State::CrashStopped));
+    }
+
+    #[test]
+    fn planned_exits_alone_never_stop_it_until_the_loop_cap() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        for n in 1..=PLANNED_LIMIT as u64 {
+            start(&mut p, t, n);
+            exit(&mut p, t, n, 75);
+            assert_eq!(p.state(ID), Some(State::Restarting));
+            assert_eq!(p.crashes(ID, t), 0);
+        }
+        // A module that exits 75 in a loop is counted from the next exit on.
+        start(&mut p, t, 7);
+        exit(&mut p, t, 7, 75);
+        assert_eq!(p.crashes(ID, t), 1);
+        // Once the window has passed, planned exits are free again.
+        let later = t + WINDOW + Duration::from_secs(1);
+        start(&mut p, later, 8);
+        exit(&mut p, later, 8, 75);
+        assert_eq!(p.crashes(ID, later), 0);
+    }
+
+    #[test]
+    fn a_planned_exit_of_a_stopped_instance_does_nothing() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        start(&mut p, t, 1);
+        // An exit of an older instance (not the one launched now) is ignored.
+        let cmds = exit(&mut p, t, 99, 75);
+        assert!(cmds.is_empty());
+        assert_eq!(p.state(ID), Some(State::Running));
     }
 }

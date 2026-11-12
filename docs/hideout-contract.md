@@ -1455,6 +1455,16 @@ Design §3.1.
 - **Restarts** a crashed instance with backoff from 1 s up to 60 s. Five crashes in ten minutes
   stops it (one notification per module per sign-in). Exit code 0 is a stop, not a crash. A
   channel closed for an oversized line (§8.1, v1.2) counts as one crash.
+- **Planned exit (#1143 P7, no version bump):** a process that ends itself to be started again
+  (Foxglove's GPU reset and its manual update install, in `--module` mode) exits with code
+  **75** (`hideout_contract::PLANNED_EXIT_CODE`, EX_TEMPFAIL) after handing its devices back.
+  The supervisor reads the code from the exit of the process *it* launched (the instance it
+  tracks), never from a message, so no other module can set it for this one. It shows
+  `restarting` (no crash bar, no `module.<id>.restart` fact, no notification), restarts after
+  2 s and counts no crash and uses no backoff step. A module keeps its own budget (the GPU reset:
+  3 in 10 minutes); more than 6 planned exits in ten minutes count as crashes from the next one
+  on, so a loop can't dodge the stop at five. Exit 75 from a process the supervisor didn't
+  launch, or any other code, changes nothing: other non-zero codes are crashes as before.
 - **Backoff steps (v1.1):** fixed delays of 1, 2, 4, 8, 16, 32 and 60 s for the 1st, 2nd, ... 7th
   restart in a run, then 60 s for every one after. No jitter: the delay is exactly the step.
 - **A run (v1.8)** is the restarts since the ten-minute crash window was last empty. A crash with

@@ -32,8 +32,8 @@
 //!   area (§6.3). See [`SERVED`] for what is left out and why.
 //! - **No tray, no pipe.** The tray is not created ([`crate::tray::Tray::none`]) and the app
 //!   serves no `foxglove-<user>` pipe (the hub owns that alias, §8.6); every device duty stays.
-//!   The self-restarts that would start a plain copy (GPU reset, identity registration, the
-//!   updater) are off: P7 makes the reset a planned exit.
+//!   The self-restarts that would start a plain copy (identity registration) are off; the GPU
+//!   reset and the updater's manual install are planned exits ([`planned_exit`], #1143 P7).
 //! - **Liveness (§7.9).** When the hub's pipe closes the app keeps running, retries with a
 //!   bounded backoff for the 30-second grace period, and then hands everything back and exits 0.
 //!   `module.exit` does the same at once. A hub that refuses `initialize` ends the module.
@@ -230,6 +230,28 @@ static LAUNCH: OnceLock<Launch> = OnceLock::new();
 /// Whether this process runs as the hub's module. False unless [`enter`] found `--module`.
 pub fn module_mode() -> bool {
     LAUNCH.get().is_some()
+}
+
+/// A planned exit (#1143 P7, contract §7.7): hands everything back as Quit does and ends with
+/// `PLANNED_EXIT_CODE` (contract crate), so the hub's supervisor restarts the module without
+/// counting a crash. The code is read from the exit of the process the supervisor launched;
+/// nothing is sent on the link for it, so no other module can claim or fake it. Module mode
+/// only; the callers check.
+pub fn planned_exit(why: &str) -> ! {
+    crate::foxglove::quit::hand_back(why);
+    end_process(foxglove_plugin_api::hideout::PLANNED_EXIT_CODE)
+}
+
+/// Ends the process now with `code`. After a GPU reset the driver may hold a lock in its DLL
+/// detach that a normal exit would wait on, so Windows ends the process directly.
+fn end_process(code: i32) -> ! {
+    #[cfg(windows)]
+    // SAFETY: the pseudo-handle for this process needs no closing.
+    unsafe {
+        use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        let _ = TerminateProcess(GetCurrentProcess(), code as u32);
+    }
+    std::process::exit(code)
 }
 
 /// First thing in `main`, before any thread: reads the launch, keeps it in memory and removes
