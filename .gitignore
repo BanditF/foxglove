@@ -8,6 +8,8 @@ zmk/
 !/tools/art-src/
 # The Hideout Python model generator (#921) is versioned.
 !/tools/gen_hideout_models.py
+# The local-compute queue feeder (#1128) is versioned; the model wrapper stays local.
+!/tools/local-queue.ps1
 .west/
 __pycache__/
 

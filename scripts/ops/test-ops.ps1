@@ -110,6 +110,10 @@ try {
     Check 'logi: delta line' ($line -match 'flash left' -and $line -match '500,000')
     . (Join-Path $here 'lab-health.ps1')
     Check 'lab status words' ((Get-LabStatus 0) -eq 'ok' -and (Get-LabStatus 1) -eq 'FAIL' -and (Get-LabStatus -1) -eq 'timeout')
+
+    # --- the local-compute queue (#1128), on stubs ---
+    & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-local-queue.ps1')
+    Check 'local-queue tests' ($LASTEXITCODE -eq 0)
 }
 finally {
     Remove-Item Env:FOXGLOVE_OPS_GAME_PATHS, Env:FOXGLOVE_OPS_GPU_UTIL, Env:FOXGLOVE_OPS_DIR -ErrorAction SilentlyContinue
