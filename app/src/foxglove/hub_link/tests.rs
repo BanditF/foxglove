@@ -143,8 +143,7 @@ fn the_embedded_manifest_is_a_valid_adopted_module() {
     let text = manifest(exe);
     assert!(text.contains("kind = \"adopted\""));
     assert!(text.contains(GRANT) && text.contains("facts:keyboard.*"));
-    // Nothing but the keyboard's facts: no method, no device, no `facts.write:*`.
-    assert!(!text.contains("method:"), "no method until P6");
+    // The facts and the served methods, nothing else: no device, no `facts.write:*`.
     assert!(!text.contains("hid.raw") && !text.contains("facts.write:*"));
     assert!(!text.contains("facts.write:device"));
 }
@@ -175,8 +174,12 @@ fn adopted_entry(granted: &[&str]) -> ModuleEntry {
 }
 
 impl Rig {
+    /// The user granted `granted` and every served method (`provide:`).
     fn new(granted: &[&str]) -> Rig {
-        Rig::with(granted, TOKEN)
+        let mut all: Vec<String> = granted.iter().map(|s| s.to_string()).collect();
+        all.extend(SERVED.iter().map(|m| format!("provide:{m}")));
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        Rig::with(&all, TOKEN)
     }
 
     /// The hub holds `hub_token` for the module; the link says `TOKEN`.
@@ -698,4 +701,386 @@ mod reconnect {
             hub.join().unwrap();
         }
     }
+}
+
+// ---- the v1 methods through the router (P6) ----
+
+/// Every served name as a `provide:` grant, the way `--adopt` records the user's yes.
+fn granted_all() -> Vec<String> {
+    let mut g = vec![GRANT.to_string()];
+    g.extend(SERVED.iter().map(|m| format!("provide:{m}")));
+    g
+}
+
+/// Counts what reaches the app's handlers.
+#[derive(Default)]
+struct Counting {
+    seen: std::sync::Mutex<Vec<(String, Value)>>,
+}
+
+impl foxglove_plugin_host::Devices for Counting {
+    fn call_from(
+        &self,
+        _conn: u64,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, foxglove_plugin_api::rpc::Error> {
+        self.seen.lock().unwrap().push((method.into(), params));
+        Ok(json!({"served": method}))
+    }
+}
+
+struct Tool {
+    conn: ConnId,
+}
+
+impl Rig {
+    fn with_devices(
+        granted: &[String],
+        devices: std::sync::Arc<dyn foxglove_plugin_host::Devices>,
+    ) -> Rig {
+        let g: Vec<&str> = granted.iter().map(String::as_str).collect();
+        let mut rig = Rig::with(&g, TOKEN);
+        rig.link = Link::new(Vec::new(), launch()).with_devices(devices);
+        rig
+    }
+
+    /// An outside tool asking for `asked`; the test router approves what is asked.
+    fn tool(&mut self, asked: &[&str]) -> Tool {
+        let conn = self.router.connect(Origin::Pipe);
+        let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "api":"1.13","client":{"name":"cli","version":"1"},"permissions":asked}});
+        let got = self.deliver(conn, &init.to_string());
+        assert!(got[0]["result"].is_object(), "{got:?}");
+        Tool { conn }
+    }
+
+    /// One call by the tool, carried to the module and back; what the tool receives.
+    fn call(&mut self, tool: &Tool, method: &str, params: Value) -> Value {
+        let line = json!({"jsonrpc":"2.0","id":7,"method":method,"params":params});
+        let got = self.deliver(tool.conn, &line.to_string());
+        assert_eq!(got.len(), 1, "{got:?}");
+        got.into_iter().next().unwrap()
+    }
+
+    /// Runs a line from `from` through the router, and every hop between the router and the
+    /// module; returns what the router sent `from`.
+    fn deliver(&mut self, from: ConnId, line: &str) -> Vec<Value> {
+        let mut mine = Vec::new();
+        let mut queue = vec![(from, line.to_string())];
+        while let Some((c, l)) = queue.pop() {
+            for o in self.router.receive(c, &l, self.now) {
+                let Out::Send(to, v) = o else { continue };
+                if to == from {
+                    mine.push(v);
+                } else if to == self.conn {
+                    self.link.line(&v.to_string()).unwrap();
+                    let sent = std::mem::take(self.link.writer_mut());
+                    for l in String::from_utf8(sent).unwrap().lines() {
+                        queue.push((self.conn, l.to_string()));
+                    }
+                }
+            }
+        }
+        mine
+    }
+}
+
+fn error_code(v: &Value) -> i64 {
+    v["error"]["code"].as_i64().unwrap_or_else(|| panic!("{v}"))
+}
+
+#[test]
+fn the_manifest_and_the_provider_table_are_the_same_list() {
+    let text = manifest(r"C:\x\foxglove.exe");
+    Module::parse(&text, &Context::default()).unwrap();
+    let found = |prefix: &str| -> Vec<String> {
+        text.lines()
+            .filter_map(|l| {
+                l.trim()
+                    .trim_end_matches(',')
+                    .trim_matches('"')
+                    .strip_prefix(prefix)
+            })
+            .map(String::from)
+            .collect()
+    };
+    let mut table: Vec<String> = SERVED.iter().map(|s| s.to_string()).collect();
+    table.sort();
+    let (mut declared, mut asked) = (found("method:"), found("provide:"));
+    declared.sort();
+    asked.sort();
+    assert_eq!(declared, table, "method: entries");
+    assert_eq!(asked, table, "provide: permissions");
+    // Exact names, never a pattern: nothing the table does not list can be claimed.
+    assert!(declared.iter().all(|d| !d.contains('*')));
+}
+
+#[test]
+fn every_served_name_has_a_router_permission_and_none_is_never_list() {
+    // The router's own area and hub-name rules are exercised by the registration test below:
+    // a name either rule refuses would come back `rejected` and be logged.
+    for m in SERVED {
+        // The router decides the caller's permission from the API table: every served name
+        // has a row with a permission (a row without one is open to every caller).
+        let row = foxglove_plugin_api::methods::find(m).unwrap_or_else(|| panic!("{m} has no row"));
+        let need = row
+            .permission
+            .unwrap_or_else(|| panic!("{m} needs a permission"));
+        assert!(
+            ![
+                "key.events",
+                "hid.raw",
+                "wallpaper.control",
+                "secrets",
+                "modules.manage"
+            ]
+            .contains(&need),
+            "{m} needs {need}, a never-list permission"
+        );
+    }
+    for never in [
+        "behaviors.invoke",
+        "behaviors.list",
+        "lighting.set",
+        "lighting.lease",
+        "lighting.update",
+        "lighting.release",
+        "devices.list",
+        "art.select",
+        "screens.panel_override",
+        "profiles.activate",
+        "focus.set",
+        "key.event",
+        "hid.raw",
+        "wallpaper-engine.pause",
+        "wallpaper-engine.release",
+        "wallpaper-engine.status",
+        "secrets.get",
+        "facts.set",
+        "modules.manage",
+    ] {
+        assert!(!SERVED.contains(&never), "{never} must not be served");
+    }
+}
+
+#[test]
+fn the_hub_registers_every_served_method_and_refuses_none() {
+    let mut rig = Rig::with_devices(&granted_all(), std::sync::Arc::new(Counting::default()));
+    let steps = rig.connect(&keyboard());
+    assert!(steps.contains(&Step::Ready), "{steps:?}");
+    assert!(rig.link.take_log().is_empty(), "no rejected registration");
+    let t = rig.tool(&["devices.read", "app.windows", "lighting.write"]);
+    for m in SERVED {
+        let params = if *m == "overlay.set_shown" {
+            json!({"on": true})
+        } else {
+            json!({"device": "x"})
+        };
+        let r = rig.call(&t, m, params);
+        assert_eq!(r["result"]["served"], json!(m), "{r}");
+    }
+}
+
+#[test]
+fn without_the_users_provide_grant_nothing_is_routed() {
+    // Registered, but the user granted no `provide:` (only the facts): the hub refuses the
+    // methods at registration, and a call finds no provider.
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&[GRANT.to_string()], counting.clone());
+    rig.connect(&keyboard());
+    let log = rig.link.take_log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(
+        log[0].contains("health.read") && log[0].contains("permission.provider"),
+        "{log:?}"
+    );
+    let t = rig.tool(&["devices.read"]);
+    let r = rig.call(&t, "health.read", json!({"device": "x"}));
+    assert!(r["error"].is_object(), "{r}");
+    assert!(counting.seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_caller_without_the_permission_is_refused_by_the_router_and_never_reaches_the_app() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    // Reads only: every write method needs more.
+    let t = rig.tool(&["devices.read"]);
+    for (m, p) in [
+        ("tray.set_panel", json!({"open": true})),
+        ("overlay.restore", json!({})),
+        ("overlay.set_shown", json!({"on": false})),
+        ("pc_lighting.set_zone", json!({})),
+    ] {
+        let r = rig.call(&t, m, p);
+        assert_eq!(error_code(&r), 5, "{m}: {r}");
+    }
+    assert!(
+        counting.seen.lock().unwrap().is_empty(),
+        "the app was never asked"
+    );
+    // A caller with nothing at all is refused for the reads too.
+    let none = rig.tool(&[]);
+    for m in [
+        "health.read",
+        "lights.page",
+        "scenes.page",
+        "tray.panel",
+        "overlay.window",
+        "overlay.shown",
+        "pc_lighting.list",
+    ] {
+        let r = rig.call(&none, m, json!({"device": "x"}));
+        assert_eq!(error_code(&r), 5, "{m}: {r}");
+    }
+    assert!(counting.seen.lock().unwrap().is_empty());
+    // With the permission the same call is answered.
+    let r = rig.call(&t, "tray.panel", json!({}));
+    assert_eq!(r["result"]["served"], "tray.panel");
+    assert_eq!(counting.seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn never_list_and_first_party_methods_are_unreachable_through_the_module() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    // A caller holding every permission a tool could be given still reaches none of these.
+    let t = rig.tool(&[
+        "devices.read",
+        "lighting.write",
+        "behaviors.invoke",
+        "app.windows",
+        "screens.write",
+        "art.write",
+        "profiles.write",
+        "focus.write",
+        "wallpaper.control",
+        "key.events",
+        "hid.raw",
+    ]);
+    for m in [
+        "behaviors.invoke",
+        "behaviors.list",
+        "lighting.set",
+        "lighting.lease",
+        "devices.list",
+        "art.select",
+        "screens.panel_override",
+        "profiles.activate",
+        "focus.set",
+        "wallpaper-engine.pause",
+        "wallpaper-engine.status",
+        "secrets.get",
+        "definitely.not.a.method",
+    ] {
+        let r = rig.call(&t, m, json!({"device": "x", "name": "x"}));
+        assert!(r["error"].is_object(), "{m} must not be answered: {r}");
+    }
+    assert!(
+        counting.seen.lock().unwrap().is_empty(),
+        "none of them reached the app's handlers: {:?}",
+        counting.seen.lock().unwrap()
+    );
+}
+
+#[test]
+fn the_module_answers_only_its_table_even_if_the_hub_forwards_more() {
+    // A (wrongly) forwarded call for a name outside the table is -32601 and never reaches the
+    // handlers.
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut rig = Rig::with_devices(&granted_all(), counting.clone());
+    rig.connect(&keyboard());
+    for m in [
+        "behaviors.invoke",
+        "lighting.set",
+        "key.event",
+        "wallpaper-engine.pause",
+        "hid.raw",
+    ] {
+        let call = json!({"jsonrpc":"2.0","id":5,"method":m,"params":{}});
+        rig.link.line(&call.to_string()).unwrap();
+        let out: Value = serde_json::from_slice(rig.link.writer_mut()).unwrap();
+        assert_eq!(out["error"]["code"], json!(-32601), "{m}");
+        rig.link.writer_mut().clear();
+    }
+    assert!(counting.seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_call_before_the_hub_has_the_module_is_not_answered() {
+    let counting = std::sync::Arc::new(Counting::default());
+    let mut link = Link::new(Vec::new(), launch()).with_devices(counting.clone());
+    let call = json!({"jsonrpc":"2.0","id":5,"method":"tray.panel","params":{}});
+    link.line(&call.to_string()).unwrap();
+    let out: Value = serde_json::from_slice(link.writer_mut()).unwrap();
+    assert_eq!(out["error"]["code"], json!(2));
+    assert!(counting.seen.lock().unwrap().is_empty());
+    // No handlers at all answers the same.
+    let mut bare = Link::new(Vec::new(), launch());
+    bare.line(&call.to_string()).unwrap();
+    let out: Value = serde_json::from_slice(bare.writer_mut()).unwrap();
+    assert_eq!(out["error"]["code"], json!(2));
+}
+
+/// The standalone answer: the app's own handler, as the pipe's host would call it.
+fn standalone(method: &str, params: &Value) -> Value {
+    use foxglove_plugin_host::Devices;
+    match crate::foxglove::api::AppDevices.call_from(0, method, params.clone()) {
+        Ok(v) => json!({"result": v}),
+        Err(e) => json!({"error": {"code": e.code, "message": e.message}}),
+    }
+}
+
+#[test]
+fn routed_answers_equal_the_standalone_handlers() {
+    crate::foxglove::store::test_config_dir();
+    let mut rig = Rig::with_devices(
+        &granted_all(),
+        std::sync::Arc::new(crate::foxglove::api::AppDevices),
+    );
+    rig.connect(&keyboard());
+    let t = rig.tool(&["devices.read", "app.windows", "lighting.write"]);
+    let nothing = json!({"device": "nothing"});
+    let cases: [(&str, Value); 7] = [
+        ("scenes.page", json!({})),
+        ("tray.panel", json!({})),
+        ("overlay.window", json!({})),
+        ("pc_lighting.list", json!({})),
+        ("lights.page", nothing.clone()),
+        ("health.read", nothing),
+        ("pc_lighting.set_zone", json!({"bogus": 1})),
+    ];
+    for (m, p) in cases {
+        let via_hub = rig.call(&t, m, p.clone());
+        let alone = standalone(m, &p);
+        if alone.get("result").is_some() {
+            assert_eq!(via_hub["result"], alone["result"], "{m}");
+        } else {
+            assert_eq!(
+                via_hub["error"]["code"], alone["error"]["code"],
+                "{m}: {via_hub} vs {alone}"
+            );
+            assert_eq!(
+                via_hub["error"]["message"], alone["error"]["message"],
+                "{m}"
+            );
+        }
+    }
+}
+
+#[test]
+fn module_mode_is_off_by_default_and_the_standalone_pipe_stays() {
+    // This process was started without --module.
+    assert!(!module_mode());
+    // The link, the only code that registers the methods, starts only from a launch.
+    let src = include_str!("../hub_link.rs");
+    let start = src.find("pub fn start()").unwrap();
+    assert!(src[start..start + 400].contains("LAUNCH.get()"));
+    // api.rs serves the pipe in a process without the flag and none with it.
+    let api = include_str!("../api.rs");
+    let at = |s: &str| api.find(s).unwrap_or_else(|| panic!("{s}"));
+    assert!(at("if super::hub_link::module_mode()") < at("pipe::listen"));
 }
