@@ -1141,19 +1141,19 @@ pub(super) fn pick(
         Probe::Verified { pid, image } => {
             if !same_path(path, &image) {
                 return Pick::Refuse(format!(
-                    "pid {pid} serves the pipe from {}, not the hub's {}",
-                    image.display(),
-                    path.display()
+                    "the pipe's server runs from a different folder or file than the hub's ({}, not {})",
+                    image.file_name().unwrap_or_default().to_string_lossy(),
+                    path.file_name().unwrap_or_default().to_string_lossy()
                 ));
             }
             match peer(pid) {
                 Ok(p) if p.app_container.is_none() && p.integrity >= hideout_acl::MEDIUM_RID => {
                     Pick::Connect(pid)
                 }
-                Ok(_) => Pick::Refuse(format!(
-                    "pid {pid} is below Medium integrity or in an AppContainer"
-                )),
-                Err(e) => Pick::Refuse(format!("pid {pid}: its token is unreadable ({e})")),
+                Ok(_) => Pick::Refuse(
+                    "the pipe's server is below Medium integrity or in an AppContainer".into(),
+                ),
+                Err(e) => Pick::Refuse(format!("the pipe's server token is unreadable ({e})")),
             }
         }
     }

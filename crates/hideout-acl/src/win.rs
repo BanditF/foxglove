@@ -215,10 +215,21 @@ pub fn peer(pid: u32) -> io::Result<Peer> {
         if p.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let mut token: HANDLE = std::ptr::null_mut();
-        let opened = OpenProcessToken(p, TOKEN_QUERY, &mut token);
+        let out = peer_of_process(p);
         CloseHandle(p);
-        if opened == 0 {
+        out
+    }
+}
+
+/// [`peer`] for a process handle the caller already holds (opened with at least
+/// `PROCESS_QUERY_LIMITED_INFORMATION`), so one handle can serve every check on a process and
+/// the pid cannot be reused between them. The handle stays the caller's.
+/// # Safety
+/// `process` must be a valid process handle.
+pub unsafe fn peer_of_process(process: HANDLE) -> io::Result<Peer> {
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
             return Err(io::Error::last_os_error());
         }
         token_peer(token)

@@ -5,8 +5,22 @@
 //! server is (`GetNamedPipeServerProcessId`). Nothing is sent and no reply is read: a server
 //! can say anything, but it cannot choose its own process id. The process is then checked:
 //!
-//! - it runs as the same user (token SID equal to ours), and
-//! - its image file name is the one expected (`foxglove.exe`, `hideout.exe`).
+//! - it runs as the same user (token SID equal to ours),
+//! - its image file name is the one expected (`foxglove.exe`, `hideout.exe`),
+//! - it runs at Medium integrity or above and is no AppContainer (`hideout_acl::peer`: a
+//!   Low-integrity or contained process of the same user can be named `foxglove.exe` too), and
+//! - its image is in the same folder as the probing exe. Chosen over a signer check: both
+//!   programs ship in one install folder (and one `target` folder in a dev tree), and a
+//!   folder compare needs no certificate chain and no special case for unsigned dev builds;
+//!   a user-writable install folder is the same trust root as the probing exe itself. A
+//!   signature check can be added where the product is signed.
+//!
+//! Every check runs on one process handle opened once, so the pid cannot be reused between
+//! them; the only window left is between the kernel's answer and that `OpenProcess` (a server
+//! that exits and whose pid is taken by a same-user, same-name, same-folder, Medium process in
+//! those microseconds), and the process is re-checked as still running at the end. A server
+//! that vanishes during the probe is "nobody there" ([`Probe::Free`]), not busy.
+//! Log lines carry the image file name only, never the full path or a pid.
 //!
 //! A server that fails either check is [`Probe::Foreign`]: ignored, never trusted, never
 //! treated as "the other program". The probe never blocks longer than [`TIMEOUT`] (plus the
@@ -85,8 +99,8 @@ mod win {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY,
-        HANDLE,
+        CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+        ERROR_PIPE_BUSY, ERROR_PIPE_NOT_CONNECTED, HANDLE,
     };
     use windows_sys::Win32::Security::{
         EqualSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
@@ -132,17 +146,23 @@ mod win {
         let mut pid = 0u32;
         // SAFETY: an open pipe handle owned by `file`.
         if unsafe { GetNamedPipeServerProcessId(file.as_raw_handle() as _, &mut pid) } == 0 {
-            return Probe::Foreign {
-                pid: None,
-                why: format!("server process unknown: {}", io::Error::last_os_error()),
+            let e = io::Error::last_os_error();
+            return match e.raw_os_error().map(|c| c as u32) {
+                // The server hung up under us: nobody is there any more.
+                Some(ERROR_PIPE_NOT_CONNECTED) | Some(ERROR_BROKEN_PIPE) => Probe::Free,
+                _ => Probe::Foreign {
+                    pid: None,
+                    why: format!("server process unknown: {e}"),
+                },
             };
         }
         // `file` closes at the end; nothing was sent.
         match verify(pid, expect) {
             Ok(image) => Probe::Verified { pid, image },
-            Err(e) => Probe::Foreign {
+            Err(Refusal::Gone) => Probe::Free,
+            Err(Refusal::Foreign(why)) => Probe::Foreign {
                 pid: Some(pid),
-                why: e.to_string(),
+                why,
             },
         }
     }
@@ -165,7 +185,13 @@ mod win {
                 let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
                 // SAFETY: NUL-terminated name.
                 if unsafe { WaitNamedPipeW(wide.as_ptr(), ms) } == 0 {
-                    return Err(io::Error::from_raw_os_error(ERROR_PIPE_BUSY as i32));
+                    let e = io::Error::last_os_error();
+                    // The server went away while we waited: nobody is there. Only a
+                    // timeout (or anything else) is "still busy".
+                    return Err(match e.raw_os_error().map(|c| c as u32) {
+                        Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => e,
+                        _ => io::Error::from_raw_os_error(ERROR_PIPE_BUSY as i32),
+                    });
                 }
                 try_open()
             }
@@ -198,33 +224,97 @@ mod win {
         )))
     }
 
-    fn verify(pid: u32, expect: Expect) -> io::Result<PathBuf> {
+    enum Refusal {
+        /// The server's process no longer exists.
+        Gone,
+        Foreign(String),
+    }
+
+    fn foreign(why: impl Into<String>) -> Refusal {
+        Refusal::Foreign(why.into())
+    }
+
+    fn file_name(p: &std::path::Path) -> String {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "?".into())
+    }
+
+    /// The identity rules on facts already read (apart from the OS, so synthetic peers can
+    /// test them): file name, same user, no AppContainer, Medium integrity or above, same
+    /// folder as `our_dir`. Messages carry the file name only.
+    pub(super) fn judge(
+        image: &std::path::Path,
+        expect: Expect,
+        our_dir: Option<&std::path::Path>,
+        same_user: bool,
+        peer: &hideout_acl::Peer,
+    ) -> Result<(), String> {
+        if !image_matches(image, expect) {
+            return Err(format!("runs {}, not {}", file_name(image), expect.exe));
+        }
+        if !same_user {
+            return Err(format!("{} runs as another user", expect.exe));
+        }
+        if peer.app_container.is_some() {
+            return Err(format!("{} runs in an AppContainer", expect.exe));
+        }
+        if peer.integrity < hideout_acl::MEDIUM_RID {
+            return Err(format!("{} runs below Medium integrity", expect.exe));
+        }
+        let same_folder = match (image.parent(), our_dir) {
+            (Some(a), Some(b)) => a.as_os_str().eq_ignore_ascii_case(b.as_os_str()),
+            _ => false,
+        };
+        if !same_folder {
+            return Err(format!(
+                "{} is not in this program's install folder",
+                expect.exe
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify(pid: u32, expect: Expect) -> Result<PathBuf, Refusal> {
+        // One handle for every check below: while it is open the pid cannot be reused.
         // SAFETY: plain Win32 calls; handles are closed by `Owned`.
         let proc = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if proc.is_null() {
-            return Err(denied(format!(
-                "pid {pid}: process not readable ({})",
-                io::Error::from_raw_os_error(unsafe { GetLastError() } as i32)
-            )));
+            let code = unsafe { GetLastError() };
+            // ERROR_INVALID_PARAMETER: no such process (the server exited).
+            return Err(if code == 87 {
+                Refusal::Gone
+            } else {
+                foreign(format!(
+                    "process not readable ({})",
+                    io::Error::from_raw_os_error(code as i32)
+                ))
+            });
         }
         let proc = Owned(proc);
         let mut buf = vec![0u16; 1024];
         let mut len = buf.len() as u32;
         if unsafe { QueryFullProcessImageNameW(proc.0, 0, buf.as_mut_ptr(), &mut len) } == 0 {
-            return Err(denied(format!("pid {pid}: image path not readable")));
+            return Err(foreign("image path not readable"));
         }
         let image = PathBuf::from(std::ffi::OsString::from_wide(&buf[..len as usize]));
-        if !image_matches(&image, expect) {
-            return Err(denied(format!(
-                "pid {pid} runs {}, not {}",
-                image.display(),
-                expect.exe
-            )));
-        }
-        let theirs = user_sid(proc.0)?;
-        let ours = user_sid(unsafe { GetCurrentProcess() })?;
-        if unsafe { EqualSid(theirs.sid, ours.sid) } == 0 {
-            return Err(denied(format!("pid {pid} runs as another user")));
+        let theirs = user_sid(proc.0).map_err(|e| foreign(e.to_string()))?;
+        let ours = user_sid(unsafe { GetCurrentProcess() }).map_err(|e| foreign(e.to_string()))?;
+        let same_user = unsafe { EqualSid(theirs.sid, ours.sid) } != 0;
+        // SAFETY: `proc` is a valid open process handle.
+        let peer = unsafe { hideout_acl::peer_of_process(proc.0) }
+            .map_err(|e| foreign(format!("token unreadable ({e})")))?;
+        let our_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        judge(&image, expect, our_dir.as_deref(), same_user, &peer).map_err(Refusal::Foreign)?;
+        // Still running? A server that exited meanwhile is gone, not verified.
+        let mut code = 0u32;
+        if unsafe { windows_sys::Win32::System::Threading::GetExitCodeProcess(proc.0, &mut code) }
+            == 0
+            || code != 259
+        {
+            return Err(Refusal::Gone);
         }
         Ok(image)
     }
@@ -316,6 +406,9 @@ mod tests {
             Probe::Foreign { pid, why } => {
                 assert_eq!(pid, Some(std::process::id()));
                 assert!(why.contains("not foxglove.exe"), "{why}");
+                // File name only: no directory, no pid.
+                assert!(!why.contains('\\'), "{why}");
+                assert!(!why.contains(&std::process::id().to_string()), "{why}");
             }
             other => panic!("expected Foreign, got {other:?}"),
         }
@@ -340,6 +433,72 @@ mod tests {
             "{:?}",
             t.elapsed()
         );
+    }
+
+    fn medium() -> hideout_acl::Peer {
+        hideout_acl::Peer {
+            integrity: hideout_acl::MEDIUM_RID,
+            app_container: None,
+        }
+    }
+
+    fn judged(peer: &hideout_acl::Peer, user: bool, dir: &str) -> Result<(), String> {
+        win::judge(
+            std::path::Path::new(r"C:\Apps\Fox\foxglove.exe"),
+            Expect::FOXGLOVE,
+            Some(std::path::Path::new(dir)),
+            user,
+            peer,
+        )
+    }
+
+    #[test]
+    fn low_integrity_appcontainer_other_user_and_other_folder_are_refused() {
+        assert_eq!(judged(&medium(), true, r"c:\apps\fox"), Ok(()));
+        let low = hideout_acl::Peer {
+            integrity: 0x1000,
+            ..medium()
+        };
+        assert!(judged(&low, true, r"C:\Apps\Fox")
+            .unwrap_err()
+            .contains("Medium"));
+        let high = hideout_acl::Peer {
+            integrity: 0x3000,
+            ..medium()
+        };
+        assert_eq!(judged(&high, true, r"C:\Apps\Fox"), Ok(()));
+        let contained = hideout_acl::Peer {
+            app_container: Some("S-1-15-2-1-2".into()),
+            ..medium()
+        };
+        assert!(judged(&contained, true, r"C:\Apps\Fox")
+            .unwrap_err()
+            .contains("AppContainer"));
+        assert!(judged(&medium(), false, r"C:\Apps\Fox")
+            .unwrap_err()
+            .contains("another user"));
+        let e = judged(&medium(), true, r"C:\Elsewhere").unwrap_err();
+        assert!(e.contains("install folder") && !e.contains("Apps"), "{e}");
+    }
+
+    #[test]
+    fn a_server_that_vanishes_during_the_wait_is_free_not_busy() {
+        let name = test_name("vanish");
+        let first = ServerPipe::create(&name, true).unwrap();
+        let client = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .unwrap();
+        let conn = first.accept();
+        let n2 = name.clone();
+        // Busy now; the whole server (and so the name) goes away while the probe waits.
+        let t = std::thread::spawn(move || probe(&n2, own_exe(), Duration::from_secs(5)));
+        std::thread::sleep(Duration::from_millis(200));
+        drop(conn);
+        drop(client);
+        let p = t.join().unwrap();
+        assert_eq!(p, Probe::Free, "{p:?}");
     }
 
     #[test]
