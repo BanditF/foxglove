@@ -581,3 +581,62 @@ fn a_lease_answered_after_the_grant_was_taken_away_is_not_kept() {
         "{out:?}"
     );
 }
+
+#[test]
+fn a_pattern_refused_for_another_reason_is_not_restored_with_the_grant() {
+    let now = Instant::now();
+    let id = identity(PATH, HASH);
+    let mut r = rig(&id);
+    // Another module holds `focus.*` when Foxglove registers (refused as taken), then leaves.
+    r.add_module(entry(
+        "example.focus",
+        Holder::FirstParty,
+        &["provide:focus.*"],
+        None,
+    ));
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    let x = module(&mut r, "example.focus", now);
+    assert!(register(&mut r, x, &["focus.*"], now).is_empty());
+    let (f, c) = connect_both(&mut r, now);
+    let rejected = register(&mut r, f, &strs(&areas()), now);
+    assert_eq!(rejected, ["focus.*"]);
+    r.disconnect(x);
+    // The grant goes and comes back: what was refused stays refused, what was accepted returns.
+    r.drop_keyboard_grant(FOX);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    assert_eq!(try_call(&mut r, c, f, "focus.get", now).0.len(), 0);
+    assert_eq!(try_call(&mut r, c, f, "devices.read", now).0.len(), 1);
+}
+
+#[test]
+fn losing_one_area_ends_that_areas_leases_only() {
+    let now = Instant::now();
+    let id = identity(PATH, HASH);
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    let (f, c) = connect_both(&mut r, now);
+    assert!(register(&mut r, f, &strs(&areas()), now).is_empty());
+    let lease = |r: &mut Router, n: u64, method: &str, name: &str| {
+        let out = call(r, c, n, method, now);
+        let asked = sends(&out, f);
+        assert_eq!(asked.len(), 1, "{out:?}");
+        let ans = json!({"jsonrpc":"2.0","id":asked[0]["id"],"result":{"lease":name}});
+        r.receive(f, &ans.to_string(), now);
+    };
+    lease(&mut r, 9101, "devices.lease", "D1");
+    lease(&mut r, 9102, "lighting.lease", "L1");
+    // A catalog now assigns `devices.*` to another module: only that route goes.
+    r.add_module(entry(
+        "foxglove.devices",
+        Holder::FirstParty,
+        &[],
+        Some(&["devices.*"]),
+    ));
+    let out = r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    let closed: Vec<String> = sends(&out, f)
+        .iter()
+        .filter(|m| m["method"] == "lease.closed" && m["params"]["reason"] == "revoked")
+        .map(|m| m["params"]["lease"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(closed, ["D1"], "{out:?}");
+}

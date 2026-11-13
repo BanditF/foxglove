@@ -303,6 +303,8 @@ struct Pending {
     /// The caller key this call counts against in the in-flight caps (a routed or held call);
     /// `None` for calls the caps do not cover.
     slot: Option<String>,
+    /// The method this call asked for (a lease it returns belongs to that method's area).
+    method: String,
 }
 
 /// A call waiting for its provider to start (activation by `call`).
@@ -330,6 +332,9 @@ struct HostCall {
 /// A lease a provider handed out (§8.5): who holds it.
 struct Lease {
     holder: ConnId,
+    /// The method whose result handed it out; the lease lives only while a route of its
+    /// provider still covers it (#1155 L3b).
+    method: String,
 }
 
 pub struct Router {
@@ -873,21 +878,25 @@ impl Router {
     /// Drops the routes the grant no longer carries and ends the leases of a legacy module that
     /// lost its routes (a lease was handed out for an area that is now closed).
     fn revalidate_grant(&mut self) -> Vec<Out> {
-        let had = self.routes.iter().any(|r| r.module == LEGACY_FOXGLOVE_ID);
         self.revalidate_adopted_routes();
         self.restore_wanted();
         let mut out = Vec::new();
-        if had && !self.routes.iter().any(|r| r.module == LEGACY_FOXGLOVE_ID) {
-            let gone: Vec<(String, String)> = self
-                .leases
-                .keys()
-                .filter(|k| k.0 == LEGACY_FOXGLOVE_ID)
-                .cloned()
+        // A lease ends when no route of the legacy module covers the method it came from any
+        // more: losing one area closes that area's leases, not only losing every route (L3b).
+        let gone: Vec<(String, String)> =
+            self.leases
+                .iter()
+                .filter(|(k, l)| {
+                    k.0 == LEGACY_FOXGLOVE_ID
+                        && !self.routes.iter().any(|r| {
+                            r.module == LEGACY_FOXGLOVE_ID && covers(&r.pattern, &l.method)
+                        })
+                })
+                .map(|(k, _)| k.clone())
                 .collect();
-            for k in gone {
-                self.leases.remove(&k);
-                self.lease_closed(&k.0, &k.1, "revoked", &mut out);
-            }
+        for k in gone {
+            self.leases.remove(&k);
+            self.lease_closed(&k.0, &k.1, "revoked", &mut out);
         }
         out
     }
@@ -912,6 +921,26 @@ impl Router {
                 });
             }
         }
+    }
+
+    /// Whether `pattern` would be provided by the legacy module if only the keyboard grant held:
+    /// every other test of [`Self::may_provide`] passes and the grant does not hold now.
+    fn rejected_by_grant_alone(&self, module: &str, pattern: &str) -> bool {
+        let Some(entry) = self.modules.get(module) else {
+            return false;
+        };
+        entry.registered_version.is_some()
+            && module == LEGACY_FOXGLOVE_ID
+            && GRANT_AREAS.iter().any(|a| covers(a, pattern))
+            && !HUB_OWNED.iter().any(|a| overlap(a, pattern))
+            && self
+                .methods_decl
+                .get(module)
+                .is_some_and(|d| d.iter().any(|d| covers(d, pattern)))
+            && entry.catalog_provide.is_none()
+            && !never_name(pattern)
+            && !self.grant_holds(module)
+            && !self.assigned_elsewhere_by(module, pattern, true)
     }
 
     /// The fact cache's value for `key`.
@@ -2017,9 +2046,7 @@ impl Router {
         };
         let others = |r: &Route| r.module != module;
         let mut methods = Vec::new();
-        if module == LEGACY_FOXGLOVE_ID {
-            self.wanted.insert(module.into(), list("methods"));
-        }
+        let mut wanted = Vec::new();
         for p in list("methods") {
             let allowed = self.may_provide(module, caps, &p);
             // The legacy module's routes give way to a module that may provide the method
@@ -2029,11 +2056,22 @@ impl Router {
                     && overlap(&r.pattern, &p)
                     && !(module != LEGACY_FOXGLOVE_ID && r.module == LEGACY_FOXGLOVE_ID)
             });
+            // Only what the grant alone kept out, or what was accepted, comes back when the
+            // grant does; a pattern refused for any other reason stays refused (#1155 L5).
+            if module == LEGACY_FOXGLOVE_ID
+                && !taken
+                && (allowed || self.rejected_by_grant_alone(module, &p))
+            {
+                wanted.push(p.clone());
+            }
             if !allowed || taken {
                 reject(&p, "permission.provider");
             } else {
                 methods.push(p);
             }
+        }
+        if module == LEGACY_FOXGLOVE_ID {
+            self.wanted.insert(module.into(), wanted);
         }
         let mut facts = Vec::new();
         for p in list("facts") {
@@ -2274,7 +2312,13 @@ impl Router {
                             // away while the call ran): the lease is ended, never kept (#1155-B).
                             self.lease_closed(&provider, &lease, "revoked", out);
                         } else {
-                            self.leases.insert((provider, lease), Lease { holder: c });
+                            self.leases.insert(
+                                (provider, lease),
+                                Lease {
+                                    holder: c,
+                                    method: p.method.clone(),
+                                },
+                            );
                         }
                     }
                 }
@@ -2361,6 +2405,7 @@ impl Router {
                 waiter,
                 deadline,
                 slot,
+                method: method.to_string(),
             },
         );
         out.push(Out::Send(
