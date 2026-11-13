@@ -428,15 +428,11 @@ pub fn scene_ended() {
 /// The keyboard's lights as `keyboard.lighting.*` (tests: straight from a report).
 #[cfg(test)]
 fn lighting(facts: &Facts, state: &LightingState) {
-    set_look(facts, &Look::of(state));
+    set_look_named(facts, &Look::of(state), false);
 }
 
 /// `look` as `keyboard.lighting.*`. Only what changed is sent on, so a new colour is one change.
-fn set_look(facts: &Facts, look: &Look) {
-    set_look_named(facts, look, false);
-}
-
-/// [`set_look`], the colour called "Custom colour" when `custom` (a scene's own colour).
+/// The colour is called "Custom colour" when `custom` (a scene's own colour).
 fn set_look_named(facts: &Facts, look: &Look, custom: bool) {
     let [r, g, b] = look.color;
     facts.set("keyboard.lighting.on", Value::Bool(look.on));

@@ -359,7 +359,7 @@ fn art_from(from: &str) -> &'static str {
 
 fn lights_glance(v: &View) -> Option<Glance> {
     let l = &v.lights;
-    if l.on? == false {
+    if !l.on? {
         return Some(Glance {
             value: "Off".into(),
             tone: "off",
@@ -541,6 +541,7 @@ pub fn panels(v: &View) -> Vec<Value> {
 
 /// The panels as `ui.register` sends them: the same set [`panels`] gives for a view of nothing
 /// (what the manifest declares).
+#[cfg(test)]
 pub fn declared() -> Vec<String> {
     let mut ids: Vec<String> = Part::ALL.iter().map(|p| p.tile_id().to_string()).collect();
     ids.push(PAGE.into());

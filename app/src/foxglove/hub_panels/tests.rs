@@ -447,7 +447,7 @@ fn the_manifest_declares_what_ui_register_sends() {
     let slots: Vec<_> = m
         .panels
         .iter()
-        .map(|p| serde_json::to_value(&p.slot).unwrap())
+        .map(|p| serde_json::to_value(p.slot).unwrap())
         .collect();
     assert_eq!(slots, ["tile", "tile", "tile", "page"]);
     let sent = panels(&view(&[]));
@@ -455,7 +455,7 @@ fn the_manifest_declares_what_ui_register_sends() {
         assert_eq!(decl.id, panel["id"]);
         assert_eq!(decl.title, panel["title"]);
         assert_eq!(decl.icon, panel["icon"]);
-        assert_eq!(serde_json::to_value(&decl.slot).unwrap(), panel["slot"]);
+        assert_eq!(serde_json::to_value(decl.slot).unwrap(), panel["slot"]);
     }
     // No new permission: the facts grant covers it.
     assert!(
