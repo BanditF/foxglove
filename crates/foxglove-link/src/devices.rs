@@ -157,6 +157,14 @@ fn lighting_state(h: &RgbHalf) -> LightingState {
     }
 }
 
+static LEFT_UNPOWERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The left half's LEDs have no power (ext power off), as of the last lighting report: its
+/// lights being off then is not a fault.
+pub fn left_unpowered() -> bool {
+    LEFT_UNPOWERED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A half's colour as the keyboard reports it, in the palette's colours: what Foxglove asked
 /// for while the keyboard still shows what was sent for it, else the calibration's inverse.
 fn asked_half(key: &str, half: &mut RgbHalf) {
@@ -290,6 +298,12 @@ impl FoxgloveLinkDevice {
                 // facts (#605): what the keyboard reports, never what was last commanded.
                 let key = report_key.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 let rgb = reported_state(&key, crate::protocol::RgbState::parse(r));
+                LEFT_UNPOWERED.store(
+                    crate::protocol::RgbOutput::parse(r)
+                        .left
+                        .is_some_and(|s| s.unpowered),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 report_sink.emit(DeviceEvent::LightingChanged {
                     state: LightingState {
                         settled: halves_agree(&rgb),

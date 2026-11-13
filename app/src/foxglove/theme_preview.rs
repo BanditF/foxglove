@@ -2179,6 +2179,84 @@ fn dynamic_lighting_through_renders() {
 
 /// The Scenes page (#487): the user's room with a scene running (wide and at the window's
 /// default size), a scene being dragged, and an empty room with nothing running.
+/// The Scenes page while the keyboard went dark under a running scene (lights self-heal): the
+/// status suffix, the hint and the buttons, in both themes. Saved as `built-lights-heal-*.png`.
+#[test]
+fn scenes_page_renders_the_dark_keyboard_states() {
+    use crate::foxglove::lights_heal::View;
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::{Choice, DARK};
+    let near = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| {
+                let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs();
+                d(p.0[0], c.r()) + d(p.0[1], c.g()) + d(p.0[2], c.b()) < 24
+            })
+            .count()
+    };
+    let states = [
+        ("running", View::default()),
+        (
+            "putting-back",
+            View {
+                dark: true,
+                putting_back: true,
+                dark_since: Some("14:03".into()),
+                suffix: Some("keyboard went dark, putting the lights back…".into()),
+                ..View::default()
+            },
+        ),
+        (
+            "not-recovered",
+            View {
+                dark: true,
+                failed: true,
+                dark_since: Some("14:05".into()),
+                suffix: Some("keyboard lights dark since 14:05".into()),
+                ..View::default()
+            },
+        ),
+    ];
+    let mut shots = Vec::new();
+    for (choice, theme) in [(Choice::Dark, "dark"), (Choice::Light, "light")] {
+        for (label, heal) in &states {
+            let mut samples = Samples::full();
+            samples.scenes.0.heal = heal.clone();
+            let img = shell_preview_in(Page::Scenes, &samples, 1000.0, choice);
+            keep(&format!("built-lights-heal-{label}-{theme}.png"), &img);
+            shots.push((choice, *label, img));
+        }
+    }
+    for choice in [Choice::Dark, Choice::Light] {
+        let get = |l: &str| {
+            &shots
+                .iter()
+                .find(|(c, n, _)| *c == choice && *n == l)
+                .unwrap()
+                .2
+        };
+        assert_ne!(
+            get("running"),
+            get("putting-back"),
+            "{choice:?}: the status changes"
+        );
+        assert_ne!(
+            get("putting-back"),
+            get("not-recovered"),
+            "{choice:?}: Repaint now shows"
+        );
+    }
+    // Dark theme: the suffix is the warning colour, which a healthy status does not use.
+    let dark = |l: &str| {
+        &shots
+            .iter()
+            .find(|(c, n, _)| *c == Choice::Dark && *n == l)
+            .unwrap()
+            .2
+    };
+    assert!(near(dark("putting-back"), DARK.warn) > near(dark("running"), DARK.warn));
+}
+
 #[test]
 fn scenes_page_renders() {
     use crate::foxglove::scenes_ui::{tests, Draft, View};

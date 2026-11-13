@@ -3,6 +3,7 @@
 //! connects; each client gets its own thread.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use foxglove_devices::{Caps, Device as _};
 use foxglove_plugin_api::methods::{self, ClientInfo};
@@ -209,6 +210,15 @@ pub fn pause_leases() {
 }
 
 /// A write refused because Foxglove is paused (#404).
+/// A scene call's refusal, in the words the CLI prints after `scene <verb>:`.
+fn app_err(message: String) -> Error {
+    Error {
+        code: code::BUSY,
+        message,
+        data: None,
+    }
+}
+
 fn paused_error() -> Error {
     Error {
         code: code::BUSY,
@@ -289,6 +299,117 @@ fn page_json(m: &super::lights_page::Model) -> methods::LightsPage {
         },
         note: m.note.clone(),
     }
+}
+
+/// `scene.status` (API 1.16): the scene and the keyboard's lights, from the heal tracker's view.
+fn scene_status() -> methods::SceneStatus {
+    use foxglove_link::lights_owner::Owner;
+    let v = super::lights_heal::view();
+    let h = super::lamp_hold::now();
+    let owner = super::lights_owner::lock(&super::lights_owner::shared()).owner();
+    let name = super::scene_run::running().map(|(n, _)| n);
+    let stopping = super::scenes_ui::stopping();
+    let paused_for = if name.is_none() {
+        None
+    } else if super::pause::paused() {
+        Some("Foxglove being paused".to_string())
+    } else if super::away::away() {
+        Some("you being away".to_string())
+    } else if super::lamp_hold::paused() {
+        Some("another app".to_string())
+    } else {
+        None
+    };
+    let held = h.usb.is_some() || h.ble.is_some();
+    let keyboard = if name.is_none() || paused_for.is_some() || stopping {
+        ""
+    } else if !held {
+        "none"
+    } else if v.unpowered && v.lit == Some(false) {
+        "off"
+    } else if v.dark || v.lit == Some(false) {
+        "dark"
+    } else {
+        "lit"
+    };
+    let (hand_backs, frames) = super::scene_run::keyboard_counts();
+    let detail = held.then(|| {
+        let over = match (h.usb.is_some(), h.ble.is_some()) {
+            (true, true) => "USB and Bluetooth",
+            (true, false) => "USB",
+            _ => "Bluetooth",
+        };
+        let owner = owner.map_or("none".to_string(), |o: Owner| format!("{o:?}"));
+        format!("held over {over}, owner {owner}, hand-backs {hand_backs}, frames sent {frames}")
+    });
+    let waiting = v.dark && !v.putting_back && !v.failed;
+    methods::SceneStatus {
+        state: match (&name, &paused_for) {
+            (None, _) => "none",
+            (Some(_), _) if stopping => "stopping",
+            (Some(_), Some(_)) => "paused",
+            _ => "running",
+        }
+        .into(),
+        scene: name,
+        paused_for,
+        keyboard: keyboard.into(),
+        off_reason: (keyboard == "off").then(|| "unpowered".to_string()),
+        dark_since: v.dark_since.clone(),
+        // Dark, waiting: when Foxglove puts them back; Not recovered: the next try.
+        next_try: if waiting || v.failed {
+            v.next_try.clone()
+        } else {
+            None
+        },
+        putting_back: v.putting_back,
+        failed: v.failed,
+        darks: v.darks,
+        recovered: v.recovered,
+        last_recovery: v.last_recovery,
+        detail,
+    }
+}
+
+/// `scene.repaint` (API 1.16): Repaint now, waiting (bounded 12 s, event-gated) for the result.
+fn scene_repaint() -> Result<methods::SceneRepainted, String> {
+    let st = scene_status();
+    let Some(scene) = st.scene.clone() else {
+        return Err("no scene is running".into());
+    };
+    if let Some(who) = &st.paused_for {
+        return Err(format!(
+            "the scene is paused for {who}; Foxglove doesn't draw over it"
+        ));
+    }
+    if st.putting_back {
+        return Err("already putting the lights back".into());
+    }
+    if st.state == "stopping" {
+        return Err("the scene is stopping".into());
+    }
+    // Only a keyboard Foxglove already gave up on (not recovered) is repainted and waited for;
+    // while it still waits (under 2 min) or lit, a plain repaint does no harm and no waiting.
+    let lit = if st.keyboard == "dark" && st.failed {
+        super::lights_heal::repaint_and_wait(Duration::from_secs(12))?
+    } else {
+        // Not dark: sending the colours again does no harm.
+        super::scene_run::repaint_lamps();
+        true
+    };
+    Ok(methods::SceneRepainted { scene, lit })
+}
+
+/// `scene.stop` (API 1.16): as the Scenes page's Stop; idempotent.
+fn scene_stop() -> Result<methods::SceneStopped, String> {
+    let scene = super::scene_run::running().map(|(n, _)| n);
+    if scene.is_some() {
+        super::scene_run::stop();
+        if super::scene_run::running().is_some() {
+            return Err("still stopping after 10 s".into());
+        }
+    }
+    Ok(methods::SceneStopped { scene })
 }
 
 /// `scenes.page` (API 1.10, #618 batch H): the Scenes page's Presets card in the API's words.
@@ -762,6 +883,9 @@ impl Devices for AppDevices {
                 let p: methods::DeviceParams = params(_params)?;
                 lights_page(&p.device)
             }
+            "scene.status" => Ok(json!(scene_status())),
+            "scene.repaint" => scene_repaint().map(|r| json!(r)).map_err(app_err),
+            "scene.stop" => scene_stop().map(|r| json!(r)).map_err(app_err),
             "scenes.page" => Ok(json!(scenes_page(&super::scenes_ui::presets_now()))),
             "health.read" => {
                 let p: methods::DeviceParams = params(_params)?;

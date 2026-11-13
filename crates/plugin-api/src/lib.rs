@@ -21,7 +21,7 @@ pub use hideout_contract::Version;
 /// The API version this crate describes. Minor versions only add; a major version breaks.
 pub const API_VERSION: Version = Version {
     major: 1,
-    minor: 15,
+    minor: 16,
 };
 
 /// The JSON Schema of every message, as checked in at `schema/v1.json`.
@@ -40,7 +40,7 @@ mod tests {
         assert!(!v("1.4").served_by(v("1.3")));
         assert!(!v("2.0").served_by(v("1.9")));
         assert_eq!(Version::parse("1"), None);
-        assert_eq!(API_VERSION.to_string(), "1.15");
+        assert_eq!(API_VERSION.to_string(), "1.16");
     }
 
     /// `schema/v1.json` must match the types. After an intended change, regenerate it with

@@ -219,6 +219,7 @@ pub fn start() {
     }
     register("art_keys", super::art_keys_health::rows_now); // #701
     register("dynamic_lighting", super::lamp_health::rows_now); // #691
+    register("lighting_heal", super::lights_heal::row_now);
     register("wallpaper_sync", super::wallpaper_sync_health::rows_now); // #586
     register("art_playlist", super::art_health::rows); // #522, #521
     register("typing_art", super::typing_art::rows_now); // #886

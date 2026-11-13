@@ -64,6 +64,8 @@ pub struct View {
     pub running: Option<String>,
     /// Stop was pressed and the lights are being given back.
     pub stopping: bool,
+    /// The keyboard lights self-heal's state (dark while the scene runs).
+    pub heal: super::lights_heal::View,
     /// The user moved a device, so "Reset positions" shows.
     pub moved: bool,
     /// The moment the preview shows, on the running scene's clock (or the page's).
@@ -138,7 +140,10 @@ pub fn status(v: &View) -> (String, Tone) {
         // No preview before the yes: the hint under the map says what shows once it runs.
         (None, false, _) if v.look.kind.reads_screen() => ("Not running.".into(), Tone::Muted),
         (Some(_), false, Some(who)) => (format!("Paused for {who}"), Tone::Warn),
-        (Some(name), false, None) => (format!("Running: {name}"), Tone::Ok),
+        (Some(name), false, None) => match &v.heal.suffix {
+            Some(s) => (format!("Running: {name} · {s}"), Tone::Warn),
+            None => (format!("Running: {name}"), Tone::Ok),
+        },
         (None, false, _) => ("Not running. The map shows a preview.".into(), Tone::Muted),
     }
 }
@@ -208,6 +213,8 @@ pub enum Intent {
     },
     Start,
     Stop,
+    /// Repaint now: send the scene's colours to the keyboard again.
+    Repaint,
     SavePreset(String),
     RemovePreset(String),
     /// A device dragged on the map, by this much (mm).
@@ -263,6 +270,11 @@ static DRAFT: Mutex<Draft> = Mutex::new(Draft {
     ask_focus: false,
 });
 static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// Whether a Stop is giving the lights back now (for `scene.status`).
+pub fn stopping() -> bool {
+    STOPPING.load(Ordering::Relaxed)
+}
 /// The running scene was started by a profile switch ("Start with this profile"), so a switch
 /// to a profile without it stops it (#489).
 static BY_PROFILE: AtomicBool = AtomicBool::new(false);
@@ -351,6 +363,7 @@ fn show(ui: &mut egui::Ui) {
         saved: st.saved.presets.clone(),
         running: running.map(|(name, _)| name),
         stopping: STOPPING.load(Ordering::Relaxed),
+        heal: super::lights_heal::view(),
         moved: st.moved,
         t,
         with_art: st.chosen.with_art,
@@ -845,6 +858,12 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             looks::save_chosen(&st.chosen);
             show_art(&st.chosen);
         }
+        Intent::Repaint => {
+            if let Err(e) = super::lights_heal::user_repaint() {
+                eprintln!("Foxglove: lights heal: Repaint now: {e}");
+            }
+            ctx.request_repaint();
+        }
         Intent::Stop => {
             stop_by_hand();
             ctx.request_repaint();
@@ -1069,6 +1088,21 @@ fn triggers_card(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     }
 }
 
+/// Repaint now shows while a step runs or Foxglove gave up, not while it still waits (UX plan).
+fn repaint_shown(h: &super::lights_heal::View) -> bool {
+    h.putting_back || h.failed
+}
+
+/// Repaint now is the primary button until it has failed once.
+fn repaint_primary(h: &super::lights_heal::View) -> bool {
+    h.failed && !h.user_failed
+}
+
+/// After Repaint now did not help, the user's next step is Stop.
+fn stop_primary(h: &super::lights_heal::View) -> bool {
+    h.user_failed
+}
+
 /// Start or Stop with the scene's state, the map, and what the scene lights.
 fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
     let p = theme::palette(ui);
@@ -1076,7 +1110,46 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         ui,
         |ui| {
             if v.running.is_some() || v.stopping {
-                let stop = ui.add_enabled(!v.stopping, egui::Button::new("Stop"));
+                // Only while the keyboard is dark (UX plan): first, so Tab reaches it before Stop.
+                if repaint_shown(&v.heal) && !v.stopping {
+                    let busy = v.heal.putting_back;
+                    let label = if busy { "Repainting…" } else { "Repaint now" };
+                    let b = ui.add_enabled(
+                        !busy,
+                        if repaint_primary(&v.heal) {
+                            theme::primary_button(ui, label)
+                        } else {
+                            egui::Button::new(label)
+                        },
+                    );
+                    let b = if busy {
+                        b.on_disabled_hover_text("Foxglove is putting the lights back")
+                    } else {
+                        b.on_hover_text("Sends the scene's colours to the keyboard again")
+                    };
+                    b.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            if busy {
+                                "Repainting the keyboard lights"
+                            } else {
+                                "Repaint the keyboard lights now"
+                            },
+                        )
+                    });
+                    if b.clicked() {
+                        out.push(Intent::Repaint);
+                    }
+                }
+                let stop = ui.add_enabled(
+                    !v.stopping,
+                    if stop_primary(&v.heal) {
+                        theme::primary_button(ui, "Stop")
+                    } else {
+                        egui::Button::new("Stop")
+                    },
+                );
                 if stop
                     .on_hover_text("Stop the scene and put the lights back")
                     .clicked()
@@ -1126,6 +1199,10 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
         },
     );
+    // The muted hint under the whole row, so it is not squeezed beside the buttons.
+    if v.heal.failed {
+        ui.add(egui::Label::new(RichText::new(super::lights_heal::HINT).color(p.muted)).wrap());
+    }
     ui.add_space(6.0);
     room_map(ui, v, draft, out);
     ui.add_space(6.0);
@@ -2136,6 +2213,7 @@ pub(crate) mod tests {
             }],
             running: Some("Bandit scanline".into()),
             stopping: false,
+            heal: Default::default(),
             moved: true,
             // The band on the case's middle fans, on its way to the keys.
             t: SceneTime(2300),
@@ -2204,6 +2282,7 @@ pub(crate) mod tests {
             saved: vec![],
             running: None,
             stopping: false,
+            heal: Default::default(),
             moved: false,
             t: SceneTime(5000),
             with_art: false,
@@ -2572,6 +2651,50 @@ pub(crate) mod tests {
             click(&sample_none(), "Sweep on layer change"),
             vec![Intent::Trigger(Trigger::SweepLayers, true)]
         );
+    }
+
+    #[test]
+    fn repaint_now_shows_only_when_putting_back_or_failed() {
+        use super::super::lights_heal::View as H;
+        let with = |heal: H| View { heal, ..sample() };
+        let waiting = H {
+            dark: true,
+            dark_since: Some("14:02".into()),
+            ..Default::default()
+        };
+        assert!(!shows(&with(waiting.clone()), "Repaint now"));
+        assert!(!shows(&with(waiting), "Repainting…"));
+        let step = H {
+            dark: true,
+            putting_back: true,
+            ..Default::default()
+        };
+        assert!(shows(&with(step), "Repainting…"));
+        let failed = H {
+            dark: true,
+            failed: true,
+            dark_since: Some("14:02".into()),
+            ..Default::default()
+        };
+        assert!(shows(&with(failed), "Repaint now"));
+        assert!(!shows(&sample(), "Repaint now"));
+    }
+
+    #[test]
+    fn stop_becomes_primary_once_repaint_now_failed() {
+        use super::super::lights_heal::View as H;
+        let first = H {
+            dark: true,
+            failed: true,
+            ..Default::default()
+        };
+        assert!(repaint_primary(&first) && !stop_primary(&first));
+        let after = H {
+            user_failed: true,
+            ..first
+        };
+        assert!(!repaint_primary(&after) && stop_primary(&after));
+        assert!(!stop_primary(&H::default()));
     }
 
     /// Whether the page draws `label`.

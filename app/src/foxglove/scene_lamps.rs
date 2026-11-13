@@ -72,6 +72,9 @@ enum Job {
     Forget,
     /// Let every device go (pause, away); the next frame opens them again.
     Release,
+    /// Forget what is believed shown and write every device's newest frame again, without
+    /// reopening (the keyboard's lights went dark under a writer that thought them lit).
+    Repaint,
     Close,
 }
 
@@ -139,6 +142,14 @@ impl Core {
                     }
                 }
                 Job::Forget => self.held.clear(),
+                Job::Repaint => {
+                    for (key, h) in self.held.iter_mut() {
+                        if let Some(h) = h {
+                            h.shown = None;
+                            touched.insert(key.clone());
+                        }
+                    }
+                }
                 Job::Release => {
                     self.held.clear();
                     let mut s = self.status();
@@ -277,6 +288,11 @@ impl LampWriter {
     /// The Lights worker's devices changed: devices not found before are looked for again.
     pub fn devices_changed(&self) {
         let _ = self.tx.send(Job::Forget);
+    }
+
+    /// Writes every device's newest frame again in full, without reopening.
+    pub fn repaint(&self) {
+        let _ = self.tx.send(Job::Repaint);
     }
 
     /// Lets every device go (pause, away). The next frame takes them again.
@@ -975,6 +991,32 @@ mod tests {
         core.handle(vec![frame(2)]);
         assert_eq!(fake.opened.load(Ordering::SeqCst), 2);
         assert_eq!(fake.writes.lock().unwrap().len(), 3, "drawn in full again");
+    }
+
+    #[test]
+    fn a_repaint_writes_the_same_frame_again_without_reopening() {
+        let fake = Arc::new(Fake::default());
+        fake.available.store(true, Ordering::SeqCst);
+        let mut core = Core {
+            opener: Box::new(FakeOpener {
+                key: KEY,
+                fake: fake.clone(),
+            }),
+            held: BTreeMap::new(),
+            tx: mpsc::channel().0,
+            status: Status::default(),
+            notify: None,
+        };
+        core.handle(vec![frame(1)]);
+        core.handle(vec![frame(1)]);
+        assert_eq!(
+            fake.writes.lock().unwrap().len(),
+            1,
+            "unchanged: not written"
+        );
+        core.handle(vec![Job::Repaint]);
+        assert_eq!(fake.writes.lock().unwrap().len(), 2, "repainted in full");
+        assert_eq!(fake.opened.load(Ordering::SeqCst), 1, "not reopened");
     }
 
     #[test]

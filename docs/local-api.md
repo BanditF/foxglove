@@ -54,6 +54,7 @@ same messages.
 | `overlay.window` / `overlay.restore` | call | `devices.read` / `app.windows` (API 1.6) |
 | `lights.page` | call | `devices.read` (API 1.7) |
 | `scenes.page` | call | `devices.read` (API 1.10) |
+| `scene.status` / `scene.repaint` / `scene.stop` | call | `devices.read` / `lighting.write` / `lighting.write` (API 1.16): see below |
 | `focus.get` / `focus.set` | call | `devices.read` / `focus.write` (API 1.12) |
 | `overlay.shown` / `overlay.set_shown` | call | `devices.read` / `app.windows` (API 1.13) |
 | `wallpaper-engine.pause` / `.release` / `.status` | call | `wallpaper.control` (API 1.15, #1120): see below. Never granted over MCP. |
@@ -164,6 +165,20 @@ The params and results are in the schema. Notes:
   wallpaper's `wallpaper` id from the installed manifests, and `on_screen`, the card's "On screen"
   tag), `effects` and `yours`, in the card's order. `scripts/lab/wallpaper_check.py presets`
   checks it against the installed manifests (the 0.2 sitting's old H4).
+- **The scene and the keyboard's lights (API 1.16), for `foxglove-cli scene` and agents:**
+  `scene.status` answers `state` (`none`, `running`, `paused`), `scene`, `paused_for`, `keyboard`
+  (`lit`, `dark`, `off`, `none`), `dark_since` and `next_try` (local `hh:mm`), `putting_back`,
+  `failed` (not put back; Repaint now is offered), the counts `darks` and `recovered` since
+  Foxglove started, `last_recovery` and a `detail` line for On-call. "Dark" means a scene runs,
+  Foxglove holds the lights, the keyboard reports them off for over 2 minutes, and it is not
+  unpowered. `scene.repaint` sends the scene's colours again in full and waits (at most 12 s,
+  woken by the keyboard's reports, no timer) for the result: `{scene, lit}`; it refuses with
+  "no scene is running", "the scene is paused for ...", or "already putting the lights back".
+  `scene.stop` stops the scene as the Scenes page's Stop does and is idempotent: `{scene}`, none
+  when nothing ran. `foxglove-cli scene [status|stop|repaint]` prints these; its exit code is
+  0 (lit, none running, done), 1 (error), 2 (dark and being put back) or 3 (dark and not put
+  back, or still dark after `repaint`). The methods are not routed through the hub yet (the
+  area `scene.*` is reserved for Foxglove).
 - **Case zones and the sync (#617, API 1.5):** `pc_lighting.list` gives each PC lighting
   device (by its key, `vvvv:pppp` plus a serial), its zones with `#rrggbb` colours, whether
   Foxglove writes it, the apps that may fight it, and the last write's status.
