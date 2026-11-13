@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hideout_registry::Registry;
 use hideout_router::server::{user, Hub};
@@ -1795,9 +1795,18 @@ impl Child {
 fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
     let Some(inner) = me.upgrade() else { return };
     let sup = Supervisor(inner);
+    // A planned exit's job, if processes the module started still run in it (the update
+    // installer's helper, #1159): the restart waits for them.
+    let mut helper_job = None;
     {
         let mut live = sup.0.live.lock().unwrap();
         if live.get(id).is_some_and(|l| l.instance == instance) {
+            if code == i64::from(crate::policy::PLANNED_EXIT_CODE) {
+                helper_job = live
+                    .get(id)
+                    .and_then(|l| l.job.clone())
+                    .filter(|j| j.active_processes().is_ok_and(|n| n > 0));
+            }
             live.remove(id);
             sup.0.expected.lock().unwrap().remove(id);
             sup.0.records.lock().unwrap().modules.remove(id);
@@ -1810,6 +1819,23 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
         instance,
         code,
     });
+    if let Some(job) = helper_job {
+        // Waits here, on the instance's own thread, only after a planned exit that left
+        // something running; bounded by the policy's cap (which restarts anyway).
+        sup.feed(Ev::HelperRunning {
+            id: id.into(),
+            instance,
+        });
+        log::info!("supervisor: {id}: restart held for its installer helper");
+        let give_up = Instant::now() + crate::policy::HELPER_WAIT_CAP;
+        while Instant::now() < give_up && job.active_processes().is_ok_and(|n| n > 0) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        sup.feed(Ev::HelperDone {
+            id: id.into(),
+            instance,
+        });
+    }
 }
 
 /// Sleeps until the policy's next deadline, or until nudged after any change.

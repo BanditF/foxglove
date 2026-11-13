@@ -122,7 +122,11 @@ pub fn crash_bar(module: &str, secs: u64, k: usize) -> (String, String) {
     )
 }
 
-/// The Modules page row and the tab tooltip while `restarting`.
+/// The Modules page row and the tab tooltip while a planned exit restarts the module (a GPU
+/// reset, an update install): no crash happened, so no count (#1159).
+pub const RESTARTING_PLANNED: &str = "Restarting\u{2026}";
+
+/// The Modules page row and the tab tooltip while `restarting` after a crash.
 pub fn restarting_row(secs: u64, k: usize) -> String {
     format!("{} ({k} of 5)", restarting_in(secs))
 }

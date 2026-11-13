@@ -21,12 +21,13 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectCpuRateControlInformation,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+    JobObjectBasicAccountingInformation, JobObjectCpuRateControlInformation,
     JobObjectExtendedLimitInformation, OpenJobObjectW, QueryInformationJobObject,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_CPU_RATE_CONTROL_INFORMATION,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
-    JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
-    JOB_OBJECT_LIMIT_JOB_MEMORY,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+    JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_JOB_MEMORY,
 };
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread,
@@ -224,6 +225,26 @@ impl Job {
             0
         };
         Ok(Caps { memory, cpu_rate })
+    }
+
+    /// How many processes run in the job now (0 once the module and everything it started,
+    /// an installer helper included, have ended).
+    pub fn active_processes(&self) -> io::Result<u32> {
+        let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        // SAFETY: the struct and its size match the info class.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.handle.0,
+                JobObjectBasicAccountingInformation,
+                &mut info as *mut _ as *mut _,
+                std::mem::size_of_val(&info) as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(info.ActiveProcesses)
     }
 
     /// Whether process `p` runs inside this job (or a job nested in it).
@@ -461,6 +482,20 @@ mod tests {
         cmd.args(["/c", "exit 3"]);
         let mut child = j.spawn(cmd).unwrap();
         assert_eq!(child.wait().unwrap().code(), Some(3));
+    }
+
+    #[test]
+    fn active_processes_counts_the_job_until_it_is_empty() {
+        let j = job("active");
+        assert_eq!(j.active_processes().unwrap(), 0);
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null());
+        let mut child = j.spawn(cmd).unwrap();
+        assert_eq!(j.active_processes().unwrap(), 1);
+        j.kill(1);
+        child.wait().unwrap();
+        assert_eq!(j.active_processes().unwrap(), 0);
     }
 
     #[test]
