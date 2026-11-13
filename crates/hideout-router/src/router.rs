@@ -864,6 +864,72 @@ impl Router {
         self.revalidate_grant()
     }
 
+    /// The user's Allow (and the hub's start): sets what module `id` holds. The only way a
+    /// module's grants widen while the hub runs (#1178).
+    pub fn set_module_grants(&mut self, id: &str, granted: Vec<String>) -> Vec<Out> {
+        if let Some(e) = self.modules.get_mut(id) {
+            e.granted = granted;
+        }
+        self.revalidate_module_grants()
+    }
+
+    /// Turn off (§6.4): drops `items` (all for `None`) from what `id` holds in memory at once,
+    /// before any file is written. Routes through them go, leases through them end `revoked`.
+    pub fn drop_module_grants(&mut self, id: &str, items: Option<&[String]>) -> Vec<Out> {
+        if let Some(e) = self.modules.get_mut(id) {
+            e.granted.retain(|g| items.is_some_and(|w| !w.contains(g)));
+        }
+        self.revalidate_module_grants()
+    }
+
+    /// What a change of `inventory.json` made by anyone may do to a module's grants: only
+    /// narrow them. `effective = in_memory ∩ file`; an item in the file that memory does not
+    /// hold is ignored (logged) until the user's Allow or the next hub start. A module missing
+    /// from `files` lost everything.
+    pub fn narrow_module_grants(&mut self, files: &HashMap<String, Vec<String>>) -> Vec<Out> {
+        for (id, e) in self.modules.iter_mut() {
+            let file = files.get(id).map(Vec::as_slice).unwrap_or(&[]);
+            let extra: Vec<&String> = file.iter().filter(|f| !e.granted.contains(f)).collect();
+            if !extra.is_empty() && e.registered_version.is_some() {
+                log::warn!(
+                    "permissions: {id}: ignored a grant added to inventory.json by another process: {extra:?}"
+                );
+            }
+            e.granted.retain(|g| file.contains(g));
+        }
+        self.revalidate_module_grants()
+    }
+
+    /// What module `id` holds in memory.
+    pub fn module_grants(&self, id: &str) -> Vec<String> {
+        self.modules.get(id).map(|e| e.granted.clone()).unwrap_or_default()
+    }
+
+    /// Routes, fact ownership and leases follow the grants now in memory.
+    fn revalidate_module_grants(&mut self) -> Vec<Out> {
+        self.revalidate_adopted_routes();
+        let mut out = Vec::new();
+        let gone: Vec<(String, String)> = self
+            .leases
+            .iter()
+            .filter(|(k, l)| {
+                self.modules
+                    .get(&k.0)
+                    .is_some_and(|m| m.registered_version.is_some())
+                    && !self
+                        .routes
+                        .iter()
+                        .any(|r| r.module == k.0 && covers(&r.pattern, &l.method))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in gone {
+            self.leases.remove(&k);
+            self.lease_closed(&k.0, &k.1, "revoked", &mut out);
+        }
+        out
+    }
+
     /// Turns the grant of `id` off in memory at once, before any file is written (a revoke must
     /// not wait for the disk). Returns the notices for the leases that ended.
     pub fn drop_keyboard_grant(&mut self, id: &str) -> Vec<Out> {

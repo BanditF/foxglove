@@ -960,22 +960,7 @@ impl Supervisor {
         declined: &[String],
         by: &str,
     ) -> Result<(), String> {
-        let out = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
-            .map_err(|e| format!("{e:?}"))
-            .and_then(|mut r| {
-                r.approve_listed(
-                    id,
-                    list_code,
-                    chosen,
-                    declined,
-                    &hideout_registry::catalogs::now_utc(),
-                    by,
-                )
-                .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))
-            })?;
-        for (item, e) in out.refused {
-            log::warn!("supervisor: {id}: not granted: {item}: {e}");
-        }
+        self.grant_listed(id, list_code, chosen, declined, by)?;
         self.feed(Ev::Review { id: id.into() });
         Ok(())
     }
@@ -1028,6 +1013,36 @@ impl Supervisor {
             log::warn!("supervisor: {id}: off not saved: {e}");
         }
         self.feed(Ev::Disable { id: id.into() });
+    }
+
+    /// Whether process `pid` may not grant (#1178): it runs inside a module's Job Object (a
+    /// module or any child of one; breakaway is not allowed), or can't be inspected (fail
+    /// closed).
+    pub fn in_module_job(&self, pid: u32) -> bool {
+        let Ok(p) = Process::open(pid) else {
+            return true;
+        };
+        let live = self.0.live.lock().unwrap();
+        live.values()
+            .filter_map(|l| l.job.as_ref())
+            .any(|j| j.holds(&p).unwrap_or(true))
+    }
+
+    /// [`grant_listed_in`] on this hub's folder and router.
+    pub fn grant_listed(
+        &self,
+        id: &str,
+        list_code: &str,
+        chosen: &[String],
+        declined: &[String],
+        by: &str,
+    ) -> Result<hideout_registry::permission::Outcome, String> {
+        grant_listed_in(&self.0.home, &self.0.hub, id, list_code, chosen, declined, by)
+    }
+
+    /// [`revoke_items_in`] on this hub's folder and router.
+    pub fn revoke_items(&self, id: &str, items: Option<&[String]>) -> Result<Vec<String>, String> {
+        revoke_items_in(&self.0.home, &self.0.hub, id, items)
     }
 
     /// **Turn on** from the Modules page: saved as on, then started as `enable` does (§7.4).
@@ -1900,4 +1915,62 @@ mod path_tests {
         assert!(!p(r"C:\Apps\fox.exe", r"C:\Other\fox.exe"));
         assert!(!p("", ""));
     }
+}
+
+/// The user's Allow for the list with code `list_code` (the dialog, or the control pipe's
+/// handler after its caller check; nothing else calls this, #1178). Records the grant and
+/// binding in `inventory.json`, then widens the router to what the file now says. Items that
+/// can't be allowed come back as refused.
+pub fn grant_listed_in(
+    home: &Path,
+    hub: &Hub,
+    id: &str,
+    list_code: &str,
+    chosen: &[String],
+    declined: &[String],
+    by: &str,
+) -> Result<hideout_registry::permission::Outcome, String> {
+    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+        .map_err(|e| format!("{e:?}"))?;
+    let out = reg
+        .approve_listed(
+            id,
+            list_code,
+            chosen,
+            declined,
+            &hideout_registry::catalogs::now_utc(),
+            by,
+        )
+        .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))?;
+    for (item, e) in &out.refused {
+        log::warn!("supervisor: {id}: not granted: {item}: {e}");
+    }
+    log::info!(
+        "permissions: {id}: allowed {}, declined {}, refused {} by {by}; bound {}",
+        out.granted.len(),
+        out.declined.len(),
+        out.refused.len(),
+        out.bound_path
+    );
+    let granted = reg.inventory.modules[id].granted.clone();
+    hub.act(|r| r.set_module_grants(id, granted));
+    Ok(out)
+}
+
+/// Turn off: the router drops the items first (routes go, leases end `revoked`), then the file
+/// is written; a failed write is reported and never undoes the router's change. `None` turns
+/// every item off. Returns what is still allowed.
+pub fn revoke_items_in(
+    home: &Path,
+    hub: &Hub,
+    id: &str,
+    items: Option<&[String]>,
+) -> Result<Vec<String>, String> {
+    let owned = items.map(<[String]>::to_vec);
+    hub.act(|r| r.drop_module_grants(id, owned.as_deref()));
+    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+        .map_err(|e| format!("{e:?}"))?;
+    let left = reg.revoke_items(id, items).map_err(|e| format!("{e:?}"))?;
+    log::info!("permissions: {id}: turned off {items:?} by user");
+    Ok(left)
 }

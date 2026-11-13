@@ -14,6 +14,8 @@
 #[cfg(windows)]
 mod adopt;
 #[cfg(windows)]
+mod control;
+#[cfg(windows)]
 mod catalog_fetch;
 #[cfg(windows)]
 mod https;
@@ -264,6 +266,14 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
     if hideout_shell::lab_control::enabled(paths) {
         lab_verbs::register(supervisor.clone());
     }
+    if let Err(e) = control::serve(
+        &control::pipe_name(paths),
+        paths.root.clone(),
+        router.clone(),
+        supervisor.clone(),
+    ) {
+        log::warn!("control pipe not served: {e}");
+    }
     let hub = router.clone();
     let facts: modules_page::Facts = Box::new(move |k| hub.read(|r| r.fact(k).cloned()));
     let sup = supervisor.clone();
@@ -300,6 +310,9 @@ fn main() {
         std::process::exit(code);
     }
     if let Some(code) = lab_do_client(&paths, std::env::args_os().skip(1)) {
+        std::process::exit(code);
+    }
+    if let Some(code) = control::client(&paths, std::env::args_os().skip(1)) {
         std::process::exit(code);
     }
     if let Some(code) = adopt_client(&paths, std::env::args_os().skip(1)) {
