@@ -356,7 +356,7 @@ impl hideout_shell::Page for ModulesPage {
     }
 
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
-        use hideout_shell::modules_list::{page_ui_with, Banner, Click, Find, Top};
+        use hideout_shell::modules_list::{page_ui_with_head, Banner, Click, Find, Top};
         let (rows, counting) = self.rows();
         let state = self
             .facts
@@ -390,7 +390,14 @@ impl hideout_shell::Page for ModulesPage {
             // Locked while it runs; the result's buttons are the way out.
             locked: active,
         };
-        if let Some(click) = page_ui_with(ui, t, &rows, top) {
+        let mut grant = self.grant.take();
+        let clicked = page_ui_with_head(ui, t, &rows, top, &mut |ui| {
+            if let Some(g) = grant.as_mut() {
+                g.top(ui, t);
+            }
+        });
+        self.grant = grant;
+        if let Some(click) = clicked {
             if click == Click::CopyDiagnostics {
                 if let Some(f) = &self.finder {
                     ui.ctx().copy_text(f.diagnostics());
@@ -398,10 +405,9 @@ impl hideout_shell::Page for ModulesPage {
             }
             self.on_click(click);
         }
-        // The keyboard grant: the header line and Permissions row, then the dialog.
+        // The keyboard grant's dialog, over the page.
         if let Some(g) = self.grant.as_mut() {
-            ui.add_space(16.0);
-            g.ui(ui, t);
+            g.dialog(ui.ctx(), t);
         }
         // Only while a row counts down and the page is drawn (no frames while hidden).
         if counting {

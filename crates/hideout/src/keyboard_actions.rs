@@ -10,7 +10,7 @@ use std::path::Path;
 use hideout_registry::keyboard::KeyboardState;
 use hideout_registry::Registry;
 use hideout_router::server::Hub;
-use hideout_shell::keyboard_grant::{Answer, Ask, Dialog, Situation};
+use hideout_shell::keyboard_grant::{Answer, Ask, Dialog, HeaderKind, Situation};
 use hideout_shell::theme::Tokens;
 
 /// Maps the registry's view to the shell's. `started_without_act`: the module started with no
@@ -57,13 +57,16 @@ pub fn allow(home: &Path, hub: &Hub, id: &str, shown_path: &str) -> Result<(), S
         return Err("the program is on a network path".into());
     }
     if !hideout_registry::keyboard::same_path(shown_path, &pin.path) {
-        return Err("the program is not the one the dialog showed".into());
+        return Err(MISMATCH.into());
     }
     reg.allow_keyboard(id, &pin.path, &pin.sha256, &hideout_supervisor::now_utc())
         .map_err(|e| format!("{e:?}"))?;
     push(&reg, hub);
     Ok(())
 }
+
+/// `allow`'s refusal when the path the dialog showed isn't the file that was pinned.
+pub const MISMATCH: &str = "the program is not the one the dialog showed";
 
 /// Not now, Esc or the close box: remembered in `hideout.toml`, never asked by itself again.
 pub fn decline(home: &Path, id: &str) -> Result<(), String> {
@@ -94,8 +97,11 @@ pub struct GrantUi {
     pub dialog: Option<Dialog>,
     /// The dialog was drawn once already (Not now takes the focus on the first frame only).
     drawn: bool,
-    /// "Not now" on the header line: hidden until the next hub start.
-    header_hidden: bool,
+    /// "Not now" on a header line hides that line (its kind) until the next hub start; a
+    /// different line (changed since you allowed it) still shows.
+    header_hidden: Option<HeaderKind>,
+    /// The button that opened the dialog: the focus goes back to it when the dialog closes.
+    opener: Option<hideout_shell::egui::Id>,
     /// The user has answered or acted on the grant in this run: a module that is on and never
     /// asked then no longer counts as "started without the user's act".
     acted: bool,
@@ -114,7 +120,8 @@ impl GrantUi {
             situation: Situation::Standalone,
             dialog: None,
             drawn: false,
-            header_hidden: false,
+            header_hidden: None,
+            opener: None,
             acted: false,
             note: None,
             seen: None,
@@ -172,9 +179,10 @@ impl GrantUi {
             log::warn!("keyboard grant: {a:?} failed ({e})");
             self.note = Some(
                 match a {
-                    Answer::Allow => {
+                    Answer::Allow if e == MISMATCH => {
                         "Foxglove wasn't allowed: its program file isn't the one shown."
                     }
+                    Answer::Allow => "Foxglove couldn't be allowed. Try again from Turn on\u{2026}",
                     Answer::NotNow => "Your answer couldn't be saved.",
                 }
                 .into(),
@@ -205,6 +213,8 @@ impl GrantUi {
     /// The Turn on of the module itself: asks when the module is on and the grant is new or
     /// void (only on the user's act; never from a background event).
     pub fn after_turn_on(&mut self) {
+        // The user acted: no "started without your act" line behind the dialog.
+        self.acted = true;
         self.refresh();
         let ask = matches!(
             self.situation,
@@ -217,35 +227,62 @@ impl GrantUi {
 
     /// The header line, unless Not now hid it.
     pub fn header(&self) -> Option<hideout_shell::keyboard_grant::Header> {
-        hideout_shell::keyboard_grant::header(&self.situation).filter(|_| !self.header_hidden)
+        hideout_shell::keyboard_grant::header(&self.situation)
+            .filter(|h| self.header_hidden != Some(h.kind))
     }
 
-    /// Draws the header line, the Permissions row and the dialog.
-    pub fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &Tokens) {
+    /// Draws the header line, then the "Foxglove · Permissions" label and row, at the top of
+    /// the Modules page.
+    pub fn top(&mut self, ui: &mut hideout_shell::egui::Ui, t: &Tokens) {
+        use hideout_shell::egui::RichText;
         use hideout_shell::keyboard_grant_ui as kui;
         if let Some(h) = self.header() {
             match kui::header_ui(ui, t, &h) {
-                Some(true) => self.open_dialog(),
-                Some(false) => self.header_hidden = true,
+                Some((true, id)) => {
+                    self.opener = Some(id);
+                    self.open_dialog();
+                }
+                Some((false, _)) => self.header_hidden = Some(h.kind),
                 None => {}
             }
             ui.add_space(8.0);
         }
         if let Some(r) = hideout_shell::keyboard_grant::row(&self.situation) {
+            ui.label(
+                RichText::new(hideout_shell::keyboard_grant::SECTION_LABEL)
+                    .small()
+                    .color(kui::rgb(t.text_muted)),
+            );
             match kui::row_ui(ui, t, &r) {
-                Some(Ask::TurnOff) => self.turn_off(),
-                Some(Ask::OpenDialog) => self.open_dialog(),
+                Some((Ask::TurnOff, _)) => self.turn_off(),
+                Some((Ask::OpenDialog, id)) => {
+                    self.opener = Some(id);
+                    self.open_dialog();
+                }
                 None => {}
             }
             if let Some(n) = &self.note {
-                ui.label(n.as_str());
+                let l = ui.label(RichText::new(n.as_str()).color(kui::rgb(t.text_muted)));
+                ui.ctx().accesskit_node_builder(l.id, |nb| {
+                    nb.set_live(hideout_shell::egui::accesskit::Live::Polite);
+                });
             }
+            ui.add_space(16.0);
         }
+    }
+
+    /// Draws the dialog while it is open. The answer is applied and the focus goes back to the
+    /// button that opened it.
+    pub fn dialog(&mut self, ctx: &hideout_shell::egui::Context, t: &Tokens) {
+        use hideout_shell::keyboard_grant_ui as kui;
         if let Some(d) = &self.dialog {
             let first = !self.drawn;
             self.drawn = true;
-            if let Some(a) = kui::dialog_ui(ui.ctx(), t, d, first) {
+            if let Some(a) = kui::dialog_ui(ctx, t, d, first) {
                 self.answer(a);
+                if let Some(id) = self.opener.take() {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
             }
         }
     }
@@ -411,6 +448,10 @@ mod tests {
     #[test]
     fn allow_from_the_dialog_grants_and_a_changed_file_offers_allow_again() {
         let (mut g, home) = ui_for("changed");
+        // Not now on the "needs your OK" line hides only that line.
+        assert_eq!(g.header().unwrap().kind, HeaderKind::Ask);
+        g.header_hidden = Some(HeaderKind::Ask);
+        assert!(g.header().is_none());
         g.open_dialog();
         g.answer(Answer::Allow);
         assert!(matches!(g.situation, Situation::Granted { .. }));
@@ -433,8 +474,9 @@ mod tests {
             "Foxglove changed since you allowed it"
         );
         assert_eq!(row_button(&g), "Review\u{2026}");
-        // Not now on the header hides it; the row stays.
-        g.header_hidden = true;
+        // The earlier Not now doesn't hide this one; Not now on it hides it, the row stays.
+        assert_eq!(g.header().unwrap().kind, HeaderKind::Changed);
+        g.header_hidden = Some(HeaderKind::Changed);
         assert!(g.header().is_none());
         assert_eq!(row_button(&g), "Review\u{2026}");
         // Review opens the same dialog with the reason on top; Allow records it again.
@@ -454,7 +496,7 @@ mod tests {
         g.dialog.as_mut().unwrap().path = r"C:\Elsewhere\foxglove.exe".into();
         g.answer(Answer::Allow);
         assert_eq!(state(&home), KeyboardState::NotAsked);
-        assert!(g.note.is_some());
+        assert!(g.note.as_deref().unwrap().contains("isn't the one shown"));
         let _ = std::fs::remove_dir_all(home.parent().unwrap());
     }
 
@@ -471,6 +513,8 @@ mod tests {
         assert!(g.header().is_some() && g.dialog.is_none());
         g.after_turn_on();
         assert!(g.dialog.is_some());
+        // The user acted: no header line behind the dialog.
+        assert!(g.header().is_none());
         assert_eq!(state(&home), KeyboardState::NotAsked);
         let _ = std::fs::remove_dir_all(home.parent().unwrap());
     }
