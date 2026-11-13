@@ -245,6 +245,9 @@ pub mod art {
     pub const SLOT_READ_MAX: usize = 25;
     /// The right's status version with SLOT_READ (`ART_RELAY_SLOT_READ_STATUS_VERSION`).
     pub const SLOT_READ_RIGHT_VERSION: u8 = 12;
+    /// The right's status version that draws SET_EFFECT's key rings (#490,
+    /// `ART_RELAY_KEYS_STATUS_VERSION`): an older right keeps its own effect.
+    pub const KEY_RINGS_RIGHT_VERSION: u8 = 13;
 }
 
 pub mod settings {

@@ -209,6 +209,8 @@ pub struct FoxgloveLinkDevice {
     /// Its LEDs by part, in SET_FRAME's order (#561): what the firmware or the board profile
     /// says, else the old firmware's.
     lamp_parts: Mutex<LampParts>,
+    /// HELLO v2's word 2 (D5 88), read once per link generation ([`FoxgloveLinkDevice::key_rings`]).
+    word2: Mutex<Option<(u64, u32)>>,
     _events: EventSubscription,
     _reports: EventSubscription,
 }
@@ -318,6 +320,7 @@ impl FoxgloveLinkDevice {
             hello: Mutex::new(hello),
             panel_size: Mutex::new(None),
             lamp_parts: Mutex::new(LampParts::old_firmware()),
+            word2: Mutex::new(None),
             sink,
             layers,
             behaviors: Mutex::new(Vec::new()),
@@ -586,6 +589,28 @@ impl FoxgloveLinkDevice {
                 (usize::from(p.width), usize::from(p.height))
             })
         })
+    }
+
+    /// Whether SET_EFFECT takes key rings (#490, HELLO v2 capability 37
+    /// [crate::hello_v2::capabilities::KEY_RINGS]). Asks nothing of firmware without
+    /// [capabilities::EFFECTS]; otherwise D5 08 once per link generation (a replug or a flash
+    /// asks again). Blocks on the link: call it off the UI thread.
+    pub fn key_rings(&self) -> bool {
+        if !self.effects() {
+            return false;
+        }
+        let generation = self.link.state().generation;
+        let mut cached = self.word2.lock().unwrap_or_else(|e| e.into_inner());
+        let word2 = match *cached {
+            Some((g, w)) if g == generation => w,
+            _ => {
+                let hello = self.hello.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let w = crate::hello_v2::read(&*self.link, &hello).word2();
+                *cached = Some((generation, w));
+                w
+            }
+        };
+        crate::hello_v2::capabilities::key_rings(capabilities::EFFECTS, word2)
     }
 
     fn has(&self, bit: u32) -> bool {

@@ -106,6 +106,8 @@ pub fn device() -> Option<Arc<FoxgloveLinkDevice>> {
         FRAMES.store(device.frames(), std::sync::atomic::Ordering::Relaxed);
         EFFECTS.store(device.effects(), std::sync::atomic::Ordering::Relaxed);
         EFFECT_LAMPS.store(device.effect_lamps(), std::sync::atomic::Ordering::Relaxed);
+        // Asked for below, outside the lock (#490).
+        KEY_RINGS.store(false, std::sync::atomic::Ordering::Relaxed);
         // The learned ids only for the build they were learned under (#633).
         build = check(&device, device.link().state().generation);
         // Its LEDs by part, from the profile just read (#561): frames are that size, until the
@@ -134,6 +136,8 @@ pub fn device() -> Option<Arc<FoxgloveLinkDevice>> {
         super::keyboard_actions::learn_cached(vid, pid, build.as_deref());
         if let Some(d) = &out {
             learn_lamp_parts(d);
+            // KEY_RINGS (#490): one D5 08 on a connect, none for firmware without effects.
+            set_key_rings(d.key_rings());
         }
     }
     out
@@ -219,6 +223,19 @@ pub fn effect_lamps() -> bool {
 }
 
 static EFFECT_LAMPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the keyboard found last draws key rings itself (#490, HELLO v2 KEY_RINGS): read on
+/// its connect, and by the scene's writer. Never looks for one, so the UI thread may ask.
+pub fn key_rings() -> bool {
+    KEY_RINGS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static KEY_RINGS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the scene's writer found the keyboard says about key rings (it asks off the UI thread).
+pub fn set_key_rings(on: bool) {
+    KEY_RINGS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// How Foxglove's host link reaches the keyboard found last (`USB` or `BLE`), which can differ
 /// from how it types to this PC (USB Raw HID stays silent before firmware #434).

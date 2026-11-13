@@ -2236,6 +2236,51 @@ fn screen_glow_frame() -> Vec<foxglove_scene::Edges> {
     vec![Edges::of(&img)]
 }
 
+/// #490 key rings on the Scenes page, for the UX review (docs/key-rings-ux.md): Ripple on each
+/// key press in states A (the keyboard draws them), B (Foxglove does: "Keep running" greyed),
+/// C (an older right half: the Effect card's line and link) and D (not running: the map's demo
+/// ring), and E (Ripple on a loop: today's card with the new row). Saved as
+/// `ui-490-key-rings-*.png`.
+#[test]
+fn key_rings_page_renders() {
+    use crate::foxglove::scene_looks::{Look, Starts};
+    use crate::foxglove::scenes_ui::{tests, View};
+    use crate::foxglove::shell::Page;
+    let page = |v: View| {
+        let mut s = Samples::full();
+        s.scenes = (v, Default::default());
+        shell_preview_with(Page::Scenes, &s, 1250.0)
+    };
+    // Mid-ring on the map: 500 ms into the demo ring.
+    let at = |v: View| View {
+        t: foxglove_scene::SceneTime(500),
+        ..v
+    };
+    let a = page(at(tests::rings_sample(true, false)));
+    let b = page(at(tests::rings_sample(false, false)));
+    let c = page(at(tests::rings_sample(true, true)));
+    let d = page(at(View {
+        running: None,
+        ..tests::rings_sample(false, false)
+    }));
+    let looped = tests::rings_sample(false, false);
+    let e = page(at(View {
+        look: Look {
+            starts: Starts::Loop,
+            ..looped.look.clone()
+        },
+        ..looped
+    }));
+    keep("ui-490-key-rings-a-keyboard.png", &a);
+    keep("ui-490-key-rings-b-foxglove.png", &b);
+    keep("ui-490-key-rings-c-old-right.png", &c);
+    keep("ui-490-key-rings-d-not-running.png", &d);
+    keep("ui-490-key-rings-e-loop.png", &e);
+    assert_ne!(a, b, "B greys Keep running");
+    assert_ne!(a, c, "C adds the right half's line");
+    assert_ne!(b, e, "the loop has today's Triggers card");
+}
+
 /// #496 Screen glow on the Scenes page, for the UX review: the permission card after the first
 /// Start, the running effect (live edge strips and each device's line to its edge, Smoothing
 /// and "Stop allowing"), held by a full-screen game, and picked but not allowed (a still grey

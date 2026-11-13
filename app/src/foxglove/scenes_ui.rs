@@ -34,8 +34,8 @@ use foxglove_scene::{
 
 use super::lights_page::{full_slider, swatch, value_row, SWATCHES, TWO_COLUMNS};
 use super::scene_looks::{
-    self as looks, Background, Chosen, Direction, Kind, Look, Preset, Saved, WallpaperLook,
-    PALETTES,
+    self as looks, Background, Chosen, Direction, Kind, Look, Preset, Saved, Starts,
+    WallpaperLook, PALETTES,
 };
 use super::screen_glow as glow;
 use super::settings_ui::{card, split_row};
@@ -97,6 +97,77 @@ pub struct View {
     pub focused: Vec<String>,
     /// Screen glow (#496).
     pub screen: ScreenView,
+    /// Key rings (#490): who can draw them, and how the map shows them.
+    pub rings: RingsView,
+}
+
+/// What the page knows of key rings (#490, docs/key-rings-ux.md, states A to E).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RingsView {
+    /// The keyboard draws key rings itself (SET_EFFECT and HELLO v2 KEY_RINGS): states A and C.
+    pub keyboard: bool,
+    /// Its right half predates them (EFFECT's reply right = 2, or relay status below 13): C.
+    pub right_old: bool,
+    /// Windows' animation effects are on: the map's demo ring moves (off: one still ring).
+    pub animations: bool,
+}
+
+impl Default for RingsView {
+    fn default() -> Self {
+        RingsView {
+            keyboard: false,
+            right_old: false,
+            animations: true,
+        }
+    }
+}
+
+/// The Triggers card's reason under "Ripple on key press" while the look covers it (#490).
+pub const RINGS_COVERED: &str = "The Ripple effect already starts a ring at each key.";
+/// The reason under "Keep running on the keyboard" when the keyboard can't draw key rings (B).
+pub const KEEP_NO_RINGS: &str =
+    "This keyboard can't draw key-press rings by itself, so they stop when Foxglove quits.";
+/// The Effect card's line when the right half predates key rings (state C), and its link.
+pub const RIGHT_HALF_OLD: &str =
+    "Rings show on the left half only. The right half needs a firmware update.";
+pub const UPDATE_FIRMWARE: &str = "Update firmware";
+/// The map's demo ring for key rings waits this long after each ring (docs/key-rings-ux.md).
+pub const DEMO_GAP_MS: i64 = 1_000;
+
+/// The map's demo ring for a key-rings look (#490): one ring from the left index finger's key
+/// every ring's time plus [`DEMO_GAP_MS`], and the moment to draw it at. With Windows' animation
+/// effects off, one still ring, half-grown, whatever `t` is. `None` for any other look or
+/// without a keyboard on the map.
+pub fn demo_ring(
+    room: &RoomMap,
+    look: &Look,
+    t: SceneTime,
+    animations: bool,
+) -> Option<(foxglove_scene::Burst, SceneTime)> {
+    let Effect::KeyRings {
+        colour,
+        width_mm,
+        period_ms,
+        ..
+    } = look.effect(room)
+    else {
+        return None;
+    };
+    let origin = super::scene_triggers::demo_key_point(room)?;
+    let (start, at) = if animations {
+        let cycle = i64::from(period_ms) + DEMO_GAP_MS;
+        (SceneTime(t.ms() - t.ms().rem_euclid(cycle)), t)
+    } else {
+        (SceneTime(0), SceneTime(i64::from(period_ms) / 2))
+    };
+    let ring = foxglove_scene::Burst {
+        shape: foxglove_scene::burst::Shape::Ring { origin },
+        colour,
+        start,
+        duration_ms: period_ms,
+        width_mm,
+    };
+    Some((ring, at))
 }
 
 /// What the page knows of Screen glow (#496).
@@ -228,6 +299,8 @@ pub enum Intent {
     AllowAndStart,
     /// Screen glow's "Stop allowing": forgets the yes and stops it.
     StopAllowing,
+    /// State C's "Update firmware" (#490): to the Keyboard page's firmware update.
+    UpdateFirmware,
 }
 
 /// The page's own state between frames.
@@ -366,6 +439,16 @@ fn show(ui: &mut egui::Ui) {
         yielded_to: super::lights_owner::yielded_to(),
         focused: st.focused.clone(),
         screen: screen_view(),
+        rings: RingsView {
+            keyboard: st.keyboard_lit
+                && super::devices::effects()
+                && super::devices::key_rings(),
+            // Asked only while the look is key rings: state C shows nowhere else.
+            right_old: st.keyboard_lit
+                && st.chosen.look.key_rings()
+                && super::scene_run::rings_right_old(),
+            animations: glow::animations_on(),
+        },
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -818,6 +901,8 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             if save {
                 looks::save_chosen(&st.chosen);
             }
+            // The look decides which presses ring and in what colour (#489, #490).
+            super::scene_triggers::set_flags(&st.chosen);
             resend(st);
         }
         Intent::Start => {
@@ -866,6 +951,10 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
         Intent::FindLeds => {
             super::shell::set_page(super::shell::Page::Lights);
             super::led_map_ui::open(ctx);
+            ctx.request_repaint();
+        }
+        Intent::UpdateFirmware => {
+            super::shell::set_page(super::shell::Page::Keyboard);
             ctx.request_repaint();
         }
         Intent::SavePreset(name) => {
@@ -957,6 +1046,20 @@ pub fn next_frame(kind: Kind, minimised: bool, away: bool) -> Option<Duration> {
         .then_some(PREVIEW_INTERVAL)
 }
 
+/// [`next_frame`] for `look`: key rings with Windows' animation effects off show one still
+/// demo ring, so they ask for none (#490).
+pub fn next_frame_for(
+    look: &Look,
+    animations: bool,
+    minimised: bool,
+    away: bool,
+) -> Option<Duration> {
+    if look.key_rings() && !animations {
+        return None;
+    }
+    next_frame(look.kind, minimised, away)
+}
+
 fn animate(ctx: &egui::Context, v: &View) {
     let minimised = ctx.input(|i| i.viewport().minimized) == Some(true);
     if v.look.kind.reads_screen() {
@@ -966,7 +1069,12 @@ fn animate(ctx: &egui::Context, v: &View) {
         }
         return;
     }
-    if let Some(after) = next_frame(v.look.kind, minimised, super::away::away()) {
+    if let Some(after) = next_frame_for(
+        &v.look,
+        v.rings.animations,
+        minimised,
+        super::away::away(),
+    ) {
         ctx.request_repaint_after(after);
         #[cfg(test)]
         REPAINTS.set(REPAINTS.get() + 1);
@@ -1039,13 +1147,20 @@ fn triggers_card(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         v.profile
     ));
     ui.add_space(4.0);
-    boxed(
-        ui,
-        Trigger::RippleKeys,
-        t.ripple_keys,
-        "Ripple on key press",
-        "Each key you press sends one ring of the scene's colour across the room. Foxglove sees where the key is, never what it types.",
-    );
+    let ripple_hint = "Each key you press sends one ring of the scene's colour across the room. Foxglove sees where the key is, never what it types.";
+    if v.look.key_rings() {
+        // #490: the look already rings at each key. Shown ticked and greyed with the reason;
+        // the saved box is untouched and back when the look changes.
+        greyed_box(ui, true, "Ripple on key press", ripple_hint, RINGS_COVERED);
+    } else {
+        boxed(
+            ui,
+            Trigger::RippleKeys,
+            t.ripple_keys,
+            "Ripple on key press",
+            ripple_hint,
+        );
+    }
     boxed(
         ui,
         Trigger::SweepLayers,
@@ -1059,14 +1174,51 @@ fn triggers_card(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         return;
     }
     ui.add_space(4.0);
+    let keep_hint = "When you quit Foxglove, the keyboard keeps drawing the scene by itself. Needs keyboard firmware that draws effects (scanline, sweep, ripple, breathe). Off: quitting gives the keyboard its own lights back.";
+    if v.look.key_rings() && !v.rings.keyboard {
+        // State B (#490): only a keyboard that draws key rings keeps them after a quit. Greyed
+        // rather than hidden, since a firmware update makes it work; the saved choice stays.
+        greyed_box(
+            ui,
+            false,
+            "Keep running on the keyboard",
+            keep_hint,
+            KEEP_NO_RINGS,
+        );
+        return;
+    }
     let mut keep = v.keep_on_keyboard;
     if ui
         .checkbox(&mut keep, "Keep running on the keyboard")
-        .on_hover_text("When you quit Foxglove, the keyboard keeps drawing the scene by itself. Needs keyboard firmware that draws effects (scanline, sweep, ripple, breathe). Off: quitting gives the keyboard its own lights back.")
+        .on_hover_text(keep_hint)
         .changed()
     {
         out.push(Intent::KeepOnKeyboard(keep));
     }
+}
+
+/// A box that can't be changed now: greyed, showing `on`, with `reason` as a visible line under
+/// it (lined up with its label) and as its AccessKit description, so a screen reader says why.
+fn greyed_box(ui: &mut egui::Ui, on: bool, label: &str, hint: &str, reason: &str) {
+    let mut shown = on;
+    let r = ui
+        .add_enabled(false, egui::Checkbox::new(&mut shown, label))
+        .on_disabled_hover_text(hint);
+    describe(ui, r.id, reason);
+    let indent = ui.spacing().icon_width + ui.spacing().icon_spacing;
+    egui::Frame::NONE
+        .inner_margin(egui::Margin {
+            left: indent.round() as i8,
+            ..Default::default()
+        })
+        .show(ui, |ui| ui.weak(reason));
+}
+
+/// Sets `text` as the AccessKit description of the widget `id` (a hover's words, or why it is
+/// greyed), so screen readers get it, not only mouse users.
+fn describe(ui: &egui::Ui, id: egui::Id, text: &str) {
+    ui.ctx()
+        .accesskit_node_builder(id, |n| n.set_description(text.to_owned()));
 }
 
 /// Start or Stop with the scene's state, the map, and what the scene lights.
@@ -1340,6 +1492,8 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
     handle_drag(&response, v, &map, draft, out);
     let room = dragged_room(&v.room, draft.drag.as_ref());
     let effect = v.look.effect(&room);
+    // Key rings can't wait for presses here: a demo ring from a home-row key (#490).
+    let ring = demo_ring(&room, &v.look, v.t, v.rings.animations);
     let painter = ui.painter_at(rect);
     painter.rect(
         rect,
@@ -1348,7 +1502,7 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
         Stroke::new(1.0, p.line),
         egui::StrokeKind::Inside,
     );
-    field(&painter, &map, &effect, v.t, &room.bounds);
+    field(&painter, &map, &effect, v.t, &room.bounds, ring.as_ref());
     if let Some(m) = stand_in {
         let r = map.rect(&m);
         painter.rect_stroke(r, 3.0, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
@@ -1362,7 +1516,11 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
             v.t,
         )
     } else {
-        effect.render(&room, v.t)
+        let mut f = effect.render(&room, v.t);
+        if let Some((b, at)) = &ring {
+            ring_over(&mut f, &room, b, *at);
+        }
+        f
     };
     if v.look.kind == Kind::Gradient {
         // A still look asks for no more frames, so nothing would finish the fade: show where
@@ -1712,6 +1870,7 @@ fn field(
     effect: &Effect,
     t: SceneTime,
     bounds: &foxglove_scene::Rect,
+    ring: Option<&(foxglove_scene::Burst, SceneTime)>,
 ) {
     let area = map.rect(bounds);
     let nx = ((area.width() / 14.0).ceil() as usize).clamp(2, 48);
@@ -1737,7 +1896,10 @@ fn field(
         }],
         bounds: *bounds,
     };
-    let frame = effect.render(&grid, t);
+    let mut frame = effect.render(&grid, t);
+    if let Some((b, at)) = ring {
+        ring_over(&mut frame, &grid, b, *at);
+    }
     let mut mesh = egui::Mesh::default();
     for (k, l) in frame.lights.iter().enumerate() {
         let (i, j) = (k % (nx + 1), k / (nx + 1));
@@ -1757,6 +1919,23 @@ fn field(
         }
     }
     painter.add(egui::Shape::mesh(mesh));
+}
+
+/// `ring` over a rendered frame of `room` at `at`, as the scene's frames draw a burst: on the
+/// point lights, and each area light following its neighbours.
+fn ring_over(
+    frame: &mut foxglove_scene::Frame,
+    room: &RoomMap,
+    ring: &foxglove_scene::Burst,
+    at: SceneTime,
+) {
+    let places = room.devices.iter().flat_map(|d| d.lights.iter());
+    for (l, place) in frame.lights.iter_mut().zip(places) {
+        if place.role == foxglove_scene::LightRole::Point {
+            l.colour = ring.over(l.colour, place.at, at, &room.bounds);
+        }
+    }
+    foxglove_scene::ambient::group(frame, room);
 }
 
 /// A strip of colours left to right, as one mesh.
@@ -1827,6 +2006,28 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
         })
     });
     ui.add_space(4.0);
+    // #490: Ripple's rings start on a loop or from each key pressed. Its other controls are the
+    // same either way: colour = the ring, background, speed = a ring's time, width.
+    if look.kind == Kind::Ripple {
+        ui.label(theme::caps_label(ui, Starts::CAPTION));
+        ui.horizontal_wrapped(|ui| {
+            theme::pill_group(ui, Starts::CAPTION, |ui, g| {
+                for s in Starts::ALL {
+                    let r = g.pill(ui, look.starts == s, s.label());
+                    describe(ui, r.id, s.hint());
+                    if r.on_hover_text(s.hint()).clicked() && look.starts != s {
+                        set(
+                            Look {
+                                starts: s,
+                                ..look.clone()
+                            },
+                            true,
+                        );
+                    }
+                }
+            })
+        });
+    }
     if look.kind.reads_screen() {
         screen_controls(ui, v, out);
         ui.add_space(6.0);
@@ -1961,6 +2162,16 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
     }
     ui.add_space(6.0);
     save_row(ui, draft, out);
+    // State C (#490): the left half draws the rings, an older right keeps its own lights.
+    if look.key_rings() && v.rings.keyboard && v.rings.right_old {
+        ui.add_space(6.0);
+        ui.label(RIGHT_HALF_OLD);
+        let link = ui.link(UPDATE_FIRMWARE);
+        describe(ui, link.id, RIGHT_HALF_OLD);
+        if link.clicked() {
+            out.push(Intent::UpdateFirmware);
+        }
+    }
 }
 
 /// A slider's change: shown at once, saved when the drag ends (or on a key press).
@@ -2155,6 +2366,7 @@ pub(crate) mod tests {
             yielded_to: None,
             focused: Vec::new(),
             screen: ScreenView::default(),
+            rings: RingsView::default(),
         }
     }
 
@@ -2218,6 +2430,7 @@ pub(crate) mod tests {
             yielded_to: None,
             focused: Vec::new(),
             screen: ScreenView::default(),
+            rings: RingsView::default(),
         }
     }
 
@@ -2572,6 +2785,202 @@ pub(crate) mod tests {
             click(&sample_none(), "Sweep on layer change"),
             vec![Intent::Trigger(Trigger::SweepLayers, true)]
         );
+    }
+
+    /// A key-rings look (#490) on the sample desk: "Ripple from the keys", with what the
+    /// keyboard can do.
+    pub(crate) fn rings_sample(keyboard: bool, right_old: bool) -> View {
+        View {
+            look: looks::effect_presets()
+                .into_iter()
+                .find(|p| p.name == "Ripple from the keys")
+                .unwrap()
+                .look,
+            running: Some("Ripple from the keys".into()),
+            rings: RingsView {
+                keyboard,
+                right_old,
+                animations: true,
+            },
+            ..sample()
+        }
+    }
+
+    /// #490, states A to E (docs/key-rings-ux.md): each state's words, exactly, and only there.
+    #[test]
+    fn each_key_rings_state_says_its_own_words() {
+        // The caption as drawn: a caps label.
+        let words = [
+            "RINGS START",
+            "On a loop",
+            "On each key press",
+            RINGS_COVERED,
+            KEEP_NO_RINGS,
+            RIGHT_HALF_OLD,
+            UPDATE_FIRMWARE,
+        ];
+        let said = |v: &View| -> Vec<&str> { words.into_iter().filter(|w| shows(v, w)).collect() };
+        assert_eq!(Starts::CAPTION.to_uppercase(), "RINGS START");
+        let row = ["RINGS START", "On a loop", "On each key press"];
+        // A: the keyboard draws them, both halves current.
+        let a = rings_sample(true, false);
+        assert_eq!(said(&a), [&row[..], &[RINGS_COVERED]].concat(), "A");
+        // B: no KEY_RINGS: Foxglove draws them, and they stop when it quits.
+        let b = rings_sample(false, false);
+        assert_eq!(
+            said(&b),
+            [&row[..], &[RINGS_COVERED, KEEP_NO_RINGS]].concat(),
+            "B"
+        );
+        assert!(shows(&b, "Keep running on the keyboard"));
+        // C: KEY_RINGS with an older right: the Effect card's line and its link.
+        let c = rings_sample(true, true);
+        assert_eq!(
+            said(&c),
+            [&row[..], &[RINGS_COVERED, RIGHT_HALF_OLD, UPDATE_FIRMWARE]].concat(),
+            "C"
+        );
+        // An older right counts only with KEY_RINGS (the page never builds this, but B wins).
+        assert!(!shows(&rings_sample(false, true), RIGHT_HALF_OLD));
+        // D: no scene running: the same controls and cards as A or B.
+        let d = View {
+            running: None,
+            ..rings_sample(true, false)
+        };
+        assert_eq!(said(&d), said(&a), "D as A");
+        let d = View {
+            running: None,
+            ..rings_sample(false, false)
+        };
+        assert_eq!(said(&d), said(&b), "D as B");
+        // E: Ripple on a loop has the row on "On a loop", and today's Triggers card.
+        let looped = View {
+            look: Look {
+                starts: Starts::Loop,
+                ..rings_sample(false, true).look
+            },
+            ..rings_sample(false, true)
+        };
+        assert_eq!(said(&looped), row, "E, Ripple on a loop");
+        // E: any other look has no row at all.
+        assert!(said(&sample()).is_empty(), "E, a scanline");
+        let still_keys = View {
+            look: Look {
+                kind: Kind::Breathe,
+                ..rings_sample(false, true).look
+            },
+            ..rings_sample(false, true)
+        };
+        assert!(said(&still_keys).is_empty(), "E, another effect keeps `starts`");
+    }
+
+    /// #490: the row picks the mode and keeps the other controls; the covered box and the
+    /// greyed "Keep running" can't be changed (the saved values stay); state C's link opens
+    /// the firmware update.
+    #[test]
+    fn the_rings_start_row_and_the_greyed_boxes_click_as_they_should() {
+        let looped = View {
+            look: Look {
+                kind: Kind::Ripple,
+                ..Look::default()
+            },
+            ..sample()
+        };
+        let picked = click(&looped, "On each key press");
+        assert!(
+            matches!(&picked[..], [Intent::Look { look, save: true }]
+                if look.key_rings() && look.speed == looped.look.speed && look.colour == looped.look.colour),
+            "{picked:?}"
+        );
+        let back = click(&rings_sample(true, false), "On a loop");
+        assert!(
+            matches!(&back[..], [Intent::Look { look, save: true }] if look.starts == Starts::Loop && look.speed == 8),
+            "{back:?}"
+        );
+        assert!(click(&rings_sample(true, false), "Ripple on key press").is_empty());
+        assert!(click(&rings_sample(false, false), "Keep running on the keyboard").is_empty());
+        assert_eq!(
+            click(&rings_sample(true, false), "Keep running on the keyboard"),
+            vec![Intent::KeepOnKeyboard(true)],
+            "A: works as today"
+        );
+        assert_eq!(
+            click(&rings_sample(true, true), UPDATE_FIRMWARE),
+            vec![Intent::UpdateFirmware]
+        );
+        // Another look: today's box, with the saved value.
+        assert_eq!(
+            click(&looped, "Ripple on key press"),
+            vec![Intent::Trigger(Trigger::RippleKeys, false)]
+        );
+    }
+
+    /// #490, the map preview: a key-rings look shows a demo ring from the left index finger's
+    /// key every ring's time plus 1 s, so the controls show; with Windows' animation effects
+    /// off it is one still ring, half-grown, and the page asks for no frames.
+    #[test]
+    fn the_map_shows_a_demo_ring_that_stands_still_without_animations() {
+        let v = rings_sample(false, false);
+        let room = &v.room;
+        let at = |t: i64, animations: bool| demo_ring(room, &v.look, SceneTime(t), animations);
+        let (ring, when) = at(5_000, true).unwrap();
+        assert_eq!(when, SceneTime(5_000));
+        assert_eq!(ring.start, SceneTime(2_600), "every 1.6 s + 1 s: 0, 2600, 5200");
+        assert!(ring.done(when), "and in the 1 s gap after it");
+        let (ring, _) = at(6_000, true).unwrap();
+        assert_eq!((ring.start, ring.duration_ms, ring.width_mm), (SceneTime(5_200), 1_600, 60.0));
+        assert_eq!(ring.colour, Rgb(v.look.colour));
+        let origin = super::super::scene_triggers::demo_key_point(room).unwrap();
+        assert_eq!(ring.shape, foxglove_scene::burst::Shape::Ring { origin });
+        // Still: the same half-grown ring whenever it is drawn.
+        let a = at(1_234, false).unwrap();
+        assert_eq!(a, at(98_765, false).unwrap());
+        assert_eq!(a.1.ms() - a.0.start.ms(), 800, "half of 1.6 s");
+        assert_eq!(next_frame_for(&v.look, false, false, false), None);
+        assert_eq!(
+            next_frame_for(&v.look, true, false, false),
+            Some(PREVIEW_INTERVAL)
+        );
+        // Animations off changes nothing for other looks.
+        assert_eq!(
+            next_frame_for(&Look::default(), false, false, false),
+            Some(PREVIEW_INTERVAL)
+        );
+        assert!(demo_ring(room, &Look::default(), SceneTime(0), true).is_none());
+        // The drawn page: two moments differ with animations, not without.
+        let drawn = |t: i64, animations: bool| {
+            render_shapes(&View {
+                t: SceneTime(t),
+                rings: RingsView {
+                    animations,
+                    ..v.rings
+                },
+                ..v.clone()
+            })
+        };
+        assert_ne!(drawn(5_300, true), drawn(6_000, true), "it moves");
+        assert_eq!(drawn(5_300, false), drawn(6_000, false), "it stands still");
+    }
+
+    /// The page's meshes and text, to compare two draws.
+    fn render_shapes(v: &View) -> String {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        crate::platform::add_phosphor_to_fonts(&mut fonts);
+        theme::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(900.0, 1100.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| {
+            draw(ui, v, &mut Draft::default());
+        });
+        out.textures_delta.clear();
+        format!("{:?}", out.shapes)
     }
 
     /// Whether the page draws `label`.

@@ -177,6 +177,60 @@ fn the_scenes_page_rows_are_radio_groups() {
     every_radio_in_a_group(&t, "Scenes page");
 }
 
+/// Key rings (#490, docs/key-rings-ux.md "Accessibility"): "Rings start" is a radio group of
+/// two, the picked one checked, each pill described by its hover; the greyed boxes say why as
+/// their description (state A: the covered ripple box; B: "Keep running" too).
+#[test]
+fn the_rings_start_row_and_the_greyed_boxes_speak() {
+    use crate::foxglove::scene_looks::Starts;
+    use crate::foxglove::scenes_ui::{tests, KEEP_NO_RINGS, RINGS_COVERED};
+    let all = |t: &TreeUpdate| nodes(t).into_values().cloned().collect::<Vec<Node>>();
+    let named = |ns: &[Node], name: &str| -> Node {
+        ns.iter()
+            .find(|n| n.label() == Some(name))
+            .cloned()
+            .unwrap_or_else(|| panic!("no node {name:?}"))
+    };
+    for keyboard in [true, false] {
+        let mut s = Samples::full();
+        s.scenes = (tests::rings_sample(keyboard, false), Default::default());
+        let t = page_tree(Page::Scenes, &s, 1100.0);
+        let gs = groups(&t);
+        let rings = group(&gs, Starts::CAPTION);
+        assert_eq!(
+            rings.pills,
+            [
+                ("On a loop".to_string(), false),
+                ("On each key press".to_string(), true)
+            ],
+            "{gs:#?}"
+        );
+        let ns = all(&t);
+        for (i, s) in Starts::ALL.iter().enumerate() {
+            let pill = named(&ns, s.label());
+            assert_eq!(pill.role(), Role::RadioButton);
+            assert_eq!(pill.position_in_set(), Some(i + 1));
+            assert_eq!(pill.size_of_set(), Some(2));
+            assert_eq!(pill.description(), Some(s.hint()), "{}", s.label());
+        }
+        let ripple = named(&ns, "Ripple on key press");
+        assert_eq!(ripple.role(), Role::CheckBox);
+        assert_eq!(ripple.toggled(), Some(Toggled::True), "shown ticked");
+        assert!(ripple.is_disabled());
+        assert_eq!(ripple.description(), Some(RINGS_COVERED));
+        let keep = named(&ns, "Keep running on the keyboard");
+        if keyboard {
+            assert!(!keep.is_disabled(), "A: works as today");
+            assert_eq!(keep.description(), None);
+        } else {
+            assert!(keep.is_disabled(), "B");
+            assert_eq!(keep.toggled(), Some(Toggled::False));
+            assert_eq!(keep.description(), Some(KEEP_NO_RINGS));
+        }
+        every_radio_in_a_group(&t, "Scenes page, key rings");
+    }
+}
+
 /// Screen glow's Smoothing row.
 #[test]
 fn the_screen_glow_smoothing_row_is_a_radio_group() {

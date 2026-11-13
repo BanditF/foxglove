@@ -96,6 +96,16 @@ pub enum Effect {
         #[serde(default)]
         smoothing: Smoothing,
     },
+    /// Key rings (#490): `background` everywhere, and a ring of `colour` from each key pressed,
+    /// `width_mm` wide, grown over `period_ms`. The rings come from key presses, not the clock:
+    /// a keyboard that draws them itself starts its own, and the app adds one per key report as
+    /// a [`crate::Burst`]. As a formula it is the still background.
+    KeyRings {
+        colour: Rgb,
+        background: Rgb,
+        width_mm: f32,
+        period_ms: u32,
+    },
 }
 
 /// What [`Effect::Screen`] shows where no screen has been read: a still, dim grey.
@@ -397,6 +407,7 @@ impl Effect {
                 ),
             },
             Effect::Screen { .. } => SCREEN_IDLE,
+            Effect::KeyRings { background, .. } => *background,
         }
     }
 

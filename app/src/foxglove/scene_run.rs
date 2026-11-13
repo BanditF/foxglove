@@ -364,6 +364,8 @@ struct Status {
     keyboard_path: Option<KeyboardPath>,
     /// The keyboard's own hand-backs (D7 8C events) seen.
     hand_backs: u64,
+    /// The running look is key rings (#490).
+    rings: bool,
     last: Option<String>,
 }
 
@@ -375,8 +377,60 @@ static STATUS: Mutex<Status> = Mutex::new(Status {
     keyboard_effects: 0,
     keyboard_path: None,
     hand_backs: 0,
+    rings: false,
     last: None,
 });
+
+/// The Diagnostics line for a key-rings look (#490, docs/key-rings-ux.md): who draws the rings,
+/// by the keyboard's KEY_RINGS.
+pub fn rings_line(on_keyboard: bool) -> &'static str {
+    if on_keyboard {
+        "keyboard: key rings drawn on the keyboard"
+    } else {
+        "keyboard: key rings drawn by Foxglove (no KEY_RINGS)"
+    }
+}
+
+/// The EFFECT reply's word on the right half for the last key rings sent (#490): `Some(true)`
+/// when it said the right can't draw them (right = 2). `None` before any reply since the
+/// keyboard connected.
+static RINGS_RIGHT_OLD: Mutex<Option<bool>> = Mutex::new(None);
+
+/// Whether the right half misses the key rings (state C, docs/key-rings-ux.md): only with
+/// KEY_RINGS; the EFFECT reply's `right` for kind 5 when one came, else the relay status
+/// version (0 is none reported yet) below [`foxglove_link::protocol::art::KEY_RINGS_RIGHT_VERSION`].
+pub fn right_misses_rings(key_rings: bool, reply_old: Option<bool>, right_version: u8) -> bool {
+    use foxglove_link::protocol::art::KEY_RINGS_RIGHT_VERSION;
+    key_rings
+        && reply_old
+            .unwrap_or(right_version != 0 && right_version < KEY_RINGS_RIGHT_VERSION)
+}
+
+/// [`right_misses_rings`] for the keyboard found last. Never asks the keyboard.
+pub fn rings_right_old() -> bool {
+    let reply = *RINGS_RIGHT_OLD.lock().unwrap_or_else(|e| e.into_inner());
+    let version = super::art_service::handle()
+        .map(|h| h.snapshot())
+        .filter(|s| s.connected)
+        .and_then(|s| s.status)
+        .map_or(0, |s| s.right_version);
+    right_misses_rings(super::devices::key_rings(), reply, version)
+}
+
+/// What an EFFECT reply said of the right half: kept for key rings only (the other kinds don't
+/// tell whether the right draws rings).
+fn note_right(kind: foxglove_link::protocol::EffectKind, right: foxglove_link::protocol::FrameRight) {
+    use foxglove_link::protocol::{EffectKind, FrameRight};
+    if kind != EffectKind::KeyRings {
+        return;
+    }
+    let old = right == FrameRight::Unsupported;
+    let mut g = RINGS_RIGHT_OLD.lock().unwrap_or_else(|e| e.into_inner());
+    if *g != Some(old) {
+        *g = Some(old);
+        repaint_page();
+    }
+}
 
 /// How the keyboard shows the scene (#542).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -415,6 +469,15 @@ pub fn summary() -> String {
             s.keyboard_frames, s.hand_backs, s.keyboard_effects
         ),
         _ => format!("keyboard: one colour ({} colours)", s.keyboard_frames),
+    };
+    // A key-rings look (#490) also says who draws its rings.
+    let keyboard = if s.rings && s.name.is_some() {
+        format!(
+            "{}, {keyboard}",
+            rings_line(super::devices::effects() && super::devices::key_rings())
+        )
+    } else {
+        keyboard
     };
     let l = lamps();
     let sent = format!(
@@ -508,8 +571,11 @@ pub fn set_effect(name: &str, effect: Effect) {
     let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = running.as_mut().filter(|r| !r.thread.is_finished()) {
         r.name = name.to_string();
+        let rings = matches!(effect, Effect::KeyRings { .. });
         let _ = r.tx.send(Ctl::Effect(name.to_string(), Box::new(effect)));
-        status().name = Some(name.to_string());
+        let mut s = status();
+        s.name = Some(name.to_string());
+        s.rings = rings;
     }
 }
 
@@ -648,6 +714,7 @@ fn control(
         *s = Status {
             name: Some(name.to_string()),
             started: Some(Instant::now()),
+            rings: matches!(effect, Effect::KeyRings { .. }),
             ..Status::default()
         };
     }
@@ -693,9 +760,14 @@ fn control(
         })),
     );
     let lamp_poster = lamp_writer.poster();
-    let (again, effects, held) = {
+    let (again, effects, rings, held) = {
         let o = outputs.lock().unwrap_or_else(|e| e.into_inner());
-        (o.keyboard_again(), o.keyboard_effects(), o.keyboard_held())
+        (
+            o.keyboard_again(),
+            o.keyboard_effects(),
+            o.keyboard_rings(),
+            o.keyboard_held(),
+        )
     };
     // While Windows Dynamic Lighting has the keyboard's lights, the output streams nothing to
     // it (#749); the lights owner clears this on the event that frees them, or for one retry.
@@ -709,8 +781,10 @@ fn control(
             && super::led_map::effects_place_leds(super::devices::effect_lamps()),
         Ordering::Relaxed,
     );
+    // Key rings likewise (#490): read on the keyboard's connect.
+    rings.store(super::devices::key_rings(), Ordering::Relaxed);
     let keyboard = KeyboardOut::spawn(Box::new(Yielding {
-        lights: Box::new(AppKeyboard::new(again.clone(), effects, clock)),
+        lights: Box::new(AppKeyboard::new(again.clone(), effects, rings, clock)),
         owner: super::lights_owner::shared(),
         again: again.clone(),
     }));
@@ -1241,8 +1315,12 @@ struct KeyboardLease {
 trait EffectTarget {
     /// EFFECT PLACE: the room's bounds and each half's place in it.
     fn place(&self, room: MmRect, left: MmRect, right: MmRect) -> Result<(), DeviceError>;
-    /// EFFECT, with the keyboard's colour calibration on its colours.
-    fn run(&self, e: &foxglove_link::protocol::Effect) -> Result<(), DeviceError>;
+    /// EFFECT, with the keyboard's colour calibration on its colours; what the reply says of
+    /// the right half (#490: an older right doesn't draw key rings).
+    fn run(
+        &self,
+        e: &foxglove_link::protocol::Effect,
+    ) -> Result<foxglove_link::protocol::FrameRight, DeviceError>;
     /// EFFECT LAMPS: where each LED of `half` sits; empty puts the half back on the firmware's
     /// table. Unsupported on firmware without HELLO bit 21 (#550).
     fn lamps(&self, half: u8, points: &[[u16; 2]]) -> Result<(), DeviceError>;
@@ -1252,8 +1330,11 @@ impl EffectTarget for foxglove_link::devices::FoxgloveLinkDevice {
     fn place(&self, room: MmRect, left: MmRect, right: MmRect) -> Result<(), DeviceError> {
         self.place_effect(room, left, right).map(|_| ())
     }
-    fn run(&self, e: &foxglove_link::protocol::Effect) -> Result<(), DeviceError> {
-        self.show_effect(e).map(|_| ())
+    fn run(
+        &self,
+        e: &foxglove_link::protocol::Effect,
+    ) -> Result<foxglove_link::protocol::FrameRight, DeviceError> {
+        self.show_effect(e).map(|r| r.right)
     }
     fn lamps(&self, half: u8, points: &[[u16; 2]]) -> Result<(), DeviceError> {
         self.place_effect_lamps(half, points).map(|_| ())
@@ -1352,7 +1433,8 @@ impl KeyboardLease {
             .and_then(|()| target.place(e.room, left, right))
             .and_then(|()| target.run(&e.at(clock.now())));
         match sent {
-            Ok(()) => {
+            Ok(right) => {
+                note_right(e.effect.kind, right);
                 self.effect_errors = 0;
                 self.effect_on = true;
                 a.frame_sent(device);
@@ -1510,6 +1592,8 @@ struct AppKeyboard {
     again: Arc<AtomicBool>,
     /// The scene's flag for the keyboard drawing its effect itself ([`Outputs::keyboard_effects`]).
     effects: Arc<AtomicBool>,
+    /// The scene's flag for the keyboard drawing key rings itself ([`Outputs::keyboard_rings`]).
+    rings: Arc<AtomicBool>,
     /// The keyboard refused effects (or they kept failing): frames until another keyboard.
     effects_failed: bool,
     /// The scene's clock, read just before an effect goes.
@@ -1524,7 +1608,12 @@ struct AppKeyboard {
 }
 
 impl AppKeyboard {
-    fn new(again: Arc<AtomicBool>, effects: Arc<AtomicBool>, clock: Clock) -> Self {
+    fn new(
+        again: Arc<AtomicBool>,
+        effects: Arc<AtomicBool>,
+        rings: Arc<AtomicBool>,
+        clock: Clock,
+    ) -> Self {
         AppKeyboard {
             lease: KeyboardLease::default(),
             next_look: None,
@@ -1532,6 +1621,7 @@ impl AppKeyboard {
             error_logged: false,
             again,
             effects,
+            rings,
             effects_failed: false,
             clock,
             left_checked: false,
@@ -1572,6 +1662,14 @@ impl AppKeyboard {
         if self.effects.swap(effects, Ordering::Relaxed) != effects {
             self.again.store(true, Ordering::Relaxed);
         }
+        // Key rings (#490): HELLO v2's KEY_RINGS, asked once per link generation (cached).
+        let has_rings = kb.key_rings();
+        super::devices::set_key_rings(has_rings);
+        let rings = effects && has_rings;
+        if self.rings.swap(rings, Ordering::Relaxed) != rings {
+            self.again.store(true, Ordering::Relaxed);
+            repaint_page();
+        }
         Some((kb, device))
     }
 
@@ -1582,6 +1680,8 @@ impl AppKeyboard {
             self.next_look = None;
             self.effects_failed = false;
             self.lease.lamps_sent = None; // it may have rebooted: its LED points again
+            // A flashed half answers for itself on the next key rings sent (#490).
+            *RINGS_RIGHT_OLD.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
 
@@ -1775,6 +1875,8 @@ mod tests {
         effect_ops: Mutex<Vec<char>>,
         /// Effects to fail (no answer) before taking them.
         effect_failing: AtomicU32,
+        /// Its right half predates key rings (#490): EFFECT's reply says right = 2 for kind 5.
+        old_right: bool,
     }
 
     impl Fake {
@@ -1802,6 +1904,7 @@ mod tests {
                 effect: Mutex::new(None),
                 effect_ops: Mutex::new(Vec::new()),
                 effect_failing: AtomicU32::new(0),
+                old_right: false,
             }
         }
 
@@ -1905,7 +2008,10 @@ mod tests {
             self.effect_ops.lock().unwrap().push('P');
             Ok(())
         }
-        fn run(&self, e: &foxglove_link::protocol::Effect) -> Result<(), DeviceError> {
+        fn run(
+            &self,
+            e: &foxglove_link::protocol::Effect,
+        ) -> Result<foxglove_link::protocol::FrameRight, DeviceError> {
             if !self.effects {
                 return Err(DeviceError::Unsupported);
             }
@@ -1919,7 +2025,12 @@ mod tests {
             self.effect_ops.lock().unwrap().push('E');
             *self.frame.lock().unwrap() = None;
             *self.effect.lock().unwrap() = Some(e.clone());
-            Ok(())
+            use foxglove_link::protocol::{EffectKind, FrameRight};
+            Ok(if self.old_right && e.kind == EffectKind::KeyRings {
+                FrameRight::Unsupported
+            } else {
+                FrameRight::Draws
+            })
         }
         fn lamps(&self, half: u8, points: &[[u16; 2]]) -> Result<(), DeviceError> {
             if !self.effects {
@@ -1934,6 +2045,9 @@ mod tests {
             Ok(())
         }
     }
+
+    /// The tests that read or reset [`RINGS_RIGHT_OLD`] (#490) run one at a time.
+    static RINGS_TEST: Mutex<()> = Mutex::new(());
 
     /// A 4 s scanline on both halves, as `scene_output::keyboard_effect` makes it.
     fn scan_effect(mix: Hsb) -> KeyboardEffect {
@@ -1952,6 +2066,64 @@ mod tests {
             mix,
             lamps: None,
         }
+    }
+
+    /// #490, state C: who misses the rings. Only with KEY_RINGS; the EFFECT reply's right = 2
+    /// for kind 5 decides, else the relay status version below 13 (0: none reported yet).
+    #[test]
+    fn an_older_right_half_misses_the_key_rings() {
+        assert!(right_misses_rings(true, Some(true), 13), "the reply wins");
+        assert!(!right_misses_rings(true, Some(false), 12), "the reply wins");
+        assert!(right_misses_rings(true, None, 12), "status 12: before them");
+        assert!(!right_misses_rings(true, None, 13));
+        assert!(!right_misses_rings(true, None, 0), "nothing reported yet");
+        assert!(!right_misses_rings(false, Some(true), 12), "no KEY_RINGS: B, not C");
+        assert_eq!(
+            [rings_line(true), rings_line(false)],
+            [
+                "keyboard: key rings drawn on the keyboard",
+                "keyboard: key rings drawn by Foxglove (no KEY_RINGS)"
+            ]
+        );
+    }
+
+    /// #490: kind 5 through the lease to a keyboard whose right half predates key rings: it
+    /// runs (the left draws them), and the reply's right = 2 is kept for state C; another kind
+    /// leaves it, and a right that draws them clears it.
+    #[test]
+    fn the_effect_reply_says_when_the_right_misses_the_rings() {
+        let _one = RINGS_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let mut kb = Fake::with_effects();
+        kb.old_right = true;
+        let again = Arc::new(AtomicBool::new(false));
+        let mut a = Arbiter::default();
+        let mut scene = KeyboardLease::default();
+        let clock = Clock::starting_now();
+        let mut rings = scan_effect(c(30));
+        rings.effect.kind = foxglove_link::protocol::EffectKind::KeyRings;
+        rings.effect.period_ms = 1600;
+        *RINGS_RIGHT_OLD.lock().unwrap() = None;
+        let sent = scene
+            .show_effect(&mut a, "kb", &kb, &kb, &rings, &clock, &again)
+            .unwrap();
+        assert_eq!(sent, EffectSent::Done);
+        assert_eq!(
+            kb.effect.lock().unwrap().as_ref().map(|e| e.kind),
+            Some(foxglove_link::protocol::EffectKind::KeyRings)
+        );
+        assert_eq!(*RINGS_RIGHT_OLD.lock().unwrap(), Some(true));
+        // A scanline says nothing about the rings.
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &scan_effect(c(30)), &clock, &again)
+            .unwrap();
+        assert_eq!(*RINGS_RIGHT_OLD.lock().unwrap(), Some(true));
+        // The right flashed: its reply clears it.
+        kb.old_right = false;
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &rings, &clock, &again)
+            .unwrap();
+        assert_eq!(*RINGS_RIGHT_OLD.lock().unwrap(), Some(false));
+        *RINGS_RIGHT_OLD.lock().unwrap() = None;
     }
 
     /// The SET_EFFECT path (#542) through the lease contract: sent once with its clock from the
@@ -2080,7 +2252,15 @@ mod tests {
     /// missing, and gets effects again after they failed.
     #[test]
     fn a_connect_ends_the_wait_for_a_missing_keyboard() {
-        let mut kb = AppKeyboard::new(Arc::default(), Arc::default(), Clock::starting_now());
+        // A connect forgets the right half's word on key rings: one test at a time touches it.
+        let _one = RINGS_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        *RINGS_RIGHT_OLD.lock().unwrap() = Some(true);
+        let mut kb = AppKeyboard::new(
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Clock::starting_now(),
+        );
         kb.next_look = Some(Instant::now() + Duration::from_secs(60));
         kb.effects_failed = true;
         kb.take_arrival();
@@ -2089,6 +2269,7 @@ mod tests {
         kb.take_arrival();
         assert_eq!((kb.next_look, kb.effects_failed), (None, false));
         assert!(!ARRIVED.load(Ordering::Relaxed));
+        assert_eq!(*RINGS_RIGHT_OLD.lock().unwrap(), None, "asked again (#490)");
     }
 
     /// No colour goes to the keyboard before its lighting command is known (#946).
