@@ -2939,3 +2939,156 @@ fn renders_the_settings_page_for_review() {
     .unwrap();
     save_png("built-settings-page.png", w, h, rgba);
 }
+
+/// The keyboard grant's dialog (#1155-B), window-free: Esc answers Not now, no key answers
+/// nothing, Enter on the opening focus answers Not now (it never allows by itself).
+#[test]
+fn the_grant_dialog_answers_not_now_to_esc_and_enter() {
+    use crate::keyboard_grant::{Answer, Dialog};
+    let d = Dialog::open(r"C:\Program Files\Foxglove\foxglove.exe", false);
+    let t = crate::theme::tokens(true);
+    let run = |frames: Vec<Vec<Event>>| {
+        let ctx = egui::Context::default();
+        let mut answers = Vec::new();
+        for (i, ev) in frames.into_iter().enumerate() {
+            let _ = ctx.run(input(800.0, 600.0, ev), |c| {
+                answers.push(crate::keyboard_grant_ui::dialog_ui(c, &t, &d, i == 0));
+            });
+        }
+        answers
+    };
+    let none = run(vec![vec![], vec![], vec![]]);
+    assert!(none.iter().all(|a| a.is_none()), "{none:?}");
+    let esc = run(vec![vec![], vec![key(Key::Escape, Modifiers::NONE)]]);
+    assert_eq!(esc.last().unwrap(), &Some(Answer::NotNow));
+    let enter = run(vec![vec![], vec![], vec![key(Key::Enter, Modifiers::NONE)]]);
+    assert!(
+        enter.iter().all(|a| *a != Some(Answer::Allow)),
+        "Enter must never allow: {enter:?}"
+    );
+}
+
+/// Tab stays inside the dialog: from Not now to Allow and back, never out to the page behind;
+/// the dialog is a Dialog node named by its title.
+#[test]
+fn the_grant_dialog_keeps_tab_inside_and_is_named() {
+    use crate::keyboard_grant::{Dialog, DIALOG_TITLE};
+    let d = Dialog::open(r"C:\Program Files\Foxglove\foxglove.exe", false);
+    let t = crate::theme::tokens(true);
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let tab = key(Key::Tab, Modifiers::NONE);
+    let mut ids = [egui::Id::NULL; 2];
+    let mut first_focus = None;
+    let mut seen = std::collections::HashSet::new();
+    for i in 0..8 {
+        let ev = if i < 2 { vec![] } else { vec![tab.clone()] };
+        let out = ctx.run(input(800.0, 600.0, ev), |c| {
+            // A button behind the dialog, which Tab must not reach.
+            egui::CentralPanel::default().show(c, |ui| {
+                let _ = ui.button("behind");
+            });
+            ids = crate::keyboard_grant_ui::dialog_ids(c, &t, &d, i == 0).1;
+        });
+        let f = ctx.memory(|m| m.focused());
+        if i == 1 {
+            first_focus = f;
+        }
+        if i >= 1 {
+            assert!(
+                f.is_some_and(|f| ids.contains(&f)),
+                "frame {i}: focus left the dialog: {f:?} not in {ids:?}"
+            );
+            seen.insert(f);
+        }
+        let dialog = out.platform_output.accesskit_update.as_ref().and_then(|u| {
+            u.nodes
+                .iter()
+                .find(|(_, n)| n.role() == egui::accesskit::Role::Dialog)
+                .map(|(_, n)| n.label().map(str::to_owned))
+        });
+        if i >= 1 {
+            assert_eq!(dialog, Some(Some(DIALOG_TITLE.to_string())));
+        }
+    }
+    assert_eq!(first_focus, Some(ids[1]), "Not now is focused on open");
+    assert_eq!(seen.len(), 2, "Tab reaches both buttons: {seen:?}");
+}
+
+/// Review images of the keyboard grant (#1155-B): the dialog (plain and after a change) and the
+/// header lines and Permissions rows of every state, both themes (`HIDEOUT_REVIEW_DIR`).
+#[test]
+fn renders_the_keyboard_grant_for_review() {
+    use crate::keyboard_grant::{header, row, Dialog, Situation};
+    use crate::keyboard_grant_ui::{dialog_ui, header_ui, row_ui};
+    let at = "2026-11-12T10:00:00Z".to_string();
+    let states = vec![
+        Situation::NotAsked {
+            started_without_act: true,
+        },
+        Situation::Granted { at: at.clone() },
+        Situation::Declined,
+        Situation::Revoked,
+        Situation::Changed { at, moved: false },
+    ];
+    let path = r"C:\Program Files\Foxglove\foxglove.exe";
+    for (dark, name) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let (w, h) = (720u32, 900u32);
+        let Some(rgba) = rasterise(w, h, |ctx| {
+            set_theme(ctx, choice);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for s in &states {
+                    if let Some(hd) = header(s) {
+                        header_ui(ui, &t, &hd);
+                        ui.add_space(6.0);
+                    }
+                    if let Some(r) = row(s) {
+                        row_ui(ui, &t, &r);
+                    }
+                    ui.add_space(18.0);
+                }
+            });
+        }) else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        save_png(&format!("built-keyboard-grant-rows-{name}.png"), w, h, rgba);
+        let long = r"C:\Users\someone-with-a-long-name\AppData\Local\Programs\Bandit Fox Labs\Foxglove\current-release\bin\x86_64-pc-windows-msvc\foxglove.exe";
+        for (after_change, long_path, tag) in [
+            (false, false, "dialog"),
+            (true, false, "dialog-changed"),
+            (false, true, "dialog-long-path"),
+        ] {
+            let d = Dialog::open(if long_path { long } else { path }, after_change);
+            let (w, h) = (720u32, 560u32);
+            let rgba = rasterise(w, h, |ctx| {
+                set_theme(ctx, choice);
+                // No fade-in: the picture is the settled dialog, over the page behind it.
+                ctx.style_mut(|s| s.animation_time = 0.0);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Modules").size(24.0).strong());
+                    ui.add_space(12.0);
+                    if let Some(r) = row(&Situation::Granted {
+                        at: "2026-11-12T10:00:00Z".into(),
+                    }) {
+                        row_ui(ui, &t, &r);
+                    }
+                });
+                dialog_ui(ctx, &t, &d, true);
+            })
+            .unwrap();
+            save_png(
+                &format!("built-keyboard-grant-{tag}-{name}.png"),
+                w,
+                h,
+                rgba,
+            );
+        }
+    }
+}

@@ -66,16 +66,27 @@ pub struct Row {
     pub said: String,
 }
 
+/// Which header line: hiding one never hides the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderKind {
+    /// "Foxglove needs your OK ..."
+    Ask,
+    /// "Foxglove changed since you allowed it"
+    Changed,
+}
+
 /// A hub-drawn header line over the Foxglove page, the frame of Update waiting for you.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
+    pub kind: HeaderKind,
     pub title: &'static str,
     pub body: &'static str,
     pub review: &'static str,
     pub not_now: &'static str,
 }
 
-pub const ROW_TITLE: &str = "Handle your keyboard for other apps";
+pub const ROW_TITLE: &str = "Foxglove handles your keyboard for other apps";
+pub const SECTION_LABEL: &str = "Foxglove \u{b7} Permissions";
 pub const TURN_OFF: &str = "Turn off";
 pub const TURN_ON: &str = "Turn on…";
 pub const REVIEW: &str = "Review…";
@@ -131,12 +142,14 @@ pub fn header(s: &Situation) -> Option<Header> {
         Situation::NotAsked {
             started_without_act: true,
         } => Some(Header {
+            kind: HeaderKind::Ask,
             title: HEADER_ASK_TITLE,
             body: HEADER_ASK_BODY,
             review: REVIEW,
             not_now: NOT_NOW,
         }),
         Situation::Changed { .. } => Some(Header {
+            kind: HeaderKind::Changed,
             title: HEADER_CHANGED_TITLE,
             body: HEADER_CHANGED_BODY,
             review: REVIEW,
@@ -186,7 +199,7 @@ pub fn row(s: &Situation) -> Option<Row> {
             true,
         ),
     };
-    let said = format!("{ROW_TITLE}, {}. {line} {button}, button.", state.word());
+    let said = format!("{ROW_TITLE}, {}. {line}", state.word());
     Some(Row {
         title: ROW_TITLE,
         state,
@@ -428,8 +441,9 @@ mod tests {
         let r = row(&Situation::Granted { at: AT.into() }).unwrap();
         assert!(r
             .said
-            .starts_with("Handle your keyboard for other apps, On. "));
-        assert!(r.said.ends_with("Turn off, button."));
+            .starts_with("Foxglove handles your keyboard for other apps, On. "));
+        assert!(r.said.ends_with("Allowed 12 Nov 2026."));
+        assert!(!r.said.contains("button"));
     }
 
     #[test]

@@ -1,0 +1,199 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1450" font-family="Segoe UI, sans-serif">
+<title>#1155-B Foxglove keyboard grant: the ask dialog, the header lines and the permission rows, light and dark (drawn mockup, not an egui render)</title>
+<rect x="0" width="720" height="1450" fill="#faf8f6"/>
+<text x="15" y="30" fill="#1f1b18" font-size="16" font-weight="600">#1155-B · Foxglove keyboard grant (proposed) · LIGHT THEME</text>
+<text x="15" y="50" fill="#5c554f" font-size="11">Drawn mockup with the hub theme tokens, not an egui render. All hub-drawn: Foxglove never draws its own grant.</text>
+<text x="15" y="80" fill="#b84a00" font-size="13" font-weight="700">1  The ask: on the user's own Turn on of Foxglove in Modules (first time only)</text>
+<rect x="15" y="92" width="690" height="470" rx="10" fill="#faf8f6" stroke="#d8d2cc"/>
+<text x="31" y="114" fill="#1f1b18" font-size="12" font-weight="600">Hideout</text>
+<line x1="15" y1="126" x2="705" y2="126" stroke="#d8d2cc"/>
+<text x="185" y="156" fill="#1f1b18" font-size="20" font-weight="600">Modules</text>
+<rect x="185" y="170" width="500" height="40" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="201" y="195" fill="#1f1b18" font-size="13" font-weight="600">Foxglove</text>
+<text x="315" y="195" fill="#5c554f" font-size="12">Off · installed separately</text>
+<rect x="185" y="218" width="500" height="40" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="201" y="243" fill="#1f1b18" font-size="13" font-weight="600">Arete</text>
+<text x="315" y="243" fill="#5c554f" font-size="12">On</text>
+<rect x="16" y="127" width="688" height="434" fill="#1f1b18" opacity="0.45"/>
+<rect x="110" y="146" width="500" height="404" rx="10" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="132" y="180" fill="#1f1b18" font-size="16" font-weight="600">Let Foxglove handle your keyboard in Hideout?</text>
+<text x="132" y="206" fill="#5c554f" font-size="12">Apps you have allowed to use your keyboard will reach it through</text>
+<text x="132" y="223" fill="#5c554f" font-size="12">Foxglove. With this on, Foxglove can do these for them:</text>
+<circle cx="138" cy="248" r="2.5" fill="#1f1b18"/>
+<text x="148" y="252" fill="#1f1b18" font-size="12" font-weight="600">Keyboard</text>
+<text x="260" y="252" fill="#1f1b18" font-size="12">See which keyboard is connected, its battery, layer</text>
+<circle cx="138" cy="269" r="2.5" fill="#1f1b18"/>
+<text x="148" y="273" fill="#1f1b18" font-size="12" font-weight="600">Lights</text>
+<text x="260" y="273" fill="#1f1b18" font-size="12">Change its colours, effects and brightness</text>
+<circle cx="138" cy="290" r="2.5" fill="#1f1b18"/>
+<text x="148" y="294" fill="#1f1b18" font-size="12" font-weight="600">Art and screens</text>
+<text x="260" y="294" fill="#1f1b18" font-size="12">Change what the keyboard's screens show</text>
+<circle cx="138" cy="311" r="2.5" fill="#1f1b18"/>
+<text x="148" y="315" fill="#1f1b18" font-size="12" font-weight="600">Actions</text>
+<text x="260" y="315" fill="#1f1b18" font-size="12">Run its key actions, switch Foxglove profiles,</text>
+<text x="260" y="336" fill="#1f1b18" font-size="12">pick the keyboard in front (never reset or bootloader)</text>
+<text x="132" y="363" fill="#5c554f" font-size="12">Each app still needs its own permission. Nothing leaves this PC.</text>
+<text x="132" y="380" fill="#5c554f" font-size="12">You can turn this off any time in Modules, Foxglove.</text>
+<text x="132" y="405" fill="#5c554f" font-size="11">Only for this copy of Foxglove:</text>
+<text x="132" y="421" fill="#1f1b18" font-size="11">C:\Users\…\Programs\Foxglove\foxglove.exe</text>
+<text x="132" y="437" fill="#5c554f" font-size="11">If the program file changes or moves, Hideout asks again.</text>
+<rect x="356" y="504" width="110" height="28" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="411.0" y="522.5" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Allow</text>
+<rect x="478" y="504" width="110" height="28" rx="5" fill="#b84a00"/>
+<text x="533.0" y="522.5" fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle">Not now</text>
+<rect x="475" y="501" width="116" height="34" rx="7" fill="none" stroke="#1f1b18" stroke-width="2"/>
+<text x="132" y="523" fill="#5c554f" font-size="10.5">Focus on Not now · Esc = Not now</text>
+<text x="15" y="592" fill="#b84a00" font-size="13" font-weight="700">2  No modal at start: Foxglove page header line (upgrade, autostart, file changed)</text>
+<rect x="15" y="604" width="690" height="92" rx="8" fill="#f0ece8" stroke="#d8d2cc"/>
+<text x="31" y="628" fill="#1f1b18" font-size="13" font-weight="600">Foxglove needs your OK to handle your keyboard for other apps</text>
+<text x="31" y="648" fill="#5c554f" font-size="12">Until you allow it, apps that use your keyboard through Hideout can't reach it.</text>
+<rect x="31" y="658" width="110" height="28" rx="5" fill="#b84a00"/>
+<text x="86.0" y="676.5" fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle">Review…</text>
+<rect x="151" y="658" width="100" height="28" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="201.0" y="676.5" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Not now</text>
+<rect x="15" y="708" width="690" height="92" rx="8" fill="#f0ece8" stroke="#d8d2cc"/>
+<text x="31" y="732" fill="#1f1b18" font-size="13" font-weight="600">Foxglove changed since you allowed it</text>
+<text x="31" y="752" fill="#5c554f" font-size="12">Its program file is new or was moved, so Hideout turned keyboard sharing off.</text>
+<rect x="31" y="762" width="110" height="28" rx="5" fill="#b84a00"/>
+<text x="86.0" y="780.5" fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle">Review…</text>
+<rect x="151" y="762" width="100" height="28" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="201.0" y="780.5" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Not now</text>
+<text x="15" y="820" fill="#5c554f" font-size="11">Review… opens the dialog in 1 with the reason on top. The live page stays usable; no focus is taken.</text>
+<text x="15" y="852" fill="#b84a00" font-size="13" font-weight="700">3  Afterwards: Modules, Foxglove, Permissions (one hub-drawn row)</text>
+<rect x="15" y="866" width="690" height="64" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="31" y="891" fill="#1f1b18" font-size="13" font-weight="600">Handle your keyboard for other apps</text>
+<text x="31" y="912" fill="#5c554f" font-size="12">Keyboard, lights, art and screens, actions. Allowed 12 Nov.</text>
+<text x="467" y="891" fill="#1c6e34" font-size="12" font-weight="600">On</text>
+<rect x="575" y="884" width="114" height="28" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="632.0" y="902.5" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Turn off</text>
+<rect x="15" y="940" width="690" height="64" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="31" y="965" fill="#1f1b18" font-size="13" font-weight="600">Handle your keyboard for other apps</text>
+<text x="31" y="986" fill="#5c554f" font-size="12">You turned this off. Foxglove keeps running on its own.</text>
+<text x="467" y="965" fill="#5c554f" font-size="12" font-weight="600">Off</text>
+<rect x="575" y="958" width="114" height="28" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="632.0" y="976.5" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Turn on…</text>
+<rect x="15" y="1014" width="690" height="64" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="31" y="1039" fill="#1f1b18" font-size="13" font-weight="600">Handle your keyboard for other apps</text>
+<text x="31" y="1060" fill="#5c554f" font-size="12">Not allowed yet.</text>
+<text x="467" y="1039" fill="#5c554f" font-size="12" font-weight="600">Off</text>
+<rect x="575" y="1032" width="114" height="28" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="632.0" y="1050.5" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Turn on…</text>
+<rect x="15" y="1088" width="690" height="64" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="31" y="1113" fill="#1f1b18" font-size="13" font-weight="600">Handle your keyboard for other apps</text>
+<text x="31" y="1134" fill="#5c554f" font-size="12">Foxglove's program file changed on 12 Nov.</text>
+<text x="467" y="1113" fill="#805a00" font-size="12" font-weight="600">Asks again</text>
+<rect x="575" y="1106" width="114" height="28" rx="5" fill="#b84a00"/>
+<text x="632.0" y="1124.5" fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle">Review…</text>
+<text x="15" y="1176" fill="#5c554f" font-size="11">Turn off acts at once, no confirm (the safe direction). Turn on… and Review… always open the dialog.</text>
+<text x="15" y="1200" fill="#b84a00" font-size="13" font-weight="700">4  After Turn off: Foxglove keeps running, with less</text>
+<rect x="15" y="1212" width="690" height="140" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="31" y="1236" fill="#5c554f" font-size="12" font-weight="600">Keeps working</text>
+<text x="145" y="1236" fill="#1f1b18" font-size="12">Foxglove's own window, its keyboard summary on the Foxglove page,</text>
+<text x="145" y="1258" fill="#1f1b18" font-size="12">and what you allowed before (lights page, overlay, tray panel).</text>
+<text x="31" y="1280" fill="#5c554f" font-size="12" font-weight="600">Stops</text>
+<text x="145" y="1280" fill="#1f1b18" font-size="12">Other apps and the foxglove command can't read or change the keyboard</text>
+<text x="145" y="1302" fill="#1f1b18" font-size="12">through Hideout. To them it looks as if Foxglove weren't running.</text>
+<text x="31" y="1324" fill="#5c554f" font-size="12" font-weight="600">Why not stop it</text>
+<text x="145" y="1324" fill="#1f1b18" font-size="12">Stopping it would take the keyboard away from you, not just from other apps.</text>
+<text x="15" y="1376" fill="#5c554f" font-size="11">Screen reader: "Handle your keyboard for other apps, On. Turn off, button." A change is announced once (polite).</text>
+<text x="15" y="1394" fill="#5c554f" font-size="11">Contrast (WCAG, from tokens, light / dark): text 17.1 / 13.0, muted 7.3 / 5.8, accent 5.2 / 6.4,</text>
+<text x="15" y="1410" fill="#5c554f" font-size="11">on-accent 5.2 / 8.0, attention 6.2 / 9.2, ok 6.3 / 8.4, muted on chrome 6.2 / 6.5. State is always a word too.</text>
+<rect x="720" width="720" height="1450" fill="#171514"/>
+<text x="735" y="30" fill="#f2eeea" font-size="16" font-weight="600">#1155-B · Foxglove keyboard grant (proposed) · DARK THEME</text>
+<text x="735" y="50" fill="#a8a099" font-size="11">Drawn mockup with the hub theme tokens, not an egui render. All hub-drawn: Foxglove never draws its own grant.</text>
+<text x="735" y="80" fill="#ff8a2a" font-size="13" font-weight="700">1  The ask: on the user's own Turn on of Foxglove in Modules (first time only)</text>
+<rect x="735" y="92" width="690" height="470" rx="10" fill="#171514" stroke="#3d3733"/>
+<text x="751" y="114" fill="#f2eeea" font-size="12" font-weight="600">Hideout</text>
+<line x1="735" y1="126" x2="1425" y2="126" stroke="#3d3733"/>
+<text x="905" y="156" fill="#f2eeea" font-size="20" font-weight="600">Modules</text>
+<rect x="905" y="170" width="500" height="40" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<text x="921" y="195" fill="#f2eeea" font-size="13" font-weight="600">Foxglove</text>
+<text x="1035" y="195" fill="#a8a099" font-size="12">Off · installed separately</text>
+<rect x="905" y="218" width="500" height="40" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<text x="921" y="243" fill="#f2eeea" font-size="13" font-weight="600">Arete</text>
+<text x="1035" y="243" fill="#a8a099" font-size="12">On</text>
+<rect x="736" y="127" width="688" height="434" fill="#000000" opacity="0.45"/>
+<rect x="830" y="146" width="500" height="404" rx="10" fill="#2a2623" stroke="#3d3733"/>
+<text x="852" y="180" fill="#f2eeea" font-size="16" font-weight="600">Let Foxglove handle your keyboard in Hideout?</text>
+<text x="852" y="206" fill="#a8a099" font-size="12">Apps you have allowed to use your keyboard will reach it through</text>
+<text x="852" y="223" fill="#a8a099" font-size="12">Foxglove. With this on, Foxglove can do these for them:</text>
+<circle cx="858" cy="248" r="2.5" fill="#f2eeea"/>
+<text x="868" y="252" fill="#f2eeea" font-size="12" font-weight="600">Keyboard</text>
+<text x="980" y="252" fill="#f2eeea" font-size="12">See which keyboard is connected, its battery, layer</text>
+<circle cx="858" cy="269" r="2.5" fill="#f2eeea"/>
+<text x="868" y="273" fill="#f2eeea" font-size="12" font-weight="600">Lights</text>
+<text x="980" y="273" fill="#f2eeea" font-size="12">Change its colours, effects and brightness</text>
+<circle cx="858" cy="290" r="2.5" fill="#f2eeea"/>
+<text x="868" y="294" fill="#f2eeea" font-size="12" font-weight="600">Art and screens</text>
+<text x="980" y="294" fill="#f2eeea" font-size="12">Change what the keyboard's screens show</text>
+<circle cx="858" cy="311" r="2.5" fill="#f2eeea"/>
+<text x="868" y="315" fill="#f2eeea" font-size="12" font-weight="600">Actions</text>
+<text x="980" y="315" fill="#f2eeea" font-size="12">Run its key actions, switch Foxglove profiles,</text>
+<text x="980" y="336" fill="#f2eeea" font-size="12">pick the keyboard in front (never reset or bootloader)</text>
+<text x="852" y="363" fill="#a8a099" font-size="12">Each app still needs its own permission. Nothing leaves this PC.</text>
+<text x="852" y="380" fill="#a8a099" font-size="12">You can turn this off any time in Modules, Foxglove.</text>
+<text x="852" y="405" fill="#a8a099" font-size="11">Only for this copy of Foxglove:</text>
+<text x="852" y="421" fill="#f2eeea" font-size="11">C:\Users\…\Programs\Foxglove\foxglove.exe</text>
+<text x="852" y="437" fill="#a8a099" font-size="11">If the program file changes or moves, Hideout asks again.</text>
+<rect x="1076" y="504" width="110" height="28" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1131.0" y="522.5" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Allow</text>
+<rect x="1198" y="504" width="110" height="28" rx="5" fill="#ff8a2a"/>
+<text x="1253.0" y="522.5" fill="#1a0e04" font-size="12" font-weight="600" text-anchor="middle">Not now</text>
+<rect x="1195" y="501" width="116" height="34" rx="7" fill="none" stroke="#f2eeea" stroke-width="2"/>
+<text x="852" y="523" fill="#a8a099" font-size="10.5">Focus on Not now · Esc = Not now</text>
+<text x="735" y="592" fill="#ff8a2a" font-size="13" font-weight="700">2  No modal at start: Foxglove page header line (upgrade, autostart, file changed)</text>
+<rect x="735" y="604" width="690" height="92" rx="8" fill="#201d1b" stroke="#3d3733"/>
+<text x="751" y="628" fill="#f2eeea" font-size="13" font-weight="600">Foxglove needs your OK to handle your keyboard for other apps</text>
+<text x="751" y="648" fill="#a8a099" font-size="12">Until you allow it, apps that use your keyboard through Hideout can't reach it.</text>
+<rect x="751" y="658" width="110" height="28" rx="5" fill="#ff8a2a"/>
+<text x="806.0" y="676.5" fill="#1a0e04" font-size="12" font-weight="600" text-anchor="middle">Review…</text>
+<rect x="871" y="658" width="100" height="28" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="921.0" y="676.5" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Not now</text>
+<rect x="735" y="708" width="690" height="92" rx="8" fill="#201d1b" stroke="#3d3733"/>
+<text x="751" y="732" fill="#f2eeea" font-size="13" font-weight="600">Foxglove changed since you allowed it</text>
+<text x="751" y="752" fill="#a8a099" font-size="12">Its program file is new or was moved, so Hideout turned keyboard sharing off.</text>
+<rect x="751" y="762" width="110" height="28" rx="5" fill="#ff8a2a"/>
+<text x="806.0" y="780.5" fill="#1a0e04" font-size="12" font-weight="600" text-anchor="middle">Review…</text>
+<rect x="871" y="762" width="100" height="28" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="921.0" y="780.5" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Not now</text>
+<text x="735" y="820" fill="#a8a099" font-size="11">Review… opens the dialog in 1 with the reason on top. The live page stays usable; no focus is taken.</text>
+<text x="735" y="852" fill="#ff8a2a" font-size="13" font-weight="700">3  Afterwards: Modules, Foxglove, Permissions (one hub-drawn row)</text>
+<rect x="735" y="866" width="690" height="64" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<text x="751" y="891" fill="#f2eeea" font-size="13" font-weight="600">Handle your keyboard for other apps</text>
+<text x="751" y="912" fill="#a8a099" font-size="12">Keyboard, lights, art and screens, actions. Allowed 12 Nov.</text>
+<text x="1187" y="891" fill="#72d68f" font-size="12" font-weight="600">On</text>
+<rect x="1295" y="884" width="114" height="28" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1352.0" y="902.5" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Turn off</text>
+<rect x="735" y="940" width="690" height="64" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<text x="751" y="965" fill="#f2eeea" font-size="13" font-weight="600">Handle your keyboard for other apps</text>
+<text x="751" y="986" fill="#a8a099" font-size="12">You turned this off. Foxglove keeps running on its own.</text>
+<text x="1187" y="965" fill="#a8a099" font-size="12" font-weight="600">Off</text>
+<rect x="1295" y="958" width="114" height="28" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1352.0" y="976.5" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Turn on…</text>
+<rect x="735" y="1014" width="690" height="64" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<text x="751" y="1039" fill="#f2eeea" font-size="13" font-weight="600">Handle your keyboard for other apps</text>
+<text x="751" y="1060" fill="#a8a099" font-size="12">Not allowed yet.</text>
+<text x="1187" y="1039" fill="#a8a099" font-size="12" font-weight="600">Off</text>
+<rect x="1295" y="1032" width="114" height="28" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1352.0" y="1050.5" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Turn on…</text>
+<rect x="735" y="1088" width="690" height="64" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<text x="751" y="1113" fill="#f2eeea" font-size="13" font-weight="600">Handle your keyboard for other apps</text>
+<text x="751" y="1134" fill="#a8a099" font-size="12">Foxglove's program file changed on 12 Nov.</text>
+<text x="1187" y="1113" fill="#f5c451" font-size="12" font-weight="600">Asks again</text>
+<rect x="1295" y="1106" width="114" height="28" rx="5" fill="#ff8a2a"/>
+<text x="1352.0" y="1124.5" fill="#1a0e04" font-size="12" font-weight="600" text-anchor="middle">Review…</text>
+<text x="735" y="1176" fill="#a8a099" font-size="11">Turn off acts at once, no confirm (the safe direction). Turn on… and Review… always open the dialog.</text>
+<text x="735" y="1200" fill="#ff8a2a" font-size="13" font-weight="700">4  After Turn off: Foxglove keeps running, with less</text>
+<rect x="735" y="1212" width="690" height="140" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<text x="751" y="1236" fill="#a8a099" font-size="12" font-weight="600">Keeps working</text>
+<text x="865" y="1236" fill="#f2eeea" font-size="12">Foxglove's own window, its keyboard summary on the Foxglove page,</text>
+<text x="865" y="1258" fill="#f2eeea" font-size="12">and what you allowed before (lights page, overlay, tray panel).</text>
+<text x="751" y="1280" fill="#a8a099" font-size="12" font-weight="600">Stops</text>
+<text x="865" y="1280" fill="#f2eeea" font-size="12">Other apps and the foxglove command can't read or change the keyboard</text>
+<text x="865" y="1302" fill="#f2eeea" font-size="12">through Hideout. To them it looks as if Foxglove weren't running.</text>
+<text x="751" y="1324" fill="#a8a099" font-size="12" font-weight="600">Why not stop it</text>
+<text x="865" y="1324" fill="#f2eeea" font-size="12">Stopping it would take the keyboard away from you, not just from other apps.</text>
+<text x="735" y="1376" fill="#a8a099" font-size="11">Screen reader: "Handle your keyboard for other apps, On. Turn off, button." A change is announced once (polite).</text>
+<text x="735" y="1394" fill="#a8a099" font-size="11">Contrast (WCAG, from tokens, light / dark): text 17.1 / 13.0, muted 7.3 / 5.8, accent 5.2 / 6.4,</text>
+<text x="735" y="1410" fill="#a8a099" font-size="11">on-accent 5.2 / 8.0, attention 6.2 / 9.2, ok 6.3 / 8.4, muted on chrome 6.2 / 6.5. State is always a word too.</text>
+</svg>

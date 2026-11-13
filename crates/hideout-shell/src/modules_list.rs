@@ -469,10 +469,23 @@ pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], banner: Option<&str>
     page_ui_with(ui, t, rows, top)
 }
 
+/// [`page_ui_with_head`] with nothing above the banner.
+pub fn page_ui_with(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], top: Top) -> Option<Click> {
+    page_ui_with_head(ui, t, rows, top, &mut |_| {})
+}
+
 /// [`page_ui`] with the banner's search parts and, during a search, Turn on and Turn off
 /// locked: they keep the focus, say the lock line as their description and do nothing, and
 /// the line shows under the list (#1033).
-pub fn page_ui_with(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], top: Top) -> Option<Click> {
+/// `head` draws between the title and the banner (the keyboard grant's header line and
+/// Permissions block, #1155): above the list, so a long list can't push it off the screen.
+pub fn page_ui_with_head(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    rows: &[Row],
+    top: Top,
+    head: &mut dyn FnMut(&mut egui::Ui),
+) -> Option<Click> {
     use egui::RichText;
     let lock_line = hideout_supervisor::bisect::words::LOCKED;
     ui.label(
@@ -482,6 +495,7 @@ pub fn page_ui_with(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], top: Top) -> Op
             .color(c(t.text)),
     );
     ui.add_space(20.0);
+    head(ui);
     let mut click = None;
     if let Some(b) = &top.banner {
         click = banner_ui(ui, t, b);
