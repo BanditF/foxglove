@@ -1727,3 +1727,171 @@ fn before_the_hub_has_the_module_nothing_registers_and_a_click_opens_nothing() {
     assert!(at("hub_link::module_mode()") < at("set_hub_opener("));
     assert!(at("set_hub_opener(") < at("create_tray_icon("));
 }
+
+// ---- the feature hand-off (P9) ----
+
+const STUB: &str = "example.stub";
+
+impl Rig {
+    /// Routes what the hub sent the module (`outs`) into the link, then runs the exchange.
+    fn feed(&mut self, outs: Vec<Out>) -> Vec<Step> {
+        let mut steps = Vec::new();
+        for o in outs {
+            if let Out::Send(c, v) = o {
+                if c == self.conn {
+                    steps.push(self.link.line(&v.to_string()).unwrap());
+                }
+            }
+        }
+        steps.extend(self.pump());
+        steps
+    }
+
+    /// A stub module (first party, no catalog entry) that provides `methods`; returns its
+    /// connection and what the hub sent the legacy module when it registered.
+    fn stub_registers(&mut self, methods: &[&str]) -> (ConnId, Vec<Step>) {
+        let grants: Vec<String> = methods.iter().map(|m| format!("provide:{m}")).collect();
+        self.router.add_module(ModuleEntry {
+            id: STUB.into(),
+            name: "Stub".into(),
+            holder: Holder::FirstParty,
+            granted: grants,
+            catalog_provide: None,
+            channel_risk: Default::default(),
+            activate_on_call: false,
+            panels: None,
+            settings_dir: String::new(),
+            data_dir: String::new(),
+            registered_version: None,
+        });
+        self.router.set_token(STUB, "stub-token");
+        let c = self.router.connect(Origin::Pipe);
+        let init = json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
+            "id":STUB,"version":"0.1.0","instance":"s","token":"stub-token","hub":"1.3",
+            "api":{"foxglove":"1.13"}}});
+        self.router.receive(c, &init.to_string(), self.now);
+        let reg = json!({"jsonrpc":"2.0","id":1,"method":"module.register","params":
+            {"methods":methods,"facts":[],"channels":[],"apis":{}}});
+        let mut outs = self.router.receive(c, &reg.to_string(), self.now);
+        outs.extend(self.router.receive(
+            c,
+            r#"{"jsonrpc":"2.0","method":"module.ready","params":{"instance":"s"}}"#,
+            self.now,
+        ));
+        (c, self.feed(outs))
+    }
+
+    fn stub_leaves(&mut self, c: ConnId) -> Vec<Step> {
+        let outs = self.router.disconnect(c);
+        self.feed(outs)
+    }
+
+    /// The methods the hub routes to the legacy module now.
+    fn routed(&self) -> Vec<String> {
+        self.router
+            .fact(&format!("module.{ID}.provides"))
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    }
+}
+
+fn watching_rig() -> Rig {
+    Rig::new(&[GRANT, GRANT_REGISTRY])
+}
+
+#[test]
+fn without_another_module_everything_is_served_and_nothing_is_off() {
+    let mut rig = watching_rig();
+    let steps = rig.connect(&keyboard());
+    assert!(steps.contains(&Step::Ready), "{steps:?}");
+    assert!(rig.link.off().is_empty());
+    let mut routed = rig.routed();
+    routed.sort();
+    let mut all: Vec<String> = SERVED.iter().map(|m| m.to_string()).collect();
+    all.sort();
+    assert_eq!(routed, all);
+    assert!(rig.link.take_log().is_empty());
+}
+
+#[test]
+fn a_stub_that_provides_a_v1_method_turns_its_feature_off_and_the_table_omits_it() {
+    let mut rig = watching_rig();
+    rig.connect(&keyboard());
+    let (_c, steps) = rig.stub_registers(&["scenes.page"]);
+    assert!(steps.contains(&Step::Handoff), "{steps:?}");
+    assert_eq!(rig.link.off(), ["hideout.scenes"]);
+    // Neither the registration the link sent nor the hub's routes hold scenes.* for it.
+    assert!(!rig.link.claimed().iter().any(|m| m.starts_with("scenes.")));
+    assert!(!rig.routed().iter().any(|m| m.starts_with("scenes.")));
+    // The other features keep their methods; the stub holds the method alone (no double writer).
+    assert!(rig.routed().contains(&"lights.page".to_string()));
+    assert!(rig.routed().contains(&"health.read".to_string()));
+    let stub = rig.router.fact(&format!("module.{STUB}.provides")).cloned();
+    assert_eq!(stub, Some(json!(["scenes.page"])));
+    // The legacy module says so once.
+    let log = rig.link.take_log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(log[0].contains("hideout.scenes"), "{log:?}");
+}
+
+#[test]
+fn a_stub_registered_before_the_legacy_module_starts_is_found_at_initialize() {
+    let mut rig = watching_rig();
+    // The stub registers first, on the same hub (the legacy module has not connected yet).
+    let (_c, _) = rig.stub_registers(&["lights.page"]);
+    let steps = rig.connect(&keyboard());
+    assert!(steps.contains(&Step::Ready), "{steps:?}");
+    assert_eq!(rig.link.off(), ["foxglove.lights"]);
+    assert!(!rig.link.claimed().contains(&"lights.page".to_string()));
+    assert!(!rig.routed().contains(&"lights.page".to_string()));
+}
+
+#[test]
+fn a_stub_that_provides_nothing_of_the_features_leaves_them_alone() {
+    let mut rig = watching_rig();
+    rig.connect(&keyboard());
+    let (_c, steps) = rig.stub_registers(&["unrelated.thing"]);
+    assert!(!steps.contains(&Step::Handoff), "{steps:?}");
+    assert!(rig.link.off().is_empty());
+    assert_eq!(rig.link.claimed().len(), SERVED.len());
+    assert_eq!(rig.routed().len(), SERVED.len());
+}
+
+#[test]
+fn the_legacy_modules_own_registration_does_not_turn_itself_off() {
+    let mut rig = watching_rig();
+    let steps = rig.connect(&keyboard());
+    assert!(steps.contains(&Step::Ready));
+    // Its own provides fact came back through the subscription.
+    assert!(!rig.routed().is_empty());
+    assert!(rig.link.off().is_empty());
+}
+
+#[test]
+fn without_the_registry_grant_nothing_is_handed_off() {
+    let mut rig = Rig::new(&[GRANT]);
+    rig.connect(&keyboard());
+    let (_c, steps) = rig.stub_registers(&["scenes.page"]);
+    assert!(!steps.contains(&Step::Handoff), "{steps:?}");
+    assert!(rig.link.off().is_empty());
+    assert_eq!(rig.link.claimed().len(), SERVED.len());
+}
+
+#[test]
+fn a_module_that_leaves_gives_the_methods_back() {
+    let mut rig = watching_rig();
+    rig.connect(&keyboard());
+    let (c, _) = rig.stub_registers(&["scenes.page", "pc_lighting.list"]);
+    assert_eq!(rig.link.off(), ["hideout.scenes", "hideout.pclights"]);
+    rig.link.take_log();
+    let steps = rig.stub_leaves(c);
+    assert!(steps.contains(&Step::Handoff), "{steps:?}");
+    assert!(rig.link.off().is_empty());
+    assert_eq!(rig.link.claimed().len(), SERVED.len());
+    assert_eq!(rig.routed().len(), SERVED.len());
+    let log = rig.link.take_log();
+    assert!(log.iter().any(|l| l.contains("is gone")), "{log:?}");
+}

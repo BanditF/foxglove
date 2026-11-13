@@ -1831,6 +1831,12 @@ pub fn lamp_health() -> Vec<super::lamp_health::LampHealth> {
     super::lamp_health::from_snapshot(&s, &s.lamp_applies, super::scene_lamps::identity())
 }
 
+/// Whether the worker refuses writes: the user's pause, or another module provides
+/// `pc_lighting.*` and has the PC's lights (P9, [`super::features`]: no double writer).
+fn write_hold() -> bool {
+    super::pause::paused() || super::features::is_off("hideout.pclights")
+}
+
 /// Starts the worker, the HID arrival watch and the first scan.
 pub fn start() {
     if super::repaint_trace::disabled("pc-lights") {
@@ -1917,7 +1923,7 @@ pub fn start() {
                     }
                     continue;
                 }
-                worker.handle(msg, super::pause::paused(), &mut std::thread::sleep);
+                worker.handle(msg, write_hold(), &mut std::thread::sleep);
             }
             if own_may_change || worker.scene_boards() != boards {
                 worker.publish_scene_own();
@@ -1927,7 +1933,7 @@ pub fn start() {
             }
             if std::mem::take(&mut worker.relist) {
                 scanned = true;
-                worker.relist(&mut |names| process_running(names), super::pause::paused());
+                worker.relist(&mut |names| process_running(names), write_hold());
             }
             if std::mem::take(&mut worker.openrgb_dirty) {
                 if let Err(e) = super::store::section(STORE_OWNER, OPENRGB_SECTION)
@@ -2037,7 +2043,7 @@ fn scan(worker: &mut Worker, restore: bool) {
         Ok(hid) => worker.scan(
             &hid,
             &mut |names| process_running(names),
-            super::pause::paused(),
+            write_hold(),
             restore,
         ),
         Err(e) => eprintln!("Foxglove: lighting scan: {e}"),
