@@ -46,8 +46,12 @@ fn connect(r: &mut Router, id: &str, now: Instant) -> ConnId {
 }
 
 fn register(r: &mut Router, c: ConnId, method: &str, now: Instant) -> Vec<Value> {
+    register_all(r, c, &[method], now)
+}
+
+fn register_all(r: &mut Router, c: ConnId, methods: &[&str], now: Instant) -> Vec<Value> {
     let reg = json!({"jsonrpc":"2.0","id":1,"method":"module.register","params":
-        {"methods":[method],"facts":[],"channels":[],"apis":{}}});
+        {"methods":methods,"facts":[],"channels":[],"apis":{}}});
     let out = r.receive(c, &reg.to_string(), now);
     r.receive(
         c,
@@ -62,7 +66,10 @@ fn register(r: &mut Router, c: ConnId, method: &str, now: Instant) -> Vec<Value>
 
 fn router() -> Router {
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
-    r.add_module(entry("foxglove", &["provide:health.read", "provide:tray.set_panel"]));
+    r.add_module(entry(
+        "foxglove",
+        &["provide:health.read", "provide:tray.set_panel"],
+    ));
     let text = "id = \"foxglove\"
 name = \"foxglove\"
 version = \"0.1.0\"
@@ -72,8 +79,11 @@ hub = \"1.0\"
 run = [\"C:/x/x.exe\"]
         provides = [\"method:health.read\", \"method:tray.set_panel\", \"method:pc_lighting.set_zone\"]
 ";
-    let m = hideout_contract::module::Module::parse(text, &hideout_contract::module::Context::default())
-        .expect("manifest");
+    let m = hideout_contract::module::Module::parse(
+        text,
+        &hideout_contract::module::Context::default(),
+    )
+    .expect("manifest");
     r.apply_manifest(&m);
     r
 }
@@ -91,7 +101,8 @@ fn inventory_json_edits_can_only_narrow() {
     let now = Instant::now();
     let mut r = router();
     let c = connect(&mut r, "foxglove", now);
-    let rej = register(&mut r, c, "health.read", now); assert!(rej.is_empty(), "{rej:?}");
+    let rej = register(&mut r, c, "health.read", now);
+    assert!(rej.is_empty(), "{rej:?}");
     // Someone adds `provide:pc_lighting.set_zone` and `net` to the file: nothing widens.
     r.narrow_module_grants(&files(&[
         "provide:health.read",
@@ -108,21 +119,73 @@ fn inventory_json_edits_can_only_narrow() {
     r.narrow_module_grants(&files(&["provide:tray.set_panel"]));
     assert_eq!(r.module_grants("foxglove"), vec!["provide:tray.set_panel"]);
     // The route went with the grant (a second register finds nothing to hold).
-    assert!(r.module_grants("foxglove").iter().all(|g| g != "provide:health.read"));
+    assert!(r
+        .module_grants("foxglove")
+        .iter()
+        .all(|g| g != "provide:health.read"));
     // And only the user's Allow widens again.
     r.set_module_grants("foxglove", vec!["provide:health.read".into()]);
-    let rej = register(&mut r, c, "health.read", now); assert!(rej.is_empty(), "{rej:?}");
+    let rej = register(&mut r, c, "health.read", now);
+    assert!(rej.is_empty(), "{rej:?}");
 }
 
-/// Turn off drops the grant. (Route removal for the legacy `foxglove` id is still untested.)
+/// Calls `method` as `caller`; returns what `provider` was asked (and answers it) and the
+/// caller's error code, if any.
+fn call_through(
+    r: &mut Router,
+    caller: ConnId,
+    provider: ConnId,
+    method: &str,
+    n: u64,
+    now: Instant,
+) -> (usize, Option<i64>) {
+    let m = json!({"jsonrpc":"2.0","id":n,"method":method,"params":{}});
+    let out = r.receive(caller, &m.to_string(), now);
+    let asked = sends(&out, provider);
+    for a in &asked {
+        let ans = json!({"jsonrpc":"2.0","id":a["id"],"result":{}});
+        r.receive(provider, &ans.to_string(), now);
+    }
+    let code = sends(&out, caller)
+        .iter()
+        .find_map(|v| v["error"]["code"].as_i64());
+    (asked.len(), code)
+}
+
+/// Turn off drops the grant and the route with it, for the legacy adopted `foxglove` id too:
+/// a call that reached the module before now has no provider, and the other route stays.
 #[test]
 fn turn_off_drops_the_route_and_calls_fail() {
     let now = Instant::now();
     let mut r = router();
+    r.add_module(entry("example.caller", &["devices.read", "app.windows"]));
     let c = connect(&mut r, "foxglove", now);
-    let rej = register(&mut r, c, "health.read", now); assert!(rej.is_empty(), "{rej:?}");
+    let rej = register_all(&mut r, c, &["health.read", "tray.set_panel"], now);
+    assert!(rej.is_empty(), "{rej:?}");
+    let caller = connect(&mut r, "example.caller", now);
+    assert_eq!(
+        call_through(&mut r, caller, c, "health.read", 300, now),
+        (1, None)
+    );
+
     r.drop_module_grants("foxglove", Some(&["provide:health.read".to_string()]));
     assert_eq!(r.module_grants("foxglove"), vec!["provide:tray.set_panel"]);
+    let (asked, code) = call_through(&mut r, caller, c, "health.read", 301, now);
+    assert_eq!(asked, 0, "the call still reached the module");
+    assert!(code.is_some(), "the caller was not told it failed");
+    // The item that stayed is still served.
+    assert_eq!(
+        call_through(&mut r, caller, c, "tray.set_panel", 302, now),
+        (1, None)
+    );
+
+    // Turn all off: nothing is served.
+    r.drop_module_grants("foxglove", None);
+    assert!(r.module_grants("foxglove").is_empty());
+    assert_eq!(
+        call_through(&mut r, caller, c, "tray.set_panel", 303, now).0,
+        0
+    );
 }
 
 /// Live: a connected module calls every plausible method for granting or approving; none
@@ -161,8 +224,9 @@ fn no_method_a_module_can_call_grants_anything() {
         let out = r.receive(c, &msg.to_string(), now);
         let answered = sends(&out, c);
         assert!(
-            answered.iter().all(|v| v.get("result").is_none()
-                || v["result"].get("granted").is_none()),
+            answered
+                .iter()
+                .all(|v| v.get("result").is_none() || v["result"].get("granted").is_none()),
             "{m}: {answered:?}"
         );
     }
@@ -172,4 +236,3 @@ fn no_method_a_module_can_call_grants_anything() {
         "a call changed a grant"
     );
 }
-
