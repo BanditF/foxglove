@@ -308,6 +308,7 @@ fn scene_status() -> methods::SceneStatus {
     let h = super::lamp_hold::now();
     let owner = super::lights_owner::lock(&super::lights_owner::shared()).owner();
     let name = super::scene_run::running().map(|(n, _)| n);
+    let stopping = super::scenes_ui::stopping();
     let paused_for = if name.is_none() {
         None
     } else if super::pause::paused() {
@@ -320,7 +321,7 @@ fn scene_status() -> methods::SceneStatus {
         None
     };
     let held = h.usb.is_some() || h.ble.is_some();
-    let keyboard = if name.is_none() || paused_for.is_some() {
+    let keyboard = if name.is_none() || paused_for.is_some() || stopping {
         ""
     } else if !held {
         "none"
@@ -345,6 +346,7 @@ fn scene_status() -> methods::SceneStatus {
     methods::SceneStatus {
         state: match (&name, &paused_for) {
             (None, _) => "none",
+            (Some(_), _) if stopping => "stopping",
             (Some(_), Some(_)) => "paused",
             _ => "running",
         }
@@ -383,7 +385,12 @@ fn scene_repaint() -> Result<methods::SceneRepainted, String> {
     if st.putting_back {
         return Err("already putting the lights back".into());
     }
-    let lit = if st.keyboard == "dark" {
+    if st.state == "stopping" {
+        return Err("the scene is stopping".into());
+    }
+    // Only a keyboard Foxglove already gave up on (not recovered) is repainted and waited for;
+    // while it still waits (under 2 min) or lit, a plain repaint does no harm and no waiting.
+    let lit = if st.keyboard == "dark" && st.failed {
         super::lights_heal::repaint_and_wait(Duration::from_secs(12))?
     } else {
         // Not dark: sending the colours again does no harm.

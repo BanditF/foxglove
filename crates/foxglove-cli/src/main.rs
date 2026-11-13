@@ -209,6 +209,15 @@ fn scene_text(s: &SceneStatus) -> (String, i32) {
             0,
         );
     };
+    if s.state == "stopping" {
+        return (
+            format!(
+                "scene: {name} (stopping)
+"
+            ),
+            0,
+        );
+    }
     if let Some(who) = &s.paused_for {
         return (
             format!(
@@ -773,6 +782,22 @@ detail: held over USB, owner USB, hand-backs 13, frames sent 5123
 "
         ));
         assert_eq!(e, 3);
+    }
+
+    #[test]
+    fn scene_status_stopping_has_no_keyboard_line() {
+        let mut s = running();
+        s.state = "stopping".into();
+        s.keyboard = String::new();
+        assert_eq!(
+            scene_text(&s),
+            (
+                "scene: Bandit scanline (stopping)
+"
+                .into(),
+                0
+            )
+        );
     }
 
     #[test]

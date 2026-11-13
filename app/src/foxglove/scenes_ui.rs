@@ -270,6 +270,11 @@ static DRAFT: Mutex<Draft> = Mutex::new(Draft {
     ask_focus: false,
 });
 static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// Whether a Stop is giving the lights back now (for `scene.status`).
+pub fn stopping() -> bool {
+    STOPPING.load(Ordering::Relaxed)
+}
 /// The running scene was started by a profile switch ("Start with this profile"), so a switch
 /// to a profile without it stops it (#489).
 static BY_PROFILE: AtomicBool = AtomicBool::new(false);
@@ -1083,6 +1088,21 @@ fn triggers_card(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     }
 }
 
+/// Repaint now shows while a step runs or Foxglove gave up, not while it still waits (UX plan).
+fn repaint_shown(h: &super::lights_heal::View) -> bool {
+    h.putting_back || h.failed
+}
+
+/// Repaint now is the primary button until it has failed once.
+fn repaint_primary(h: &super::lights_heal::View) -> bool {
+    h.failed && !h.user_failed
+}
+
+/// After Repaint now did not help, the user's next step is Stop.
+fn stop_primary(h: &super::lights_heal::View) -> bool {
+    h.user_failed
+}
+
 /// Start or Stop with the scene's state, the map, and what the scene lights.
 fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
     let p = theme::palette(ui);
@@ -1091,13 +1111,12 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         |ui| {
             if v.running.is_some() || v.stopping {
                 // Only while the keyboard is dark (UX plan): first, so Tab reaches it before Stop.
-                if v.heal.dark && !v.stopping {
+                if repaint_shown(&v.heal) && !v.stopping {
                     let busy = v.heal.putting_back;
                     let label = if busy { "Repainting…" } else { "Repaint now" };
-                    let first_try = v.heal.failed && v.heal.dark_since.is_some();
                     let b = ui.add_enabled(
                         !busy,
-                        if first_try {
+                        if repaint_primary(&v.heal) {
                             theme::primary_button(ui, label)
                         } else {
                             egui::Button::new(label)
@@ -1123,7 +1142,14 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                         out.push(Intent::Repaint);
                     }
                 }
-                let stop = ui.add_enabled(!v.stopping, egui::Button::new("Stop"));
+                let stop = ui.add_enabled(
+                    !v.stopping,
+                    if stop_primary(&v.heal) {
+                        theme::primary_button(ui, "Stop")
+                    } else {
+                        egui::Button::new("Stop")
+                    },
+                );
                 if stop
                     .on_hover_text("Stop the scene and put the lights back")
                     .clicked()
@@ -2625,6 +2651,50 @@ pub(crate) mod tests {
             click(&sample_none(), "Sweep on layer change"),
             vec![Intent::Trigger(Trigger::SweepLayers, true)]
         );
+    }
+
+    #[test]
+    fn repaint_now_shows_only_when_putting_back_or_failed() {
+        use super::super::lights_heal::View as H;
+        let with = |heal: H| View { heal, ..sample() };
+        let waiting = H {
+            dark: true,
+            dark_since: Some("14:02".into()),
+            ..Default::default()
+        };
+        assert!(!shows(&with(waiting.clone()), "Repaint now"));
+        assert!(!shows(&with(waiting), "Repainting…"));
+        let step = H {
+            dark: true,
+            putting_back: true,
+            ..Default::default()
+        };
+        assert!(shows(&with(step), "Repainting…"));
+        let failed = H {
+            dark: true,
+            failed: true,
+            dark_since: Some("14:02".into()),
+            ..Default::default()
+        };
+        assert!(shows(&with(failed), "Repaint now"));
+        assert!(!shows(&sample(), "Repaint now"));
+    }
+
+    #[test]
+    fn stop_becomes_primary_once_repaint_now_failed() {
+        use super::super::lights_heal::View as H;
+        let first = H {
+            dark: true,
+            failed: true,
+            ..Default::default()
+        };
+        assert!(repaint_primary(&first) && !stop_primary(&first));
+        let after = H {
+            user_failed: true,
+            ..first
+        };
+        assert!(!repaint_primary(&after) && stop_primary(&after));
+        assert!(!stop_primary(&H::default()));
     }
 
     /// Whether the page draws `label`.

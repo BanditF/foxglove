@@ -527,6 +527,8 @@ pub struct View {
     pub putting_back: bool,
     /// Past the first step: Repaint now is shown.
     pub failed: bool,
+    /// Repaint now did not help: Stop is the primary button.
+    pub user_failed: bool,
     pub dark_since: Option<String>,
     pub suffix: Option<String>,
     pub darks: u64,
@@ -559,6 +561,7 @@ impl Tracker {
             dark: self.dark(),
             putting_back: self.putting_back(),
             failed: self.failed(),
+            user_failed: self.dark() && self.user_failed.is_some(),
             dark_since: self.dark_since().map(|h| h.to_string()),
             suffix: self.status_suffix(),
             darks: self.darks,
