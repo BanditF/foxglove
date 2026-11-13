@@ -23,7 +23,7 @@ impl Pin {
     /// Opens `exe` write-locked and hashes it through that handle.
     pub fn open(exe: &Path) -> io::Result<Pin> {
         let mut file = open_locked(exe)?;
-        let path = hideout_registry::keyboard::canonical_path(exe)?;
+        let path = final_path(&file, exe)?;
         let mut h = Sha256::new();
         let mut buf = vec![0u8; 64 * 1024];
         file.seek(SeekFrom::Start(0))?;
@@ -53,6 +53,42 @@ impl Pin {
         }
         Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
     }
+}
+
+/// The path of the file the handle really names, so a link swapped after the open cannot make the
+/// record say another file than the one hashed (#1155 L1). Windows asks the handle; elsewhere the
+/// name is all there is.
+#[cfg(windows)]
+fn final_path(file: &std::fs::File, _exe: &Path) -> io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED,
+    };
+    let h = file.as_raw_handle() as _;
+    let mut buf = vec![0u16; 1024];
+    loop {
+        let n = unsafe {
+            GetFinalPathNameByHandleW(h, buf.as_mut_ptr(), buf.len() as u32, FILE_NAME_NORMALIZED)
+        };
+        if n == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (n as usize) < buf.len() {
+            buf.truncate(n as usize);
+            break;
+        }
+        buf.resize(n as usize + 1, 0);
+    }
+    // The same spelling `canonical_path` records: no verbatim prefix (UNC stays two backslashes, and
+    // the registry refuses it as before).
+    Ok(hideout_registry::keyboard::strip_verbatim(
+        &String::from_utf16_lossy(&buf),
+    ))
+}
+
+#[cfg(not(windows))]
+fn final_path(_file: &std::fs::File, exe: &Path) -> io::Result<String> {
+    hideout_registry::keyboard::canonical_path(exe)
 }
 
 #[cfg(windows)]
@@ -163,5 +199,38 @@ mod tests {
         (short.exists()
             && short.display().to_string().to_lowercase() != p.display().to_string().to_lowercase())
         .then_some(short)
+    }
+
+    #[test]
+    fn the_path_comes_from_the_open_handle_not_the_name() {
+        let d = temp("handle");
+        let real = d.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("foxglove.exe"), b"B").unwrap();
+        // A plain open: the handle's path has no verbatim prefix and names the file.
+        let file = open_locked(&real.join("foxglove.exe")).unwrap();
+        let got = final_path(&file, &real.join("foxglove.exe")).unwrap();
+        assert!(!got.starts_with(r"\\"), "no verbatim prefix: {got}");
+        let want = real.join("foxglove.exe").display().to_string();
+        assert!(hideout_registry::keyboard::same_path(&got, &want), "{got}");
+        // Opened through a junction, the handle still names the real file, and the name the
+        // caller passed (a wrong one, as after a swap) is not consulted at all.
+        let junction = d.join("junction");
+        let ok = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&real)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            let f = open_locked(&junction.join("foxglove.exe")).unwrap();
+            let other = d.join("elsewhere.exe");
+            let got = final_path(&f, &other).unwrap();
+            assert!(hideout_registry::keyboard::same_path(&got, &want), "{got}");
+            let _ = std::fs::remove_dir(&junction);
+        }
     }
 }
