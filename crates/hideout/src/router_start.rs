@@ -337,7 +337,8 @@ fn watch_inventory(
             let grants = hideout_supervisor::driver::keyboard_grants(&reg)
                 .into_iter()
                 .collect();
-            hub.act(|r| r.set_keyboard_grants(grants));
+            // The file can only narrow a grant; widening is the user's Allow or the hub's start.
+            hub.act(|r| r.narrow_keyboard_grants(&grants));
             // Joined after the start (#1076): the router and the supervisor learn it, so an
             // enabled module starts now; the panel host gets its manifest. Taken from this read,
             // not from the watch's ids: those came from a read a moment earlier, which a write

@@ -88,14 +88,20 @@ pub fn legacy_foxglove_ok(module: &str, pattern: &str) -> bool {
 /// legacy module through the grant, whatever area it lies in.
 pub const GRANT_NEVER: &[&str] = &["reset", "bootloader", "flash", "erase", "dfu", "bond"];
 
-/// Whether a method name or pattern has a [`GRANT_NEVER`] word as a part (split at anything that
-/// is not a letter or digit, so `devices.reset_all` and `devices.reset-all` both count; case
-/// ignored).
+/// Whether a method name or pattern contains a [`GRANT_NEVER`] word anywhere (#1155-B review L4):
+/// case ignored and every separator removed, so `devices.reset_all`, `devices.resetAll`,
+/// `factoryReset`, `enterDfu`, `flashFirmware` and `clearBonds` all count. The ordinary words
+/// `preset` and `respond` are taken out first, so `lighting.presets.list` is not caught by
+/// `reset` or `bond`.
 pub fn never_name(method: &str) -> bool {
-    method
+    let flat: String = method
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
         .to_ascii_lowercase()
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|w| GRANT_NEVER.contains(&w) || w.starts_with("bootload"))
+        .replace("preset", "")
+        .replace("respond", "");
+    GRANT_NEVER.iter().any(|w| flat.contains(w))
 }
 
 /// The first-party areas an adopted module may still provide when no catalog gives them to

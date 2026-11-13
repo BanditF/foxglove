@@ -70,7 +70,7 @@ pub struct KeyboardGrant {
     /// or `void`.
     #[serde(default)]
     pub path: String,
-    /// SHA-256 of that file at Allow, lowercase hex.
+    /// SHA-256 of that file at Allow, lowercase hex; empty once the record is not `on`.
     #[serde(default)]
     pub sha256: String,
     /// When the state last changed (RFC 3339, UTC).
@@ -91,8 +91,18 @@ impl KeyboardGrant {
             && is_hash(sha256)
             && self.sha256.eq_ignore_ascii_case(sha256)
             && is_absolute(&self.path)
+            && !is_unc(&self.path)
             && same_path(&self.path, path)
     }
+}
+
+/// A network path (`\\host\share`, or the verbatim `\\?\UNC\` form): never carries the grant,
+/// because a remote file is not under this machine's write lock.
+pub fn is_unc(p: &str) -> bool {
+    let p = p.replace('/', "\\");
+    let up = p.to_ascii_uppercase();
+    up.starts_with("\\\\?\\UNC\\")
+        || (p.starts_with("\\\\") && !p.starts_with("\\\\?\\") && !p.starts_with("\\\\.\\"))
 }
 
 fn is_hash(s: &str) -> bool {
@@ -232,7 +242,7 @@ impl Registry {
         now: &str,
     ) -> Result<KeyboardGrant, Failure> {
         let here = self.keyboard_exe(id)?;
-        if !same_path(&here, path) || !is_hash(sha256) {
+        if !same_path(&here, path) || !is_hash(sha256) || is_unc(&here) {
             return Err(Failure::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "the program is not where the grant was asked for",
@@ -265,7 +275,7 @@ impl Registry {
         self.write_keyboard(id, Some(g))
     }
 
-    /// The program's path or hash changed: `on` becomes `void` (kept path and hash for the
+    /// The program's path or hash changed: `on` becomes `void` (the path is kept, the hash cleared, for the
     /// record only; [`KeyboardGrant::allows`] refuses anything but `on`). Does nothing from any
     /// other state, so it can never turn a grant on.
     pub fn void_keyboard(
@@ -283,6 +293,8 @@ impl Registry {
             if let Some(m) = inv.modules.get_mut(id) {
                 if let Some(g) = m.keyboard.as_mut().filter(|g| g.state == GrantState::On) {
                     g.state = GrantState::Void;
+                    // What was granted is not kept: nothing can match it again.
+                    g.sha256.clear();
                     g.reason = Some(reason);
                     g.at = now.into();
                     changed = Some(g.clone());

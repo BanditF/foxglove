@@ -111,6 +111,7 @@ fn void_never_revives_and_only_allow_turns_it_on() {
     );
     // The old file put back (same path, same hash) is not enough.
     let g = reg.inventory.modules[ID].keyboard.clone().unwrap();
+    assert!(g.sha256.is_empty(), "a void record keeps no hash");
     assert!(!g.allows(&path, H1));
     assert!(!Registry::open(&home, false).unwrap().inventory.modules[ID]
         .keyboard
@@ -137,6 +138,7 @@ fn revoke_is_at_once_and_drops_path_and_hash() {
     assert_eq!(json["state"], "off");
     assert_eq!(json["sha256"], "");
     let g = reg.inventory.modules[ID].keyboard.clone().unwrap();
+    assert!(g.sha256.is_empty(), "a void record keeps no hash");
     assert!(!g.allows(&path, H1));
 }
 
@@ -215,4 +217,27 @@ fn a_hand_edited_unknown_or_broken_record_is_no_grant_and_the_inventory_still_lo
     std::fs::write(home.join("inventory.json"), v.to_string()).unwrap();
     let reg = Registry::open(&home, false).unwrap();
     assert_eq!(reg.keyboard_state(ID), KeyboardState::NotAsked);
+}
+
+#[test]
+fn a_network_path_never_carries_the_grant() {
+    use hideout_registry::keyboard::is_unc;
+    for p in [
+        r"\\srv\share\foxglove.exe",
+        r"\\?\UNC\srv\share\f.exe",
+        "//srv/share/f.exe",
+    ] {
+        assert!(is_unc(p), "{p}");
+        let g = KeyboardGrant {
+            state: GrantState::On,
+            path: p.into(),
+            sha256: H1.into(),
+            at: NOW.into(),
+            reason: None,
+        };
+        assert!(!g.allows(p, H1), "{p}");
+    }
+    for p in [r"C:\Apps\f.exe", r"\\?\C:\Apps\f.exe"] {
+        assert!(!is_unc(p), "{p}");
+    }
 }

@@ -833,6 +833,43 @@ impl Router {
         self.revalidate_grant()
     }
 
+    /// What a change of `inventory.json` made by anyone may do to a grant (#1155-B review M3): it
+    /// may only narrow it. A grant that is `on` here stays `on` only while the file still says
+    /// the same path and hash; anything else turns it off or void. A grant that is not `on`
+    /// here never becomes `on` from the file: only [`Router::set_keyboard_grants`] (the user's
+    /// Allow, the hub's start) widens.
+    pub fn narrow_keyboard_grants(
+        &mut self,
+        grants: &HashMap<String, hideout_registry::keyboard::KeyboardGrant>,
+    ) -> Vec<Out> {
+        use hideout_registry::keyboard::GrantState;
+        for (id, cur) in self.keyboards.iter_mut() {
+            if cur.state != GrantState::On {
+                continue;
+            }
+            match grants.get(id) {
+                Some(n) if n.state == GrantState::On && cur.allows(&n.path, &n.sha256) => {}
+                Some(n) if n.state != GrantState::On => *cur = n.clone(),
+                _ => {
+                    cur.state = GrantState::Void;
+                    cur.sha256.clear();
+                }
+            }
+        }
+        self.revalidate_grant()
+    }
+
+    /// Turns the grant of `id` off in memory at once, before any file is written (a revoke must
+    /// not wait for the disk). Returns the notices for the leases that ended.
+    pub fn drop_keyboard_grant(&mut self, id: &str) -> Vec<Out> {
+        if let Some(g) = self.keyboards.get_mut(id) {
+            g.state = hideout_registry::keyboard::GrantState::Off;
+            g.path.clear();
+            g.sha256.clear();
+        }
+        self.revalidate_grant()
+    }
+
     /// Drops the routes the grant no longer carries and ends the leases of a legacy module that
     /// lost its routes (a lease was handed out for an area that is now closed).
     fn revalidate_grant(&mut self) -> Vec<Out> {
@@ -1571,6 +1608,12 @@ impl Router {
                 ready: false,
                 v1,
             };
+            if mid == LEGACY_FOXGLOVE_ID {
+                // A new connection of the legacy module with another image ends the routes the
+                // grant gave the older one (#1155-B review M1).
+                let o = self.revalidate_grant();
+                out.extend(o);
+            }
             let result = if v1 {
                 json!({"api": api, "app": self.settings.app, "granted": caps.v1_strings()})
             } else {
@@ -2073,6 +2116,10 @@ impl Router {
             Who::Module { ready, .. } => *ready = true,
             _ => return,
         }
+        if module == LEGACY_FOXGLOVE_ID {
+            let o = self.revalidate_grant();
+            out.extend(o);
+        }
         self.set_fact(&format!("module.{module}.state"), json!("running"), out);
         out.push(Out::Ready(module.to_string()));
         let mut keep = VecDeque::new();
@@ -2175,8 +2222,16 @@ impl Router {
                         r.get("lease").and_then(Value::as_str),
                         self.conns.contains_key(&c),
                     ) {
-                        self.leases
-                            .insert((provider.clone(), lease.to_string()), Lease { holder: c });
+                        let (provider, lease) = (provider.clone(), lease.to_string());
+                        if provider == LEGACY_FOXGLOVE_ID
+                            && !self.routes.iter().any(|r| r.module == provider)
+                        {
+                            // No route covers the legacy module any more (the grant was taken
+                            // away while the call ran): the lease is ended, never kept (#1155-B).
+                            self.lease_closed(&provider, &lease, "revoked", out);
+                        } else {
+                            self.leases.insert((provider, lease), Lease { holder: c });
+                        }
                     }
                 }
                 out.push(Out::Send(c, envelope(&id, result)))

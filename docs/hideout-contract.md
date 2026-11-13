@@ -1169,22 +1169,35 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   while a per-install record in `inventory.json` (`modules.foxglove.keyboard`: `state`, the
   canonical full `path` of `run[0]`, its `sha256`, `at`) is `on` and the connection's verified
   program image (the one the launch check of §7.5 just verified: pid, path, SHA-256) is exactly
-  that path and hash; with two live instances every one must match. The record is written only
-  by the registry crate, only by the user's Allow, never on upgrade, autostart or restart. A
-  changed path or hash voids it (state `void`, at launch and at `initialize`); putting the old
-  file back does not revive it, only Allow records a new one. Foxglove updates ask again (one
+  that path and hash; with two live instances every one must match, checked again when a
+  connection of the module registers or becomes ready. The hub writes state `on` only for the
+  user's Allow, never on upgrade, autostart or restart, but this is not enforceable against a
+  process of the same user that edits `inventory.json` itself. So the router treats a change of
+  that file as narrowing only: a grant that is `on` in the router stays `on` only while the
+  file names the same path and hash and otherwise drops (to `void` or `off`); a grant the router
+  does not hold `on` never becomes `on` from the file. It widens only from the user's Allow in
+  this hub, or when the hub starts and loads the file (a restart carries an existing grant
+  over). A changed path or hash voids it: at launch the supervisor writes state `void` (and the
+  hash is cleared); at `initialize` and `module.register` the router only refuses (nothing is
+  written there). Putting the old file back does not revive it, only Allow records a new one. A
+  path on the network (UNC) is never granted. A taken-back instance (found running at the hub's
+  start) has no verified identity and gets the grant at its next restart. Foxglove updates ask again (one
   click) until a signed catalog entry exists. Turn off (state `off`, path and hash cleared) acts
-  at once: the routes are dropped, leases handed out through them end with `lease.closed`
+  at once and fails safe: the router drops the grant first, then the file is written, and a
+  failed write is reported without undoing it. The routes are dropped, leases handed out through them end with `lease.closed`
   (`revoked`), and Foxglove keeps running with its own window, tiles, page, facts and the 11
-  methods above. The areas must be declared in the manifest; a method named `reset`,
-  `bootloader`, `flash`, `erase`, `dfu` or `bond` is never provided through the grant (refused at
+  methods above. The areas must be declared in the manifest; a method whose name contains
+  `reset`, `bootloader`, `flash`, `erase`, `dfu` or `bond` (case and separators ignored, so
+  `factoryReset` and `clearBonds` count; `preset` and `respond` do not) is never provided through the grant (refused at
   `module.register`, answered -32601 at `route`); a catalog or root assignment still wins; no
   other adopted module gets them. `FIRST_PARTY_AREAS` is unchanged for adopted modules in
   general. The grant is off by default, and a decline (`[modules.foxglove] keyboard =
   "declined"` in `hideout.toml`, a hub preference, not a grant) is never asked again by itself.
   The record is user-writable machine state: a process running as the same user can edit it;
   what holds is the live check of the verified image, and the program file is held open
-  write-locked (no overwrite, rename or delete) from its hash until the instance ends.
+  write-locked (no overwrite, rename or delete) from its hash until the instance ends. The
+  supervisor pins the program of every module it starts, not only this one, so an update that
+  would overwrite a running program fails as it already does (§7.2).
   Open items (#1155-B): (a) a catalog entry for the legacy module (Hideout root and catalog keys,
   #90 row D) is the long-term path; the grant is then migrated silently (§6.4: existing grants
   carry over) and the row goes away. (b) Name the exact answer a caller gets when nothing

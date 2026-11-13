@@ -1335,9 +1335,14 @@ impl Supervisor {
             Ok(()) => {
                 log::warn!("supervisor: {id}: the program changed; its keyboard grant is void");
                 let grants = keyboard_grants(&reg).into_iter().collect();
-                self.0.hub.act(|r| r.set_keyboard_grants(grants));
+                self.0.hub.act(|r| r.narrow_keyboard_grants(&grants));
             }
-            Err(e) => log::warn!("supervisor: {id}: grant not voided: {e:?}"),
+            Err(e) => {
+                // The file could not be written (inventory.lock busy): the router drops the
+                // grant in memory all the same, so the launch never runs on a stale `on`.
+                log::warn!("supervisor: {id}: grant not voided on disk: {e:?}; dropped in memory");
+                self.0.hub.act(|r| r.drop_keyboard_grant(id));
+            }
         }
     }
 
@@ -1589,7 +1594,9 @@ impl Supervisor {
                 pid: rec.pid,
                 exe: rec.exe.clone(),
                 sha256: rec.sha256.clone(),
-                canon: hideout_registry::keyboard::canonical_path(&rec.exe).unwrap_or_default(),
+                // A taken-back instance has no verified identity: this hub did not launch it,
+                // so it gets the keyboard grant at its next restart (#1155-B review L2).
+                canon: String::new(),
                 pin: crate::pin::Pin::open(&rec.exe)
                     .ok()
                     .filter(|p| p.sha256 == rec.sha256)

@@ -345,11 +345,24 @@ fn names_that_reset_flash_erase_or_bond_are_never_routed() {
         "devices.DFU",
         "devices.bond",
         "devices.unbond",
+        "devices.resetAll",
+        "devices.factoryReset",
+        "devices.enterDfu",
+        "devices.flashFirmware",
+        "devices.clearBonds",
+        "devices.re_set_all_BOOTLOADER",
     ] {
-        let expect = !bad.contains("unbond");
-        assert_eq!(never_name(bad), expect, "{bad}");
+        assert!(never_name(bad), "{bad}");
     }
-    // `unbond` is one word, not the word bond: the list is whole words (and bootload*).
+    // The ordinary words that only contain a never-word are not caught.
+    for fine in [
+        "lighting.presets.list",
+        "devices.respond",
+        "devices.read",
+        "art.list",
+    ] {
+        assert!(!never_name(fine), "{fine}");
+    }
     let id = identity(PATH, HASH);
     let mut r = rig(&id);
     r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
@@ -478,4 +491,93 @@ fn the_registry_carries_an_existing_grant_over_and_never_adds_one() {
     let f = module(&mut r, FOX, now);
     assert!(register(&mut r, f, &strs(&areas()), now).is_empty());
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn a_second_connection_with_another_image_closes_the_routes_the_first_held() {
+    let now = Instant::now();
+    let id = identity(PATH, HASH);
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    let (f, c) = connect_both(&mut r, now);
+    assert!(register(&mut r, f, &strs(&areas()), now).is_empty());
+    assert_eq!(try_call(&mut r, c, f, "devices.list", now).0.len(), 1);
+    // Another instance connects, and its verified image is not the granted one.
+    *id.lock().unwrap() = Some((PATH.to_string(), OTHER.to_string()));
+    let _f2 = module(&mut r, FOX, now);
+    let (got, code) = try_call(&mut r, c, f, "devices.list", now);
+    assert!(got.is_empty());
+    assert_eq!(code, Some(-32601));
+}
+
+#[test]
+fn a_file_change_can_only_narrow_a_grant_never_widen_it() {
+    let now = Instant::now();
+    let id = identity(PATH, HASH);
+    // Nothing granted here: a file that says `on` (another process wrote it) gives nothing.
+    let mut r = rig(&id);
+    r.narrow_keyboard_grants(&grants(Some(grant(GrantState::On))));
+    let (f, _) = connect_both(&mut r, now);
+    assert_eq!(register(&mut r, f, &strs(&areas()), now).len(), 7);
+    // Off here stays off against an `on` file.
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::Off))));
+    r.narrow_keyboard_grants(&grants(Some(grant(GrantState::On))));
+    let (f, _) = connect_both(&mut r, now);
+    assert_eq!(register(&mut r, f, &strs(&areas()), now).len(), 7);
+    // The same grant in the file keeps it; another hash in the file voids it; a missing record
+    // turns it off, at once, for a routed call.
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    r.narrow_keyboard_grants(&grants(Some(grant(GrantState::On))));
+    let (f, c) = connect_both(&mut r, now);
+    assert!(register(&mut r, f, &strs(&areas()), now).is_empty());
+    assert_eq!(try_call(&mut r, c, f, "devices.list", now).0.len(), 1);
+    let mut edited = grant(GrantState::On);
+    edited.sha256 = OTHER.into();
+    r.narrow_keyboard_grants(&grants(Some(edited)));
+    assert_eq!(try_call(&mut r, c, f, "devices.list", now).1, Some(-32601));
+    // Once narrowed, an `on` file does not bring it back; only the user's Allow does.
+    r.narrow_keyboard_grants(&grants(Some(grant(GrantState::On))));
+    assert_eq!(try_call(&mut r, c, f, "devices.list", now).1, Some(-32601));
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    assert_eq!(try_call(&mut r, c, f, "devices.list", now).0.len(), 1);
+    // A record that vanished from the file turns it off.
+    r.narrow_keyboard_grants(&grants(None));
+    assert_eq!(try_call(&mut r, c, f, "devices.list", now).1, Some(-32601));
+}
+
+#[test]
+fn dropping_the_grant_in_memory_closes_the_routes_at_once() {
+    let now = Instant::now();
+    let id = identity(PATH, HASH);
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    let (f, c) = connect_both(&mut r, now);
+    assert!(register(&mut r, f, &strs(&areas()), now).is_empty());
+    r.drop_keyboard_grant(FOX);
+    assert_eq!(try_call(&mut r, c, f, "devices.list", now).1, Some(-32601));
+}
+
+#[test]
+fn a_lease_answered_after_the_grant_was_taken_away_is_not_kept() {
+    let now = Instant::now();
+    let id = identity(PATH, HASH);
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    let (f, c) = connect_both(&mut r, now);
+    assert!(register(&mut r, f, &strs(&areas()), now).is_empty());
+    let out = call(&mut r, c, 9001, "lighting.lease", now);
+    let asked = sends(&out, f);
+    assert_eq!(asked.len(), 1, "{out:?}");
+    // The grant goes while the provider is still answering.
+    r.drop_keyboard_grant(FOX);
+    let ans = json!({"jsonrpc":"2.0","id":asked[0]["id"],"result":{"lease":"L1"}});
+    let out = r.receive(f, &ans.to_string(), now);
+    assert!(
+        sends(&out, f)
+            .iter()
+            .any(|m| m["method"] == "lease.closed" && m["params"]["reason"] == "revoked"),
+        "{out:?}"
+    );
 }
