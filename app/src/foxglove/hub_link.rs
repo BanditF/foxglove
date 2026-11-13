@@ -37,6 +37,15 @@
 //!   (event-driven, no poll). The one button, "Open Foxglove settings", comes back as a plain
 //!   `ui.event`; the module opens its own Settings window at that part's page. Standalone, none
 //!   of this runs.
+//! - **Hand-off (P9).** With `facts.read:module.*` the module reads which methods the other
+//!   registered modules provide (the hub's `module.<id>.provides`, listed after `initialize` and
+//!   followed through `facts.changed`; nothing polls). A feature in [`super::features`] whose
+//!   methods another module provides is switched off here: the module registers without those
+//!   methods (a new `module.register` replaces the old one, so there is one writer) and the
+//!   feature's device duties end ([`super::features::apply`]). When that module goes, the
+//!   methods are claimed again at once and a feature that had to be stopped starts with a
+//!   planned restart of this process (contract section 7.7; nothing counts as a crash); one that
+//!   only refuses writes (`pc_lighting.*`) is on again at once. Standalone none of this runs.
 //! - **No tray, no pipe.** The tray is not created ([`crate::tray::Tray::none`]) and the app
 //!   serves no `foxglove-<user>` pipe (the hub owns that alias, §8.6); every device duty stays.
 //!   The self-restarts that would start a plain copy (identity registration) are off; the GPU
@@ -74,6 +83,11 @@ const HUB: &str = "1.0";
 const FACTS: &str = "keyboard.*";
 /// The permission that lets it publish them (§6.1).
 const GRANT: &str = "facts.write:keyboard.*";
+/// The permission that lets it read the hub's `module.*` facts: which methods the other
+/// registered modules provide (`module.<id>.provides`), the registry check of the feature
+/// hand-off (P9, [`super::features`]). Without it nothing is handed off and the module serves
+/// everything in [`SERVED`], as before.
+const GRANT_REGISTRY: &str = "facts.read:module.*";
 /// The Foxglove API this module's facts follow.
 const API: &str = "1.13";
 /// How long a lost hub is waited for (§7.9).
@@ -304,6 +318,8 @@ struct Hub {
     /// Opens Settings at a page for a panel's button; `None` uses the host's
     /// ([`super::settings_open::open_page_from_hub`]).
     opener: Option<Opener>,
+    /// `module.<id>.provides` facts the hub sent (`facts.changed`), for the link to read.
+    changes: Vec<(String, Value)>,
 }
 
 /// What a panel's button opens Settings with.
@@ -315,6 +331,15 @@ impl Handler for Hub {
     }
     fn exit(&mut self) {
         self.exit = true;
+    }
+    fn notification(&mut self, method: &str, params: Value) {
+        if method != "facts.changed" {
+            return;
+        }
+        if let Some(key) = params["key"].as_str().filter(|k| is_provides(k)) {
+            self.changes
+                .push((key.to_string(), params["value"].clone()));
+        }
     }
     /// A click on one of the panels' buttons (the hub sends `kind: "click"`): opens Settings at
     /// the page of that part. Only while the hub has the module; nothing else is a button.
@@ -348,6 +373,20 @@ impl Handler for Hub {
         };
         run_handler(devices.as_ref(), method, params)
     }
+}
+
+/// Whether `key` is `module.<id>.provides`.
+fn is_provides(key: &str) -> bool {
+    key.strip_prefix("module.")
+        .and_then(|k| k.strip_suffix(".provides"))
+        .is_some_and(|id| !id.is_empty())
+}
+
+/// The module id of a `module.<id>.provides` key.
+fn provider_of(key: &str) -> &str {
+    key.strip_prefix("module.")
+        .and_then(|k| k.strip_suffix(".provides"))
+        .unwrap_or(key)
 }
 
 /// The app's handler for one routed call (it may block for seconds).
@@ -505,6 +544,8 @@ pub(super) fn run_worker(
 enum Phase {
     Fresh,
     Initializing,
+    /// Asked the hub which methods the others provide; registers when it answers.
+    Surveying,
     Registering,
     Live,
 }
@@ -514,8 +555,12 @@ enum Phase {
 pub enum Step {
     /// Nothing for the caller to do.
     Nothing,
-    /// The hub has the module (`module.ready` sent): send the snapshot of the facts.
+    /// The hub has the module (`module.ready` sent): send the snapshot of the facts, and apply
+    /// [`Link::off`].
     Ready,
+    /// Another module started or stopped providing methods of a feature: [`Link::off`] is the
+    /// set of features that are off now, and the registration was sent again without them.
+    Handoff,
     /// `module.exit`: hand back and exit 0.
     Exit,
     /// The hub refused the module; the text is for the log. The module ends.
@@ -538,6 +583,12 @@ pub struct Link<W: Write> {
     queue: Option<Arc<CallQueue>>,
     /// The panels the hub has now (what `ui.register` or the last patches made), for the next diff.
     shown: Option<Vec<Value>>,
+    /// The hub lets the module read `module.*` (the registry check can run).
+    watching: bool,
+    /// Each other module's provided method patterns, from `module.<id>.provides`.
+    provided: std::collections::BTreeMap<String, Vec<String>>,
+    /// The features switched off for another module's sake now.
+    off: Vec<&'static str>,
 }
 
 impl<W: Write> Drop for Link<W> {
@@ -560,7 +611,92 @@ impl<W: Write> Link<W> {
             log: Vec::new(),
             queue: None,
             shown: None,
+            watching: false,
+            provided: Default::default(),
+            off: Vec::new(),
         }
+    }
+
+    /// The features that are off in this module because another module provides their methods.
+    pub fn off(&self) -> &[&'static str] {
+        &self.off
+    }
+
+    /// The v1 methods this module claims now: [`SERVED`] less the areas of the features that
+    /// are off.
+    pub fn claimed(&self) -> Vec<String> {
+        SERVED
+            .iter()
+            .filter(|m| !super::features::withheld(m, &self.off))
+            .map(|m| m.to_string())
+            .collect()
+    }
+
+    fn send_register(&mut self) -> Result<(), SessionError> {
+        let methods = self.claimed();
+        self.session.register(&ModuleRegister {
+            facts: vec![FACTS.into()],
+            methods,
+            apis: [("foxglove".to_string(), API.to_string())].into(),
+            ..Default::default()
+        })?;
+        Ok(())
+    }
+
+    /// Takes the `module.<id>.provides` changes the hub sent into the registry view.
+    fn absorb(&mut self, changes: Vec<(String, Value)>) {
+        for (key, value) in changes {
+            let id = provider_of(&key).to_string();
+            if id == ID {
+                continue;
+            }
+            let list: Vec<String> = value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            if list.is_empty() {
+                self.provided.remove(&id);
+            } else {
+                self.provided.insert(id, list);
+            }
+        }
+    }
+
+    /// Re-reads the plan: when the set of features to turn off changed, registers again
+    /// without (or with) their methods and says so.
+    fn rehand(&mut self) -> Result<bool, SessionError> {
+        let want = super::features::plan(ID, &self.provided);
+        if want == self.off {
+            return Ok(false);
+        }
+        let gone: Vec<&str> = want
+            .iter()
+            .filter(|f| !self.off.contains(f))
+            .copied()
+            .collect();
+        let back: Vec<&str> = self
+            .off
+            .iter()
+            .filter(|f| !want.contains(f))
+            .copied()
+            .collect();
+        if !gone.is_empty() {
+            self.log.push(format!(
+                "Foxglove: another module provides the methods of {}; those features are off here",
+                gone.join(", ")
+            ));
+        }
+        if !back.is_empty() {
+            self.log.push(format!(
+                "Foxglove: the module that provided {} is gone; claiming them again",
+                back.join(", ")
+            ));
+        }
+        self.off = want;
+        self.send_register()?;
+        Ok(true)
     }
 
     /// Opens Settings through `opener` for the panels' buttons (tests; the app uses the host's).
@@ -757,6 +893,13 @@ impl<W: Write> Link<W> {
         if self.hub.exit {
             return Ok(Step::Exit);
         }
+        let changes = std::mem::take(&mut self.hub.changes);
+        if !changes.is_empty() {
+            self.absorb(changes);
+            if self.phase == Phase::Live && self.rehand()? {
+                return Ok(Step::Handoff);
+            }
+        }
         let Incoming::Response {
             method, outcome, ..
         } = got
@@ -775,12 +918,47 @@ impl<W: Write> Link<W> {
                          publishing the keyboard's facts to it"
                     ));
                 }
-                self.session.register(&ModuleRegister {
-                    facts: vec![FACTS.into()],
-                    methods: SERVED.iter().map(|m| m.to_string()).collect(),
-                    apis: [("foxglove".to_string(), API.to_string())].into(),
-                    ..Default::default()
-                })?;
+                self.watching = result["granted"]
+                    .as_array()
+                    .is_some_and(|g| g.iter().any(|p| p.as_str() == Some(GRANT_REGISTRY)));
+                if self.watching {
+                    // Subscribe first, list second: a change between the two is not lost.
+                    self.session
+                        .request("facts.subscribe", json!({ "pattern": "module.*" }))?;
+                    self.session
+                        .request("facts.list", json!({ "pattern": "module.*" }))?;
+                    self.phase = Phase::Surveying;
+                    return Ok(Step::Nothing);
+                }
+                self.send_register()?;
+                self.phase = Phase::Registering;
+                Ok(Step::Nothing)
+            }
+            ("facts.list", outcome) if self.phase == Phase::Surveying => {
+                match outcome {
+                    Ok(result) => {
+                        let found = result["facts"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|f| f["key"].as_str().is_some_and(is_provides))
+                            .map(|f| {
+                                (
+                                    f["key"].as_str().unwrap_or_default().to_string(),
+                                    f["value"].clone(),
+                                )
+                            })
+                            .collect();
+                        self.absorb(found);
+                    }
+                    Err(e) => self.say(format!(
+                        "Foxglove: the hub would not list the other modules ({}); no feature is \
+                         handed off",
+                        reason(&e)
+                    )),
+                }
+                self.off = super::features::plan(ID, &self.provided);
+                self.send_register()?;
                 self.phase = Phase::Registering;
                 Ok(Step::Nothing)
             }
@@ -788,6 +966,7 @@ impl<W: Write> Link<W> {
                 "Foxglove: the hub refused this module: {}",
                 reason(&e)
             ))),
+            ("module.register", Ok(_)) if self.phase == Phase::Live => Ok(Step::Nothing),
             ("module.register", Ok(result)) => {
                 let result: RegisterResult = serde_json::from_value(result)
                     .map_err(|e| SessionError::Protocol(e.to_string()))?;
@@ -805,6 +984,8 @@ impl<W: Write> Link<W> {
                 self.session.ready(&self.launch.instance)?;
                 self.phase = Phase::Live;
                 self.hub.live = true;
+                // A change that came while registering.
+                self.rehand()?;
                 Ok(Step::Ready)
             }
             ("module.register", Err(e)) => Ok(Step::Refused(format!(
@@ -1153,6 +1334,23 @@ mod runner {
         }
     }
 
+    /// Makes `off` the set of handed-off features. True when a feature that was stopped is
+    /// wanted back: it cannot start again inside this process, so the module ends with a
+    /// planned exit (contract section 7.7) and the hub starts it again, with the feature.
+    fn apply_handoff(off: &[&'static str]) -> bool {
+        let done = crate::foxglove::features::apply(off);
+        for f in &done.off {
+            crate::foxglove::app_log::line(&format!("Foxglove: {f} is handed to another module"));
+        }
+        if done.restart {
+            crate::foxglove::app_log::early(
+                "Foxglove: the module that took a feature over is gone; restarting to bring it back",
+            );
+            planned_exit("a handed-off feature is wanted back");
+        }
+        false
+    }
+
     /// Hands the app's devices back and ends the process, as the tray's Quit does.
     fn finish(why: &str, code: i32) -> ! {
         crate::foxglove::quit::hand_back(why);
@@ -1327,8 +1525,16 @@ mod runner {
                 Step::Nothing => {}
                 Step::Exit => return (Ended::Exit, live),
                 Step::Refused(why) => return (Ended::Refused(why), live),
+                Step::Handoff => {
+                    if apply_handoff(link.off()) {
+                        return (Ended::Exit, live);
+                    }
+                }
                 Step::Ready => {
                     live = true;
+                    if apply_handoff(link.off()) {
+                        return (Ended::Exit, live);
+                    }
                     crate::foxglove::app_log::line("Foxglove: registered with the hub as a module");
                     let all = facts.list(FACTS);
                     if let Err(e) = link.snapshot(all.clone()) {

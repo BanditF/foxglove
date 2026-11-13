@@ -194,6 +194,162 @@ pub static FEATURES: &[Feature] = &[
     ),
 ];
 
+/// How a feature gives way to another module that provides its methods (#1143, P9).
+#[derive(Clone, Copy)]
+pub enum How {
+    /// Its device duties end as a quit ends them (lights back to the firmware or the next
+    /// controller). Nothing starts them again in this process: when the other module goes, the
+    /// legacy module asks the hub for a planned restart ([`Applied::restart`]) and the feature
+    /// starts with it.
+    Release(fn()),
+    /// The feature asks [`is_off`] before it writes and stops writing at once; it is on again
+    /// the moment the other module is gone.
+    Gate,
+}
+
+/// A feature that can hand its job to a module: the v1 method patterns it serves for the hub
+/// (the areas such a module would provide) and how it gives way. Features not listed here are
+/// never switched off by a hand-off: the keyboard link, screens, art, the overlay and the
+/// core (their areas are the keyboard grant's, #1155-B, or the app's own plumbing), and the
+/// never-names methods (reset, bootloader, flash, erase, dfu, bond) stay out of the hub link
+/// whatever this table says.
+pub struct HandOff {
+    pub feature: &'static str,
+    pub methods: &'static [&'static str],
+    pub how: How,
+}
+
+pub static HAND_OFFS: &[HandOff] = &[
+    HandOff {
+        feature: "foxglove.lights",
+        methods: &["lights.*"],
+        how: How::Release(super::lamp_hold::stop),
+    },
+    HandOff {
+        feature: "hideout.scenes",
+        methods: &["scenes.*"],
+        how: How::Release(|| {
+            super::scenes_ui::quitting();
+            super::scene_run::quit();
+        }),
+    },
+    HandOff {
+        feature: "hideout.pclights",
+        methods: &["pc_lighting.*"],
+        how: How::Gate,
+    },
+    HandOff {
+        feature: "wallpaper-engine",
+        methods: &["wallpaper-engine.*"],
+        how: How::Release(|| {
+            super::live_feed::stop();
+            super::wallpaper_sync::quit();
+        }),
+    },
+];
+
+/// Whether method pattern `a` covers `b` (`x.*` covers `x.y`; a name covers itself).
+fn covers(a: &str, b: &str) -> bool {
+    match a.strip_suffix('*') {
+        Some(prefix) => b.starts_with(prefix),
+        None => a == b,
+    }
+}
+
+fn overlap(a: &str, b: &str) -> bool {
+    covers(a, b) || covers(b, a)
+}
+
+/// The features whose methods another module provides: `provided` is each other registered
+/// module's method patterns (the hub's `module.<id>.provides`), `own` the legacy module's id
+/// (never counted against itself). Sorted by table order.
+pub fn plan(
+    own: &str,
+    provided: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<&'static str> {
+    HAND_OFFS
+        .iter()
+        .filter(|h| {
+            provided.iter().any(|(module, patterns)| {
+                module != own
+                    && patterns
+                        .iter()
+                        .any(|p| h.methods.iter().any(|m| overlap(m, p)))
+            })
+        })
+        .map(|h| h.feature)
+        .collect()
+}
+
+/// Whether `method` belongs to one of the `off` features' areas.
+pub fn withheld(method: &str, off: &[&str]) -> bool {
+    HAND_OFFS
+        .iter()
+        .filter(|h| off.contains(&h.feature))
+        .any(|h| h.methods.iter().any(|m| covers(m, method)))
+}
+
+static OFF: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+fn off_now() -> std::sync::MutexGuard<'static, Vec<&'static str>> {
+    OFF.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether feature `id` is handed off right now (legacy module only; always false standalone).
+pub fn is_off(id: &str) -> bool {
+    off_now().contains(&id)
+}
+
+/// What [`apply`] changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// Features switched off by this call.
+    pub off: Vec<&'static str>,
+    /// Features that are on again.
+    pub back: Vec<&'static str>,
+    /// A released feature came back: it cannot restart inside this process, so the caller asks
+    /// the hub for a planned restart.
+    pub restart: bool,
+}
+
+/// Makes `want` the set of handed-off features: runs the release of each newly off feature
+/// (once) and clears the others. Pure bookkeeping for [`How::Gate`]; `release` runs the stop
+/// of a [`How::Release`] feature (tests count calls instead of stopping devices).
+pub fn apply_with(want: &[&'static str], release: &mut dyn FnMut(&HandOff)) -> Applied {
+    let mut now = off_now();
+    let mut done = Applied::default();
+    for h in HAND_OFFS {
+        let (is, wanted) = (now.contains(&h.feature), want.contains(&h.feature));
+        if wanted && !is {
+            now.push(h.feature);
+            done.off.push(h.feature);
+            if matches!(h.how, How::Release(_)) {
+                release(h);
+            }
+        } else if is && !wanted {
+            now.retain(|f| *f != h.feature);
+            done.back.push(h.feature);
+            done.restart |= matches!(h.how, How::Release(_));
+        }
+    }
+    done
+}
+
+/// [`apply_with`] stopping the devices of a released feature.
+pub fn apply(want: &[&'static str]) -> Applied {
+    apply_with(want, &mut |h| {
+        if let How::Release(stop) = h.how {
+            stop();
+        }
+    })
+}
+
+/// Forgets every hand-off (tests; a process starts with none).
+#[cfg(test)]
+pub fn reset_off() {
+    off_now().clear();
+}
+
 macro_rules! step {
     ($feature:literal, $path:path) => {
         step!($feature, $path, None)
@@ -251,10 +407,11 @@ pub static STEPS: &[Step] = &[
     step!("core", super::autostart::start),
 ];
 
-/// Runs `steps` in order, skipping a gated step whose key `disabled` says is off.
+/// Runs `steps` in order, skipping a gated step whose key `disabled` says is off and the steps of
+/// a feature that is handed off to another module (P9; nothing is, standalone).
 pub fn run(steps: &[Step], disabled: impl Fn(&str) -> bool) {
     for step in steps {
-        if step.gate.is_some_and(&disabled) {
+        if step.gate.is_some_and(&disabled) || is_off(step.feature) {
             continue;
         }
         (step.start)();
@@ -450,5 +607,120 @@ mod tests {
         assert_eq!(ran_with(&[]), ["a", "b", "c"]);
         assert_eq!(ran_with(&["ka"]), ["b", "c"]);
         assert_eq!(ran_with(&["kc", "unrelated"]), ["a", "b"]);
+    }
+
+    fn provided(pairs: &[(&str, &[&str])]) -> std::collections::BTreeMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(m, ps)| (m.to_string(), ps.iter().map(|p| p.to_string()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn the_hand_off_table_names_features_and_never_the_keyboard_areas() {
+        let mut seen = HashSet::new();
+        for h in HAND_OFFS {
+            assert!(is_feature(h.feature), "{} is no feature", h.feature);
+            for m in h.methods {
+                assert!(seen.insert(*m), "{m} listed twice");
+                assert!(
+                    ![
+                        "keyboard",
+                        "layers",
+                        "reset",
+                        "bootloader",
+                        "flash",
+                        "erase",
+                        "dfu",
+                        "bond"
+                    ]
+                    .iter()
+                    .any(|n| m.starts_with(n)),
+                    "{m} is a keyboard or never-names area"
+                );
+            }
+        }
+        for keep in ["foxglove.link", "foxglove.screens", "foxglove.art", "core"] {
+            assert!(!HAND_OFFS.iter().any(|h| h.feature == keep));
+        }
+    }
+
+    #[test]
+    fn a_provider_of_a_v1_method_turns_that_feature_off_and_others_stay() {
+        let own = "foxglove";
+        assert_eq!(
+            plan(own, &provided(&[("lamps", &["lights.set"])])),
+            ["foxglove.lights"]
+        );
+        assert_eq!(
+            plan(own, &provided(&[("x", &["scenes.*"])])),
+            ["hideout.scenes"]
+        );
+        assert_eq!(
+            plan(own, &provided(&[("x", &["*"])])).len(),
+            HAND_OFFS.len()
+        );
+        // Not overlapping: nothing changes.
+        assert!(plan(own, &provided(&[("x", &["other.thing", "lightshow.go"])])).is_empty());
+        assert!(plan(own, &provided(&[])).is_empty());
+        // Its own registration never turns itself off.
+        assert!(plan(own, &provided(&[("foxglove", &["lights.*", "scenes.*"])])).is_empty());
+    }
+
+    #[test]
+    fn withheld_covers_only_the_areas_of_the_off_features() {
+        assert!(withheld("lights.set", &["foxglove.lights"]));
+        assert!(!withheld("scenes.run", &["foxglove.lights"]));
+        assert!(!withheld("lights.set", &[]));
+        assert!(!withheld(
+            "keyboard.layers",
+            &["foxglove.lights", "hideout.scenes"]
+        ));
+    }
+
+    #[test]
+    fn handing_off_releases_once_skips_the_start_and_coming_back_asks_for_a_restart() {
+        reset_off();
+        let released = RefCell::new(Vec::new());
+        let mut rel = |h: &HandOff| released.borrow_mut().push(h.feature);
+        let a = apply_with(&["hideout.scenes", "hideout.pclights"], &mut rel);
+        assert_eq!(a.off, ["hideout.scenes", "hideout.pclights"]);
+        // Only the Release feature is stopped; the Gate one is a flag.
+        assert_eq!(*released.borrow(), ["hideout.scenes"]);
+        assert!(is_off("hideout.scenes") && is_off("hideout.pclights"));
+        // Again: no second release.
+        let again = apply_with(&["hideout.scenes", "hideout.pclights"], &mut rel);
+        assert_eq!(again, Applied::default());
+        assert_eq!(released.borrow().len(), 1);
+        // A start of an off feature is not called.
+        let table = [
+            Step {
+                feature: "hideout.scenes",
+                name: "s",
+                gate: None,
+                start: || push("scenes"),
+            },
+            Step {
+                feature: "core",
+                name: "c",
+                gate: None,
+                start: || push("core"),
+            },
+        ];
+        RAN.with(|r| r.borrow_mut().clear());
+        run(&table, |_| false);
+        assert_eq!(RAN.with(|r| r.borrow().clone()), ["core"]);
+        // The Gate feature comes back at once, no restart.
+        let back = apply_with(&["hideout.scenes"], &mut rel);
+        assert_eq!(back.back, ["hideout.pclights"]);
+        assert!(!back.restart && !is_off("hideout.pclights"));
+        // The Release feature returns: a restart is asked for.
+        let back = apply_with(&[], &mut rel);
+        assert_eq!(back.back, ["hideout.scenes"]);
+        assert!(back.restart);
+        RAN.with(|r| r.borrow_mut().clear());
+        run(&table, |_| false);
+        assert_eq!(RAN.with(|r| r.borrow().clone()), ["scenes", "core"]);
+        reset_off();
     }
 }

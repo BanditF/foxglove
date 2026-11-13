@@ -1149,6 +1149,7 @@ impl Router {
                 self.wanted.remove(&id);
                 self.channels.remove(&id);
                 self.leases.retain(|k, _| k.0 != id);
+                self.publish_provides(&id, &mut out);
                 out.push(Out::ModuleGone(id));
             }
         }
@@ -1400,7 +1401,7 @@ impl Router {
             }
             "module.register" => {
                 let reply = match &module {
-                    Some(m) => self.register(m, &caps, &id, &params),
+                    Some(m) => self.register(m, &caps, &id, &params, out),
                     None => denied(&id, Some("only modules register")),
                 };
                 out.push(answer(reply));
@@ -1989,7 +1990,14 @@ impl Router {
         })
     }
 
-    fn register(&mut self, module: &str, caps: &Caps, id: &Value, params: &Value) -> Value {
+    fn register(
+        &mut self,
+        module: &str,
+        caps: &Caps,
+        id: &Value,
+        params: &Value,
+        out: &mut Vec<Out>,
+    ) -> Value {
         let Some(entry) = self.modules.get(module).cloned() else {
             return denied(id, None);
         };
@@ -2014,10 +2022,13 @@ impl Router {
         }
         for p in list("methods") {
             let allowed = self.may_provide(module, caps, &p);
-            let taken = self
-                .routes
-                .iter()
-                .any(|r| others(r) && overlap(&r.pattern, &p));
+            // The legacy module's routes give way to a module that may provide the method
+            // (P9, #1143: the feature hand-off); every other route holds it against a rival.
+            let taken = self.routes.iter().any(|r| {
+                others(r)
+                    && overlap(&r.pattern, &p)
+                    && !(module != LEGACY_FOXGLOVE_ID && r.module == LEGACY_FOXGLOVE_ID)
+            });
             if !allowed || taken {
                 reject(&p, "permission.provider");
             } else {
@@ -2054,7 +2065,17 @@ impl Router {
                 reject(&ch, "permission.provider");
             }
         }
-        // A new registration replaces the module's old one.
+        // A new registration replaces the module's old one. What the legacy module held of
+        // what this one now provides is the legacy module's no more (P9).
+        let yielded = module != LEGACY_FOXGLOVE_ID
+            && self.routes.iter().any(|r| {
+                r.module == LEGACY_FOXGLOVE_ID && methods.iter().any(|m| overlap(&r.pattern, m))
+            });
+        if module != LEGACY_FOXGLOVE_ID {
+            self.routes.retain(|r| {
+                !(r.module == LEGACY_FOXGLOVE_ID && methods.iter().any(|m| overlap(&r.pattern, m)))
+            });
+        }
         self.routes.retain(|r| r.module != module);
         self.fact_owners.retain(|r| r.module != module);
         for pattern in methods {
@@ -2079,7 +2100,30 @@ impl Router {
         }
         // A rival adopted candidate for an area drops this module's route too (fail closed).
         self.revalidate_adopted_routes();
+        self.publish_provides(module, out);
+        if yielded {
+            self.publish_provides(LEGACY_FOXGLOVE_ID, out);
+        }
         ok(id, json!({ "rejected": rejected }))
+    }
+
+    /// The hub fact `module.<id>.provides` (v1.14, P9): the method patterns the router routes to
+    /// the module now, an array, or none when it has no route. A module with
+    /// `facts.read:module.*` learns from it that another module took a method over (the legacy
+    /// module turns the feature behind it off), and from its removal that it left.
+    fn publish_provides(&mut self, module: &str, out: &mut Vec<Out>) {
+        let held: Vec<Value> = self
+            .routes
+            .iter()
+            .filter(|r| r.module == module)
+            .map(|r| json!(r.pattern))
+            .collect();
+        let value = if held.is_empty() {
+            Value::Null
+        } else {
+            Value::Array(held)
+        };
+        self.set_fact(&format!("module.{module}.provides"), value, out);
     }
 
     fn ui_register(

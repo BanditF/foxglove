@@ -549,3 +549,31 @@ fn the_queue_cap_is_checked_before_a_module_is_started() {
     );
     assert_eq!(code(&sends(&out, c)[0]), 3);
 }
+
+#[test]
+fn the_hub_publishes_what_a_module_provides_and_clears_it_when_it_goes() {
+    // `module.<id>.provides` (v1.14, P9): the registry check of the feature hand-off.
+    let now = Instant::now();
+    let (mut r, a, _c) = rig(&["gpu.status"], now);
+    let key = format!("module.{ARETE}.provides");
+    let mut held: Vec<String> = r
+        .fact(&key)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    held.sort();
+    assert_eq!(held, ["gpu.*", "vulpes.*"]);
+    let out = r.disconnect(a);
+    assert!(
+        out.iter().any(|o| matches!(o, Out::ModuleGone(_))),
+        "{out:?}"
+    );
+    assert!(
+        r.fact(&key).is_none_or(|v| v.is_null()),
+        "{:?}",
+        r.fact(&key)
+    );
+}

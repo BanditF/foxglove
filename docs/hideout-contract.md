@@ -1164,6 +1164,10 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   keeps the 11 v1 methods it serves today, each exact name, only with its manifest declaring it
   and the user's `provide:` naming that method exactly (a wildcard grant does not carry it);
   the id alone grants nothing.
+  (P9) The routes the legacy module holds give way to a module that may provide the same
+  method: its `module.register` takes the method over, the legacy module's route for it is
+  removed and `module.<id>.provides` (§7.8) is republished for both, so there is one writer.
+
   (#1155-B) The user's keyboard grant: the adopted module `foxglove` also provides the areas
   `devices.*`, `lighting.*`, `art.*`, `screens.*`, `behaviors.*`, `profiles.*` and `focus.*`
   while a per-install record in `inventory.json` (`modules.foxglove.keyboard`: `state`, the
@@ -1572,6 +1576,15 @@ supervisor beside the state:
   no longer withdrawn. The module's own words never reach it: `module.*` facts are the hub's.
   (v1.9) Also published for an installed version that isn't running (turned off, waiting for a
   call, or found at hub start), so its Modules row can say so.
+- **`module.<id>.provides` (v1.14, P9):** the method patterns the hub routes to the module now, an
+  array, or `null` when it has none (set on `module.register`, cleared when the module goes). A
+  module granted `facts.read:module.*` learns from it which other modules provide a method area.
+  The legacy `foxglove` module (`--module`) uses it for the feature hand-off: a feature whose
+  methods another module provides (`lights.*`, `scenes.*`, `pc_lighting.*`, `wallpaper-engine.*`)
+  is switched off there and its methods are registered away; when that module goes, they are
+  claimed again at once, and a feature that had to be stopped starts again with a planned restart
+  of the legacy module (§7.7). Keyboard areas (§6.3, #1155-B) and the never-names are never
+  handed off.
 - **`module.<id>.check` (v1.9):** while the module is `revoked` (or off with a withdrawn
   version), the card's **Check for updates**: `checking` while one fetch of its source's catalog
   runs, `none` when the source had nothing newer, `failed` when it couldn't be reached. `null`

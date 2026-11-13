@@ -29,6 +29,7 @@ provides = [
 ]
 permissions = [
   "facts.write:keyboard.*",
+  "facts.read:module.*",
   "provide:health.read",
   "provide:lights.page",
   "provide:scenes.page",
