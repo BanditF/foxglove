@@ -2153,11 +2153,14 @@ dependencies = [
 name = "hideout-supervisor"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "foxglove-plugin",
+ "foxglove-update",
  "hideout-contract",
  "hideout-registry",
  "hideout-router",
  "log",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

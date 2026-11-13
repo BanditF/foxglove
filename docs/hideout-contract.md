@@ -1281,7 +1281,7 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   and a swapped file is caught only when it is not attested. Until Foxglove has a signed
   publisher key, the attestation trusts the updater's own verification and not a key held by the
   grant; with the key, the check becomes "signed by that publisher" instead of "attested by the
-  updater".
+  updater". Signer-bound grants (#383 / row D) are the tightening.
 - (#1178) **After a grant only narrowing.** Turn off (one item or all) acts at once and needs no
   confirmation: the router drops the grant (routes and the leases through them end) before the
   file is written. Turning an item back on is a new Allow through the dialog. A change of
