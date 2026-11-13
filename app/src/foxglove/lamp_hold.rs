@@ -151,6 +151,9 @@ enum Job {
     Check(super::lamp_loss::Trigger),
     /// Another app came to the front (its exe, when known): a check too.
     Front(Option<String>),
+    /// Heal step 2 (`lights_heal`): let the keyboard's LampArrays go and hold them again, then
+    /// redraw the scene.
+    Retake,
     Stop,
 }
 
@@ -196,6 +199,7 @@ impl Core {
         // Windows said something (AvailabilityChanged) in this batch: no loss is silent.
         let mut heard = false;
         let mut check: Option<Trigger> = None;
+        let mut redraw = false;
         for job in jobs {
             match job {
                 Job::Keyboard(k) => {
@@ -259,6 +263,14 @@ impl Core {
                         reopen = true;
                     }
                 }
+                Job::Retake => {
+                    eprintln!(
+                        "Foxglove: LampArrays: re-taking the holds (the keyboard stayed dark)"
+                    );
+                    self.held.clear();
+                    reopen = true;
+                    redraw = true;
+                }
                 Job::Stop => {
                     self.held.clear();
                     self.publish();
@@ -281,6 +293,9 @@ impl Core {
             } else {
                 "a LampArray change"
             });
+        }
+        if redraw {
+            (self.redraw)();
         }
         for id in self.loss.heard(&self.readings()) {
             eprintln!("Foxglove: LampArray {id}: available to Foxglove again (silent loss over)");
@@ -621,6 +636,7 @@ pub fn start() {
             // link once, and the pages repaint with the owner line.
             super::lights_owner::retry("Foxglove's hold on the keyboard's LampArrays changed");
             super::lights_owner::repaint();
+            super::lights_heal::context_changed();
         }),
         // After a recovered silent loss a running scene draws the keyboard in full again.
         Arc::new(super::scene_run::devices_changed),
@@ -712,6 +728,20 @@ pub fn pause_changed(paused: bool) {
     send(Job::Paused(paused));
 }
 
+/// Lets the keyboard's LampArrays go and holds them again, then redraws the scene (the heal's
+/// second step).
+pub fn retake() {
+    send(Job::Retake);
+}
+
+/// The owner byte changed from `before` to `now`: back to a LampArray Foxglove holds (from
+/// nobody, the other transport or another app). What the keyboard drew meanwhile is black (the
+/// firmware blanks on each take-over), so the scene must be drawn in full whether or not the
+/// drawing transport moved (11/13: USB, none, USB is no move).
+pub fn owner_returned(before: Option<Owner>, now: Option<Owner>, holds: Holds) -> bool {
+    now.is_some_and(|n| n.lamp_array() && holds.ours(n)) && before != now
+}
+
 /// Quit: lets every held LampArray go (Windows hands each to the next controller).
 pub fn stop() {
     if let Some(tx) = TX.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -796,6 +826,30 @@ pub fn follow_draw() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_owner_coming_back_to_a_held_lamp_array_repaints_even_on_the_same_transport() {
+        let held = Holds {
+            usb: Some(true),
+            ble: Some(true),
+        };
+        let (usb, none) = (Some(Owner::LampArrayUsb), None);
+        assert!(owner_returned(none, usb, held), "USB, none, USB");
+        assert!(owner_returned(Some(Owner::LampArrayBle), usb, held));
+        assert!(!owner_returned(usb, none, held), "letting go is no return");
+        assert!(!owner_returned(usb, usb, held));
+        assert!(
+            !owner_returned(
+                none,
+                usb,
+                Holds {
+                    usb: Some(false),
+                    ble: None
+                }
+            ),
+            "not ours"
+        );
+    }
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     #[derive(Default)]

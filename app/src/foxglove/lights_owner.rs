@@ -333,6 +333,13 @@ pub fn attach(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
             // The lights moved to the keyboard's other LampArray (11/09): what draws through it
             // follows (`lamp_hold::follow_draw`).
             super::lamp_hold::follow_draw();
+            if super::lamp_hold::owner_returned(before, now, super::lamp_hold::now()) {
+                eprintln!(
+                    "Foxglove: lights owner: back to a LampArray Foxglove holds; the scene is repainted in full"
+                );
+                super::scene_run::repaint_lamps();
+            }
+            super::lights_heal::context_changed();
             // Screen glow stops reading while someone else has the lights (#496).
             super::scene_run::owner_changed();
             // With the cable in, the lights belong on USB (the firmware prefers it); the holder

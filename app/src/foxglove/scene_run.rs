@@ -233,6 +233,8 @@ enum Ctl {
     Paused(bool),
     /// The lighting devices changed (or the user moved one): place them again.
     Devices,
+    /// Write the Dynamic Lighting devices' colours again in full (no reopen).
+    Repaint,
     /// Another look for the running scene, and its name.
     Effect(String, Box<Effect>),
     /// A key was pressed at this row and column (#489): a ring from it.
@@ -478,6 +480,7 @@ pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
     let thread = super::services::spawn_named("scene-control", move || {
         control(&name, effect, limit, clock, &own, &rx)
     });
+    super::lights_heal::context_changed();
     *running = Some(Running {
         tx,
         thread,
@@ -573,6 +576,13 @@ pub fn devices_changed() {
     super::scene_room::changed();
     tell(Ctl::Devices);
     super::scene_card::devices_changed();
+}
+
+/// Sends the running scene's colours to the Dynamic Lighting devices again in full, without
+/// reopening them: the LampArray owner came back to Foxglove, or the keyboard went dark under
+/// a writer that thought its colours shown. A no-op when no scene runs.
+pub fn repaint_lamps() {
+    tell(Ctl::Repaint);
 }
 
 /// The keyboard's LEDs by part now: its firmware's, else its board profile's (#561).
@@ -786,6 +796,7 @@ fn control(
     let ended = pump(rx, limit.map(|l| Instant::now() + l), |ctl| {
         match ctl {
             Ctl::Away(a) => {
+                super::lights_heal::context_changed();
                 if !a {
                     // Before the gate opens, so the first frame back draws the keyboard and the
                     // Dynamic Lighting devices (let go while away) even when nothing changed.
@@ -810,6 +821,7 @@ fn control(
                 });
             }
             Ctl::Paused(p) => {
+                super::lights_heal::context_changed();
                 // Pausing hands the frames back through the lease arbiter (the keyboard's own
                 // lights); resuming draws again.
                 if !p {
@@ -839,6 +851,10 @@ fn control(
                 o.set_room(room, cases);
                 o.set_lamps(lamp_targets);
                 o.set_keyboard_lamps(keyboard_lamps());
+            }
+            Ctl::Repaint => {
+                lamp_writer.repaint();
+                redraw_lamps(&outputs);
             }
             Ctl::KeyRipple(row, col) => {
                 let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
@@ -986,6 +1002,7 @@ impl Drop for GiveBack {
         super::api::end_leases(|l| l.conn == SCENE_CONN);
         super::wallpaper_sync::scene_stopped();
         super::keyboard_facts::scene_ended();
+        super::lights_heal::scene_ended();
         // The art from before the scene, when it showed a wallpaper's.
         let art = ART.lock().unwrap_or_else(|e| e.into_inner()).take();
         if matches!(art, Some(Some(_))) {

@@ -138,6 +138,7 @@ fn publish_with(facts: &Facts, sources: &mut Sources, event: &DeviceEvent) {
             sources.connected = true;
             sources.firmware = Some(state.clone());
             sources.publish(facts);
+            super::lights_heal::lit_changed(state.on, foxglove_link::devices::left_unpowered());
             super::pc_lights::keyboard_lights(state);
         }
         DeviceEvent::Key { .. } => {}
