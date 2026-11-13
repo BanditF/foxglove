@@ -8,13 +8,15 @@ use hideout_contract::capability::{check_grantable, Capability, Holder};
 use hideout_contract::panel::{self, Register, LIMITS};
 use hideout_contract::permission::key_matches;
 use hideout_contract::{Version, HUB_VERSION};
+use hideout_registry::keyboard::GRANT_AREAS;
 use hideout_registry::Registry;
 use serde_json::{json, Map, Value};
 
 use crate::checks::HUB_OWNED;
+use crate::checks::LEGACY_FOXGLOVE_ID;
 use crate::checks::{
-    adopted_area_ok, covers, event_permission, legacy_foxglove_ok, may_call, overlap, watches_app,
-    Caps, ADOPTED_AREAS, FIRST_PARTY_AREAS,
+    adopted_area_ok, covers, event_permission, legacy_foxglove_ok, may_call, never_name, overlap,
+    watches_app, Caps, ADOPTED_AREAS, FIRST_PARTY_AREAS,
 };
 
 /// Calls one connection may have waiting for a provider to start (§4.6); more answer error 3.
@@ -145,6 +147,11 @@ pub enum Out {
 /// connecting process's id (when the transport knows it), whether this is the process the
 /// supervisor started or took back. `Err` carries the reason for the log.
 pub type LaunchCheck = Box<dyn FnMut(&str, Option<u32>) -> Result<(), String> + Send>;
+
+/// Right after a passed [`LaunchCheck`]: the canonical path and SHA-256 of the program image the
+/// supervisor just verified for this module and process (#1155-B). `None` = unknown, which never
+/// matches a grant (fail closed).
+pub type IdentityLookup = Box<dyn FnMut(&str, Option<u32>) -> Option<(String, String)> + Send>;
 
 /// Approves an outside tool's asks once per tool (§6.4): given the tool's name and what it asks
 /// for (never-list items already left out), returns what the user approved.
@@ -356,6 +363,15 @@ pub struct Router {
     leases: HashMap<(String, String), Lease>,
     /// The supervisor's pid and exe-hash check (§7.5); `None` = tokens only (tests, lab).
     launch_check: Option<LaunchCheck>,
+    /// The verified program image of each module connection (#1155-B), set at `initialize`.
+    identity_lookup: Option<IdentityLookup>,
+    identities: HashMap<ConnId, (String, String)>,
+    /// The user's keyboard grant per module, pushed by the hub from `inventory.json` (#1155-B).
+    keyboards: HashMap<String, hideout_registry::keyboard::KeyboardGrant>,
+    /// The method patterns the legacy module asked for at `module.register`, kept while it is
+    /// connected so that a grant that comes back (Turn on after Turn off) brings its routes back
+    /// without Foxglove registering again (#1155-B). Never read for any other module.
+    wanted: HashMap<String, Vec<String>>,
     /// Each module's `[[actions]]` ids, when known: a button's `action` must name one
     /// (`ui.action`, spec v1.4).
     actions: HashMap<String, Vec<String>>,
@@ -429,6 +445,10 @@ impl Router {
             faults: HashMap::new(),
             leases: HashMap::new(),
             launch_check: None,
+            identity_lookup: None,
+            identities: HashMap::new(),
+            keyboards: HashMap::new(),
+            wanted: HashMap::new(),
             pending: HashMap::new(),
             slots: HashMap::new(),
             provider_load: HashMap::new(),
@@ -478,6 +498,12 @@ impl Router {
                 }
             }
         }
+        self.keyboards = reg
+            .inventory
+            .modules
+            .iter()
+            .filter_map(|(id, m)| m.keyboard.clone().map(|g| (id.clone(), g)))
+            .collect();
         let areas = reg
             .trust
             .catalogs
@@ -790,6 +816,104 @@ impl Router {
         self.launch_check = Some(check);
     }
 
+    /// Installs the lookup of the verified program image (#1155-B), run after a passed launch
+    /// check.
+    pub fn set_identity_lookup(&mut self, lookup: IdentityLookup) {
+        self.identity_lookup = Some(lookup);
+    }
+
+    /// Replaces the keyboard grants with what the hub read from `inventory.json` now (#1155-B)
+    /// and drops, at once, every route and lease the legacy module no longer holds. Returns the
+    /// notices for the leases that ended.
+    pub fn set_keyboard_grants(
+        &mut self,
+        grants: HashMap<String, hideout_registry::keyboard::KeyboardGrant>,
+    ) -> Vec<Out> {
+        self.keyboards = grants;
+        self.revalidate_grant()
+    }
+
+    /// What a change of `inventory.json` made by anyone may do to a grant (#1155-B review M3): it
+    /// may only narrow it. A grant that is `on` here stays `on` only while the file still says
+    /// the same path and hash; anything else turns it off or void. A grant that is not `on`
+    /// here never becomes `on` from the file: only [`Router::set_keyboard_grants`] (the user's
+    /// Allow, the hub's start) widens.
+    pub fn narrow_keyboard_grants(
+        &mut self,
+        grants: &HashMap<String, hideout_registry::keyboard::KeyboardGrant>,
+    ) -> Vec<Out> {
+        use hideout_registry::keyboard::GrantState;
+        for (id, cur) in self.keyboards.iter_mut() {
+            if cur.state != GrantState::On {
+                continue;
+            }
+            match grants.get(id) {
+                Some(n) if n.state == GrantState::On && cur.allows(&n.path, &n.sha256) => {}
+                Some(n) if n.state != GrantState::On => *cur = n.clone(),
+                _ => {
+                    cur.state = GrantState::Void;
+                    cur.sha256.clear();
+                }
+            }
+        }
+        self.revalidate_grant()
+    }
+
+    /// Turns the grant of `id` off in memory at once, before any file is written (a revoke must
+    /// not wait for the disk). Returns the notices for the leases that ended.
+    pub fn drop_keyboard_grant(&mut self, id: &str) -> Vec<Out> {
+        if let Some(g) = self.keyboards.get_mut(id) {
+            g.state = hideout_registry::keyboard::GrantState::Off;
+            g.path.clear();
+            g.sha256.clear();
+        }
+        self.revalidate_grant()
+    }
+
+    /// Drops the routes the grant no longer carries and ends the leases of a legacy module that
+    /// lost its routes (a lease was handed out for an area that is now closed).
+    fn revalidate_grant(&mut self) -> Vec<Out> {
+        let had = self.routes.iter().any(|r| r.module == LEGACY_FOXGLOVE_ID);
+        self.revalidate_adopted_routes();
+        self.restore_wanted();
+        let mut out = Vec::new();
+        if had && !self.routes.iter().any(|r| r.module == LEGACY_FOXGLOVE_ID) {
+            let gone: Vec<(String, String)> = self
+                .leases
+                .keys()
+                .filter(|k| k.0 == LEGACY_FOXGLOVE_ID)
+                .cloned()
+                .collect();
+            for k in gone {
+                self.leases.remove(&k);
+                self.lease_closed(&k.0, &k.1, "revoked", &mut out);
+            }
+        }
+        out
+    }
+
+    /// Gives the legacy module back the patterns it asked for that the grant carries now, when
+    /// it is connected, ready and nobody else holds them.
+    fn restore_wanted(&mut self) {
+        let m = LEGACY_FOXGLOVE_ID;
+        if self.ready_conn(m).is_none() {
+            return;
+        }
+        let Some(asked) = self.wanted.get(m).cloned() else {
+            return;
+        };
+        let caps = Caps::parse(&self.modules[m].granted);
+        for p in asked {
+            let held = self.routes.iter().any(|r| overlap(&r.pattern, &p));
+            if !held && self.may_provide(m, &caps, &p) {
+                self.routes.push(Route {
+                    pattern: p,
+                    module: m.into(),
+                });
+            }
+        }
+    }
+
     /// The fact cache's value for `key`.
     pub fn fact(&self, key: &str) -> Option<&Value> {
         self.facts.get(key)
@@ -983,6 +1107,7 @@ impl Router {
             out.push(Out::ServiceGone(conn));
         }
         self.subs.retain(|_, (owner, _)| *owner != conn);
+        self.identities.remove(&conn);
         // Its app watches end with it (§8.12, v1.13).
         self.app_watches.remove(&conn);
         // Leases it held end: tell each provider (§8.5).
@@ -1021,6 +1146,7 @@ impl Router {
             if self.module_conn(&id).is_none() {
                 self.routes.retain(|r| r.module != id);
                 self.fact_owners.retain(|r| r.module != id);
+                self.wanted.remove(&id);
                 self.channels.remove(&id);
                 self.leases.retain(|k, _| k.0 != id);
                 out.push(Out::ModuleGone(id));
@@ -1436,6 +1562,17 @@ impl Router {
                         return refuse(out, code::DENIED, "denied", "launch check failed");
                     }
                 }
+                // The image the check just verified: what a keyboard grant is compared with.
+                if let Some(look) = self.identity_lookup.as_mut() {
+                    match look(&mid, pid) {
+                        Some(i) => {
+                            self.identities.insert(conn, i);
+                        }
+                        None => {
+                            self.identities.remove(&conn);
+                        }
+                    }
+                }
                 Some(mid)
             }
             (None, None) => None,
@@ -1471,6 +1608,12 @@ impl Router {
                 ready: false,
                 v1,
             };
+            if mid == LEGACY_FOXGLOVE_ID {
+                // A new connection of the legacy module with another image ends the routes the
+                // grant gave the older one (#1155-B review M1).
+                let o = self.revalidate_grant();
+                out.extend(o);
+            }
             let result = if v1 {
                 json!({"api": api, "app": self.settings.app, "granted": caps.v1_strings()})
             } else {
@@ -1654,7 +1797,28 @@ impl Router {
         let Some(entry) = self.modules.get(module) else {
             return false;
         };
-        if HUB_OWNED.iter().any(|a| overlap(a, pattern)) || !caps.provides(pattern) {
+        if HUB_OWNED.iter().any(|a| overlap(a, pattern)) {
+            return false;
+        }
+        // The user's keyboard grant (#1155-B, §6.3): the legacy adopted module provides the
+        // areas in GRANT_AREAS while the grant matches its verified program image. It replaces
+        // the `provide:` grant for those areas and for nothing else; a catalog entry, a
+        // first-party holder or a root area that is assigned the area still wins.
+        if entry.registered_version.is_some()
+            && module == LEGACY_FOXGLOVE_ID
+            && GRANT_AREAS.iter().any(|a| covers(a, pattern))
+        {
+            let declared = self
+                .methods_decl
+                .get(module)
+                .is_some_and(|d| d.iter().any(|d| covers(d, pattern)));
+            return declared
+                && entry.catalog_provide.is_none()
+                && !never_name(pattern)
+                && self.grant_holds(module)
+                && !self.assigned_elsewhere_by(module, pattern, true);
+        }
+        if !caps.provides(pattern) {
             return false;
         }
         if entry.registered_version.is_some() {
@@ -1693,6 +1857,34 @@ impl Router {
             .as_ref()
             .is_none_or(|c| c.iter().any(|c| covers(c, pattern)))
             && (first_party || !FIRST_PARTY_AREAS.iter().any(|a| overlap(a, pattern)))
+    }
+
+    /// Whether the keyboard grant of `module` holds now: a record that is `on`, and every
+    /// connection the module has was verified as exactly the recorded path and hash. A
+    /// connection with no verified identity (no check ran, bridged) never matches.
+    fn grant_holds(&self, module: &str) -> bool {
+        let Some(g) = self.keyboards.get(module) else {
+            return false;
+        };
+        if g.state != hideout_registry::keyboard::GrantState::On {
+            return false;
+        }
+        let mut any = false;
+        for (k, c) in &self.conns {
+            if matches!(&c.who, Who::Module { id, .. } if id == module) {
+                any = true;
+                let ok = self
+                    .identities
+                    .get(k)
+                    .is_some_and(|(path, sha)| g.allows(path, sha));
+                if !ok {
+                    return false;
+                }
+            }
+        }
+        // No connection yet: nothing is routed, and `module.register` checks again.
+        let _ = any;
+        true
     }
 
     /// Drops the routes of an adopted module that the registry now disallows (a catalog install
@@ -1817,6 +2009,9 @@ impl Router {
         };
         let others = |r: &Route| r.module != module;
         let mut methods = Vec::new();
+        if module == LEGACY_FOXGLOVE_ID {
+            self.wanted.insert(module.into(), list("methods"));
+        }
         for p in list("methods") {
             let allowed = self.may_provide(module, caps, &p);
             let taken = self
@@ -1921,6 +2116,10 @@ impl Router {
             Who::Module { ready, .. } => *ready = true,
             _ => return,
         }
+        if module == LEGACY_FOXGLOVE_ID {
+            let o = self.revalidate_grant();
+            out.extend(o);
+        }
         self.set_fact(&format!("module.{module}.state"), json!("running"), out);
         out.push(Out::Ready(module.to_string()));
         let mut keep = VecDeque::new();
@@ -2023,8 +2222,16 @@ impl Router {
                         r.get("lease").and_then(Value::as_str),
                         self.conns.contains_key(&c),
                     ) {
-                        self.leases
-                            .insert((provider.clone(), lease.to_string()), Lease { holder: c });
+                        let (provider, lease) = (provider.clone(), lease.to_string());
+                        if provider == LEGACY_FOXGLOVE_ID
+                            && !self.routes.iter().any(|r| r.module == provider)
+                        {
+                            // No route covers the legacy module any more (the grant was taken
+                            // away while the call ran): the lease is ended, never kept (#1155-B).
+                            self.lease_closed(&provider, &lease, "revoked", out);
+                        } else {
+                            self.leases.insert((provider, lease), Lease { holder: c });
+                        }
                     }
                 }
                 out.push(Out::Send(c, envelope(&id, result)))
@@ -2136,6 +2343,17 @@ impl Router {
             .filter(|r| covers(&r.pattern, method))
             .max_by_key(|r| r.pattern.len())
             .map(|r| r.module.clone());
+        // The grant never carries a name that resets, flashes, erases or re-bonds (#1155-B): the
+        // answer is the same as for a method nobody provides.
+        if live.as_deref() == Some(LEGACY_FOXGLOVE_ID)
+            && never_name(method)
+            && GRANT_AREAS.iter().any(|a| covers(a, method))
+        {
+            return out.push(Out::Send(
+                conn,
+                error(&id, code::METHOD_NOT_FOUND, "method not found", None),
+            ));
+        }
         if let Some(m) = &live {
             if let Some(p) = self.ready_conn(m) {
                 // The per-caller bound first: a caller with MAX_INFLIGHT_PER_CALLER calls

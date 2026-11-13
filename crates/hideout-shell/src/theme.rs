@@ -25,6 +25,10 @@ pub struct Tokens {
     pub danger: Rgb,
     /// The quiet warning (amber): the crash bar's edge and, blended, its fill.
     pub warn: Rgb,
+    /// The state word "On" (green; always with its text, #1155-B).
+    pub ok: Rgb,
+    /// The state word "Asks again" (never the amber `warn`: that fails 4.5:1 on light).
+    pub attention: Rgb,
 }
 
 pub const LIGHT: Tokens = Tokens {
@@ -39,6 +43,8 @@ pub const LIGHT: Tokens = Tokens {
     on_accent: Rgb(0xff, 0xff, 0xff),
     danger: Rgb(0xb0, 0x1e, 0x1e),
     warn: Rgb(0xb0, 0x78, 0x00),
+    ok: Rgb(0x1e, 0x6b, 0x34),
+    attention: Rgb(0x9a, 0x4a, 0x00),
 };
 
 pub const DARK: Tokens = Tokens {
@@ -53,6 +59,8 @@ pub const DARK: Tokens = Tokens {
     on_accent: Rgb(0x1a, 0x0e, 0x04),
     danger: Rgb(0xff, 0x6b, 0x6b),
     warn: Rgb(0xf5, 0xc4, 0x51),
+    ok: Rgb(0x6c, 0xd0, 0x8a),
+    attention: Rgb(0xff, 0xb0, 0x5a),
 };
 
 pub fn tokens(dark: bool) -> Tokens {
@@ -180,6 +188,17 @@ pub fn tab_pairs(t: &Tokens) -> Vec<(&'static str, Rgb, Rgb)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_grant_state_words_are_readable() {
+        for t in [LIGHT, DARK] {
+            assert!(contrast(t.ok, t.surface) >= 4.5, "ok");
+            assert!(contrast(t.attention, t.surface) >= 4.5, "attention");
+            assert!(contrast(t.text_muted, t.surface) >= 4.5, "muted");
+            assert!(contrast(t.on_accent, t.accent) >= 4.5, "on accent");
+            assert!(contrast(t.accent, t.surface) >= 4.5, "accent");
+        }
+    }
 
     #[test]
     fn selected_nav_label_contrasts_with_its_fill() {

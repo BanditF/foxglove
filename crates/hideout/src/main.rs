@@ -20,6 +20,8 @@ mod https;
 #[cfg(windows)]
 mod inventory_watch;
 #[cfg(windows)]
+mod keyboard_actions;
+#[cfg(windows)]
 mod lab_verbs;
 mod modules_page;
 #[cfg(windows)]

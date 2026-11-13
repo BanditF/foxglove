@@ -20,6 +20,7 @@ pub mod hub_config;
 /// The installed ids for the hub's change watch (#1012.4).
 pub mod installed;
 pub mod inventory;
+pub mod keyboard;
 pub mod lab;
 pub mod trust;
 
@@ -354,6 +355,7 @@ impl Registry {
                 previous: None,
                 granted: Vec::new(),
                 pending_permissions: Vec::new(),
+                keyboard: None,
             },
         );
         self.inventory.grant(&m.id, &m.permissions);
@@ -408,6 +410,7 @@ impl Registry {
                 previous: None,
                 granted: Vec::new(),
                 pending_permissions: Vec::new(),
+                keyboard: None,
             },
         );
         if self.hub.enabled_set(&head.id).is_none() {
@@ -729,6 +732,8 @@ impl Registry {
             previous: previous.clone(),
             granted: old.as_ref().map(|o| o.granted.clone()).unwrap_or_default(),
             pending_permissions: Vec::new(),
+            // The grant is for the adopted legacy module only; a catalog install never has one.
+            keyboard: None,
         };
         self.inventory.modules.insert(m.id.clone(), entry);
         self.inventory.ask(&m.id, &m.permissions);
@@ -798,6 +803,9 @@ impl Registry {
             previous: None,
             granted: old.as_ref().map(|o| o.granted.clone()).unwrap_or_default(),
             pending_permissions: Vec::new(),
+            // Registering again keeps the user's grant as it is: it is checked against the
+            // program's path and hash at every launch, never carried by the id.
+            keyboard: old.as_ref().and_then(|o| o.keyboard.clone()),
         };
         self.inventory.modules.insert(m.id.clone(), entry);
         self.inventory.ask(&m.id, &m.permissions);

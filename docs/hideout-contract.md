@@ -1163,8 +1163,50 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   exception (#1155 replaces it with an explicit user grant): the adopted module `foxglove`
   keeps the 11 v1 methods it serves today, each exact name, only with its manifest declaring it
   and the user's `provide:` naming that method exactly (a wildcard grant does not carry it);
-  the id alone grants nothing. Open item for #1155: the exception (and its replacement) should
-  also require the publisher or exe path of the registered module to match, not only the id.
+  the id alone grants nothing.
+  (#1155-B) The user's keyboard grant: the adopted module `foxglove` also provides the areas
+  `devices.*`, `lighting.*`, `art.*`, `screens.*`, `behaviors.*`, `profiles.*` and `focus.*`
+  while a per-install record in `inventory.json` (`modules.foxglove.keyboard`: `state`, the
+  canonical full `path` of `run[0]`, its `sha256`, `at`) is `on` and the connection's verified
+  program image (the one the launch check of §7.5 just verified: pid, path, SHA-256) is exactly
+  that path and hash; with two live instances every one must match, checked again when a
+  connection of the module registers or becomes ready. The hub writes state `on` only for the
+  user's Allow, never on upgrade, autostart or restart, but this is not enforceable against a
+  process of the same user that edits `inventory.json` itself. So the router treats a change of
+  that file as narrowing only: a grant that is `on` in the router stays `on` only while the
+  file names the same path and hash and otherwise drops (to `void` or `off`); a grant the router
+  does not hold `on` never becomes `on` from the file. It widens only from the user's Allow in
+  this hub, or when the hub starts and loads the file (a restart carries an existing grant
+  over). A changed path or hash voids it: at launch the supervisor writes state `void` (and the
+  hash is cleared); at `initialize` and `module.register` the router only refuses (nothing is
+  written there). Putting the old file back does not revive it, only Allow records a new one. A
+  path on the network (UNC) is never granted. A taken-back instance (found running at the hub's
+  start) has no verified identity and gets the grant at its next restart. Foxglove updates ask again (one
+  click) until a signed catalog entry exists. Turn off (state `off`, path and hash cleared) acts
+  at once and fails safe: the router drops the grant first, then the file is written, and a
+  failed write is reported without undoing it. The routes are dropped, leases handed out through them end with `lease.closed`
+  (`revoked`), and Foxglove keeps running with its own window, tiles, page, facts and the 11
+  methods above. The areas must be declared in the manifest; a method whose name contains
+  `reset`, `bootloader`, `flash`, `erase`, `dfu` or `bond` (case and separators ignored, so
+  `factoryReset` and `clearBonds` count; `preset` and `respond` do not) is never provided through the grant (refused at
+  `module.register`, answered -32601 at `route`); a catalog or root assignment still wins; no
+  other adopted module gets them. `FIRST_PARTY_AREAS` is unchanged for adopted modules in
+  general. The grant is off by default, and a decline (`[modules.foxglove] keyboard =
+  "declined"` in `hideout.toml`, a hub preference, not a grant) is never asked again by itself.
+  The record is user-writable machine state: a process running as the same user can edit it;
+  what holds is the live check of the verified image, and the program file is held open
+  write-locked (no overwrite, rename or delete) from its hash until the instance ends. The
+  supervisor pins the program of every module it starts, not only this one, so an update that
+  would overwrite a running program fails as it already does (§7.2).
+  Open items (#1155-B): (a) a catalog entry for the legacy module (Hideout root and catalog keys,
+  #90 row D) is the long-term path; the grant is then migrated silently (§6.4: existing grants
+  carry over) and the row goes away. (b) Name the exact answer a caller gets when nothing
+  provides a reserved area (today: -32601 "method not found" from `route`; error 2 when a
+  provider is down), so `foxglove-cli status` can say "Foxglove isn't sharing your keyboard in
+  Hideout". (c) A panel button needs an `a11y_label` (accessible name different from the label;
+  P8's "Open Foxglove settings, Lights page"). (d) `wallpaper-engine.*` through the router needs
+  string lease ids and a `lease.closed` the provider can see; until then it stays standalone-only
+  and out of this grant.
 - (#1118) An `adopted` module has no catalog entry; registering it is the user's act (§7.4). It
   may provide only the `method:` patterns of its registered manifest that its `provide:` grant
   covers, and never a first-party area (the list above) except `gpu.*` (Arete's hub is the GPU
@@ -1198,6 +1240,12 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 - The cut-over from Foxglove carries every existing grant over silently. Only new permissions ask.
 - Grants are machine state: they are stored in `inventory.json` (`granted`), in canonical form,
   sorted, never in `hideout.toml`.
+- (#1155-B) The permission dialog is hub-drawn, never by a module panel. Its first section is the
+  keyboard grant of §6.3 (title, plain list, footer, binding line with the path, **Allow** /
+  **Not now**); Not now is the default, focused, and Enter, Esc and closing all answer it. The
+  dialog opens only on the user's own act (Turn on, Review...), never at sign-in, autostart, a
+  hub restart or an update; a start without that act gets a header line instead. "Update waiting
+  for you" reuses the dialog.
 
 ### 6.5 Signing is provenance, not permission
 
@@ -1277,10 +1325,14 @@ error 5.
 - `source` and `anchor` name the module source and trust anchor it came from (§13). `sideload`
   is a source id reserved for developer mode.
 - `seen` is anti-rollback state per anchor. It never goes down.
+- (#1155-B) An adopted `foxglove` may carry `"keyboard": {"state": "on" | "off" | "void", "path",
+  "sha256", "at", "reason"}`, the user's keyboard grant (§6.3). Written only by the registry
+  crate; an unknown or broken value reads as no grant and the file still loads.
 - A reader that meets an unknown `format` MUST NOT write the file.
 
 `hideout.toml` (the hub's own state, written only by the hub):
-- `[modules.<id>] enabled`;
+- `[modules.<id>] enabled`; (#1155-B) `[modules.foxglove] keyboard = "declined"`, a remembered
+  Not now (a preference, never a grant);
 - `autostart`, the main window's placement, theme;
 - (v1.6) `[windows]`: per page, popped out or not, Keep on top and its places per screen layout
   (§2.5). Checked on its own (`config.windows`); a bad entry is dropped, never the file;
@@ -1320,7 +1372,9 @@ LSP-style: capabilities and versions are exchanged once.
      (`GetNamedPipeServerProcessId`); the SDK's `connect_env` does. A launch without it (an older
      hub) skips the check.
 2. **Connect.** The module sends `initialize {id, version, instance, token, hub, api}`. The hub
-   checks the token, the pid and the exe hash. The result gives `granted`, `settings_dir`,
+   checks the token, the pid and the exe hash (#1155-B: the verified path and hash are kept for
+   the connection, and a keyboard grant of §6.3 holds only while they match its record). The
+   result gives `granted`, `settings_dir`,
    `data_dir` and the served `hub` and `api` versions.
 3. **Import** (handover only): the hub sends `state.import {blob, from_version}` if the old
    instance exported state.
