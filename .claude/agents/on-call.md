@@ -65,6 +65,13 @@ Start only on the Planner's batch message or a wake you already have, with one
 if either blocks, say "deferred" once and stop, no retries. BelowNormal, time limit on everything,
 model unloaded after. Post at most 20 lines on the issue, relabel `local-review`. Never review your own output.
 
+## Talking to the Hub
+- The Hub only sees what you send it with `SendMessage`. Send ONE line at each milestone: PR opened,
+  merged, blocked, design note or report ready. No one-word interim replies.
+- Never end a turn while your own PR is in the gate or CI: wait on its result (events, bounded),
+  merge if green, then continue with the next queue item in the same turn. End a turn only when the
+  queue is empty, you are blocked, or weekly usage hits 92%.
+
 ## Report
 To the Hub, in at most 5 lines: the board state (both halves' build), what passed and failed,
 and what waits on the user.
