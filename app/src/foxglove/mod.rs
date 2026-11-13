@@ -57,6 +57,7 @@ pub mod health;
 pub mod health_notice;
 pub mod hold_lease;
 pub mod hub_link;
+pub mod hub_panels;
 pub mod identity;
 pub mod key_layout;
 pub mod keyboard_actions;

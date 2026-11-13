@@ -41,3 +41,30 @@ permissions = [
   "provide:pc_lighting.list",
   "provide:pc_lighting.set_zone",
 ]
+
+# Foxglove's panels in the hub (P8): three tiles and one page, built from the keyboard.* facts
+# (hub_panels.rs; a test keeps these and what ui.register sends equal). Read-only: the one button
+# opens Foxglove's own Settings window. No permission beyond the facts the module already has.
+[[ui.panels]]
+id = "keyboard"
+slot = "tile"
+title = "Keyboard"
+icon = "keyboard"
+
+[[ui.panels]]
+id = "lights"
+slot = "tile"
+title = "Keyboard lights"
+icon = "lights"
+
+[[ui.panels]]
+id = "art"
+slot = "tile"
+title = "Keyboard art"
+icon = "image"
+
+[[ui.panels]]
+id = "page"
+slot = "page"
+title = "Foxglove"
+icon = "keyboard"

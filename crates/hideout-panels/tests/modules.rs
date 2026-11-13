@@ -85,11 +85,12 @@ fn every_module_state_registers_within_the_tile_rules() {
             let rejected =
                 host.register_with(module, name, Some(&declared), Some(&actions), &params);
             assert!(rejected.is_empty(), "{what}: {rejected:?}");
+            // At least one tile, then one page (a module may show several tiles).
             let slots: Vec<Slot> = host.panels().iter().map(|p| p.slot).collect();
-            assert_eq!(
-                slots,
-                [Slot::Tile, Slot::Page],
-                "{what}: one tile and one page"
+            let tiles = slots.iter().filter(|s| **s == Slot::Tile).count();
+            assert!(
+                tiles >= 1 && slots.len() == tiles + 1 && slots.last() == Some(&Slot::Page),
+                "{what}: tiles and one page: {slots:?}"
             );
             for p in host.panels() {
                 assert!(ICONS.contains(&p.icon.as_str()), "{what}: icon {}", p.icon);
@@ -104,10 +105,12 @@ fn every_module_state_registers_within_the_tile_rules() {
                     assert!(!text.contains(word), "{what}: {word:?} shows");
                 }
             }
-            let tile = &host.panels()[0].tree;
-            assert_eq!(count(tile, "value"), 1, "{what}: one glance");
-            for kind in ["label", "meter", "button"] {
-                assert!(count(tile, kind) <= 1, "{what}: at most one {kind}");
+            for p in host.panels().iter().filter(|p| p.slot == Slot::Tile) {
+                let tile = &p.tree;
+                assert_eq!(count(tile, "value"), 1, "{what}: one glance");
+                for kind in ["label", "meter", "button"] {
+                    assert!(count(tile, kind) <= 1, "{what}: at most one {kind}");
+                }
             }
         }
     }
@@ -128,12 +131,21 @@ fn every_module_state_draws() {
             host.register(module, "M", None, &params);
             let ctx = egui::Context::default();
             ctx.set_fonts(fonts.clone());
-            let (tile, page) = (PanelKey::new(module, "tile"), PanelKey::new(module, "page"));
+            let keys: Vec<(PanelKey, bool)> = host
+                .panels()
+                .iter()
+                .map(|p| (p.key.clone(), p.slot == Slot::Tile))
+                .collect();
             let mut panicked = false;
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    panicked |= tile_ui(&mut host, ui, &tile).draw.panicked;
-                    panicked |= panel_ui(&mut host, ui, &page).panicked;
+                    for (key, is_tile) in &keys {
+                        panicked |= if *is_tile {
+                            tile_ui(&mut host, ui, key).draw.panicked
+                        } else {
+                            panel_ui(&mut host, ui, key).panicked
+                        };
+                    }
                 });
             });
             assert!(!panicked, "{file}: {} panicked", st["state"]);

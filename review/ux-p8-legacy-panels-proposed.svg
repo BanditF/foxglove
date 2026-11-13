@@ -1,0 +1,312 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 1180" font-family="Segoe UI, sans-serif">
+<title>P8 legacy pages as panels: Keyboard, Keyboard lights and Keyboard art in the Hub (drawn mockup, not an egui render)</title>
+<rect width="720" height="1180" fill="#faf8f6"/>
+<rect x="720" width="720" height="1180" fill="#171514"/>
+<text x="15" y="30" fill="#1f1b18" font-size="17" font-weight="600">P8 · Legacy pages as panels (proposed) · drawn mockup with the hub's theme tokens</text>
+<text x="15" y="52" fill="#5c554f" font-size="11.5">Module mode only. With module mode off (the default) none of this exists: no page, no tiles; Foxglove keeps its own tray and window.</text>
+<text x="15" y="68" fill="#5c554f" font-size="11.5">Hub-drawn frame states (5, 6, 7, 9) are the supervisor's existing words; the module draws only the body and its one button.</text>
+<text x="15" y="90" fill="#b84a00" font-size="13" font-weight="700">LIGHT THEME</text>
+<text x="15" y="114" fill="#5c554f" font-size="11">Hub window, module mode on, Foxglove connected: one page, three summaries, one button each.</text>
+<rect x="15" y="124" width="690" height="470" rx="10" fill="#faf8f6" stroke="#d8d2cc"/>
+<text x="31" y="146" fill="#1f1b18" font-size="12" font-weight="600">Hideout</text>
+<line x1="15" y1="158" x2="705" y2="158" stroke="#d8d2cc"/>
+<rect x="16" y="159" width="150" height="434" fill="#f0ece8"/>
+<text x="35" y="193" fill="#1f1b18" font-size="12.5">Home</text>
+<text x="35" y="227" fill="#1f1b18" font-size="12.5">Lights</text>
+<rect x="23" y="242" width="134" height="28" rx="5" fill="#b84a00"/>
+<text x="35" y="261" fill="#ffffff" font-size="12.5" font-weight="600">Foxglove</text>
+<text x="35" y="295" fill="#1f1b18" font-size="12.5">Modules</text>
+<text x="35" y="329" fill="#1f1b18" font-size="12.5">Settings</text>
+<text x="35" y="578" fill="#5c554f" font-size="10">Lights = Hideout's PC lights</text>
+<text x="183" y="188" fill="#1f1b18" font-size="20" font-weight="600">Foxglove</text>
+<text x="183" y="208" fill="#5c554f" font-size="11.5">Your keyboard, its lights and its art, as the Foxglove app sees them.</text>
+<rect x="183" y="224" width="504" height="116" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<rect x="197" y="239" width="16" height="10" rx="2" fill="none" stroke="#5c554f"/>
+<line x1="201" y1="246" x2="209" y2="246" stroke="#5c554f"/>
+<text x="221" y="249" fill="#1f1b18" font-size="14" font-weight="600">Keyboard</text>
+<rect x="504" y="234" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="588.5" y="251" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="197" y="278" fill="#5c554f" font-size="12">Connection</text>
+<text x="307" y="278" fill="#1f1b18" font-size="12">Bluetooth, profile 2</text>
+<text x="197" y="300" fill="#5c554f" font-size="12">Battery</text>
+<text x="307" y="300" fill="#1f1b18" font-size="12">Left 77 %</text>
+<rect x="371" y="292" width="60" height="6" rx="3" fill="#d8d2cc"/>
+<rect x="371" y="292" width="46" height="6" rx="3" fill="#1c6e34"/>
+<text x="457" y="300" fill="#1f1b18" font-size="12">Right 91 %</text>
+<rect x="521" y="292" width="60" height="6" rx="3" fill="#d8d2cc"/>
+<rect x="521" y="292" width="54" height="6" rx="3" fill="#1c6e34"/>
+<text x="197" y="322" fill="#5c554f" font-size="12">Layer</text>
+<text x="307" y="322" fill="#1f1b18" font-size="12">GAME *</text>
+<rect x="183" y="350" width="504" height="116" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<circle cx="205" cy="369" r="5" fill="none" stroke="#5c554f"/>
+<line x1="203" y1="376" x2="207" y2="376" stroke="#5c554f"/>
+<text x="221" y="375" fill="#1f1b18" font-size="14" font-weight="600">Keyboard lights</text>
+<rect x="504" y="360" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="588.5" y="377" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="197" y="404" fill="#5c554f" font-size="12">Lights</text>
+<text x="307" y="404" fill="#1f1b18" font-size="12">On · Solid</text>
+<text x="197" y="426" fill="#5c554f" font-size="12">Colour</text>
+<rect x="307" y="415" width="13" height="13" rx="3" fill="#ff6a00" stroke="#d8d2cc"/>
+<text x="327" y="426" fill="#1f1b18" font-size="12">Orange *</text>
+<text x="197" y="448" fill="#5c554f" font-size="12">Brightness</text>
+<text x="307" y="448" fill="#1f1b18" font-size="12">80 %</text>
+<rect x="183" y="476" width="504" height="96" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<rect x="197" y="490" width="16" height="12" rx="2" fill="none" stroke="#5c554f"/>
+<polyline points="199,500 204,495 208,499 211,496" fill="none" stroke="#5c554f"/>
+<text x="221" y="501" fill="#1f1b18" font-size="14" font-weight="600">Keyboard art</text>
+<rect x="504" y="486" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="588.5" y="503" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="197" y="530" fill="#5c554f" font-size="12">Showing</text>
+<text x="307" y="530" fill="#1f1b18" font-size="12">Steel for good *</text>
+<text x="197" y="552" fill="#5c554f" font-size="12">From</text>
+<text x="307" y="552" fill="#1f1b18" font-size="12">Built-in set *</text>
+<text x="183" y="586" fill="#5c554f" font-size="10">* needs a new fact (see plan, facts table)</text>
+<text x="15" y="624" fill="#b84a00" font-size="13" font-weight="700">TRAY PANEL TILES · one per summary, and the states</text>
+<text x="15" y="650" fill="#5c554f" font-size="11">1 · Keyboard, connected</text>
+<rect x="15" y="658" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<rect x="27" y="672" width="16" height="10" rx="2" fill="none" stroke="#5c554f"/>
+<line x1="31" y1="679" x2="39" y2="679" stroke="#5c554f"/>
+<text x="49" y="682" fill="#1f1b18" font-size="12" font-weight="600">Keyboard</text>
+<text x="215" y="682" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="27" y="712" fill="#1f1b18" font-size="14" font-weight="600">Connected over Bluetooth</text>
+<text x="27" y="730" fill="#5c554f" font-size="11">Left 77 % · Right 91 %</text>
+<rect x="27" y="744" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="111.5" y="761" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="245" y="650" fill="#5c554f" font-size="11">2 · Keyboard lights, on</text>
+<rect x="245" y="658" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<circle cx="265" cy="676" r="5" fill="none" stroke="#5c554f"/>
+<line x1="263" y1="683" x2="267" y2="683" stroke="#5c554f"/>
+<text x="279" y="682" fill="#1f1b18" font-size="12" font-weight="600">Keyboard lights</text>
+<text x="445" y="682" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<rect x="257" y="700" width="14" height="14" rx="3" fill="#ff6a00" stroke="#d8d2cc"/>
+<text x="277" y="712" fill="#1f1b18" font-size="14" font-weight="600">Solid · 80 %</text>
+<text x="257" y="730" fill="#5c554f" font-size="11">Orange</text>
+<rect x="257" y="744" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="341.5" y="761" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="475" y="650" fill="#5c554f" font-size="11">3 · Keyboard art, showing</text>
+<rect x="475" y="658" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<rect x="487" y="671" width="16" height="12" rx="2" fill="none" stroke="#5c554f"/>
+<polyline points="489,681 494,676 498,680 501,677" fill="none" stroke="#5c554f"/>
+<text x="509" y="682" fill="#1f1b18" font-size="12" font-weight="600">Keyboard art</text>
+<text x="675" y="682" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="487" y="712" fill="#1f1b18" font-size="14" font-weight="600">Steel for good</text>
+<text x="487" y="730" fill="#5c554f" font-size="11">Built-in set</text>
+<rect x="487" y="744" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="571.5" y="761" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="15" y="802" fill="#5c554f" font-size="11">4 · Keyboard not connected</text>
+<rect x="15" y="810" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<rect x="27" y="824" width="16" height="10" rx="2" fill="none" stroke="#5c554f"/>
+<line x1="31" y1="831" x2="39" y2="831" stroke="#5c554f"/>
+<text x="49" y="834" fill="#1f1b18" font-size="12" font-weight="600">Keyboard</text>
+<text x="215" y="834" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="27" y="864" fill="#5c554f" font-size="14" font-weight="600">Not connected</text>
+<text x="27" y="882" fill="#5c554f" font-size="11">Turn it on or plug it in.</text>
+<rect x="27" y="896" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="111.5" y="913" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="245" y="802" fill="#5c554f" font-size="11">5 · Starting (cached values, greyed)</text>
+<rect x="245" y="810" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<circle cx="265" cy="828" r="5" fill="none" stroke="#5c554f"/>
+<line x1="263" y1="835" x2="267" y2="835" stroke="#5c554f"/>
+<text x="279" y="834" fill="#1f1b18" font-size="12" font-weight="600">Keyboard lights</text>
+<text x="445" y="834" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="257" y="852" fill="#5c554f" font-size="11.5" font-weight="600">Starting…</text>
+<rect x="257" y="868" width="14" height="14" rx="3" fill="#ff6a00" stroke="#d8d2cc" opacity="0.45"/>
+<text x="277" y="880" fill="#1f1b18" font-size="14" font-weight="600" opacity="0.45">Solid · 80 %</text>
+<text x="257" y="898" fill="#5c554f" font-size="11" opacity="0.45">Orange</text>
+<rect x="257" y="896" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc" opacity="0.5"/>
+<text x="341.5" y="913" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle" opacity="0.45">Open Foxglove settings</text>
+<text x="475" y="802" fill="#5c554f" font-size="11">6 · Crashed, restarting</text>
+<rect x="475" y="810" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<rect x="487" y="823" width="16" height="12" rx="2" fill="none" stroke="#5c554f"/>
+<polyline points="489,833 494,828 498,832 501,829" fill="none" stroke="#5c554f"/>
+<text x="509" y="834" fill="#1f1b18" font-size="12" font-weight="600">Keyboard art</text>
+<text x="675" y="834" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="487" y="852" fill="#805a00" font-size="11.5" font-weight="600">Restarting in 4 s (2 of 5)</text>
+<text x="487" y="880" fill="#1f1b18" font-size="14" font-weight="600" opacity="0.45">Steel for good</text>
+<text x="487" y="898" fill="#5c554f" font-size="11" opacity="0.45">Built-in set</text>
+<rect x="487" y="896" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc" opacity="0.5"/>
+<text x="571.5" y="913" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle" opacity="0.45">Open Foxglove settings</text>
+<text x="15" y="954" fill="#5c554f" font-size="11">7 · Stopped after 5 crashes</text>
+<rect x="15" y="962" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<rect x="27" y="976" width="16" height="10" rx="2" fill="none" stroke="#5c554f"/>
+<line x1="31" y1="983" x2="39" y2="983" stroke="#5c554f"/>
+<text x="49" y="986" fill="#1f1b18" font-size="12" font-weight="600">Keyboard</text>
+<text x="215" y="986" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="27" y="1016" fill="#b01e1e" font-size="14" font-weight="600">Stopped after 5 crashes</text>
+<text x="27" y="1034" fill="#5c554f" font-size="11">Foxglove isn't running.</text>
+<rect x="27" y="1048" width="96" height="26" rx="5" fill="#b84a00"/>
+<text x="75.0" y="1065" fill="#ffffff" font-size="12" font-weight="600" text-anchor="middle">Start again</text>
+<text x="245" y="954" fill="#5c554f" font-size="11">8 · Foxglove page stopped (guard)</text>
+<rect x="245" y="962" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<circle cx="265" cy="980" r="5" fill="none" stroke="#5c554f"/>
+<line x1="263" y1="987" x2="267" y2="987" stroke="#5c554f"/>
+<text x="279" y="986" fill="#1f1b18" font-size="12" font-weight="600">Keyboard lights</text>
+<text x="445" y="986" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<rect x="257" y="1004" width="14" height="14" rx="3" fill="#ff6a00" stroke="#d8d2cc"/>
+<text x="277" y="1016" fill="#1f1b18" font-size="14" font-weight="600">Solid · 80 %</text>
+<text x="257" y="1034" fill="#805a00" font-size="11" font-weight="600">Foxglove's page stopped working.</text>
+<rect x="257" y="1048" width="169" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="341.5" y="1065" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="475" y="954" fill="#5c554f" font-size="11">9 · Module off</text>
+<rect x="475" y="962" width="214" height="120" rx="8" fill="#ffffff" stroke="#d8d2cc"/>
+<rect x="487" y="976" width="16" height="10" rx="2" fill="none" stroke="#5c554f"/>
+<line x1="491" y1="983" x2="499" y2="983" stroke="#5c554f"/>
+<text x="509" y="986" fill="#1f1b18" font-size="12" font-weight="600">Keyboard</text>
+<text x="675" y="986" fill="#5c554f" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="487" y="1016" fill="#5c554f" font-size="14" font-weight="600">Off</text>
+<text x="487" y="1034" fill="#5c554f" font-size="11">Foxglove runs on its own.</text>
+<rect x="487" y="1048" width="70" height="26" rx="5" fill="#ffffff" stroke="#d8d2cc"/>
+<text x="522.0" y="1065" fill="#b84a00" font-size="12" font-weight="600" text-anchor="middle">Turn on</text>
+<text x="735" y="90" fill="#ff8a2a" font-size="13" font-weight="700">DARK THEME</text>
+<text x="735" y="114" fill="#a8a099" font-size="11">Hub window, module mode on, Foxglove connected: one page, three summaries, one button each.</text>
+<rect x="735" y="124" width="690" height="470" rx="10" fill="#171514" stroke="#3d3733"/>
+<text x="751" y="146" fill="#f2eeea" font-size="12" font-weight="600">Hideout</text>
+<line x1="735" y1="158" x2="1425" y2="158" stroke="#3d3733"/>
+<rect x="736" y="159" width="150" height="434" fill="#201d1b"/>
+<text x="755" y="193" fill="#f2eeea" font-size="12.5">Home</text>
+<text x="755" y="227" fill="#f2eeea" font-size="12.5">Lights</text>
+<rect x="743" y="242" width="134" height="28" rx="5" fill="#ff8a2a"/>
+<text x="755" y="261" fill="#1a0e04" font-size="12.5" font-weight="600">Foxglove</text>
+<text x="755" y="295" fill="#f2eeea" font-size="12.5">Modules</text>
+<text x="755" y="329" fill="#f2eeea" font-size="12.5">Settings</text>
+<text x="755" y="578" fill="#a8a099" font-size="10">Lights = Hideout's PC lights</text>
+<text x="903" y="188" fill="#f2eeea" font-size="20" font-weight="600">Foxglove</text>
+<text x="903" y="208" fill="#a8a099" font-size="11.5">Your keyboard, its lights and its art, as the Foxglove app sees them.</text>
+<rect x="903" y="224" width="504" height="116" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<rect x="917" y="239" width="16" height="10" rx="2" fill="none" stroke="#a8a099"/>
+<line x1="921" y1="246" x2="929" y2="246" stroke="#a8a099"/>
+<text x="941" y="249" fill="#f2eeea" font-size="14" font-weight="600">Keyboard</text>
+<rect x="1224" y="234" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1308.5" y="251" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="917" y="278" fill="#a8a099" font-size="12">Connection</text>
+<text x="1027" y="278" fill="#f2eeea" font-size="12">Bluetooth, profile 2</text>
+<text x="917" y="300" fill="#a8a099" font-size="12">Battery</text>
+<text x="1027" y="300" fill="#f2eeea" font-size="12">Left 77 %</text>
+<rect x="1091" y="292" width="60" height="6" rx="3" fill="#3d3733"/>
+<rect x="1091" y="292" width="46" height="6" rx="3" fill="#72d68f"/>
+<text x="1177" y="300" fill="#f2eeea" font-size="12">Right 91 %</text>
+<rect x="1241" y="292" width="60" height="6" rx="3" fill="#3d3733"/>
+<rect x="1241" y="292" width="54" height="6" rx="3" fill="#72d68f"/>
+<text x="917" y="322" fill="#a8a099" font-size="12">Layer</text>
+<text x="1027" y="322" fill="#f2eeea" font-size="12">GAME *</text>
+<rect x="903" y="350" width="504" height="116" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<circle cx="925" cy="369" r="5" fill="none" stroke="#a8a099"/>
+<line x1="923" y1="376" x2="927" y2="376" stroke="#a8a099"/>
+<text x="941" y="375" fill="#f2eeea" font-size="14" font-weight="600">Keyboard lights</text>
+<rect x="1224" y="360" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1308.5" y="377" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="917" y="404" fill="#a8a099" font-size="12">Lights</text>
+<text x="1027" y="404" fill="#f2eeea" font-size="12">On · Solid</text>
+<text x="917" y="426" fill="#a8a099" font-size="12">Colour</text>
+<rect x="1027" y="415" width="13" height="13" rx="3" fill="#ff6a00" stroke="#3d3733"/>
+<text x="1047" y="426" fill="#f2eeea" font-size="12">Orange *</text>
+<text x="917" y="448" fill="#a8a099" font-size="12">Brightness</text>
+<text x="1027" y="448" fill="#f2eeea" font-size="12">80 %</text>
+<rect x="903" y="476" width="504" height="96" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<rect x="917" y="490" width="16" height="12" rx="2" fill="none" stroke="#a8a099"/>
+<polyline points="919,500 924,495 928,499 931,496" fill="none" stroke="#a8a099"/>
+<text x="941" y="501" fill="#f2eeea" font-size="14" font-weight="600">Keyboard art</text>
+<rect x="1224" y="486" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1308.5" y="503" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="917" y="530" fill="#a8a099" font-size="12">Showing</text>
+<text x="1027" y="530" fill="#f2eeea" font-size="12">Steel for good *</text>
+<text x="917" y="552" fill="#a8a099" font-size="12">From</text>
+<text x="1027" y="552" fill="#f2eeea" font-size="12">Built-in set *</text>
+<text x="903" y="586" fill="#a8a099" font-size="10">* needs a new fact (see plan, facts table)</text>
+<text x="735" y="624" fill="#ff8a2a" font-size="13" font-weight="700">TRAY PANEL TILES · one per summary, and the states</text>
+<text x="735" y="650" fill="#a8a099" font-size="11">1 · Keyboard, connected</text>
+<rect x="735" y="658" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<rect x="747" y="672" width="16" height="10" rx="2" fill="none" stroke="#a8a099"/>
+<line x1="751" y1="679" x2="759" y2="679" stroke="#a8a099"/>
+<text x="769" y="682" fill="#f2eeea" font-size="12" font-weight="600">Keyboard</text>
+<text x="935" y="682" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="747" y="712" fill="#f2eeea" font-size="14" font-weight="600">Connected over Bluetooth</text>
+<text x="747" y="730" fill="#a8a099" font-size="11">Left 77 % · Right 91 %</text>
+<rect x="747" y="744" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="831.5" y="761" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="965" y="650" fill="#a8a099" font-size="11">2 · Keyboard lights, on</text>
+<rect x="965" y="658" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<circle cx="985" cy="676" r="5" fill="none" stroke="#a8a099"/>
+<line x1="983" y1="683" x2="987" y2="683" stroke="#a8a099"/>
+<text x="999" y="682" fill="#f2eeea" font-size="12" font-weight="600">Keyboard lights</text>
+<text x="1165" y="682" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<rect x="977" y="700" width="14" height="14" rx="3" fill="#ff6a00" stroke="#3d3733"/>
+<text x="997" y="712" fill="#f2eeea" font-size="14" font-weight="600">Solid · 80 %</text>
+<text x="977" y="730" fill="#a8a099" font-size="11">Orange</text>
+<rect x="977" y="744" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1061.5" y="761" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="1195" y="650" fill="#a8a099" font-size="11">3 · Keyboard art, showing</text>
+<rect x="1195" y="658" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<rect x="1207" y="671" width="16" height="12" rx="2" fill="none" stroke="#a8a099"/>
+<polyline points="1209,681 1214,676 1218,680 1221,677" fill="none" stroke="#a8a099"/>
+<text x="1229" y="682" fill="#f2eeea" font-size="12" font-weight="600">Keyboard art</text>
+<text x="1395" y="682" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="1207" y="712" fill="#f2eeea" font-size="14" font-weight="600">Steel for good</text>
+<text x="1207" y="730" fill="#a8a099" font-size="11">Built-in set</text>
+<rect x="1207" y="744" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1291.5" y="761" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="735" y="802" fill="#a8a099" font-size="11">4 · Keyboard not connected</text>
+<rect x="735" y="810" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<rect x="747" y="824" width="16" height="10" rx="2" fill="none" stroke="#a8a099"/>
+<line x1="751" y1="831" x2="759" y2="831" stroke="#a8a099"/>
+<text x="769" y="834" fill="#f2eeea" font-size="12" font-weight="600">Keyboard</text>
+<text x="935" y="834" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="747" y="864" fill="#a8a099" font-size="14" font-weight="600">Not connected</text>
+<text x="747" y="882" fill="#a8a099" font-size="11">Turn it on or plug it in.</text>
+<rect x="747" y="896" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="831.5" y="913" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="965" y="802" fill="#a8a099" font-size="11">5 · Starting (cached values, greyed)</text>
+<rect x="965" y="810" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<circle cx="985" cy="828" r="5" fill="none" stroke="#a8a099"/>
+<line x1="983" y1="835" x2="987" y2="835" stroke="#a8a099"/>
+<text x="999" y="834" fill="#f2eeea" font-size="12" font-weight="600">Keyboard lights</text>
+<text x="1165" y="834" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="977" y="852" fill="#a8a099" font-size="11.5" font-weight="600">Starting…</text>
+<rect x="977" y="868" width="14" height="14" rx="3" fill="#ff6a00" stroke="#3d3733" opacity="0.45"/>
+<text x="997" y="880" fill="#f2eeea" font-size="14" font-weight="600" opacity="0.45">Solid · 80 %</text>
+<text x="977" y="898" fill="#a8a099" font-size="11" opacity="0.45">Orange</text>
+<rect x="977" y="896" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733" opacity="0.5"/>
+<text x="1061.5" y="913" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle" opacity="0.45">Open Foxglove settings</text>
+<text x="1195" y="802" fill="#a8a099" font-size="11">6 · Crashed, restarting</text>
+<rect x="1195" y="810" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<rect x="1207" y="823" width="16" height="12" rx="2" fill="none" stroke="#a8a099"/>
+<polyline points="1209,833 1214,828 1218,832 1221,829" fill="none" stroke="#a8a099"/>
+<text x="1229" y="834" fill="#f2eeea" font-size="12" font-weight="600">Keyboard art</text>
+<text x="1395" y="834" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="1207" y="852" fill="#f5c451" font-size="11.5" font-weight="600">Restarting in 4 s (2 of 5)</text>
+<text x="1207" y="880" fill="#f2eeea" font-size="14" font-weight="600" opacity="0.45">Steel for good</text>
+<text x="1207" y="898" fill="#a8a099" font-size="11" opacity="0.45">Built-in set</text>
+<rect x="1207" y="896" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733" opacity="0.5"/>
+<text x="1291.5" y="913" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle" opacity="0.45">Open Foxglove settings</text>
+<text x="735" y="954" fill="#a8a099" font-size="11">7 · Stopped after 5 crashes</text>
+<rect x="735" y="962" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<rect x="747" y="976" width="16" height="10" rx="2" fill="none" stroke="#a8a099"/>
+<line x1="751" y1="983" x2="759" y2="983" stroke="#a8a099"/>
+<text x="769" y="986" fill="#f2eeea" font-size="12" font-weight="600">Keyboard</text>
+<text x="935" y="986" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="747" y="1016" fill="#ff6b6b" font-size="14" font-weight="600">Stopped after 5 crashes</text>
+<text x="747" y="1034" fill="#a8a099" font-size="11">Foxglove isn't running.</text>
+<rect x="747" y="1048" width="96" height="26" rx="5" fill="#ff8a2a"/>
+<text x="795.0" y="1065" fill="#1a0e04" font-size="12" font-weight="600" text-anchor="middle">Start again</text>
+<text x="965" y="954" fill="#a8a099" font-size="11">8 · Foxglove page stopped (guard)</text>
+<rect x="965" y="962" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<circle cx="985" cy="980" r="5" fill="none" stroke="#a8a099"/>
+<line x1="983" y1="987" x2="987" y2="987" stroke="#a8a099"/>
+<text x="999" y="986" fill="#f2eeea" font-size="12" font-weight="600">Keyboard lights</text>
+<text x="1165" y="986" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<rect x="977" y="1004" width="14" height="14" rx="3" fill="#ff6a00" stroke="#3d3733"/>
+<text x="997" y="1016" fill="#f2eeea" font-size="14" font-weight="600">Solid · 80 %</text>
+<text x="977" y="1034" fill="#f5c451" font-size="11" font-weight="600">Foxglove's page stopped working.</text>
+<rect x="977" y="1048" width="169" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1061.5" y="1065" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Open Foxglove settings</text>
+<text x="1195" y="954" fill="#a8a099" font-size="11">9 · Module off</text>
+<rect x="1195" y="962" width="214" height="120" rx="8" fill="#2a2623" stroke="#3d3733"/>
+<rect x="1207" y="976" width="16" height="10" rx="2" fill="none" stroke="#a8a099"/>
+<line x1="1211" y1="983" x2="1219" y2="983" stroke="#a8a099"/>
+<text x="1229" y="986" fill="#f2eeea" font-size="12" font-weight="600">Keyboard</text>
+<text x="1395" y="986" fill="#a8a099" font-size="13" font-weight="700" text-anchor="end">···</text>
+<text x="1207" y="1016" fill="#a8a099" font-size="14" font-weight="600">Off</text>
+<text x="1207" y="1034" fill="#a8a099" font-size="11">Foxglove runs on its own.</text>
+<rect x="1207" y="1048" width="70" height="26" rx="5" fill="#2a2623" stroke="#3d3733"/>
+<text x="1242.0" y="1065" fill="#ff8a2a" font-size="12" font-weight="600" text-anchor="middle">Turn on</text>
+</svg>

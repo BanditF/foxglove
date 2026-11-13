@@ -155,6 +155,10 @@ struct Rig {
     conn: ConnId,
     link: Link<Vec<u8>>,
     now: Instant,
+    /// The panels the hub accepted from the last `ui.register`.
+    panels: Vec<Value>,
+    /// Every `ui.patch` the hub got, in order.
+    patches: Vec<Value>,
 }
 
 fn adopted_entry(granted: &[&str]) -> ModuleEntry {
@@ -195,6 +199,8 @@ impl Rig {
             conn,
             link: Link::new(Vec::new(), launch()),
             now: Instant::now(),
+            panels: Vec::new(),
+            patches: Vec::new(),
         }
     }
 
@@ -210,10 +216,15 @@ impl Rig {
             for line in String::from_utf8(sent).unwrap().lines() {
                 let out = self.router.receive(self.conn, line, self.now);
                 for o in out {
-                    if let Out::Send(c, v) = o {
-                        if c == self.conn {
+                    match o {
+                        Out::Send(c, v) if c == self.conn => {
                             steps.push(self.link.line(&v.to_string()).unwrap());
                         }
+                        Out::Panels { panels, .. } => {
+                            self.panels = panels.as_array().cloned().unwrap_or_default();
+                        }
+                        Out::Patch { params, .. } => self.patches.push(params),
+                        _ => {}
                     }
                 }
             }
@@ -226,6 +237,9 @@ impl Rig {
         let steps = self.pump();
         if steps.contains(&Step::Ready) {
             self.link.snapshot(facts.list(FACTS)).unwrap();
+            self.link
+                .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+                .unwrap();
             self.pump();
         }
         steps
@@ -235,6 +249,12 @@ impl Rig {
         self.router.fact(key).cloned()
     }
 }
+
+const STOPPED_NONE: super::super::hub_panels::Stopped = super::super::hub_panels::Stopped {
+    keyboard: false,
+    lights: false,
+    screens: false,
+};
 
 fn keyboard() -> foxglove_devices::facts::Facts {
     let facts = foxglove_devices::facts::Facts::default();
@@ -1513,4 +1533,197 @@ fn a_slow_call_does_not_hold_the_other_workers() {
     for t in threads {
         t.join().unwrap();
     }
+}
+
+// ---- the panels (P8) ----
+
+/// A keyboard that is connected over Bluetooth with both batteries and lights on.
+fn board() -> foxglove_devices::facts::Facts {
+    let facts = keyboard();
+    for (k, v) in [
+        ("keyboard.link", Fact::Text("ble".into())),
+        ("keyboard.left.battery", Fact::Int(77)),
+        ("keyboard.right.battery", Fact::Int(91)),
+        ("keyboard.lighting.on", Fact::Bool(true)),
+        ("keyboard.lighting.effect", Fact::Text("Solid".into())),
+        ("keyboard.lighting.brightness", Fact::Int(80)),
+        ("keyboard.lighting.color_name", Fact::Text("Orange".into())),
+        ("keyboard.lighting.source", Fact::Text("keyboard".into())),
+    ] {
+        facts.set(k, v);
+    }
+    facts
+}
+
+fn said(v: &[Value], text: &str) -> bool {
+    serde_json::to_string(v).unwrap().contains(text)
+}
+
+fn ids(v: &[Value]) -> Vec<String> {
+    v.iter()
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn the_panels_register_when_the_module_is_ready_and_are_what_the_manifest_declares() {
+    let mut rig = Rig::new(&[GRANT]);
+    rig.connect(&board());
+    assert_eq!(ids(&rig.panels), super::super::hub_panels::declared());
+    assert!(said(&rig.panels, "Connected over Bluetooth"));
+    assert!(said(&rig.panels, "Left 77 % · Right 91 %"));
+    // None was refused (an undeclared or over-cap panel would be logged).
+    assert!(rig.link.take_log().is_empty());
+    assert!(rig.patches.is_empty(), "one register, no patch yet");
+}
+
+#[test]
+fn a_change_patches_the_panels_that_show_it_and_nothing_re_registers() {
+    let facts = board();
+    let mut rig = Rig::new(&[GRANT]);
+    rig.connect(&facts);
+    let before = rig.panels.clone();
+    facts.set("keyboard.left.battery", Fact::Int(60));
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    rig.pump();
+    let panels: Vec<_> = rig
+        .patches
+        .iter()
+        .map(|p| p["panel"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        panels,
+        ["keyboard", "page"],
+        "the tile and the page that say it"
+    );
+    assert!(said(&rig.patches, "Left 60 %"));
+    assert_eq!(rig.panels, before, "no second ui.register");
+    // The same facts again say nothing.
+    rig.patches.clear();
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    assert!(rig.link.writer_mut().is_empty());
+}
+
+#[test]
+fn a_stopped_page_shows_its_notice_and_a_retry_takes_it_away() {
+    let facts = board();
+    let mut rig = Rig::new(&[GRANT]);
+    rig.connect(&facts);
+    let stopped = super::super::hub_panels::Stopped {
+        lights: true,
+        ..STOPPED_NONE
+    };
+    rig.link
+        .refresh_panels(&facts.list(FACTS), stopped)
+        .unwrap();
+    rig.pump();
+    let notice = "Foxglove's page stopped working.";
+    assert!(said(&rig.panels, notice) || said(&rig.patches, notice));
+    rig.patches.clear();
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    rig.pump();
+    assert!(!rig.link.shown.as_ref().is_some_and(|p| said(p, notice)));
+}
+
+/// A restarted module says the same things: a new link over the same facts registers the
+/// same panels.
+#[test]
+fn a_restart_registers_the_same_panels() {
+    let facts = board();
+    let mut first = Rig::new(&[GRANT]);
+    first.connect(&facts);
+    let mut second = Rig::new(&[GRANT]);
+    second.connect(&facts);
+    assert_eq!(first.panels, second.panels);
+    assert!(!first.panels.is_empty());
+}
+
+#[test]
+fn a_disconnect_clears_the_panels_to_not_connected() {
+    let facts = board();
+    let changes = facts.subscribe(FACTS);
+    let mut rig = Rig::new(&[GRANT]);
+    rig.connect(&facts);
+    facts.remove_prefix("keyboard.", &["keyboard.connected"]);
+    facts.set("keyboard.connected", Fact::Bool(false));
+    for c in changes.try_iter() {
+        rig.link.change(&c).unwrap();
+    }
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    rig.pump();
+    let shown = rig.link.shown.clone().unwrap();
+    assert!(said(&shown, "Not connected"));
+    assert!(!said(&shown, "Orange") && !said(&shown, "77 %"));
+}
+
+#[test]
+fn a_click_opens_settings_at_the_matching_page_and_nothing_else_does() {
+    use crate::foxglove::shell::Page;
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let seen = opened.clone();
+    let mut rig = Rig::new(&[GRANT]);
+    rig.link = Link::new(Vec::new(), launch())
+        .with_opener(Arc::new(move |p| seen.lock().unwrap().push(p)));
+    rig.connect(&board());
+    let click = |panel: &str, node: &str, kind: &str| {
+        json!({"jsonrpc":"2.0","id":7,"method":"ui.event","params":
+            {"panel":panel,"node":node,"kind":kind,"value":null}})
+        .to_string()
+    };
+    for (panel, node) in [
+        ("keyboard", "go"),
+        ("lights", "go"),
+        ("art", "go"),
+        ("page", "go-lights"),
+    ] {
+        rig.link.line(&click(panel, node, "click")).unwrap();
+    }
+    assert_eq!(
+        *opened.lock().unwrap(),
+        [Page::Keyboard, Page::Lights, Page::Screens, Page::Lights]
+    );
+    // Not a click, not a button, not ours: nothing opens, and each is still answered.
+    opened.lock().unwrap().clear();
+    rig.link.writer_mut().clear();
+    for (panel, node, kind) in [
+        ("lights", "go", "change"),
+        ("lights", "glance", "click"),
+        ("nope", "go", "click"),
+    ] {
+        rig.link.line(&click(panel, node, kind)).unwrap();
+    }
+    assert!(opened.lock().unwrap().is_empty());
+    let answers = String::from_utf8(std::mem::take(rig.link.writer_mut())).unwrap();
+    assert_eq!(answers.lines().count(), 3, "{answers}");
+}
+
+#[test]
+fn before_the_hub_has_the_module_nothing_registers_and_a_click_opens_nothing() {
+    use crate::foxglove::shell::Page;
+    let opened = Arc::new(Mutex::new(Vec::<Page>::new()));
+    let seen = opened.clone();
+    let mut link = Link::new(Vec::new(), launch())
+        .with_opener(Arc::new(move |p| seen.lock().unwrap().push(p)));
+    // Standalone (no `--module`) never makes a link at all; a link not yet ready sends nothing.
+    assert!(!module_mode());
+    link.refresh_panels(&board().list(FACTS), STOPPED_NONE)
+        .unwrap();
+    assert!(link.writer_mut().is_empty());
+    let click = json!({"jsonrpc":"2.0","id":1,"method":"ui.event","params":
+        {"panel":"keyboard","node":"go","kind":"click","value":null}});
+    link.line(&click.to_string()).unwrap();
+    assert!(opened.lock().unwrap().is_empty());
+    // The wiring: the standalone host never sets the hub's opener, the module host does.
+    let host = include_str!("../../platform/eframe_host.rs");
+    let at = |s: &str| host.find(s).unwrap_or_else(|| panic!("{s}"));
+    assert!(at("hub_link::module_mode()") < at("set_hub_opener("));
+    assert!(at("set_hub_opener(") < at("create_tray_icon("));
 }
