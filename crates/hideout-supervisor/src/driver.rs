@@ -1040,6 +1040,16 @@ impl Supervisor {
         grant_listed_in(&self.0.home, &self.0.hub, id, list_code, chosen, declined, by)
     }
 
+    /// The updater vouches for the program now installed for `id` (#1178): only with a
+    /// signature-checked release ([`crate::attest::Verified`]), no path, hub-side only.
+    pub fn attest_verified_update(
+        &self,
+        id: &str,
+        update: &crate::attest::Verified,
+    ) -> Result<(), String> {
+        crate::attest::attest_installed(&self.0.home, id, update)
+    }
+
     /// [`revoke_items_in`] on this hub's folder and router.
     pub fn revoke_items(&self, id: &str, items: Option<&[String]>) -> Result<Vec<String>, String> {
         revoke_items_in(&self.0.home, &self.0.hub, id, items)

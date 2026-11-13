@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 foxglove-plugin = { path = "../plugin-sdk" }
+foxglove-update = { path = "../foxglove-update" }
 hideout-contract = { path = "../hideout-contract" }
 hideout-registry = { path = "../hideout-registry" }
 hideout-router = { path = "../hideout-router" }
@@ -23,3 +24,7 @@ test = false
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
+
+[dev-dependencies]
+ring = "0.17"
+base64 = "0.22"

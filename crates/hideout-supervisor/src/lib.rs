@@ -11,6 +11,7 @@
 //!   launch check the router runs at `initialize` (pid and exe hash, §8.2 v1.3),
 //!   `run\instances.json` and adoption.
 
+pub mod attest;
 pub mod bisect;
 pub mod closes;
 pub mod contain;
