@@ -346,30 +346,18 @@
                     "type": "label"
                   },
                   {
-                    "id": "keyboard-battery-left",
-                    "props": {
-                      "text": "Left battery 77 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-left",
                     "props": {
+                      "label": "Left battery 77 %",
                       "max": 100,
                       "value": 77
                     },
                     "type": "meter"
                   },
                   {
-                    "id": "keyboard-battery-right",
-                    "props": {
-                      "text": "Right battery 91 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-right",
                     "props": {
+                      "label": "Right battery 91 %",
                       "max": 100,
                       "value": 91
                     },
@@ -399,15 +387,9 @@
                     "type": "label"
                   },
                   {
-                    "id": "lights-brightness",
-                    "props": {
-                      "text": "Brightness: 80 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "lights-meter-brightness",
                     "props": {
+                      "label": "Brightness: 80 %",
                       "max": 100,
                       "value": 80
                     },
@@ -644,15 +626,9 @@
                     "type": "label"
                   },
                   {
-                    "id": "lights-brightness",
-                    "props": {
-                      "text": "Brightness: 80 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "lights-meter-brightness",
                     "props": {
+                      "label": "Brightness: 80 %",
                       "max": 100,
                       "value": 80
                     },
@@ -1054,30 +1030,18 @@
                     "type": "label"
                   },
                   {
-                    "id": "keyboard-battery-left",
-                    "props": {
-                      "text": "Left battery 77 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-left",
                     "props": {
+                      "label": "Left battery 77 %",
                       "max": 100,
                       "value": 77
                     },
                     "type": "meter"
                   },
                   {
-                    "id": "keyboard-battery-right",
-                    "props": {
-                      "text": "Right battery 91 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-right",
                     "props": {
+                      "label": "Right battery 91 %",
                       "max": 100,
                       "value": 91
                     },
@@ -1300,30 +1264,18 @@
                     "type": "label"
                   },
                   {
-                    "id": "keyboard-battery-left",
-                    "props": {
-                      "text": "Left battery 77 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-left",
                     "props": {
+                      "label": "Left battery 77 %",
                       "max": 100,
                       "value": 77
                     },
                     "type": "meter"
                   },
                   {
-                    "id": "keyboard-battery-right",
-                    "props": {
-                      "text": "Right battery 91 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-right",
                     "props": {
+                      "label": "Right battery 91 %",
                       "max": 100,
                       "value": 91
                     },
@@ -1353,15 +1305,9 @@
                     "type": "label"
                   },
                   {
-                    "id": "lights-brightness",
-                    "props": {
-                      "text": "Brightness: 80 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "lights-meter-brightness",
                     "props": {
+                      "label": "Brightness: 80 %",
                       "max": 100,
                       "value": 80
                     },
@@ -1487,7 +1433,7 @@
               {
                 "id": "sub",
                 "props": {
-                  "text": "Bandit scanline is running"
+                  "text": "A Foxglove scene is drawing them"
                 },
                 "type": "label"
               },
@@ -1575,30 +1521,18 @@
                     "type": "label"
                   },
                   {
-                    "id": "keyboard-battery-left",
-                    "props": {
-                      "text": "Left battery 77 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-left",
                     "props": {
+                      "label": "Left battery 77 %",
                       "max": 100,
                       "value": 77
                     },
                     "type": "meter"
                   },
                   {
-                    "id": "keyboard-battery-right",
-                    "props": {
-                      "text": "Right battery 91 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-right",
                     "props": {
+                      "label": "Right battery 91 %",
                       "max": 100,
                       "value": 91
                     },
@@ -1628,15 +1562,9 @@
                     "type": "label"
                   },
                   {
-                    "id": "lights-brightness",
-                    "props": {
-                      "text": "Brightness: 80 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "lights-meter-brightness",
                     "props": {
+                      "label": "Brightness: 80 %",
                       "max": 100,
                       "value": 80
                     },
@@ -1652,7 +1580,7 @@
                   {
                     "id": "lights-source",
                     "props": {
-                      "text": "Bandit scanline is running"
+                      "text": "A Foxglove scene is drawing them"
                     },
                     "type": "label"
                   },
@@ -1850,30 +1778,18 @@
                     "type": "label"
                   },
                   {
-                    "id": "keyboard-battery-left",
-                    "props": {
-                      "text": "Left battery 77 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-left",
                     "props": {
+                      "label": "Left battery 77 %",
                       "max": 100,
                       "value": 77
                     },
                     "type": "meter"
                   },
                   {
-                    "id": "keyboard-battery-right",
-                    "props": {
-                      "text": "Right battery 91 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-right",
                     "props": {
+                      "label": "Right battery 91 %",
                       "max": 100,
                       "value": 91
                     },
@@ -1903,15 +1819,9 @@
                     "type": "label"
                   },
                   {
-                    "id": "lights-brightness",
-                    "props": {
-                      "text": "Brightness: 80 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "lights-meter-brightness",
                     "props": {
+                      "label": "Brightness: 80 %",
                       "max": 100,
                       "value": 80
                     },
@@ -1975,6 +1885,256 @@
         }
       ],
       "state": "Lights make their own colours"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ… · 100 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Orange"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ…"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 100 %",
+                      "max": 100,
+                      "value": 100
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "A long effect name at full brightness"
     },
     {
       "panels": [
@@ -2119,30 +2279,18 @@
                     "type": "label"
                   },
                   {
-                    "id": "keyboard-battery-left",
-                    "props": {
-                      "text": "Left battery 77 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-left",
                     "props": {
+                      "label": "Left battery 77 %",
                       "max": 100,
                       "value": 77
                     },
                     "type": "meter"
                   },
                   {
-                    "id": "keyboard-battery-right",
-                    "props": {
-                      "text": "Right battery 91 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-right",
                     "props": {
+                      "label": "Right battery 91 %",
                       "max": 100,
                       "value": 91
                     },
@@ -2172,15 +2320,9 @@
                     "type": "label"
                   },
                   {
-                    "id": "lights-brightness",
-                    "props": {
-                      "text": "Brightness: 80 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "lights-meter-brightness",
                     "props": {
+                      "label": "Brightness: 80 %",
                       "max": 100,
                       "value": 80
                     },
@@ -2395,30 +2537,18 @@
                     "type": "label"
                   },
                   {
-                    "id": "keyboard-battery-left",
-                    "props": {
-                      "text": "Left battery 77 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-left",
                     "props": {
+                      "label": "Left battery 77 %",
                       "max": 100,
                       "value": 77
                     },
                     "type": "meter"
                   },
                   {
-                    "id": "keyboard-battery-right",
-                    "props": {
-                      "text": "Right battery 91 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "keyboard-meter-right",
                     "props": {
+                      "label": "Right battery 91 %",
                       "max": 100,
                       "value": 91
                     },
@@ -2448,15 +2578,9 @@
                     "type": "label"
                   },
                   {
-                    "id": "lights-brightness",
-                    "props": {
-                      "text": "Brightness: 80 %"
-                    },
-                    "type": "label"
-                  },
-                  {
                     "id": "lights-meter-brightness",
                     "props": {
+                      "label": "Brightness: 80 %",
                       "max": 100,
                       "value": 80
                     },

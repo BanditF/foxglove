@@ -259,7 +259,11 @@ fn lights_off_and_lights_held_by_windows_or_a_scene() {
     let all = panels(&view(&scene));
     assert_eq!(
         tile_texts(&all, TILE_LIGHTS),
-        ["Bandit scanline · 80 %", "Bandit scanline is running", OPEN]
+        [
+            "Bandit scanline · 80 %",
+            "A Foxglove scene is drawing them",
+            OPEN
+        ]
     );
 }
 
@@ -528,6 +532,16 @@ fn the_panels_match_the_hub_vectors() {
                 ],
             ))),
         ),
+        (
+            "A long effect name at full brightness",
+            panels(&view(&with(
+                connected(),
+                vec![
+                    t("keyboard.lighting.effect", &"Ä".repeat(70)),
+                    i("keyboard.lighting.brightness", 100),
+                ],
+            ))),
+        ),
         ("A Foxglove page stopped", panels(&stopped)),
         ("A long piece name", panels(&view(&long))),
     ];
@@ -536,4 +550,52 @@ fn the_panels_match_the_hub_vectors() {
         let _ = name;
     }
     foxglove_plugin::ui::check_vectors("foxglove.json", (&m.id, &m.name, &declared, &[]), states);
+}
+
+/// A user-chosen effect name never takes a tile past its 64-byte text cap, with the brightness.
+#[test]
+fn a_long_effect_name_fits_the_lights_tile_at_full_brightness_and_as_a_scene() {
+    for effect in ["x".repeat(70), "Ä".repeat(70), "日".repeat(30)] {
+        for source in ["keyboard", "scene"] {
+            let f = with(
+                connected(),
+                vec![
+                    t("keyboard.lighting.effect", &effect),
+                    i("keyboard.lighting.brightness", 100),
+                    t("keyboard.lighting.source", source),
+                ],
+            );
+            let all = panels(&view(&f));
+            assert_valid(&all);
+            let value = &tile_texts(&all, TILE_LIGHTS)[0];
+            assert!(value.len() <= 64, "{} bytes: {value}", value.len());
+            assert!(value.ends_with(" · 100 %"));
+        }
+    }
+}
+
+/// The meters carry their own words, so the page has no second row saying the same.
+#[test]
+fn the_page_meters_are_named_in_words_and_not_said_twice() {
+    let all = panels(&view(&connected()));
+    let page = texts(&panel(&all, PAGE)["tree"]);
+    for words in [
+        "Left battery 77 %",
+        "Right battery 91 %",
+        "Brightness: 80 %",
+    ] {
+        assert_eq!(page.iter().filter(|s| *s == words).count(), 1, "{words}");
+    }
+    let mut meters = 0;
+    let mut stack = vec![&panel(&all, PAGE)["tree"]];
+    while let Some(n) = stack.pop() {
+        if n["type"] == "meter" {
+            meters += 1;
+            assert!(n["props"]["label"]
+                .as_str()
+                .is_some_and(|l| l.contains('%')));
+        }
+        stack.extend(n["children"].as_array().into_iter().flatten());
+    }
+    assert_eq!(meters, 3);
 }

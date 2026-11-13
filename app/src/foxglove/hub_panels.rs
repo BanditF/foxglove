@@ -257,10 +257,15 @@ impl View {
 
 /// `text` cut on a whole character to fit a tile's text cap, with "…".
 pub fn cut(text: &str) -> String {
-    if text.len() <= CUT {
+    cut_to(text, CUT)
+}
+
+/// `text` cut on a whole character to at most `max` bytes before the "…".
+pub fn cut_to(text: &str, max: usize) -> String {
+    if text.len() <= max {
         return text.to_string();
     }
-    let mut end = CUT;
+    let mut end = max;
     while !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -361,16 +366,20 @@ fn lights_glance(v: &View) -> Option<Glance> {
             sub: "The keyboard's lights are off.".into(),
         });
     }
-    let effect = cut(l.effect.as_deref()?);
+    // The brightness follows in the same value: room for it under the 64-byte cap.
+    let effect = cut_to(l.effect.as_deref()?, 48);
     let value = match l.brightness {
         Some(b) => format!("{effect} · {}", percent(b)),
         None => effect,
     };
     let sub = match l.source {
         Some(Source::Windows) => "Windows Dynamic Lighting is drawing them".to_string(),
-        Some(Source::Scene) => format!("{} is running", cut(l.effect.as_deref()?)),
+        Some(Source::Scene) => "A Foxglove scene is drawing them".into(),
         _ if l.rainbow => "Makes its own colours".into(),
-        _ => cut(l.colour.as_deref().unwrap_or("Custom colour")),
+        _ => cut(l
+            .colour
+            .as_deref()
+            .unwrap_or("The colour shows once the keyboard reports it.")),
     };
     Some(Glance {
         value,
@@ -407,8 +416,9 @@ fn stopped_label(id: &str) -> Value {
     json!({"type": "label", "id": id, "props": {"text": STOPPED, "tone": "attention"}})
 }
 
-fn meter(id: &str, percent: i64) -> Value {
-    json!({"type": "meter", "id": id, "props": {"value": percent, "max": 100}})
+/// A meter, named in words for a screen reader (the label is its name and what it reads).
+fn meter(id: &str, percent: i64, words: &str) -> Value {
+    json!({"type": "meter", "id": id, "props": {"value": percent, "max": 100, "label": words}})
 }
 
 /// A page section's rows; the button comes after them.
@@ -447,11 +457,11 @@ fn rows(part: Part, v: &View) -> Vec<Value> {
                 ));
             }
             for (part_name, p) in &v.batteries {
-                out.push(line(
-                    &format!("battery-{part_name}"),
+                out.push(meter(
+                    &id(&format!("meter-{part_name}")),
+                    *p,
                     &format!("{} battery {}", capital(part_name), percent(*p)),
                 ));
-                out.push(meter(&id(&format!("meter-{part_name}")), *p));
             }
         }
         Part::Lights => match lights_rows(part, v) {
@@ -480,11 +490,11 @@ fn lights_rows(part: Part, v: &View) -> Option<Vec<Value>> {
         &format!("Effect: {}", cut(l.effect.as_deref()?)),
     )];
     if let Some(b) = l.brightness {
-        out.push(ui::label(
-            &id("brightness"),
+        out.push(meter(
+            &id("meter-brightness"),
+            b,
             &format!("Brightness: {}", percent(b)),
         ));
-        out.push(meter(&id("meter-brightness"), b));
     }
     if l.rainbow {
         out.push(ui::label(&id("colour"), "Colour: makes its own colours"));
@@ -496,10 +506,9 @@ fn lights_rows(part: Part, v: &View) -> Option<Vec<Value>> {
             &id("source"),
             "Windows Dynamic Lighting is drawing them",
         )),
-        Some(Source::Scene) => out.push(ui::label(
-            &id("source"),
-            &format!("{} is running", cut(l.effect.as_deref()?)),
-        )),
+        Some(Source::Scene) => {
+            out.push(ui::label(&id("source"), "A Foxglove scene is drawing them"))
+        }
         _ => {}
     }
     Some(out)
