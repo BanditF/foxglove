@@ -1231,3 +1231,44 @@ fn renders_adopted_row_states_for_review() {
         save_png(&format!("adopted-row-a11y-{name}.png"), w, h, px);
     }
 }
+
+/// #1159: a planned exit (a GPU reset, an update install) reads "Restarting…" with no count; a
+/// crash restart keeps its countdown and "(k of 5)". Side by side for review.
+#[test]
+fn the_planned_restart_row_has_no_count_and_the_crash_row_keeps_it() {
+    let all: Vec<Installed> = [("m.fox", "Foxglove"), ("m.art", "Art")]
+        .iter()
+        .map(|(id, name)| Installed {
+            adopted: false,
+            id: (*id).into(),
+            name: (*name).into(),
+            version: "1.0.0".into(),
+            enabled: true,
+        })
+        .collect();
+    let facts: HashMap<String, serde_json::Value> = [
+        ("module.m.fox.state", serde_json::json!("restarting")),
+        ("module.m.art.state", serde_json::json!("restarting")),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    let fact = |k: &str| facts.get(k).cloned();
+    // The planned exit publishes no restart fact; the crash restart does.
+    let planned = row_in(&all[0], &all, &fact, None);
+    let crash = row_in(&all[1], &all, &fact, Some((3, 2)));
+    assert_eq!(planned.state, "Restarting\u{2026}");
+    assert_eq!(crash.state, "Restarting in 3 s (2 of 5)");
+    let rows = vec![planned, crash];
+    let (w, h) = (1000u32, 240u32);
+    let Some(px) = rasterise(w, h, |c| {
+        let t = theme::tokens(true);
+        egui::CentralPanel::default().show(c, |ui| {
+            let _ = page_ui(ui, &t, &rows, None);
+        });
+    }) else {
+        eprintln!("no system font; state review skipped");
+        return;
+    };
+    save_png("built-planned-vs-crash-restart-row.png", w, h, px);
+}

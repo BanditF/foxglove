@@ -29,6 +29,9 @@ pub const EXIT_AFTER_PIPE: Duration = Duration::from_secs(5);
 pub use hideout_contract::PLANNED_EXIT_CODE;
 /// The wait before a planned exit's restart.
 pub const PLANNED_DELAY: Duration = Duration::from_secs(2);
+/// How long a planned exit's restart waits for the processes the module left in its job (the
+/// update installer's helper, #1159) before it restarts anyway.
+pub const HELPER_WAIT_CAP: Duration = Duration::from_secs(60);
 /// Planned exits in [`WINDOW`] the supervisor accepts without counting them. A module's own
 /// budget (3 in 10 minutes for the GPU reset) is under this, so an honest module never reaches
 /// it; one that exits with the code in a loop is counted as crashing from the next exit on.
@@ -124,6 +127,17 @@ pub enum Ev {
     },
     /// The driver started instance `instance` (after [`Cmd::Launch`]).
     Started {
+        id: String,
+        instance: u64,
+    },
+    /// Processes the exited instance left in its job (an update installer's helper) still run:
+    /// a planned exit's restart waits for [`Ev::HelperDone`], at most [`HELPER_WAIT_CAP`].
+    HelperRunning {
+        id: String,
+        instance: u64,
+    },
+    /// The job of instance `instance` is empty now: the held restart goes ahead.
+    HelperDone {
         id: String,
         instance: u64,
     },
@@ -357,6 +371,11 @@ struct Slot {
     /// Restarts in this run, for the backoff step.
     run_restarts: u32,
     restart_at: Option<Instant>,
+    /// `restart_at` is a planned exit's hold for the module's leftover processes (its cap),
+    /// not the usual delay.
+    held: bool,
+    /// The pending restart follows a planned exit (a crash restart is never held).
+    planned_restart: bool,
     ready_by: Option<Instant>,
     /// Taken back after a hub restart: no crash bar, fresh start past this.
     adopt_by: Option<Instant>,
@@ -561,6 +580,7 @@ impl Policy {
             return;
         }
         s.restart_at = None;
+        s.held = false;
         s.exit_by = None;
         s.adopt_by = None;
         s.then_launch = false;
@@ -660,6 +680,8 @@ impl Policy {
                     planned: VecDeque::new(),
                     run_restarts: 0,
                     restart_at: None,
+                    held: false,
+                    planned_restart: false,
                     ready_by: None,
                     adopt_by: None,
                     exit_by: None,
@@ -789,6 +811,24 @@ impl Policy {
                     self.planned_exit(&id, now, &mut out);
                 } else {
                     self.crash(&id, now, &mut out);
+                }
+            }
+            Ev::HelperRunning { id, instance } => {
+                if let Some(s) = self.slots.get_mut(&id) {
+                    if instance == s.instance && s.ended && s.planned_restart {
+                        if let Some(at) = s.restart_at.as_mut() {
+                            *at = now + HELPER_WAIT_CAP;
+                            s.held = true;
+                        }
+                    }
+                }
+            }
+            Ev::HelperDone { id, instance } => {
+                if let Some(s) = self.slots.get_mut(&id) {
+                    if instance == s.instance && s.held && s.restart_at.is_some() {
+                        s.held = false;
+                        s.restart_at = Some(now + PLANNED_DELAY);
+                    }
                 }
             }
             Ev::PipeGone { id } => {
@@ -1331,6 +1371,8 @@ impl Policy {
             s.update = None;
         }
         s.restart_at = Some(now + PLANNED_DELAY);
+        s.held = false;
+        s.planned_restart = true;
         self.note(id, now, "planned exit; restarting".into());
         self.set_state(id, State::Restarting, None, out);
     }
@@ -1430,6 +1472,7 @@ impl Policy {
         s.run_restarts += 1;
         let delay = backoff(s.run_restarts);
         s.restart_at = Some(now + delay);
+        s.planned_restart = false;
         self.set_state(
             id,
             State::Restarting,
@@ -1451,6 +1494,14 @@ impl Policy {
             let s = self.slots.get_mut(&id).unwrap();
             if s.restart_at.is_some_and(|t| t <= now) {
                 s.restart_at = None;
+                if std::mem::take(&mut s.held) {
+                    self.note(
+                        &id,
+                        now,
+                        "installer still running after 60 s; restarting anyway".into(),
+                    );
+                }
+                let s = self.slots.get_mut(&id).unwrap();
                 if s.enabled {
                     publish(&mut out, format!("module.{id}.restart"), Value::Null);
                     self.launch(&id, &mut out);
@@ -1526,6 +1577,8 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
             }
             (id.clone(), format!("exited with code {}", exit_code(*code)))
         }
+        Ev::HelperRunning { id, .. } => (id.clone(), "restart held for the installer".into()),
+        Ev::HelperDone { id, .. } => (id.clone(), "installer finished; restarting".into()),
         Ev::PipeGone { id } => (id.clone(), "router connection closed".into()),
         Ev::Fault { id } => (id.clone(), "channel closed: rpc.frame-too-large".into()),
         Ev::Refused { id } => (
@@ -2293,6 +2346,94 @@ mod planned_tests {
         start(&mut p, later, 8);
         exit(&mut p, later, 8, 75);
         assert_eq!(p.crashes(ID, later), 0);
+    }
+
+    fn helper(p: &mut Policy, t: Instant, instance: u64, running: bool) -> Vec<Cmd> {
+        let id = ID.to_string();
+        p.handle(
+            if running {
+                Ev::HelperRunning { id, instance }
+            } else {
+                Ev::HelperDone { id, instance }
+            },
+            t,
+        )
+    }
+
+    #[test]
+    fn a_live_installer_holds_the_restart_until_it_ends() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        start(&mut p, t, 1);
+        exit(&mut p, t, 1, 75);
+        helper(&mut p, t, 1, true);
+        // The usual 2 s pass and nothing starts.
+        assert!(!launched(&p.tick(t + PLANNED_DELAY)));
+        assert!(!launched(&p.tick(t + Duration::from_secs(30))));
+        assert_eq!(p.state(ID), Some(State::Restarting));
+        // The helper ends at 31 s: the restart follows after the usual short delay.
+        let done = t + Duration::from_secs(31);
+        helper(&mut p, done, 1, false);
+        assert!(!launched(&p.tick(done)));
+        assert!(launched(&p.tick(done + PLANNED_DELAY)));
+        assert_eq!(p.crashes(ID, done), 0);
+    }
+
+    #[test]
+    fn a_helper_that_never_ends_is_waited_for_at_most_the_cap() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        start(&mut p, t, 1);
+        exit(&mut p, t, 1, 75);
+        helper(&mut p, t, 1, true);
+        assert!(!launched(
+            &p.tick(t + HELPER_WAIT_CAP - Duration::from_secs(1))
+        ));
+        assert!(launched(&p.tick(t + HELPER_WAIT_CAP)));
+        assert_eq!(p.crashes(ID, t), 0);
+        assert!(p
+            .history(ID)
+            .iter()
+            .any(|(_, l)| l.contains("installer still running after 60 s")));
+    }
+
+    #[test]
+    fn no_helper_restarts_after_the_usual_delay_and_stale_events_do_nothing() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        start(&mut p, t, 1);
+        exit(&mut p, t, 1, 75);
+        // Another instance's events change nothing.
+        helper(&mut p, t, 7, true);
+        assert_eq!(p.restart_at(ID), Some(t + PLANNED_DELAY));
+        assert!(launched(&p.tick(t + PLANNED_DELAY)));
+        // After the restart a late "done" for the old instance does not touch the new one.
+        helper(&mut p, t + PLANNED_DELAY, 1, false);
+        assert_eq!(p.restart_at(ID), None);
+    }
+
+    #[test]
+    fn a_crash_is_never_held_and_stays_counted() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        start(&mut p, t, 1);
+        exit(&mut p, t, 1, 1);
+        // A helper event after a crash (it can't come from the driver) is ignored too.
+        helper(&mut p, t, 1, true);
+        assert_eq!(p.crashes(ID, t), 1);
+        assert_eq!(p.restart_at(ID), Some(t + backoff(1)));
+    }
+
+    #[test]
+    fn a_stop_during_the_hold_cancels_the_restart() {
+        let mut p = Policy::new();
+        let t = Instant::now();
+        start(&mut p, t, 1);
+        exit(&mut p, t, 1, 75);
+        helper(&mut p, t, 1, true);
+        p.handle(Ev::Disable { id: ID.into() }, t);
+        helper(&mut p, t, 1, false);
+        assert!(!launched(&p.tick(t + HELPER_WAIT_CAP)));
     }
 
     #[test]

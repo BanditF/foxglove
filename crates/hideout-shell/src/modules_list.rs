@@ -267,8 +267,12 @@ pub fn row_in(
             primary(words::START_AGAIN, Does::StartAgain),
         ),
         Some("restarting") => {
-            let (secs, k) = restart.unwrap_or((0, 1));
-            (words::restarting_row(secs, k), false, None)
+            // A restart fact means a crash restart (counted); a planned exit publishes none.
+            let text = match restart {
+                Some((secs, k)) => words::restarting_row(secs, k),
+                None => words::RESTARTING_PLANNED.into(),
+            };
+            (text, false, None)
         }
         Some("crash-stopped") | Some("crash-looped") => {
             // The ladder's step, worded as the stopped card's main button.
@@ -653,6 +657,13 @@ mod tests {
                 vec![("module.m.art.state", json!("restarting"))],
                 Some((4, 2)),
                 "Restarting in 4 s (2 of 5)",
+                false,
+            ),
+            (
+                true,
+                vec![("module.m.art.state", json!("restarting"))],
+                None,
+                "Restarting\u{2026}",
                 false,
             ),
             (

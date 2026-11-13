@@ -1519,7 +1519,8 @@ Design §3.1.
   The supervisor reads the code from the exit of the process *it* launched (the instance it
   tracks), never from a message, so no other module can set it for this one. It shows
   `restarting` (no crash bar, no `module.<id>.restart` fact, no notification), restarts after
-  2 s and counts no crash and uses no backoff step. A module keeps its own budget (the GPU reset:
+  2 s (if processes the module started, such as the update installer's helper, still run in its
+  job, the restart waits until the job is empty, at most 60 s, then goes ahead and is logged) and counts no crash and uses no backoff step. A module keeps its own budget (the GPU reset:
   3 in 10 minutes); more than 6 planned exits in ten minutes count as crashes from the next one
   on, so a loop can't dodge the stop at five. Exit 75 from a process the supervisor didn't
   launch, or any other code, changes nothing: other non-zero codes are crashes as before.

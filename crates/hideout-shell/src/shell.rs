@@ -1425,9 +1425,10 @@ impl Hub {
                 .fact(&format!("module.{}.restart", key.module))
                 .and_then(|f| f.get("crash"))
                 .and_then(|v| v.as_u64());
-            if let Some(k) = crash {
-                look.state = TabState::Busy(words::restarting_row(0, k as usize));
-            }
+            look.state = TabState::Busy(match crash {
+                Some(k) => words::restarting_row(0, k as usize),
+                None => words::RESTARTING_PLANNED.into(),
+            });
         }
         look
     }
