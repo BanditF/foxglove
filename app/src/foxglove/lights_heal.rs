@@ -389,7 +389,6 @@ enum Msg {
         lit: bool,
         unpowered: bool,
     },
-    User,
     Ended,
 }
 
@@ -430,7 +429,7 @@ pub fn lit_changed(lit: bool, unpowered: bool) {
 
 /// Repaint now. An error says why not.
 pub fn user_repaint() -> Result<(), String> {
-    let t = tracker();
+    let mut t = tracker();
     if super::scene_run::running().is_none() {
         return Err("no scene is running".into());
     }
@@ -440,9 +439,34 @@ pub fn user_repaint() -> Result<(), String> {
     if !t.dark() {
         return Err("the keyboard lights aren't dark".into());
     }
+    // Applied here, so the caller sees "putting back" on return; the worker is woken to re-arm
+    // its one deadline.
+    let acts = t.event(Instant::now(), local_hm(), Event::UserRepaint);
     drop(t);
-    send(Msg::User);
+    execute(acts);
+    send(Msg::Context);
     Ok(())
+}
+
+fn execute(acts: Vec<Act>) {
+    for a in acts {
+        match a {
+            Act::Log(l) => eprintln!("{l}"),
+            Act::Repaint => super::scene_run::repaint_lamps(),
+            Act::Retake => {
+                super::lamp_hold::retake();
+                super::scene_run::repaint_lamps();
+            }
+        }
+    }
+}
+
+/// Repaint now and wait (bounded, woken by the worker's events) until the step is over: whether
+/// the keyboard is lit after.
+pub fn repaint_and_wait(limit: Duration) -> Result<bool, String> {
+    user_repaint()?;
+    wait_settled(limit);
+    Ok(!tracker().dark())
 }
 
 fn active_now() -> bool {
@@ -474,25 +498,16 @@ fn run(rx: std::sync::mpsc::Receiver<Msg>) {
             None => Event::Tick,
             Some(Msg::Context) => Event::Active(active_now()),
             Some(Msg::Lit { lit, unpowered }) => Event::Lit { lit, unpowered },
-            Some(Msg::User) => Event::UserRepaint,
             Some(Msg::Ended) => Event::Active(false),
         };
         let acts = tracker().event(Instant::now(), local_hm(), ev);
-        for a in acts {
-            match a {
-                Act::Log(l) => eprintln!("{l}"),
-                Act::Repaint => super::scene_run::repaint_lamps(),
-                Act::Retake => {
-                    super::lamp_hold::retake();
-                    super::scene_run::repaint_lamps();
-                }
-            }
-        }
+        execute(acts);
         super::scene_run::repaint_page();
         super::lights_owner::repaint();
         if tracker().failed() {
             super::health_notice::check(&super::health::all_rows());
         }
+        settled();
     }
 }
 
@@ -516,18 +531,78 @@ pub struct View {
     pub suffix: Option<String>,
     pub darks: u64,
     pub recovered: u64,
+    /// The keyboard's last report (`None`: none yet).
+    pub lit: Option<bool>,
+    pub unpowered: bool,
+    pub last_recovery: Option<String>,
+    /// Local `hh:mm` of the step still to come while dark.
+    pub next_try: Option<String>,
+}
+
+impl Hm {
+    /// This time plus `d`, rounded down to the minute, past midnight wrapping.
+    pub fn plus(self, d: Duration) -> Hm {
+        let m = (self.0 as u64 * 60 + self.1 as u64 + d.as_secs() / 60) % (24 * 60);
+        Hm((m / 60) as u8, (m % 60) as u8)
+    }
+}
+
+impl Tracker {
+    /// The view at `now` (local time `wall`).
+    pub fn view(&self, now: Instant, wall: Hm) -> View {
+        let next_try = self
+            .dark()
+            .then(|| self.deadline())
+            .flatten()
+            .map(|d| wall.plus(d.saturating_duration_since(now)));
+        View {
+            dark: self.dark(),
+            putting_back: self.putting_back(),
+            failed: self.failed(),
+            dark_since: self.dark_since().map(|h| h.to_string()),
+            suffix: self.status_suffix(),
+            darks: self.darks,
+            recovered: self.recovered,
+            lit: self.lit,
+            unpowered: self.unpowered,
+            last_recovery: self.last_recovery.map(|h| h.to_string()),
+            next_try: next_try.map(|h| h.to_string()),
+        }
+    }
 }
 
 pub fn view() -> View {
-    let t = tracker();
-    View {
-        dark: t.dark(),
-        putting_back: t.putting_back(),
-        failed: t.failed(),
-        dark_since: t.dark_since().map(|h| h.to_string()),
-        suffix: t.status_suffix(),
-        darks: t.darks,
-        recovered: t.recovered,
+    tracker().view(Instant::now(), local_hm())
+}
+
+/// Bumped after every event the worker handled, so a waiter wakes on a change, not on a timer.
+static SETTLED: (std::sync::Mutex<u64>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+fn settled() {
+    let mut n = SETTLED.0.lock().unwrap_or_else(|e| e.into_inner());
+    *n += 1;
+    SETTLED.1.notify_all();
+}
+
+/// Waits until no step runs (Putting back is over), at most `limit`; true when it is over.
+/// Woken by the worker's events; the worker's own re-check (10 s) ends a step.
+pub fn wait_settled(limit: Duration) -> bool {
+    let end = Instant::now() + limit;
+    let mut n = SETTLED.0.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if !tracker().putting_back() {
+            return true;
+        }
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        n = SETTLED
+            .1
+            .wait_timeout(n, left)
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
     }
 }
 
@@ -720,5 +795,29 @@ mod tests {
             r.detail,
             "went dark 3 times since start, put back each time (last at 14:12)"
         );
+    }
+
+    #[test]
+    fn a_clock_time_plus_a_wait_wraps_past_midnight() {
+        assert_eq!(Hm(14, 3).plus(Duration::from_secs(120)), Hm(14, 5));
+        assert_eq!(Hm(23, 59).plus(Duration::from_secs(120)), Hm(0, 1));
+    }
+
+    #[test]
+    fn the_view_names_the_time_the_next_step_runs() {
+        let t0 = Instant::now();
+        let mut t = Tracker::default();
+        t.event(t0, Hm(14, 0), Event::Active(true));
+        t.event(
+            t0,
+            Hm(14, 0),
+            Event::Lit {
+                lit: false,
+                unpowered: false,
+            },
+        );
+        let v = t.view(t0, Hm(14, 0));
+        assert_eq!(v.next_try.as_deref(), Some("14:02"));
+        assert_eq!(v.lit, Some(false));
     }
 }

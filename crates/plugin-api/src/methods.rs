@@ -506,6 +506,42 @@ pub struct OverlayShown {
     pub on: bool,
 }
 
+/// The scene and the keyboard's lights while it runs (API 1.16): what `foxglove-cli scene status`
+/// prints. `state` is `none`, `running`, `paused` or `stopping`; `keyboard` is `lit`, `dark`,
+/// `off` (the keyboard turned them off), `none` (no keyboard LampArray held) or `unknown`.
+/// Times are local `hh:mm`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SceneStatus {
+    pub state: String,
+    pub scene: Option<String>,
+    pub paused_for: Option<String>,
+    pub keyboard: String,
+    pub off_reason: Option<String>,
+    pub dark_since: Option<String>,
+    /// When the lights are put back (dark, waiting) or the next try runs (not recovered).
+    pub next_try: Option<String>,
+    pub putting_back: bool,
+    /// Not put back: Repaint now is offered.
+    pub failed: bool,
+    pub darks: u64,
+    pub recovered: u64,
+    pub last_recovery: Option<String>,
+    pub detail: Option<String>,
+}
+
+/// The answer of `scene.repaint` (API 1.16): the scene, and whether the keyboard is lit after.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SceneRepainted {
+    pub scene: String,
+    pub lit: bool,
+}
+
+/// The answer of `scene.stop` (API 1.16): the scene that was stopped, none when nothing ran.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SceneStopped {
+    pub scene: Option<String>,
+}
+
 /// Turns "Show layer overlay" on or off (API 1.13), as the Keyboard page's checkbox does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetOverlayShownParams {
@@ -1102,6 +1138,28 @@ pub const METHODS: &[Method] = &[
         permission: Some("app.windows"),
         params: schema!(SetOverlayShownParams),
         result: Some(schema!(OverlayShown)),
+    },
+    // The running scene and the keyboard's lights; repaint and stop it (API 1.16).
+    Method {
+        name: "scene.status",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(SceneStatus)),
+    },
+    Method {
+        name: "scene.repaint",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(Empty),
+        result: Some(schema!(SceneRepainted)),
+    },
+    Method {
+        name: "scene.stop",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(Empty),
+        result: Some(schema!(SceneStopped)),
     },
     // Hold and give back the lights (#236).
     Method {

@@ -1171,13 +1171,12 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 super::tray_panel::eye(ui.painter(), rect.center(), 18.0, color);
             }
             ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
-            if v.heal.failed {
-                ui.add(
-                    egui::Label::new(RichText::new(super::lights_heal::HINT).color(p.muted)).wrap(),
-                );
-            }
         },
     );
+    // The muted hint under the whole row, so it is not squeezed beside the buttons.
+    if v.heal.failed {
+        ui.add(egui::Label::new(RichText::new(super::lights_heal::HINT).color(p.muted)).wrap());
+    }
     ui.add_space(6.0);
     room_map(ui, v, draft, out);
     ui.add_space(6.0);

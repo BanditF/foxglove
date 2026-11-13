@@ -1,5 +1,5 @@
 {
-  "api": "1.15",
+  "api": "1.16",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -2485,6 +2485,147 @@
           "names"
         ],
         "title": "Profiles",
+        "type": "object"
+      }
+    },
+    "scene.repaint": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The answer of `scene.repaint` (API 1.16): the scene, and whether the keyboard is lit after.",
+        "properties": {
+          "lit": {
+            "type": "boolean"
+          },
+          "scene": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scene",
+          "lit"
+        ],
+        "title": "SceneRepainted",
+        "type": "object"
+      }
+    },
+    "scene.status": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The scene and the keyboard's lights while it runs (API 1.16): what `foxglove-cli scene status`\nprints. `state` is `none`, `running`, `paused` or `stopping`; `keyboard` is `lit`, `dark`,\n`off` (the keyboard turned them off), `none` (no keyboard LampArray held) or `unknown`.\nTimes are local `hh:mm`.",
+        "properties": {
+          "dark_since": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "darks": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failed": {
+            "description": "Not put back: Repaint now is offered.",
+            "type": "boolean"
+          },
+          "keyboard": {
+            "type": "string"
+          },
+          "last_recovery": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_try": {
+            "description": "When the lights are put back (dark, waiting) or the next try runs (not recovered).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "off_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "paused_for": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "putting_back": {
+            "type": "boolean"
+          },
+          "recovered": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scene": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "keyboard",
+          "putting_back",
+          "failed",
+          "darks",
+          "recovered"
+        ],
+        "title": "SceneStatus",
+        "type": "object"
+      }
+    },
+    "scene.stop": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The answer of `scene.stop` (API 1.16): the scene that was stopped, none when nothing ran.",
+        "properties": {
+          "scene": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "SceneStopped",
         "type": "object"
       }
     },

@@ -52,12 +52,12 @@ fn status_works_through_the_router() {
         send(
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
             "id":LINK,"version":"0.1.0","instance":"i1","token":token,"hub":"1.0",
-            "api":{"foxglove":"1.15"}}}),
+            "api":{"foxglove":"1.16"}}}),
         );
         assert!(read(&mut line).get("result").is_some());
         send(
             json!({"jsonrpc":"2.0","id":2,"method":"module.register","params":{
-            "methods":["devices.*"],"facts":["device.*"],"channels":[],"apis":{"foxglove":"1.15"}}}),
+            "methods":["devices.*"],"facts":["device.*"],"channels":[],"apis":{"foxglove":"1.16"}}}),
         );
         assert_eq!(read(&mut line)["result"]["rejected"], json!([]));
         send(
@@ -90,7 +90,7 @@ fn status_works_through_the_router() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "stdout: {stdout}\nstderr: {stderr}");
-    assert!(stdout.contains("Foxglove hideout (API 1.15)"), "{stdout}");
+    assert!(stdout.contains("Foxglove hideout (API 1.16)"), "{stdout}");
     assert!(
         stdout.contains("Example Board [example] connected: lighting"),
         "{stdout}"

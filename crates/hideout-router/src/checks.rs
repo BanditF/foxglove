@@ -47,6 +47,7 @@ pub const FIRST_PARTY_AREAS: &[&str] = &[
     "secrets.*",
     "lights.*",
     "scenes.*",
+    "scene.*",
     "pc_lighting.*",
     "health.*",
     "tray.*",

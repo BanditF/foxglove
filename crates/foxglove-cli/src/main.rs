@@ -14,12 +14,14 @@
 //!   click does (#618).
 //! - `foxglove-cli overlay [restore]`: the overlay window's state (minimized, where, on which
 //!   display), or brings it back as a tray click or display change does (#612, #618).
+//! - `foxglove-cli scene [status|stop|repaint]`: the running scene and whether the keyboard shows
+//!   it; exit 0 lit or none running, 2 dark and being put back, 3 dark and not put back.
 
 use std::io::{BufRead, BufReader, Write};
 
 use foxglove_plugin_api::methods::{
-    ArtStatus, Devices, FactList, InitializeResult, OverlayWindow, PcDevices, Profiles, SyncState,
-    TrayPanel,
+    ArtStatus, Devices, FactList, InitializeResult, OverlayWindow, PcDevices, Profiles,
+    SceneRepainted, SceneStatus, SceneStopped, SyncState, TrayPanel,
 };
 use foxglove_plugin_api::rpc::{Outcome, Request, Response};
 use serde_json::{json, Value};
@@ -183,7 +185,147 @@ fn lights_text(list: &PcDevices) -> String {
     out
 }
 
-fn run(args: &[String]) -> Result<(), String> {
+/// An API refusal of a `scene` call in the CLI's words: `scene <verb>: <what>`.
+fn scene_err(verb: &str, e: &str) -> String {
+    let what = e
+        .strip_prefix(&format!("scene.{verb}: "))
+        .unwrap_or(e)
+        .rsplit_once(" (code ")
+        .map_or(e, |(m, _)| m);
+    let what = what
+        .strip_prefix(&format!("scene.{verb}: "))
+        .unwrap_or(what);
+    format!("scene {verb}: {what}")
+}
+
+/// `scene status`: the lines and the exit code (0 lit or none running, 2 dark and being put
+/// back, 3 dark and not put back).
+fn scene_text(s: &SceneStatus) -> (String, i32) {
+    let Some(name) = &s.scene else {
+        return (
+            "scene: none running
+"
+            .into(),
+            0,
+        );
+    };
+    if let Some(who) = &s.paused_for {
+        return (
+            format!(
+                "scene: {name} (paused for {who})
+"
+            ),
+            0,
+        );
+    }
+    let mut out = format!(
+        "scene: {name} (running)
+"
+    );
+    let since = s.dark_since.as_deref().unwrap_or("?");
+    let mut exit = 0;
+    match s.keyboard.as_str() {
+        "dark" => {
+            exit = if s.failed { 3 } else { 2 };
+            let next = s.next_try.as_deref();
+            let line = match (s.failed, s.putting_back, next) {
+                (true, _, Some(t)) => format!("DARK since {since}, next try at {t}"),
+                (false, false, Some(t)) => format!("DARK since {since}, putting them back at {t}"),
+                _ => format!("DARK since {since}, putting them back"),
+            };
+            out += &format!(
+                "keyboard lights: {line}
+"
+            );
+        }
+        "off" => {
+            let why = s.off_reason.as_deref().unwrap_or("unpowered");
+            out += &format!(
+                "keyboard lights: off (the keyboard turned them off: {why})
+"
+            );
+        }
+        "none" => {
+            out += "keyboard lights: no keyboard connected
+"
+        }
+        _ => {
+            out += "keyboard lights: lit
+"
+        }
+    }
+    if s.darks > 0 {
+        let last = s.last_recovery.as_deref().unwrap_or("?");
+        out += &if s.recovered >= s.darks && s.darks == 1 {
+            format!(
+                "went dark: once since start, put back (at {last})
+"
+            )
+        } else if s.recovered >= s.darks {
+            format!(
+                "went dark: {} times since start, put back each time (last at {last})
+",
+                s.darks
+            )
+        } else {
+            format!(
+                "went dark: {} times since start, {} put back
+",
+                s.darks, s.recovered
+            )
+        };
+    }
+    if s.failed {
+        out += "next: foxglove-cli scene repaint, or foxglove-cli scene stop
+";
+    }
+    if let Some(d) = &s.detail {
+        out += &format!(
+            "detail: {d}
+"
+        );
+    }
+    (out, exit)
+}
+
+/// `scene repaint`: 3 when the keyboard is still dark after.
+fn repaint_text(r: &SceneRepainted) -> (String, i32) {
+    if r.lit {
+        (
+            format!(
+                "scene: repainted {}
+keyboard lights: lit
+",
+                r.scene
+            ),
+            0,
+        )
+    } else {
+        (
+            format!(
+                "scene: repainted {}, but the keyboard is still dark
+next: foxglove-cli scene stop
+",
+                r.scene
+            ),
+            3,
+        )
+    }
+}
+
+fn stop_text(r: &SceneStopped) -> String {
+    match &r.scene {
+        Some(n) => format!(
+            "scene: stopped {n}; the keyboard's own lights are back
+"
+        ),
+        None => "scene: none running; nothing to stop
+"
+        .into(),
+    }
+}
+
+fn run(args: &[String]) -> Result<i32, String> {
     let command = args.first().map(String::as_str).unwrap_or("status");
     // FOXGLOVE_PIPE names another pipe (the lab, the router's tests); default `foxglove-<user>`,
     // which the Hideout hub also serves as an alias (contract §8.2).
@@ -219,6 +361,7 @@ fn run(args: &[String]) -> Result<(), String> {
             }),
         )?)
         .map_err(|e| e.to_string())?;
+        let mut code = 0;
         match command {
             "status" => {
                 println!("Foxglove {} (API {})", init.app, init.api);
@@ -365,21 +508,47 @@ fn run(args: &[String]) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
                 print!("{}", overlay_text(&o));
             }
+            "scene" => {
+                let verb = match args.get(1).map(String::as_str) {
+                    None | Some("status") => "status",
+                    Some("stop") => "stop",
+                    Some("repaint") => "repaint",
+                    Some(o) => {
+                        return Err(format!(
+                            "scene takes status, stop or repaint, not {o:?}"
+                        ))
+                    }
+                };
+                let v = api
+                    .call(&format!("scene.{verb}"), json!({}))
+                    .map_err(|e| scene_err(verb, &e))?;
+                let (text, exit) = match verb {
+                    "status" => scene_text(&serde_json::from_value(v).map_err(|e| e.to_string())?),
+                    "repaint" => repaint_text(&serde_json::from_value(v).map_err(|e| e.to_string())?),
+                    _ => (stop_text(&serde_json::from_value(v).map_err(|e| e.to_string())?), 0),
+                };
+                print!("{text}");
+                code = exit;
+            }
             other => {
                 return Err(format!(
-                "unknown command {other:?}; try status, facts [pattern], profile [name|default], lights, light <device> <zone> <#rrggbb>, sync [on|off], art [next|prev|<name>|slot <n>], panel [open|close] or overlay [restore]"
+                "unknown command {other:?}; try status, facts [pattern], profile [name|default], lights, light <device> <zone> <#rrggbb>, sync [on|off], art [next|prev|<name>|slot <n>], panel [open|close], overlay [restore] or scene [status|stop|repaint]"
             ))
             }
         }
-        Ok(())
+        Ok(code)
     }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Err(e) = run(&args) {
-        eprintln!("foxglove-cli: {e}");
-        std::process::exit(1);
+    match run(&args) {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(e) => {
+            eprintln!("foxglove-cli: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -507,6 +676,185 @@ mod tests {
         assert_eq!(
             lights_text(&list),
             "Case [103c:84fd]\n  zone 1 Logo: #a57500\n  zone 2 Fan: not set\nRunning: Light Studio on Case (it may put its own colours back)\nLast: Case: colours set\n"
+        );
+    }
+
+    fn running() -> SceneStatus {
+        SceneStatus {
+            state: "running".into(),
+            scene: Some("Bandit scanline".into()),
+            keyboard: "lit".into(),
+            detail: Some("held over USB, owner USB, hand-backs 13, frames sent 5123".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn scene_status_prints_each_state_with_its_exit_code() {
+        let none = SceneStatus::default();
+        assert_eq!(
+            scene_text(&none),
+            (
+                "scene: none running
+"
+                .into(),
+                0
+            )
+        );
+
+        let mut s = running();
+        s.darks = 2;
+        s.recovered = 2;
+        s.last_recovery = Some("14:05".into());
+        assert_eq!(
+            scene_text(&s),
+            (
+                "scene: Bandit scanline (running)
+keyboard lights: lit
+went dark: 2 times since start, put back each time (last at 14:05)
+detail: held over USB, owner USB, hand-backs 13, frames sent 5123
+"
+                .into(),
+                0
+            )
+        );
+        s.darks = 1;
+        s.recovered = 1;
+        assert!(scene_text(&s).0.contains(
+            "went dark: once since start, put back (at 14:05)
+"
+        ));
+
+        // Dark, waiting, then putting back: exit 2.
+        let mut d = running();
+        d.keyboard = "dark".into();
+        d.dark_since = Some("14:03".into());
+        d.next_try = Some("14:05".into());
+        assert!(scene_text(&d).0.contains(
+            "keyboard lights: DARK since 14:03, putting them back at 14:05
+"
+        ));
+        assert_eq!(scene_text(&d).1, 2);
+        d.putting_back = true;
+        d.darks = 3;
+        d.recovered = 2;
+        let (t, e) = scene_text(&d);
+        assert!(
+            t.contains(
+                "keyboard lights: DARK since 14:03, putting them back
+"
+            ),
+            "{t}"
+        );
+        assert!(
+            t.contains(
+                "went dark: 3 times since start, 2 put back
+"
+            ),
+            "{t}"
+        );
+        assert_eq!(e, 2);
+
+        // Not recovered: the next line and exit 3.
+        d.putting_back = false;
+        d.failed = true;
+        d.dark_since = Some("14:05".into());
+        d.next_try = Some("14:35".into());
+        let (t, e) = scene_text(&d);
+        assert!(
+            t.contains(
+                "keyboard lights: DARK since 14:05, next try at 14:35
+"
+            ),
+            "{t}"
+        );
+        assert!(t.contains(
+            "next: foxglove-cli scene repaint, or foxglove-cli scene stop
+"
+        ));
+        assert_eq!(e, 3);
+    }
+
+    #[test]
+    fn scene_status_other_first_lines_and_keyboard_words() {
+        let mut p = running();
+        p.paused_for = Some("another app".into());
+        assert_eq!(
+            scene_text(&p),
+            (
+                "scene: Bandit scanline (paused for another app)
+"
+                .into(),
+                0
+            )
+        );
+        let mut n = running();
+        n.keyboard = "none".into();
+        assert!(scene_text(&n).0.contains(
+            "keyboard lights: no keyboard connected
+"
+        ));
+        let mut o = running();
+        o.keyboard = "off".into();
+        o.off_reason = Some("USB power off".into());
+        let (t, e) = scene_text(&o);
+        assert!(t.contains(
+            "keyboard lights: off (the keyboard turned them off: USB power off)
+"
+        ));
+        assert_eq!(e, 0);
+    }
+
+    #[test]
+    fn scene_repaint_and_stop_print_their_words() {
+        let ok = SceneRepainted {
+            scene: "Bandit scanline".into(),
+            lit: true,
+        };
+        assert_eq!(
+            repaint_text(&ok),
+            (
+                "scene: repainted Bandit scanline
+keyboard lights: lit
+"
+                .into(),
+                0
+            )
+        );
+        let dark = SceneRepainted { lit: false, ..ok };
+        assert_eq!(
+            repaint_text(&dark),
+            (
+                "scene: repainted Bandit scanline, but the keyboard is still dark
+next: foxglove-cli scene stop
+"
+                .into(),
+                3
+            )
+        );
+        assert_eq!(
+            stop_text(&SceneStopped {
+                scene: Some("Bandit scanline".into())
+            }),
+            "scene: stopped Bandit scanline; the keyboard's own lights are back
+"
+        );
+        assert_eq!(
+            stop_text(&SceneStopped { scene: None }),
+            "scene: none running; nothing to stop
+"
+        );
+    }
+
+    #[test]
+    fn scene_refusals_read_as_the_ux_plan_says() {
+        assert_eq!(
+            scene_err("repaint", "scene.repaint: no scene is running (code 3)"),
+            "scene repaint: no scene is running"
+        );
+        assert_eq!(
+            scene_err("stop", "scene.stop: still stopping after 10 s (code 3)"),
+            "scene stop: still stopping after 10 s"
         );
     }
 }

@@ -404,6 +404,12 @@ fn status() -> std::sync::MutexGuard<'static, Status> {
     STATUS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Hand-backs the keyboard reported and frames sent to it, for `scene.status`.
+pub fn keyboard_counts() -> (u64, u64) {
+    let s = status();
+    (s.hand_backs, s.keyboard_frames)
+}
+
 /// One line for Copy diagnostics.
 pub fn summary() -> String {
     let s = status().clone();
