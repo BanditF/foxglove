@@ -80,6 +80,13 @@ Everything else continues as normal: local builds (at below-normal priority), `g
 - Give every subagent a stop line: about 100k tokens or 30 minutes, then report back what is done and
   what is stuck. No second full gate run on the same tree.
 
+## Talking to the Hub
+- The Hub only sees what you send it with `SendMessage`. Send ONE line at each milestone: PR opened,
+  merged, blocked, design note or report ready. No one-word interim replies.
+- Never end a turn while your own PR is in the gate or CI: wait on its result (events, bounded),
+  merge if green, then continue with the next queue item in the same turn. End a turn only when the
+  queue is empty, you are blocked, or weekly usage hits 92%.
+
 ## Report
 To the Hub, in at most 5 lines: what merged (PR numbers from `gh` output only), what's next,
 what waits on the user.

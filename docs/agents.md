@@ -19,6 +19,13 @@ keyboard). Everything else starts on demand.
 | Code reviewer | `code-reviewer.md` | a subagent, the merge gate |
 | Release | `release.md` | a subagent |
 
+## Talking to the Hub (Planner and On-call)
+- The Hub only sees what you send it with `SendMessage`. Send ONE line at each milestone: PR opened,
+  merged, blocked, design note or report ready. No one-word interim replies.
+- Never end a turn while your own PR is in the gate or CI: wait on its result (events, bounded),
+  merge if green, then continue with the next queue item in the same turn. End a turn only when the
+  queue is empty, you are blocked, or weekly usage hits 92%.
+
 ## Feature requests: research & scope gate
 
 Every feature request goes through three steps before a job is briefed:
