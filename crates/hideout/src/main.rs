@@ -329,6 +329,11 @@ fn main() {
         started.safe_by_closes,
         started.finder.clone(),
         started.fresh.take(),
+        // The keyboard grant's dialog and row: only the hub that holds the router.
+        started
+            ._router
+            .clone()
+            .map(|h| keyboard_actions::GrantUi::new(&paths.root, h)),
     );
     // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
     pages.push(Box::new(settings_page::SettingsPage::new(

@@ -2939,3 +2939,93 @@ fn renders_the_settings_page_for_review() {
     .unwrap();
     save_png("built-settings-page.png", w, h, rgba);
 }
+
+/// The keyboard grant's dialog (#1155-B), window-free: Esc answers Not now, no key answers
+/// nothing, Enter on the opening focus answers Not now (it never allows by itself).
+#[test]
+fn the_grant_dialog_answers_not_now_to_esc_and_enter() {
+    use crate::keyboard_grant::{Answer, Dialog};
+    let d = Dialog::open(r"C:\Program Files\Foxglove\foxglove.exe", false);
+    let t = crate::theme::tokens(true);
+    let run = |frames: Vec<Vec<Event>>| {
+        let ctx = egui::Context::default();
+        let mut answers = Vec::new();
+        for (i, ev) in frames.into_iter().enumerate() {
+            let _ = ctx.run(input(800.0, 600.0, ev), |c| {
+                answers.push(crate::keyboard_grant_ui::dialog_ui(c, &t, &d, i == 0));
+            });
+        }
+        answers
+    };
+    let none = run(vec![vec![], vec![], vec![]]);
+    assert!(none.iter().all(|a| a.is_none()), "{none:?}");
+    let esc = run(vec![vec![], vec![key(Key::Escape, Modifiers::NONE)]]);
+    assert_eq!(esc.last().unwrap(), &Some(Answer::NotNow));
+    let enter = run(vec![vec![], vec![], vec![key(Key::Enter, Modifiers::NONE)]]);
+    assert!(
+        enter.iter().all(|a| *a != Some(Answer::Allow)),
+        "Enter must never allow: {enter:?}"
+    );
+}
+
+/// Review images of the keyboard grant (#1155-B): the dialog (plain and after a change) and the
+/// header lines and Permissions rows of every state, both themes (`HIDEOUT_REVIEW_DIR`).
+#[test]
+fn renders_the_keyboard_grant_for_review() {
+    use crate::keyboard_grant::{header, row, Dialog, Situation};
+    use crate::keyboard_grant_ui::{dialog_ui, header_ui, row_ui};
+    let at = "2026-11-12T10:00:00Z".to_string();
+    let states = vec![
+        Situation::NotAsked {
+            started_without_act: true,
+        },
+        Situation::Granted { at: at.clone() },
+        Situation::Declined,
+        Situation::Revoked,
+        Situation::Changed { at, moved: false },
+    ];
+    let path = r"C:\Program Files\Foxglove\foxglove.exe";
+    for (dark, name) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let (w, h) = (720u32, 900u32);
+        let Some(rgba) = rasterise(w, h, |ctx| {
+            set_theme(ctx, choice);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for s in &states {
+                    if let Some(hd) = header(s) {
+                        header_ui(ui, &t, &hd);
+                        ui.add_space(6.0);
+                    }
+                    if let Some(r) = row(s) {
+                        row_ui(ui, &t, &r);
+                    }
+                    ui.add_space(18.0);
+                }
+            });
+        }) else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        save_png(&format!("built-keyboard-grant-rows-{name}.png"), w, h, rgba);
+        for (after_change, tag) in [(false, "dialog"), (true, "dialog-changed")] {
+            let d = Dialog::open(path, after_change);
+            let (w, h) = (720u32, 520u32);
+            let rgba = rasterise(w, h, |ctx| {
+                set_theme(ctx, choice);
+                dialog_ui(ctx, &t, &d, true);
+            })
+            .unwrap();
+            save_png(
+                &format!("built-keyboard-grant-{tag}-{name}.png"),
+                w,
+                h,
+                rgba,
+            );
+        }
+    }
+}

@@ -82,6 +82,8 @@ pub struct ModulesPage {
     pub finder: Option<hideout_supervisor::finder::Finder>,
     /// A newer list from the inventory watch (#1054.1); `None` on a second hub.
     pub fresh: Option<Fresh>,
+    /// The keyboard grant's row, header line and dialog (#1155-B); `None` on a second hub.
+    pub grant: Option<crate::keyboard_actions::GrantUi>,
     restarts: hideout_shell::modules_list::Restarts,
 }
 
@@ -220,6 +222,12 @@ impl ModulesPage {
                 (Does::TurnOn, Some(a)) => match a.turn_on(&id) {
                     Ok(()) => {
                         self.set_enabled(&id, true);
+                        // The legacy module's keyboard grant asks on the user's own Turn on.
+                        if id == crate::keyboard_actions::MODULE {
+                            if let Some(g) = self.grant.as_mut() {
+                                g.after_turn_on();
+                            }
+                        }
                         false
                     }
                     Err(why) => {
@@ -246,6 +254,9 @@ impl ModulesPage {
         use hideout_shell::modules_list::row_in;
         if let Some(list) = self.fresh.as_ref().and_then(Fresh::take) {
             self.installed = list;
+            if let Some(g) = self.grant.as_mut() {
+                g.refresh();
+            }
         }
         let none = |_: &str| None;
         let facts: &dyn Fn(&str) -> Option<serde_json::Value> = match &self.facts {
@@ -347,6 +358,13 @@ impl hideout_shell::Page for ModulesPage {
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
         use hideout_shell::modules_list::{page_ui_with, Banner, Click, Find, Top};
         let (rows, counting) = self.rows();
+        let state = self
+            .facts
+            .as_ref()
+            .and_then(|f| f(&format!("module.{}.state", crate::keyboard_actions::MODULE)));
+        if let Some(g) = self.grant.as_mut() {
+            g.sync(state);
+        }
         let searching = self.finder.as_ref().is_some_and(|f| f.searching());
         let active = self.finder.as_ref().is_some_and(|f| f.active());
         let banner_shown = self.safe_mode() && !searching;
@@ -380,6 +398,11 @@ impl hideout_shell::Page for ModulesPage {
             }
             self.on_click(click);
         }
+        // The keyboard grant: the header line and Permissions row, then the dialog.
+        if let Some(g) = self.grant.as_mut() {
+            ui.add_space(16.0);
+            g.ui(ui, t);
+        }
         // Only while a row counts down and the page is drawn (no frames while hidden).
         if counting {
             ui.ctx()
@@ -398,6 +421,7 @@ pub fn pages(
     safe_by_closes: bool,
     finder: Option<hideout_supervisor::finder::Finder>,
     fresh: Option<Fresh>,
+    grant: Option<crate::keyboard_actions::GrantUi>,
 ) -> Vec<Box<dyn hideout_shell::Page>> {
     vec![Box::new(ModulesPage {
         installed,
@@ -406,6 +430,7 @@ pub fn pages(
         safe_by_closes,
         finder,
         fresh,
+        grant,
         restarts: Default::default(),
     })]
 }
@@ -418,7 +443,7 @@ mod tests {
 
     #[test]
     fn the_hub_starts_with_only_the_modules_page() {
-        let pages = pages(Vec::new(), None, None, false, None, None);
+        let pages = pages(Vec::new(), None, None, false, None, None, None);
         assert_eq!(pages.len(), 1);
         assert_eq!((pages[0].id(), pages[0].title()), (ID, TITLE));
         assert_eq!(
@@ -449,6 +474,7 @@ mod tests {
             safe_by_closes: false,
             finder: None,
             fresh: None,
+            grant: None,
             restarts: Default::default(),
         };
         let (rows, counting) = page.rows();
@@ -484,6 +510,7 @@ mod tests {
             finder: None,
             fresh: Some(fresh.clone()),
             restarts: Default::default(),
+            grant: None,
         };
         let ids = |page: &mut ModulesPage| -> Vec<String> {
             page.rows().0.into_iter().map(|r| r.id).collect()
@@ -579,6 +606,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            grant: None,
             finder: None,
             fresh: None,
         };
@@ -634,6 +662,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            grant: None,
             finder: None,
             fresh: None,
         };
@@ -685,6 +714,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            grant: None,
             finder: None,
             fresh: None,
         };
@@ -729,6 +759,7 @@ mod tests {
             safe_by_closes: true,
             finder: None,
             fresh: None,
+            grant: None,
             restarts: Default::default(),
         };
         assert!(page.safe_mode());

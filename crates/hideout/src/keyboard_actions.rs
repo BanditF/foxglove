@@ -5,16 +5,13 @@
 //! router in the same call, so a turn-off closes the legacy module's areas at once. Nothing here
 //! grants anything by itself: only `allow` does, and it is called only from the user's Allow.
 
-// Not drawn into the shell yet (the Modules page and the dialog host call these in the next
-// step); tested here on their own.
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use hideout_registry::keyboard::KeyboardState;
 use hideout_registry::Registry;
 use hideout_router::server::Hub;
-use hideout_shell::keyboard_grant::Situation;
+use hideout_shell::keyboard_grant::{Answer, Ask, Dialog, Situation};
+use hideout_shell::theme::Tokens;
 
 /// Maps the registry's view to the shell's. `started_without_act`: the module started with no
 /// click of the user's (autostart, an upgrade), which shows the header line.
@@ -82,6 +79,176 @@ pub fn turn_off(home: &Path, hub: &Hub, id: &str) -> Result<(), String> {
     let mut reg = Registry::open_from_env(home).map_err(|e| format!("{e:?}"))?;
     reg.revoke_keyboard(id, &hideout_supervisor::now_utc())
         .map_err(|e| format!("{e:?}"))
+}
+
+/// The one module the grant is for (the adopted legacy module).
+pub const MODULE: &str = hideout_registry::keyboard::LEGACY_MODULE;
+
+/// What the Modules page keeps for the keyboard grant: where it stands, the open dialog and
+/// the header line. Drawn by the hub (never a module panel); every change to the grant goes
+/// through `allow`, `decline` and `turn_off` above, and only the user's Allow grants.
+pub struct GrantUi {
+    home: std::path::PathBuf,
+    hub: Hub,
+    pub situation: Situation,
+    pub dialog: Option<Dialog>,
+    /// The dialog was drawn once already (Not now takes the focus on the first frame only).
+    drawn: bool,
+    /// "Not now" on the header line: hidden until the next hub start.
+    header_hidden: bool,
+    /// The user has answered or acted on the grant in this run: a module that is on and never
+    /// asked then no longer counts as "started without the user's act".
+    acted: bool,
+    /// Why the last action failed, in words, under the row.
+    pub note: Option<String>,
+    /// The module's state fact at the last read: the supervisor voids a grant when it starts
+    /// the module, so a change of state is the event that re-reads the grant.
+    seen: Option<serde_json::Value>,
+}
+
+impl GrantUi {
+    pub fn new(home: &Path, hub: Hub) -> GrantUi {
+        let mut g = GrantUi {
+            home: home.to_path_buf(),
+            hub,
+            situation: Situation::Standalone,
+            dialog: None,
+            drawn: false,
+            header_hidden: false,
+            acted: false,
+            note: None,
+            seen: None,
+        };
+        g.refresh();
+        g
+    }
+
+    /// Reads the grant's state from the registry again.
+    pub fn refresh(&mut self) {
+        self.situation = match Registry::open_from_env(&self.home) {
+            Ok(reg) => {
+                let without_act = !self.acted && reg.hub.enabled(MODULE);
+                situation(reg.keyboard_state(MODULE), without_act)
+            }
+            // Unreadable: nothing is shown and nothing is granted.
+            Err(_) => Situation::Standalone,
+        };
+    }
+
+    /// Re-reads the grant when the module's state fact changed (no timer).
+    pub fn sync(&mut self, state: Option<serde_json::Value>) {
+        if self.seen != state {
+            self.seen = state;
+            self.refresh();
+        }
+    }
+
+    /// Turn on… / Review…: opens the dialog for the path Allow would bind to now.
+    pub fn open_dialog(&mut self) {
+        self.note = None;
+        match dialog_path(&self.home, MODULE) {
+            Ok(path) => {
+                let changed = matches!(self.situation, Situation::Changed { .. });
+                self.dialog = Some(Dialog::open(&path, changed));
+                self.drawn = false;
+            }
+            Err(e) => {
+                log::warn!("keyboard grant: the dialog can't open ({e})");
+                self.note = Some("Foxglove's program file couldn't be found.".into());
+            }
+        }
+    }
+
+    /// The user's answer. Not now is the only default; Allow runs only from the user's Allow
+    /// and is refused unless the path is the one the dialog showed.
+    pub fn answer(&mut self, a: Answer) {
+        let Some(d) = self.dialog.take() else { return };
+        self.acted = true;
+        let r = match a {
+            Answer::Allow => allow(&self.home, &self.hub, MODULE, &d.path),
+            Answer::NotNow => decline(&self.home, MODULE),
+        };
+        if let Err(e) = r {
+            log::warn!("keyboard grant: {a:?} failed ({e})");
+            self.note = Some(
+                match a {
+                    Answer::Allow => {
+                        "Foxglove wasn't allowed: its program file isn't the one shown."
+                    }
+                    Answer::NotNow => "Your answer couldn't be saved.",
+                }
+                .into(),
+            );
+        } else {
+            self.note = None;
+        }
+        self.refresh();
+    }
+
+    /// Turn off: at once, no confirm.
+    pub fn turn_off(&mut self) {
+        self.acted = true;
+        match turn_off(&self.home, &self.hub, MODULE) {
+            Ok(()) => {
+                self.note = None;
+                self.refresh();
+            }
+            Err(e) => {
+                // The router already closed the areas: the row says Off whatever the file says.
+                log::warn!("keyboard grant: turn off not saved ({e})");
+                self.note = Some("Turned off, but the change couldn't be saved.".into());
+                self.situation = Situation::Revoked;
+            }
+        }
+    }
+
+    /// The Turn on of the module itself: asks when the module is on and the grant is new or
+    /// void (only on the user's act; never from a background event).
+    pub fn after_turn_on(&mut self) {
+        self.refresh();
+        let ask = matches!(
+            self.situation,
+            Situation::NotAsked { .. } | Situation::Changed { .. }
+        );
+        if ask && Registry::open_from_env(&self.home).is_ok_and(|r| r.keyboard_needs_ok(MODULE)) {
+            self.open_dialog();
+        }
+    }
+
+    /// The header line, unless Not now hid it.
+    pub fn header(&self) -> Option<hideout_shell::keyboard_grant::Header> {
+        hideout_shell::keyboard_grant::header(&self.situation).filter(|_| !self.header_hidden)
+    }
+
+    /// Draws the header line, the Permissions row and the dialog.
+    pub fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &Tokens) {
+        use hideout_shell::keyboard_grant_ui as kui;
+        if let Some(h) = self.header() {
+            match kui::header_ui(ui, t, &h) {
+                Some(true) => self.open_dialog(),
+                Some(false) => self.header_hidden = true,
+                None => {}
+            }
+            ui.add_space(8.0);
+        }
+        if let Some(r) = hideout_shell::keyboard_grant::row(&self.situation) {
+            match kui::row_ui(ui, t, &r) {
+                Some(Ask::TurnOff) => self.turn_off(),
+                Some(Ask::OpenDialog) => self.open_dialog(),
+                None => {}
+            }
+            if let Some(n) = &self.note {
+                ui.label(n.as_str());
+            }
+        }
+        if let Some(d) = &self.dialog {
+            let first = !self.drawn;
+            self.drawn = true;
+            if let Some(a) = kui::dialog_ui(ui.ctx(), t, d, first) {
+                self.answer(a);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +355,151 @@ mod tests {
                 moved: true
             }
         );
+    }
+    fn ui_for(tag: &str) -> (GrantUi, std::path::PathBuf) {
+        let (home, hub) = setup(tag);
+        (GrantUi::new(&home, hub), home)
+    }
+
+    fn row_button(g: &GrantUi) -> &'static str {
+        hideout_shell::keyboard_grant::row(&g.situation)
+            .unwrap()
+            .button
+    }
+
+    #[test]
+    fn the_dialog_opens_on_not_now_and_shows_the_path_allow_binds() {
+        let (mut g, home) = ui_for("dlg");
+        assert_eq!(row_button(&g), "Turn on\u{2026}");
+        g.open_dialog();
+        let d = g.dialog.clone().unwrap();
+        assert_eq!(d.focus, Answer::NotNow);
+        assert_eq!(d.path, dialog_path(&home, "foxglove").unwrap());
+        // Enter on the opening focus is Not now, and nothing is granted by opening or by Enter.
+        assert_eq!(
+            d.clone().key(hideout_shell::keyboard_grant::Key::Enter),
+            Some(Answer::NotNow)
+        );
+        assert_eq!(state(&home), KeyboardState::NotAsked);
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn esc_and_close_never_grant_and_not_now_is_remembered() {
+        use hideout_shell::keyboard_grant::Key;
+        let (mut g, home) = ui_for("esc");
+        g.open_dialog();
+        let mut d = g.dialog.clone().unwrap();
+        // Esc from any focus, and the close box, answer Not now.
+        d.key(Key::Tab);
+        assert_eq!(d.focus, Answer::Allow);
+        let a = d.key(Key::Escape).unwrap();
+        assert_eq!((a, d.close()), (Answer::NotNow, Answer::NotNow));
+        g.answer(a);
+        assert!(g.dialog.is_none());
+        assert_eq!(state(&home), KeyboardState::Declined);
+        assert_eq!(g.situation, Situation::Declined);
+        assert!(
+            Registry::open_from_env(&home).unwrap().inventory.modules["foxglove"]
+                .keyboard
+                .is_none()
+        );
+        assert_eq!(row_button(&g), "Turn on\u{2026}");
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn allow_from_the_dialog_grants_and_a_changed_file_offers_allow_again() {
+        let (mut g, home) = ui_for("changed");
+        g.open_dialog();
+        g.answer(Answer::Allow);
+        assert!(matches!(g.situation, Situation::Granted { .. }));
+        assert_eq!(row_button(&g), "Turn off");
+        // The program file changes under the grant: void, the supervisor's check.
+        let mut reg = Registry::open_from_env(&home).unwrap();
+        reg.void_keyboard(
+            "foxglove",
+            hideout_registry::keyboard::VoidReason::Changed,
+            NOW,
+        )
+        .unwrap();
+        g.refresh();
+        assert!(matches!(
+            g.situation,
+            Situation::Changed { moved: false, .. }
+        ));
+        assert_eq!(
+            g.header().unwrap().title,
+            "Foxglove changed since you allowed it"
+        );
+        assert_eq!(row_button(&g), "Review\u{2026}");
+        // Not now on the header hides it; the row stays.
+        g.header_hidden = true;
+        assert!(g.header().is_none());
+        assert_eq!(row_button(&g), "Review\u{2026}");
+        // Review opens the same dialog with the reason on top; Allow records it again.
+        g.open_dialog();
+        let d = g.dialog.clone().unwrap();
+        assert!(d.reason.is_some());
+        assert_eq!(d.focus, Answer::NotNow);
+        g.answer(Answer::Allow);
+        assert!(matches!(g.situation, Situation::Granted { .. }));
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn allow_is_refused_when_the_shown_path_is_not_the_pinned_file() {
+        let (mut g, home) = ui_for("mismatch");
+        g.open_dialog();
+        g.dialog.as_mut().unwrap().path = r"C:\Elsewhere\foxglove.exe".into();
+        g.answer(Answer::Allow);
+        assert_eq!(state(&home), KeyboardState::NotAsked);
+        assert!(g.note.is_some());
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn turn_on_of_the_module_asks_only_on_the_users_act_and_never_grants() {
+        let (mut g, home) = ui_for("turnon");
+        // Started without a click (module on, never asked): header line, no dialog.
+        assert_eq!(
+            g.situation,
+            Situation::NotAsked {
+                started_without_act: true
+            }
+        );
+        assert!(g.header().is_some() && g.dialog.is_none());
+        g.after_turn_on();
+        assert!(g.dialog.is_some());
+        assert_eq!(state(&home), KeyboardState::NotAsked);
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn turn_off_fails_safe_when_the_record_cannot_be_written() {
+        let (mut g, home) = ui_for("failsafe");
+        g.open_dialog();
+        g.answer(Answer::Allow);
+        assert!(matches!(g.situation, Situation::Granted { .. }));
+        // The home folder goes away: the write fails, the row still says Off.
+        std::fs::remove_dir_all(&home).unwrap();
+        std::fs::write(&home, b"not a folder").unwrap();
+        g.turn_off();
+        assert_eq!(g.situation, Situation::Revoked);
+        assert!(g.note.is_some());
+        assert_eq!(row_button(&g), "Turn on\u{2026}");
+        let _ = std::fs::remove_file(&home);
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn turn_off_revokes_at_once_with_no_dialog() {
+        let (mut g, home) = ui_for("off");
+        g.open_dialog();
+        g.answer(Answer::Allow);
+        g.turn_off();
+        assert!(g.dialog.is_none());
+        assert!(matches!(g.situation, Situation::Revoked));
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
     }
 }
