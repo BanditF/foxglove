@@ -41,7 +41,10 @@ fn the_room_maps_preview_streams_from_its_appcontainer() {
     let home = base.join("home");
     let mut reg = Registry::open(&home, true).unwrap();
     reg.install(&folder, NOW).unwrap();
-    reg.approve(ID).unwrap();
+    let list = reg.permission_list(ID).unwrap();
+    let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    reg.approve_listed(ID, list.code(), &all, &[], NOW, "dialog")
+        .unwrap();
     reg.set_enabled(ID, true).unwrap();
     let toml = home.join("hideout.toml");
     let mut text = std::fs::read_to_string(&toml).unwrap_or_default();

@@ -1250,6 +1250,46 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   dialog opens only on the user's own act (Turn on, Review...), never at sign-in, autostart, a
   hub restart or an update; a start without that act gets a header line instead. "Update waiting
   for you" reuses the dialog.
+- (#1178) **The grant is bound to the list that was shown.** The dialog and `hideout modules
+  permissions <id>` show a **list code** (the first 16 hex digits of SHA-256 over canonical JSON
+  `{format: "hideout-permission-list-v1", id, version, manifest_sha256, exe_path, exe_sha256,
+  items}`, items sorted with their state `asked | never | overlap`; for modules that are not
+  adopted `exe_sha256` is the hash of the signed `files` map). `Registry::approve_listed` re-reads
+  the hub's manifest copy, re-hashes the program and recomputes the code under the registry's
+  write; it refuses with `permission.list_changed` unless it equals the code shown (a 16-digit
+  prefix or the full 64 digits), and writes nothing. The chosen items must be in the shown list.
+  Items the user declines, and items that cannot be granted (never-list, overlap), go to
+  `declined_permissions`; items in neither set stay pending. There is no "grant whatever is
+  pending" step.
+- (#1178) **Bound to the install.** An allow records `bound` (manifest hash, the canonical
+  `run[0]` path and its SHA-256 for an adopted module, the list code, the time and `by` =
+  `dialog` or `cli`). Paths are compared as Windows names them (either slash, case folded, no
+  `\?\` prefix). At every turn on and launch the program's path and hash are compared with
+  `bound`. A difference **voids** unless it was **attested**: `granted` moves back to
+  `pending_permissions` (the old choices are kept as `last_choice` for the dialog's default),
+  the keyboard record goes void, the module is not started, and putting the old file back does
+  not revive the grant. A new program file does **not** need a new Allow when the update or
+  install path vouches for it: after it has verified the signed `latest.json` / package it calls
+  the hub-side `attest_update` (no router method, module request or CLI verb reaches it), which
+  accepts only a bound, not void grant and a new file in the **same install folder**, and
+  appends `{from_sha256, to_sha256, from_path, to_path, version, at, by}` to `bound.attested`
+  (the history the Modules page shows; the last 20 are kept). A hash that no attestation names,
+  or a file in another folder, voids. A grant with no `bound` record (made before #1178) is not
+  voided by this rule.
+  *Tradeoff:* this is **weaker than binding to one file hash**. Whoever can call the update
+  path, or write the hub's `inventory.json`, can move a grant to a new file in the same folder;
+  and a swapped file is caught only when it is not attested. Until Foxglove has a signed
+  publisher key, the attestation trusts the updater's own verification and not a key held by the
+  grant; with the key, the check becomes "signed by that publisher" instead of "attested by the
+  updater".
+- (#1178) **After a grant only narrowing.** Turn off (one item or all) acts at once and needs no
+  confirmation: the router drops the grant (routes and the leases through them end) before the
+  file is written. Turning an item back on is a new Allow through the dialog. A change of
+  `inventory.json` by another process never widens a running hub's grants.
+- (#1178) **Who may grant.** Only an input event in the hub's own dialog, or a request on the
+  hub's control pipe from the user's own `hideout.exe` that is not inside any module's Job
+  Object. No router method, panel event, action, setting or module call reaches
+  `approve_listed`; `modules.manage` is not enough.
 
 ### 6.5 Signing is provenance, not permission
 
@@ -1358,6 +1398,19 @@ the first failure, with its error id.
 | **update** | Install the new version beside the old. If it adds permissions, wait (§6.4). Then hot swap (§7.6) at the right moment (§7.6, "when"). Record `previous`. |
 | **rollback** | Only if the previous folder exists: hot swap back to it, shallow verify first. A revoked version is refused (`trust.revoked`). |
 | **remove** | Stop it and end its Job Object. Delete its secrets, undo its `footprint`, delete its version folders, then `data\` per `[lifecycle] data` (`ask` without a terminal is `keep`). Remove the records. First-party modules shipped in the MSI offer **Turn off**, not Remove (UX7). |
+
+**Permission steps (#1178).** `hideout modules permissions <id>` (read-only, works without the hub)
+prints every item (group, raw string, plain line, state), the program path and hash and the **list
+code**. `hideout modules grant <id> <permission>... --listed <code>` and `... --all-listed
+--listed <code>` grant exactly that list; `deny <id> (<permission>... | --all-listed) --listed
+<code>` records items as declined; `revoke <id> (<permission>... | --all)` narrows and needs no
+code. `grant`, `deny` and `revoke` are requests to the **running hub** (its control pipe): without
+a hub they exit 5 and change nothing. There is no `--yes` and no `--all` for grant; a missing code
+prints the full list and exits 3; a stale code prints "Not allowed: the list changed since you
+read it (permission.list_changed). Read it again." and exits 3. Every grant prints every item it
+granted, declined or refused, one per line, with the path it is bound to. `hideout.exe --modules
+<step> <id> ...` takes the same words until a separate `hideout` binary exists. See
+`docs/hideout-permission-grant.md`.
 
 **CLI exit codes:** 0 done; 1 refused (error id printed, `error.id` in `--json`); 2 usage; 3 needs
 approval; 4 busy (lock held); 5 the hub isn't running (for steps that need it).
@@ -2557,6 +2610,8 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `permission.argument` | bad argument |
 | `permission.never` | a never-list item asked for where it can't be granted |
 | `permission.provider` | registering a method the catalog doesn't allow |
+| `permission.list_changed` | (#1178) a grant or deny named a list code that is not the list now (an item, the manifest or the program changed since it was shown); nothing was written |
+| `permission.caller` | (#1178) a grant request over the control pipe from a process that may not grant (inside a module's Job Object, or not `hideout.exe`) |
 | `ui.undeclared` | `ui.register` with a panel id not in `[[ui.panels]]` |
 | `ui.limits` | a panel tree over a cap (v1.4: and a tile over the tile caps; v1.5: a stream in a tile) |
 | `ui.prop` | (v1.4) a `tone` that isn't a string, a button `opens` that isn't `page`, `page#<node id>` or `settings`, an `action` that isn't an action id, or a button with both; (v1.5) a canvas `width`/`height` or image `aspect`/`width` that isn't a number above 0, an image `scaling` that isn't a string, a text `mono` that isn't a boolean, a `stale_after_ms` that isn't a whole number above 0, or a streamed image without a `label` |

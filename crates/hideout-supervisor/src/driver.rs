@@ -948,14 +948,33 @@ impl Supervisor {
         });
     }
 
-    /// **Review** on Update waiting for you, after the user approved the permission dialog:
-    /// the grants are recorded (`inventory.json`), then the swap runs.
-    pub fn review_approved(&self, id: &str) -> Result<(), String> {
-        let never = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
+    /// **Review** on Update waiting for you, after the user allowed in the permission dialog:
+    /// the grant for the list they saw (`list_code`) is recorded (`inventory.json`), then the
+    /// swap runs. A list that changed since the dialog opened is refused (`permission.list_changed`)
+    /// and nothing is written (#1178).
+    pub fn review_approved(
+        &self,
+        id: &str,
+        list_code: &str,
+        chosen: &[String],
+        declined: &[String],
+        by: &str,
+    ) -> Result<(), String> {
+        let out = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
             .map_err(|e| format!("{e:?}"))
-            .and_then(|mut r| r.approve(id).map_err(|e| format!("{e:?}")))?;
-        for e in never {
-            log::warn!("supervisor: {id}: not granted: {e}");
+            .and_then(|mut r| {
+                r.approve_listed(
+                    id,
+                    list_code,
+                    chosen,
+                    declined,
+                    &hideout_registry::catalogs::now_utc(),
+                    by,
+                )
+                .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))
+            })?;
+        for (item, e) in out.refused {
+            log::warn!("supervisor: {id}: not granted: {item}: {e}");
         }
         self.feed(Ev::Review { id: id.into() });
         Ok(())
@@ -1028,13 +1047,17 @@ impl Supervisor {
         let saved = Registry::open_from_env(&self.0.home)
             .map_err(|e| format!("{e:?}"))
             .and_then(|mut r| {
-                let pending = r
+                // A new or moved program file voids its grants first (#1178); then anything
+                // still waiting, or a void binding, sends the user to the dialog.
+                let _ = r.void_if_changed(id, &hideout_registry::catalogs::now_utc());
+                let waits = r
                     .inventory
                     .modules
                     .get(id)
-                    .is_some_and(|m| !m.pending_permissions.is_empty());
-                if pending {
-                    return Err("permissions wait for the permission dialog".into());
+                    .is_some_and(|m| !m.pending_permissions.is_empty())
+                    || r.binding_void(id).is_some();
+                if waits {
+                    return Err("Hideout needs your OK first. Press Turn on… to review.".into());
                 }
                 r.set_enabled(id, true).map_err(|e| format!("{e:?}"))
             });
@@ -1757,8 +1780,10 @@ fn withdrawn_lines(w: &Withdrawal) -> Vec<(String, String)> {
     v
 }
 
+/// Same file as Windows names it: either slash, case folded, no verbatim prefix (#1178: a
+/// `run[0]` written with forward slashes made the launch and owner check refuse).
 fn same_path(a: &Path, b: &Path) -> bool {
-    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    hideout_registry::keyboard::same_path(&a.to_string_lossy(), &b.to_string_lossy())
 }
 
 /// A started instance's process: a plain child, or one in an AppContainer.
@@ -1858,5 +1883,21 @@ fn timer(me: Weak<Inner>, wake: Receiver<()>) {
                 sup.run(cmds);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::same_path;
+    use std::path::Path;
+
+    #[test]
+    fn exe_paths_compare_by_place_not_spelling() {
+        let p = |a: &str, b: &str| same_path(Path::new(a), Path::new(b));
+        assert!(p("C:/Apps/Fox/fox.exe", r"c:\apps\fox\FOX.exe"));
+        assert!(p(r"\\?\C:\Apps\fox.exe", r"C:\Apps\fox.exe"));
+        assert!(p(r"\\?\UNC\h\s\f.exe", r"\\h\s\f.exe"));
+        assert!(!p(r"C:\Apps\fox.exe", r"C:\Other\fox.exe"));
+        assert!(!p("", ""));
     }
 }

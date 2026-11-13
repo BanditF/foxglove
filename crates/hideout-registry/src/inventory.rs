@@ -50,6 +50,16 @@ pub struct Installed {
     pub granted: Vec<String>,
     #[serde(default)]
     pub pending_permissions: Vec<String>,
+    /// Asked for and not allowed: declined by the user, or refused (never-list, overlap). Not
+    /// pending, so they never block a start (#1178).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_permissions: Vec<String>,
+    /// What the user had allowed before a void, the dialog's default (#1178).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_choice: Vec<String>,
+    /// What the grant is bound to (#1178); none for a grant made before the binding existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound: Option<Bound>,
     /// The user's grant of the reserved areas to the adopted legacy module (#1155-B): path and
     /// hash of its program at Allow. Only [`Registry::allow_keyboard`] writes `on`.
     ///
@@ -60,6 +70,43 @@ pub struct Installed {
         deserialize_with = "crate::keyboard::lenient"
     )]
     pub keyboard: Option<crate::keyboard::KeyboardGrant>,
+}
+
+/// The list, manifest and program a grant was made for (#1178, contract §6.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bound {
+    pub manifest_sha256: String,
+    /// Canonical path of `run[0]`; empty for a module the hub installed itself.
+    #[serde(default)]
+    pub exe_path: String,
+    /// SHA-256 of the program; cleared once void (a void binding never matches again).
+    #[serde(default)]
+    pub exe_sha256: String,
+    pub list_hash: String,
+    pub at: String,
+    /// `dialog` or `cli`.
+    pub by: String,
+    /// The program changed or moved since the allow.
+    #[serde(default)]
+    pub void: bool,
+    /// Program changes the install or update path attested, oldest first (#1178): the grant
+    /// follows the install, not one file hash. Shown on the Modules page.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attested: Vec<Attestation>,
+}
+
+/// One program change the update path vouched for: old file to new file, same install folder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attestation {
+    pub from_sha256: String,
+    pub to_sha256: String,
+    pub from_path: String,
+    pub to_path: String,
+    /// The version the updater or installer named.
+    pub version: String,
+    pub at: String,
+    /// Who vouched: `updater` or `installer`.
+    pub by: String,
 }
 
 impl Installed {
@@ -85,7 +132,7 @@ impl Installed {
 }
 
 /// Whether two `provide:` method patterns (a name or a prefix ending in `.*`) overlap.
-fn provide_overlap(a: &str, b: &str) -> bool {
+pub(crate) fn provide_overlap(a: &str, b: &str) -> bool {
     let covers = |outer: &str, inner: &str| match outer.strip_suffix('*') {
         Some(prefix) => inner.starts_with(prefix),
         None => outer == inner,
@@ -212,11 +259,16 @@ impl Inventory {
         let Some(m) = self.modules.get_mut(id) else {
             return false;
         };
+        let asked: Vec<String> = asked.iter().map(|c| c.to_string()).collect();
+        // What the manifest no longer asks for is dropped (narrowing, #1178).
+        m.granted.retain(|g| asked.contains(g));
+        m.declined_permissions.retain(|d| asked.contains(d));
         let new = asked
             .iter()
-            .map(|c| c.to_string())
-            .filter(|c| !m.granted.contains(c));
+            .filter(|c| !m.granted.contains(c) && !m.declined_permissions.contains(c))
+            .cloned();
         m.pending_permissions = canonical(m.pending_permissions.drain(..).chain(new));
+        m.pending_permissions.retain(|p| asked.contains(p));
         !m.pending_permissions.is_empty()
     }
 

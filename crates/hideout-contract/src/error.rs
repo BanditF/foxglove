@@ -61,6 +61,8 @@ error_ids! {
     PermissionArgument => "permission.argument",
     PermissionNever => "permission.never",
     PermissionProvider => "permission.provider",
+    PermissionListChanged => "permission.list_changed",
+    PermissionCaller => "permission.caller",
     UiUndeclared => "ui.undeclared",
     UiLimits => "ui.limits",
     UiProp => "ui.prop",
