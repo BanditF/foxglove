@@ -1,4 +1,4 @@
-﻿//! Opening Settings from outside a frame: the tray menu's "Open Foxglove" (on the tray-menu
+//! Opening Settings from outside a frame: the tray menu's "Open Foxglove" (on the tray-menu
 //! thread) and a second launch (on the single-instance thread). The tray panel's "Open
 //! Foxglove â†’" runs inside a frame and only logs here.
 //!
@@ -47,6 +47,8 @@ pub enum Source {
     TrayPanel,
     /// A second launch of the app (#345).
     SecondLaunch,
+    /// A button of Foxglove's panels in the Hub (#1143 P8).
+    Hub,
 }
 
 impl Source {
@@ -55,8 +57,39 @@ impl Source {
             Source::TrayMenu => "tray menu",
             Source::TrayPanel => "tray panel",
             Source::SecondLaunch => "second launch",
+            Source::Hub => "hub",
         }
     }
+}
+
+/// The page a request from the Hub asked for, until the frame takes it.
+static PAGE: std::sync::Mutex<Option<super::shell::Page>> = std::sync::Mutex::new(None);
+
+/// What opens Settings at a page for the Hub's buttons (set once by the host that owns the
+/// window; the module mode only).
+type Opener = std::sync::Arc<dyn Fn(super::shell::Page) + Send + Sync>;
+static HUB_OPENER: std::sync::OnceLock<Opener> = std::sync::OnceLock::new();
+
+/// The host says how to open Settings at a page (a tray-less module has no menu to do it).
+pub fn set_hub_opener(f: Opener) {
+    let _ = HUB_OPENER.set(f);
+}
+
+/// The Hub's button: opens Settings at `page` (nothing while the host has not said how).
+pub fn open_page_from_hub(page: super::shell::Page) {
+    if let Some(f) = HUB_OPENER.get() {
+        f(page);
+    }
+}
+
+/// Remembers the page a request wants; the next frame shows it ([`take_page`]).
+pub fn want_page(page: super::shell::Page) {
+    *PAGE.lock().unwrap_or_else(|e| e.into_inner()) = Some(page);
+}
+
+/// The page a request wanted, once.
+pub fn take_page() -> Option<super::shell::Page> {
+    PAGE.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 /// The log line for a request.
@@ -269,6 +302,18 @@ mod tests {
             "the root viewport is woken: {woken:?}"
         );
         assert!(!woken.contains(&settings), "not the hidden Settings one");
+    }
+
+    /// The Hub's button asks for a page, and the frame takes it once.
+    #[test]
+    fn a_hub_request_wants_a_page_until_the_frame_takes_it() {
+        use super::super::shell::Page;
+        assert_eq!(take_page(), None);
+        want_page(Page::Lights);
+        want_page(Page::Screens);
+        assert_eq!(take_page(), Some(Page::Screens), "the latest ask wins");
+        assert_eq!(take_page(), None, "once");
+        assert_eq!(requested_line(Source::Hub), "tray: open requested (hub)");
     }
 
     #[test]

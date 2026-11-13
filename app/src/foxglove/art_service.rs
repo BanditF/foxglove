@@ -364,12 +364,18 @@ impl Handle {
     }
 
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
-        f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
+        let art = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            f(&mut s);
+            super::keyboard_facts::art_of(&s)
+        };
         // An agent waiting for a job's end (`wait_job`) looks again.
         *CHANGES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         CHANGED.notify_all();
         // The live wallpaper feed names the piece on the right screen (#499).
         super::live_feed::art_changed();
+        // The Hub's Keyboard art tile names it too (P8).
+        super::keyboard_facts::art_changed(art);
         if let Some(wake) = WAKE.get() {
             wake.request_repaint();
         }

@@ -809,6 +809,8 @@ pub fn connected(vid: u16, pid: u16, product: &str) {
     // Its keymap tells its key count again; the last keyboard's doesn't carry over.
     KEYMAP_KEYS.store(0, std::sync::atomic::Ordering::Relaxed);
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = board;
+    // The Hub's Keyboard tile names it (P8).
+    super::keyboard_facts::board_changed();
 }
 
 /// Every built-in keymap source, for a keyboard whose profile isn't known yet.

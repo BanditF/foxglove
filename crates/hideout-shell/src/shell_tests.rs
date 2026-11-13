@@ -716,9 +716,18 @@ fn renders_the_module_tiles_for_review() {
             )
             .unwrap();
             host.register(&id, name, None, &params);
-            row.push(PanelKey::new(&id, "tile"));
-            if row.len() == 4 {
-                rows.push(std::mem::take(&mut row));
+            // A module's tiles are the ones its panels declare (ids are its own).
+            let tiles: Vec<PanelKey> = host
+                .panels()
+                .iter()
+                .filter(|p| p.key.module == id && p.slot == hideout_panels::Slot::Tile)
+                .map(|p| p.key.clone())
+                .collect();
+            for key in tiles {
+                row.push(key);
+                if row.len() == 4 {
+                    rows.push(std::mem::take(&mut row));
+                }
             }
             if page.is_none() && st["panels"].to_string().contains("\"connect\"") {
                 page = Some((PanelKey::new(&id, "page"), name.to_string()));
@@ -741,7 +750,7 @@ fn renders_the_module_tiles_for_review() {
             let id = format!("{}#{state}", first.module);
             host.register(&id, doc["name"].as_str().unwrap(), None, &params);
             host.module_gone(&id, state);
-            extra.push(PanelKey::new(&id, "tile"));
+            extra.push(PanelKey::new(&id, first.panel.clone()));
         }
         rows.push(extra);
     }

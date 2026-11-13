@@ -30,6 +30,13 @@
 //!   -32601, and the `lighting.*`, `art.*`, `screens.*`, `devices.*`, `behaviors.*`, `profiles.*`
 //!   and `focus.*` areas stay out because the contract gives an adopted module no first-party
 //!   area (§6.3). See [`SERVED`] for what is left out and why.
+//! - **Panels (P8).** Three tiles (Keyboard, Keyboard lights, Keyboard art) and one page
+//!   ("Foxglove") in the hub, drawn by [`super::hub_panels`] from the same `keyboard.*` facts and
+//!   nothing else: `ui.register` when the module is ready, `ui.patch` on each change (a new
+//!   `ui.register` when the shape changes), driven by the fact changes and the page guard's
+//!   (event-driven, no poll). The one button, "Open Foxglove settings", comes back as a plain
+//!   `ui.event`; the module opens its own Settings window at that part's page. Standalone, none
+//!   of this runs.
 //! - **No tray, no pipe.** The tray is not created ([`crate::tray::Tray::none`]) and the app
 //!   serves no `foxglove-<user>` pipe (the hub owns that alias, §8.6); every device duty stays.
 //!   The self-restarts that would start a plain copy (identity registration) are off; the GPU
@@ -49,8 +56,8 @@ use std::time::{Duration, Instant};
 
 use foxglove_devices::facts::{Change, Value as Fact};
 use foxglove_plugin::hideout::{
-    code, DrainResult, Handler, Incoming, InitializeModule, ModuleDrain, ModuleRegister,
-    RegisterResult, RpcError, Session, SessionError,
+    code, DrainResult, Handler, Incoming, InitializeModule, ModuleDrain, ModuleRegister, PatchOp,
+    Register, RegisterResult, RpcError, Session, SessionError, UiEvent, UiPatch,
 };
 use serde_json::{json, Value};
 
@@ -294,7 +301,13 @@ struct Hub {
     devices: Option<std::sync::Arc<dyn foxglove_plugin_host::Devices>>,
     /// The hub has the module (registered and ready): calls are answered only then.
     live: bool,
+    /// Opens Settings at a page for a panel's button; `None` uses the host's
+    /// ([`super::settings_open::open_page_from_hub`]).
+    opener: Option<Opener>,
 }
+
+/// What a panel's button opens Settings with.
+pub type Opener = Arc<dyn Fn(super::shell::Page) + Send + Sync>;
 
 impl Handler for Hub {
     fn drain(&mut self, _drain: ModuleDrain) -> Result<DrainResult, RpcError> {
@@ -302,6 +315,23 @@ impl Handler for Hub {
     }
     fn exit(&mut self) {
         self.exit = true;
+    }
+    /// A click on one of the panels' buttons (the hub sends `kind: "click"`): opens Settings at
+    /// the page of that part. Only while the hub has the module; nothing else is a button.
+    fn ui_event(&mut self, event: UiEvent) -> Result<Value, RpcError> {
+        if !self.live {
+            return Err(RpcError::new(code::DISCONNECTED, "disconnected"));
+        }
+        if event.kind == "click" {
+            if let Some(part) = super::hub_panels::Part::of_event(&event.panel, &event.node) {
+                let page = part.settings_page();
+                match &self.opener {
+                    Some(open) => open(page),
+                    None => super::settings_open::open_page_from_hub(page),
+                }
+            }
+        }
+        Ok(json!({}))
     }
     /// A routed v1 call. The router has already checked the caller's permission; the name is
     /// checked again here against [`SERVED`], so a hub that routes more than the manifest names
@@ -506,6 +536,8 @@ pub struct Link<W: Write> {
     log: Vec<String>,
     /// Where routed calls go to run off the link thread; `None` runs them inline (tests).
     queue: Option<Arc<CallQueue>>,
+    /// The panels the hub has now (what `ui.register` or the last patches made), for the next diff.
+    shown: Option<Vec<Value>>,
 }
 
 impl<W: Write> Drop for Link<W> {
@@ -527,7 +559,67 @@ impl<W: Write> Link<W> {
             said: false,
             log: Vec::new(),
             queue: None,
+            shown: None,
         }
+    }
+
+    /// Opens Settings through `opener` for the panels' buttons (tests; the app uses the host's).
+    #[cfg(test)]
+    pub fn with_opener(mut self, opener: Opener) -> Self {
+        self.hub.opener = Some(opener);
+        self
+    }
+
+    /// Shows the panels for `facts` (the module's `keyboard.*`) and the guard's state: the
+    /// first time `ui.register`, afterwards `ui.patch` of what changed (a new `ui.register` when
+    /// the shape did). Nothing before the hub has the module, or when nothing changed.
+    pub fn refresh_panels(
+        &mut self,
+        facts: &[(String, Fact)],
+        stopped: super::hub_panels::Stopped,
+    ) -> Result<(), SessionError> {
+        if self.phase != Phase::Live {
+            return Ok(());
+        }
+        let panels = super::hub_panels::panels(&super::hub_panels::View::of(facts, stopped));
+        if self.shown.as_ref() == Some(&panels) {
+            return Ok(());
+        }
+        let patches = self.shown.as_ref().and_then(|old| {
+            if old.len() != panels.len() {
+                return None;
+            }
+            let mut all = Vec::new();
+            for (o, n) in old.iter().zip(&panels) {
+                if (&o["id"], &o["title"], &o["icon"], &o["slot"])
+                    != (&n["id"], &n["title"], &n["icon"], &n["slot"])
+                {
+                    return None;
+                }
+                let ops = foxglove_plugin::ui::diff(&o["tree"], &n["tree"])?;
+                if !ops.is_empty() {
+                    all.push((n["id"].as_str()?.to_string(), ops));
+                }
+            }
+            Some(all)
+        });
+        match patches {
+            Some(all) => {
+                for (panel, ops) in all {
+                    let ops: Vec<PatchOp> = serde_json::from_value(Value::Array(ops))
+                        .map_err(|e| SessionError::Protocol(e.to_string()))?;
+                    self.session.ui_patch(&UiPatch { panel, ops })?;
+                }
+            }
+            None => {
+                self.session.ui_register(&Register {
+                    instance: self.launch.instance.clone(),
+                    panels: panels.clone(),
+                })?;
+            }
+        }
+        self.shown = Some(panels);
+        Ok(())
     }
 
     /// Runs routed calls on a worker instead of inline (#1156 M2): the link thread only reads
@@ -719,6 +811,19 @@ impl<W: Write> Link<W> {
                 "Foxglove: the hub refused the registration: {}",
                 reason(&e)
             ))),
+            ("ui.register", Ok(result)) => {
+                if let Some(rejected) = result["rejected"].as_array().filter(|r| !r.is_empty()) {
+                    self.say(format!("Foxglove: the hub refused panels: {rejected:?}"));
+                }
+                Ok(Step::Nothing)
+            }
+            ("ui.register", Err(e)) => {
+                self.say(format!(
+                    "Foxglove: the hub refused the panels: {}",
+                    reason(&e)
+                ));
+                Ok(Step::Nothing)
+            }
             ("facts.set", Err(e)) => {
                 if e.code == code::DENIED {
                     // The grant went (or never was): stop, once. A later grant takes a restart.
@@ -947,6 +1052,8 @@ mod runner {
         Closed(u64),
         /// Changes are waiting in [`Pending`].
         Facts,
+        /// A page's guard stopped or retried: the panels say so.
+        Guard,
         /// The worker answered a routed call of connection `.0`.
         Reply(u64, super::Reply),
         /// A call worker of connection `.0` died: the connection ends.
@@ -984,6 +1091,11 @@ mod runner {
                     break;
                 }
             }
+        });
+        // The panels follow the page guard (P8): told by its change, never polled.
+        let gtx = tx.clone();
+        crate::foxglove::hub_panels::on_guard_change(move || {
+            let _ = gtx.send(Msg::Guard);
         });
         // Recorded while the hub's process is alive: a restarted hub must run this exact image.
         let mut hub = HubId {
@@ -1189,6 +1301,21 @@ mod runner {
                             return lost(e, live);
                         }
                     }
+                    if let Err(e) = link.refresh_panels(
+                        &facts.list(FACTS),
+                        crate::foxglove::hub_panels::Stopped::now(),
+                    ) {
+                        return lost(e, live);
+                    }
+                    Step::Nothing
+                }
+                Msg::Guard => {
+                    if let Err(e) = link.refresh_panels(
+                        &facts.list(FACTS),
+                        crate::foxglove::hub_panels::Stopped::now(),
+                    ) {
+                        return lost(e, live);
+                    }
                     Step::Nothing
                 }
                 _ => Step::Nothing, // a line of an older connection
@@ -1203,7 +1330,13 @@ mod runner {
                 Step::Ready => {
                     live = true;
                     crate::foxglove::app_log::line("Foxglove: registered with the hub as a module");
-                    if let Err(e) = link.snapshot(facts.list(FACTS)) {
+                    let all = facts.list(FACTS);
+                    if let Err(e) = link.snapshot(all.clone()) {
+                        return lost(e, live);
+                    }
+                    if let Err(e) =
+                        link.refresh_panels(&all, crate::foxglove::hub_panels::Stopped::now())
+                    {
                         return lost(e, live);
                     }
                 }

@@ -230,6 +230,10 @@ impl OverlayApp {
 
     pub fn ui(&mut self, ctx: &egui::Context, host: &mut dyn OverlayHost) {
         if self.settings_requested.swap(false, Ordering::Acquire) {
+            // The Hub's panel buttons (#1143 P8) ask for a page; the tray's ask for none.
+            if let Some(page) = crate::foxglove::settings_open::take_page() {
+                crate::foxglove::shell::set_page(page);
+            }
             self.open_settings(ctx);
         }
 

@@ -1,0 +1,2649 @@
+{
+  "actions": [],
+  "declared": [
+    "keyboard",
+    "lights",
+    "art",
+    "page"
+  ],
+  "module": "foxglove",
+  "name": "Foxglove",
+  "states": [
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Waiting for the keyboard"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Its state shows here once the keyboard reports it."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Waiting for the keyboard"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "The lights show here once the keyboard reports them."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "neutral",
+                  "value": "Waiting for the keyboard"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "The art shows here once the keyboard reports it."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-waiting",
+                    "props": {
+                      "text": "Its state shows here once the keyboard reports it."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-waiting",
+                    "props": {
+                      "text": "The lights show here once the keyboard reports them."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-waiting",
+                    "props": {
+                      "text": "The art shows here once the keyboard reports it."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Waiting for the keyboard"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Solid · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Orange"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Solid"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Connected"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over USB"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Battery shows once the keyboard reports it."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Solid · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Orange"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Kept on the keyboard"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over USB"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-battery",
+                    "props": {
+                      "text": "Battery shows once the keyboard reports it."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Solid"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Kept on the keyboard"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Connected over USB, no battery yet"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "Not connected"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Turn it on or plug it in."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "Not connected"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Turn it on or plug it in."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "Not connected"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Turn it on or plug it in."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-away",
+                    "props": {
+                      "text": "Not connected"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-away",
+                    "props": {
+                      "text": "Not connected"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-away",
+                    "props": {
+                      "text": "Not connected"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Not connected"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "Off"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "The keyboard's lights are off."
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-off",
+                    "props": {
+                      "text": "Lights: Off"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Lights off"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Solid · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Windows Dynamic Lighting is drawing them"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Solid"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-source",
+                    "props": {
+                      "text": "Windows Dynamic Lighting is drawing them"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Lights held by Windows"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Bandit scanline · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "A Foxglove scene is drawing them"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Bandit scanline"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Custom colour"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-source",
+                    "props": {
+                      "text": "A Foxglove scene is drawing them"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Lights held by a scene"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Spectrum · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Makes its own colours"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Spectrum"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: makes its own colours"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "Lights make their own colours"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ… · 100 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Orange"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ…"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 100 %",
+                      "max": 100,
+                      "value": 100
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "A long effect name at full brightness"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Solid · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Foxglove's page stopped working.",
+                  "tone": "attention"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Fox walk"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Solid"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-stopped",
+                    "props": {
+                      "text": "Foxglove's page stopped working.",
+                      "tone": "attention"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "Fox walk"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "A Foxglove page stopped"
+    },
+    {
+      "panels": [
+        {
+          "icon": "keyboard",
+          "id": "keyboard",
+          "slot": "tile",
+          "title": "Keyboard",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "Connected over Bluetooth"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Left 77 % · Right 91 %"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "lights",
+          "id": "lights",
+          "slot": "tile",
+          "title": "Keyboard lights",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "active",
+                  "value": "Solid · 80 %"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Orange"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "image",
+          "id": "art",
+          "slot": "tile",
+          "title": "Keyboard art",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "ok",
+                  "value": "ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ…"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Built-in set"
+                },
+                "type": "label"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "label": "Open Foxglove settings"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "keyboard",
+          "id": "page",
+          "slot": "page",
+          "title": "Foxglove",
+          "tree": {
+            "children": [
+              {
+                "id": "intro",
+                "props": {
+                  "text": "Your keyboard, its lights and its art, as the Foxglove app sees them."
+                },
+                "type": "label"
+              },
+              {
+                "children": [
+                  {
+                    "id": "keyboard-name",
+                    "props": {
+                      "text": "Eyelash Corne"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-link",
+                    "props": {
+                      "text": "Connected over Bluetooth, profile 2"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-layer",
+                    "props": {
+                      "text": "Layer GAME"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "keyboard-meter-left",
+                    "props": {
+                      "label": "Left battery 77 %",
+                      "max": 100,
+                      "value": 77
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "keyboard-meter-right",
+                    "props": {
+                      "label": "Right battery 91 %",
+                      "max": 100,
+                      "value": 91
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "go-keyboard",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "keyboard",
+                "props": {
+                  "title": "Keyboard"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "lights-effect",
+                    "props": {
+                      "text": "Effect: Solid"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "lights-meter-brightness",
+                    "props": {
+                      "label": "Brightness: 80 %",
+                      "max": 100,
+                      "value": 80
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "lights-colour",
+                    "props": {
+                      "text": "Colour: Orange"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-lights",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "lights",
+                "props": {
+                  "title": "Keyboard lights"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "art-name",
+                    "props": {
+                      "text": "ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ…"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "art-from",
+                    "props": {
+                      "text": "Built-in set"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "go-art",
+                    "props": {
+                      "label": "Open Foxglove settings"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "art",
+                "props": {
+                  "title": "Keyboard art"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "A long piece name"
+    }
+  ]
+}

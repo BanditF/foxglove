@@ -15,6 +15,13 @@
 //!   `keyboard.lighting.rainbow` (Bool, the effect makes its own colours), from the keyboard's
 //!   report of its lights (#40: the live feed gives them to the wallpaper)
 //!
+//! - For the Hub's Foxglove panels (P8, `hub_panels`): `keyboard.name` (Text, the board's profile
+//!   name), `keyboard.layer_name` (Text, the top layer's name as the wallpaper sync words it),
+//!   `keyboard.lighting.color_name` (Text, "Orange"; "Custom colour" for a scene's; none while the
+//!   effect makes its own colours), `keyboard.lighting.source` (Text, `keyboard`, `windows` or
+//!   `scene`: who draws the lights) and `keyboard.art.name` / `keyboard.art.from` (Text, the piece
+//!   on the right screen, `built_in`, `kept` or `sent`). All set on change and gone on a disconnect.
+//!
 //! While Windows Dynamic Lighting holds the keyboard and Foxglove draws through its own
 //! LampArray (#789, `lights_owner::through_windows`), the keyboard's report doesn't change, so
 //! the lighting facts follow what Foxglove draws instead ([`Sources`]): a running scene's look
@@ -55,6 +62,12 @@ pub fn start() {
                     foxglove_devices::Device::layers(&*d).and_then(|l| l.active().ok())
                 });
                 publish(facts, &connect_layers(known));
+                // The board's name and the piece on the screen were known before the keyboard
+                // counted as connected (and so were dropped): say them again.
+                board_changed();
+                if let Some(h) = super::art_service::handle() {
+                    art_changed(art_of(&h.snapshot()));
+                }
                 // One read when it connects; the firmware reports changes after that.
                 if let Some(info) = super::devices::device()
                     .and_then(|d| foxglove_devices::Device::power(&*d).and_then(|p| p.info().ok()))
@@ -142,6 +155,72 @@ pub(super) fn layers(facts: &Facts, active: &[u8], names: &[Option<String>]) {
         "keyboard.game_mode",
         Value::Bool(super::wallpaper_sync::game_mode(active, names)),
     );
+    match super::wallpaper_sync::layer_name(active, names) {
+        Some(name) => facts.set("keyboard.layer_name", Value::Text(name)),
+        None => {
+            facts.remove("keyboard.layer_name");
+        }
+    }
+}
+
+/// The layer names were stored again (a connect read them): the top layer's name follows.
+pub fn names_changed() {
+    let facts = super::devices::bus().facts();
+    if let Some(Value::Bytes(active)) = facts.get("keyboard.layers") {
+        layers(facts, &active, &super::layer_names::remembered());
+    }
+}
+
+/// The connected board's profile name as `keyboard.name` (gone with no profile, or while the
+/// keyboard is away).
+pub fn board_changed() {
+    let facts = super::devices::bus().facts();
+    let name = super::boards::current().map(|b| b.name);
+    set_name(facts, name.as_deref());
+}
+
+fn set_name(facts: &Facts, name: Option<&str>) {
+    let away = facts.get("keyboard.connected") != Some(Value::Bool(true));
+    match name.filter(|n| !n.is_empty() && !away) {
+        Some(n) => facts.set("keyboard.name", Value::Text(n.to_string())),
+        None => {
+            facts.remove("keyboard.name");
+        }
+    }
+}
+
+/// What the right screen shows (`art_service`, on each change of its state): the piece's name
+/// and where it comes from. Nothing while the keyboard is away or the screen shows something
+/// Foxglove can't name.
+pub fn art_changed(art: Option<(String, &'static str)>) {
+    let facts = super::devices::bus().facts();
+    set_art(facts, art.as_ref().map(|(n, f)| (n.as_str(), *f)));
+}
+
+/// The piece on the right screen and where it comes from, for [`art_changed`].
+pub fn art_of(s: &super::art_service::Snapshot) -> Option<(String, &'static str)> {
+    use super::art_words::{showing, Showing};
+    let from = match showing(&s.status?) {
+        Showing::BuiltIn(_) => "built_in",
+        Showing::Kept(_) => "kept",
+        Showing::Sent => "sent",
+        Showing::Other(_) => return None,
+    };
+    Some((super::art_pieces::showing_name(s), from))
+}
+
+fn set_art(facts: &Facts, art: Option<(&str, &str)>) {
+    let away = facts.get("keyboard.connected") != Some(Value::Bool(true));
+    match art.filter(|_| !away) {
+        Some((name, from)) => {
+            facts.set("keyboard.art.name", Value::Text(name.to_string()));
+            facts.set("keyboard.art.from", Value::Text(from.to_string()));
+        }
+        None => {
+            facts.remove("keyboard.art.name");
+            facts.remove("keyboard.art.from");
+        }
+    }
 }
 
 /// The lights as the facts give them: what [`lighting`] sets.
@@ -284,10 +363,23 @@ impl Sources {
         self.held = false;
     }
 
+    /// Who draws the lights now: `scene` (a running scene's look, through Windows), `windows`
+    /// (Foxglove draws through Windows Dynamic Lighting), or `keyboard` (its own report).
+    fn source(&self) -> &'static str {
+        match (self.held, self.scene.is_some()) {
+            (true, true) => "scene",
+            (true, false) => "windows",
+            (false, _) => "keyboard",
+        }
+    }
+
     /// Sets the facts to [`Sources::shown`]; only what changed is sent on.
     fn publish(&self, facts: &Facts) {
         if let Some(look) = self.shown() {
-            set_look(facts, &look);
+            let source = self.source();
+            // A scene's colour is its own, not one of the card's.
+            set_look_named(facts, &look, source == "scene");
+            facts.set("keyboard.lighting.source", Value::Text(source.into()));
         }
     }
 }
@@ -336,11 +428,12 @@ pub fn scene_ended() {
 /// The keyboard's lights as `keyboard.lighting.*` (tests: straight from a report).
 #[cfg(test)]
 fn lighting(facts: &Facts, state: &LightingState) {
-    set_look(facts, &Look::of(state));
+    set_look_named(facts, &Look::of(state), false);
 }
 
 /// `look` as `keyboard.lighting.*`. Only what changed is sent on, so a new colour is one change.
-fn set_look(facts: &Facts, look: &Look) {
+/// The colour is called "Custom colour" when `custom` (a scene's own colour).
+fn set_look_named(facts: &Facts, look: &Look, custom: bool) {
     let [r, g, b] = look.color;
     facts.set("keyboard.lighting.on", Value::Bool(look.on));
     facts.set(
@@ -353,6 +446,44 @@ fn set_look(facts: &Facts, look: &Look) {
     );
     facts.set("keyboard.lighting.effect", Value::Text(look.effect.clone()));
     facts.set("keyboard.lighting.rainbow", Value::Bool(look.rainbow));
+    if look.rainbow {
+        facts.remove("keyboard.lighting.color_name");
+    } else {
+        facts.set(
+            "keyboard.lighting.color_name",
+            Value::Text(if custom {
+                "Custom colour".into()
+            } else {
+                colour_words(look.color)
+            }),
+        );
+    }
+}
+
+/// A colour's plain name, capitalised: "Orange" (the words of the Keyboard card's colour).
+fn colour_words(rgb: [u8; 3]) -> String {
+    let [r, g, b] = rgb.map(|v| f32::from(v) / 255.0);
+    let max = r.max(g).max(b);
+    let d = max - r.min(g).min(b);
+    let sat = if max <= 0.0 { 0.0 } else { d / max };
+    let mut hue = if d <= 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * (((g - b) / d) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    if hue < 0.0 {
+        hue += 360.0;
+    }
+    let name = super::effect_controls::colour_name(hue.round() as u16, (sat * 100.0).round() as u8);
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -390,6 +521,71 @@ mod tests {
             },
         );
         assert_eq!(facts.get("keyboard.game_mode"), None);
+    }
+
+    /// P8: the board's name, the top layer's name and the screen's piece are facts while the
+    /// keyboard is there, say the same again (a restart's re-say), and go with a disconnect.
+    #[test]
+    fn name_layer_and_art_are_facts_that_clear_on_a_disconnect() {
+        let facts = Facts::default();
+        // Away: nothing is said.
+        set_name(&facts, Some("Eyelash Corne"));
+        set_art(&facts, Some(("Fox", "built_in")));
+        assert_eq!(facts.get("keyboard.name"), None);
+        assert_eq!(facts.get("keyboard.art.name"), None);
+        let mut s = Sources::default();
+        publish_with(&facts, &mut s, &DeviceEvent::Connected);
+        let names: Vec<Option<String>> = ["QWERTY", "NUMBER"]
+            .iter()
+            .map(|n| Some(n.to_string()))
+            .collect();
+        layers(&facts, &[0, 1], &names);
+        let say = |facts: &Facts| {
+            set_name(facts, Some("Eyelash Corne"));
+            set_art(facts, Some(("Fox", "built_in")));
+        };
+        say(&facts);
+        let text = |k: &str| facts.get(k);
+        assert_eq!(
+            text("keyboard.name"),
+            Some(Value::Text("Eyelash Corne".into()))
+        );
+        assert_eq!(
+            text("keyboard.layer_name"),
+            Some(Value::Text("NUMBER".into()))
+        );
+        assert_eq!(text("keyboard.art.name"), Some(Value::Text("Fox".into())));
+        assert_eq!(
+            text("keyboard.art.from"),
+            Some(Value::Text("built_in".into()))
+        );
+        // Restart parity: saying it all again changes nothing.
+        let changes = facts.subscribe("keyboard.*");
+        say(&facts);
+        layers(&facts, &[0, 1], &names);
+        assert_eq!(changes.try_iter().count(), 0);
+        // A piece the screen can't name takes both art facts away.
+        set_art(&facts, None);
+        assert_eq!(facts.get("keyboard.art.name"), None);
+        assert_eq!(facts.get("keyboard.art.from"), None);
+        say(&facts);
+        publish_with(
+            &facts,
+            &mut s,
+            &DeviceEvent::Disconnected {
+                reason: "unplugged".into(),
+            },
+        );
+        for k in [
+            "keyboard.name",
+            "keyboard.layer_name",
+            "keyboard.art.name",
+            "keyboard.art.from",
+            "keyboard.lighting.source",
+            "keyboard.lighting.color_name",
+        ] {
+            assert_eq!(facts.get(k), None, "{k}");
+        }
     }
 
     #[test]
@@ -531,7 +727,11 @@ mod tests {
         let changes = facts.subscribe("keyboard.*");
         lighting(&facts, &lights(120, 100, "0"));
         let got: Vec<_> = changes.try_iter().map(|c| c.key).collect();
-        assert_eq!(got, ["keyboard.lighting.color"]);
+        assert_eq!(
+            got,
+            ["keyboard.lighting.color", "keyboard.lighting.color_name"],
+            "the colour and the words for it"
+        );
         publish_with(
             &facts,
             &mut Sources::default(),
@@ -605,7 +805,11 @@ mod tests {
         let got: Vec<_> = changes.try_iter().map(|c| c.key).collect();
         assert_eq!(
             got,
-            ["keyboard.lighting.color", "keyboard.lighting.brightness"],
+            [
+                "keyboard.lighting.color",
+                "keyboard.lighting.brightness",
+                "keyboard.lighting.color_name"
+            ],
             "only what changed"
         );
         // Spectrum and Swirl make their own colours.

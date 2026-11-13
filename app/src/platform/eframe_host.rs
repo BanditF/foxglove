@@ -431,6 +431,19 @@ fn run_inner(
                                                                  // taskbar watch: the hub draws the one tray.
             let in_hub = crate::foxglove::hub_link::module_mode();
             let tray_icon = if in_hub {
+                // The hub's panels open Settings at a page (#1143 P8).
+                crate::foxglove::settings_open::set_hub_opener({
+                    let settings_requested = settings_requested.clone();
+                    let ui_wake = ui_wake.clone();
+                    Arc::new(move |page| {
+                        crate::foxglove::settings_open::want_page(page);
+                        crate::foxglove::settings_open::request(
+                            crate::foxglove::settings_open::Source::Hub,
+                            &settings_requested,
+                            &|| ui_wake.request_repaint(),
+                        );
+                    })
+                });
                 crate::tray::Tray::none()
             } else {
                 crate::tray::create_tray_icon({

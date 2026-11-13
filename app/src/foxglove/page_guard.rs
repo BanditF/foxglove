@@ -67,6 +67,7 @@ fn run(ui: &mut egui::Ui, key: &str, title: &str, compact: bool, body: impl FnOn
         eprintln!("Foxglove: {} stopped drawing: {}", d.title, d.reason);
         super::health::register("page_guard", health_rows);
         disabled().insert(key.to_string(), d.clone());
+        super::hub_panels::guard_changed(); // the Hub's panels say so (P8)
         ui.ctx().request_repaint();
         notice(ui, key, &d, compact);
     }
@@ -80,6 +81,7 @@ pub fn stopped(key: &str) -> bool {
 /// "Try again": draws it on the next frame.
 fn retry(ctx: &egui::Context, key: &str) {
     disabled().remove(key);
+    super::hub_panels::guard_changed();
     eprintln!("Foxglove: trying {key} again");
     ctx.request_repaint();
 }

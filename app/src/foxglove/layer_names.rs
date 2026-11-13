@@ -68,6 +68,9 @@ pub fn remember(new: &[Option<String>]) {
     if let Err(e) = super::store::section(STORE_OWNER, "layers").save(&Layers::from_names(new)) {
         eprintln!("Foxglove: can't save the layer names: {e}");
     }
+    drop(names);
+    // The Hub's Keyboard page words the layer by its name (P8).
+    super::keyboard_facts::names_changed();
 }
 
 /// The names from the last connection.
