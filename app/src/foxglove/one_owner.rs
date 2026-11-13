@@ -21,7 +21,8 @@ pub enum Coexistence {
     Alone,
     /// A verified `hideout.exe` serves the name: both programs are running.
     HubHasTheName { pid: u32 },
-    /// A server that is not `hideout.exe` is on the name: logged, ignored.
+    /// A server that did not verify as `hideout.exe` is on the name (another program, a
+    /// Test-lab app, or a process failing the identity checks): logged, ignored.
     Unverified { why: String },
 }
 
@@ -31,9 +32,10 @@ pub fn classify(p: &Probe) -> Coexistence {
         Probe::Free => Coexistence::Alone,
         Probe::Verified { pid, .. } => Coexistence::HubHasTheName { pid: *pid },
         Probe::Foreign { pid, why } => Coexistence::Unverified {
-            why: match pid {
-                Some(pid) => format!("pid {pid}: {why}"),
-                None => why.clone(),
+            // No pid in the log; `why` carries a file name, never a path.
+            why: {
+                let _ = pid;
+                why.clone()
             },
         },
     }
@@ -43,12 +45,12 @@ pub fn classify(p: &Probe) -> Coexistence {
 pub fn line(c: &Coexistence, pipe: &str) -> Option<String> {
     match c {
         Coexistence::Alone => None,
-        Coexistence::HubHasTheName { pid } => Some(format!(
-            "Foxglove: hideout.exe (pid {pid}) already serves {pipe}; both programs are running, \
+        Coexistence::HubHasTheName { .. } => Some(format!(
+            "Foxglove: hideout.exe already serves {pipe}; both programs are running, \
              so the local API is not available here until the hub lets go of the name"
         )),
         Coexistence::Unverified { why } => Some(format!(
-            "Foxglove: {pipe} is held by a server that is not hideout.exe ({why}); ignored"
+            "Foxglove: {pipe} is held by a server that did not verify as hideout.exe ({why}); ignored"
         )),
     }
 }
@@ -139,7 +141,7 @@ mod tests {
         assert!(app.starts_with("Local\\BanditF.Foxglove."));
         assert_ne!(app, "Local\\BanditF.Hideout.Hub");
         let (scoped, _) = super::super::single_instance::names_for_tests(Some(
-            std::ffi::OsStr::new("C:\test-scope"),
+            std::ffi::OsStr::new(r"C:\test-scope"),
         ));
         assert_ne!(scoped, app);
     }
