@@ -158,6 +158,12 @@ struct Expected {
     pid: u32,
     exe: PathBuf,
     sha256: String,
+    /// The canonical full path of the verified image (#1155-B); what a keyboard grant is
+    /// compared with.
+    canon: String,
+    /// The write-locked program file while the instance runs (#1155-B); `None` for one taken
+    /// back whose file could not be pinned.
+    pin: Option<Arc<crate::pin::Pin>>,
 }
 
 /// One running instance.
@@ -355,7 +361,37 @@ fn launch_check(
     if hash != want.sha256 {
         return Err(format!("exe hash of {} changed", image.display()));
     }
+    // The pinned handle is the file that was hashed and started: its bytes now must be the same.
+    if let Some(pin) = &want.pin {
+        match pin.rehash() {
+            Ok(h) if h == want.sha256 => {}
+            _ => return Err(format!("pinned exe of {} changed", image.display())),
+        }
+    }
     Ok(())
+}
+
+/// The verified image of the instance of `id` (#1155-B): its canonical path and SHA-256.
+fn identity_of(
+    expected: &Mutex<BTreeMap<String, Expected>>,
+    id: &str,
+    pid: Option<u32>,
+) -> Option<(String, String)> {
+    let e = expected.lock().unwrap();
+    let want = e.get(id)?;
+    (Some(want.pid) == pid && !want.canon.is_empty())
+        .then(|| (want.canon.clone(), want.sha256.clone()))
+}
+
+/// The keyboard grants of every module in `reg`, for the router.
+pub fn keyboard_grants(
+    reg: &Registry,
+) -> BTreeMap<String, hideout_registry::keyboard::KeyboardGrant> {
+    reg.inventory
+        .modules
+        .iter()
+        .filter_map(|(id, m)| m.keyboard.clone().map(|g| (id.clone(), g)))
+        .collect()
 }
 
 impl Supervisor {
@@ -382,7 +418,9 @@ impl Supervisor {
             lab: lab::LabState::default(),
         }));
         hub.act(|r| {
+            let seen = expected.clone();
             r.set_launch_check(Box::new(move |id, pid| launch_check(&expected, id, pid)));
+            r.set_identity_lookup(Box::new(move |id, pid| identity_of(&seen, id, pid)));
             Vec::new()
         });
         let safe = hub.read(|r| r.fact("hub.safe_mode").and_then(Value::as_bool)) == Some(true);
@@ -1270,6 +1308,39 @@ impl Supervisor {
     }
 
     /// The file check, then the exe in a new Job Object with the launch token (§7.5).
+    /// A recorded keyboard grant (#1155-B) that no longer matches the program about to start is
+    /// voided: never reset, never revived by putting the old file back. The router then closes
+    /// the areas at once.
+    fn check_keyboard(&self, id: &str, canon: &str, sha256: &str) {
+        let Ok(mut reg) = Registry::open_from_env(&self.0.home) else {
+            return;
+        };
+        let Some(g) = reg
+            .inventory
+            .modules
+            .get(id)
+            .and_then(|m| m.keyboard.clone())
+        else {
+            return;
+        };
+        if g.state != hideout_registry::keyboard::GrantState::On || g.allows(canon, sha256) {
+            return;
+        }
+        let reason = if hideout_registry::keyboard::same_path(&g.path, canon) {
+            hideout_registry::keyboard::VoidReason::Changed
+        } else {
+            hideout_registry::keyboard::VoidReason::Moved
+        };
+        match reg.void_keyboard(id, reason, &crate::now_utc()) {
+            Ok(()) => {
+                log::warn!("supervisor: {id}: the program changed; its keyboard grant is void");
+                let grants = keyboard_grants(&reg).into_iter().collect();
+                self.0.hub.act(|r| r.set_keyboard_grants(grants));
+            }
+            Err(e) => log::warn!("supervisor: {id}: grant not voided: {e:?}"),
+        }
+    }
+
     fn launch(&self, id: &str) -> Result<(), String> {
         let reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
         let l = reg.pre_launch(id).map_err(|e| match e.id() {
@@ -1296,7 +1367,12 @@ impl Supervisor {
         if !exe.exists() {
             return Err(format!("{NOT_INSTALLED}{}", exe.display()));
         }
-        let sha256 = sha256_file(&exe).map_err(|e| format!("{}: {e}", exe.display()))?;
+        // The program is pinned (write-locked) and hashed through that one handle, which stays
+        // open until the instance is gone (#1155-B).
+        let pin =
+            Arc::new(crate::pin::Pin::open(&exe).map_err(|e| format!("{}: {e}", exe.display()))?);
+        let sha256 = pin.sha256.clone();
+        self.check_keyboard(id, &pin.path, &sha256);
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
         let caps = self.caps_of(Some(&reg), id);
         let job = Arc::new(
@@ -1382,6 +1458,8 @@ impl Supervisor {
                 pid,
                 exe: exe.clone(),
                 sha256: sha256.clone(),
+                canon: pin.path.clone(),
+                pin: Some(pin.clone()),
             },
         );
         self.0.live.lock().unwrap().insert(
@@ -1511,6 +1589,11 @@ impl Supervisor {
                 pid: rec.pid,
                 exe: rec.exe.clone(),
                 sha256: rec.sha256.clone(),
+                canon: hideout_registry::keyboard::canonical_path(&rec.exe).unwrap_or_default(),
+                pin: crate::pin::Pin::open(&rec.exe)
+                    .ok()
+                    .filter(|p| p.sha256 == rec.sha256)
+                    .map(Arc::new),
             },
         );
         self.0.live.lock().unwrap().insert(

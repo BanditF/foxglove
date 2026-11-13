@@ -50,6 +50,16 @@ pub struct Installed {
     pub granted: Vec<String>,
     #[serde(default)]
     pub pending_permissions: Vec<String>,
+    /// The user's grant of the reserved areas to the adopted legacy module (#1155-B): path and
+    /// hash of its program at Allow. Only [`Registry::allow_keyboard`] writes `on`.
+    ///
+    /// [`Registry::allow_keyboard`]: crate::Registry::allow_keyboard
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::keyboard::lenient"
+    )]
+    pub keyboard: Option<crate::keyboard::KeyboardGrant>,
 }
 
 impl Installed {

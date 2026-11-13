@@ -73,6 +73,37 @@ impl HubConfig {
         }
     }
 
+    /// `[modules.<id>] keyboard = "declined"`: the user answered **Not now** to the legacy
+    /// grant's ask (#1155-B). A hub preference, never a grant; it only stops the ask coming
+    /// back by itself.
+    pub fn keyboard_declined(&self, id: &str) -> bool {
+        self.table
+            .get("modules")
+            .and_then(|m| m.get(id))
+            .and_then(|m| m.get("keyboard"))
+            .and_then(|v| v.as_str())
+            == Some("declined")
+    }
+
+    pub fn set_keyboard_declined(&mut self, id: &str, declined: bool) {
+        let modules = self
+            .table
+            .entry("modules")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(modules) = modules {
+            let m = modules
+                .entry(id)
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let toml::Value::Table(m) = m {
+                if declined {
+                    m.insert("keyboard".into(), toml::Value::String("declined".into()));
+                } else {
+                    m.remove("keyboard");
+                }
+            }
+        }
+    }
+
     /// The `safe_mode` flag (§7.10): the hub set it for itself after closing 3 times in 5
     /// minutes; **Start normally** clears it.
     pub fn safe_mode(&self) -> bool {

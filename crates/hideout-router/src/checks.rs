@@ -83,6 +83,21 @@ pub fn legacy_foxglove_ok(module: &str, pattern: &str) -> bool {
     module == LEGACY_FOXGLOVE_ID && LEGACY_FOXGLOVE_METHODS.contains(&pattern)
 }
 
+/// Words that make a method name one the keyboard grant never carries (#1155-B): nothing that
+/// resets, flashes, erases or re-bonds a device, or enters its bootloader, is routed to the
+/// legacy module through the grant, whatever area it lies in.
+pub const GRANT_NEVER: &[&str] = &["reset", "bootloader", "flash", "erase", "dfu", "bond"];
+
+/// Whether a method name or pattern has a [`GRANT_NEVER`] word as a part (split at anything that
+/// is not a letter or digit, so `devices.reset_all` and `devices.reset-all` both count; case
+/// ignored).
+pub fn never_name(method: &str) -> bool {
+    method
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| GRANT_NEVER.contains(&w) || w.starts_with("bootload"))
+}
+
 /// The first-party areas an adopted module may still provide when no catalog gives them to
 /// another module: Arete's hub is the GPU broker (§8.9). Every other first-party area is closed
 /// to it, with or without a root catalog (§6.3).

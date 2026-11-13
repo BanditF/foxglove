@@ -13,6 +13,9 @@
 pub mod drag;
 pub mod flyout;
 pub mod icon;
+pub mod keyboard_grant;
+#[cfg(windows)]
+pub mod keyboard_grant_ui;
 pub mod logfile;
 pub mod marks;
 pub mod palette;
