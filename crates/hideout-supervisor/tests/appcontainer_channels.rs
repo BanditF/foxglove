@@ -67,7 +67,10 @@ fn lab(name: &str, modules: &[Spec]) -> Lab {
         )
         .unwrap();
         reg.install(&folder, NOW).unwrap();
-        reg.approve(m.id).unwrap();
+        let list = reg.permission_list(m.id).unwrap();
+        let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+        reg.approve_listed(m.id, list.code(), &all, &[], NOW, "dialog")
+            .unwrap();
         reg.set_enabled(m.id, m.on).unwrap();
     }
     let toml = home.join("hideout.toml");

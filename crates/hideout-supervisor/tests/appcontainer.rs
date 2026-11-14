@@ -55,7 +55,10 @@ fn lab_home(id: &str, contain: bool) -> (PathBuf, PathBuf) {
     let mut reg = Registry::open(&home, true).unwrap();
     reg.install(&folder, NOW).unwrap();
     // The plan reads granted permissions: approve its device.hid as the dialog would.
-    reg.approve(id).unwrap();
+    let list = reg.permission_list(id).unwrap();
+    let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    reg.approve_listed(id, list.code(), &all, &[], NOW, "dialog")
+        .unwrap();
     reg.set_enabled(id, true).unwrap();
     if contain {
         let toml = home.join("hideout.toml");

@@ -12,7 +12,7 @@
 //!   (#1001, docs/hideout-lab.md).
 //!
 //! A signature proves where files came from and never grants a permission (§6.5): installing
-//! puts a module's permissions in `pending_permissions`, and only [`Registry::approve`] grants.
+//! puts a module's permissions in `pending_permissions`, and only [`Registry::approve_listed`] grants.
 //! Nothing here starts a process or opens a window.
 
 pub mod catalogs;
@@ -22,6 +22,7 @@ pub mod installed;
 pub mod inventory;
 pub mod keyboard;
 pub mod lab;
+pub mod permission;
 pub mod trust;
 
 use std::collections::BTreeMap;
@@ -30,7 +31,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use foxglove_plugin_trust::hash_dir;
-use hideout_contract::capability::Capability;
 use hideout_contract::config::Anchor;
 use hideout_contract::module::{read_dir, Context, Module, Visibility};
 use hideout_contract::{Error, ErrorId, Version};
@@ -167,14 +167,14 @@ pub struct Registry {
 }
 
 /// An adopted module's program: its absolute `run[0]`.
-fn adopted_exe(m: &Module) -> Result<PathBuf, Failure> {
+pub(crate) fn adopted_exe(m: &Module) -> Result<PathBuf, Failure> {
     match m.run.as_ref().and_then(|r| r.first()) {
         Some(r) => Ok(PathBuf::from(r)),
         None => Err(Error::new(ErrorId::ManifestRun, "run is required").into()),
     }
 }
 
-fn not_found(exe: &Path) -> io::Error {
+pub(crate) fn not_found(exe: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::NotFound,
         format!("{} was not found", exe.display()),
@@ -355,6 +355,9 @@ impl Registry {
                 previous: None,
                 granted: Vec::new(),
                 pending_permissions: Vec::new(),
+                declined_permissions: Vec::new(),
+                last_choice: Vec::new(),
+                bound: None,
                 keyboard: None,
             },
         );
@@ -410,6 +413,9 @@ impl Registry {
                 previous: None,
                 granted: Vec::new(),
                 pending_permissions: Vec::new(),
+                declined_permissions: Vec::new(),
+                last_choice: Vec::new(),
+                bound: None,
                 keyboard: None,
             },
         );
@@ -732,6 +738,15 @@ impl Registry {
             previous: previous.clone(),
             granted: old.as_ref().map(|o| o.granted.clone()).unwrap_or_default(),
             pending_permissions: Vec::new(),
+            declined_permissions: old
+                .as_ref()
+                .map(|o| o.declined_permissions.clone())
+                .unwrap_or_default(),
+            last_choice: old
+                .as_ref()
+                .map(|o| o.last_choice.clone())
+                .unwrap_or_default(),
+            bound: old.as_ref().and_then(|o| o.bound.clone()),
             // The grant is for the adopted legacy module only; a catalog install never has one.
             keyboard: None,
         };
@@ -803,6 +818,15 @@ impl Registry {
             previous: None,
             granted: old.as_ref().map(|o| o.granted.clone()).unwrap_or_default(),
             pending_permissions: Vec::new(),
+            declined_permissions: old
+                .as_ref()
+                .map(|o| o.declined_permissions.clone())
+                .unwrap_or_default(),
+            last_choice: old
+                .as_ref()
+                .map(|o| o.last_choice.clone())
+                .unwrap_or_default(),
+            bound: old.as_ref().and_then(|o| o.bound.clone()),
             // Registering again keeps the user's grant as it is: it is checked against the
             // program's path and hash at every launch, never carried by the id.
             keyboard: old.as_ref().and_then(|o| o.keyboard.clone()),
@@ -945,27 +969,6 @@ impl Registry {
         Ok(())
     }
 
-    /// The user approved the permission dialog (§6.4): the pending permissions are granted,
-    /// except never-list items, which are returned (`permission.never`).
-    pub fn approve(&mut self, id: &str) -> Result<Vec<Error>, Failure> {
-        let m = self
-            .inventory
-            .modules
-            .get(id)
-            .ok_or_else(|| Failure::NotInstalled(id.into()))?;
-        let asked: Vec<Capability> = m
-            .pending_permissions
-            .iter()
-            .map(|p| Capability::parse(p))
-            .collect::<Result<_, _>>()?;
-        let refused = self.inventory.grant(id, &asked).unwrap_or_default();
-        if let Some(m) = self.inventory.modules.get_mut(id) {
-            m.pending_permissions.clear();
-        }
-        self.save_inventory()?;
-        Ok(refused)
-    }
-
     /// Sets or clears `hideout.toml`'s `safe_mode` flag (§7.10) and saves the file.
     pub fn set_safe_mode(&mut self, on: bool) -> Result<(), Failure> {
         self.change_hub(|h| h.set_safe_mode(on))
@@ -1019,6 +1022,16 @@ impl Registry {
         if m.source == ADOPTED {
             // Path and version only (§7.4): no hashes; the version is checked at `initialize`.
             self.verify_adopted(id)?;
+            // A grant bound to another program file is void (#1178): not launched.
+            if let Some(why) = self.binding_void(id) {
+                return Err(Error::new(
+                    ErrorId::TrustMismatch,
+                    format!(
+                        "{id}: its program file is new or was moved since you allowed it ({why:?})"
+                    ),
+                )
+                .into());
+            }
             let manifest = self.read_manifest(&dir)?;
             return Ok(Launch {
                 id: id.into(),

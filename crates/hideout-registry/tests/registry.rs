@@ -164,23 +164,27 @@ fn grants_wait_for_approval_and_skip_the_never_list() {
         .collect();
     assert!(reg.inventory.ask(id_, &caps));
     assert!(reg.inventory.modules[id_].granted.is_empty());
+    reg.inventory.save(&home.join("inventory.json")).unwrap();
 
-    let refused = reg.approve(id_).unwrap();
-    assert_eq!(refused.len(), 1);
-    assert_eq!(refused[0].id(), "permission.never");
+    // Nothing is granted by asking; the user's Allow names the list it saw.
+    let list = reg.permission_list(id_).unwrap();
+    let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    let out = reg
+        .approve_listed(id_, list.code(), &all, &[], NOW, "dialog")
+        .unwrap();
+    assert_eq!(out.refused.len(), 1);
+    assert_eq!(out.refused[0].1.id(), "permission.never");
     let m = &reg.inventory.modules[id_];
     assert_eq!(m.granted, ["hub.notify", "ui.window"]);
     assert!(m.pending_permissions.is_empty());
 
-    // A reinstall (an update) keeps the grants and asks only for what's new.
+    // A reinstall (an update) whose manifest asks for nothing any more drops those grants (#1178:
+    // a grant never outlives the ask); what it still asks for would stay.
     reg.install(&vectors().join("folders/example.private.notes-0.1.0"), NOW)
         .unwrap();
     let again = Registry::open(&home, true).unwrap();
-    assert_eq!(
-        again.inventory.modules[id_].granted,
-        ["hub.notify", "ui.window"]
-    );
-    assert!(again.inventory.holds(id_, &caps[1]));
+    assert!(again.inventory.modules[id_].granted.is_empty());
+    assert!(!again.inventory.holds(id_, &caps[1]));
     let _ = std::fs::remove_dir_all(home);
 }
 

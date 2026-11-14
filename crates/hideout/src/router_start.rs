@@ -339,6 +339,14 @@ fn watch_inventory(
                 .collect();
             // The file can only narrow a grant; widening is the user's Allow or the hub's start.
             hub.act(|r| r.narrow_keyboard_grants(&grants));
+            // Every other grant the same way: effective = in memory ∩ file (#1178).
+            let files: std::collections::HashMap<String, Vec<String>> = reg
+                .inventory
+                .modules
+                .iter()
+                .map(|(k, m)| (k.clone(), m.granted.clone()))
+                .collect();
+            hub.act(|r| r.narrow_module_grants(&files));
             // Joined after the start (#1076): the router and the supervisor learn it, so an
             // enabled module starts now; the panel host gets its manifest. Taken from this read,
             // not from the watch's ids: those came from a read a moment earlier, which a write

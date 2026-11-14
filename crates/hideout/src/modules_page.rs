@@ -30,6 +30,8 @@ pub trait Actions {
     fn check_for_updates(&self, id: &str);
     /// Update ready's Force (§7.6).
     fn force_update(&self, id: &str);
+    /// Review on "Update waiting for you" after the user's Allow: the swap runs.
+    fn review(&self, _id: &str) {}
     /// The page Update Hideout opens for `id` (#991): its catalog's release page, else the
     /// releases page. `None`: the releases page.
     fn update_hideout_url(&self, _id: &str) -> Option<String> {
@@ -63,6 +65,9 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     fn force_update(&self, id: &str) {
         hideout_supervisor::driver::Supervisor::force_update(self, id)
     }
+    fn review(&self, id: &str) {
+        hideout_supervisor::driver::Supervisor::review(self, id)
+    }
     fn update_hideout_url(&self, id: &str) -> Option<String> {
         Some(hideout_supervisor::driver::Supervisor::update_hideout_url(
             self, id,
@@ -84,6 +89,8 @@ pub struct ModulesPage {
     pub fresh: Option<Fresh>,
     /// The keyboard grant's row, header line and dialog (#1155-B); `None` on a second hub.
     pub grant: Option<crate::keyboard_actions::GrantUi>,
+    /// The module permission dialog, header lines and sections (#1178); `None` on a second hub.
+    pub perm: Option<crate::permission_actions::PermUi>,
     restarts: hideout_shell::modules_list::Restarts,
 }
 
@@ -190,8 +197,15 @@ impl ModulesPage {
                     }
                     false
                 }
-                // The page's card has the new permission and Not now.
-                (Does::Review, _) => true,
+                // The permission dialog (§6.4) opens on the user's click; without a hub that
+                // holds the router there is none, and the module's page opens as before.
+                (Does::Review, _) => match self.perm.as_mut() {
+                    Some(p) => {
+                        p.open(&id, crate::permission_actions::Opener::Review);
+                        false
+                    }
+                    None => true,
+                },
                 (Does::Force, Some(a)) => {
                     a.force_update(&id);
                     false
@@ -230,6 +244,13 @@ impl ModulesPage {
                         }
                         false
                     }
+                    // Waiting for the user's OK: Turn on… opens the dialog (Allow then turns it on).
+                    Err(_) if self.perm.as_ref().is_some_and(|p| p.needs_ok(&id)) => {
+                        if let Some(p) = self.perm.as_mut() {
+                            p.open(&id, crate::permission_actions::Opener::TurnOn);
+                        }
+                        false
+                    }
                     Err(why) => {
                         log::warn!("Modules page: {id} not turned on ({why}); opening its page");
                         true
@@ -239,6 +260,36 @@ impl ModulesPage {
         };
         if let (true, Some(id)) = (open, id) {
             hideout_shell::open_module(&id);
+        }
+    }
+
+    /// What follows the user's Allow in the permission dialog: the module turns on (Turn on…,
+    /// a header's Review…) or its update swaps (Review…); Change… only records.
+    fn after_allow(&mut self, done: crate::permission_actions::Done) {
+        use crate::permission_actions::Then;
+        if let Some(g) = self.grant.as_mut() {
+            g.refresh();
+        }
+        let Some(a) = self.actions.as_deref() else {
+            return;
+        };
+        match done.then {
+            Then::TurnOn => match a.turn_on(&done.id) {
+                Ok(()) => {
+                    self.set_enabled(&done.id, true);
+                    if done.id == crate::keyboard_actions::MODULE {
+                        if let Some(g) = self.grant.as_mut() {
+                            g.after_turn_on();
+                        }
+                    }
+                }
+                Err(why) => log::warn!("Modules page: {} not turned on ({why})", done.id),
+            },
+            Then::Review => a.review(&done.id),
+            Then::Nothing => {}
+        }
+        if let Some(p) = self.perm.as_mut() {
+            p.refresh();
         }
     }
 
@@ -256,6 +307,9 @@ impl ModulesPage {
             self.installed = list;
             if let Some(g) = self.grant.as_mut() {
                 g.refresh();
+            }
+            if let Some(p) = self.perm.as_mut() {
+                p.refresh();
             }
         }
         let none = |_: &str| None;
@@ -365,6 +419,20 @@ impl hideout_shell::Page for ModulesPage {
         if let Some(g) = self.grant.as_mut() {
             g.sync(state);
         }
+        // A module's start voids a grant whose program changed: its state fact is the event
+        // that re-reads the permissions (no timer).
+        if let Some(p) = self.perm.as_mut() {
+            let states: Vec<Option<serde_json::Value>> = self
+                .installed
+                .iter()
+                .map(|m| {
+                    self.facts
+                        .as_ref()
+                        .and_then(|f| f(&format!("module.{}.state", m.id)))
+                })
+                .collect();
+            p.sync(states);
+        }
         let searching = self.finder.as_ref().is_some_and(|f| f.searching());
         let active = self.finder.as_ref().is_some_and(|f| f.active());
         let banner_shown = self.safe_mode() && !searching;
@@ -391,12 +459,17 @@ impl hideout_shell::Page for ModulesPage {
             locked: active,
         };
         let mut grant = self.grant.take();
+        let mut perm = self.perm.take();
         let clicked = page_ui_with_head(ui, t, &rows, top, &mut |ui| {
             if let Some(g) = grant.as_mut() {
                 g.top(ui, t);
             }
+            if let Some(p) = perm.as_mut() {
+                p.top(ui, t);
+            }
         });
         self.grant = grant;
+        self.perm = perm;
         if let Some(click) = clicked {
             if click == Click::CopyDiagnostics {
                 if let Some(f) = &self.finder {
@@ -409,6 +482,11 @@ impl hideout_shell::Page for ModulesPage {
         if let Some(g) = self.grant.as_mut() {
             g.dialog(ui.ctx(), t);
         }
+        // The module permission dialog: Allow records the grant, then the module turns on.
+        let done = self.perm.as_mut().and_then(|p| p.dialog(ui.ctx(), t));
+        if let Some(done) = done {
+            self.after_allow(done);
+        }
         // Only while a row counts down and the page is drawn (no frames while hidden).
         if counting {
             ui.ctx()
@@ -420,6 +498,7 @@ impl hideout_shell::Page for ModulesPage {
 /// The hub's pages, in sidebar order: only Modules. `facts` and `actions` are `None` on a
 /// second hub; `safe_by_closes` is [`ModulesPage::safe_by_closes`].
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 pub fn pages(
     installed: Vec<hideout_shell::modules_list::Installed>,
     facts: Option<Facts>,
@@ -428,6 +507,7 @@ pub fn pages(
     finder: Option<hideout_supervisor::finder::Finder>,
     fresh: Option<Fresh>,
     grant: Option<crate::keyboard_actions::GrantUi>,
+    perm: Option<crate::permission_actions::PermUi>,
 ) -> Vec<Box<dyn hideout_shell::Page>> {
     vec![Box::new(ModulesPage {
         installed,
@@ -437,6 +517,7 @@ pub fn pages(
         finder,
         fresh,
         grant,
+        perm,
         restarts: Default::default(),
     })]
 }
@@ -449,7 +530,7 @@ mod tests {
 
     #[test]
     fn the_hub_starts_with_only_the_modules_page() {
-        let pages = pages(Vec::new(), None, None, false, None, None, None);
+        let pages = pages(Vec::new(), None, None, false, None, None, None, None);
         assert_eq!(pages.len(), 1);
         assert_eq!((pages[0].id(), pages[0].title()), (ID, TITLE));
         assert_eq!(
@@ -481,6 +562,7 @@ mod tests {
             finder: None,
             fresh: None,
             grant: None,
+            perm: None,
             restarts: Default::default(),
         };
         let (rows, counting) = page.rows();
@@ -517,6 +599,7 @@ mod tests {
             fresh: Some(fresh.clone()),
             restarts: Default::default(),
             grant: None,
+            perm: None,
         };
         let ids = |page: &mut ModulesPage| -> Vec<String> {
             page.rows().0.into_iter().map(|r| r.id).collect()
@@ -613,6 +696,7 @@ mod tests {
             safe_by_closes: false,
             restarts: Default::default(),
             grant: None,
+            perm: None,
             finder: None,
             fresh: None,
         };
@@ -669,6 +753,7 @@ mod tests {
             safe_by_closes: false,
             restarts: Default::default(),
             grant: None,
+            perm: None,
             finder: None,
             fresh: None,
         };
@@ -721,6 +806,7 @@ mod tests {
             safe_by_closes: false,
             restarts: Default::default(),
             grant: None,
+            perm: None,
             finder: None,
             fresh: None,
         };
@@ -766,6 +852,7 @@ mod tests {
             finder: None,
             fresh: None,
             grant: None,
+            perm: None,
             restarts: Default::default(),
         };
         assert!(page.safe_mode());

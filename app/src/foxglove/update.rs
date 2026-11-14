@@ -7,11 +7,14 @@ struct State {
     busy: bool,
     message: String,
     available: Option<(Manifest, String)>,
+    /// The signed bytes of the manifest `available` came from (handed to the hub, #1179).
+    signed: Option<foxglove_update::Signed>,
 }
 static STATE: Mutex<State> = Mutex::new(State {
     busy: false,
     message: String::new(),
     available: None,
+    signed: None,
 });
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
@@ -150,8 +153,12 @@ fn check() {
                 return Err("Too many release pages".into());
             }
         }
-        let available =
-            foxglove_update::check(&Http, &releases, env!("CARGO_PKG_VERSION"), &key()?)?;
+        let found =
+            foxglove_update::check_signed(&Http, &releases, env!("CARGO_PKG_VERSION"), &key()?)?;
+        let (available, signed) = match found {
+            Some((m, page, signed)) => (Some((m, page)), Some(signed)),
+            None => (None, None),
+        };
         let mut s = state();
         s.message = if available.is_some() {
             "Update available"
@@ -160,6 +167,7 @@ fn check() {
         }
         .into();
         s.available = available;
+        s.signed = signed;
         Ok(())
     });
 }
@@ -261,6 +269,15 @@ pub fn group(ui: &mut egui::Ui) {
                     // In the hub's module mode the helper doesn't start a plain copy: the exit
                     // below is planned and the supervisor starts the module again (#1143 P7).
                     let module = super::hub_link::module_mode();
+                    // In module mode the hub keeps the permission grant across this update
+                    // if it can check the release's signature itself (#1179); a failure here
+                    // only means the grant is asked for again.
+                    if module {
+                        let signed = state().signed.clone();
+                        if let Some(signed) = signed {
+                            let _ = foxglove_update::handoff::write(&folder()?, &signed);
+                        }
+                    }
                     let mut cmd = std::process::Command::new(helper);
                     cmd.arg("--apply-update")
                         .arg(p)

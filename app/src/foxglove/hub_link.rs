@@ -88,8 +88,10 @@ const GRANT: &str = "facts.write:keyboard.*";
 /// hand-off (P9, [`super::features`]). Without it nothing is handed off and the module serves
 /// everything in [`SERVED`], as before.
 const GRANT_REGISTRY: &str = "facts.read:module.*";
-/// The Foxglove API this module's facts follow.
-const API: &str = "1.13";
+/// The Foxglove API this module serves: the plugin API's own version, so a client built for it
+/// (the CLI, the SDK) is not refused with code 7. A test keeps it, `module.toml` and the crate
+/// constant equal.
+const API: &str = "1.16";
 /// How long a lost hub is waited for (§7.9).
 const GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 

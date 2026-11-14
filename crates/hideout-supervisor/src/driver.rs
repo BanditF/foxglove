@@ -251,6 +251,9 @@ struct Inner {
     hub: Hub,
     policy: Mutex<Policy>,
     live: Mutex<BTreeMap<String, Live>>,
+    /// Jobs of ended instances that still hold processes: a child that outlives its module is
+    /// still a module process for the caller check (#1178), until the job is empty.
+    retired: Mutex<Vec<Arc<Job>>>,
     expected: Arc<Mutex<BTreeMap<String, Expected>>>,
     records: Mutex<Instances>,
     next_instance: AtomicU64,
@@ -404,6 +407,7 @@ impl Supervisor {
             hub: hub.clone(),
             policy: Mutex::new(Policy::new()),
             live: Mutex::new(BTreeMap::new()),
+            retired: Mutex::new(Vec::new()),
             expected: expected.clone(),
             records: Mutex::new(Instances::default()),
             next_instance: AtomicU64::new(unix_ms()),
@@ -948,17 +952,27 @@ impl Supervisor {
         });
     }
 
-    /// **Review** on Update waiting for you, after the user approved the permission dialog:
-    /// the grants are recorded (`inventory.json`), then the swap runs.
-    pub fn review_approved(&self, id: &str) -> Result<(), String> {
-        let never = Registry::open(&self.0.home, hideout_registry::dev_mode_from_env())
-            .map_err(|e| format!("{e:?}"))
-            .and_then(|mut r| r.approve(id).map_err(|e| format!("{e:?}")))?;
-        for e in never {
-            log::warn!("supervisor: {id}: not granted: {e}");
-        }
-        self.feed(Ev::Review { id: id.into() });
+    /// **Review** on Update waiting for you, after the user allowed in the permission dialog:
+    /// the grant for the list they saw (`list_code`) is recorded (`inventory.json`), then the
+    /// swap runs. A list that changed since the dialog opened is refused (`permission.list_changed`)
+    /// and nothing is written (#1178).
+    pub fn review_approved(
+        &self,
+        id: &str,
+        list_code: &str,
+        chosen: &[String],
+        declined: &[String],
+        by: &str,
+    ) -> Result<(), String> {
+        self.grant_listed(id, list_code, chosen, declined, by)?;
+        self.review(id);
         Ok(())
+    }
+
+    /// The swap on **Review** once the grant is recorded (the dialog's Allow already ran
+    /// `grant_listed_in`).
+    pub fn review(&self, id: &str) {
+        self.feed(Ev::Review { id: id.into() });
     }
 
     /// **Not now** on Update waiting for you or Update ready.
@@ -1011,6 +1025,73 @@ impl Supervisor {
         self.feed(Ev::Disable { id: id.into() });
     }
 
+    /// Whether process `pid` may not grant (#1178): it runs inside a module's Job Object (a
+    /// module or any child of one; breakaway is not allowed), or can't be inspected (fail
+    /// closed).
+    pub fn in_module_job(&self, pid: u32) -> bool {
+        let Ok(p) = Process::open(pid) else {
+            return true;
+        };
+        self.process_in_module_job(&p)
+    }
+
+    /// [`Supervisor::in_module_job`] for a process already opened (one handle for every check
+    /// on a caller). Looks at the live instances' jobs and at the retired ones that still hold
+    /// processes; empty retired jobs are dropped here.
+    pub fn process_in_module_job(&self, p: &Process) -> bool {
+        {
+            let mut retired = self.0.retired.lock().unwrap();
+            retired.retain(|j| j.active_processes().map_or(true, |n| n > 0));
+            if retired.iter().any(|j| j.holds(p).unwrap_or(true)) {
+                return true;
+            }
+        }
+        let live = self.0.live.lock().unwrap();
+        live.values()
+            .filter_map(|l| l.job.as_ref())
+            .any(|j| j.holds(p).unwrap_or(true))
+    }
+
+    /// Test hook: jobs kept after their instance ended.
+    pub fn retired_jobs(&self) -> usize {
+        self.0.retired.lock().unwrap().len()
+    }
+
+    /// [`grant_listed_in`] on this hub's folder and router.
+    pub fn grant_listed(
+        &self,
+        id: &str,
+        list_code: &str,
+        chosen: &[String],
+        declined: &[String],
+        by: &str,
+    ) -> Result<hideout_registry::permission::Outcome, String> {
+        grant_listed_in(
+            &self.0.home,
+            &self.0.hub,
+            id,
+            list_code,
+            chosen,
+            declined,
+            by,
+        )
+    }
+
+    /// The updater vouches for the program now installed for `id` (#1178): only with a
+    /// signature-checked release ([`crate::attest::Verified`]), no path, hub-side only.
+    pub fn attest_verified_update(
+        &self,
+        id: &str,
+        update: &crate::attest::Verified,
+    ) -> Result<(), String> {
+        crate::attest::attest_installed(&self.0.home, id, update)
+    }
+
+    /// [`revoke_items_in`] on this hub's folder and router.
+    pub fn revoke_items(&self, id: &str, items: Option<&[String]>) -> Result<Vec<String>, String> {
+        revoke_items_in(&self.0.home, &self.0.hub, id, items)
+    }
+
     /// **Turn on** from the Modules page: saved as on, then started as `enable` does (§7.4).
     /// A module with permissions still waiting for the permission dialog (§6.4) isn't turned
     /// on here: that dialog isn't built, so it answers why and the caller opens the module. In
@@ -1028,13 +1109,17 @@ impl Supervisor {
         let saved = Registry::open_from_env(&self.0.home)
             .map_err(|e| format!("{e:?}"))
             .and_then(|mut r| {
-                let pending = r
+                // A new or moved program file voids its grants first (#1178); then anything
+                // still waiting, or a void binding, sends the user to the dialog.
+                let _ = r.void_if_changed(id, &hideout_registry::catalogs::now_utc());
+                let waits = r
                     .inventory
                     .modules
                     .get(id)
-                    .is_some_and(|m| !m.pending_permissions.is_empty());
-                if pending {
-                    return Err("permissions wait for the permission dialog".into());
+                    .is_some_and(|m| !m.pending_permissions.is_empty())
+                    || r.binding_void(id).is_some();
+                if waits {
+                    return Err("Hideout needs your OK first. Press Turn on… to review.".into());
                 }
                 r.set_enabled(id, true).map_err(|e| format!("{e:?}"))
             });
@@ -1757,8 +1842,10 @@ fn withdrawn_lines(w: &Withdrawal) -> Vec<(String, String)> {
     v
 }
 
+/// Same file as Windows names it: either slash, case folded, no verbatim prefix (#1178: a
+/// `run[0]` written with forward slashes made the launch and owner check refuse).
 fn same_path(a: &Path, b: &Path) -> bool {
-    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    hideout_registry::keyboard::same_path(&a.to_string_lossy(), &b.to_string_lossy())
 }
 
 /// A started instance's process: a plain child, or one in an AppContainer.
@@ -1807,13 +1894,24 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
                     .and_then(|l| l.job.clone())
                     .filter(|j| j.active_processes().is_ok_and(|n| n > 0));
             }
-            live.remove(id);
+            if let Some(gone) = live.remove(id) {
+                if let Some(job) = gone
+                    .job
+                    .filter(|j| j.active_processes().is_ok_and(|n| n > 0))
+                {
+                    sup.0.retired.lock().unwrap().push(job);
+                }
+            }
             sup.0.expected.lock().unwrap().remove(id);
             sup.0.records.lock().unwrap().modules.remove(id);
         }
     }
     sup.save_records();
     log::info!("supervisor: {id} ended with {code}");
+    let planned = code == i64::from(crate::policy::PLANNED_EXIT_CODE);
+    if planned && helper_job.is_none() {
+        keep_grant_across_update(&sup, id, instance);
+    }
     sup.feed(Ev::Exited {
         id: id.into(),
         instance,
@@ -1831,11 +1929,35 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
         while Instant::now() < give_up && job.active_processes().is_ok_and(|n| n > 0) {
             std::thread::sleep(Duration::from_millis(100));
         }
+        // The installer has finished (or the wait gave up): the new program file is in place
+        // before the module starts again, so the grant is carried over first (#1179).
+        if planned {
+            keep_grant_across_update(&sup, id, instance);
+        }
         sup.feed(Ev::HelperDone {
             id: id.into(),
             instance,
         });
     }
+}
+
+/// #1179: after the legacy Foxglove module's planned exit, the updater's signed hand-off (if
+/// the app left one) lets the registry keep the module's permission grant for the new program.
+/// Only that module: another module's planned exit never reads the app's hand-off.
+fn keep_grant_across_update(sup: &Supervisor, id: &str, instance: u64) {
+    if id != hideout_registry::keyboard::LEGACY_MODULE {
+        return;
+    }
+    let (Some(dir), Some(key)) = (
+        foxglove_update::handoff::default_dir(),
+        crate::attest::update_key(),
+    ) else {
+        return;
+    };
+    // An instance id is the clock (ms) at its start: the hand-off must be newer than that
+    // (less a little slack for clock steps).
+    let started = std::time::UNIX_EPOCH + Duration::from_millis(instance.saturating_sub(5_000));
+    let _ = crate::attest::attest_from_handoff(&sup.0.home, &dir, id, &key, Some(started));
 }
 
 /// Sleeps until the policy's next deadline, or until nudged after any change.
@@ -1858,5 +1980,88 @@ fn timer(me: Weak<Inner>, wake: Receiver<()>) {
                 sup.run(cmds);
             }
         }
+    }
+}
+
+/// The user's Allow for the list with code `list_code` (the dialog, or the control pipe's
+/// handler after its caller check; nothing else calls this, #1178). Records the grant and
+/// binding in `inventory.json`, then widens the router to what the file now says. Items that
+/// can't be allowed come back as refused.
+pub fn grant_listed_in(
+    home: &Path,
+    hub: &Hub,
+    id: &str,
+    list_code: &str,
+    chosen: &[String],
+    declined: &[String],
+    by: &str,
+) -> Result<hideout_registry::permission::Outcome, String> {
+    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+        .map_err(|e| format!("{e:?}"))?;
+    let out = reg
+        .approve_listed(
+            id,
+            list_code,
+            chosen,
+            declined,
+            &hideout_registry::catalogs::now_utc(),
+            by,
+        )
+        .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))?;
+    for (item, e) in &out.refused {
+        log::warn!("supervisor: {id}: not granted: {item}: {e}");
+    }
+    log::info!(
+        "permissions: {id}: allowed {}, declined {}, refused {} by {by}; bound {}",
+        out.granted.len(),
+        out.declined.len(),
+        out.refused.len(),
+        out.bound_path
+    );
+    // Widens only by what this Allow granted: the router's own holdings plus `out.granted`,
+    // never the whole list read back from `inventory.json` (a file anyone running as the user
+    // can write). Narrowing to the file happens elsewhere (`narrow_module_grants`).
+    let new = out.granted.clone();
+    hub.act(|r| {
+        let mut now = r.module_grants(id);
+        now.extend(new);
+        now.sort();
+        now.dedup();
+        r.set_module_grants(id, now)
+    });
+    Ok(out)
+}
+
+/// Turn off: the router drops the items first (routes go, leases end `revoked`), then the file
+/// is written; a failed write is reported and never undoes the router's change. `None` turns
+/// every item off. Returns what is still allowed.
+pub fn revoke_items_in(
+    home: &Path,
+    hub: &Hub,
+    id: &str,
+    items: Option<&[String]>,
+) -> Result<Vec<String>, String> {
+    let owned = items.map(<[String]>::to_vec);
+    hub.act(|r| r.drop_module_grants(id, owned.as_deref()));
+    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+        .map_err(|e| format!("{e:?}"))?;
+    let left = reg.revoke_items(id, items).map_err(|e| format!("{e:?}"))?;
+    log::info!("permissions: {id}: turned off {items:?} by user");
+    Ok(left)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::same_path;
+    use std::path::Path;
+
+    #[test]
+    fn exe_paths_compare_by_place_not_spelling() {
+        let p = |a: &str, b: &str| same_path(Path::new(a), Path::new(b));
+        assert!(p("C:/Apps/Fox/fox.exe", r"c:\apps\fox\FOX.exe"));
+        assert!(p(r"\\?\C:\Apps\fox.exe", r"C:\Apps\fox.exe"));
+        assert!(p(r"\\?\UNC\h\s\f.exe", r"\\h\s\f.exe"));
+        assert!(!p(r"C:\Apps\fox.exe", r"C:\Other\fox.exe"));
+        assert!(!p("", ""));
     }
 }

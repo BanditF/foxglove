@@ -11,7 +11,7 @@ kind = "adopted"
 family = "foxglove"
 hub = "1.0"
 description = "The keyboard and its lights, until they are modules of their own."
-api = { foxglove = "1.13" }
+api = { foxglove = "1.16" }
 run = ["@EXE@", "--module"]
 provides = [
   "facts:keyboard.*",

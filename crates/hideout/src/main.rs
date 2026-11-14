@@ -16,6 +16,8 @@ mod adopt;
 #[cfg(windows)]
 mod catalog_fetch;
 #[cfg(windows)]
+mod control;
+#[cfg(windows)]
 mod https;
 #[cfg(windows)]
 mod inventory_watch;
@@ -26,6 +28,8 @@ mod lab_verbs;
 mod modules_page;
 #[cfg(windows)]
 mod panel_feed;
+#[cfg(windows)]
+mod permission_actions;
 #[cfg(windows)]
 mod router_start;
 mod settings_page;
@@ -264,6 +268,14 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
     if hideout_shell::lab_control::enabled(paths) {
         lab_verbs::register(supervisor.clone());
     }
+    if let Err(e) = control::serve(
+        &control::pipe_name(paths),
+        paths.root.clone(),
+        router.clone(),
+        supervisor.clone(),
+    ) {
+        log::warn!("control pipe not served: {e}");
+    }
     let hub = router.clone();
     let facts: modules_page::Facts = Box::new(move |k| hub.read(|r| r.fact(k).cloned()));
     let sup = supervisor.clone();
@@ -302,6 +314,9 @@ fn main() {
     if let Some(code) = lab_do_client(&paths, std::env::args_os().skip(1)) {
         std::process::exit(code);
     }
+    if let Some(code) = control::client(&paths, std::env::args_os().skip(1)) {
+        std::process::exit(code);
+    }
     if let Some(code) = adopt_client(&paths, std::env::args_os().skip(1)) {
         std::process::exit(code);
     }
@@ -334,6 +349,11 @@ fn main() {
             ._router
             .clone()
             .map(|h| keyboard_actions::GrantUi::new(&paths.root, h)),
+        // The module permission dialog, header lines and sections (#1178): same condition.
+        started
+            ._router
+            .clone()
+            .map(|h| permission_actions::PermUi::new(&paths.root, h)),
     );
     // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
     pages.push(Box::new(settings_page::SettingsPage::new(

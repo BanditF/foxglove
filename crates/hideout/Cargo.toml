@@ -17,6 +17,7 @@ hideout-router = { path = "../hideout-router" }
 hideout-services = { path = "../hideout-services" }
 hideout-shell = { path = "../hideout-shell" }
 hideout-supervisor = { path = "../hideout-supervisor" }
+foxglove-plugin = { path = "../plugin-sdk" }
 log = "0.4"
 serde_json = "1"
 
