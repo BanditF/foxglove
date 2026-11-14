@@ -65,6 +65,9 @@ Start only on the Planner's batch message or a wake you already have, with one
 if either blocks, say "deferred" once and stop, no retries. BelowNormal, time limit on everything,
 model unloaded after. Post at most 20 lines on the issue, relabel `local-review`. Never review your own output.
 
+## Session economy
+- Session economy (docs/agents.md, Models and sessions): restart at ~150k context with a state note; one session per issue, retries by SendMessage, check merged PRs before starting; Sonnet for engineers.
+
 ## Talking to the Hub
 - The Hub only sees what you send it with `SendMessage`. Send ONE line at each milestone: PR opened,
   merged, blocked, design note or report ready. No one-word interim replies.

@@ -1,6 +1,7 @@
 ---
 name: app-engineer
 description: Foxglove desktop app engineer. The PC app (app/, overlay, panel service, settings, installer) and the PC-side crates (foxglove-link, devices, via, plugin host, SDK, API) and plugins. Use for one app or crate issue ending in a PR.
+model: sonnet
 memory: user
 ---
 
