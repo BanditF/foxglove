@@ -534,3 +534,204 @@ impl PermUi {
         done
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hideout_router::{Router, Settings};
+    use std::sync::mpsc;
+
+    const NOW: &str = "2026-11-13T12:00:00Z";
+    const ID: &str = "vulpes";
+
+    fn manifest(exe: &Path, perms: &[&str]) -> String {
+        let run = exe.display().to_string().replace('\\', "/");
+        let perms: Vec<String> = perms.iter().map(|p| format!("\"{p}\"")).collect();
+        format!(
+            "id = \"{ID}\"\nname = \"Vulpes\"\nversion = \"1.0.0\"\nkind = \"adopted\"\n\
+             family = \"arete\"\nhub = \"1.0\"\nrun = ['{run}']\napi = {{ arete = \"1.0\" }}\n\
+             permissions = [{}]\n",
+            perms.join(", ")
+        )
+    }
+
+    struct Fx {
+        home: std::path::PathBuf,
+        exe: std::path::PathBuf,
+        folder: std::path::PathBuf,
+        ui: PermUi,
+    }
+
+    fn fx(tag: &str, perms: &[&str]) -> Fx {
+        let base = std::env::temp_dir().join(format!("hideout-pact-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let install = base.join("install");
+        std::fs::create_dir_all(&install).unwrap();
+        let exe = install.join("vulpes.exe");
+        std::fs::write(&exe, b"program v1").unwrap();
+        let folder = base.join("manifest");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("module.toml"), manifest(&exe, perms)).unwrap();
+        let home = base.join("home");
+        let mut reg = Registry::open(&home, false).unwrap();
+        reg.register_adopted(&folder, NOW).unwrap();
+        let router = Router::new(Settings::default(), Box::new(|_, asked| asked.to_vec()));
+        let (events, _rx) = mpsc::channel();
+        let ui = PermUi::new(&home, Hub::new(router, events));
+        Fx {
+            home,
+            exe,
+            folder,
+            ui,
+        }
+    }
+
+    fn view(f: &Fx) -> View {
+        Registry::open_from_env(&f.home)
+            .unwrap()
+            .permission_view(ID)
+            .unwrap()
+    }
+
+    fn allow_all(f: &mut Fx, how: Opener) -> Option<Done> {
+        f.ui.open(ID, how);
+        let a = f.ui.dialog.as_ref().unwrap().allowed();
+        f.ui.answer(PermAnswer::Allow(a))
+    }
+
+    #[test]
+    fn allow_records_the_shown_list_and_turn_on_follows_it() {
+        let mut f = fx("allow", &["hub.notify", "ui.window", "provide:a.read"]);
+        assert!(f.ui.needs_ok(ID));
+        f.ui.open(ID, Opener::TurnOn);
+        let d = f.ui.dialog.clone().unwrap();
+        assert_eq!(d.items.len(), 3);
+        assert!(
+            d.items.iter().all(|i| i.checked),
+            "normal items start checked"
+        );
+        // Not now writes nothing.
+        f.ui.answer(PermAnswer::NotNow);
+        assert!(f.ui.dialog.is_none());
+        assert!(view(&f).granted.is_empty());
+        let done = allow_all(&mut f, Opener::TurnOn).unwrap();
+        assert_eq!(done.then, Then::TurnOn);
+        assert_eq!(done.chosen.len(), 3);
+        assert_eq!(view(&f).granted.len(), 3);
+        assert!(!f.ui.needs_ok(ID));
+        // Review on an update waiting for the user lets the swap run; Change only records.
+        assert_eq!(Opener::Review.then(), Then::Review);
+        assert_eq!(Opener::Change.then(), Then::Nothing);
+    }
+
+    #[test]
+    fn a_list_that_changed_while_the_dialog_was_open_is_refused_and_reopens() {
+        let mut f = fx("changed", &["hub.notify", "ui.window"]);
+        f.ui.open(ID, Opener::TurnOn);
+        let shown = f.ui.dialog.clone().unwrap();
+        // The manifest asks for more while the dialog is open (a re-adopt).
+        std::fs::write(
+            f.folder.join("module.toml"),
+            manifest(&f.exe, &["hub.notify", "ui.window", "lighting.lease"]),
+        )
+        .unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&f.folder, NOW)
+            .unwrap();
+        let a = shown.allowed();
+        assert!(f.ui.answer(PermAnswer::Allow(a)).is_none());
+        // Nothing was allowed; the dialog is back with the new list and the reason on top.
+        assert!(view(&f).granted.is_empty());
+        let d = f.ui.dialog.clone().expect("reopened");
+        assert_eq!(d.reason, Some(Reason::ListChanged));
+        assert_eq!(d.items.len(), 3);
+        assert_ne!(d.code, shown.code);
+        assert_eq!(f.ui.opener, Some(Opener::TurnOn));
+        // Choosing again on the new list works.
+        let a = d.allowed();
+        assert!(f.ui.answer(PermAnswer::Allow(a)).is_some());
+        assert_eq!(view(&f).granted.len(), 3);
+    }
+
+    #[test]
+    fn a_voided_grant_goes_back_through_review_then_allow() {
+        let mut f = fx("void", &["hub.notify", "ui.window"]);
+        // Allow only one of the two.
+        f.ui.open(ID, Opener::TurnOn);
+        f.ui.dialog
+            .as_mut()
+            .unwrap()
+            .set_checked("ui.window", false);
+        let a = f.ui.dialog.as_ref().unwrap().allowed();
+        f.ui.answer(PermAnswer::Allow(a)).unwrap();
+        assert_eq!(view(&f).granted.len(), 1);
+        // The program file changes: the next launch voids the grant.
+        std::fs::write(&f.exe, b"program v2").unwrap();
+        Registry::open_from_env(&f.home)
+            .unwrap()
+            .void_if_changed(ID, NOW)
+            .unwrap();
+        f.ui.refresh();
+        let v = view(&f);
+        assert!(v.void.is_some() && v.granted.is_empty());
+        assert_eq!(header_kind(&v, false, false), Some(HeaderKind::Changed));
+        assert!(f.ui.needs_ok(ID));
+        // Review opens with the void line and the old choice as the default.
+        f.ui.open(ID, Opener::Header);
+        let d = f.ui.dialog.clone().unwrap();
+        assert_eq!(d.reason, Some(Reason::Void));
+        let checked: Vec<_> = d
+            .items
+            .iter()
+            .filter(|i| i.checked)
+            .map(|i| &i.raw[..])
+            .collect();
+        assert_eq!(checked, ["hub.notify"]);
+        let done = f.ui.answer(PermAnswer::Allow(d.allowed())).unwrap();
+        assert_eq!(done.then, Then::TurnOn);
+        let v = view(&f);
+        assert!(v.void.is_none());
+        assert_eq!(v.granted.len(), 1);
+        assert!(!f.ui.needs_ok(ID));
+    }
+
+    #[test]
+    fn turning_off_only_narrows_and_change_offers_it_again_through_the_full_dialog() {
+        let mut f = fx("narrow", &["hub.notify", "ui.window"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        f.ui.turn_off(ID, "ui.window");
+        let v = view(&f);
+        assert_eq!(
+            v.granted.iter().map(|i| &i.raw[..]).collect::<Vec<_>>(),
+            ["hub.notify"]
+        );
+        let s = section_for(ID, &v).unwrap();
+        let word = |raw: &str| s.items.iter().find(|i| i.raw == raw).unwrap().word;
+        assert_eq!(word("hub.notify"), ItemWord::Allowed);
+        assert_eq!(word("ui.window"), ItemWord::Off);
+        assert!(s.can_change);
+        assert!(s
+            .allowed_on
+            .as_deref()
+            .is_some_and(|l| l.starts_with("Allowed in Hideout on ")));
+        // Change… lists only what is off, unchecked; nothing widens without Allow.
+        f.ui.open(ID, Opener::Change);
+        let d = f.ui.dialog.clone().unwrap();
+        assert_eq!(d.items.len(), 1);
+        assert!(!d.items[0].checked);
+        assert!(f.ui.answer(PermAnswer::NotNow).is_none());
+        assert_eq!(view(&f).granted.len(), 1);
+        // An item that is not allowed can't be turned off; Turn all off empties the grant.
+        f.ui.turn_off(ID, "ui.window");
+        assert_eq!(view(&f).granted.len(), 1);
+        f.ui.turn_all_off(ID);
+        assert!(view(&f).granted.is_empty());
+    }
+
+    #[test]
+    fn dates_read_in_words() {
+        assert_eq!(date_words("2026-11-13T12:00:00Z"), "13 Nov 2026");
+        assert_eq!(date_words("later"), "later");
+    }
+}

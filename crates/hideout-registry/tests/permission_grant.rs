@@ -506,3 +506,53 @@ fn an_exe_path_written_with_forward_slashes_and_other_case_is_the_same_file() {
     assert!(reg.binding_void(ID).is_none());
     assert!(reg.pre_launch(ID).is_ok());
 }
+
+#[test]
+fn permission_view_reports_pending_granted_declined_void_and_last_choice() {
+    let mut f = fx("view", &["hub.notify", "ui.window", "provide:a.read"]);
+    // Before any answer: all pending, nothing bound, nothing void.
+    let v = f.reg.permission_view(ID).unwrap();
+    assert!(v.adopted);
+    assert_eq!(v.listing.items.len(), 3);
+    assert_eq!(v.pending.len(), 3);
+    assert!(v.granted.is_empty() && v.declined.is_empty() && v.last_choice.is_empty());
+    assert!(v.bound.is_none() && v.void.is_none());
+
+    // After Allow: granted lines carry text, the rest is declined; the binding is set.
+    let code = v.listing.code().to_string();
+    f.reg
+        .approve_listed(
+            ID,
+            &code,
+            &strs(&["hub.notify", "provide:a.read"]),
+            &strs(&["ui.window"]),
+            NOW,
+            "dialog",
+        )
+        .unwrap();
+    let v = f.reg.permission_view(ID).unwrap();
+    let raws: Vec<&str> = v.granted.iter().map(|i| i.raw.as_str()).collect();
+    assert_eq!(raws.len(), 2);
+    assert!(raws.contains(&"hub.notify") && raws.contains(&"provide:a.read"));
+    assert!(v.granted.iter().all(|i| !i.line.is_empty()));
+    assert_eq!(v.declined, ["ui.window"]);
+    assert!(v.pending.is_empty());
+    assert_eq!(v.bound.as_ref().unwrap().by, "dialog");
+    assert!(v.void.is_none());
+
+    // A new program file voids it: granted empties, last_choice remembers the choice.
+    std::fs::write(&f.exe, b"program v2").unwrap();
+    let v = f.reg.permission_view(ID).unwrap();
+    assert!(
+        v.void.is_some(),
+        "void is visible even before it is recorded"
+    );
+    f.reg.void_if_changed(ID, NOW).unwrap();
+    let v = f.reg.permission_view(ID).unwrap();
+    assert!(v.void.is_some());
+    assert!(v.granted.is_empty());
+    assert!(v.pending.contains(&"hub.notify".to_string()));
+    assert!(v.last_choice.contains(&"hub.notify".to_string()));
+    assert!(!v.last_choice.contains(&"ui.window".to_string()));
+    assert!(v.bound.as_ref().unwrap().void);
+}
