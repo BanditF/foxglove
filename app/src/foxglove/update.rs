@@ -153,12 +153,8 @@ fn check() {
                 return Err("Too many release pages".into());
             }
         }
-        let found = foxglove_update::check_signed(
-            &Http,
-            &releases,
-            env!("CARGO_PKG_VERSION"),
-            &key()?,
-        )?;
+        let found =
+            foxglove_update::check_signed(&Http, &releases, env!("CARGO_PKG_VERSION"), &key()?)?;
         let (available, signed) = match found {
             Some((m, page, signed)) => (Some((m, page)), Some(signed)),
             None => (None, None),
