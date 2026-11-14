@@ -3092,3 +3092,223 @@ fn renders_the_keyboard_grant_for_review() {
         }
     }
 }
+
+/// Review images of the module permission dialog (#1178): the pending list, the list that
+/// changed while it was open, a voided grant, and the granted state with its header line and
+/// Permissions section, both themes (`HIDEOUT_REVIEW_DIR`, files `built-permission-*.png`).
+#[test]
+fn renders_the_permission_dialog_for_review() {
+    use crate::permission_dialog::{
+        header, Group, HeaderKind, ItemWord, KeyboardChoice, ListItem, PermDialog, Reason, Section,
+        SectionItem,
+    };
+    use crate::permission_dialog_ui::{perm_dialog_ui, perm_header_ui, section_ui};
+
+    // The 13 `foxglove` lines, a sensitive one and one that can't be allowed.
+    let rows: [(&str, &str, Group); 13] = [
+        (
+            "facts.write:keyboard.*",
+            "Share your keyboard's status in Hideout",
+            Group::ShareStatus,
+        ),
+        (
+            "facts.read:module.*",
+            "See which modules are installed and running",
+            Group::ShareStatus,
+        ),
+        (
+            "provide:health.read",
+            "The keyboard's health report",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:lights.page",
+            "What the Lights page shows",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:scenes.page",
+            "Which scenes and wallpaper looks are listed",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:overlay.window",
+            "Where the layer overlay window is",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:overlay.shown",
+            "Whether the layer overlay is on",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:tray.panel",
+            "Whether the tray panel is open",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:pc_lighting.list",
+            "Your PC's lighting zones",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:overlay.restore",
+            "Bring the layer overlay back on screen",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:overlay.set_shown",
+            "Turn the layer overlay on or off",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:tray.set_panel",
+            "Open or close the tray panel",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:pc_lighting.set_zone",
+            "Change a PC lighting zone's colour",
+            Group::MakeChanges,
+        ),
+    ];
+    let dialog = |reason: Option<Reason>, extra: bool| {
+        let mut items: Vec<ListItem> = rows
+            .iter()
+            .map(|(raw, line, g)| ListItem {
+                raw: (*raw).into(),
+                line: (*line).into(),
+                group: *g,
+                allowable: true,
+                sensitive: false,
+                reason: None,
+                checked: true,
+                confirmed: false,
+            })
+            .collect();
+        if extra {
+            items.push(ListItem {
+                raw: "key.events".into(),
+                line: "See every key you press".into(),
+                group: Group::Sensitive,
+                allowable: true,
+                sensitive: true,
+                reason: None,
+                checked: false,
+                confirmed: false,
+            });
+            items.push(ListItem {
+                raw: "modules.manage".into(),
+                line: "Turn other modules on and off".into(),
+                group: Group::CantBeAllowed,
+                allowable: false,
+                sensitive: false,
+                reason: Some("Hideout never allows this for this module.".into()),
+                checked: false,
+                confirmed: false,
+            });
+        }
+        items.sort_by_key(|i| (i.group, i.raw.clone()));
+        PermDialog {
+            id: "foxglove".into(),
+            name: "Foxglove".into(),
+            code: "7f3a91c20b4e55d1".into(),
+            path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+            items,
+            reason,
+            keyboard: Some(KeyboardChoice {
+                on: false,
+                expanded: false,
+            }),
+            error: None,
+        }
+    };
+    let section = || Section {
+        id: "foxglove".into(),
+        name: "Foxglove".into(),
+        items: rows
+            .iter()
+            .enumerate()
+            .map(|(i, (raw, line, g))| SectionItem {
+                raw: (*raw).into(),
+                line: (*line).into(),
+                group: *g,
+                word: if i == 12 {
+                    ItemWord::Off
+                } else {
+                    ItemWord::Allowed
+                },
+            })
+            .chain([SectionItem {
+                raw: "modules.manage".into(),
+                line: "Turn other modules on and off".into(),
+                group: Group::CantBeAllowed,
+                word: ItemWord::CantBeAllowed,
+            }])
+            .collect(),
+        allowed_on: Some("Allowed in Hideout on 13 Nov 2026".into()),
+        history: vec!["Updated to 0.3.1 on 14 Nov 2026. Your OK stayed.".into()],
+        can_change: true,
+        note: Some("Foxglove can't share its status. Its tiles stay empty.".into()),
+    };
+    for (dark, name) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        for (tag, reason, extra) in [
+            ("pending", None, true),
+            ("list-changed", Some(Reason::ListChanged), false),
+            ("voided", Some(Reason::Void), false),
+        ] {
+            let mut d = dialog(reason, extra);
+            let (w, h) = (760u32, 1000u32);
+            let Some(rgba) = rasterise(w, h, |ctx| {
+                set_theme(ctx, choice);
+                ctx.style_mut(|s| s.animation_time = 0.0);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Modules").size(24.0).strong());
+                    let h = header(
+                        if reason == Some(Reason::Void) {
+                            HeaderKind::Changed
+                        } else {
+                            HeaderKind::Ask
+                        },
+                        "foxglove",
+                        "Foxglove",
+                        None,
+                    );
+                    perm_header_ui(ui, &t, &h);
+                });
+                perm_dialog_ui(ctx, &t, &mut d, true);
+            }) else {
+                eprintln!("no system font; render test skipped");
+                return;
+            };
+            save_png(&format!("built-permission-{tag}-{name}.png"), w, h, rgba);
+        }
+        // Granted: the CLI header line, then the section with one item off.
+        let (w, h) = (760u32, 760u32);
+        let s = section();
+        let hd = header(
+            HeaderKind::Cli,
+            "foxglove",
+            "Foxglove",
+            Some((12, "13 Nov 2026")),
+        );
+        let rgba = rasterise(w, h, |ctx| {
+            set_theme(ctx, choice);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label(egui::RichText::new("Modules").size(24.0).strong());
+                ui.add_space(8.0);
+                perm_header_ui(ui, &t, &hd);
+                ui.add_space(12.0);
+                section_ui(ui, &t, &s, true);
+            });
+        })
+        .unwrap();
+        save_png(&format!("built-permission-granted-{name}.png"), w, h, rgba);
+    }
+}
