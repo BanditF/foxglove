@@ -14,6 +14,7 @@ New-Item -ItemType Directory $tmp | Out-Null
 $ps = (Get-Command powershell).Source
 $env:FOXGLOVE_OPS_DIR = Join-Path $tmp 'ops'
 $env:LQ_DIR = $tmp
+$env:LQ_SERVER_UP = '0'   # never probe the real LM Studio port (a pilot may have left it up)
 try {
     # --- stubs ---
     $stub = Join-Path $tmp 'stub'; New-Item -ItemType Directory $stub | Out-Null
@@ -143,7 +144,7 @@ switch ($env:LQ_LLM) {
     Check 'wrapper failure: exit 1, no comment, no label' ($code -eq 1 -and $out -match 'failed 1' -and -not ((Read-Log 'gh.log') -match 'comment|edit'))
 }
 finally {
-    Remove-Item Env:FOXGLOVE_OPS_DIR, Env:LQ_DIR, Env:LQ_GAME_AT, Env:LQ_LLM -ErrorAction SilentlyContinue
+    Remove-Item Env:FOXGLOVE_OPS_DIR, Env:LQ_DIR, Env:LQ_GAME_AT, Env:LQ_LLM, Env:LQ_SERVER_UP -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
 if ($fails) { Write-Host "$fails local-queue test(s) failed"; exit 1 }

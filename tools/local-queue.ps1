@@ -141,6 +141,7 @@ function Invoke-Hard([string]$File, [string[]]$Arguments, [int]$TimeoutSec) {
 }
 
 function Test-ServerUp {
+    if ($env:LQ_SERVER_UP) { return $env:LQ_SERVER_UP -eq '1' }   # tests pin it: the real port may be up (pilot TTL leaves it)
     try { Invoke-RestMethod 'http://127.0.0.1:1234/v1/models' -TimeoutSec 2 | Out-Null; $true } catch { $false }
 }
 
