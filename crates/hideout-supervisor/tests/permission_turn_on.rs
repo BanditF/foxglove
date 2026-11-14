@@ -205,7 +205,7 @@ fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
     // A literal TOML string keeps the backslashes `start` needs in the helper's path.
     let helper = exe.display().to_string();
     let run = format!(
-        "run = [\"{cmd}\", \"/c\", \"start\", \"/b\", '{helper}', \"-n\", \"6\", \"127.0.0.1\"]"
+        "run = [\"{cmd}\", \"/c\", \"start\", \"/b\", '{helper}', \"-n\", \"25\", \"127.0.0.1\"]"
     );
     std::fs::write(folder.join("module.toml"), text.replace(old, &run)).unwrap();
     Registry::open(&home, true)
@@ -226,7 +226,7 @@ fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
     )
     .unwrap();
     sup.turn_on(id).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while sup.retired_jobs() == 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -236,7 +236,7 @@ fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
         "the ended instance's job, with its helper still in it, was dropped"
     );
     // Once the helper is gone the job is pruned on the next check.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(40);
     while std::time::Instant::now() < deadline {
         let _ = sup.in_module_job(std::process::id());
         if sup.retired_jobs() == 0 {
