@@ -498,6 +498,7 @@ impl hideout_shell::Page for ModulesPage {
 /// The hub's pages, in sidebar order: only Modules. `facts` and `actions` are `None` on a
 /// second hub; `safe_by_closes` is [`ModulesPage::safe_by_closes`].
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 pub fn pages(
     installed: Vec<hideout_shell::modules_list::Installed>,
     facts: Option<Facts>,
