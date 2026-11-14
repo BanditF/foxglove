@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::marks::Marks;
-use crate::modules_list::{page_ui, row_in, Does, Installed, Row};
+use crate::modules_list::{page_ui, row_in, Click, Does, Installed, Row};
 
 const LINK: &str = "mod.link";
 
@@ -641,10 +641,10 @@ fn the_modules_rows_say_each_state() {
     assert!(r.primary.is_none());
 }
 
-/// The Modules row's Review is greyed with "Comes in a later Hideout." as on the page, and a
-/// click on it asks nothing (designer review of #1093).
+/// The Modules row's Review is a live button (#1178): a click on it asks the page for the
+/// permission dialog. (The module page's own update line stays greyed until its wiring.)
 #[test]
-fn the_modules_rows_review_is_greyed() {
+fn the_modules_rows_review_is_live_and_asks_for_the_dialog() {
     let ctx = ctx();
     ctx.enable_accesskit();
     let rows = state_rows();
@@ -686,9 +686,13 @@ fn the_modules_rows_review_is_greyed() {
         .find(|(_, n)| n.label() == Some("Review"))
         .map(|(_, n)| n.clone())
         .expect("Review in the tree");
-    assert!(review.is_disabled());
-    assert_eq!(review.description(), Some(words::COMES_LATER));
-    assert!(clicks.is_empty(), "a greyed Review clicked: {clicks:?}");
+    assert!(!review.is_disabled());
+    assert_eq!(review.description(), None);
+    assert_eq!(
+        clicks,
+        [Click::Primary("m.fern".into(), Does::Review)],
+        "Review asks the page for the dialog"
+    );
 }
 
 fn tray_for(states: &[(&str, &str)]) -> Marks {

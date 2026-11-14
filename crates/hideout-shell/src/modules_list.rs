@@ -57,8 +57,8 @@ pub enum Does {
     GoTo,
     /// Update ready (`update-busy`, §7.6): Force.
     Force,
-    /// Update waiting for you (`update-waiting`): Review, drawn greyed with "Comes in a later
-    /// Hideout." until the permission dialog is built.
+    /// Update waiting for you (`update-waiting`): Review, which opens the permission dialog
+    /// (#1178) on the user's click.
     Review,
 }
 
@@ -554,16 +554,7 @@ pub fn page_ui_with_head(
                             if b.clicked() {
                                 click = Some(Click::Open(r.id.clone()));
                             }
-                            if let Some(p) = r.primary.as_ref().filter(|p| p.does == Does::Review) {
-                                // The permission dialog (§6.4) isn't built: greyed as on the
-                                // page's line, with the same words (designer review of #1093).
-                                let b = ui
-                                    .add_enabled(false, egui::Button::new(&p.label))
-                                    .on_disabled_hover_text(words::COMES_LATER);
-                                ui.ctx().accesskit_node_builder(b.id, |n| {
-                                    n.set_description(words::COMES_LATER)
-                                });
-                            } else if let Some(p) = &r.primary {
+                            if let Some(p) = &r.primary {
                                 let locked = top.locked && toggles(p.does);
                                 let (fg, bg) = if locked {
                                     (t.text_muted, t.surface)

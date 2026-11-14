@@ -29,6 +29,8 @@ mod modules_page;
 #[cfg(windows)]
 mod panel_feed;
 #[cfg(windows)]
+mod permission_actions;
+#[cfg(windows)]
 mod router_start;
 mod settings_page;
 
@@ -347,6 +349,11 @@ fn main() {
             ._router
             .clone()
             .map(|h| keyboard_actions::GrantUi::new(&paths.root, h)),
+        // The module permission dialog, header lines and sections (#1178): same condition.
+        started
+            ._router
+            .clone()
+            .map(|h| permission_actions::PermUi::new(&paths.root, h)),
     );
     // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
     pages.push(Box::new(settings_page::SettingsPage::new(

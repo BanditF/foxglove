@@ -961,8 +961,14 @@ impl Supervisor {
         by: &str,
     ) -> Result<(), String> {
         self.grant_listed(id, list_code, chosen, declined, by)?;
-        self.feed(Ev::Review { id: id.into() });
+        self.review(id);
         Ok(())
+    }
+
+    /// The swap on **Review** once the grant is recorded (the dialog's Allow already ran
+    /// `grant_listed_in`).
+    pub fn review(&self, id: &str) {
+        self.feed(Ev::Review { id: id.into() });
     }
 
     /// **Not now** on Update waiting for you or Update ready.
