@@ -37,7 +37,11 @@ fn home(name: &str, exe_in: Option<&Path>) -> (PathBuf, PathBuf, String) {
     std::fs::create_dir_all(&folder).unwrap();
     let exe = install.join("prog.exe");
     std::fs::write(&exe, b"program v1").unwrap();
-    let run = exe_in.unwrap_or(&exe).display().to_string().replace('\\', "/");
+    let run = exe_in
+        .unwrap_or(&exe)
+        .display()
+        .to_string()
+        .replace('\\', "/");
     std::fs::write(
         folder.join("module.toml"),
         format!(
@@ -119,8 +123,15 @@ fn another_folder_or_a_void_grant_is_refused_and_changes_nothing() {
     std::fs::write(&exe2, b"program v1").unwrap();
     let folder = home_a.parent().unwrap().join("manifest");
     let text = std::fs::read_to_string(folder.join("module.toml")).unwrap();
-    let old = text.lines().find(|l| l.starts_with("run")).unwrap().to_string();
-    let new = format!("run = [\"{}\"]", exe2.display().to_string().replace('\\', "/"));
+    let old = text
+        .lines()
+        .find(|l| l.starts_with("run"))
+        .unwrap()
+        .to_string();
+    let new = format!(
+        "run = [\"{}\"]",
+        exe2.display().to_string().replace('\\', "/")
+    );
     std::fs::write(folder.join("module.toml"), text.replace(&old, &new)).unwrap();
     Registry::open(&home_a, true)
         .unwrap()

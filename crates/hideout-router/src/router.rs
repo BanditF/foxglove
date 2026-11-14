@@ -902,7 +902,10 @@ impl Router {
 
     /// What module `id` holds in memory.
     pub fn module_grants(&self, id: &str) -> Vec<String> {
-        self.modules.get(id).map(|e| e.granted.clone()).unwrap_or_default()
+        self.modules
+            .get(id)
+            .map(|e| e.granted.clone())
+            .unwrap_or_default()
     }
 
     /// Routes, fact ownership and leases follow the grants now in memory.

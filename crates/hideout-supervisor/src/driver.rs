@@ -1037,7 +1037,15 @@ impl Supervisor {
         declined: &[String],
         by: &str,
     ) -> Result<hideout_registry::permission::Outcome, String> {
-        grant_listed_in(&self.0.home, &self.0.hub, id, list_code, chosen, declined, by)
+        grant_listed_in(
+            &self.0.home,
+            &self.0.hub,
+            id,
+            list_code,
+            chosen,
+            declined,
+            by,
+        )
     }
 
     /// The updater vouches for the program now installed for `id` (#1178): only with a

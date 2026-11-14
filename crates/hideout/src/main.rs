@@ -14,9 +14,9 @@
 #[cfg(windows)]
 mod adopt;
 #[cfg(windows)]
-mod control;
-#[cfg(windows)]
 mod catalog_fetch;
+#[cfg(windows)]
+mod control;
 #[cfg(windows)]
 mod https;
 #[cfg(windows)]
