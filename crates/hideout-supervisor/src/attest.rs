@@ -47,3 +47,74 @@ pub fn attest_installed(home: &Path, id: &str, update: &Verified) -> Result<(), 
     )
     .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))
 }
+
+/// The update key the app's updater checks with; the hub checks the same release signature.
+/// A build without the real key (a placeholder) can't attest, and says so in the log.
+pub fn update_key() -> Option<foxglove_update::PublicKey> {
+    foxglove_update::public_key(include_str!("../../../app/resources/update-key.pub")).ok()
+}
+
+/// After the legacy Foxglove module's planned exit for an update install (#1179): takes the
+/// updater's hand-off from `dir`, checks its signature against `key` here (the file is only a
+/// carrier; a module that can write it can't sign), and attests the program now at `run[0]`.
+///
+/// Guards: the file is used once and only while fresh; the release must be newer than any
+/// version already attested for this module (a captured old release can't be replayed); and
+/// `attest_installed` still insists on a bound, not void grant and the same install folder.
+/// Returns the attested version, or `None` when there was nothing usable (logged).
+pub fn attest_from_handoff(
+    home: &Path,
+    dir: &Path,
+    id: &str,
+    key: &foxglove_update::PublicKey,
+) -> Option<String> {
+    let signed = foxglove_update::handoff::take(dir, std::time::SystemTime::now())?;
+    let v = match Verified::from_signed(&signed.json, &signed.sig, key) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("supervisor: {id}: update hand-off ignored: {e}");
+            return None;
+        }
+    };
+    let newest_attested = Registry::open(home, hideout_registry::dev_mode_from_env())
+        .ok()
+        .and_then(|r| {
+            r.inventory
+                .modules
+                .get(id)?
+                .bound
+                .as_ref()?
+                .attested
+                .iter()
+                .filter_map(|a| semver_triple(&a.version))
+                .max()
+        });
+    if let (Some(old), Some(new)) = (newest_attested, semver_triple(&v.version)) {
+        if new <= old {
+            log::warn!(
+                "supervisor: {id}: update hand-off ignored: {} is not newer than an attested release",
+                v.version
+            );
+            return None;
+        }
+    }
+    match attest_installed(home, id, &v) {
+        Ok(()) => {
+            log::info!(
+                "supervisor: {id}: grant kept across the update to {}",
+                v.version
+            );
+            Some(v.version)
+        }
+        Err(e) => {
+            log::warn!("supervisor: {id}: update not attested ({e}); the change voids as before");
+            None
+        }
+    }
+}
+
+fn semver_triple(v: &str) -> Option<(u64, u64, u64)> {
+    let core = v.split(['-', '+']).next()?;
+    let mut it = core.split('.').map(|p| p.parse::<u64>().ok());
+    Some((it.next()??, it.next()??, it.next()??))
+}

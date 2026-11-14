@@ -158,3 +158,82 @@ fn another_folder_or_a_void_grant_is_refused_and_changes_nothing() {
     let _ = std::fs::remove_dir_all(home_b.parent().unwrap());
     let _ = std::fs::remove_dir_all(other);
 }
+
+fn handoff_dir(home: &Path) -> PathBuf {
+    let d = home.parent().unwrap().join("updates");
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn write_handoff(dir: &Path, version: &str, seed: u8) -> [u8; 32] {
+    let (json, sig, key) = signed(version, seed);
+    foxglove_update::handoff::write(dir, &foxglove_update::Signed { json, sig }).unwrap();
+    key
+}
+
+#[test]
+fn the_updaters_handoff_keeps_the_grant_once_and_only_when_signed_and_newer() {
+    let (home, exe, id) = home("handoff", None);
+    let sup = sup(&home);
+    allow(&sup, &home, &id);
+    let dir = handoff_dir(&home);
+
+    // A hand-off signed by another key is dropped and consumed; nothing is attested.
+    std::fs::write(&exe, b"program v2").unwrap();
+    let _ = write_handoff(&dir, "1.1.0", 8);
+    let key = signed("1.1.0", 7).2;
+    assert!(
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).is_none(),
+        "a signature from another key is not accepted"
+    );
+    assert!(!dir.join(foxglove_update::handoff::FILE).exists());
+
+    // The real key's release is attested, once; the file is gone afterwards.
+    let _ = write_handoff(&dir, "1.1.0", 7);
+    assert_eq!(
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).as_deref(),
+        Some("1.1.0")
+    );
+    assert!(hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).is_none());
+    let reg = Registry::open_from_env(&home).unwrap();
+    let m = &reg.inventory.modules[&id];
+    assert_eq!(m.granted, ["hub.notify"]);
+    assert_eq!(m.bound.as_ref().unwrap().attested[0].by, "updater");
+
+    // The same release again, with the program changed once more, is a replay: refused.
+    std::fs::write(&exe, b"program v3").unwrap();
+    let _ = write_handoff(&dir, "1.1.0", 7);
+    assert!(hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).is_none());
+    let reg = Registry::open_from_env(&home).unwrap();
+    assert_eq!(
+        reg.inventory.modules[&id]
+            .bound
+            .as_ref()
+            .unwrap()
+            .attested
+            .len(),
+        1
+    );
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+#[test]
+fn a_stale_handoff_is_not_used() {
+    let (home, exe, id) = home("stale", None);
+    let sup = sup(&home);
+    allow(&sup, &home, &id);
+    let dir = handoff_dir(&home);
+    std::fs::write(&exe, b"program v2").unwrap();
+    let key = write_handoff(&dir, "1.1.0", 7);
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
+    std::fs::File::options()
+        .write(true)
+        .open(dir.join(foxglove_update::handoff::FILE))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    assert!(hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).is_none());
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}

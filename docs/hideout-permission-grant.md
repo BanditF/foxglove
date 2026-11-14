@@ -40,7 +40,20 @@ and Permissions section are **not built yet**; this page records what they must 
 
 - The attestation history in the section, the "Waits for your OK" row wording, and the Review
   button on the module page's own update line (still greyed).
-- Handing the signed `latest.json` and its signature from the app's updater to the hub after a
-  successful install, so the hub calls `attest_verified_update` (today the hook exists and is tested;
-  nothing in the shipped updater sends it yet, so an update still voids until then).
 - Signer-bound grants (#383 / row D), the tightening of contract section 6.4.
+
+## The updater's hand-off (built)
+
+The app can't call the hub to attest (it runs inside the module's Job Object, and the control
+pipe and router refuse that). Instead, before an install in module mode, `update.rs` leaves the
+verified release's `latest.json` and `latest.json.sig` in `%LOCALAPPDATA%/Foxglove/updates/attest-handoff.json`
+(`foxglove_update::handoff`). The file is only a carrier. After the legacy `foxglove` module's
+planned exit, once the installer helper has finished and before the restart, the supervisor
+(`attest::attest_from_handoff`) takes the file (read once, deleted, ignored when older than an hour),
+checks the Ed25519 signature itself with the update key, requires the release to be newer than any
+version already attested for the module, and calls `attest_installed`, which still needs a bound,
+not void grant and the same install folder. Any other module's planned exit never reads it. A failure
+anywhere means the change voids at the next check as before (the user is asked again).
+
+Known limit: this proves "a signed release was installed by the updater", not that the file on disk is
+that release's file (the hash isn't in `latest.json`); the signer-bound grant below closes that.

@@ -1878,6 +1878,10 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
     }
     sup.save_records();
     log::info!("supervisor: {id} ended with {code}");
+    let planned = code == i64::from(crate::policy::PLANNED_EXIT_CODE);
+    if planned && helper_job.is_none() {
+        keep_grant_across_update(&sup, id);
+    }
     sup.feed(Ev::Exited {
         id: id.into(),
         instance,
@@ -1895,11 +1899,32 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
         while Instant::now() < give_up && job.active_processes().is_ok_and(|n| n > 0) {
             std::thread::sleep(Duration::from_millis(100));
         }
+        // The installer has finished (or the wait gave up): the new program file is in place
+        // before the module starts again, so the grant is carried over first (#1179).
+        if planned {
+            keep_grant_across_update(&sup, id);
+        }
         sup.feed(Ev::HelperDone {
             id: id.into(),
             instance,
         });
     }
+}
+
+/// #1179: after the legacy Foxglove module's planned exit, the updater's signed hand-off (if
+/// the app left one) lets the registry keep the module's permission grant for the new program.
+/// Only that module: another module's planned exit never reads the app's hand-off.
+fn keep_grant_across_update(sup: &Supervisor, id: &str) {
+    if id != hideout_registry::keyboard::LEGACY_MODULE {
+        return;
+    }
+    let (Some(dir), Some(key)) = (
+        foxglove_update::handoff::default_dir(),
+        crate::attest::update_key(),
+    ) else {
+        return;
+    };
+    let _ = crate::attest::attest_from_handoff(&sup.0.home, &dir, id, &key);
 }
 
 /// Sleeps until the policy's next deadline, or until nudged after any change.

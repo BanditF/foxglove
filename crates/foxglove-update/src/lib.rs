@@ -110,6 +110,23 @@ pub fn check(
     current: &str,
     key: &VerifyingKey,
 ) -> Result<Option<(Manifest, String)>> {
+    Ok(check_signed(http, releases, current, key)?.map(|(m, page, _)| (m, page)))
+}
+
+/// The bytes of a release's `latest.json` and its `latest.json.sig`, as downloaded.
+#[derive(Clone, Debug)]
+pub struct Signed {
+    pub json: Vec<u8>,
+    pub sig: Vec<u8>,
+}
+
+/// [`check`], also returning the signed bytes so they can be handed to the hub (#1179).
+pub fn check_signed(
+    http: &impl Transport,
+    releases: &[Release],
+    current: &str,
+    key: &VerifyingKey,
+) -> Result<Option<(Manifest, String, Signed)>> {
     let Some(i) = newest(releases, current)? else {
         return Ok(None);
     };
@@ -133,7 +150,63 @@ pub fn check(
     if m.msi.name != "foxglove-x64.msi" || m.msi.size == 0 {
         return Err("Invalid installer metadata".into());
     }
-    Ok(Some((m, r.html_url.clone())))
+    Ok(Some((m, r.html_url.clone(), Signed { json: bytes, sig })))
+}
+
+/// The hand-off from the app's updater to the hub (#1179): the verified release's signed
+/// `latest.json`, left in the updates folder as `attest-handoff.json` before the installer
+/// runs. It is only a carrier: the hub checks the signature itself with the update key and
+/// takes nothing else from the file.
+pub mod handoff {
+    use super::{Result, Signed};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use std::{path::Path, time::Duration};
+
+    pub const FILE: &str = "attest-handoff.json";
+    /// A hand-off older than this is not used (an install happens within minutes).
+    pub const MAX_AGE: Duration = Duration::from_secs(3600);
+    const LIMIT: u64 = 2 * 1024 * 1024;
+
+    /// The updates folder of an installed Foxglove: `%LOCALAPPDATA%/Foxglove/updates`.
+    pub fn default_dir() -> Option<std::path::PathBuf> {
+        std::env::var_os("LOCALAPPDATA")
+            .map(|d| std::path::PathBuf::from(d).join("Foxglove").join("updates"))
+    }
+
+    pub fn write(dir: &Path, signed: &Signed) -> Result<()> {
+        let body = serde_json::json!({
+            "latest_json": STANDARD.encode(&signed.json),
+            "signature": String::from_utf8_lossy(&signed.sig).trim(),
+        });
+        let tmp = dir.join(format!("{FILE}.tmp"));
+        std::fs::write(&tmp, body.to_string())?;
+        std::fs::rename(&tmp, dir.join(FILE))?;
+        Ok(())
+    }
+
+    /// Reads and removes the hand-off; `None` when absent, unreadable, too old or too large.
+    pub fn take(dir: &Path, now: std::time::SystemTime) -> Option<Signed> {
+        let path = dir.join(FILE);
+        let meta = std::fs::metadata(&path).ok()?;
+        let fresh = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age <= MAX_AGE);
+        let text = (meta.len() <= LIMIT)
+            .then(|| std::fs::read_to_string(&path).ok())
+            .flatten();
+        let _ = std::fs::remove_file(&path);
+        if !fresh {
+            return None;
+        }
+        let v: serde_json::Value = serde_json::from_str(&text?).ok()?;
+        Some(Signed {
+            json: STANDARD.decode(v.get("latest_json")?.as_str()?).ok()?,
+            // The signature stays the base64 text `verify` takes.
+            sig: v.get("signature")?.as_str()?.as_bytes().to_vec(),
+        })
+    }
 }
 
 #[cfg(test)]
