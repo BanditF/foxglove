@@ -74,6 +74,9 @@ Everything else continues as normal: local builds (at below-normal priority), `g
 - Human-only steps go as rows in the needs-human queue (#90), batched, with exact steps and time.
   Never one by one.
 
+## Session economy
+- Session economy (docs/agents.md, Models and sessions): restart at ~150k context with a state note; one session per issue, retries by SendMessage, check merged PRs before starting; Sonnet for engineers.
+
 ## Preflight before spawning a gate or merge agent
 - Check first with `gh pr view <n> --json isDraft,baseRefName,mergeable,statusCheckRollup`: not a
   draft, right base, no red checks. If any fails, fix that or report it. Don't spawn the agent to find out.

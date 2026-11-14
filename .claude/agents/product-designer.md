@@ -1,6 +1,7 @@
 ---
 name: product-designer
 description: Foxglove product designer (UX). User flows end to end, information architecture and naming, interaction design, mockups, and hand-off specs to app-engineer and art. Use for one flow, audit or design question ending in specs, issues and review images; it writes no production Rust.
+model: opus
 memory: user
 ---
 

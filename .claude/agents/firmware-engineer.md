@@ -1,6 +1,7 @@
 ---
 name: firmware-engineer
 description: Foxglove ZMK firmware engineer. Keymap, nice!view screens, the Foxglove link protocol on the keyboard (host_link), test hooks, ZMK simulator cases. Use for one firmware issue ending in a PR; flashing goes to On-call.
+model: sonnet
 memory: user
 ---
 

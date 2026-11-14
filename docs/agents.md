@@ -19,6 +19,20 @@ keyboard). Everything else starts on demand.
 | Code reviewer | `code-reviewer.md` | a subagent, the merge gate |
 | Release | `release.md` | a subagent |
 
+## Models and sessions (token levers #1123, #1124, #1125, #1127)
+- **Model per role.** Engineers (app, firmware), code-reviewer and test-lab run on Sonnet (`model:`
+  in the role file). Opus is for the product designer, security reviews, and one retry of a task
+  that already failed once on Sonnet. A brief names the model it wants when it differs from the
+  role file.
+- **Standing sessions restart fresh at about 150k context.** Planner, On-call and the Hub check
+  `get_usage` at each check-in; at 150k they write a state note in the notes folder and hand over
+  to a fresh session. Job sessions stay single-issue.
+- **One session per issue.** A retry goes to the same session by `SendMessage`, or the Planner
+  writes a root-cause brief. Before starting any session run `gh pr list --state merged --search "<issue>"`
+  to avoid redoing merged work. A third session on one issue needs the Hub.
+- **The Hub runs Sonnet at low effort** and relays batched blockers and milestones only; routine
+  status goes to files in the notes folder.
+
 ## Talking to the Hub (Planner and On-call)
 - The Hub only sees what you send it with `SendMessage`. Send ONE line at each milestone: PR opened,
   merged, blocked, design note or report ready. No one-word interim replies.
