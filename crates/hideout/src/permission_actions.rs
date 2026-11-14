@@ -16,8 +16,8 @@ use hideout_registry::Registry;
 use hideout_router::server::Hub;
 use hideout_shell::egui;
 use hideout_shell::permission_dialog::{
-    header, turned_off_note, Allowed, Group, HeaderKind, ItemWord, KeyboardChoice, ListItem,
-    PermAnswer, PermDialog, PermHeader, Reason, Section, SectionItem, BUSY, NOT_SAVED,
+    header, Allowed, Group, HeaderKind, ItemWord, KeyboardChoice, ListItem, PermAnswer, PermDialog,
+    PermHeader, Reason, Section, SectionItem, BUSY, NOT_SAVED,
 };
 use hideout_shell::permission_dialog_ui::{perm_dialog_ui, perm_header_ui, section_ui, SectionAsk};
 use hideout_shell::theme::Tokens;
@@ -103,8 +103,10 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
         .map(|i| {
             let allowable = i.state == ItemState::Asked;
             let checked = allowable
-                && if after_void {
-                    v.last_choice.contains(&i.raw)
+                && if after_void && v.last_choice.contains(&i.raw) {
+                    true
+                } else if after_void && v.declined.contains(&i.raw) {
+                    false
                 } else {
                     !i.sensitive && !v.declined.contains(&i.raw)
                 };
@@ -125,6 +127,7 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
                 },
                 checked,
                 confirmed: false,
+                new: false,
             }
         })
         .collect();
@@ -149,6 +152,7 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
         items,
         reason,
         keyboard,
+        removed: Vec::new(),
         error: None,
     })
 }
@@ -167,6 +171,7 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
         })
         .collect();
     let mut can_change = v.void.is_some();
+
     for i in &v.listing.items {
         let allowable = i.state == ItemState::Asked;
         can_change |= allowable;
@@ -197,6 +202,7 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
             format!("Allowed in Hideout on {when}")
         }
     });
+    let note = hideout_shell::permission_dialog::status_note(&name, &items);
     let history = v
         .bound
         .as_ref()
@@ -220,7 +226,7 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
         allowed_on,
         history,
         can_change,
-        note: None,
+        note,
     })
 }
 
@@ -333,12 +339,21 @@ impl PermUi {
 
     /// Opens the dialog for `id` (only from the user's click).
     pub fn open(&mut self, id: &str, how: Opener) {
-        self.open_with(id, how, None);
+        self.open_with(id, how, None, None);
     }
 
-    fn open_with(&mut self, id: &str, how: Opener, reason: Option<Reason>) {
+    fn open_with(
+        &mut self,
+        id: &str,
+        how: Opener,
+        reason: Option<Reason>,
+        prev: Option<&PermDialog>,
+    ) {
         match build_dialog(&self.home, id, reason) {
-            Ok(d) => {
+            Ok(mut d) => {
+                if let Some(p) = prev {
+                    d.mark_changes(p);
+                }
                 let asked = d.items.iter().filter(|i| i.allowable).count();
                 log::info!(
                     "permissions: {id}: dialog shown, list {}, {asked} asked, {} can't be allowed",
@@ -400,7 +415,7 @@ impl PermUi {
                     "permissions: {}: not allowed: list changed (shown {code})",
                     d.id
                 );
-                self.open_with(&d.id, how, Some(Reason::ListChanged));
+                self.open_with(&d.id, how, Some(Reason::ListChanged), Some(&d));
                 None
             }
             Err(e) => {
@@ -437,31 +452,27 @@ impl PermUi {
 
     /// Turn off one allowed item: the router first, then the file. Never asks.
     pub fn turn_off(&mut self, id: &str, raw: &str) {
-        self.narrow(id, Some(std::slice::from_ref(&raw.to_string())), Some(raw));
+        self.narrow(id, Some(std::slice::from_ref(&raw.to_string())));
     }
 
     pub fn turn_all_off(&mut self, id: &str) {
-        self.narrow(id, None, None);
+        self.narrow(id, None);
     }
 
-    fn narrow(&mut self, id: &str, items: Option<&[String]>, one: Option<&str>) {
+    fn narrow(&mut self, id: &str, items: Option<&[String]>) {
         let r = hideout_supervisor::driver::revoke_items_in(&self.home, &self.hub, id, items);
-        let name = self
-            .entries
-            .iter()
-            .find(|e| e.id == id)
-            .map_or_else(|| id.to_string(), |e| e.view.listing.name.clone());
+        // Cleared first: only a failure leaves a note; the status line comes from the state.
+        if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
+            e.note = None;
+        }
         self.refresh();
-        let note = match r {
-            // The router already closed it: the section says Off whatever the file says.
-            Err(e) => {
-                log::warn!("permissions: {id}: turn off not saved ({e})");
-                Some("Turned off, but the change couldn't be saved.".to_string())
-            }
-            Ok(_) => one.and_then(|raw| turned_off_note(&name, raw)),
-        };
-        if let Some(n) = note {
-            self.note(id, n);
+        // The router already closed it: the section says Off whatever the file says.
+        if let Err(e) = r {
+            log::warn!("permissions: {id}: turn off not saved ({e})");
+            self.note(
+                id,
+                "Turned off, but the change couldn't be saved.".to_string(),
+            );
         }
     }
 
@@ -495,7 +506,7 @@ impl PermUi {
             let Some(mut s) = section_for(&e.id, &e.view) else {
                 continue;
             };
-            s.note = e.note.clone();
+            s.note = e.note.clone().or(s.note);
             match section_ui(ui, t, &s, false) {
                 Some((SectionAsk::TurnOff(raw), _)) => off = Some((e.id.clone(), Some(raw))),
                 Some((SectionAsk::TurnAllOff, _)) => off = Some((e.id.clone(), None)),
@@ -688,6 +699,16 @@ mod tests {
             .map(|i| &i.raw[..])
             .collect();
         assert_eq!(checked, ["hub.notify"]);
+        // Declined items start unchecked and the button count follows.
+        assert!(
+            !d.items
+                .iter()
+                .find(|i| i.raw == "ui.window")
+                .unwrap()
+                .checked
+        );
+        assert_eq!(d.allow_label(), "Allow 1");
+        assert_eq!(d.all_state(), hideout_shell::permission_dialog::All::Some);
         let done = f.ui.answer(PermAnswer::Allow(d.allowed())).unwrap();
         assert_eq!(done.then, Then::TurnOn);
         let v = view(&f);
@@ -727,6 +748,89 @@ mod tests {
         assert_eq!(view(&f).granted.len(), 1);
         f.ui.turn_all_off(ID);
         assert!(view(&f).granted.is_empty());
+    }
+
+    #[test]
+    fn counts_agree_and_the_status_line_follows_the_item() {
+        let mut f = fx(
+            "counts",
+            &["facts.write:keyboard.*", "ui.window", "modules.manage"],
+        );
+        f.ui.open(ID, Opener::TurnOn);
+        let d = f.ui.dialog.clone().unwrap();
+        let never = d.items.iter().filter(|i| !i.allowable).count();
+        assert_eq!(never, 1);
+        assert_eq!(d.items.len(), 3);
+        assert!(d
+            .intro()
+            .starts_with("Vulpes asks for these 3 things. 1 can't be allowed."));
+        assert_eq!(d.all_label(), "All 2");
+        assert_eq!(d.allow_label(), "Allow 2");
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        // Allowed: no line about empty tiles.
+        let s = section_for(ID, &view(&f)).unwrap();
+        assert!(s.note.is_none());
+        // Off: the line shows, and it goes again when the item is allowed through Change.
+        f.ui.turn_off(ID, "facts.write:keyboard.*");
+        let s = section_for(ID, &view(&f)).unwrap();
+        assert_eq!(
+            s.note.as_deref(),
+            Some("Vulpes can't share its status. Its tiles stay empty.")
+        );
+        f.ui.open(ID, Opener::Change);
+        let a = f.ui.dialog.as_mut().unwrap();
+        a.set_checked("facts.write:keyboard.*", true);
+        let a = a.allowed();
+        f.ui.answer(PermAnswer::Allow(a)).unwrap();
+        assert!(section_for(ID, &view(&f)).unwrap().note.is_none());
+    }
+
+    #[test]
+    fn the_allowed_line_follows_who_allowed_it() {
+        let f = fx("by", &["hub.notify"]);
+        let v = view(&f);
+        let list = v.listing.code().to_string();
+        let mut reg = Registry::open_from_env(&f.home).unwrap();
+        reg.approve_listed(ID, &list, &["hub.notify".to_string()], &[], NOW, "cli")
+            .unwrap();
+        let v = view(&f);
+        assert_eq!(header_kind(&v, false, false), Some(HeaderKind::Cli));
+        assert_eq!(
+            section_for(ID, &v).unwrap().allowed_on.as_deref(),
+            Some("Allowed from the command line on 13 Nov 2026")
+        );
+    }
+
+    #[test]
+    fn a_changed_list_marks_the_new_item_and_names_the_dropped_one() {
+        let mut f = fx("marks", &["hub.notify", "ui.window"]);
+        f.ui.open(ID, Opener::TurnOn);
+        let shown = f.ui.dialog.clone().unwrap();
+        std::fs::write(
+            f.folder.join("module.toml"),
+            manifest(&f.exe, &["hub.notify", "lighting.lease"]),
+        )
+        .unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&f.folder, NOW)
+            .unwrap();
+        assert!(f.ui.answer(PermAnswer::Allow(shown.allowed())).is_none());
+        let d = f.ui.dialog.clone().unwrap();
+        assert_ne!(d.code, shown.code);
+        let new: Vec<_> = d
+            .items
+            .iter()
+            .filter(|i| i.new)
+            .map(|i| &i.raw[..])
+            .collect();
+        assert_eq!(new, ["lighting.lease"]);
+        let gone = shown.items.iter().find(|i| i.raw == "ui.window").unwrap();
+        assert_eq!(d.removed.len(), 1);
+        assert_eq!(d.removed[0], gone.line);
+        assert!(d
+            .reason_lines()
+            .contains(&format!("No longer asked: {}", gone.line)));
     }
 
     #[test]

@@ -22,6 +22,37 @@ fn group_colour(t: &Tokens, g: Group) -> egui::Color32 {
     })
 }
 
+/// Text one point under body size (the old `.small()` was about 9 px).
+fn fine(ui: &egui::Ui, text: impl Into<String>) -> egui::RichText {
+    let body = ui
+        .style()
+        .text_styles
+        .get(&egui::TextStyle::Body)
+        .map_or(14.0, |f| f.size);
+    egui::RichText::new(text).size(body - 1.0)
+}
+
+/// Gives checkboxes drawn inside `add` an outline in the muted text colour (at least 3:1 on the
+/// window, light and dark), so an unchecked box is visible.
+fn outlined<R>(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope(|ui| {
+        let w = &mut ui.visuals_mut().widgets;
+        w.inactive.bg_stroke = egui::Stroke::new(1.5_f32, c(t.text_muted));
+        w.hovered.bg_stroke = egui::Stroke::new(1.5_f32, c(t.text));
+        add(ui)
+    })
+    .inner
+}
+
+fn check(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    on: &mut bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    outlined(ui, t, |ui| ui.checkbox(on, text))
+}
+
 /// The dialog. `first`: the first frame, when Not now takes the focus.
 pub fn perm_dialog_ui(
     ctx: &egui::Context,
@@ -60,13 +91,15 @@ pub(crate) fn perm_dialog_ids(
         // All N: tri-state.
         let state = d.all_state();
         let mut all_on = state == All::All;
-        let all = ui.add(
-            egui::Checkbox::new(
-                &mut all_on,
-                egui::RichText::new(d.all_label()).strong().color(c(t.text)),
+        let all = outlined(ui, t, |ui| {
+            ui.add(
+                egui::Checkbox::new(
+                    &mut all_on,
+                    egui::RichText::new(d.all_label()).strong().color(c(t.text)),
+                )
+                .indeterminate(state == All::Some),
             )
-            .indeterminate(state == All::Some),
-        );
+        });
         if all.changed() {
             d.toggle_all();
         }
@@ -89,23 +122,34 @@ pub(crate) fn perm_dialog_ids(
                         ui.label(
                             egui::RichText::new(g.heading())
                                 .strong()
-                                .small()
                                 .color(group_colour(t, g)),
                         );
                         let name = d.name.clone();
                         for item in d.items.iter_mut().filter(|i| i.group == g) {
                             if !item.allowable {
-                                ui.label(egui::RichText::new(&item.line).color(c(t.danger)));
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&item.line).color(c(t.text)));
+                                    if item.new {
+                                        ui.label(fine(ui, "New").strong().color(c(t.attention)));
+                                    }
+                                });
                                 if let Some(r) = &item.reason {
                                     ui.label(
-                                        egui::RichText::new(r.replace("this module", &name))
-                                            .small()
+                                        fine(ui, r.replace("this module", &name))
                                             .color(c(t.text_muted)),
                                     );
                                 }
                                 continue;
                             }
-                            let r = ui.checkbox(&mut item.checked, &item.line);
+                            let r = ui
+                                .horizontal(|ui| {
+                                    let r = check(ui, t, &mut item.checked, &item.line);
+                                    if item.new {
+                                        ui.label(fine(ui, "New").strong().color(c(t.attention)));
+                                    }
+                                    r
+                                })
+                                .inner;
                             let said = item.said();
                             ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(said));
                             if r.changed() && !item.checked {
@@ -115,7 +159,7 @@ pub(crate) fn perm_dialog_ids(
                             if let Some(s) = item.sub_line() {
                                 ui.horizontal(|ui| {
                                     ui.add_space(24.0);
-                                    ui.label(egui::RichText::new(s).small().color(c(t.text_muted)));
+                                    ui.label(fine(ui, s).color(c(t.text_muted)));
                                 });
                             }
                             if item.sensitive && item.checked {
@@ -126,7 +170,7 @@ pub(crate) fn perm_dialog_ids(
                                             egui::RichText::new(item.confirm_line(&name))
                                                 .color(c(t.attention)),
                                         );
-                                        let u = ui.checkbox(&mut item.confirmed, UNDERSTAND);
+                                        let u = check(ui, t, &mut item.confirmed, UNDERSTAND);
                                         ids.push(u.id);
                                     });
                                 });
@@ -162,7 +206,7 @@ pub(crate) fn perm_dialog_ids(
                                 for f in DIALOG_FOOTER {
                                     ui.label(egui::RichText::new(f).color(c(t.text_muted)));
                                 }
-                                let on = ui.checkbox(&mut k.on, "Allow this too");
+                                let on = check(ui, t, &mut k.on, "Allow this too");
                                 ids.push(on.id);
                             });
                         });
@@ -180,15 +224,11 @@ pub(crate) fn perm_dialog_ids(
                     .selectable(true),
             );
         }
-        ui.label(egui::RichText::new(b1).small().color(c(t.text_muted)));
-        ui.label(egui::RichText::new(b2).small().color(c(t.text_muted)));
+        ui.label(fine(ui, b1).color(c(t.text_muted)));
+        ui.label(fine(ui, b2).color(c(t.text_muted)));
         ui.add(
-            egui::Label::new(
-                egui::RichText::new(format!("List code {}", d.code))
-                    .small()
-                    .color(c(t.text_muted)),
-            )
-            .selectable(true),
+            egui::Label::new(fine(ui, format!("List code {}", d.code)).color(c(t.text_muted)))
+                .selectable(true),
         );
         if let Some(e) = &d.error {
             ui.add_space(4.0);
@@ -289,11 +329,30 @@ pub enum SectionAsk {
     Change,
 }
 
+const STATE_W: f32 = 120.0;
+const BUTTON_W: f32 = 80.0;
+
+/// A fixed-width cell in a row.
+fn cell<R>(
+    ui: &mut egui::Ui,
+    w: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    ui.allocate_ui_with_layout(
+        egui::vec2(w, 24.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_width(w);
+            add(ui)
+        },
+    )
+}
+
 fn word_colour(t: &Tokens, w: ItemWord) -> egui::Color32 {
     c(match w {
         ItemWord::Allowed => t.ok,
         ItemWord::Off => t.text_muted,
-        ItemWord::CantBeAllowed => t.danger,
+        ItemWord::CantBeAllowed => t.text,
     })
 }
 
@@ -310,11 +369,7 @@ pub fn section_ui(
     let id = ui.make_persistent_id(("hideout.permissions", &s.id));
     let group = ui.push_id(id, |ui| {
         ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new(s.heading())
-                    .small()
-                    .color(c(t.text_muted)),
-            );
+            ui.label(fine(ui, s.heading()).color(c(t.text_muted)));
             ui.horizontal_wrapped(|ui| {
                 ui.label(
                     egui::RichText::new(format!("{} allowed", s.allowed()))
@@ -326,7 +381,7 @@ pub fn section_ui(
                 }
             });
             for h in &s.history {
-                ui.label(egui::RichText::new(h).small().color(c(t.text_muted)));
+                ui.label(fine(ui, h).color(c(t.text_muted)));
             }
             egui::CollapsingHeader::new(
                 egui::RichText::new("Show each permission").color(c(t.text)),
@@ -345,28 +400,38 @@ pub fn section_ui(
                         ui.label(
                             egui::RichText::new(g.heading())
                                 .strong()
-                                .small()
                                 .color(group_colour(t, g)),
                         );
+                        // Fixed columns: the line, the state word, the Turn off button.
+                        let line_w = (ui.available_width() - STATE_W - BUTTON_W - 16.0).max(160.0);
                         for i in items {
                             ui.horizontal(|ui| {
-                                let l = ui.label(egui::RichText::new(&i.line).color(c(t.text)));
-                                ui.label(
-                                    egui::RichText::new(i.word.word())
-                                        .strong()
-                                        .color(word_colour(t, i.word)),
-                                );
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                let l = cell(ui, line_w, |ui| {
+                                    ui.label(egui::RichText::new(&i.line).color(c(t.text)))
+                                })
+                                .inner;
+                                cell(ui, STATE_W, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(i.word.word())
+                                            .strong()
+                                            .color(word_colour(t, i.word)),
+                                    )
+                                });
                                 let said =
                                     format!("{}: {}, {}", g.heading(), i.line, i.word.word());
                                 ui.ctx().accesskit_node_builder(l.id, |n| n.set_label(said));
-                                if i.word == ItemWord::Allowed {
-                                    let b = ui.button(TURN_OFF);
-                                    let said = format!("{TURN_OFF}: {}", i.line);
-                                    ui.ctx().accesskit_node_builder(b.id, |n| n.set_label(said));
-                                    if b.clicked() {
-                                        out = Some((SectionAsk::TurnOff(i.raw.clone()), b.id));
+                                cell(ui, BUTTON_W, |ui| {
+                                    if i.word == ItemWord::Allowed {
+                                        let b = ui.button(TURN_OFF);
+                                        let said = format!("{TURN_OFF}: {}", i.line);
+                                        ui.ctx()
+                                            .accesskit_node_builder(b.id, |n| n.set_label(said));
+                                        if b.clicked() {
+                                            out = Some((SectionAsk::TurnOff(i.raw.clone()), b.id));
+                                        }
                                     }
-                                }
+                                });
                             });
                         }
                     });

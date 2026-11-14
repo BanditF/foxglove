@@ -70,6 +70,8 @@ pub struct ListItem {
     pub checked: bool,
     /// The "I understand" under a sensitive item.
     pub confirmed: bool,
+    /// Not in the list the user saw before it changed (marked "New").
+    pub new: bool,
 }
 
 impl ListItem {
@@ -142,6 +144,8 @@ pub struct PermDialog {
     pub items: Vec<ListItem>,
     pub reason: Option<Reason>,
     pub keyboard: Option<KeyboardChoice>,
+    /// After a changed list: the lines of items the old list asked for and this one doesn't.
+    pub removed: Vec<String>,
     /// An inline failure under the buttons (busy, not saved).
     pub error: Option<String>,
 }
@@ -178,10 +182,12 @@ impl PermDialog {
     /// permission. Nothing leaves this PC." (the last sentence goes when the network is asked).
     pub fn intro(&self) -> String {
         let n = self.items.len();
-        let mut s = format!(
-            "{} asks for these {n} things. Each app that uses them still needs its own permission.",
-            self.name
-        );
+        let never = n - self.allowable().count();
+        let mut s = format!("{} asks for these {n} things.", self.name);
+        if never > 0 {
+            s.push_str(&format!(" {never} can't be allowed."));
+        }
+        s.push_str(" Each app that uses them still needs its own permission.");
         if !self
             .items
             .iter()
@@ -202,7 +208,13 @@ impl PermDialog {
     /// The reason lines on top.
     pub fn reason_lines(&self) -> Vec<String> {
         match self.reason {
-            Some(Reason::ListChanged) => LIST_CHANGED.iter().map(|s| (*s).into()).collect(),
+            Some(Reason::ListChanged) => {
+                let mut v: Vec<String> = LIST_CHANGED.iter().map(|s| (*s).into()).collect();
+                if !self.removed.is_empty() {
+                    v.push(format!("No longer asked: {}", self.removed.join(", ")));
+                }
+                v
+            }
             Some(Reason::Void) => vec![self.void_line()],
             None => Vec::new(),
         }
@@ -217,6 +229,20 @@ impl PermDialog {
                 self.name
             ),
         ]
+    }
+
+    /// Marks what a changed list added (`new`) and records what it dropped (`removed`),
+    /// comparing with the list `old` that was on screen.
+    pub fn mark_changes(&mut self, old: &PermDialog) {
+        for i in self.items.iter_mut() {
+            i.new = !old.items.iter().any(|o| o.raw == i.raw);
+        }
+        self.removed = old
+            .items
+            .iter()
+            .filter(|o| !self.items.iter().any(|i| i.raw == o.raw))
+            .map(|o| o.line.clone())
+            .collect();
     }
 
     /// The items that have a checkbox.
@@ -437,6 +463,14 @@ pub fn turned_off_note(name: &str, raw: &str) -> Option<String> {
         .then(|| format!("{name} can't share its status. Its tiles stay empty."))
 }
 
+/// The line under the section: only while the status item is Off, never while it is Allowed.
+pub fn status_note(name: &str, items: &[SectionItem]) -> Option<String> {
+    items
+        .iter()
+        .find(|i| i.raw == "facts.write:keyboard.*" && i.word == ItemWord::Off)
+        .and_then(|i| turned_off_note(name, &i.raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +485,7 @@ mod tests {
             reason: None,
             checked,
             confirmed: false,
+            new: false,
         }
     }
 
@@ -476,6 +511,7 @@ mod tests {
                 on: false,
                 expanded: false,
             }),
+            removed: Vec::new(),
             error: None,
         }
     }
@@ -486,8 +522,8 @@ mod tests {
         assert_eq!(d.title(), "Let Foxglove run in Hideout?");
         assert_eq!(
             d.intro(),
-            "Foxglove asks for these 4 things. Each app that uses them still needs its own \
-             permission. Nothing leaves this PC."
+            "Foxglove asks for these 4 things. 1 can't be allowed. Each app that uses them \
+             still needs its own permission. Nothing leaves this PC."
         );
         assert_eq!(d.allow_label(), "Allow 2");
         assert_eq!(d.all_label(), "All 3");
@@ -499,6 +535,8 @@ mod tests {
             keyboard_line("Foxglove", false),
             "Also let Foxglove handle your keyboard for other apps (off)"
         );
+        // The counts agree: total, can't be allowed, the All box and the button.
+        assert_eq!(d.items.len() - d.allowable().count(), 1);
         let mut n = dialog();
         n.items.push(item("net", Group::Sensitive, true, false));
         assert!(!n.intro().contains("Nothing leaves this PC."));
@@ -586,5 +624,47 @@ mod tests {
         assert_eq!(h.title, "Foxglove was allowed from the command line");
         assert_eq!(h.body, "13 permissions, 12 Nov 2026.");
         assert_eq!((h.review, h.dismiss), ("Review\u{2026}", "OK"));
+    }
+
+    #[test]
+    fn a_changed_list_marks_new_items_and_names_the_dropped_ones() {
+        let old = dialog();
+        let mut now = dialog();
+        now.items.retain(|i| i.raw != "provide:a.set");
+        now.items
+            .push(item("provide:c.set", Group::MakeChanges, false, true));
+        now.reason = Some(Reason::ListChanged);
+        now.mark_changes(&old);
+        let new: Vec<_> = now
+            .items
+            .iter()
+            .filter(|i| i.new)
+            .map(|i| &i.raw[..])
+            .collect();
+        assert_eq!(new, ["provide:c.set"]);
+        assert_eq!(now.removed, ["line of provide:a.set"]);
+        let lines = now.reason_lines();
+        assert_eq!(
+            lines.last().unwrap(),
+            "No longer asked: line of provide:a.set"
+        );
+        assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn the_status_line_shows_only_while_the_item_is_off() {
+        let mk = |word| {
+            vec![SectionItem {
+                raw: "facts.write:keyboard.*".into(),
+                line: "Share status".into(),
+                group: Group::ShareStatus,
+                word,
+            }]
+        };
+        assert!(status_note("Foxglove", &mk(ItemWord::Allowed)).is_none());
+        assert_eq!(
+            status_note("Foxglove", &mk(ItemWord::Off)).as_deref(),
+            Some("Foxglove can't share its status. Its tiles stay empty.")
+        );
     }
 }
