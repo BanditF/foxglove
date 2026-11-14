@@ -95,7 +95,7 @@ fn turn_on_waits_for_the_users_ok_and_proceeds_after_a_valid_grant() {
     let out = sup
         .grant_listed(
             id,
-            &list.code(),
+            list.code(),
             &strs(&["hub.notify", "ui.window"]),
             &[],
             "dialog",
@@ -129,7 +129,7 @@ fn declining_everything_still_lets_the_module_start_and_a_swapped_program_asks_a
         .unwrap();
     sup.grant_listed(
         id,
-        &list.code(),
+        list.code(),
         &[],
         &strs(&["hub.notify", "ui.window"]),
         "dialog",

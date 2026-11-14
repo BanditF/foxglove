@@ -1919,22 +1919,6 @@ fn timer(me: Weak<Inner>, wake: Receiver<()>) {
     }
 }
 
-#[cfg(test)]
-mod path_tests {
-    use super::same_path;
-    use std::path::Path;
-
-    #[test]
-    fn exe_paths_compare_by_place_not_spelling() {
-        let p = |a: &str, b: &str| same_path(Path::new(a), Path::new(b));
-        assert!(p("C:/Apps/Fox/fox.exe", r"c:\apps\fox\FOX.exe"));
-        assert!(p(r"\\?\C:\Apps\fox.exe", r"C:\Apps\fox.exe"));
-        assert!(p(r"\\?\UNC\h\s\f.exe", r"\\h\s\f.exe"));
-        assert!(!p(r"C:\Apps\fox.exe", r"C:\Other\fox.exe"));
-        assert!(!p("", ""));
-    }
-}
-
 /// The user's Allow for the list with code `list_code` (the dialog, or the control pipe's
 /// handler after its caller check; nothing else calls this, #1178). Records the grant and
 /// binding in `inventory.json`, then widens the router to what the file now says. Items that
@@ -1991,4 +1975,20 @@ pub fn revoke_items_in(
     let left = reg.revoke_items(id, items).map_err(|e| format!("{e:?}"))?;
     log::info!("permissions: {id}: turned off {items:?} by user");
     Ok(left)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::same_path;
+    use std::path::Path;
+
+    #[test]
+    fn exe_paths_compare_by_place_not_spelling() {
+        let p = |a: &str, b: &str| same_path(Path::new(a), Path::new(b));
+        assert!(p("C:/Apps/Fox/fox.exe", r"c:\apps\fox\FOX.exe"));
+        assert!(p(r"\\?\C:\Apps\fox.exe", r"C:\Apps\fox.exe"));
+        assert!(p(r"\\?\UNC\h\s\f.exe", r"\\h\s\f.exe"));
+        assert!(!p(r"C:\Apps\fox.exe", r"C:\Other\fox.exe"));
+        assert!(!p("", ""));
+    }
 }
