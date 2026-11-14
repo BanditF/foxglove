@@ -23,11 +23,23 @@ and Permissions section are **not built yet**; this page records what they must 
   while permissions are pending or the binding is void.
 - `Supervisor::review_approved(id, code, chosen, declined, by)` grants for the list the user saw.
 
+## Built in the Modules page
+
+- `crates/hideout/src/permission_actions.rs` (`PermUi`) opens the dialog from Turn on, the row's
+  Review button, the Permissions header line and Change... Allow calls `grant_listed_in` (router
+  widened after the file write) and then turns the module on or lets the pending update swap run
+  (`Supervisor::review`). Turn off and Turn all off call `revoke_items_in` (router narrowed first).
+- A list that changed while the dialog was open is refused (`permission.list_changed`) and the
+  dialog reopens on the new list with the reason on top. After a void, Review then Allow starts
+  from the last choice.
+- The Permissions section shows Allowed / Off / Can't be allowed. Tests live in
+  `permission_actions.rs` and `crates/hideout-registry/tests/permission_grant.rs`; the render test
+  writes `review/built-permission-*.png`.
+
 ## Still to build
 
-- The dialog on the Modules page (reuse `keyboard_grant_ui.rs`), the Permissions section
-  (Allowed / Off / Can't be allowed, Turn off, Turn all off, Change...) and the attestation history,
-  with Review then Allow for a voided binding.
+- The attestation history in the section, the "Waits for your OK" row wording, and the Review
+  button on the module page's own update line (still greyed).
 - Handing the signed `latest.json` and its signature from the app's updater to the hub after a
   successful install, so the hub calls `attest_verified_update` (today the hook exists and is tested;
   nothing in the shipped updater sends it yet, so an update still voids until then).
