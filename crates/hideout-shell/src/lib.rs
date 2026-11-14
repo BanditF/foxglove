@@ -20,6 +20,9 @@ pub mod logfile;
 pub mod marks;
 pub mod palette;
 pub mod paths;
+pub mod permission_dialog;
+#[cfg(windows)]
+pub mod permission_dialog_ui;
 pub mod placement;
 pub mod popout;
 pub mod prefs;

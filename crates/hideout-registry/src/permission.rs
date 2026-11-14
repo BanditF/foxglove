@@ -197,6 +197,22 @@ impl Listing {
     }
 }
 
+/// A module's permissions as the Modules page reads them (#1178).
+#[derive(Clone, Debug)]
+pub struct View {
+    /// Pending and declined items, with the list code.
+    pub listing: Listing,
+    /// Allowed now.
+    pub granted: Vec<Item>,
+    pub declined: Vec<String>,
+    pub pending: Vec<String>,
+    pub last_choice: Vec<String>,
+    pub bound: Option<Bound>,
+    /// The program changed or moved since the allow (or the binding was already voided).
+    pub void: Option<VoidReason>,
+    pub adopted: bool,
+}
+
 /// What an allow or deny did.
 #[derive(Debug, Default)]
 pub struct Outcome {
@@ -330,6 +346,40 @@ impl Registry {
             exe_sha256,
             items,
             list_hash,
+        })
+    }
+
+    /// What the Modules page draws for `id` (#1178): the list as the dialog shows it, the items
+    /// now allowed (with their plain lines), what was declined, the dialog's defaults after a
+    /// void, and where the binding stands. Read-only.
+    pub fn permission_view(&self, id: &str) -> Result<View, Failure> {
+        let listing = self.permission_list(id)?;
+        let m = &self.inventory.modules[id];
+        let mut granted: Vec<Item> = m
+            .granted
+            .iter()
+            .map(|raw| {
+                let (group, line, sensitive) = describe(raw);
+                Item {
+                    raw: raw.clone(),
+                    state: ItemState::Asked,
+                    group,
+                    line,
+                    reason: None,
+                    sensitive,
+                }
+            })
+            .collect();
+        granted.sort_by(|a, b| (a.group, &a.raw).cmp(&(b.group, &b.raw)));
+        Ok(View {
+            listing,
+            granted,
+            declined: m.declined_permissions.clone(),
+            pending: m.pending_permissions.clone(),
+            last_choice: m.last_choice.clone(),
+            bound: m.bound.clone(),
+            void: self.binding_void(id),
+            adopted: m.source == ADOPTED,
         })
     }
 
