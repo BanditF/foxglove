@@ -251,6 +251,9 @@ struct Inner {
     hub: Hub,
     policy: Mutex<Policy>,
     live: Mutex<BTreeMap<String, Live>>,
+    /// Jobs of ended instances that still hold processes: a child that outlives its module is
+    /// still a module process for the caller check (#1178), until the job is empty.
+    retired: Mutex<Vec<Arc<Job>>>,
     expected: Arc<Mutex<BTreeMap<String, Expected>>>,
     records: Mutex<Instances>,
     next_instance: AtomicU64,
@@ -404,6 +407,7 @@ impl Supervisor {
             hub: hub.clone(),
             policy: Mutex::new(Policy::new()),
             live: Mutex::new(BTreeMap::new()),
+            retired: Mutex::new(Vec::new()),
             expected: expected.clone(),
             records: Mutex::new(Instances::default()),
             next_instance: AtomicU64::new(unix_ms()),
@@ -1028,10 +1032,29 @@ impl Supervisor {
         let Ok(p) = Process::open(pid) else {
             return true;
         };
+        self.process_in_module_job(&p)
+    }
+
+    /// [`Supervisor::in_module_job`] for a process already opened (one handle for every check
+    /// on a caller). Looks at the live instances' jobs and at the retired ones that still hold
+    /// processes; empty retired jobs are dropped here.
+    pub fn process_in_module_job(&self, p: &Process) -> bool {
+        {
+            let mut retired = self.0.retired.lock().unwrap();
+            retired.retain(|j| j.active_processes().map_or(true, |n| n > 0));
+            if retired.iter().any(|j| j.holds(p).unwrap_or(true)) {
+                return true;
+            }
+        }
         let live = self.0.live.lock().unwrap();
         live.values()
             .filter_map(|l| l.job.as_ref())
-            .any(|j| j.holds(&p).unwrap_or(true))
+            .any(|j| j.holds(p).unwrap_or(true))
+    }
+
+    /// Test hook: jobs kept after their instance ended.
+    pub fn retired_jobs(&self) -> usize {
+        self.0.retired.lock().unwrap().len()
     }
 
     /// [`grant_listed_in`] on this hub's folder and router.
@@ -1871,7 +1894,14 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
                     .and_then(|l| l.job.clone())
                     .filter(|j| j.active_processes().is_ok_and(|n| n > 0));
             }
-            live.remove(id);
+            if let Some(gone) = live.remove(id) {
+                if let Some(job) = gone
+                    .job
+                    .filter(|j| j.active_processes().is_ok_and(|n| n > 0))
+                {
+                    sup.0.retired.lock().unwrap().push(job);
+                }
+            }
             sup.0.expected.lock().unwrap().remove(id);
             sup.0.records.lock().unwrap().modules.remove(id);
         }
@@ -1880,7 +1910,7 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
     log::info!("supervisor: {id} ended with {code}");
     let planned = code == i64::from(crate::policy::PLANNED_EXIT_CODE);
     if planned && helper_job.is_none() {
-        keep_grant_across_update(&sup, id);
+        keep_grant_across_update(&sup, id, instance);
     }
     sup.feed(Ev::Exited {
         id: id.into(),
@@ -1902,7 +1932,7 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
         // The installer has finished (or the wait gave up): the new program file is in place
         // before the module starts again, so the grant is carried over first (#1179).
         if planned {
-            keep_grant_across_update(&sup, id);
+            keep_grant_across_update(&sup, id, instance);
         }
         sup.feed(Ev::HelperDone {
             id: id.into(),
@@ -1914,7 +1944,7 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
 /// #1179: after the legacy Foxglove module's planned exit, the updater's signed hand-off (if
 /// the app left one) lets the registry keep the module's permission grant for the new program.
 /// Only that module: another module's planned exit never reads the app's hand-off.
-fn keep_grant_across_update(sup: &Supervisor, id: &str) {
+fn keep_grant_across_update(sup: &Supervisor, id: &str, instance: u64) {
     if id != hideout_registry::keyboard::LEGACY_MODULE {
         return;
     }
@@ -1924,7 +1954,10 @@ fn keep_grant_across_update(sup: &Supervisor, id: &str) {
     ) else {
         return;
     };
-    let _ = crate::attest::attest_from_handoff(&sup.0.home, &dir, id, &key);
+    // An instance id is the clock (ms) at its start: the hand-off must be newer than that
+    // (less a little slack for clock steps).
+    let started = std::time::UNIX_EPOCH + Duration::from_millis(instance.saturating_sub(5_000));
+    let _ = crate::attest::attest_from_handoff(&sup.0.home, &dir, id, &key, Some(started));
 }
 
 /// Sleeps until the policy's next deadline, or until nudged after any change.
@@ -1985,8 +2018,17 @@ pub fn grant_listed_in(
         out.refused.len(),
         out.bound_path
     );
-    let granted = reg.inventory.modules[id].granted.clone();
-    hub.act(|r| r.set_module_grants(id, granted));
+    // Widens only by what this Allow granted: the router's own holdings plus `out.granted`,
+    // never the whole list read back from `inventory.json` (a file anyone running as the user
+    // can write). Narrowing to the file happens elsewhere (`narrow_module_grants`).
+    let new = out.granted.clone();
+    hub.act(|r| {
+        let mut now = r.module_grants(id);
+        now.extend(new);
+        now.sort();
+        now.dedup();
+        r.set_module_grants(id, now)
+    });
     Ok(out)
 }
 

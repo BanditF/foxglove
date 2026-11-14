@@ -14,6 +14,7 @@ use hideout_registry::Registry;
 /// A release manifest whose signature checked out against the update key.
 pub struct Verified {
     version: String,
+    exe_sha256: Option<String>,
 }
 
 impl Verified {
@@ -24,7 +25,10 @@ impl Verified {
         key: &foxglove_update::PublicKey,
     ) -> Result<Verified, String> {
         let m = foxglove_update::verify(latest_json, signature, key).map_err(|e| e.to_string())?;
-        Ok(Verified { version: m.version })
+        Ok(Verified {
+            version: m.version,
+            exe_sha256: m.exe_sha256.filter(|h| !h.trim().is_empty()),
+        })
     }
 
     pub fn version(&self) -> &str {
@@ -36,9 +40,37 @@ impl Verified {
 /// grant is bound to. Keeps the grant (history in `bound.attested`) only for a bound, not void
 /// grant whose program stayed in the same install folder; anything else is an error and the
 /// change voids at the next check as before.
+///
+/// Always applies (every caller): the release must be strictly newer than the module's
+/// recorded installed version and every attested one (if none parses: refused), and, when the
+/// signed manifest carries `exe_sha256`, the program at `run[0]` must hash to it. A manifest
+/// without the hash only gets the version rule (logged): the hash in the manifest is the real
+/// fix and the release pipeline is to emit it (docs/hideout-permission-grant.md).
 pub fn attest_installed(home: &Path, id: &str, update: &Verified) -> Result<(), String> {
     let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
         .map_err(|e| format!("{e:?}"))?;
+    let floor = version_floor(&reg, id)
+        .ok_or_else(|| format!("{id}: no recorded version to compare the release with; refused"))?;
+    let new = semver_triple(&update.version)
+        .ok_or_else(|| format!("{id}: release version {} does not parse", update.version))?;
+    if new <= floor {
+        return Err(format!(
+            "{id}: release {} is not newer than the installed or attested version",
+            update.version
+        ));
+    }
+    match &update.exe_sha256 {
+        Some(want) => {
+            let (_, have) = reg.current_program(id).map_err(|e| format!("{e:?}"))?;
+            if !have.eq_ignore_ascii_case(want.trim()) {
+                return Err(format!(
+                    "{id}: the program is not the one release {} names (hash differs)",
+                    update.version
+                ));
+            }
+        }
+        None => log::warn!("supervisor: {id}: release has no exe hash; version rule only"),
+    }
     reg.attest_update(
         id,
         &update.version,
@@ -46,6 +78,18 @@ pub fn attest_installed(home: &Path, id: &str, update: &Verified) -> Result<(), 
         &hideout_registry::catalogs::now_utc(),
     )
     .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))
+}
+
+/// The highest version the module is known at: its recorded installed version and every
+/// attested one. `None` when neither parses.
+fn version_floor(reg: &Registry, id: &str) -> Option<(u64, u64, u64)> {
+    let m = reg.inventory.modules.get(id)?;
+    m.bound
+        .iter()
+        .flat_map(|b| b.attested.iter().map(|a| a.version.as_str()))
+        .chain(std::iter::once(m.version.as_str()))
+        .filter_map(semver_triple)
+        .max()
 }
 
 /// The update key the app's updater checks with; the hub checks the same release signature.
@@ -58,17 +102,21 @@ pub fn update_key() -> Option<foxglove_update::PublicKey> {
 /// updater's hand-off from `dir`, checks its signature against `key` here (the file is only a
 /// carrier; a module that can write it can't sign), and attests the program now at `run[0]`.
 ///
-/// Guards: the file is used once and only while fresh; the release must be newer than any
-/// version already attested for this module (a captured old release can't be replayed); and
-/// `attest_installed` still insists on a bound, not void grant and the same install folder.
+/// Guards: the file is used once, only while fresh and only if written after
+/// `instance_started` (the hub's own record of when the module's current instance began); the
+/// release must be strictly newer than the module's installed and attested versions and, when
+/// it names the program's hash, match it ([`attest_installed`]); and the registry still
+/// insists on a bound, not void grant and the same install folder.
 /// Returns the attested version, or `None` when there was nothing usable (logged).
 pub fn attest_from_handoff(
     home: &Path,
     dir: &Path,
     id: &str,
     key: &foxglove_update::PublicKey,
+    instance_started: Option<std::time::SystemTime>,
 ) -> Option<String> {
-    let signed = foxglove_update::handoff::take(dir, std::time::SystemTime::now())?;
+    let signed =
+        foxglove_update::handoff::take_since(dir, std::time::SystemTime::now(), instance_started)?;
     let v = match Verified::from_signed(&signed.json, &signed.sig, key) {
         Ok(v) => v,
         Err(e) => {
@@ -76,28 +124,6 @@ pub fn attest_from_handoff(
             return None;
         }
     };
-    let newest_attested = Registry::open(home, hideout_registry::dev_mode_from_env())
-        .ok()
-        .and_then(|r| {
-            r.inventory
-                .modules
-                .get(id)?
-                .bound
-                .as_ref()?
-                .attested
-                .iter()
-                .filter_map(|a| semver_triple(&a.version))
-                .max()
-        });
-    if let (Some(old), Some(new)) = (newest_attested, semver_triple(&v.version)) {
-        if new <= old {
-            log::warn!(
-                "supervisor: {id}: update hand-off ignored: {} is not newer than an attested release",
-                v.version
-            );
-            return None;
-        }
-    }
     match attest_installed(home, id, &v) {
         Ok(()) => {
             log::info!(

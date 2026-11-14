@@ -151,3 +151,100 @@ fn declining_everything_still_lets_the_module_start_and_a_swapped_program_asks_a
     drop(sup);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
+
+#[test]
+fn an_allow_widens_the_router_only_by_what_it_granted() {
+    let (home, _exe, id) = adopted_home("widen");
+    let id = id.as_str();
+    let hub = hub();
+    let sup = Supervisor::start(&home, hub.clone());
+    let code = || {
+        Registry::open_from_env(&home)
+            .unwrap()
+            .permission_list(id)
+            .unwrap()
+            .code()
+            .to_string()
+    };
+    sup.grant_listed(id, &code(), &strs(&["hub.notify"]), &[], "dialog")
+        .unwrap();
+    assert_eq!(hub.read(|r| r.module_grants(id)), ["hub.notify"]);
+
+    // Something running as the user writes an extra grant into inventory.json.
+    hideout_registry::inventory::Inventory::update(&home.join("inventory.json"), |inv| {
+        inv.modules
+            .get_mut(id)
+            .unwrap()
+            .granted
+            .push("net".to_string());
+    })
+    .unwrap();
+
+    // The user allows another item: the router gets it, not the injected one.
+    sup.grant_listed(id, &code(), &strs(&["ui.window"]), &[], "dialog")
+        .unwrap();
+    let held = hub.read(|r| r.module_grants(id));
+    assert!(held.contains(&"hub.notify".to_string()), "{held:?}");
+    assert!(held.contains(&"ui.window".to_string()), "{held:?}");
+    assert!(!held.contains(&"net".to_string()), "widened: {held:?}");
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+#[test]
+fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
+    let (home, exe, id) = adopted_home("retired");
+    let id = id.as_str();
+    // The module's program starts a helper and exits at once; the helper outlives it.
+    let folder = home.parent().unwrap().join("manifest");
+    let text = std::fs::read_to_string(folder.join("module.toml")).unwrap();
+    let old = text.lines().find(|l| l.starts_with("run")).unwrap();
+    // ping.exe is the program; the leftover is a second ping started through cmd's `start`.
+    let cmd = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+    let cmd = cmd.replace(std::path::MAIN_SEPARATOR, "/");
+    // A literal TOML string keeps the backslashes `start` needs in the helper's path.
+    let helper = exe.display().to_string();
+    let run = format!(
+        "run = [\"{cmd}\", \"/c\", \"start\", \"/b\", '{helper}', \"-n\", \"6\", \"127.0.0.1\"]"
+    );
+    std::fs::write(folder.join("module.toml"), text.replace(old, &run)).unwrap();
+    Registry::open(&home, true)
+        .unwrap()
+        .register_adopted(&folder, NOW)
+        .unwrap();
+    let sup = Supervisor::start(&home, hub());
+    let list = Registry::open_from_env(&home)
+        .unwrap()
+        .permission_list(id)
+        .unwrap();
+    sup.grant_listed(
+        id,
+        list.code(),
+        &strs(&["hub.notify", "ui.window"]),
+        &[],
+        "dialog",
+    )
+    .unwrap();
+    sup.turn_on(id).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while sup.retired_jobs() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    sup.turn_off(id);
+    assert!(
+        sup.retired_jobs() >= 1,
+        "the ended instance's job, with its helper still in it, was dropped"
+    );
+    // Once the helper is gone the job is pruned on the next check.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        let _ = sup.in_module_job(std::process::id());
+        if sup.retired_jobs() == 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert_eq!(sup.retired_jobs(), 0, "an empty retired job was kept");
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}

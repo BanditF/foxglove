@@ -17,9 +17,14 @@ use ring::signature::{Ed25519KeyPair, KeyPair};
 const NOW: &str = "2026-11-13T00:00:00Z";
 
 fn signed(version: &str, seed: u8) -> (Vec<u8>, Vec<u8>, [u8; 32]) {
+    signed_with(version, seed, None)
+}
+
+fn signed_with(version: &str, seed: u8, exe: Option<&str>) -> (Vec<u8>, Vec<u8>, [u8; 32]) {
     let pair = Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap();
+    let exe = exe.map_or(String::new(), |h| format!(r#","exe_sha256":"{h}""#));
     let json = format!(
-        r#"{{"version":"{version}","tag":"app-v{version}","msi":{{"name":"a.msi","url":"https://x/a.msi","sha256":"00","size":1}},"notes":"","published":"2026-11-13T00:00:00Z"}}"#
+        r#"{{"version":"{version}","tag":"app-v{version}","msi":{{"name":"a.msi","url":"https://x/a.msi","sha256":"00","size":1}},"notes":"","published":"2026-11-13T00:00:00Z"{exe}}}"#
     );
     let sig = STANDARD.encode(pair.sign(json.as_bytes()).as_ref());
     let key: [u8; 32] = pair.public_key().as_ref().try_into().unwrap();
@@ -183,7 +188,7 @@ fn the_updaters_handoff_keeps_the_grant_once_and_only_when_signed_and_newer() {
     let _ = write_handoff(&dir, "1.1.0", 8);
     let key = signed("1.1.0", 7).2;
     assert!(
-        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).is_none(),
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).is_none(),
         "a signature from another key is not accepted"
     );
     assert!(!dir.join(foxglove_update::handoff::FILE).exists());
@@ -191,10 +196,12 @@ fn the_updaters_handoff_keeps_the_grant_once_and_only_when_signed_and_newer() {
     // The real key's release is attested, once; the file is gone afterwards.
     let _ = write_handoff(&dir, "1.1.0", 7);
     assert_eq!(
-        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).as_deref(),
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).as_deref(),
         Some("1.1.0")
     );
-    assert!(hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).is_none());
+    assert!(
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).is_none()
+    );
     let reg = Registry::open_from_env(&home).unwrap();
     let m = &reg.inventory.modules[&id];
     assert_eq!(m.granted, ["hub.notify"]);
@@ -203,7 +210,9 @@ fn the_updaters_handoff_keeps_the_grant_once_and_only_when_signed_and_newer() {
     // The same release again, with the program changed once more, is a replay: refused.
     std::fs::write(&exe, b"program v3").unwrap();
     let _ = write_handoff(&dir, "1.1.0", 7);
-    assert!(hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).is_none());
+    assert!(
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).is_none()
+    );
     let reg = Registry::open_from_env(&home).unwrap();
     assert_eq!(
         reg.inventory.modules[&id]
@@ -233,7 +242,92 @@ fn a_stale_handoff_is_not_used() {
         .unwrap()
         .set_modified(old)
         .unwrap();
-    assert!(hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key).is_none());
+    assert!(
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).is_none()
+    );
     drop(sup);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+fn attested(home: &Path, id: &str) -> usize {
+    Registry::open_from_env(home).unwrap().inventory.modules[id]
+        .bound
+        .as_ref()
+        .unwrap()
+        .attested
+        .len()
+}
+
+#[test]
+fn the_version_rule_always_applies_to_the_installed_version_too() {
+    let (home, exe, id) = home("ver", None);
+    let sup = sup(&home);
+    allow(&sup, &home, &id);
+    std::fs::write(&exe, b"program v2").unwrap();
+    // The module is recorded at 1.0.0: the same or an older release is a replay; a version that
+    // doesn't parse is refused too.
+    for v in ["1.0.0", "0.9.0", "banana"] {
+        let (json, sig, key) = signed(v, 7);
+        let ver = Verified::from_signed(&json, &sig, &key).unwrap();
+        assert!(sup.attest_verified_update(&id, &ver).is_err(), "{v}");
+    }
+    assert_eq!(attested(&home, &id), 0);
+    let (json, sig, key) = signed("1.0.1", 7);
+    let ver = Verified::from_signed(&json, &sig, &key).unwrap();
+    sup.attest_verified_update(&id, &ver).unwrap();
+    // Now 1.0.1 is the floor.
+    std::fs::write(&exe, b"program v3").unwrap();
+    assert!(sup.attest_verified_update(&id, &ver).is_err());
+    assert_eq!(attested(&home, &id), 1);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+#[test]
+fn a_release_that_names_the_program_hash_must_match_it() {
+    let (home, exe, id) = home("hash", None);
+    let sup = sup(&home);
+    allow(&sup, &home, &id);
+    std::fs::write(&exe, b"program v2").unwrap();
+    let good = sha_hex(b"program v2").to_uppercase();
+    let bad = sha_hex(b"something else");
+    let (json, sig, key) = signed_with("1.1.0", 7, Some(&bad));
+    let ver = Verified::from_signed(&json, &sig, &key).unwrap();
+    assert!(sup.attest_verified_update(&id, &ver).is_err());
+    assert_eq!(attested(&home, &id), 0);
+    let (json, sig, key) = signed_with("1.1.0", 7, Some(&good));
+    let ver = Verified::from_signed(&json, &sig, &key).unwrap();
+    sup.attest_verified_update(&id, &ver).unwrap();
+    assert_eq!(attested(&home, &id), 1);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+#[test]
+fn a_handoff_older_than_the_instance_is_not_used() {
+    let (home, exe, id) = home("since", None);
+    let sup = sup(&home);
+    allow(&sup, &home, &id);
+    let dir = handoff_dir(&home);
+    std::fs::write(&exe, b"program v2").unwrap();
+    let key = write_handoff(&dir, "1.1.0", 7);
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    assert!(
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, Some(later))
+            .is_none()
+    );
+    let _ = write_handoff(&dir, "1.1.0", 7);
+    let before = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    assert_eq!(
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, Some(before))
+            .as_deref(),
+        Some("1.1.0")
+    );
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+fn sha_hex(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(b))
 }

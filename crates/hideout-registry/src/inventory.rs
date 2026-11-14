@@ -86,6 +86,9 @@ pub struct Bound {
     pub at: String,
     /// `dialog` or `cli`.
     pub by: String,
+    /// `run[1..]` (the program's arguments) at the allow; empty = not recorded, not checked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run_args: Vec<String>,
     /// The program changed or moved since the allow.
     #[serde(default)]
     pub void: bool,

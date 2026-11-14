@@ -30,7 +30,7 @@ fn run() -> Result<()> {
             let version = flag("--version")?;
             if foxglove_update::tag_version(&format!("app-v{version}")).is_none() { return Err("Invalid stable version".into()); }
             let (sha256, size) = hash(std::fs::File::open(flag("--msi")?)?)?;
-            let manifest = Manifest { tag: format!("app-v{version}"), version, msi: Msi { name: "foxglove-x64.msi".into(), url: flag("--url")?, sha256, size }, notes: std::fs::read_to_string(flag("--notes-file")?)?, published: chrono::Utc::now().to_rfc3339() };
+            let manifest = Manifest { tag: format!("app-v{version}"), version, msi: Msi { name: "foxglove-x64.msi".into(), url: flag("--url")?, sha256, size }, notes: std::fs::read_to_string(flag("--notes-file")?)?, published: chrono::Utc::now().to_rfc3339(), exe_sha256: flag("--exe-sha256").ok() };
             std::fs::write("latest.json", serde_json::to_vec_pretty(&manifest)?)?;
         }
         _ => return Err("Usage: keygen | sign <latest.json> | manifest --version V --msi PATH --url URL --notes-file PATH".into()),

@@ -556,3 +556,41 @@ fn permission_view_reports_pending_granted_declined_void_and_last_choice() {
     assert!(!v.last_choice.contains(&"ui.window".to_string()));
     assert!(v.bound.as_ref().unwrap().void);
 }
+
+#[test]
+fn changed_program_arguments_void_the_grant() {
+    let install = temp("args-install");
+    let exe = install.join("hub.exe");
+    std::fs::write(&exe, b"program v1").unwrap();
+    let folder = temp("args-manifest");
+    let spelled = exe
+        .display()
+        .to_string()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let with = |args: &str| {
+        manifest(&exe, &["hub.notify"]).replace(
+            &format!("run = [\"{spelled}\"]"),
+            &format!("run = [\"{spelled}\"{args}]"),
+        )
+    };
+    std::fs::write(folder.join("module.toml"), with(", \"--quiet\"")).unwrap();
+    let home = temp("args-home");
+    let mut reg = Registry::open(&home, true).unwrap();
+    reg.register_adopted(&folder, NOW).unwrap();
+    let list = reg.permission_list(ID).unwrap();
+    assert_eq!(list.run_args, ["--quiet"]);
+    reg.approve_listed(ID, list.code(), &strs(&["hub.notify"]), &[], NOW, "dialog")
+        .unwrap();
+    assert_eq!(
+        reg.inventory.modules[ID].bound.as_ref().unwrap().run_args,
+        ["--quiet"]
+    );
+    assert!(reg.binding_void(ID).is_none());
+
+    // Same program, other arguments: the grant is void.
+    std::fs::write(folder.join("module.toml"), with(", \"--evil\"")).unwrap();
+    reg.register_adopted(&folder, NOW).unwrap();
+    assert!(reg.binding_void(ID).is_some());
+    assert!(reg.void_if_changed(ID, NOW).unwrap().is_some());
+    assert!(reg.inventory.modules[ID].granted.is_empty());
+}

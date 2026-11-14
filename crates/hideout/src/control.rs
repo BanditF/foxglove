@@ -232,21 +232,44 @@ pub fn handle(
     }
 }
 
-/// Whether a connecting process may grant: not inside any module's job, and the hub's own image.
+/// Whether a connecting process may grant: not inside any module's job (live, or retired with
+/// processes still in it), and the hub's own image. The process is opened once; the same handle
+/// serves both checks.
 pub fn caller_ok(sup: &hideout_supervisor::driver::Supervisor, pid: u32) -> bool {
-    if sup.in_module_job(pid) {
+    let Ok(p) = hideout_supervisor::win::Process::open(pid) else {
+        return false;
+    };
+    if sup.process_in_module_job(&p) {
         return false;
     }
     let me = std::env::current_exe().ok();
-    let theirs = hideout_supervisor::win::Process::open(pid)
-        .and_then(|p| p.image())
-        .ok();
-    match (me, theirs) {
+    match (me, p.image().ok()) {
         (Some(a), Some(b)) => {
             hideout_registry::keyboard::same_path(&a.to_string_lossy(), &b.to_string_lossy())
         }
         _ => false,
     }
+}
+
+/// How long a permitted client has to send its request line.
+const READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Reads one request line (at most 4096 bytes) before `READ_DEADLINE`; `None` when the client
+/// said nothing in time or closed without a line.
+fn read_line_before(conn: &foxglove_plugin::channel::PipeConn) -> Option<String> {
+    let end = std::time::Instant::now() + READ_DEADLINE;
+    let mut line = Vec::new();
+    let mut buf = [0u8; 256];
+    while line.len() < 4096 && !line.contains(&b'\n') {
+        match conn.read_before(&mut buf, end) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => line.extend_from_slice(&buf[..n]),
+        }
+    }
+    if !line.contains(&b'\n') && line.is_empty() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&line).into_owned())
 }
 
 /// Serves the control pipe from a thread of its own, one request per connection.
@@ -257,7 +280,7 @@ pub fn serve(
     sup: hideout_supervisor::driver::Supervisor,
 ) -> std::io::Result<()> {
     use foxglove_plugin::channel::ServerPipe;
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::Write;
     let first = ServerPipe::create(name, true)?;
     let name = name.to_string();
     std::thread::Builder::new()
@@ -271,9 +294,17 @@ pub fn serve(
                 let next = ServerPipe::create(&name, false);
                 if let Ok(mut conn) = conn {
                     let ok = conn.client_pid().is_ok_and(|p| caller_ok(&sup, p));
-                    let mut line = String::new();
-                    let _ = BufReader::new(conn.clone()).take(4096).read_line(&mut line);
-                    let (code, text) = handle(&home, &hub, ok, &line);
+                    // A caller that may not grant is refused without reading its request.
+                    let line = if ok {
+                        read_line_before(&conn).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    let (code, text) = if ok && line.is_empty() {
+                        usage("no request line")
+                    } else {
+                        handle(&home, &hub, ok, &line)
+                    };
                     let _ = conn.write_all(
                         format!(
                             "{code}
@@ -725,5 +756,26 @@ mod tests {
         assert!(!caller_ok(&f.sup, other.id()));
         let _ = other.kill();
         let _ = other.wait();
+    }
+
+    #[test]
+    fn a_silent_client_does_not_stall_the_pipe() {
+        let f = fx("silent", &ping());
+        // Connects and says nothing, and stays connected.
+        let silent = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&f.pipe)
+            .unwrap();
+        // The server makes its next pipe instance right after it accepts.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let t = std::time::Instant::now();
+        let (c, text) = request(&f.pipe, "frobnicate x");
+        assert_eq!(c, USAGE, "{text}");
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(8),
+            "the pipe was held by a client that sent nothing"
+        );
+        drop(silent);
     }
 }

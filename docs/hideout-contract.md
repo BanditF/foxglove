@@ -1290,6 +1290,26 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   hub's control pipe from the user's own `hideout.exe` that is not inside any module's Job
   Object. No router method, panel event, action, setting or module call reaches
   `approve_listed`; `modules.manage` is not enough.
+- (#1179) **Attestation guards.** The hub-side attestation (`attest_installed`) always requires
+  the release's version to be strictly greater than the module's recorded installed version
+  and every version already attested (neither parsing: refused). When the signed `latest.json`
+  carries `exe_sha256` (SHA-256 of `foxglove.exe` in that release; optional field) the program
+  at `run[0]` must hash to it, case-insensitively, else refused; without it only the version
+  rule applies (logged: "release has no exe hash; version rule only"). The hand-off file is
+  also ignored when it is older than the module's current instance (the hub's own record).
+  **Open item:** the hash-in-manifest is the real fix (without it a signed old-or-new release
+  proves only that the updater ran, not which file is on disk); the release pipeline must emit
+  `exe_sha256` (`foxglove-update manifest --exe-sha256 <hex>` takes it). A binding also records
+  `run[1..]` (the program's arguments); a later difference voids the grant (empty = not
+  recorded, not checked).
+- (#1179) **Design limit.** A module that runs outside an AppContainer has the user's token. It
+  can inject into or drive `hideout.exe`, synthesise input to the hub's dialog, or write
+  `inventory.json`. The guarantee that a module never grants itself is therefore **full only
+  for AppContainer modules**, unless the hub home and install folders carry ACLs and every
+  grant needs a real click in the hub window. Follow-ups: a DACL on the hub home, job UI-limit
+  flags (no desktop handles, no input to other windows), queue-and-confirm for CLI grants (the
+  CLI only queues; the click in the hub confirms), and a pipe-server identity check
+  (`GetNamedPipeServerProcessId`) in the CLI client.
 
 ### 6.5 Signing is provenance, not permission
 

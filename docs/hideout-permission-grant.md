@@ -55,5 +55,25 @@ version already attested for the module, and calls `attest_installed`, which sti
 not void grant and the same install folder. Any other module's planned exit never reads it. A failure
 anywhere means the change voids at the next check as before (the user is asked again).
 
+Guards added after the security review: the version rule always applies (strictly newer than the
+installed and every attested version; if neither parses, refused); the hand-off must be newer than the
+module's current instance; and when the signed manifest carries `exe_sha256` the program at `run[0]`
+must match it. The control pipe keeps the caller check on retired jobs (children that outlive their
+module), opens the client once, refuses a bad caller without reading, and reads with a 2 s deadline.
+An Allow widens the router only by what it granted, never by what `inventory.json` says, and a
+binding also records the program's arguments (a change voids).
+
+Open item (pipeline): the hash-in-manifest is the real fix. Until the release pipeline emits
+`exe_sha256` in `latest.json` (`foxglove-update manifest --exe-sha256 <hex>` is ready), a release
+without it gets only the version rule and a warning in the log.
+
+### Design limit
+
+A module outside an AppContainer has the user's token: it can inject into or drive `hideout.exe`,
+synthesise input to the hub's dialog, or write `inventory.json`. "A module never grants itself" is
+full only for AppContainer modules unless the hub home and install folders get ACLs and every grant
+needs a real click in the hub window. Follow-ups: DACL on the hub home; job UI-limit flags;
+queue-and-confirm for CLI grants; a pipe-server identity check (`GetNamedPipeServerProcessId`).
+
 Known limit: this proves "a signed release was installed by the updater", not that the file on disk is
 that release's file (the hash isn't in `latest.json`); the signer-bound grant below closes that.

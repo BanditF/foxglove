@@ -23,6 +23,10 @@ pub struct Manifest {
     pub msi: Msi,
     pub notes: String,
     pub published: String,
+    /// SHA-256 of foxglove.exe in this release (hex). The release pipeline is to emit it; the
+    /// hub then requires the installed program to match before it keeps a grant (#1179).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exe_sha256: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 pub struct Asset {
@@ -186,13 +190,25 @@ pub mod handoff {
 
     /// Reads and removes the hand-off; `None` when absent, unreadable, too old or too large.
     pub fn take(dir: &Path, now: std::time::SystemTime) -> Option<Signed> {
+        take_since(dir, now, None)
+    }
+
+    /// [`take`], and also `None` when the file was written before `not_before` (the hub's own
+    /// record of when the module's current instance started: a hand-off older than that
+    /// instance was not left by it).
+    pub fn take_since(
+        dir: &Path,
+        now: std::time::SystemTime,
+        not_before: Option<std::time::SystemTime>,
+    ) -> Option<Signed> {
         let path = dir.join(FILE);
         let meta = std::fs::metadata(&path).ok()?;
         let fresh = meta
             .modified()
             .ok()
             .and_then(|m| now.duration_since(m).ok())
-            .is_some_and(|age| age <= MAX_AGE);
+            .is_some_and(|age| age <= MAX_AGE)
+            && not_before.is_none_or(|nb| meta.modified().is_ok_and(|m| m >= nb));
         let text = (meta.len() <= LIMIT)
             .then(|| std::fs::read_to_string(&path).ok())
             .flatten();
@@ -249,6 +265,7 @@ mod tests {
 
     fn manifest(version: &str) -> Vec<u8> {
         serde_json::to_vec(&Manifest {
+            exe_sha256: None,
             version: version.into(),
             tag: format!("app-v{version}"),
             msi: Msi {

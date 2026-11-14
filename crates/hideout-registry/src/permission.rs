@@ -173,6 +173,8 @@ pub struct Listing {
     /// Canonical path of `run[0]` (adopted modules), else empty.
     pub exe_path: String,
     pub exe_sha256: String,
+    /// `run[1..]` of an adopted module's manifest, else empty.
+    pub run_args: Vec<String>,
     /// Items in dialog order (group, then raw).
     pub items: Vec<Item>,
     /// 64 hex digits.
@@ -239,6 +241,29 @@ impl Registry {
     /// The program of a module now: canonical path and SHA-256 of the file for an adopted one.
     /// A module the hub installed itself has no external program: its path is empty and its
     /// hash is the hash of the signed file map.
+    /// `run[1..]` of an adopted module now; empty for any other (or an unreadable manifest).
+    fn run_args(&self, id: &str) -> Vec<String> {
+        let adopted = self
+            .inventory
+            .modules
+            .get(id)
+            .is_some_and(|m| m.source == ADOPTED);
+        if !adopted {
+            return Vec::new();
+        }
+        self.manifest_checked(id)
+            .ok()
+            .and_then(|m| m.run)
+            .map(|r| r.into_iter().skip(1).collect())
+            .unwrap_or_default()
+    }
+
+    /// The program of `id` now (canonical path, SHA-256), as the binding and the updater's
+    /// hash check read it.
+    pub fn current_program(&self, id: &str) -> Result<(String, String), Failure> {
+        self.program(id)
+    }
+
     fn program(&self, id: &str) -> Result<(String, String), Failure> {
         let m = self
             .inventory
@@ -269,6 +294,7 @@ impl Registry {
         let manifest = self.manifest_checked(id)?;
         let manifest_text = std::fs::read(self.module_dir(id, &m.version).join("module.toml"))?;
         let (exe_path, exe_sha256) = self.program(id)?;
+        let run_args = self.run_args(id);
         let overlap = |cap: &Capability| -> bool {
             let Capability::Provide(p) = cap else {
                 return false;
@@ -344,6 +370,7 @@ impl Registry {
             manifest_sha256,
             exe_path,
             exe_sha256,
+            run_args,
             items,
             list_hash,
         })
@@ -455,6 +482,7 @@ impl Registry {
             list_hash: list.list_hash.clone(),
             at: now.into(),
             by: by.into(),
+            run_args: list.run_args.clone(),
             void: false,
             attested: m.bound.take().map(|b| b.attested).unwrap_or_default(),
         });
@@ -528,7 +556,9 @@ impl Registry {
         }
         match self.program(id) {
             Ok((path, hash)) => {
-                if !crate::keyboard::same_path(&path, &b.exe_path) {
+                if !b.run_args.is_empty() && self.run_args(id) != b.run_args {
+                    Some(VoidReason::Changed)
+                } else if !crate::keyboard::same_path(&path, &b.exe_path) {
                     Some(VoidReason::Moved)
                 } else if !hash.eq_ignore_ascii_case(&b.exe_sha256) {
                     Some(VoidReason::Changed)

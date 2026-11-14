@@ -618,6 +618,12 @@ impl PipeConn {
         Ok(pid)
     }
 
+    /// One read that gives up at `deadline` (an error of kind `TimedOut` or similar), so a
+    /// client that connects and says nothing can't hold the server.
+    pub fn read_before(&self, buf: &mut [u8], deadline: Instant) -> io::Result<usize> {
+        self.read_until(buf, Some(deadline))
+    }
+
     fn read_until(&self, buf: &mut [u8], deadline: Option<Instant>) -> io::Result<usize> {
         let h = self.0 .0;
         let len = buf.len().min(u32::MAX as usize) as u32;
