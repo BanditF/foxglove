@@ -148,6 +148,14 @@ fn the_embedded_manifest_is_a_valid_adopted_module() {
     assert!(!text.contains("facts.write:device"));
 }
 
+#[test]
+fn the_module_serves_the_plugin_apis_real_version_in_code_and_manifest() {
+    // A client built for the SDK's version (1.16) must not get code 7 from this module's hub.
+    assert_eq!(API, foxglove_plugin_api::API_VERSION.to_string());
+    let m = Module::parse(&manifest(r"C:\x\foxglove.exe"), &Context::default()).unwrap();
+    assert_eq!(m.api.get("foxglove").map(String::as_str), Some(API));
+}
+
 // ---- the link against the hub's router ----
 
 struct Rig {
