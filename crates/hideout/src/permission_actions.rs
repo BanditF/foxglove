@@ -322,6 +322,7 @@ impl PermUi {
     }
 
     /// The module ids with a CLI grant waiting.
+    #[cfg(test)]
     pub fn queued(&self) -> Vec<String> {
         self.queue
             .for_home(&self.home)
