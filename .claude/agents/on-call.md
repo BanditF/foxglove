@@ -64,6 +64,7 @@ Start only on the Planner's batch message or a wake you already have, with one
 `gh issue list --label compute:local-llm,compute:cpu`. No game running, then `labkit.py idle --min 120`;
 if either blocks, say "deferred" once and stop, no retries. BelowNormal, time limit on everything,
 model unloaded after. Post at most 20 lines on the issue, relabel `local-review`. Never review your own output.
+`tools\digest.ps1 <file>` (local model; big outputs over 8k chars) gives a digest: a POINTER to where to read, never evidence. Open the raw lines it points to before you act, quote nothing from the digest as fact, and read the raw whole when the digest says "not stated" or you act on a cause, verdict or count. Shadow test 11/13-14: 28/30 digests were fine, 2 inverted a clause (a cause, a CI status). Exit 3 = game or busy GPU: read the raw.
 
 ## Session economy
 - Session economy (docs/agents.md, Models and sessions): restart at ~150k context with a state note; one session per issue, retries by SendMessage, check merged PRs before starting; Sonnet for engineers.
