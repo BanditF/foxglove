@@ -30,10 +30,16 @@ fn run() -> Result<()> {
             let version = flag("--version")?;
             if foxglove_update::tag_version(&format!("app-v{version}")).is_none() { return Err("Invalid stable version".into()); }
             let (sha256, size) = hash(std::fs::File::open(flag("--msi")?)?)?;
-            let manifest = Manifest { tag: format!("app-v{version}"), version, msi: Msi { name: "foxglove-x64.msi".into(), url: flag("--url")?, sha256, size }, notes: std::fs::read_to_string(flag("--notes-file")?)?, published: chrono::Utc::now().to_rfc3339(), exe_sha256: flag("--exe-sha256").ok() };
+            // Optional for a manual build, but the release workflow always passes it (#1185). A
+            // malformed value is refused rather than signed: the hub would never match it.
+            let exe_sha256 = flag("--exe-sha256").ok().map(|h| h.trim().to_ascii_lowercase());
+            if let Some(h) = &exe_sha256 {
+                if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("--exe-sha256 must be 64 hexadecimal characters".into()); }
+            }
+            let manifest = Manifest { tag: format!("app-v{version}"), version, msi: Msi { name: "foxglove-x64.msi".into(), url: flag("--url")?, sha256, size }, notes: std::fs::read_to_string(flag("--notes-file")?)?, published: chrono::Utc::now().to_rfc3339(), exe_sha256 };
             std::fs::write("latest.json", serde_json::to_vec_pretty(&manifest)?)?;
         }
-        _ => return Err("Usage: keygen | sign <latest.json> | manifest --version V --msi PATH --url URL --notes-file PATH".into()),
+        _ => return Err("Usage: keygen | sign <latest.json> | manifest --version V --msi PATH --url URL --notes-file PATH [--exe-sha256 HEX]".into()),
     }
     Ok(())
 }
