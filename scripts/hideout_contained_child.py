@@ -30,7 +30,8 @@ def provide(cmd):
         for i in range(5):
             conn.write_frame(bytes([i]) * 3)
         end = conn.read_frame()
-    say(accepted=True, end=end)
+    # read_frame() is None on a clean hang-up, else raw bytes: JSON needs text.
+    say(accepted=True, end=None if end is None else end.hex())
 
 
 def consume(cmd):
