@@ -146,9 +146,11 @@ pub fn monitors() -> Vec<MonitorInfo> {
 /// A display change: read the monitors again.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn display_changed() {
-    // Screen glow's capture tries again on any display change (#496); a no-op without a scene.
-    super::scene_run::display_changed();
     let now = imp::read();
+    // Screen glow's capture tries again (#496; a no-op without a scene), once the displays
+    // settled and only when they differ from the last ones it opened: a display that flaps every
+    // few seconds reopened the capture each time.
+    capture_settle().event(now.clone());
     let mut known = MONITORS.lock().unwrap_or_else(|e| e.into_inner());
     if known.as_ref() != Some(&now) {
         let what = difference(known.as_deref().unwrap_or(&[]), &now);
@@ -163,6 +165,16 @@ fn display_changed() {
         changed();
     }
     *known = Some(now);
+}
+
+fn capture_settle() -> &'static super::display_settle::Debounce<Vec<MonitorInfo>> {
+    static SETTLE: std::sync::OnceLock<super::display_settle::Debounce<Vec<MonitorInfo>>> =
+        std::sync::OnceLock::new();
+    SETTLE.get_or_init(|| {
+        super::display_settle::Debounce::new("scene-displays-settle", |_| {
+            super::scene_run::display_changed()
+        })
+    })
 }
 
 /// Display changes while the user is away (#903): a sleeping monitor's link can drop and come
