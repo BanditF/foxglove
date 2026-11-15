@@ -12,6 +12,7 @@ import argparse
 import base64
 import json
 import os
+from pathlib import Path
 
 from PIL import Image, ImageDraw
 
@@ -354,13 +355,13 @@ def font35():
 
 
 def write(plugin, data, previews):
-    d = os.path.join(ROOT, "assets", "plugins", plugin)
-    os.makedirs(os.path.join(d, "preview"), exist_ok=True)
-    with open(os.path.join(d, "panel.json"), "w", encoding="utf-8", newline="\n") as f:
+    d = Path(ROOT) / "assets" / "plugins" / plugin
+    (d / "preview").mkdir(parents=True, exist_ok=True)
+    with open(d / "panel.json", "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=1)
         f.write("\n")
     for name, img in previews.items():
-        preview(img).save(os.path.join(d, "preview", name + ".png"))
+        preview(img).save(str(d / "preview" / (name + ".png")))
     return previews
 
 
