@@ -325,18 +325,46 @@ pub fn serve(
     Ok(())
 }
 
-/// The client: sends one request line, returns (exit code, text). No hub = exit 5.
+/// The client: sends one request line, returns (exit code, text). No hub = exit 5. The server
+/// must be this install's `hideout.exe`, same user (#1184): see [`request_to`].
+#[cfg(test)]
 pub fn request(pipe: &str, line: &str) -> (i32, String) {
+    request_to(pipe, line, foxglove_plugin::owner::Expect::HIDEOUT)
+}
+
+/// How long a client waits for a busy pipe before giving up (the server takes one request at a
+/// time and a grant touches the registry).
+const WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// [`request`] against a server that must be `expect`. Before a byte is sent the kernel is
+/// asked who serves the pipe (`GetNamedPipeServerProcessId`, on the connection the request then
+/// uses) and the process must be that image, in this program's install folder, same user, Medium
+/// integrity or above, no AppContainer (`foxglove_plugin::owner`). Anything else is a squatter:
+/// nothing is sent and the exit code is 1 (`hideout.pipe.foreign`), so the grant request (the
+/// module id and list code) never reaches it.
+pub fn request_to(pipe: &str, line: &str, expect: foxglove_plugin::owner::Expect) -> (i32, String) {
+    use foxglove_plugin::owner::{open_verified, Probe};
     use std::io::{Read, Write};
-    let Ok(mut c) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(pipe)
-    else {
-        return (
-            NO_HUB,
-            "hideout: the hub isn't running; nothing changed\n".into(),
-        );
+    let mut c = match open_verified(pipe, expect, WAIT) {
+        Ok(c) => c,
+        Err(Probe::Foreign { why, .. }) if why.starts_with("every instance busy") => {
+            return (BUSY, "hideout: the hub is busy; nothing changed\n".into());
+        }
+        Err(Probe::Foreign { why, .. }) => {
+            return (
+                REFUSED,
+                format!(
+                    "hideout.pipe.foreign\nhideout: something other than this hub answers on \
+                     the control pipe ({why}); nothing was sent\n"
+                ),
+            );
+        }
+        Err(_) => {
+            return (
+                NO_HUB,
+                "hideout: the hub isn't running; nothing changed\n".into(),
+            );
+        }
     };
     let _ = c.write_all(format!("{line}\n").as_bytes());
     let mut reply = String::new();
@@ -350,7 +378,16 @@ pub fn request(pipe: &str, line: &str) -> (i32, String) {
 /// `hideout.exe --modules <step> <id> ...`: `None` for any other command line.
 pub fn client(
     paths: &hideout_shell::paths::HubPaths,
+    args: impl Iterator<Item = std::ffi::OsString>,
+) -> Option<i32> {
+    client_as(paths, args, foxglove_plugin::owner::Expect::HIDEOUT)
+}
+
+/// [`client`] with the server identity to require (tests expect their own binary).
+fn client_as(
+    paths: &hideout_shell::paths::HubPaths,
     mut args: impl Iterator<Item = std::ffi::OsString>,
+    expect: foxglove_plugin::owner::Expect,
 ) -> Option<i32> {
     if args.next()? != "--modules" {
         return None;
@@ -366,7 +403,7 @@ pub fn client(
             }
         }
         [s, _, ..] if matches!(s.as_str(), "grant" | "deny" | "revoke") => {
-            request(&pipe_name(paths), &rest.join(" "))
+            request_to(&pipe_name(paths), &rest.join(" "), expect)
         }
         _ => usage("usage: --modules permissions|grant|deny|revoke <id> ..."),
     };
@@ -465,6 +502,32 @@ mod tests {
         }
     }
 
+    /// This test binary's own file name: the identity of the real server in these tests (the
+    /// server runs in this process, which is not `hideout.exe`).
+    fn own_exe() -> foxglove_plugin::owner::Expect {
+        let n = std::env::current_exe()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        foxglove_plugin::owner::Expect {
+            exe: Box::leak(n.into_boxed_str()),
+        }
+    }
+
+    /// The client as the product uses it, but expecting this test binary as the server.
+    fn ask(pipe: &str, line: &str) -> (i32, String) {
+        request_to(pipe, line, own_exe())
+    }
+
+    fn cli(
+        paths: &hideout_shell::paths::HubPaths,
+        args: impl Iterator<Item = std::ffi::OsString>,
+    ) -> Option<i32> {
+        client_as(paths, args, own_exe())
+    }
+
     fn windir() -> String {
         std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())
     }
@@ -515,11 +578,11 @@ mod tests {
     fn the_pipe_grants_only_the_listed_code_and_exit_codes_say_what_happened() {
         let f = fx("grant", &ping());
         // No code: the list is printed, exit 3, nothing granted.
-        let (c, t) = request(&f.pipe, &format!("grant {} --all-listed", f.id));
+        let (c, t) = ask(&f.pipe, &format!("grant {} --all-listed", f.id));
         assert_eq!(c, NEEDS_OK, "{t}");
         assert!(t.contains("--listed <code> is needed"), "{t}");
         // A stale code: exit 3, nothing granted.
-        let (c, t) = request(
+        let (c, t) = ask(
             &f.pipe,
             &format!("grant {} --all-listed --listed {}", f.id, "0".repeat(16)),
         );
@@ -536,16 +599,16 @@ mod tests {
             "grant".to_string(),
             format!("revoke {}", f.id),
         ] {
-            let (c, t) = request(&f.pipe, &bad);
+            let (c, t) = ask(&f.pipe, &bad);
             assert_eq!(c, USAGE, "{bad}: {t}");
         }
         assert!(state(&f).0.is_empty());
         // An item that is not in the list: refused (1), nothing granted.
-        let (c, t) = request(&f.pipe, &format!("grant {} net --listed {good}", f.id));
+        let (c, t) = ask(&f.pipe, &format!("grant {} net --listed {good}", f.id));
         assert_eq!(c, REFUSED, "{t}");
         assert!(state(&f).0.is_empty());
         // The shown list, one item: it is granted and the other stays pending.
-        let (c, t) = request(
+        let (c, t) = ask(
             &f.pipe,
             &format!("grant {} hub.notify --listed {good}", f.id),
         );
@@ -560,7 +623,7 @@ mod tests {
         // The router follows the file at once.
         assert_eq!(f.hub.read(|r| r.module_grants(&f.id)), ["hub.notify"]);
         // Revoke narrows and needs no code.
-        let (c, t) = request(&f.pipe, &format!("revoke {} --all", f.id));
+        let (c, t) = ask(&f.pipe, &format!("revoke {} --all", f.id));
         assert_eq!(c, DONE, "{t}");
         assert!(state(&f).0.is_empty());
         assert!(f.hub.read(|r| r.module_grants(&f.id)).is_empty());
@@ -570,33 +633,30 @@ mod tests {
     fn no_hub_is_exit_5_and_the_cli_words_are_parsed() {
         let f = fx("cli", &ping());
         let gone = r"\\.\pipe\hideout-control-nobody-here-1178";
-        let (c, t) = request(gone, "grant x --all-listed --listed 0");
+        let (c, t) = ask(gone, "grant x --all-listed --listed 0");
         assert_eq!(c, NO_HUB, "{t}");
         assert!(t.contains("nothing changed"), "{t}");
 
         let os = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
         // Not a `--modules` command line: not ours.
-        assert_eq!(client(&f.paths, os(&["--adopt", "x"]).into_iter()), None);
-        assert_eq!(client(&f.paths, os(&[]).into_iter()), None);
+        assert_eq!(cli(&f.paths, os(&["--adopt", "x"]).into_iter()), None);
+        assert_eq!(cli(&f.paths, os(&[]).into_iter()), None);
         // Unknown step and a bare `--modules`: usage.
         assert_eq!(
-            client(&f.paths, os(&["--modules", "frobnicate", "x"]).into_iter()),
+            cli(&f.paths, os(&["--modules", "frobnicate", "x"]).into_iter()),
             Some(USAGE)
         );
-        assert_eq!(
-            client(&f.paths, os(&["--modules"]).into_iter()),
-            Some(USAGE)
-        );
+        assert_eq!(cli(&f.paths, os(&["--modules"]).into_iter()), Some(USAGE));
         // permissions works through the CLI front end.
         assert_eq!(
-            client(
+            cli(
                 &f.paths,
                 os(&["--modules", "permissions", &f.id]).into_iter()
             ),
             Some(DONE)
         );
         assert_eq!(
-            client(
+            cli(
                 &f.paths,
                 os(&["--modules", "permissions", "nope"]).into_iter()
             ),
@@ -605,7 +665,7 @@ mod tests {
         // grant and revoke through the CLI go over the served pipe.
         let good = code(&f);
         assert_eq!(
-            client(
+            cli(
                 &f.paths,
                 os(&[
                     "--modules",
@@ -621,7 +681,7 @@ mod tests {
         );
         assert_eq!(state(&f).0.len(), 2);
         assert_eq!(
-            client(
+            cli(
                 &f.paths,
                 os(&["--modules", "revoke", &f.id, "ui.window"]).into_iter()
             ),
@@ -681,7 +741,7 @@ mod tests {
 
     fn grant_all(f: &Fx) {
         let good = code(f);
-        let (c, t) = request(
+        let (c, t) = ask(
             &f.pipe,
             &format!("grant {} --all-listed --listed {good}", f.id),
         );
@@ -770,12 +830,92 @@ mod tests {
         // The server makes its next pipe instance right after it accepts.
         std::thread::sleep(std::time::Duration::from_millis(200));
         let t = std::time::Instant::now();
-        let (c, text) = request(&f.pipe, "frobnicate x");
+        let (c, text) = ask(&f.pipe, "frobnicate x");
         assert_eq!(c, USAGE, "{text}");
         assert!(
             t.elapsed() < std::time::Duration::from_secs(8),
             "the pipe was held by a client that sent nothing"
         );
         drop(silent);
+    }
+
+    /// A server that is not `hideout.exe` (here: this test binary under another expected name)
+    /// that records every byte it is sent.
+    fn squatter(name: &str) -> (std::thread::JoinHandle<Vec<u8>>, String) {
+        use std::io::Read;
+        let pipe = format!(
+            r"\\.\pipe\hideout-control-squat-{name}-{}",
+            std::process::id()
+        );
+        let first = foxglove_plugin::channel::ServerPipe::create(&pipe, true).expect("squat");
+        let h = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            // Waits for a connection; the refused client closes it without a byte.
+            if let Ok(mut c) = first.accept() {
+                let _ = c.read_to_end(&mut got);
+            }
+            got
+        });
+        (h, pipe)
+    }
+
+    #[test]
+    fn a_squatting_server_is_refused_and_gets_nothing() {
+        let (h, pipe) = squatter("refuse");
+        // The squatter runs as the right user in the right folder, but is not hideout.exe:
+        // the product's own identity (`Expect::HIDEOUT`) refuses it.
+        let (c, t) = request(&pipe, "grant example.x --all-listed --listed 1234");
+        assert_eq!(c, REFUSED, "{t}");
+        assert!(t.starts_with("hideout.pipe.foreign"), "{t}");
+        assert!(t.contains("nothing was sent"), "{t}");
+        // File name only in the text: no folder, no pid.
+        assert!(
+            !t.contains('\\') && !t.contains(&std::process::id().to_string()),
+            "{t}"
+        );
+        // The connection was closed unread: the squatter saw no request bytes.
+        assert!(h.join().unwrap().is_empty(), "the squatter was sent bytes");
+    }
+
+    #[test]
+    fn the_cli_front_end_refuses_a_squatter_too() {
+        let f = fx("squatcli", &ping());
+        // The real control server runs in this process (not hideout.exe): the product client
+        // must refuse it before sending, so nothing is granted.
+        let os = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
+        let good = code(&f);
+        let rc = client(
+            &f.paths,
+            os(&[
+                "--modules",
+                "grant",
+                &f.id,
+                "--all-listed",
+                "--listed",
+                &good,
+            ])
+            .into_iter(),
+        );
+        assert_eq!(rc, Some(REFUSED));
+        assert!(
+            state(&f).0.is_empty(),
+            "a refused server still got the grant"
+        );
+        // The same server with the matching identity is used as before.
+        assert_eq!(
+            request_to(&f.pipe, &format!("revoke {} --all", f.id), own_exe()).0,
+            DONE
+        );
+    }
+
+    #[test]
+    fn no_server_is_still_exit_5_and_the_expected_identity_is_served() {
+        assert_eq!(
+            request(r"\\.\pipe\hideout-control-squat-none-1184", "x").0,
+            NO_HUB
+        );
+        let f = fx("ident", &ping());
+        let (c, t) = ask(&f.pipe, "frobnicate x");
+        assert_eq!(c, USAGE, "{t}");
     }
 }

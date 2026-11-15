@@ -69,6 +69,29 @@ pub fn probe(pipe: &str, expect: Expect, timeout: Duration) -> Probe {
     }
 }
 
+/// Opens `pipe` as a client and returns that same open handle once its server passed the
+/// identity checks (#1184). Use it for a client that is about to SEND something: the checks
+/// ran on the very connection the request goes over, so there is no gap in which another
+/// server could take the name between "who is it" and "send". `Err(Probe::Free)`: nobody
+/// serves the name (nothing was sent); `Err(Probe::Foreign)`: a server that is not who it must
+/// be (nothing was sent, the handle is closed). `Err(Probe::Verified)` never happens. Off
+/// Windows there are no pipes: always `Err(Probe::Free)`.
+pub fn open_verified(
+    pipe: &str,
+    expect: Expect,
+    timeout: Duration,
+) -> Result<std::fs::File, Probe> {
+    #[cfg(windows)]
+    {
+        win::connect(pipe, expect, timeout).map(|(file, _, _)| file)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pipe, expect, timeout);
+        Err(Probe::Free)
+    }
+}
+
 /// The full image path of process `pid`, or `None` when it is not running (or not readable).
 /// Used to tell a hub still alive from one that is gone, and to compare a new server's exact
 /// path with a recorded one (#1143 P5).
@@ -123,23 +146,36 @@ mod win {
     }
 
     pub fn probe(pipe: &str, expect: Expect, timeout: Duration) -> Probe {
+        // `file` closes at the end; nothing was sent.
+        match connect(pipe, expect, timeout) {
+            Ok((_file, pid, image)) => Probe::Verified { pid, image },
+            Err(p) => p,
+        }
+    }
+
+    /// Opens the pipe and verifies its server, keeping the handle.
+    pub fn connect(
+        pipe: &str,
+        expect: Expect,
+        timeout: Duration,
+    ) -> Result<(std::fs::File, u32, PathBuf), Probe> {
         let file = match open(pipe, timeout) {
             Ok(f) => f,
             Err(e) => match e.raw_os_error().map(|c| c as u32) {
-                Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => return Probe::Free,
+                Some(ERROR_FILE_NOT_FOUND) | Some(ERROR_PATH_NOT_FOUND) => return Err(Probe::Free),
                 // Busy beyond the timeout: something serves it and we could not look.
                 Some(ERROR_PIPE_BUSY) => {
-                    return Probe::Foreign {
+                    return Err(Probe::Foreign {
                         pid: None,
                         why: "every instance busy past the probe timeout".into(),
-                    }
+                    })
                 }
                 // Access denied etc.: a server we may not even open is not ours to trust.
                 _ => {
-                    return Probe::Foreign {
+                    return Err(Probe::Foreign {
                         pid: None,
                         why: format!("could not be opened: {e}"),
-                    }
+                    })
                 }
             },
         };
@@ -147,23 +183,22 @@ mod win {
         // SAFETY: an open pipe handle owned by `file`.
         if unsafe { GetNamedPipeServerProcessId(file.as_raw_handle() as _, &mut pid) } == 0 {
             let e = io::Error::last_os_error();
-            return match e.raw_os_error().map(|c| c as u32) {
+            return Err(match e.raw_os_error().map(|c| c as u32) {
                 // The server hung up under us: nobody is there any more.
                 Some(ERROR_PIPE_NOT_CONNECTED) | Some(ERROR_BROKEN_PIPE) => Probe::Free,
                 _ => Probe::Foreign {
                     pid: None,
                     why: format!("server process unknown: {e}"),
                 },
-            };
+            });
         }
-        // `file` closes at the end; nothing was sent.
         match verify(pid, expect) {
-            Ok(image) => Probe::Verified { pid, image },
-            Err(Refusal::Gone) => Probe::Free,
-            Err(Refusal::Foreign(why)) => Probe::Foreign {
+            Ok(image) => Ok((file, pid, image)),
+            Err(Refusal::Gone) => Err(Probe::Free),
+            Err(Refusal::Foreign(why)) => Err(Probe::Foreign {
                 pid: Some(pid),
                 why,
-            },
+            }),
         }
     }
 
@@ -412,6 +447,23 @@ mod tests {
             }
             other => panic!("expected Foreign, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn open_verified_keeps_the_handle_only_for_the_right_identity() {
+        let name = test_name("openv-ok");
+        let _h = serve(&name);
+        assert!(open_verified(&name, own_exe(), TIMEOUT).is_ok());
+        let name = test_name("openv-bad");
+        let _h = serve(&name);
+        match open_verified(&name, Expect::HIDEOUT, TIMEOUT) {
+            Err(Probe::Foreign { .. }) => {}
+            other => panic!("expected Foreign, got {other:?}"),
+        }
+        assert!(matches!(
+            open_verified(&test_name("openv-none"), own_exe(), TIMEOUT),
+            Err(Probe::Free)
+        ));
     }
 
     #[test]
