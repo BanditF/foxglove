@@ -4,6 +4,11 @@
 //! without a hub; `grant`, `deny` and `revoke` are requests over `\\.\pipe\hideout-control-<user>`
 //! so the router widens from the user's act and narrows first.
 //!
+//! `grant` never widens by itself (#1183): a request with the current list code is queued
+//! (`grant_queue`) and the user confirms it in the Modules page's permission dialog; exit 3.
+//! `deny` and `revoke` only narrow and apply at once. A lab hub (`lab_control::enabled`, a folder
+//! of its own) may apply a grant directly so lab runs stay headless: the `auto_confirm` seam.
+//!
 //! Who may ask: the hub checks the client process is **not** inside any module's Job Object
 //! (a module and its children can never grant, `permission.caller`) and that its image is the
 //! hub's own `hideout.exe`. Exit codes: 0 done, 1 refused (error id printed), 2 usage, 3 needs
@@ -109,6 +114,8 @@ pub fn handle(
     hub: &hideout_router::server::Hub,
     caller_ok: bool,
     line: &str,
+    queue: &crate::grant_queue::GrantQueue,
+    auto_confirm: bool,
 ) -> (i32, String) {
     if !caller_ok {
         log::warn!(
@@ -188,6 +195,9 @@ pub fn handle(
             } else {
                 items
             };
+            if *step == "grant" && !auto_confirm {
+                return queue_grant(home, queue, &list, &code, named, keyboard);
+            }
             let (chosen, declined) = if *step == "grant" {
                 (named, Vec::new())
             } else {
@@ -230,6 +240,61 @@ pub fn handle(
         }
         other => usage(&format!("unknown step {other}")),
     }
+}
+
+/// A grant from the command line: checked against the list as it is now, then queued for the
+/// user's confirmation. Nothing is written and the router is not touched.
+fn queue_grant(
+    home: &Path,
+    queue: &crate::grant_queue::GrantQueue,
+    list: &Listing,
+    code: &str,
+    named: Vec<String>,
+    keyboard: bool,
+) -> (i32, String) {
+    if keyboard {
+        return (
+            REFUSED,
+            "hideout: --keyboard can only be allowed in the Hideout window
+"
+            .into(),
+        );
+    }
+    if code != list.code() {
+        return (
+            NEEDS_OK,
+            "Not allowed: the list changed since you read it (permission.list_changed). Read it again.
+"
+                .into(),
+        );
+    }
+    let grantable: Vec<&str> = list.grantable().map(|i| i.raw.as_str()).collect();
+    if let Some(bad) = named.iter().find(|n| !grantable.contains(&n.as_str())) {
+        return (
+            REFUSED,
+            format!(
+                "hideout: {bad} can't be allowed
+"
+            ),
+        );
+    }
+    let mut named = named;
+    named.sort();
+    named.dedup();
+    let n = named.len();
+    queue.submit(crate::grant_queue::Queued {
+        home: home.to_path_buf(),
+        id: list.id.clone(),
+        code: code.to_string(),
+        items: named,
+    });
+    (
+        NEEDS_OK,
+        format!(
+            "Queued: {n} item(s) for {}. Nothing is allowed yet: confirm in Hideout, on the Modules page.",
+            list.name
+        ),
+    )
 }
 
 /// Whether a connecting process may grant: not inside any module's job (live, or retired with
@@ -278,6 +343,8 @@ pub fn serve(
     home: std::path::PathBuf,
     hub: hideout_router::server::Hub,
     sup: hideout_supervisor::driver::Supervisor,
+    queue: crate::grant_queue::GrantQueue,
+    auto_confirm: bool,
 ) -> std::io::Result<()> {
     use foxglove_plugin::channel::ServerPipe;
     use std::io::Write;
@@ -303,7 +370,7 @@ pub fn serve(
                     let (code, text) = if ok && line.is_empty() {
                         usage("no request line")
                     } else {
-                        handle(&home, &hub, ok, &line)
+                        handle(&home, &hub, ok, &line, &queue, auto_confirm)
                     };
                     let _ = conn.write_all(
                         format!(
@@ -445,6 +512,7 @@ mod tests {
         id: String,
         pipe: String,
         base: PathBuf,
+        queue: crate::grant_queue::GrantQueue,
     }
 
     impl Drop for Fx {
@@ -457,6 +525,16 @@ mod tests {
     /// `run` (`{base}` is the fixture's folder); its hub folder served on a control pipe of its
     /// own.
     fn fx(name: &str, run: &[String]) -> Fx {
+        fx_with(name, run, true)
+    }
+
+    /// [`fx`] with the `auto_confirm` seam off: a hub as the user runs it, where a CLI grant is
+    /// queued.
+    fn fx_user(name: &str, run: &[String]) -> Fx {
+        fx_with(name, run, false)
+    }
+
+    fn fx_with(name: &str, run: &[String], auto_confirm: bool) -> Fx {
         std::env::set_var("HIDEOUT_DEV_UNSIGNED", "1");
         let base = std::env::temp_dir().join(format!("hideout-ctl-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -491,8 +569,18 @@ mod tests {
         hub.set_folder_suffix(&hideout_router::server::folder_suffix(&root));
         let sup = Supervisor::start(&root, hub.clone());
         let pipe = pipe_name(&paths);
-        serve(&pipe, root, hub.clone(), sup.clone()).expect("control pipe");
+        let queue = crate::grant_queue::GrantQueue::default();
+        serve(
+            &pipe,
+            root,
+            hub.clone(),
+            sup.clone(),
+            queue.clone(),
+            auto_confirm,
+        )
+        .expect("control pipe");
         Fx {
+            queue,
             paths,
             hub,
             sup,
@@ -699,14 +787,82 @@ mod tests {
             &f.hub,
             false,
             &format!("grant {} --all-listed --listed {good}", f.id),
+            &f.queue,
+            true,
         );
         assert_eq!(c, REFUSED);
         assert!(t.starts_with("permission.caller"), "{t}");
         assert!(state(&f).0.is_empty());
         // Even an unparsable line is answered with the caller refusal, not usage.
-        assert!(handle(&f.paths.root, &f.hub, false, "???")
+        assert!(handle(&f.paths.root, &f.hub, false, "???", &f.queue, true)
             .1
             .starts_with("permission.caller"));
+        assert!(f.queue.for_home(&f.paths.root).is_empty());
+    }
+
+    #[test]
+    fn cli_grant_leaves_permission_unchanged_until_confirmed() {
+        let f = fx_user("queue", &ping());
+        let good = code(&f);
+        let (c, t) = ask(
+            &f.pipe,
+            &format!("grant {} hub.notify --listed {good}", f.id),
+        );
+        assert_eq!(c, NEEDS_OK, "{t}");
+        assert!(
+            t.contains("Queued") && t.contains("Nothing is allowed yet"),
+            "{t}"
+        );
+        // Nothing was written and the router did not widen.
+        let (granted, pending) = state(&f);
+        assert!(granted.is_empty(), "{granted:?}");
+        assert_eq!(pending.len(), 2);
+        assert!(f.hub.read(|r| r.module_grants(&f.id)).is_empty());
+        // The request waits for the user, with exactly the named items and the list code.
+        let q = f.queue.get(&f.paths.root, &f.id).expect("queued");
+        assert_eq!(
+            (q.code.as_str(), q.items.as_slice()),
+            (good.as_str(), ["hub.notify".to_string()].as_slice())
+        );
+        // --all-listed queues too; a newer request replaces the older one.
+        let (c, _) = ask(
+            &f.pipe,
+            &format!("grant {} --all-listed --listed {good}", f.id),
+        );
+        assert_eq!(c, NEEDS_OK);
+        assert_eq!(f.queue.for_home(&f.paths.root).len(), 1);
+        assert_eq!(f.queue.get(&f.paths.root, &f.id).unwrap().items.len(), 2);
+        assert!(state(&f).0.is_empty());
+        // A stale code, an item outside the list and --keyboard are not queued at all.
+        f.queue.clear(&f.paths.root, &f.id);
+        for bad in [
+            format!("grant {} hub.notify --listed {}", f.id, "0".repeat(16)),
+            format!("grant {} net --listed {good}", f.id),
+            format!("grant {} hub.notify --keyboard --listed {good}", f.id),
+        ] {
+            let (c, t) = ask(&f.pipe, &bad);
+            assert_ne!(c, DONE, "{bad}: {t}");
+            assert!(f.queue.for_home(&f.paths.root).is_empty(), "{bad}");
+        }
+        assert!(state(&f).0.is_empty());
+    }
+
+    #[test]
+    fn deny_and_revoke_still_apply_directly_and_only_narrow() {
+        let f = fx("narrow", &ping());
+        grant_all(&f);
+        let (c, t) = ask(&f.pipe, &format!("revoke {} ui.window", f.id));
+        assert_eq!(c, DONE, "{t}");
+        assert_eq!(state(&f).0, ["hub.notify"]);
+        let user = fx_user("narrow2", &ping());
+        let good = code(&user);
+        let (c, t) = ask(
+            &user.pipe,
+            &format!("deny {} ui.window --listed {good}", user.id),
+        );
+        assert_eq!(c, DONE, "{t}");
+        assert!(state(&user).0.is_empty());
+        assert!(user.queue.for_home(&user.paths.root).is_empty());
     }
 
     /// A PowerShell script that sends `revoke <id> --all` over the control pipe and writes the

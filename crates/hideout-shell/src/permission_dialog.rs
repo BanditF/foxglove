@@ -412,6 +412,8 @@ pub enum HeaderKind {
     Changed,
     /// Allowed from the command line, not yet seen.
     Cli,
+    /// A command-line grant waits for the user's confirmation (#1183); nothing is allowed yet.
+    Queued,
 }
 
 /// A hub-drawn header line.
@@ -438,6 +440,17 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
                 .into(),
             NOT_NOW,
         ),
+        HeaderKind::Queued => {
+            let (n, _) = cli.unwrap_or((0, ""));
+            (
+                format!(
+                    "A command asked to allow {n} permission{} for {name}",
+                    if n == 1 { "" } else { "s" }
+                ),
+                "Nothing is allowed until you review it here.".into(),
+                NOT_NOW,
+            )
+        }
         HeaderKind::Cli => {
             let (n, when) = cli.unwrap_or((0, ""));
             (
