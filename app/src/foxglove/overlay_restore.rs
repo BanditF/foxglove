@@ -414,6 +414,34 @@ pub fn request(trigger: Trigger) {
         // Heard while away too, so a display dropping all night is known on coming back.
         displays_seen(&crate::monitors::list());
     }
+    request_now(trigger);
+}
+
+/// The displays the overlay last acted on, and the settle before it acts again: a display that
+/// flaps every few seconds moved the overlay and re-applied every device's state each time, and
+/// the lights went black with each ([`crate::foxglove::display_settle`]).
+static DISPLAY_SETTLE: std::sync::OnceLock<
+    super::display_settle::Debounce<Vec<crate::monitors::Monitor>>,
+> = std::sync::OnceLock::new();
+
+fn display_settle() -> &'static super::display_settle::Debounce<Vec<crate::monitors::Monitor>> {
+    DISPLAY_SETTLE.get_or_init(|| {
+        super::display_settle::Debounce::new("overlay-settle", |_| {
+            request_now(Trigger::DisplayChange)
+        })
+    })
+}
+
+/// `WM_DISPLAYCHANGE`: the departures are recorded at once ([`Flaps`]); the check, the overlay's
+/// move and the devices' re-apply wait until the displays stayed as they are for
+/// [`super::display_settle::SETTLE`], and run only when they differ from the last ones acted on.
+fn display_event() {
+    let monitors = crate::monitors::list();
+    displays_seen(&monitors);
+    display_settle().event(monitors);
+}
+
+fn request_now(trigger: Trigger) {
     if defer_while_away(trigger, super::away::away()) {
         DEFERRED.store(true, Ordering::Relaxed);
         return;
@@ -809,7 +837,7 @@ mod imp {
     ) -> LRESULT {
         if message == WM_DISPLAYCHANGE {
             // A panic must not unwind into Windows.
-            let _ = std::panic::catch_unwind(|| super::request(super::Trigger::DisplayChange));
+            let _ = std::panic::catch_unwind(super::display_event);
             return LRESULT(0);
         }
         // SAFETY: the default handling for this window's other messages.
@@ -823,7 +851,9 @@ mod imp {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
             // The displays at the start, for the departures the display changes record.
-            super::displays_seen(&crate::monitors::list());
+            let monitors = crate::monitors::list();
+            super::displays_seen(&monitors);
+            super::display_settle().seed(monitors);
             // The display changes held while away get their one check on coming back.
             std::mem::forget(super::super::away::subscribe(|away| {
                 if !away && super::DEFERRED.swap(false, Ordering::Relaxed) {

@@ -152,6 +152,35 @@ pub trait Sessions: Send + Sync {
 /// One detent: 2 %, the step Windows' own volume keys take.
 pub const STEP: i32 = 2;
 
+/// How often the same audio-session error may be logged: one line, then at most one a minute with
+/// the count of those left out. A display that drops every few seconds makes Windows answer
+/// "no output device" (0x80070490) in bursts, and each one was a line.
+pub const LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The rate limit of one repeating log line; the clock is passed in.
+#[derive(Debug, Default)]
+pub struct LogLimit {
+    last: Option<std::time::Instant>,
+    suppressed: u32,
+}
+
+impl LogLimit {
+    /// The line occurred at `now`: `Some(suppressed)` when it is logged now (with how many were
+    /// left out since the last one), `None` when it is left out.
+    pub fn note(&mut self, now: std::time::Instant) -> Option<u32> {
+        match self.last {
+            Some(at) if now.saturating_duration_since(at) < LOG_EVERY => {
+                self.suppressed += 1;
+                None
+            }
+            _ => {
+                self.last = Some(now);
+                Some(std::mem::take(&mut self.suppressed))
+            }
+        }
+    }
+}
+
 /// `level` (0.0-1.0) moved by `steps` detents, on Windows' 2 % grid, within 0-100 %.
 pub fn step_level(level: f32, steps: i32) -> f32 {
     let percent = (level * 100.0).round() as i32;
@@ -1315,6 +1344,8 @@ mod imp {
         device: Option<Device>,
         /// Foxglove is quitting: the device was put back, and nothing starts it again.
         stopped: bool,
+        /// The "no output device" line's rate limit.
+        no_device_log: super::LogLimit,
     }
 
     impl Worker {
@@ -1346,7 +1377,14 @@ mod imp {
             let manager = match manager {
                 Ok(m) => m,
                 Err(e) => {
-                    eprintln!("Foxglove: audio sessions: no output device: {e}");
+                    if let Some(left_out) = self.no_device_log.note(Instant::now()) {
+                        let more = if left_out > 0 {
+                            format!(" ({left_out} more in the last minute not logged)")
+                        } else {
+                            String::new()
+                        };
+                        eprintln!("Foxglove: audio sessions: no output device: {e}{more}");
+                    }
                     return;
                 }
             };
@@ -2051,6 +2089,7 @@ mod imp {
                     soft: host.map(|h| Soft::new(h, today())),
                     device: None,
                     stopped: false,
+                    no_device_log: Default::default(),
                 };
                 w.open();
                 loop {
@@ -2103,6 +2142,23 @@ pub fn stop(_within: std::time::Duration) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repeating_error_logs_once_a_minute_with_the_count_left_out() {
+        let t0 = std::time::Instant::now();
+        let mut l = LogLimit::default();
+        assert_eq!(l.note(t0), Some(0));
+        // A burst of 50 in the next 30 s: all left out.
+        for i in 1..=50u64 {
+            assert_eq!(l.note(t0 + std::time::Duration::from_millis(i * 600)), None);
+        }
+        assert_eq!(l.note(t0 + LOG_EVERY), Some(50));
+        assert_eq!(
+            l.note(t0 + LOG_EVERY + std::time::Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(l.note(t0 + LOG_EVERY * 2), Some(1));
+    }
 
     #[test]
     fn a_detent_is_windows_2_percent_and_stays_in_range() {

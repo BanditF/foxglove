@@ -39,6 +39,7 @@ pub mod connection;
 pub mod device_thumb;
 pub mod devices;
 pub mod diagnostics;
+pub mod display_settle;
 pub mod effect_controls;
 pub mod features;
 pub mod firmware_update;
