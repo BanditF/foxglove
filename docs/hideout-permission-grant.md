@@ -73,7 +73,10 @@ A module outside an AppContainer has the user's token: it can inject into or dri
 synthesise input to the hub's dialog, or write `inventory.json`. "A module never grants itself" is
 full only for AppContainer modules unless the hub home and install folders get ACLs and every grant
 needs a real click in the hub window. Follow-ups: DACL on the hub home; job UI-limit flags;
-queue-and-confirm for CLI grants; a pipe-server identity check (`GetNamedPipeServerProcessId`).
+queue-and-confirm for CLI grants. Done (#1184): the CLI client asks the kernel who serves the
+control pipe (`GetNamedPipeServerProcessId`, on the connection it then uses) and sends nothing
+unless that is `hideout.exe` in its own install folder, same user, Medium integrity or above, no
+AppContainer (`foxglove_plugin::owner::open_verified`); a squatter gets exit 1 `hideout.pipe.foreign`.
 
 Known limit: this proves "a signed release was installed by the updater", not that the file on disk is
 that release's file (the hash isn't in `latest.json`); the signer-bound grant below closes that.
