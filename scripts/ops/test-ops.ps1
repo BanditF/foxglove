@@ -24,6 +24,11 @@ try {
     $env:FOXGLOVE_OPS_GAME_PATHS = 'C:\x\y.exe'; $env:FOXGLOVE_OPS_GPU_UTIL = '90'
     & $ps -NoProfile -File $gc -Quiet; Check 'game-check: busy GPU -> 3' ($LASTEXITCODE -eq 3)
 
+    $env:FOXGLOVE_OPS_GAME_PATHS = 'C:\Users\x\.lmstudio\llama-server.exe'; $env:FOXGLOVE_OPS_GPU_UTIL = '95'
+    & $ps -NoProfile -File $gc -Quiet; Check 'game-check: busy GPU from llama-server -> 0' ($LASTEXITCODE -eq 0)
+    $env:FOXGLOVE_OPS_GAME_PATHS = 'C:\Users\x\.lmstudio\llama-server.exe;C:\Epic Games\Fortnite\f.exe'
+    & $ps -NoProfile -File $gc -Quiet; Check 'game-check: game next to llama-server -> 3' ($LASTEXITCODE -eq 3)
+
     # --- every script skips with 3 and one summary line while a game runs ---
     $env:FOXGLOVE_OPS_GAME_PATHS = 'C:\Epic Games\Fortnite\f.exe'; $env:FOXGLOVE_OPS_GPU_UTIL = '5'
     foreach ($s in 'pc-health-check', 'foxglove-digest', 'monthly-driver-check', 'weekly-repo-janitor', 'lab-health') {

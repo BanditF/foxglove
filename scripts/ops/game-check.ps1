@@ -13,6 +13,10 @@ function Get-GameReason {
     foreach ($p in $Paths) {
         if ($p -and ($p -match $pattern) -and ($p -notmatch $List.notGamesPattern)) { return "game process: $p" }
     }
+    # GPU load while the local LLM runs is its own work (compute:local-llm-eligible), not a game.
+    # A game process is still caught above; only the bare GPU-percent signal is ignored here.
+    $llm = $List.localLlmPattern
+    if ($llm -and (@($Paths | Where-Object { $_ -and ($_ -match $llm) }).Count -gt 0)) { return $null }
     if ($null -ne $GpuUtil -and [int]$GpuUtil -ge [int]$List.gpuBusyPercent) { return "GPU busy at $GpuUtil%" }
     return $null
 }
