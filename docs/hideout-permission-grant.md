@@ -36,6 +36,35 @@ and Permissions section are **not built yet**; this page records what they must 
   `permission_actions.rs` and `crates/hideout-registry/tests/permission_grant.rs`; the render test
   writes `review/built-permission-*.png`.
 
+## CLI grants queue and wait for the user (#1183)
+
+`hideout --modules grant <id> ... --listed <code>` no longer writes anything. The control pipe
+checks the code against the list now and the named items against the grantable ones, then records
+a request in the hub's memory (`crates/hideout/src/grant_queue.rs`: module id, list code, items)
+and answers exit 3 with "Queued ... Nothing is allowed yet". A stale code, an item that is not in
+the list and `--keyboard` (which has its own window) are not queued. A newer request for the same
+module replaces the older one; restarting the hub drops them all.
+
+The Modules page shows a header line "A command asked to allow N permissions for X" with Review
+and Not now. Review opens the normal dialog (`PermUi::open_queued`) with exactly the named items
+ticked and everything else unticked; only the user's Allow writes the grant, for the list code
+the dialog shows (the same `grant_listed_in` as any Allow, recorded as `by = "dialog"`). If the
+list changed since the command, the request is dropped and the dialog opens on the new list with
+the reason on top. Not now on the header line drops the request; any Allow in the dialog for
+that module answers it. A module that holds the user's token can therefore
+still run the CLI, but all that does is put a line in the hub's window.
+
+`deny` and `revoke` only narrow, so they still apply at once.
+
+Test seam: a lab hub (`lab_control::enabled`: its own folder and lab mode allowed, never the
+user's default folder) is served with `auto_confirm`, and there `grant` applies directly as it did
+before, so lab runs stay headless. The user's hub always queues. Tests use the same parameter
+(`serve(..., auto_confirm)`): `control::tests::cli_grant_leaves_permission_unchanged_until_confirmed`
+and `permission_actions::tests::confirming_a_queued_cli_grant_applies_exactly_the_listed_items`.
+
+Residual limit: the queue is only a request; a module outside an AppContainer can still synthesise
+the click in the hub window (see Design limit below).
+
 ## Still to build
 
 - The attestation history in the section, the "Waits for your OK" row wording, and the Review
@@ -72,8 +101,8 @@ without it gets only the version rule and a warning in the log.
 A module outside an AppContainer has the user's token: it can inject into or drive `hideout.exe`,
 synthesise input to the hub's dialog, or write `inventory.json`. "A module never grants itself" is
 full only for AppContainer modules unless the hub home and install folders get ACLs and every grant
-needs a real click in the hub window. Follow-ups: DACL on the hub home; job UI-limit flags;
-queue-and-confirm for CLI grants. Done (#1184): the CLI client asks the kernel who serves the
+needs a real click in the hub window. Follow-ups: DACL on the hub home. Done: job UI-limit flags (#1194); queue-and-confirm for CLI
+grants (#1183); #1184: the CLI client asks the kernel who serves the
 control pipe (`GetNamedPipeServerProcessId`, on the connection it then uses) and sends nothing
 unless that is `hideout.exe` in its own install folder, same user, Medium integrity or above, no
 AppContainer (`foxglove_plugin::owner::open_verified`); a squatter gets exit 1 `hideout.pipe.foreign`.

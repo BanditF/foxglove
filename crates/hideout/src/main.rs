@@ -18,6 +18,7 @@ mod catalog_fetch;
 #[cfg(windows)]
 mod control;
 #[cfg(windows)]
+mod grant_queue;
 mod https;
 #[cfg(windows)]
 mod inventory_watch;
@@ -273,6 +274,10 @@ fn start(paths: &hideout_shell::paths::HubPaths) -> Started {
         paths.root.clone(),
         router.clone(),
         supervisor.clone(),
+        grant_queue::shared().clone(),
+        // A lab hub (own folder, lab mode allowed) applies a CLI grant at once, so lab runs
+        // stay headless; the user's hub always queues it (#1183).
+        hideout_shell::lab_control::enabled(paths),
     ) {
         log::warn!("control pipe not served: {e}");
     }
@@ -350,10 +355,10 @@ fn main() {
             .clone()
             .map(|h| keyboard_actions::GrantUi::new(&paths.root, h)),
         // The module permission dialog, header lines and sections (#1178): same condition.
-        started
-            ._router
-            .clone()
-            .map(|h| permission_actions::PermUi::new(&paths.root, h)),
+        started._router.clone().map(|h| {
+            permission_actions::PermUi::new(&paths.root, h)
+                .with_queue(grant_queue::shared().clone())
+        }),
     );
     // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
     pages.push(Box::new(settings_page::SettingsPage::new(

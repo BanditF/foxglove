@@ -271,6 +271,8 @@ pub struct PermUi {
     /// Header lines the user answered with Not now / OK, until the next hub start.
     hidden: Vec<(String, HeaderKind)>,
     seen: Vec<Option<serde_json::Value>>,
+    /// CLI grant requests waiting for the user (#1183).
+    queue: crate::grant_queue::GrantQueue,
 }
 
 impl PermUi {
@@ -285,9 +287,47 @@ impl PermUi {
             drawn: false,
             hidden: Vec::new(),
             seen: Vec::new(),
+            queue: crate::grant_queue::GrantQueue::default(),
         };
         p.refresh();
         p
+    }
+
+    /// Uses the hub's shared CLI grant queue.
+    pub fn with_queue(mut self, queue: crate::grant_queue::GrantQueue) -> PermUi {
+        self.queue = queue;
+        self
+    }
+
+    /// Opens the dialog for a queued CLI grant (only from the user's click). The items the
+    /// command named start checked and every other item unchecked, for the list code the
+    /// command named; Allow then records exactly what the dialog shows. A list that changed
+    /// since the command drops the request and opens the normal dialog with the reason.
+    pub fn open_queued(&mut self, id: &str) {
+        let Some(q) = self.queue.get(&self.home, id) else {
+            return self.open(id, Opener::Change);
+        };
+        self.open_with(id, Opener::Change, None, None);
+        let Some(d) = self.dialog.as_mut() else {
+            return;
+        };
+        if d.code != q.code {
+            self.queue.clear(&self.home, id);
+            self.open_with(id, Opener::Change, Some(Reason::ListChanged), None);
+            return;
+        }
+        for i in d.items.iter_mut() {
+            i.checked = i.allowable && q.items.contains(&i.raw);
+        }
+    }
+
+    /// The module ids with a CLI grant waiting.
+    pub fn queued(&self) -> Vec<String> {
+        self.queue
+            .for_home(&self.home)
+            .into_iter()
+            .map(|q| q.id)
+            .collect()
     }
 
     /// Reads every module's permissions from the registry again (on a change of the inventory
@@ -393,6 +433,8 @@ impl PermUi {
             return None;
         };
         let by = "dialog";
+        // Whatever the dialog decides answers a command waiting for this module.
+        self.queue.clear(&self.home, &d.id);
         let r = hideout_supervisor::driver::grant_listed_in(
             &self.home, &self.hub, &d.id, &code, &chosen, &declined, by,
         );
@@ -482,6 +524,25 @@ impl PermUi {
         let mut open: Option<(String, Opener, egui::Id)> = None;
         let mut hide: Option<(String, HeaderKind)> = None;
         let mut off: Option<(String, Option<String>)> = None;
+        let mut open_queued: Option<(String, egui::Id)> = None;
+        for q in self.queue.for_home(&self.home) {
+            let Some(e) = self.entries.iter().find(|e| e.id == q.id) else {
+                continue;
+            };
+            let h = header(
+                HeaderKind::Queued,
+                &q.id,
+                &e.view.listing.name,
+                Some((q.items.len(), "")),
+            );
+            match perm_header_ui(ui, t, &h) {
+                Some((true, id)) => open_queued = Some((q.id.clone(), id)),
+                // Not now: the command's request is dropped; nothing was allowed.
+                Some((false, _)) => self.queue.clear(&self.home, &q.id),
+                None => {}
+            }
+            ui.add_space(8.0);
+        }
         for e in &self.entries {
             let kind = header_kind(&e.view, e.enabled, false)
                 .filter(|k| !self.hidden.iter().any(|(i, h)| i == &e.id && h == k));
@@ -514,6 +575,10 @@ impl PermUi {
                 None => {}
             }
             ui.add_space(12.0);
+        }
+        if let Some((id, btn)) = open_queued {
+            self.opener_id = Some(btn);
+            self.open_queued(&id);
         }
         if let Some((id, how, btn)) = open {
             self.opener_id = Some(btn);
@@ -633,6 +698,75 @@ mod tests {
         // Review on an update waiting for the user lets the swap run; Change only records.
         assert_eq!(Opener::Review.then(), Then::Review);
         assert_eq!(Opener::Change.then(), Then::Nothing);
+    }
+
+    fn queue_for(f: &mut Fx, items: &[&str]) -> crate::grant_queue::GrantQueue {
+        let q = crate::grant_queue::GrantQueue::default();
+        let code = view(f).listing.code().to_string();
+        q.submit(crate::grant_queue::Queued {
+            home: f.home.clone(),
+            id: ID.into(),
+            code,
+            items: items.iter().map(|s| s.to_string()).collect(),
+        });
+        let ui = PermUi::new(&f.home, f.ui.hub.clone()).with_queue(q.clone());
+        f.ui = ui;
+        q
+    }
+
+    #[test]
+    fn confirming_a_queued_cli_grant_applies_exactly_the_listed_items() {
+        let mut f = fx("queued", &["hub.notify", "ui.window", "provide:a.read"]);
+        let q = queue_for(&mut f, &["hub.notify", "ui.window"]);
+        assert_eq!(f.ui.queued(), [ID]);
+        // Queued is not allowed.
+        assert!(view(&f).granted.is_empty());
+        f.ui.open_queued(ID);
+        let d = f.ui.dialog.clone().unwrap();
+        let checked: Vec<&str> = d
+            .items
+            .iter()
+            .filter(|i| i.checked)
+            .map(|i| i.raw.as_str())
+            .collect();
+        assert_eq!(checked.len(), 2);
+        assert!(!checked.contains(&"provide:a.read"));
+        // Allow records exactly those two, for the list code the command named.
+        let a = d.allowed();
+        assert_eq!(a.code, q.get(&f.home, ID).unwrap().code);
+        let done = f.ui.answer(PermAnswer::Allow(a)).expect("allowed");
+        assert_eq!(done.then, Then::Nothing);
+        let mut granted = view(&f)
+            .granted
+            .iter()
+            .map(|g| g.raw.clone())
+            .collect::<Vec<_>>();
+        granted.sort();
+        assert_eq!(granted, ["hub.notify", "ui.window"]);
+        assert!(
+            q.for_home(&f.home).is_empty(),
+            "the answered request stays queued"
+        );
+    }
+
+    #[test]
+    fn a_queued_request_for_an_old_list_is_dropped_and_grants_nothing() {
+        let mut f = fx("queuedstale", &["hub.notify", "ui.window"]);
+        let q = queue_for(&mut f, &["hub.notify"]);
+        std::fs::write(
+            f.folder.join("module.toml"),
+            manifest(&f.exe, &["hub.notify", "ui.window", "lighting.lease"]),
+        )
+        .unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&f.folder, NOW)
+            .unwrap();
+        f.ui.open_queued(ID);
+        let d = f.ui.dialog.clone().unwrap();
+        assert_eq!(d.reason, Some(Reason::ListChanged));
+        assert!(q.for_home(&f.home).is_empty());
+        assert!(view(&f).granted.is_empty());
     }
 
     #[test]
