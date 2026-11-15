@@ -19,6 +19,7 @@ mod catalog_fetch;
 mod control;
 #[cfg(windows)]
 mod grant_queue;
+#[cfg(windows)]
 mod https;
 #[cfg(windows)]
 mod inventory_watch;

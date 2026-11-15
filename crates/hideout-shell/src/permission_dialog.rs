@@ -443,7 +443,10 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
         HeaderKind::Queued => {
             let (n, _) = cli.unwrap_or((0, ""));
             (
-                format!("A command asked to allow {n} permissions for {name}"),
+                format!(
+                    "A command asked to allow {n} permission{} for {name}",
+                    if n == 1 { "" } else { "s" }
+                ),
                 "Nothing is allowed until you review it here.".into(),
                 NOT_NOW,
             )

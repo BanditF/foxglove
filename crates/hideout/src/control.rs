@@ -278,6 +278,9 @@ fn queue_grant(
             ),
         );
     }
+    let mut named = named;
+    named.sort();
+    named.dedup();
     let n = named.len();
     queue.submit(crate::grant_queue::Queued {
         home: home.to_path_buf(),
@@ -288,8 +291,7 @@ fn queue_grant(
     (
         NEEDS_OK,
         format!(
-            "Queued: {n} item(s) for {}. Nothing is allowed yet: confirm in Hideout, on the              Modules page.
-",
+            "Queued: {n} item(s) for {}. Nothing is allowed yet: confirm in Hideout, on the Modules page.",
             list.name
         ),
     )
