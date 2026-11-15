@@ -1261,6 +1261,15 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   Items the user declines, and items that cannot be granted (never-list, overlap), go to
   `declined_permissions`; items in neither set stay pending. There is no "grant whatever is
   pending" step.
+- (#1182) **UI limits on every module Job Object.** `Job::create` sets `JOB_OBJECT_UILIMIT_HANDLES`
+  (no USER handles of processes outside the job: a module cannot `SendMessage` / post input into
+  hub dialogs), `DESKTOP`, `SYSTEMPARAMETERS`, `GLOBALATOMS` and `EXITWINDOWS`. **Left out:**
+  `READCLIPBOARD` / `WRITECLIPBOARD` (Foxglove's Copy diagnostics and any module's own paste need
+  the clipboard) and `DISPLAYSETTINGS` (the legacy Foxglove module reads monitor layout for its
+  overlay). A take-back job (§7.9, `Job::create_nested`) sets none: Windows refuses (error 50) to
+  nest an already-jobbed process into a job with UI limits, and the first job's limits keep
+  holding. The AppContainer limit stays the main one; this closes the cross-process window path
+  for non-contained modules.
 - (#1178) **Bound to the install.** An allow records `bound` (manifest hash, the canonical
   `run[0]` path and its SHA-256 for an adopted module, the list code, the time and `by` =
   `dialog` or `cli`). Paths are compared as Windows names them (either slash, case folded, no

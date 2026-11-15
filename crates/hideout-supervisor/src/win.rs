@@ -22,12 +22,15 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
-    JobObjectBasicAccountingInformation, JobObjectCpuRateControlInformation,
-    JobObjectExtendedLimitInformation, OpenJobObjectW, QueryInformationJobObject,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JobObjectBasicAccountingInformation, JobObjectBasicUIRestrictions,
+    JobObjectCpuRateControlInformation, JobObjectExtendedLimitInformation, OpenJobObjectW,
+    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_UI_RESTRICTIONS,
     JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
     JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS,
+    JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
 };
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread,
@@ -62,6 +65,17 @@ pub fn spawn(command: &mut Command) -> io::Result<Child> {
     let _spawning = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
     command.spawn()
 }
+
+/// UI limits of every module job (#1182, contract §6.4): no USER handles (windows, hooks, menus)
+/// of processes outside the job, so a module cannot send messages or synthesise input into hub
+/// dialogs; no desktop switching or creation; no SystemParametersInfo changes; no global atoms
+/// outside its own; no ExitWindowsEx. The clipboard is left open on purpose (Copy diagnostics,
+/// paste in a module's own windows); display settings are not restricted either.
+pub(crate) const UI_LIMITS: u32 = JOB_OBJECT_UILIMIT_HANDLES
+    | JOB_OBJECT_UILIMIT_DESKTOP
+    | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
+    | JOB_OBJECT_UILIMIT_GLOBALATOMS
+    | JOB_OBJECT_UILIMIT_EXITWINDOWS;
 
 /// JOB_OBJECT_ASSIGN_PROCESS | SET_ATTRIBUTES | QUERY | TERMINATE (winnt.h).
 const JOB_ACCESS: u32 = 0x1 | 0x2 | 0x4 | 0x8;
@@ -133,6 +147,17 @@ impl Job {
     }
 
     pub fn create(name: &str, caps: Caps) -> io::Result<Job> {
+        Self::create_with(name, caps, true)
+    }
+
+    /// A job for a process that already runs in another job (the §7.9 take-back, [`Job::assign`]):
+    /// Windows refuses to nest such a process into a job that sets UI limits (error 50), so this
+    /// one sets none. The old job's UI limits keep holding for the process: nesting only adds.
+    pub fn create_nested(name: &str, caps: Caps) -> io::Result<Job> {
+        Self::create_with(name, caps, false)
+    }
+
+    fn create_with(name: &str, caps: Caps, ui_limits: bool) -> io::Result<Job> {
         let w = wide(name);
         // SAFETY: a valid wide string; default security (the creator's).
         let handle = check(unsafe { CreateJobObjectW(std::ptr::null(), w.as_ptr()) })?;
@@ -152,6 +177,23 @@ impl Job {
         };
         if ok == 0 {
             return Err(io::Error::last_os_error());
+        }
+        if ui_limits {
+            let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+                UIRestrictionsClass: UI_LIMITS,
+            };
+            // SAFETY: the struct and its size match the info class.
+            let ok = unsafe {
+                SetInformationJobObject(
+                    handle.0,
+                    JobObjectBasicUIRestrictions,
+                    &ui as *const _ as *const _,
+                    std::mem::size_of_val(&ui) as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
         let mut cpu = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION {
             ControlFlags: JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
@@ -225,6 +267,25 @@ impl Job {
             0
         };
         Ok(Caps { memory, cpu_rate })
+    }
+
+    /// The UI restriction flags the job holds now (`JOB_OBJECT_UILIMIT_*`).
+    pub fn ui_limits(&self) -> io::Result<u32> {
+        let mut ui = JOBOBJECT_BASIC_UI_RESTRICTIONS::default();
+        // SAFETY: the struct and its size match the info class; an owned job handle.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.handle.0,
+                JobObjectBasicUIRestrictions,
+                &mut ui as *mut _ as *mut _,
+                std::mem::size_of_val(&ui) as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(ui.UIRestrictionsClass)
     }
 
     /// How many processes run in the job now (0 once the module and everything it started,
@@ -536,12 +597,21 @@ mod tests {
         let p = Process::open(child.id()).unwrap();
         assert!(p.running());
         assert_eq!(p.started().unwrap(), started);
-        let fresh = Job::create(&format!("{name}-again"), Caps::default()).unwrap();
+        let fresh = Job::create_nested(&format!("{name}-again"), Caps::default()).unwrap();
         fresh.assign(&p).unwrap();
         fresh.kill(9);
         assert_eq!(p.wait().unwrap(), 9);
         assert!(!p.running());
         assert_eq!(child.wait().unwrap().code(), Some(9));
+    }
+
+    #[test]
+    fn the_job_holds_its_ui_limits() {
+        let j = job("ui");
+        let got = j.ui_limits().unwrap();
+        assert_eq!(got & UI_LIMITS, UI_LIMITS, "flags read back: {got:#x}");
+        // The clipboard stays open: Copy diagnostics must work from a module.
+        assert_eq!(got & (0x2 | 0x4), 0, "clipboard flags set: {got:#x}");
     }
 
     #[test]

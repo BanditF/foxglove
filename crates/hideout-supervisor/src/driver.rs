@@ -1630,7 +1630,7 @@ impl Supervisor {
     fn adopt(&self, id: &str, rec: &Record, p: Process) -> Result<(), String> {
         let p = Arc::new(p);
         let reg = Registry::open_from_env(&self.0.home).ok();
-        let job = Job::create(
+        let job = Job::create_nested(
             &Job::name_for(&self.job_user(), id, rec.instance),
             self.caps_of(reg.as_ref(), id),
         )
