@@ -107,5 +107,11 @@ control pipe (`GetNamedPipeServerProcessId`, on the connection it then uses) and
 unless that is `hideout.exe` in its own install folder, same user, Medium integrity or above, no
 AppContainer (`foxglove_plugin::owner::open_verified`); a squatter gets exit 1 `hideout.pipe.foreign`.
 
+Hub-home DACL (#1181): evaluated, not shipped. Same user token means the module is the owner of
+`inventory.json` and holds `WRITE_DAC`, so any ACE meant to keep it out is undone by it (test:
+`same_user_dacl_does_not_keep_the_owner_out`). Effective routes need another principal: run
+outside-container modules at Low integrity with Low-labelled `data\` (breaks `files` modules), a
+restricted token, or a hub-side service owning the file. See contract §6.4.
+
 Known limit: this proves "a signed release was installed by the updater", not that the file on disk is
 that release's file (the hash isn't in `latest.json`); the signer-bound grant below closes that.

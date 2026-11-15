@@ -1319,6 +1319,19 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   flags (no desktop handles, no input to other windows), queue-and-confirm for CLI grants (the
   CLI only queues; the click in the hub confirms), and a pipe-server identity check
   (`GetNamedPipeServerProcessId`) in the CLI client.
+- (#1181) **A DACL on the hub home cannot close this, and none is shipped.** The hub and a
+  non-AppContainer module run under the same user token, so no ACE tells them apart: the user
+  (the owner) always holds `WRITE_DAC`, so a deny or read-only ACE on `inventory.json` or the
+  hand-off folder is removed by the module itself (tested in `hideout-acl`,
+  `same_user_dacl_does_not_keep_the_owner_out`). Only a different principal helps: a restricted
+  or Low-integrity token for the module (a Low process cannot write the Medium-labelled
+  `inventory.json` and cannot open the hub for write), a service that owns the files, or the
+  AppContainer. Spawning outside-container modules at Low integrity is the one effective option
+  left; it needs the module's `data\` and install folders labelled Low and would break modules
+  that use `files` (the iCUE mirror), so it is not done here. Until then the
+  `inventory.json` and hand-off guarantees hold **only for AppContainer modules**; the hand-off
+  stays safe because its content is Ed25519-signed and checked in the hub (a carrier only), and
+  grants are re-bound to the shown list code and program hash.
 
 ### 6.5 Signing is provenance, not permission
 
