@@ -199,13 +199,16 @@ fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
     let folder = home.parent().unwrap().join("manifest");
     let text = std::fs::read_to_string(folder.join("module.toml")).unwrap();
     let old = text.lines().find(|l| l.starts_with("run")).unwrap();
-    // ping.exe is the program; the leftover is a second ping started through cmd's `start`.
-    let cmd = std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
-    let cmd = cmd.replace(std::path::MAIN_SEPARATOR, "/");
-    // A literal TOML string keeps the backslashes `start` needs in the helper's path.
+    // The program is powershell, which starts the leftover (a copy of ping) in a console of its
+    // own and exits at once. `cmd /c start /b` shared cmd's console, which Windows tears down when
+    // cmd exits, so the helper sometimes died before the supervisor looked (#1187).
+    let ps = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let ps = format!("{ps}/System32/WindowsPowerShell/v1.0/powershell.exe").replace('\\', "/");
     let helper = exe.display().to_string();
+    let script = format!("Start-Process -WindowStyle Hidden -FilePath '{helper}' -ArgumentList '-n','25','127.0.0.1'");
     let run = format!(
-        "run = [\"{cmd}\", \"/c\", \"start\", \"/b\", '{helper}', \"-n\", \"25\", \"127.0.0.1\"]"
+        "run = [\"{ps}\", \"-NoProfile\", \"-NonInteractive\", \"-Command\", \"{}\"]",
+        script.replace('\\', "\\\\")
     );
     std::fs::write(folder.join("module.toml"), text.replace(old, &run)).unwrap();
     Registry::open(&home, true)
