@@ -109,3 +109,6 @@ wrapper writes the `local-llm-usage.csv` row (task `local-queue:<type>`). The su
 **Review step:** a Sonnet agent at low effort reads every `local-review` comment against its input
 before anything is used or posted outward; then the Planner closes the issue or relabels it
 `compute:claude` as above. Update the accept-rate table after each batch.
+
+## Digests of big outputs: pointer only (Meta-planner, 11/14)
+`tools\digest.ps1 <file>` (outputs over 8k chars; 10-min model TTL, unloaded on a game) returns SUMMARY, verbatim KEY LINES (each checked against the raw) and WHERE TO LOOK. It saves tokens only as a pointer: open the raw lines it names before acting, never quote the digest as fact, read the raw whole when it says "not stated" or you act on a cause, verdict or count. Shadow test of 30 real outputs: 28 fine, 2 inverted a clause (a cause; a CI status). If a digest ever misleads someone, say so on the Meta-planner's issue and the prompt is tightened again.

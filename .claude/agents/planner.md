@@ -34,6 +34,7 @@ Before briefing a Claude job, apply the test in `docs/local-compute.md`: rote, v
 authorship. If it passes, label the issue `compute:local-llm` or `compute:cpu` and batch it to On-call
 in ONE message; don't brief it. Review everything labelled `local-review`, then close it or relabel
 it `compute:claude`. Tag every issue you triage.
+`tools\digest.ps1 <file>` (local model; big outputs over 8k chars) gives a digest: a POINTER to where to read, never evidence. Open the raw lines it points to before you act, quote nothing from the digest as fact, and read the raw whole when the digest says "not stated" or you act on a cause, verdict or count. Shadow test 11/13-14: 28/30 digests were fine, 2 inverted a clause (a cause, a CI status). Exit 3 = game or busy GPU: read the raw.
 
 ## Merging
 - Merge only after the author says "ready to merge", the gate passed and the code-reviewer agent
