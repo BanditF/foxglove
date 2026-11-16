@@ -576,6 +576,59 @@ mod tests {
         assert!(Descriptor::current_user_and(&["S-1-15-2-1-2-3".into()]).is_ok());
     }
 
+    /// Sets `sddl`'s DACL (protected) on `path` the way any process of the owner can.
+    fn set_dacl(path: &Path, sddl: &str) -> io::Result<()> {
+        let sd = Descriptor::from_sddl(sddl)?;
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut acl: *mut ACL = std::ptr::null_mut();
+        let mut w = wide_path(path);
+        unsafe {
+            if GetSecurityDescriptorDacl(sd.as_ptr(), &mut present, &mut acl, &mut defaulted) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let rc = SetNamedSecurityInfoW(
+                w.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                acl,
+                std::ptr::null_mut(),
+            );
+            if rc != ERROR_SUCCESS {
+                return Err(io::Error::from_raw_os_error(rc as i32));
+            }
+        }
+        Ok(())
+    }
+
+    /// #1181, the finding in a test: under one user token a DACL cannot keep a module (a job
+    /// member running as the user) out of `inventory.json`. A deny or read-only ACE for the
+    /// user stops a plain write, but the owner holds WRITE_DAC implicitly, so any process of
+    /// the user takes the ACE off and writes. The hub and a module are the same principal here.
+    #[test]
+    fn same_user_dacl_does_not_keep_the_owner_out() {
+        let dir = temp("owner");
+        create_private_dir_all(&dir).unwrap();
+        let f = dir.join("inventory.json");
+        std::fs::write(&f, "{}").unwrap();
+        let me = current_user_sid().unwrap();
+
+        // Read-only for the user: a plain write is refused...
+        set_dacl(&f, &format!("D:P(A;;FR;;;{me})(D;;FW;;;{me})")).unwrap();
+        assert!(
+            std::fs::write(&f, "{\"edited\":1}").is_err(),
+            "the ACE does bite a plain write"
+        );
+
+        // ...and the same user (a module in a job, not in an AppContainer) undoes it.
+        set_dacl(&f, &format!("D:P(A;;FA;;;{me})")).unwrap();
+        std::fs::write(&f, "{\"edited\":1}").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "{\"edited\":1}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn missing_dir_is_an_error() {
         assert!(ensure_private_dir(&temp("missing")).is_err());
