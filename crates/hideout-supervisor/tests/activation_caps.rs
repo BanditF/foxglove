@@ -7,6 +7,8 @@
 //! maximum, read back from Windows. Turn off ends it.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -95,7 +97,7 @@ fn until_state(hub: &Hub, rx: &mpsc::Receiver<Out>, sup: &Supervisor, want: &str
 fn a_fact_starts_the_module_once_in_a_job_with_its_clamped_caps() {
     let home = lab_home();
     let (h, rx) = hub(&home);
-    let sup = Supervisor::start(&home, h.clone());
+    let sup = common::start(&home, h.clone());
     h.act(|r| r.activation_due(None));
     let early: Vec<Out> = rx.try_iter().collect();
     for o in &early {

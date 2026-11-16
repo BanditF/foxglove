@@ -6,6 +6,8 @@
 //! with its launch token and `module.ready`. Windowless; the module's job is ended at the end.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -13,7 +15,6 @@ use std::time::{Duration, Instant};
 use hideout_registry::Registry;
 use hideout_router::server::{folder_suffix, router_pipe_name, Hub};
 use hideout_router::{Out, Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::instances::Instances;
 use hideout_supervisor::win::Job;
 
@@ -73,7 +74,7 @@ fn a_module_started_by_a_lab_hub_connects_to_that_hub() {
     );
     hub.serve_pipe(&pipe).unwrap();
 
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
     assert!(sup.pid(ID).is_some(), "the module was not started");
     let rec = Instances::load(&home).modules[ID].clone();
     // Stop event: `module.ready` from the module on the lab pipe; 20 s only as the fallback.

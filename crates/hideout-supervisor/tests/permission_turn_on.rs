@@ -4,27 +4,17 @@
 //! valid grant for the list that was shown, refused again once the program file changes.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use hideout_registry::Registry;
 use hideout_router::server::Hub;
 use hideout_router::{Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::win::Process;
 
 const NOW: &str = "2026-11-13T00:00:00Z";
-
-/// Ends the module the test started, by handle.
-struct Reaper(Vec<Process>);
-impl Drop for Reaper {
-    fn drop(&mut self) {
-        for p in &self.0 {
-            p.kill(1);
-            let _ = p.wait();
-        }
-    }
-}
 
 fn adopted_home(name: &str) -> (PathBuf, PathBuf, String) {
     // One id per test: the job name is per user, module and instance.
@@ -70,8 +60,7 @@ fn turn_on_waits_for_the_users_ok_and_proceeds_after_a_valid_grant() {
     let (home, exe, id) = adopted_home("ok");
     let id = id.as_str();
     let hub = hub();
-    let sup = Supervisor::start(&home, hub.clone());
-    let mut reaper = Reaper(Vec::new());
+    let sup = common::start(&home, hub.clone());
 
     // Asked, not granted: refused, nothing saved as on, nothing started.
     let e = sup.turn_on(id).unwrap_err();
@@ -108,11 +97,9 @@ fn turn_on_waits_for_the_users_ok_and_proceeds_after_a_valid_grant() {
     let pid = sup
         .pid(id)
         .unwrap_or_else(|| panic!("the module was not started after the grant: {state:?}"));
-    reaper.0.push(Process::open(pid).unwrap());
     assert!(sup.in_module_job(pid), "the module is not in its job");
 
     drop(sup);
-    drop(reaper);
     let _ = exe;
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
@@ -121,8 +108,7 @@ fn turn_on_waits_for_the_users_ok_and_proceeds_after_a_valid_grant() {
 fn declining_everything_still_lets_the_module_start_and_a_swapped_program_asks_again() {
     let (home, exe, id) = adopted_home("swap");
     let id = id.as_str();
-    let sup = Supervisor::start(&home, hub());
-    let mut reaper = Reaper(Vec::new());
+    let sup = common::start(&home, hub());
     let list = Registry::open_from_env(&home)
         .unwrap()
         .permission_list(id)
@@ -136,11 +122,13 @@ fn declining_everything_still_lets_the_module_start_and_a_swapped_program_asks_a
     )
     .unwrap();
     sup.turn_on(id).expect("declined items never block a start");
-    if let Some(pid) = sup.pid(id) {
-        reaper.0.push(Process::open(pid).unwrap());
-    }
+    // Ended by handle and waited for, so the program file is free to be replaced below.
+    let running = sup.pid(id).map(|pid| Process::open(pid).unwrap());
     sup.turn_off(id);
-    drop(reaper);
+    if let Some(p) = running {
+        p.kill(1);
+        let _ = p.wait();
+    }
 
     // The program file is replaced: the grant is void and turn_on asks again.
     let mut bytes = std::fs::read(&exe).unwrap();
@@ -166,7 +154,7 @@ fn an_allow_widens_the_router_only_by_what_it_granted() {
     let (home, _exe, id) = adopted_home("widen");
     let id = id.as_str();
     let hub = hub();
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
     let code = || {
         Registry::open_from_env(&home)
             .unwrap()
@@ -224,7 +212,7 @@ fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
         .unwrap()
         .register_adopted(&folder, NOW)
         .unwrap();
-    let sup = Supervisor::start(&home, hub());
+    let sup = common::start(&home, hub());
     let list = Registry::open_from_env(&home)
         .unwrap()
         .permission_list(id)

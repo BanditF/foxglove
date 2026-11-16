@@ -7,6 +7,8 @@
 //! a few seconds; its job is ended at the end. Windowless.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -14,7 +16,6 @@ use hideout_registry::lab::LAB_MODULES_DIR;
 use hideout_registry::Registry;
 use hideout_router::server::{folder_suffix, Hub};
 use hideout_router::{Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::instances::Instances;
 use hideout_supervisor::win::Job;
 
@@ -39,7 +40,7 @@ fn a_module_added_after_the_start_is_learnt_and_started() {
     let (events, _rx) = mpsc::channel();
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(&folder_suffix(&home));
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
     assert!(!sup.knows(ID));
 
     // The folder first: nothing to learn yet.

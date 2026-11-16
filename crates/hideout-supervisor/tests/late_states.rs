@@ -7,6 +7,8 @@
 //! Windowless; every job is ended at the end.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -15,7 +17,6 @@ use hideout_registry::lab::LAB_MODULES_DIR;
 use hideout_registry::Registry;
 use hideout_router::server::{folder_suffix, Hub};
 use hideout_router::{Out, Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::instances::Instances;
 use hideout_supervisor::win::Job;
 
@@ -74,7 +75,7 @@ fn late_modules_read_needs_hub_and_waiting() {
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(&folder_suffix(&home));
     hub.serve_pipe(&hub.router_pipe()).unwrap();
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
 
     // Installed while the hub served its `hub`, then the hub went back a version (here: its
     // installed manifest asks for a newer one). Joins: known, needs-hub, not started.
