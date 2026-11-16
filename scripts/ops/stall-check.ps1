@@ -1,4 +1,4 @@
-# MIT. Foxglove stall check (#1126): facts and the decision, no LLM, no network, no GUI.
+# MIT. Foxglove stall check (#1126): facts and the decision, no LLM, no GUI; the only network use is two bounded gh reads.
 # Runs unattended from Task Scheduler (scripts\ops\register-stall-check.ps1) at below-normal
 # priority with a hard time limit. Read-only apart from its own files in <Root>\worktrees\_tools:
 #   stall-status.json  what is stalled, since when, the last check time, the facts, and `action`
@@ -7,10 +7,10 @@
 #   game-freeze.flag   if present (and no game runs) it is deleted and `action` is freeze_lifted
 # The one summary line also goes to ops\summary.log (ops-common.ps1).
 #   powershell -File scripts\ops\stall-check.ps1 [-Root <folder that holds worktrees\>]
-# Open PRs and the #90 queue need the network, so this script never fetches them: another job
-# (the Hub, On-call) may drop worktrees\_tools\open-prs.json (gh pr list --json
-# number,title,updatedAt,isDraft) and user-queue-count.txt; both are used only while fresher than
-# -CacheMaxAgeMin. Without them prs_known is false, which is never "quiet" (no pause, no rule b).
+# Open PRs and the #90 queue come from gh (gh pr list --json, and the table rows of the #90 body),
+# each with a 25 s limit; only if gh fails or answers nothing usable are worktrees\_tools\open-prs.json
+# and user-queue-count.txt used, and only while fresher than -CacheMaxAgeMin. Without either,
+# prs_known is false, which is never "quiet" (no pause, no rule b). -NoGh skips the gh calls (tests).
 # Rules (the Hub's six, see docs/ops-stall-check.md): a no progress >90 min while work exists
 # (grace 60 min after a session start or a cleared freeze), b open non-draft PR idle >120 min with
 # no cargo/rustc, c local job (hideout-fuzz, python) past 180 min, e C: free <50 GB, f possible
@@ -23,6 +23,8 @@ param(
     [string]$GitDir,          # the main checkout's .git; default: from -Repo
     [string]$PrFile, [string]$QueueFile,
     [int]$CacheMaxAgeMin = 180,
+    [switch]$NoGh,
+    [string]$GhRepo = 'BanditF/foxglove',
     [string]$ExcludeTranscriptPrefix = '59de466b',   # the Hub's transcript never counts as work
     # Test hooks (window-free tests): a JSON array of {name,minutes}, and free GB on C:.
     [string]$JobsJson, [double]$FreeGB = -1,
@@ -32,6 +34,10 @@ param(
 # The decision, pure: facts and state in, action out. $Facts: game_running, freeze_flag,
 # free_gb, prs (number, draft, idle_min), prs_known, jobs (name, minutes), any_min, grace_active.
 # $State: last_rules (array), f_reported (bool), since (hashtable rule -> iso time).
+function Get-QueueCount([string]$body) {
+    @($body -split "`n" | Where-Object { $_ -match '^\|\s*[A-Z]{1,3}\s*\|' -and $_ -notmatch '^\|\s*#\s*\|' }).Count
+}
+
 function Get-StallDecision {
     param($Facts, $State, [datetime]$Now)
     $st = @{ last_rules = @($State.last_rules); f_reported = [bool]$State.f_reported; since = @{}; freeze_cleared_at = $State.freeze_cleared_at }
@@ -116,18 +122,34 @@ $facts.jobs = @($jobs)
 $freeGb = if ($FreeGB -ge 0) { $FreeGB } else { [int]((Get-PSDrive C).Free / 1GB) }
 $facts.disk = [ordered]@{ c_free_gb = $freeGb; low = ($freeGb -lt 50) }
 
-# PRs and the queue count: cache files only, never the network.
+# PRs and the queue count: gh first (bounded), cache files only if gh fails.
 function Get-FreshFile($path) { if ((Test-Path $path) -and ((Get-MinSince (Get-Item $path).LastWriteTime $now) -le $CacheMaxAgeMin)) { $path } }
+function Invoke-GhBounded([string[]]$GhArgs) {
+    if ($NoGh -or -not (Get-Command gh -ErrorAction SilentlyContinue)) { return $null }
+    try {
+        $j = Start-Job -ScriptBlock { param($a) $o = & gh @a 2>$null; if ($LASTEXITCODE -eq 0) { $o -join "`n" } } -ArgumentList (, $GhArgs)
+        if (Wait-Job $j -Timeout 25) { $r = Receive-Job $j } else { $r = $null }
+        Remove-Job $j -Force -ErrorAction SilentlyContinue
+        return $r
+    } catch { return $null }
+}
 $prs = @(); $prsKnown = $false
-$pf = Get-FreshFile $PrFile
-if ($pf) {
-    try { $prs = @((Get-Content -Raw -Encoding UTF8 $pf | ConvertFrom-Json) | ForEach-Object { $_ }); $prsKnown = $true } catch { $prs = @() }
+$ghPrs = Invoke-GhBounded @('pr', 'list', '--repo', $GhRepo, '--state', 'open', '--limit', '100', '--json', 'number,title,updatedAt,isDraft')
+if ($ghPrs) { try { $prs = @($ghPrs | ConvertFrom-Json | ForEach-Object { $_ }); $prsKnown = $true } catch { $prs = @() } }
+if (-not $prsKnown) {
+    $pf = Get-FreshFile $PrFile
+    if ($pf) {
+        try { $prs = @((Get-Content -Raw -Encoding UTF8 $pf | ConvertFrom-Json) | ForEach-Object { $_ }); $prsKnown = $true } catch { $prs = @() }
+    }
 }
 $facts.prs_known = $prsKnown
 $prRows = @($prs | ForEach-Object { [pscustomobject]@{ number = $_.number; draft = [bool]$_.isDraft; idle_min = [int]($now.ToUniversalTime() - ([datetime]$_.updatedAt).ToUniversalTime()).TotalMinutes } })
 $facts.open_prs = $prRows
-$qf = Get-FreshFile $QueueFile
-$facts.user_queue_open_items = if ($qf) { [int](Get-Content -Raw $qf).Trim() } else { $null }
+$queue = $null
+$ghBody = Invoke-GhBounded @('issue', 'view', '90', '--repo', $GhRepo, '--json', 'body', '-q', '.body')
+if ($ghBody) { $queue = Get-QueueCount $ghBody }
+if ($null -eq $queue) { $qf = Get-FreshFile $QueueFile; if ($qf) { $queue = [int](Get-Content -Raw $qf).Trim() } }
+$facts.user_queue_open_items = $queue
 
 # Progress: minutes since the newest signal of work.
 $tx = @(Get-ChildItem $ProjectDir -Filter *.jsonl -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike "$ExcludeTranscriptPrefix*" } |
