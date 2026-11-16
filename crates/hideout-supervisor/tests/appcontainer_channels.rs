@@ -256,7 +256,7 @@ fn a_stdio_module_runs_contained() {
     let lab = lab(
         "stdio",
         &[Spec {
-            id: id,
+            id,
             rest: format!(
                 "transport = \"stdio\"\napi = {{ foxglove = \"1.2\" }}\n\
                  permissions = [\"lighting.write\"]\nrun = [\"probe.exe\", \"--stdio\", '{}']",
