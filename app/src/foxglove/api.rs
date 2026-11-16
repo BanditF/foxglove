@@ -12,7 +12,7 @@ use foxglove_plugin_api::rpc::{code, Error};
 use foxglove_plugin_host::{Client, Context, Devices, Limits};
 use serde_json::{json, Value};
 
-use super::wallpaper_leases::Fail;
+use super::wallpaper_leases::{Ended, Fail};
 use super::wallpaper_sync;
 
 /// Starts the pipe listener (Windows; `FOXGLOVE_DISABLE=api` leaves it out).
@@ -133,6 +133,76 @@ fn wallpaper_error(e: Fail) -> Error {
         code,
         message,
         data: None,
+    }
+}
+
+/// What the `wallpaper-engine.*` calls run on (#1120): the wallpaper sync worker
+/// ([`LiveWallpaper`]), or a lease table over a fake Wallpaper Engine in tests.
+pub(crate) trait WallpaperControl {
+    fn pause(&self, conn: u64, reason: &str) -> Result<(String, bool), Fail>;
+    fn release(&self, conn: u64, lease: String) -> Result<Ended, Fail>;
+    /// Running, live leases, paused by a lease.
+    fn status(&self) -> (bool, u32, bool);
+}
+
+/// The app's own: the wallpaper sync worker, the only sender of Wallpaper Engine's commands.
+pub(crate) struct LiveWallpaper;
+
+impl WallpaperControl for LiveWallpaper {
+    fn pause(&self, conn: u64, reason: &str) -> Result<(String, bool), Fail> {
+        wallpaper_sync::pause(conn, reason)
+    }
+    fn release(&self, conn: u64, lease: String) -> Result<Ended, Fail> {
+        wallpaper_sync::release(conn, lease)
+    }
+    fn status(&self) -> (bool, u32, bool) {
+        wallpaper_sync::status()
+    }
+}
+
+/// One `wallpaper-engine.*` call of connection `conn` (the hub's calls all come as
+/// `hub_link::ROUTED_CONN`; the router keeps their callers apart, contract section 8.5).
+pub(crate) fn wallpaper_call(
+    we: &dyn WallpaperControl,
+    conn: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value, Error> {
+    match method {
+        "wallpaper-engine.pause" => {
+            let p: methods::WallpaperPauseParams = parse_params(params)?;
+            if p.reason.chars().count() > WALLPAPER_REASON_MAX {
+                return Err(Error {
+                    code: code::INVALID_PARAMS,
+                    message: format!("reason is longer than {WALLPAPER_REASON_MAX} characters"),
+                    data: None,
+                });
+            }
+            let (lease, paused) = we.pause(conn, &p.reason).map_err(wallpaper_error)?;
+            Ok(json!(methods::WallpaperPaused { lease, paused }))
+        }
+        "wallpaper-engine.release" => {
+            let p: methods::WallpaperReleaseParams = parse_params(params)?;
+            let ended = we.release(conn, p.lease).map_err(wallpaper_error)?;
+            Ok(json!(methods::WallpaperReleased {
+                played: ended.played,
+                why: ended.why.map(str::to_string),
+            }))
+        }
+        "wallpaper-engine.status" => {
+            let (running, leases, paused_by_lease) = we.status();
+            Ok(json!(methods::WallpaperStatus {
+                running,
+                owner: "foxglove".into(),
+                leases,
+                paused_by_lease,
+            }))
+        }
+        _ => Err(Error {
+            code: code::METHOD_NOT_FOUND,
+            message: format!("no method {method}"),
+            data: None,
+        }),
     }
 }
 
@@ -608,35 +678,8 @@ impl Devices for AppDevices {
                 end_leases(|l| l.id == p.lease && l.conn == conn);
                 Ok(json!({}))
             }
-            "wallpaper-engine.pause" => {
-                let p: methods::WallpaperPauseParams = parse_params(params)?;
-                if p.reason.chars().count() > WALLPAPER_REASON_MAX {
-                    return Err(Error {
-                        code: code::INVALID_PARAMS,
-                        message: format!("reason is longer than {WALLPAPER_REASON_MAX} characters"),
-                        data: None,
-                    });
-                }
-                let (lease, paused) =
-                    wallpaper_sync::pause(conn, &p.reason).map_err(wallpaper_error)?;
-                Ok(json!(methods::WallpaperPaused { lease, paused }))
-            }
-            "wallpaper-engine.release" => {
-                let p: methods::WallpaperReleaseParams = parse_params(params)?;
-                let ended = wallpaper_sync::release(conn, p.lease).map_err(wallpaper_error)?;
-                Ok(json!(methods::WallpaperReleased {
-                    played: ended.played,
-                    why: ended.why.map(str::to_string),
-                }))
-            }
-            "wallpaper-engine.status" => {
-                let (running, leases, paused_by_lease) = wallpaper_sync::status();
-                Ok(json!(methods::WallpaperStatus {
-                    running,
-                    owner: "foxglove".into(),
-                    leases,
-                    paused_by_lease,
-                }))
+            "wallpaper-engine.pause" | "wallpaper-engine.release" | "wallpaper-engine.status" => {
+                wallpaper_call(&LiveWallpaper, conn, method, params)
             }
             "screens.panel_override" | "screens.info_override" => {
                 use base64::Engine;
@@ -688,6 +731,12 @@ impl Devices for AppDevices {
         // Its Wallpaper Engine pause leases end too; the last one plays (#1120).
         wallpaper_sync::connection_closed(conn);
         super::screens::clear_override(conn);
+    }
+
+    /// The hub's `lease.closed` (#1120 slice C): only Wallpaper Engine's pauses are leases the
+    /// module hands out through the router, so that is the one table it can end.
+    fn lease_closed(&self, conn: u64, lease: &str) {
+        wallpaper_sync::lease_closed(conn, lease);
     }
 
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
@@ -1822,7 +1871,7 @@ mod parity_tests {
             .unwrap_err();
         assert_eq!(e.code, code::INVALID_PARAMS);
         let e = AppDevices
-            .call_from(1, "wallpaper-engine.release", json!({"lease": 99}))
+            .call_from(1, "wallpaper-engine.release", json!({"lease": "we-63-0"}))
             .unwrap_err();
         assert_eq!(
             e.code,

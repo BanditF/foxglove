@@ -26,6 +26,9 @@ provides = [
   "method:tray.set_panel",
   "method:pc_lighting.list",
   "method:pc_lighting.set_zone",
+  "method:wallpaper-engine.pause",
+  "method:wallpaper-engine.release",
+  "method:wallpaper-engine.status",
 ]
 permissions = [
   "facts.write:keyboard.*",
@@ -41,6 +44,9 @@ permissions = [
   "provide:tray.set_panel",
   "provide:pc_lighting.list",
   "provide:pc_lighting.set_zone",
+  "provide:wallpaper-engine.pause",
+  "provide:wallpaper-engine.release",
+  "provide:wallpaper-engine.status",
 ]
 
 # Foxglove's panels in the hub (P8): three tiles and one page, built from the keyboard.* facts

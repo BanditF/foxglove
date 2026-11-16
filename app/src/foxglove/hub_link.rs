@@ -108,8 +108,6 @@ const GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 /// - the first-party areas above (so `devices.list`, which `foxglove-cli status` calls, and the
 ///   art/lights/screens/behaviors/profiles/focus methods stay with the standalone pipe until a
 ///   legacy module can be granted those areas: follow-up issue);
-/// - `wallpaper-engine.*`: its lease is tied to the calling connection, which a provider behind
-///   the router cannot see, so a dead caller would leave Wallpaper Engine paused;
 /// - `lighting.lease/update/release`, `key.event`, `behaviors.invoke` and everything of the
 ///   contract's never-list: not served, so unreachable here whatever a caller holds.
 pub const SERVED: &[&str] = &[
@@ -124,7 +122,19 @@ pub const SERVED: &[&str] = &[
     "tray.set_panel",
     "pc_lighting.list",
     "pc_lighting.set_zone",
+    // Wallpaper Engine's pause (#1120 slice C): its leases follow the contract's lease rules
+    // (section 8.5). Every routed caller is `ROUTED_CONN` here; the router keeps them apart
+    // (only a lease's holder may name it, and each caller holds at most
+    // `hideout_router::MAX_LEASES_PER_CALLER`), `lease.closed` ends one lease, and the link
+    // dropping ends them all ([`Link`]'s drop), so a caller that dies never leaves Wallpaper
+    // Engine paused.
+    "wallpaper-engine.pause",
+    "wallpaper-engine.release",
+    "wallpaper-engine.status",
 ];
+
+/// The hub's notice that a lease the module handed out ended (contract section 8.5).
+const LEASE_CLOSED: &str = "lease.closed";
 
 /// Routed calls waiting for the worker, all callers together (#1156 M2). The router already
 /// caps one caller at `hideout_router::MAX_INFLIGHT_PER_CALLER` forwarded and unanswered calls
@@ -150,8 +160,9 @@ const EXPIRY_MARGIN: Duration = Duration::from_secs(2);
 pub const CALL_WORKERS: usize = 3;
 
 /// The connection number the module hands the app's handlers for a routed call. Plugin-host
-/// connections count from 1, so 0 is nobody's; no served method keeps anything per connection.
-const ROUTED_CONN: u64 = 0;
+/// connections count from 1, so 0 is nobody's. Only the `wallpaper-engine.*` leases keep
+/// anything per connection, under the hub's lease rules (see [`SERVED`]).
+pub(crate) const ROUTED_CONN: u64 = 0;
 
 /// The manifest `hideout.exe --adopt` reads, with `@VERSION@` and `@EXE@` to fill ([`manifest`]).
 #[cfg_attr(not(test), allow(dead_code))] // read by tests and by the lab, which copies the file
@@ -335,6 +346,16 @@ impl Handler for Hub {
         self.exit = true;
     }
     fn notification(&mut self, method: &str, params: Value) {
+        if method == LEASE_CLOSED {
+            // Any reason ends it: `released` (the release call came first and may still be
+            // queued; the lease table keeps the outcome for it), `disconnect`, `revoked`,
+            // `restart`, and reasons a later contract adds. Only ever one lease, and only the
+            // hub can send this (a hub-owned name, section 8.3).
+            if let (Some(d), Some(lease)) = (self.devices.as_ref(), params["lease"].as_str()) {
+                d.lease_closed(ROUTED_CONN, lease);
+            }
+            return;
+        }
         if method != "facts.changed" {
             return;
         }
@@ -474,6 +495,15 @@ impl CallQueue {
         g.0.clear();
         self.wake.notify_all();
     }
+
+    fn is_closed(&self) -> bool {
+        self.lock().1
+    }
+}
+
+/// A lease a reply hands out, if any (a string `lease` in a result, contract section 8.5).
+fn handed_out(reply: &Reply) -> Option<&str> {
+    reply.outcome.as_ref().ok()?.get("lease")?.as_str()
 }
 
 fn expired(job: &Job, now: Instant) -> bool {
@@ -517,9 +547,27 @@ pub(super) fn work(
 ) {
     while let Some(job) = queue.wait() {
         if let Some(reply) = execute(devices, job, Instant::now()) {
-            deliver(reply);
+            hand_over(queue, devices, reply, &mut deliver);
         }
     }
+}
+
+/// Gives a worker's answer to the link, unless the link has gone: then nobody can hold or name
+/// a lease the answer hands out (the link ended every routed lease when it dropped, maybe
+/// before this one existed), so that lease ends here.
+pub(super) fn hand_over(
+    queue: &CallQueue,
+    devices: &dyn foxglove_plugin_host::Devices,
+    reply: Reply,
+    deliver: &mut impl FnMut(Reply),
+) {
+    if queue.is_closed() {
+        if let Some(lease) = handed_out(&reply) {
+            devices.lease_closed(ROUTED_CONN, lease);
+        }
+        return;
+    }
+    deliver(reply);
 }
 
 /// [`work`] that cannot end quietly: when the worker dies (a panic outside the handler, which
@@ -595,8 +643,15 @@ pub struct Link<W: Write> {
 
 impl<W: Write> Drop for Link<W> {
     fn drop(&mut self) {
+        // The queue first: a call still running sees it closed and ends what it hands out.
         if let Some(q) = &self.queue {
             q.close();
+        }
+        // The hub is gone, so every lease its callers held through this link ends (section
+        // 8.5: a provider treats the leases of a connection that ended as ended); the last
+        // Wallpaper Engine pause plays. A reconnect starts with none.
+        if let Some(d) = &self.hub.devices {
+            d.closed(ROUTED_CONN);
         }
     }
 }

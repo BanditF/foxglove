@@ -41,6 +41,12 @@ pub mod reason {
     pub const ALL: &[&str] = &[DISCONNECT, RELEASED, REVOKED, RESTART];
 }
 
+/// Live leases one caller may hold at one provider (§8.5, v1.15, #1120). The caller is the
+/// router's caller key (a module's id, a tool's name), so a reconnect buys no fresh room; a
+/// result over it is not passed on ([`error_id::LEASE_LIMIT`]) and the provider hears
+/// `lease.closed {reason: "revoked"}` for it.
+pub const MAX_PER_CALLER: usize = 16;
+
 /// The `data.id`s of a lease refusal (§15, v1.14).
 pub mod error_id {
     /// A routed call names a lease the calling connection doesn't hold at that provider
@@ -48,6 +54,9 @@ pub mod error_id {
     pub const LEASE_UNKNOWN: &str = "lease.unknown";
     /// A provider's result names a lease another connection holds (error 6).
     pub const LEASE_REUSED: &str = "lease.reused";
+    /// (v1.15) A provider's result would give a caller more than
+    /// [`super::MAX_PER_CALLER`] live leases at that provider (error 8).
+    pub const LEASE_LIMIT: &str = "lease.limit";
 }
 
 #[cfg(test)]

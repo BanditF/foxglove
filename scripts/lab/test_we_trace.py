@@ -40,6 +40,25 @@ class Counting(unittest.TestCase):
         w.FakePipe(t, lambda m, p: fox(EXE, '-control', 'pause')).call('arete', 'wallpaper-engine.pause')
         self.assertEqual(set(w.senders(t.records)), {'foxglove'})
 
+    def test_via_hub_shape_one_sender_and_a_dead_caller_resumes(self):
+        t = w.scenario(None, True)
+        self.assertEqual(set(w.senders(t.records)), {'foxglove'})
+        self.assertEqual(w.senders(t.records)['foxglove'], ['applyProperties', 'pause', 'play', 'pause', 'play'])
+        pauses = [r for r in t.records if r['kind'] == 'pipe' and r['args'][0] == 'wallpaper-engine.pause']
+        self.assertTrue(all(r['args'][1].get('reason') for r in pauses))
+        self.assertEqual(t.provider.live, {})
+
+    def test_fake_provider_keeps_callers_apart(self):
+        sent = []
+        p = w.FakeProvider(sent.append)
+        a = p('wallpaper-engine.pause', {'reason': 'a'}, 'a')['lease']
+        b = p('wallpaper-engine.pause', {'reason': 'b'}, 'b')['lease']
+        self.assertEqual(p('wallpaper-engine.release', {'lease': a}, 'b')['error']['data']['id'], 'lease.unknown')
+        self.assertEqual(p('wallpaper-engine.release', {'lease': a}, 'a'), {'played': False, 'why': 'held'})
+        p.disconnect('b')
+        self.assertEqual(sent, ['pause', 'play'])
+        self.assertNotEqual(a, b)
+
     def test_other_exes_and_non_control_ignored(self):
         t = w.Trace()
         t.add('x', 'exe', ['C:/other/notepad.exe', '-control', 'pause'])

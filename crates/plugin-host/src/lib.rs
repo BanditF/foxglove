@@ -44,6 +44,13 @@ pub trait Devices: Send + Sync {
     fn closed(&self, conn: u64) {
         let _ = conn;
     }
+
+    /// One lease handed out on `conn` ended without its release call (the hub's `lease.closed`,
+    /// contract section 8.5: the holder left, was revoked, or the provider restarted). Ends
+    /// only that lease; an id the provider doesn't know (already released) is ignored.
+    fn lease_closed(&self, conn: u64, lease: &str) {
+        let _ = (conn, lease);
+    }
 }
 
 /// Which plugin each open connection is, by connection number (tools aren't listed).

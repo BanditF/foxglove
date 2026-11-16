@@ -1,6 +1,7 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.14** (v1.13 plus provider lease ids: only a lease's holder
+Status: spec, contract version **1.15** (v1.14 plus a cap on the leases one caller holds at one
+provider, #1120; v1.14 was v1.13 plus provider lease ids: only a lease's holder
 may name it, and `lease.closed` reaches a provider that restarted, #1229; v1.13 was v1.12 plus the
 hub's `apps.watch`, the SDK's wait for an
 app, answered on top of the app watch's facts, #1108; v1.12 was v1.11 plus the hub's host services: the network broker
@@ -14,12 +15,19 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.15** (#1120): a caller holds at most 16 live leases at one provider (§8.5), counted by
+  the router's caller key (a module's id, a tool's name), so a second connection buys no room;
+  a result over it isn't passed on (error 8, `lease.limit`) and the provider hears
+  `lease.closed {reason: "revoked"}` for it. Foxglove's legacy module serves
+  `wallpaper-engine.pause/release/status` through the router with string lease ids. New error id
+  (§15): `lease.limit`. Contract crate: `lease::MAX_PER_CALLER`. `hub` stays 1.3 (§8.7): one
+  refusal, no message and no manifest key.
 - **1.14** (#1229): provider lease ids, the hub's half of §6.3 open item (d) (§8.5). A lease id
   is a string of 1 to 128 bytes without control characters, never handed out twice by one
   provider connection; a `lease` that isn't one is passed through and never recorded. Every
@@ -2083,10 +2091,20 @@ Rules:
   - *Forgery.* `lease.closed` is a hub-owned name (§8.3): a module that sends it, as a
     notification or with `to:`, is dropped, so no module can make another provider end a
     lease.
+  - *A cap per caller (v1.15, #1120).* A provider sees every routed caller as the hub's one
+    connection, so its own per-connection cap would be shared and one caller could fill it: the
+    hub caps instead, at 16 live leases per caller (its caller key, as the in-flight caps count)
+    per provider. A result that would go over answers error 8 `lease.limit` and the provider
+    hears `lease.closed {reason: "revoked"}` for that lease; a provider keeps only a backstop
+    for all routed callers together (Foxglove: 64).
 - **Wallpaper Engine's pause (#1120).** Foxglove serves `wallpaper-engine.pause`,
   `wallpaper-engine.release` and `wallpaper-engine.status` on its pipe (permission
-  `wallpaper.control`, never over MCP) with the lease rules above; the `wallpaper-engine` service
-  module (H6.2) later serves the same methods through the router with no change for callers.
+  `wallpaper.control`, never over MCP) with the lease rules above; (v1.15) its legacy module
+  serves them through the router too, with string lease ids: `lease.closed` (any reason) ends
+  that lease, a `release` the close overtook still answers what ending it did, and the hub
+  link dropping ends every routed lease, so a dead caller never leaves the wallpaper paused.
+  The `wallpaper-engine` service module (H6.2) later serves the same methods with no change
+  for callers.
 - **Revoked holders (v1.6).** When an accepted catalog revokes the running version of a module
   that holds leases, the hub ends each of them with `reason: "revoked"` before it stops the
   module; the disconnect that follows sends nothing more for them.
@@ -2122,7 +2140,8 @@ and a hub-owned `hideout.toml` table, no message or manifest key). The hub answe
   modules already make, and a hub without it answers −32601, which its callers take as "can't
   say" (§8.12); no manifest key. (v1.14) Spec 1.14 stays `hub` 1.3: a new `lease.closed`
   reason, which providers take as ended, and two refusals of calls naming a lease the caller
-  doesn't hold (§8.5); no message and no manifest key.
+  doesn't hold (§8.5); no message and no manifest key. (v1.15) Spec 1.15 stays `hub` 1.3: one
+  more refusal, `lease.limit` (§8.5).
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
 - A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
@@ -2775,6 +2794,7 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `apps.argument` | (v1.13) `apps.watch` with an `exe` that isn't a program's file name `<name>.exe`: −32602 (§8.12) |
 | `lease.unknown` | (v1.14) a routed call whose params carry a string `lease` the calling connection doesn't hold at that provider: −32602, not forwarded (§8.5) |
 | `lease.reused` | (v1.14) a provider's result names a lease another connection holds: error 6 to the caller, the first holder keeps it (§8.5) |
+| `lease.limit` | (v1.15) a provider's result would give its caller more than 16 live leases at that provider: error 8 to the caller, `lease.closed {reason: "revoked"}` to the provider (§8.5) |
 | `channel.pipe` | (v1.4, #977) a provider answered `channel.create` with no pipe or one that is not `\\.\pipe\hideout-ch-<rest>`: the consumer gets error 6 with this `data.id` (§8.4) |
 | `rpc.*` | JSON-RPC transcripts use the numeric codes of §8.1; the two ids above travel in the error's `data.id` |
 

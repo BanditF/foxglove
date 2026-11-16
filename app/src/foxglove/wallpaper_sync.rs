@@ -429,18 +429,23 @@ pub enum Ctl {
     },
     Release {
         conn: u64,
-        lease: u64,
+        lease: String,
         reply: Sender<Reply>,
     },
     Status(Sender<Reply>),
     /// A connection closed: its leases end.
     Closed(u64),
+    /// The hub ended one lease of a connection (`lease.closed`, #1120 slice C).
+    HubClosed {
+        conn: u64,
+        lease: String,
+    },
 }
 
 /// The worker's answer to a [`Ctl`].
 pub enum Reply {
     Paused {
-        lease: u64,
+        lease: String,
         paused: bool,
     },
     Released(Ended),
@@ -1038,11 +1043,12 @@ fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> b
         } => {
             match leases.pause(apply, conn, &reason, user_paused) {
                 Ok((lease, paused)) => {
+                    let id = lease.clone();
                     if to.send(Reply::Paused { lease, paused }).is_err() {
                         // The caller gave up (timed out): nobody holds this lease and nobody
                         // knows its id, so it ends now; the play follows when it was the last.
                         return leases
-                            .release(apply, conn, lease, full)
+                            .release(apply, conn, &id, full)
                             .is_ok_and(|ended| ended.played);
                     }
                 }
@@ -1054,7 +1060,7 @@ fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> b
             conn,
             lease,
             reply: to,
-        } => match leases.release(apply, conn, lease, full) {
+        } => match leases.release(apply, conn, &lease, full) {
             Ok(ended) => {
                 reply(to, Reply::Released(ended));
                 ended.played
@@ -1078,6 +1084,9 @@ fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> b
         }
         Ctl::Closed(conn) => leases
             .drop_conn(apply, conn, full)
+            .is_some_and(|ended| ended.played),
+        Ctl::HubClosed { conn, lease } => leases
+            .hub_closed(apply, conn, &lease, full)
             .is_some_and(|ended| ended.played),
     }
 }
@@ -1132,7 +1141,7 @@ fn control(make: impl FnOnce(Sender<Reply>) -> Ctl, start: bool) -> Result<Reply
 }
 
 /// `wallpaper-engine.pause`: a lease; the first one pauses Wallpaper Engine.
-pub fn pause(conn: u64, reason: &str) -> Result<(u64, bool), Fail> {
+pub fn pause(conn: u64, reason: &str) -> Result<(String, bool), Fail> {
     let user_paused = super::live_feed::wallpaper_paused();
     let reason = reason.to_string();
     let ask = |reply| Ctl::Pause {
@@ -1149,7 +1158,7 @@ pub fn pause(conn: u64, reason: &str) -> Result<(u64, bool), Fail> {
 }
 
 /// `wallpaper-engine.release`: ends a lease; the last one plays.
-pub fn release(conn: u64, lease: u64) -> Result<Ended, Fail> {
+pub fn release(conn: u64, lease: String) -> Result<Ended, Fail> {
     match control(|reply| Ctl::Release { conn, lease, reply }, false)? {
         Reply::Released(e) => Ok(e),
         Reply::Failed(e) => Err(e),
@@ -1172,6 +1181,15 @@ pub fn status() -> (bool, u32, bool) {
 /// A connection of the local API closed: its leases end (no answer is waited for).
 pub fn connection_closed(conn: u64) {
     wake(Wake::Control(Ctl::Closed(conn)));
+}
+
+/// The hub ended one lease of `conn` (`lease.closed`, any reason): it ends as a release would,
+/// the last one plays. No answer is waited for; an id that isn't live changes nothing.
+pub fn lease_closed(conn: u64, lease: &str) {
+    wake(Wake::Control(Ctl::HubClosed {
+        conn,
+        lease: lease.to_string(),
+    }));
 }
 
 /// Wallpaper Engine's command line.
@@ -1933,9 +1951,18 @@ mod tests {
         (Wake::Control(ctl), got)
     }
 
-    fn release_ctl(conn: u64, lease: u64) -> (Wake, Receiver<Reply>) {
+    fn release_ctl(conn: u64, lease: &str) -> (Wake, Receiver<Reply>) {
         let (reply, got) = mpsc::channel();
+        let lease = lease.to_string();
         (Wake::Control(Ctl::Release { conn, lease, reply }), got)
+    }
+
+    /// The lease a pause answered.
+    fn lease_of(r: Reply) -> String {
+        match r {
+            Reply::Paused { lease, .. } => lease,
+            _ => panic!("a pause answers Paused"),
+        }
     }
 
     fn layer_state(layer: &str) -> std::sync::Arc<Mutex<State>> {
@@ -1996,10 +2023,9 @@ mod tests {
         );
         assert_eq!(apply.log(), ["apply start"], "no second process meanwhile");
         apply.open();
-        assert!(matches!(
-            paused.recv_timeout(wait).unwrap(),
-            Reply::Paused { paused: true, .. }
-        ));
+        let got = paused.recv_timeout(wait).unwrap();
+        assert!(matches!(got, Reply::Paused { paused: true, .. }));
+        let lease = lease_of(got);
         assert_eq!(apply.log(), ["apply start", "apply end other", "pause"]);
 
         // A change while paused: held, not sent.
@@ -2007,7 +2033,7 @@ mod tests {
         tx.send(Wake::Changed(Reason::Layer)).unwrap();
         assert!(pushing.recv_timeout(Duration::from_millis(400)).is_err());
 
-        let (release, released) = release_ctl(1, 1);
+        let (release, released) = release_ctl(1, &lease);
         tx.send(release).unwrap();
         assert!(matches!(
             released.recv_timeout(wait).unwrap(),
@@ -2063,6 +2089,33 @@ mod tests {
         );
     }
 
+    /// #1120 slice C: the hub's `lease.closed` ends that one lease on the worker, between
+    /// pushes; the last one plays, and a release that was on its way answers the play.
+    #[test]
+    fn the_hubs_lease_closed_ends_one_lease_on_the_worker() {
+        let wait = Duration::from_secs(5);
+        let (apply, _pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_worker(apply.clone(), &state, &full);
+        let routed = crate::foxglove::hub_link::ROUTED_CONN;
+        let (pause, paused) = pause_ctl(routed, false);
+        tx.send(pause).unwrap();
+        let lease = lease_of(paused.recv_timeout(wait).unwrap());
+        tx.send(Wake::Control(Ctl::HubClosed {
+            conn: routed,
+            lease: lease.clone(),
+        }))
+        .unwrap();
+        let (release, released) = release_ctl(routed, &lease);
+        tx.send(release).unwrap();
+        assert!(matches!(
+            released.recv_timeout(wait).unwrap(),
+            Reply::Released(Ended { played: true, .. })
+        ));
+        quit(&tx, worker);
+        assert_eq!(apply.log()[..2], ["pause", "play"], "{:?}", apply.log());
+    }
+
     /// #1120: quitting with a lease plays first (when it is ours to play), then says `gone`.
     #[test]
     fn quitting_with_a_lease_plays_then_says_gone() {
@@ -2098,11 +2151,9 @@ mod tests {
         let (tx, worker) = spawn_worker(apply.clone(), &state, &full);
         let (pause, paused) = pause_ctl(1, true);
         tx.send(pause).unwrap();
-        assert!(matches!(
-            paused.recv_timeout(wait).unwrap(),
-            Reply::Paused { paused: false, .. }
-        ));
-        let (release, released) = release_ctl(1, 1);
+        let got = paused.recv_timeout(wait).unwrap();
+        assert!(matches!(got, Reply::Paused { paused: false, .. }));
+        let (release, released) = release_ctl(1, &lease_of(got));
         tx.send(release).unwrap();
         match released.recv_timeout(wait).unwrap() {
             Reply::Released(e) => assert_eq!((e.played, e.why), (false, Some("user-paused"))),

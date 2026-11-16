@@ -3150,9 +3150,8 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "lease": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
+            "description": "The lease's id (#1120): a string of at most 128 bytes that the hub's lease rules\n(contract section 8.5, v1.14) can route; give it back as it is.",
+            "type": "string"
           },
           "paused": {
             "description": "`false`: Wallpaper Engine was paused already (the user's pause), so this lease will not\nplay it.",
@@ -3173,9 +3172,8 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "lease": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
+            "description": "The id `wallpaper-engine.pause` answered.",
+            "type": "string"
           }
         },
         "required": [

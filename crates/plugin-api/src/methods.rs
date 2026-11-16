@@ -666,7 +666,9 @@ pub struct WallpaperPauseParams {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WallpaperPaused {
-    pub lease: u64,
+    /// The lease's id (#1120): a string of at most 128 bytes that the hub's lease rules
+    /// (contract section 8.5, v1.14) can route; give it back as it is.
+    pub lease: String,
     /// `false`: Wallpaper Engine was paused already (the user's pause), so this lease will not
     /// play it.
     pub paused: bool,
@@ -674,7 +676,8 @@ pub struct WallpaperPaused {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WallpaperReleaseParams {
-    pub lease: u64,
+    /// The id `wallpaper-engine.pause` answered.
+    pub lease: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
