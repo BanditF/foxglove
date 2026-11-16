@@ -113,7 +113,30 @@ static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
 static STATUS: Mutex<Vec<Found>> = Mutex::new(Vec::new());
 /// The boards whose layouts the last scan handed to `key_layout`, and from which step, so the
 /// next scan can withdraw the ones that are gone.
+#[cfg(not(test))]
 static HANDED: Mutex<Vec<((u16, u16), super::key_layout::LayoutSource)>> = Mutex::new(Vec::new());
+// Tests run side by side and `key_layout` keeps one store per test thread, so what a scan
+// handed over is per test thread too: a scan in another test must not rewrite this list under
+// a test that is checking what it withdrew.
+#[cfg(test)]
+thread_local! {
+    static HANDED: std::cell::RefCell<Vec<((u16, u16), super::key_layout::LayoutSource)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(not(test))]
+fn with_handed<R>(
+    f: impl FnOnce(&mut Vec<((u16, u16), super::key_layout::LayoutSource)>) -> R,
+) -> R {
+    f(&mut HANDED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+#[cfg(test)]
+fn with_handed<R>(
+    f: impl FnOnce(&mut Vec<((u16, u16), super::key_layout::LayoutSource)>) -> R,
+) -> R {
+    HANDED.with_borrow_mut(f)
+}
 
 /// An open board's layout as `key_layout` takes it (#797): from its definition, laid out for the
 /// layout options the board reported when it was opened. A loaded VIA definition is the
@@ -164,15 +187,16 @@ pub fn layout_of(
 /// scan handed over that are gone. Called once per scan, the only time a board's definition
 /// and layout options are read; never on a timer.
 fn hand_layouts(handed: Vec<((u16, u16), super::key_layout::Supplied)>) {
-    let mut last = HANDED.lock().unwrap_or_else(|e| e.into_inner());
-    let now: Vec<_> = handed.iter().map(|(id, l)| (*id, l.source)).collect();
-    for (id, source) in last.iter().filter(|old| !now.contains(old)) {
-        super::key_layout::withdraw(id.0, id.1, *source);
-    }
-    for ((vid, pid), layout) in handed {
-        super::key_layout::from_definition(vid, pid, layout);
-    }
-    *last = now;
+    with_handed(|last| {
+        let now: Vec<_> = handed.iter().map(|(id, l)| (*id, l.source)).collect();
+        for (id, source) in last.iter().filter(|old| !now.contains(old)) {
+            super::key_layout::withdraw(id.0, id.1, *source);
+        }
+        for ((vid, pid), layout) in handed {
+            super::key_layout::from_definition(vid, pid, layout);
+        }
+        *last = now;
+    });
 }
 
 /// A keyboard found on the last scan, for the settings.

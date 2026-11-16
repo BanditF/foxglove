@@ -353,12 +353,14 @@ pub fn serve(
     std::thread::Builder::new()
         .name("hideout-control".into())
         .spawn(move || {
-            // The next instance of the pipe exists before this one is served, so a client that
-            // connects while a request is handled finds the pipe, not "no hub".
+            // The next instance of the pipe exists before this one is even accepted, so a client
+            // that connects while a request is handled finds the pipe, not "no hub". Made after
+            // the accept it left a gap: a client that connected and hung up before the server
+            // thread ran (the accept fails, closing that instance) found no instance at all.
             let mut pipe = first;
             loop {
-                let conn = pipe.accept();
                 let next = ServerPipe::create(&name, false);
+                let conn = pipe.accept();
                 if let Ok(mut conn) = conn {
                     let ok = conn.client_pid().is_ok_and(|p| caller_ok(&sup, p));
                     // A caller that may not grant is refused without reading its request.
