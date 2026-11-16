@@ -1330,15 +1330,39 @@ keep = true
     fn a_refused_handle_never_reads_or_writes_the_file() {
         test_config_dir();
         let file = path().unwrap();
+        // Every writer of the shared test file takes `LOCK` (and other tests write it all the
+        // time), so holding it makes the before/after comparison deterministic. The refused
+        // calls run on a thread of their own: a refused handle that did reach for a write
+        // would block on the lock we hold, and the bounded wait below reports it, where on this
+        // thread it would deadlock.
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let before = std::fs::read(&file).ok();
-        let wrong = section("foxglove.screens", "art.polarity");
-        assert_eq!(wrong.try_load::<Demo>(), None);
-        assert!(wrong.load::<Demo>().is_err());
-        assert!(wrong.save(&Demo { on: true, n: 9 }).is_err());
-        assert!(wrong.update(|d: &mut Demo| d.n = 9).is_err());
-        let migrated: Demo = wrong.load_or_migrate(|| panic!("a refused handle must not import"));
-        assert_eq!(migrated, Demo::default());
-        assert_eq!(std::fs::read(&file).ok(), before, "the file was touched");
+        let (done, finished) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let wrong = section("foxglove.screens", "art.polarity");
+            assert_eq!(wrong.try_load::<Demo>(), None);
+            assert!(wrong.load::<Demo>().is_err());
+            assert!(wrong.save(&Demo { on: true, n: 9 }).is_err());
+            assert!(wrong.update(|d: &mut Demo| d.n = 9).is_err());
+            let migrated: Demo =
+                wrong.load_or_migrate(|| panic!("a refused handle must not import"));
+            assert_eq!(migrated, Demo::default());
+            let _ = done.send(());
+        });
+        // A panic on the worker drops the sender (Disconnected): that is reported by the join.
+        let finished_in_time = !matches!(
+            finished.recv_timeout(std::time::Duration::from_secs(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        let after = std::fs::read(&file).ok();
+        drop(guard);
+        let joined = worker.join();
+        assert!(
+            finished_in_time,
+            "a refused handle waited for the store lock: it tried to write"
+        );
+        joined.expect("a refused handle misbehaved");
+        assert_eq!(after, before, "the file was touched");
     }
 
     #[test]
