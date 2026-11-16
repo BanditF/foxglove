@@ -442,15 +442,30 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 .map(|a| a.iter().map(text_of).collect())
                 .unwrap_or_default();
             let current = s(&p, "value").unwrap_or_default().to_string();
-            egui::ComboBox::from_id_salt(d.salt(n))
-                .selected_text(&current)
-                .show_ui(ui, |ui| {
+            // The declared label is drawn left of the box and is its accessible name with
+            // the current value: "Chat profile, daily" (#1216).
+            ui.horizontal(|ui| {
+                if !label.is_empty() {
+                    ui.label(&label);
+                }
+                let combo = egui::ComboBox::from_id_salt(d.salt(n)).selected_text(&current);
+                let r = combo.show_ui(ui, |ui| {
                     for o in &options {
                         if ui.selectable_label(o == &current, o).clicked() && o != &current {
                             d.emit(&n.id, "change", Value::String(o.clone()), true);
                         }
                     }
                 });
+                let name = if label.is_empty() {
+                    current.clone()
+                } else {
+                    format!("{label}, {current}")
+                };
+                let enabled = ui.is_enabled();
+                r.response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, enabled, &name)
+                });
+            });
         }
         "color" => {
             let hex = s(&p, "value").unwrap_or("#000000");
@@ -831,5 +846,44 @@ mod tests {
         assert_eq!(host.panel(&bad).unwrap().state, PanelState::Broken);
         assert!(host.panel(&good).unwrap().live());
         assert!(host.breadcrumb().is_none());
+    }
+
+    #[test]
+    fn a_choice_draws_its_label_and_is_named_by_it() {
+        let Some(fonts) = crate::render::test_fonts() else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        let mut host = PanelHost::default();
+        let tree = json!({"type": "choice", "id": "profile", "props": {
+            "label": "Chat profile", "value": "daily", "options": ["daily", "code"]}});
+        let params: Register = serde_json::from_value(json!({"instance": "i1", "panels": [
+            {"id": "p", "slot": "page", "title": "P", "icon": "x", "tree": tree}]}))
+        .unwrap();
+        assert!(host.register("m", "Example", None, &params).is_empty());
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts);
+        ctx.enable_accesskit();
+        let key = PanelKey::new("m", "p");
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                panel_ui(&mut host, ui, &key);
+            });
+        });
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        let named = |role, name: &str| {
+            nodes
+                .iter()
+                .any(|(_, n)| n.role() == role && n.label() == Some(name))
+        };
+        let drawn = out
+            .shapes
+            .iter()
+            .any(|s| format!("{:?}", s.shape).contains("Chat profile"));
+        assert!(drawn, "the label is drawn");
+        assert!(named(
+            egui::accesskit::Role::ComboBox,
+            "Chat profile, daily"
+        ));
     }
 }
