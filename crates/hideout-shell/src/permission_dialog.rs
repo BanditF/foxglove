@@ -107,6 +107,9 @@ impl ListItem {
         if self.sensitive {
             s.push_str(", sensitive");
         }
+        if self.new {
+            s.push_str(", new");
+        }
         s.push_str(if self.checked {
             ", checked"
         } else {
@@ -123,7 +126,7 @@ pub enum Reason {
     ListChanged,
     /// The program is new or was moved since the allow.
     Void,
-    /// PROTOTYPE (#1238 UX plan): a kept grant whose update asks for more.
+    /// A kept grant whose signed update asks for more (#1238): only the new items are marked.
     More,
 }
 
@@ -357,7 +360,7 @@ pub enum ItemWord {
     Allowed,
     Off,
     CantBeAllowed,
-    /// PROTOTYPE (#1238): asked by an update, never answered.
+    /// Asked (by an update, say) and never answered: not the same as turned off (#1238).
     Waits,
 }
 
@@ -426,7 +429,7 @@ pub enum HeaderKind {
     Cli,
     /// A command-line grant waits for the user's confirmation (#1183); nothing is allowed yet.
     Queued,
-    /// PROTOTYPE (#1238): allowed, and an update asks for more; `cli` carries (count, first line).
+    /// Allowed, and a signed update asks for more (#1238); `cli` carries (count, first line).
     More,
 }
 
@@ -472,7 +475,7 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
             } else {
                 format!("Its update asks for {n} new things, like “{first}”. They stay off until you allow them, so apps that ask for them get no answer.")
             };
-            (format!("{name} asks for more"), body, NOT_NOW)
+            (format!("{name}'s update asks for more"), body, NOT_NOW)
         }
         HeaderKind::Cli => {
             let (n, when) = cli.unwrap_or((0, ""));

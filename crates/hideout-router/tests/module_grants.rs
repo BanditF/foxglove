@@ -236,3 +236,61 @@ fn no_method_a_module_can_call_grants_anything() {
         "a call changed a grant"
     );
 }
+
+/// #1238: a method the module declares but the user has not allowed answers DENIED with a
+/// reason (not "method not found"); after the user's Allow it is served with no restart, even
+/// though the module registered while the grant was missing; a never name stays not found.
+#[test]
+fn a_declared_but_ungranted_method_is_denied_then_served_after_allow_without_a_restart() {
+    let now = Instant::now();
+    let mut r = router();
+    let text = "id = \"foxglove\"
+name = \"foxglove\"
+version = \"0.2.0\"
+kind = \"adopted\"
+family = \"foxglove\"
+hub = \"1.0\"
+run = [\"C:/x/x.exe\"]
+provides = [\"method:health.read\", \"method:wallpaper-engine.pause\", \"method:pc_lighting.set_zone\"]
+";
+    let m = hideout_contract::module::Module::parse(
+        text,
+        &hideout_contract::module::Context::default(),
+    )
+    .expect("manifest");
+    r.apply_manifest(&m);
+    r.add_module(entry("example.caller", &["wallpaper.control"]));
+    let c = connect(&mut r, "foxglove", now);
+    // The module asks for all it declares at start; the missing grant rejects the new one.
+    let rej = register_all(&mut r, c, &["health.read", "wallpaper-engine.pause"], now);
+    assert_eq!(rej.len(), 1, "{rej:?}");
+    let caller = connect(&mut r, "example.caller", now);
+    let m = json!({"jsonrpc":"2.0","id":400,"method":"wallpaper-engine.pause","params":{}});
+    let out = r.receive(caller, &m.to_string(), now);
+    let e = &sends(&out, caller)[0]["error"];
+    assert_eq!(e["code"], 5, "{e}");
+    assert!(e["data"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Not allowed in Hideout yet"));
+    // A name nobody declares stays not found.
+    let m = json!({"jsonrpc":"2.0","id":401,"method":"nobody.declares","params":{}});
+    let out = r.receive(caller, &m.to_string(), now);
+    assert_eq!(sends(&out, caller)[0]["error"]["code"], -32601);
+
+    // The user's Allow adds the item; the call is served at once, no restart, no re-register.
+    r.set_module_grants(
+        "foxglove",
+        vec![
+            "provide:health.read".into(),
+            "provide:tray.set_panel".into(),
+            "provide:wallpaper-engine.pause".into(),
+        ],
+    );
+    let (asked, code) = call_through(&mut r, caller, c, "wallpaper-engine.pause", 402, now);
+    assert_eq!((asked, code), (1, None));
+    // What was held before is still held.
+    assert!(r
+        .module_grants("foxglove")
+        .contains(&"provide:health.read".to_string()));
+}
