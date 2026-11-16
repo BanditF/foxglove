@@ -3629,7 +3629,7 @@ fn the_waits_word_keeps_its_contrast_in_both_themes() {
         let t = crate::theme::tokens(dark);
         for bg in [t.surface, t.bg] {
             let r = crate::theme::contrast(t.attention, bg);
-            assert!(r >= 3.0, "attention on {bg:?} in dark={dark}: {r:.2}");
+            assert!(r >= 4.5, "attention on {bg:?} in dark={dark}: {r:.2}");
         }
     }
 }

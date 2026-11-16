@@ -471,9 +471,9 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
         HeaderKind::More => {
             let (n, first) = cli.unwrap_or((0, ""));
             let body = if n == 1 {
-                format!("Its update asks for one new thing: “{first}”. It stays off until you allow it, so apps that ask for it get no answer.")
+                format!("Its update asks for one new thing: “{first}”. It stays off until you allow it, so apps that ask for it are told no.")
             } else {
-                format!("Its update asks for {n} new things, like “{first}”. They stay off until you allow them, so apps that ask for them get no answer.")
+                format!("Its update asks for {n} new things, like “{first}”. They stay off until you allow them, so apps that ask for them are told no.")
             };
             (format!("{name}'s update asks for more"), body, NOT_NOW)
         }

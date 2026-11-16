@@ -1063,11 +1063,12 @@ impl Router {
             return false;
         };
         let mut granted = entry.granted.clone();
-        let own = format!("provide:{pattern}");
-        if entry.registered_version.is_none() || granted.contains(&own) {
+        // A held grant, a wildcard such as `provide:x.*` included, means the grant is not what
+        // keeps the method out.
+        if entry.registered_version.is_none() || Caps::parse(&granted).provides(pattern) {
             return false;
         }
-        granted.push(own);
+        granted.push(format!("provide:{pattern}"));
         self.may_provide(module, &Caps::parse(&granted), pattern)
     }
 
@@ -2316,8 +2317,12 @@ impl Router {
                 methods.push(p);
             }
         }
+        // A registration replaces the module's old one, so it replaces what it wanted too: a
+        // register that wants nothing clears the rest (the legacy module keeps its empty entry).
         if module == LEGACY_FOXGLOVE_ID || !wanted.is_empty() {
             self.wanted.insert(module.into(), wanted);
+        } else {
+            self.wanted.remove(module);
         }
         let mut facts = Vec::new();
         for p in list("facts") {
