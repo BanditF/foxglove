@@ -60,6 +60,10 @@ pub use services::{all_methods as host_methods, ServiceCall, ServiceError};
 /// What a caller reads when the method exists but its module has not been allowed it (#1238).
 const NOT_ALLOWED_YET: &str = "Not allowed in Hideout yet. The user can allow it there.";
 
+/// At most this many (module, method) pairs are remembered for the once-per-run log line: a
+/// declared wildcard (`method:x.*`) lets a caller mint names, so the set must not grow with them.
+const MAX_ASKED_UNGRANTED: usize = 256;
+
 mod code {
     pub const PARSE: i64 = -32700;
     pub const INVALID_REQUEST: i64 = -32600;
@@ -2847,7 +2851,9 @@ impl Router {
             // A registered module declares the method but the user has not allowed it (#1238):
             // the caller is told where the answer is, instead of "method not found".
             if let Some(m) = self.declared_but_ungranted(method) {
-                if self.asked_ungranted.insert((m.clone(), method.into())) {
+                if self.asked_ungranted.len() < MAX_ASKED_UNGRANTED
+                    && self.asked_ungranted.insert((m.clone(), method.into()))
+                {
                     log::info!(
                         "permissions: {m}: {method} asked by {}, not allowed in Hideout",
                         self.caller_key(conn)
