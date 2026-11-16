@@ -42,6 +42,21 @@ function Test-RustRelevant {
     $other = @($changed | Where-Object { $_ -notmatch '\.md$' -and $_ -notmatch '^scripts/.*\.py$' })
     return ($other.Count -gt 0)
 }
+# cargo-nextest, or $null: on PATH, else _tools\perf-bin\bin (or worktrees\_tools\perf-bin\bin) in this
+# checkout's parent folders, so every worktree finds the one copy the machine has.
+function Find-Nextest {
+    $onPath = Get-Command cargo-nextest -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+    $dir = Split-Path -Parent $PSScriptRoot
+    for ($i = 0; $i -lt 4 -and $dir; $i++) {
+        $dir = Split-Path -Parent $dir
+        foreach ($sub in '_tools\perf-bin\bin', 'worktrees\_tools\perf-bin\bin') {
+            $exe = if ($dir) { Join-Path $dir "$sub\cargo-nextest.exe" }
+            if ($exe -and (Test-Path $exe)) { return $exe }
+        }
+    }
+    $null
+}
 try {
     $start = Get-Date
     $rustRelevant = Test-RustRelevant
@@ -79,7 +94,23 @@ try {
         # package in its graph has a permissive licence, and no path dependency points under app/.
         Step 'hub: dependency licences' { python scripts/check_hub_deps.py }
         Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
-        Step 'crates: tests' { cargo test --workspace }
+        # cargo-nextest runs each test in its own process (about 90 s faster than cargo test on the
+        # crates); without it, plain cargo test. nextest skips doc tests, so those run on their own.
+        Step 'crates: tests' {
+            $nextest = Find-Nextest
+            if ($nextest) {
+                Write-Host "crates: tests run with cargo nextest ($nextest)"
+                $path = $env:PATH
+                $env:PATH = "$(Split-Path -Parent $nextest);$path"
+                try {
+                    cargo nextest run --workspace
+                    if (!$LASTEXITCODE) { cargo test --workspace --doc }
+                } finally { $env:PATH = $path }
+            } else {
+                Write-Host 'crates: tests run with cargo test (cargo-nextest not found: cargo install cargo-nextest --locked)'
+                cargo test --workspace
+            }
+        }
         # The catalog signer (#785) is behind a feature the app never turns on.
         Step 'plugin-trust signer' { cargo clippy -p foxglove-plugin-trust --features sign --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-plugin-trust --features sign } }
         Step 'foxglove-link without hidapi' { cargo build -p foxglove-link --no-default-features }
