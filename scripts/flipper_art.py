@@ -79,6 +79,7 @@ import re
 import struct
 import sys
 from collections import namedtuple
+from pathlib import Path
 
 from PIL import Image
 
@@ -111,12 +112,12 @@ def parse_size(text):
     """--size WxH[:ROT]: upright W x H, stored ROT quarter turns clockwise."""
     m = re.fullmatch(r"\s*(\d+)\s*[xX]\s*(\d+)\s*(?::\s*(\d+)\s*)?", text)
     if not m:
-        raise argparse.ArgumentTypeError("%r: give the upright size as WxH or WxH:ROT" % text)
+        raise argparse.ArgumentTypeError(f"{text!r}: give the upright size as WxH or WxH:ROT")
     w, h, rot = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
     if rot > 3:
-        raise argparse.ArgumentTypeError("%r: ROT is 0 to 3 quarter turns" % text)
+        raise argparse.ArgumentTypeError(f"{text!r}: ROT is 0 to 3 quarter turns")
     if not (1 <= w <= 255 and 1 <= h <= 255):
-        raise argparse.ArgumentTypeError("%r: a blob holds 1 to 255 pixels each way" % text)
+        raise argparse.ArgumentTypeError(f"{text!r}: a blob holds 1 to 255 pixels each way")
     return Target(h, w, rot) if rot % 2 else Target(w, h, rot)
 
 
@@ -129,7 +130,7 @@ def decode_bm(data, w, h):
     elif data[0] == 0x00:
         data = data[1:]
     else:
-        raise ValueError("unknown .bm header byte %#x" % data[0])
+        raise ValueError(f"unknown .bm header byte 0x{data[0]:x}")
     stride = (w + 7) // 8
     img = Image.new("1", (w, h), 1)
     px = img.load()
@@ -152,12 +153,12 @@ def parse_meta(path):
 
 def load_frame(folder, index, w, h):
     for ext in (".png", ".bm"):
-        p = os.path.join(folder, "frame_%d%s" % (index, ext))
-        if os.path.exists(p):
+        p = Path(folder) / f"frame_{index}{ext}"
+        if p.exists():
             if ext == ".png":
                 return Image.open(p)
             return decode_bm(open(p, "rb").read(), w, h)
-    raise FileNotFoundError("frame_%d not found in %s" % (index, folder))
+    raise FileNotFoundError(f"frame_{index} not found in {folder}")
 
 
 def decode_lvgl_c(path):
@@ -188,7 +189,7 @@ def decode_lvgl_c(path):
                     px[x, y] = 0
         images.append(img.rotate(90, expand=True))  # stored sideways -> upright
     if not images:
-        sys.exit("%s: no 1-bit LVGL images found" % path)
+        sys.exit(f"{path}: no 1-bit LVGL images found")
     return images
 
 
@@ -213,16 +214,16 @@ def load_input(spec, size=None):
     landscape = "landscape" in opts
     if size is not None:
         if landscape:
-            sys.exit("%s: --size's ROT says how the art is stored; drop :landscape" % spec)
+            sys.exit(f"{spec}: --size's ROT says how the art is stored; drop :landscape")
         landscape = size
     polarity = opts.get("polarity", "auto").lower()
     if polarity not in POLARITIES:
-        sys.exit("%s: polarity is one of %s" % (spec, ", ".join(POLARITIES)))
+        sys.exit(f"{spec}: polarity is one of {', '.join(POLARITIES)}")
     if "stills" in opts:
         labels = opts["labels"].split("|") if "labels" in opts else []
         sets = []
         for i, f in enumerate(frames):
-            set_name = "%s_%d" % (name, i + 1)
+            set_name = f"{name}_{i + 1}"
             label = labels[i] if i < len(labels) else set_name.replace("_", " ")
             if "labels" not in opts:
                 label = opts.get("label", label)
@@ -236,8 +237,8 @@ def load_input(spec, size=None):
 
 def load_frames(path):
     name = re.sub(r"[^A-Za-z0-9]+", "_", os.path.basename(os.path.normpath(path))).strip("_")
-    if os.path.isdir(path):
-        meta = parse_meta(os.path.join(path, "meta.txt"))
+    if Path(path).is_dir():
+        meta = parse_meta(Path(path) / "meta.txt")
         w, h = int(meta["Width"]), int(meta["Height"])
         order = [int(i) for i in meta.get("Frames order", "0").split()] or [0]
         cache = {}
@@ -250,7 +251,7 @@ def load_frames(path):
     if path.lower().endswith(".bm"):
         m = re.search(r"(\d+)x(\d+)", os.path.basename(path))
         if not m:
-            sys.exit("%s: name a single .bm like name_128x64.bm so its size is known" % path)
+            sys.exit(f"{path}: name a single .bm like name_128x64.bm so its size is known")
         w, h = int(m.group(1)), int(m.group(2))
         return name, [decode_bm(open(path, "rb").read(), w, h)], 0
     if path.lower().endswith(".c"):
@@ -411,14 +412,14 @@ def encode_set(name, frames, landscape, invert=False):
             uniq.append(data)
         order.append(uniq.index(data))
     if len(uniq) > 256:
-        sys.exit("%s: more than 256 unique frames" % name)
+        sys.exit(f"{name}: more than 256 unique frames")
     prev = bytes(len(uniq[0]))
     buf = bytearray(len(prev))
     deltas = []
     for fi, data in enumerate(uniq):
         blob = rle(bytes(a ^ b for a, b in zip(data, prev)))
         unrle_xor(blob, buf)
-        assert bytes(buf) == data, "RLE round-trip failed for %s frame %d" % (name, fi)
+        assert bytes(buf) == data, f"RLE round-trip failed for {name} frame {fi}"
         deltas.append(blob)
         prev = data
     return order, deltas
@@ -427,7 +428,7 @@ def encode_set(name, frames, landscape, invert=False):
 def write_blob(path, sets):
     """One set as a pushable blob: header, order, delta offsets, deltas (see art_relay.h)."""
     if len(sets) != 1:
-        sys.exit("a .bin holds one art set; got %d (drop :stills or pass one input)" % len(sets))
+        sys.exit(f"a .bin holds one art set; got {len(sets)} (drop :stills or pass one input)")
     name, frames, fps, landscape, label, invert = sets[0]
     target = target_of(landscape)
     order, deltas = encode_set(name, frames, landscape, invert)
@@ -440,8 +441,8 @@ def write_blob(path, sets):
         offsets.append(at)
         at += len(d)
     if at > 0xFFFF:
-        sys.exit("%s: %d bytes is more than a blob can hold" % (name, at))
-    blob = head + bytes(order) + struct.pack("<%dH" % len(offsets), *offsets) + b"".join(deltas)
+        sys.exit(f"{name}: {at} bytes is more than a blob can hold")
+    blob = head + bytes(order) + struct.pack(f"<{len(offsets)}H", *offsets) + b"".join(deltas)
     open(path, "wb").write(blob)
     raw = len(deltas) * ((target.width + 7) // 8) * target.height
     return len(deltas), raw, len(blob)
@@ -452,12 +453,12 @@ def write_variant(set_dir, sets):
     set_dir/<w>x<h>/ (upright size) with meta.txt and frame_N.png, upright, ink black on a white
     field, so the app encodes them as they are. Returns the folder."""
     if len(sets) != 1:
-        sys.exit("--variant writes one art set; got %d (drop :stills or pass one input)" % len(sets))
+        sys.exit(f"--variant writes one art set; got {len(sets)} (drop :stills or pass one input)")
     name, frames, fps, landscape, label, invert = sets[0]
     if not isinstance(landscape, Target):
         sys.exit("--variant needs --size")
     w, h = upright(landscape)
-    folder = os.path.join(set_dir, "%dx%d" % (w, h))
+    folder = os.path.join(set_dir, f"{w}x{h}")
     os.makedirs(folder, exist_ok=True)
     uniq, order = [], []
     for img in frames:
@@ -467,15 +468,15 @@ def write_variant(set_dir, sets):
         order.append(uniq.index(data))
     for old in os.listdir(folder):
         if re.fullmatch(r"frame_\d+\.(png|bm)", old):
-            os.remove(os.path.join(folder, old))
+            os.remove(Path(folder) / old)
     for i, data in enumerate(uniq):
-        Image.frombytes("1", (w, h), data).convert("L").save(os.path.join(folder, "frame_%d.png" % i))
-    with open(os.path.join(folder, "meta.txt"), "w", encoding="utf-8", newline="\n") as f:
+        Image.frombytes("1", (w, h), data).convert("L").save(Path(folder) / f"frame_{i}.png")
+    with open(Path(folder) / "meta.txt", "w", encoding="utf-8", newline="\n") as f:
         f.write("Filetype: Flipper Animation\nVersion: 1\n\n")
-        f.write("Width: %d\nHeight: %d\n" % (w, h))
-        f.write("Passive frames: %d\nActive frames: 0\n" % len(order))
-        f.write("Frames order: %s\n" % " ".join(map(str, order)))
-        f.write("Active cycles: 0\nFrame rate: %d\n" % fps)
+        f.write(f"Width: {w}\nHeight: {h}\n")
+        f.write(f"Passive frames: {len(order)}\nActive frames: 0\n")
+        f.write(f"Frames order: {' '.join(map(str, order))}\n")
+        f.write(f"Active cycles: 0\nFrame rate: {fps}\n")
     return folder
 
 
@@ -499,25 +500,23 @@ def write_c(path, sets):
         order, deltas = encode_set(name, frames, landscape, invert)
         uniq = deltas
         for fi, blob in enumerate(deltas):
-            lines.append("static const uint8_t set_%d_delta_%d[] = {" % (si, fi))
+            lines.append(f"static const uint8_t set_{si}_delta_{fi}[] = {{")
             for i in range(0, len(blob), 16):
-                lines.append("    " + ", ".join("0x%02x" % b for b in blob[i : i + 16]) + ",")
+                lines.append("    " + ", ".join(f"0x{b:02x}" for b in blob[i : i + 16]) + ",")
             lines.append("};")
             raw_bytes += stride * ART_H
             packed_bytes += len(blob)
         unique += len(uniq)
         lines.append(
-            "static const uint8_t *const set_%d_deltas[] = {%s};"
-            % (si, ", ".join("set_%d_delta_%d" % (si, i) for i in range(len(uniq))))
+            f"static const uint8_t *const set_{si}_deltas[] = {{{', '.join(f'set_{si}_delta_{i}' for i in range(len(uniq)))}}};"
         )
         lines.append(
-            "static const uint8_t set_%d_order[] = {%s};" % (si, ", ".join(map(str, order)))
+            f"static const uint8_t set_{si}_order[] = {{{', '.join(map(str, order))}}};"
         )
         lines.append("")
         set_lines.append(
-            '    {.name = "%s", .deltas = set_%d_deltas, .order = set_%d_order, '
-            ".frame_count = %d, .fps = %d},"
-            % (name, si, si, len(order), fps)
+            f'    {{.name = "{name}", .deltas = set_{si}_deltas, .order = set_{si}_order, '
+            f".frame_count = {len(order)}, .fps = {fps}}},"
         )
         # pointer table + order table
         packed_bytes += 4 * len(uniq) + len(order)
@@ -525,7 +524,7 @@ def write_c(path, sets):
             {"index": si, "name": name, "label": label, "frames": len(order), "fps": fps}
         )
     lines += ["const struct custom_art_set custom_art_sets[] = {"] + set_lines + ["};"]
-    lines.append("const int custom_art_set_count = %d;" % len(sets))
+    lines.append(f"const int custom_art_set_count = {len(sets)};")
     open(path, "w", newline="\n").write("\n".join(lines) + "\n")
     manifest = {
         "format": "foxglove-builtin-art",
@@ -595,24 +594,23 @@ def main():
     write = write_blob if is_bin else write_c
     unique, raw, packed = write(args.out, sets)
     if args.variant:
-        print("variant folder: %s" % write_variant(args.variant, sets))
+        print(f"variant folder: {write_variant(args.variant, sets)}")
     total = sum(len(s[1]) for s in sets)
-    print("%d art sets, %d frames (%d unique)" % (len(sets), total, unique))
+    print(f"{len(sets)} art sets, {total} frames ({unique} unique)")
     print(
-        "flash: %.1f KiB compressed vs %.1f KiB raw (%.0f%%)"
-        % (packed / 1024, raw / 1024, 100.0 * packed / raw)
+        f"flash: {packed / 1024:.1f} KiB compressed vs {raw / 1024:.1f} KiB raw "
+        f"({100.0 * packed / raw:.0f}%)"
     )
     for name, frames, fps, landscape, label, invert in sets:
         print(
-            "  %-32s %3d frame(s)%s%s%s"
-            % (
-                name,
-                len(frames),
-                " @ %d fps" % fps if fps else "",
-                " (%dx%d)" % upright(landscape) if isinstance(landscape, Target)
-                else " (landscape)" if landscape else "",
-                " (inverted: drawn light on dark)" if invert else "",
+            f"  {name:<32} {len(frames):3d} frame(s)"
+            + (f" @ {fps} fps" if fps else "")
+            + (
+                f" ({upright(landscape)[0]}x{upright(landscape)[1]})"
+                if isinstance(landscape, Target)
+                else " (landscape)" if landscape else ""
             )
+            + (" (inverted: drawn light on dark)" if invert else "")
         )
     if args.preview:
         write_preview(args.preview, sets)
