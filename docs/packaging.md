@@ -147,8 +147,22 @@ Ed25519 signature over the exact JSON bytes (including whitespace). The manifest
 contains:
 
 ```json
-{"version":"1.2.3","tag":"app-v1.2.3","msi":{"name":"foxglove-x64.msi","url":"https://github.com/BanditF/foxglove/releases/download/app-v1.2.3/foxglove-x64.msi","sha256":"64 hexadecimal characters","size":12345},"notes":"Release notes","published":"2026-10-23T00:00:00Z"}
+{"version":"1.2.3","tag":"app-v1.2.3","msi":{"name":"foxglove-x64.msi","url":"https://github.com/BanditF/foxglove/releases/download/app-v1.2.3/foxglove-x64.msi","sha256":"64 hexadecimal characters","size":12345},"notes":"Release notes","published":"2026-10-23T00:00:00Z","exe_sha256":"64 hexadecimal characters"}
 ```
+
+`exe_sha256` (#1185) is the SHA-256 of the released `foxglove.exe`, the same file
+attached to the release. The release job computes it from the downloaded
+artifact (`sha256sum release/foxglove.exe`) and passes it as
+`manifest --exe-sha256 <hex>`; it fails the release if the exe is missing, the
+hash is not 64 hex characters, or `latest.json` lacks the field, so a release
+never ships without it. The field is part of the signed bytes, so the app's
+signature check covers it. The updater hands the signed manifest to the hub, and
+`attest_from_handoff` (`crates/hideout-supervisor/src/attest.rs`) keeps a module
+grant across the update only if the installed program at `run[0]` hashes to it (a
+mismatch is refused; see `crates/hideout-supervisor/tests/attest_update.rs`).
+Older manifests without the field still work, with only the version rule
+applied. `--exe-sha256` is optional for a manual build and rejected when
+malformed; `crates/foxglove-update/tests/manifest_cli.rs` covers both.
 
 Unknown JSON fields are ignored. To build and sign manually, run the signing
 binary with `manifest --version 1.2.3 --msi <path> --url <https-url>

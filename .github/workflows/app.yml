@@ -154,7 +154,16 @@ jobs:
             gh release create "$TAG" --verify-tag --title "Foxglove $TAG" --generate-notes
           fi
           gh release view "$TAG" --json body --jq .body > notes.txt
-          cargo run --locked --manifest-path ../Cargo.toml -p foxglove-update --bin foxglove-update-sign -- manifest --version "${TAG#app-v}" --msi wix/foxglove-x64.msi --url "https://github.com/$GH_REPO/releases/download/$TAG/foxglove-x64.msi" --notes-file notes.txt
+          # #1185: the hash of the exact exe attached below goes into the signed manifest, so the
+          # hub can check the installed program against it (attest_from_handoff).
+          test -f release/foxglove.exe || { echo "::error::release/foxglove.exe missing; cannot hash it"; exit 1; }
+          EXE_SHA256=$(sha256sum release/foxglove.exe | cut -d' ' -f1)
+          if ! [[ "$EXE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::bad exe hash: $EXE_SHA256"
+            exit 1
+          fi
+          cargo run --locked --manifest-path ../Cargo.toml -p foxglove-update --bin foxglove-update-sign -- manifest --version "${TAG#app-v}" --msi wix/foxglove-x64.msi --url "https://github.com/$GH_REPO/releases/download/$TAG/foxglove-x64.msi" --notes-file notes.txt --exe-sha256 "$EXE_SHA256"
+          grep -q "\"exe_sha256\": \"$EXE_SHA256\"" latest.json || { echo "::error::latest.json lacks exe_sha256"; exit 1; }
           cargo run --locked --manifest-path ../Cargo.toml -p foxglove-update --bin foxglove-update-sign -- sign latest.json
           gh release upload "$TAG" release/foxglove.exe wix/foxglove-x64.msi latest.json latest.json.sig --clobber
 

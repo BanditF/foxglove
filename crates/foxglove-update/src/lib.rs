@@ -23,7 +23,7 @@ pub struct Manifest {
     pub msi: Msi,
     pub notes: String,
     pub published: String,
-    /// SHA-256 of foxglove.exe in this release (hex). The release pipeline is to emit it; the
+    /// SHA-256 of foxglove.exe in this release (hex). The release workflow emits it (#1185); the
     /// hub then requires the installed program to match before it keeps a grant (#1179).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exe_sha256: Option<String>,
@@ -327,6 +327,22 @@ mod tests {
         let wrong = other.public_key().as_ref().try_into().unwrap();
         assert!(verify(&bytes, sig.as_bytes(), &wrong).is_err());
         assert!(public_key("PLACEHOLDER: replace").is_err());
+    }
+
+    #[test]
+    fn exe_sha256_is_covered_by_the_signature() {
+        let (pair, public) = keypair();
+        let mut m: Manifest = serde_json::from_slice(&manifest("0.2.0")).unwrap();
+        m.exe_sha256 = Some("ab".repeat(32));
+        let bytes = serde_json::to_vec_pretty(&m).unwrap();
+        let sig = STANDARD.encode(pair.sign(&bytes).as_ref());
+        assert_eq!(
+            verify(&bytes, sig.as_bytes(), &public).unwrap().exe_sha256,
+            Some("ab".repeat(32))
+        );
+        // Swapping the hash (the one field the hub trusts for the program) breaks the signature.
+        let swapped = String::from_utf8(bytes).unwrap().replace("abab", "cdab");
+        assert!(verify(swapped.as_bytes(), sig.as_bytes(), &public).is_err());
     }
 
     #[test]
