@@ -969,8 +969,17 @@ mod consumer_tests {
             };
             let pipe = ChannelPipe::create_for(&name, &consumer).unwrap();
             let t = std::thread::spawn(move || {
-                let mut c = connect(&name, "n-who").unwrap();
-                let _ = read_frame(&mut c);
+                // A refused consumer is closed on before it writes: the provider checks the
+                // client's pid right after the connect and drops the pipe, so on a loaded
+                // machine the consumer's nonce write can land on the closed pipe
+                // (`BrokenPipe`). That is the refusal working, not a failure: only the
+                // admitted consumer must get through.
+                match connect(&name, "n-who") {
+                    Ok(mut c) => {
+                        let _ = read_frame(&mut c);
+                    }
+                    Err(e) => assert!(!admitted, "the admitted consumer was refused: {e}"),
+                }
             });
             let r = pipe.accept_nonce("n-who", Duration::from_secs(10));
             assert_eq!(r.is_ok(), admitted, "{want}: {:?}", r.as_ref().err());
