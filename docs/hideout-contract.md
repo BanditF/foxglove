@@ -2163,10 +2163,13 @@ Provided by the Vulpes module.
   Free GPU action or panel button (`action.invoke` or `ui.event` with a user source).
 - Gaming is a shared signal: Vulpes publishes `gpu.reserved`, the link publishes
   `keyboard.game_mode`; neither acts on the other's alone.
-- (#1121) Foxglove's app sets `keyboard.game_mode` in its own fact store (a GAME or GAME+ layer is
-  active). The hub does not receive it until the link and the hub share facts; until then the
-  hub-side half of the rule holds trivially (it cannot act on a fact it does not see) and is
-  tested with the fact published into the router's cache.
+- (#1121, #1139, #1149) Foxglove's app sets `keyboard.game_mode` (a GAME or GAME+ layer is
+  active) and its hub link publishes the `keyboard.*` facts, game mode included, to the hub
+  (`facts.write:keyboard.*`), so the hub sees it. It still acts on nothing: a key bound to
+  Vulpes's `free-gpu` sends the same `action.invoke {source: "key"}` with game mode on or off,
+  and ending a reservation stays the user's own click or key. Tested window-free at the router
+  (`hideout-router/tests/gaming.rs`) and from the bound key through the feed to the router pipe
+  (`hideout`'s `panel_feed` tests).
 
 ### 8.10 The network broker (v1.12, #1102)
 

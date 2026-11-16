@@ -610,4 +610,121 @@ mod tests {
         assert_eq!(call["method"], "action.invoke");
         assert_eq!(call["params"], json!({"action": "toggle", "source": "key"}));
     }
+
+    /// The Free GPU key (#1121, H4.7), end to end from the bindings to the router pipe: a key bound
+    /// to Vulpes's declared `free-gpu` reaches Vulpes as `action.invoke {action, source: "key"}`; a
+    /// key nobody bound sends nothing; and `keyboard.game_mode` being true changes nothing about
+    /// that (game mode alone acts on nothing, §8.9). The press is the hotkey thread's dispatch
+    /// (a bound chord looked up in `bound_keys`, then the feed's invoker); no window, no OS hook.
+    #[test]
+    fn a_key_bound_to_free_gpu_sends_the_action_and_game_mode_changes_nothing() {
+        use hideout_contract::module::{Context, Module};
+        const VULPES: &str = "vulpes";
+        let manifest = Module::parse(
+            include_str!("../../hideout-panels/tests/vectors/vulpes.module.toml"),
+            &Context::default(),
+        )
+        .expect("Arete's manifest parses");
+        assert!(manifest.actions.iter().any(|a| a.decl.id == "free-gpu"));
+        let mut host = PanelHost::default();
+        host.set_manifest(manifest);
+        host.set_key(VULPES, "free-gpu", Some("F13".into()));
+        let bound = host.bound_keys();
+        assert_eq!(
+            bound,
+            [(
+                VULPES.to_string(),
+                "free-gpu".to_string(),
+                "F13".to_string()
+            )]
+        );
+
+        let mut router = Router::new(Settings::default(), Box::new(|_, _| Vec::new()));
+        router.add_module(ModuleEntry {
+            id: VULPES.into(),
+            name: "AI".into(),
+            holder: Holder::FirstParty,
+            granted: vec![],
+            catalog_provide: None,
+            channel_risk: Default::default(),
+            activate_on_call: false,
+            panels: None,
+            settings_dir: String::new(),
+            data_dir: String::new(),
+            registered_version: None,
+        });
+        router.set_token(VULPES, "tok-vulpes");
+        let (events, _rx) = mpsc::channel();
+        let hub = Hub::new(router, events);
+        let (_side, feed) = feed(hub.clone());
+        let name = format!(r"\\.\pipe\hideout-free-gpu-key-test-{}", std::process::id());
+        hub.serve_pipe(&name).expect("serve the test pipe");
+        let pipe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .expect("router pipe");
+        let mut from_hub = BufReader::new(pipe.try_clone().unwrap());
+        let mut to_hub = pipe;
+        writeln!(
+            to_hub,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "id": VULPES, "token": "tok-vulpes", "instance": "i1", "version": "0.1.0", "hub": "1.0",
+            "api": {}, "client": {"name": "arete", "version": "0.1.0"}}})
+        )
+        .unwrap();
+        let mut line = String::new();
+        from_hub.read_line(&mut line).unwrap();
+        assert!(serde_json::from_str::<Value>(&line).unwrap()["result"].is_object());
+
+        let invoke = feed.key_invoker().expect("the hub feed has a key invoker");
+        // What the hotkey thread does for a pressed chord: the binding for it, else nothing.
+        let press = |chord: &str| {
+            for (m, a, _) in bound.iter().filter(|(_, _, k)| k == chord) {
+                invoke(m, a);
+            }
+        };
+        let expect = json!({"action": "free-gpu", "source": "key"});
+        // Lines from the pipe, read on a thread so "nothing arrived" can be told from "not yet".
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || loop {
+            let mut line = String::new();
+            if from_hub.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            if tx
+                .send(serde_json::from_str::<Value>(&line).unwrap())
+                .is_err()
+            {
+                break;
+            }
+        });
+        let wait = Duration::from_millis(500);
+        // An unbound key sends nothing; the bound one sends exactly one call.
+        press("F14");
+        assert!(
+            lines.recv_timeout(wait).is_err(),
+            "an unbound key sends nothing"
+        );
+        press("F13");
+        let call = lines.recv_timeout(wait).expect("the bound key's call");
+        assert_eq!(call["method"], "action.invoke");
+        assert_eq!(call["params"], expect);
+        assert!(lines.recv_timeout(wait).is_err(), "exactly one call");
+        // Game mode true (published into the hub as the link does): the same key, the same call.
+        hub.act(|r| r.publish("keyboard.game_mode", json!(true)));
+        press("F14");
+        assert!(
+            lines.recv_timeout(wait).is_err(),
+            "game mode: an unbound key still sends nothing"
+        );
+        press("F13");
+        let call = lines
+            .recv_timeout(wait)
+            .expect("the bound key's call in game mode");
+        assert_eq!(call["method"], "action.invoke");
+        assert_eq!(call["params"], expect, "game mode alone changes nothing");
+        assert!(lines.recv_timeout(wait).is_err(), "exactly one call");
+    }
 }
