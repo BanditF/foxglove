@@ -12,10 +12,10 @@ single-colour, so roles only matter for the tiles.
 
 import argparse
 import io
-import os
+from pathlib import Path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "app", "resources", "plugins")
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "app" / "resources" / "plugins"
 
 STROKE = 'fill="none" stroke-width="2" stroke-linecap="square" stroke-linejoin="miter"'
 
@@ -27,7 +27,7 @@ def arc(cx, cy, r, a0, a1):
     p = lambda a: (cx + r * math.cos(math.radians(a)), cy + r * math.sin(math.radians(a)))
     (x0, y0), (x1, y1) = p(a0), p(a1)
     large = 1 if (a1 - a0) % 360 > 180 else 0
-    return '<path d="M%.2f %.2f A%g %g 0 %d 1 %.2f %.2f"/>' % (x0, y0, r, r, large, x1, y1)
+    return f'<path d="M{x0:.2f} {y0:.2f} A{r:g} {r:g} 0 {large:d} 1 {x1:.2f} {y1:.2f}"/>'
 
 
 FOX = "4,3 9,8 15,8 20,3 20,12 12,21 4,12"
@@ -35,7 +35,7 @@ FOX = "4,3 9,8 15,8 20,3 20,12 12,21 4,12"
 GLYPHS = {
     # fallback for plugins with no icon: the Bandit fox head
     "_default": [
-        ("ink", '<polygon points="%s"/>' % FOX),
+        ("ink", f'<polygon points="{FOX}"/>'),
         ("accent", '<path d="M7.5 12.5 L10.5 13.8 M16.5 12.5 L13.5 13.8"/>'),
         ("ink", '<path d="M11 17.5 H13"/>'),
     ],
@@ -112,58 +112,56 @@ def glyph_body(parts, pal=None, mono="#ffffff"):
     out = []
     for role, el in parts:
         c = colour(role, pal) if pal else mono
-        out.append('<g stroke="%s">%s</g>' % (c, el))
+        out.append(f'<g stroke="{c}">{el}</g>')
     return "\n  ".join(out)
 
 
 def gradient(pal):
-    return ('<defs><linearGradient id="rgb" x1="2" y1="0" x2="22" y2="0" gradientUnits="userSpaceOnUse">'
-            '<stop offset="0" stop-color="%s"/><stop offset="0.5" stop-color="%s"/>'
-            '<stop offset="1" stop-color="%s"/></linearGradient></defs>' % (pal["r"], pal["g"], pal["b"]))
+    return (f'<defs><linearGradient id="rgb" x1="2" y1="0" x2="22" y2="0" gradientUnits="userSpaceOnUse">'
+            f'<stop offset="0" stop-color="{pal["r"]}"/><stop offset="0.5" stop-color="{pal["g"]}"/>'
+            f'<stop offset="1" stop-color="{pal["b"]}"/></linearGradient></defs>')
 
 
 def glyph_svg(parts, size=24, mono="#ffffff"):
-    return ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 24 24">\n'
-            '<g %s>\n  %s\n</g>\n</svg>\n' % (size, size, STROKE, glyph_body(parts, mono=mono)))
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size:d}" height="{size:d}" viewBox="0 0 24 24">\n'
+            f'<g {STROKE}>\n  {glyph_body(parts, mono=mono)}\n</g>\n</svg>\n')
 
 
 def tile_svg(parts, pal):
     # 48x48 rounded tile, HUD corner brackets, the glyph at 1.25x in the middle
     br = []
     for x, y, dx, dy in ((5, 5, 1, 1), (43, 5, -1, 1), (5, 43, 1, -1), (43, 43, -1, -1)):
-        br.append("M%g %g V%g M%g %g H%g" % (x, y + 4 * dy, y, x, y, x + 4 * dx))
-    return ('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">\n'
-            '%s\n'
-            '<rect x="0.5" y="0.5" width="47" height="47" rx="10" fill="%s" stroke="%s"/>\n'
-            '<path d="%s" fill="none" stroke="%s" stroke-width="1.25" stroke-opacity="0.7"/>\n'
-            '<g transform="translate(9 9) scale(1.25)" %s>\n  %s\n</g>\n</svg>\n'
-            % (gradient(pal), pal["bg"], pal["edge"], " ".join(br), pal["bracket"], STROKE,
-               glyph_body(parts, pal)))
+        br.append(f"M{x:g} {y + 4 * dy:g} V{y:g} M{x:g} {y:g} H{x + 4 * dx:g}")
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">\n'
+            f'{gradient(pal)}\n'
+            f'<rect x="0.5" y="0.5" width="47" height="47" rx="10" fill="{pal["bg"]}" stroke="{pal["edge"]}"/>\n'
+            f'<path d="{" ".join(br)}" fill="none" stroke="{pal["bracket"]}" stroke-width="1.25" stroke-opacity="0.7"/>\n'
+            f'<g transform="translate(9 9) scale(1.25)" {STROKE}>\n  {glyph_body(parts, pal)}\n</g>\n</svg>\n')
 
 
 def empty_svg():
     """The empty Plugins tab: Bandit asleep in an empty den. Mono white; the app tints it."""
     s = 1.8  # the fox head from the glyph, scaled and resting its chin on the ground
-    head = " ".join("%g,%g" % (float(x) * s + 56, float(y) * s + 92)
+    head = " ".join(f"{float(x) * s + 56:g},{float(y) * s + 92:g}"
                     for x, y in (p.split(",") for p in FOX.split()))
-    ticks = " ".join("M%d 137 V%d" % (x, 141 if (x - 24) % 48 else 144) for x in range(24, 217, 12))
-    br = " ".join("M%g %g V%g M%g %g H%g" % (x, y + 10 * dy, y, x, y, x + 10 * dx)
+    ticks = " ".join(f"M{x:d} 137 V{(141 if (x - 24) % 48 else 144):d}" for x in range(24, 217, 12))
+    br = " ".join(f"M{x:g} {y + 10 * dy:g} V{y:g} M{x:g} {y:g} H{x + 10 * dx:g}"
                   for x, y, dx, dy in ((6, 6, 1, 1), (234, 6, -1, 1), (6, 154, 1, -1), (234, 154, -1, -1)))
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160">\n'
             '<g fill="none" stroke="#ffffff" stroke-linecap="square" stroke-linejoin="miter">\n'
-            '  <path d="%s" stroke-width="2" stroke-opacity="0.6"/>\n'
+            f'  <path d="{br}" stroke-width="2" stroke-opacity="0.6"/>\n'
             '  <path d="M44 130 A76 76 0 0 1 196 130" stroke-width="3"/>\n'
             '  <path d="M30 130 A90 90 0 0 1 210 130" stroke-width="1.5" stroke-dasharray="2 7" stroke-opacity="0.6"/>\n'
             '  <path d="M114 32 H126 L120 40 Z" stroke-width="2"/>\n'
             '  <path d="M16 130 H224" stroke-width="3"/>\n'
-            '  <path d="%s" stroke-width="1.5" stroke-opacity="0.6"/>\n'
+            f'  <path d="{ticks}" stroke-width="1.5" stroke-opacity="0.6"/>\n'
             '  <path d="M92 110 C100 96 150 94 162 122 L164 130" stroke-width="3"/>\n'
             '  <path d="M163 129 C150 114 120 115 102 126" stroke-width="3"/>\n'
             '  <path d="M106 127 L109 122 M112 124 L115 119.5 M118 122 L120.5 118" stroke-width="2" stroke-opacity="0.7"/>\n'
-            '  <polygon points="%s" stroke-width="3"/>\n'
+            f'  <polygon points="{head}" stroke-width="3"/>\n'
             '  <path d="M68 116 Q71 119 74 117 M87 116 Q84 119 81 117" stroke-width="2.5"/>\n'
             '  <path d="M76 124 H79" stroke-width="2.5"/>\n'
-            '</g>\n</svg>\n' % (br, ticks, head))
+            '</g>\n</svg>\n')
 
 
 def render(svg, width):
@@ -179,15 +177,15 @@ def main():
     ap.add_argument("--sheet")
     a = ap.parse_args()
     for pid, parts in GLYPHS.items():
-        d = os.path.join(OUT, pid)
-        os.makedirs(d, exist_ok=True)
+        d = OUT / pid
+        d.mkdir(parents=True, exist_ok=True)
         files = {"glyph.svg": glyph_svg(parts), "icon.svg": tile_svg(parts, DARK),
                  "icon-light.svg": tile_svg(parts, LIGHT)}
         for name, text in files.items():
-            open(os.path.join(d, name), "w", encoding="utf-8", newline="\n").write(text)
+            open(d / name, "w", encoding="utf-8", newline="\n").write(text)
         for name, ink in (("tray-white.png", "#ffffff"), ("tray-black.png", "#000000")):
-            render(glyph_svg(parts, mono=ink), 32).save(os.path.join(d, name))
-    open(os.path.join(OUT, "empty.svg"), "w", encoding="utf-8", newline="\n").write(empty_svg())
+            render(glyph_svg(parts, mono=ink), 32).save(d / name)
+    open(OUT / "empty.svg", "w", encoding="utf-8", newline="\n").write(empty_svg())
     print("wrote", len(GLYPHS), "icon sets and empty.svg to", OUT)
     if a.sheet:
         sheet(a.sheet)

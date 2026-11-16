@@ -19,12 +19,12 @@ Writes:
 """
 
 import argparse
-import os
+from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RES = os.path.join(ROOT, "app", "resources")
+ROOT = Path(__file__).resolve().parent.parent
+RES = ROOT / "app" / "resources"
 
 # the Bandit fox, in its 680 x 760 crop (from art-src/bandit/bandit_art.py)
 FW, FH = 680.0, 760.0
@@ -186,38 +186,38 @@ def tray(size, variant, state):
 
 def tray_name(variant, state, size):
     suffix = {"on": "", "off": "-off", "paused": "-paused", "screen": "-screen"}[state]
-    sized = "" if size in (32, 44) else "-%d" % size
-    return "tray-icon-%s%s%s.png" % (variant, suffix, sized)
+    sized = "" if size in (32, 44) else f"-{size}"
+    return f"tray-icon-{variant}{suffix}{sized}.png"
 
 
 def write_tray():
     for variant in ("white", "black"):
         for state in TRAY_STATES:
             for size in TRAY_SIZES:
-                tray(size, variant, state).save(os.path.join(RES, tray_name(variant, state, size)))
+                tray(size, variant, state).save(RES / tray_name(variant, state, size))
     for state in TRAY_STATES:
-        tray(44, "template", state).save(os.path.join(RES, tray_name("template", state, 44)))
+        tray(44, "template", state).save(RES / tray_name("template", state, 44))
 
 
 def svg():
     """The master, as vectors (the full fox in the dark tile)."""
     S = 256
     scale, ox, oy = tile_geometry(S, False)
-    pts = lambda p: " ".join("%.1f,%.1f" % (ox + x * scale, oy + y * scale) for x, y in p)
-    body = ["<polygon points=\"%s\" fill=\"%s\"/>" % (pts(p), c) for p, c in fox_layers(False)]
+    pts = lambda p: " ".join(f"{ox + x * scale:.1f},{oy + y * scale:.1f}" for x, y in p)
+    body = [f'<polygon points="{pts(p)}" fill="{c}"/>' for p, c in fox_layers(False)]
     w = S / 160
     lines = [(340, 300), (340, 700)]
-    body.append("<polyline points=\"%s\" fill=\"none\" stroke=\"%s\" stroke-width=\"%.2f\"/>" % (pts(lines), DARK, w))
+    body.append(f'<polyline points="{pts(lines)}" fill="none" stroke="{DARK}" stroke-width="{w:.2f}"/>')
     for p in (FACET, mirror(FACET)):
-        body.append("<polyline points=\"%s\" fill=\"none\" stroke=\"%s\" stroke-width=\"%.2f\"/>" % (pts(p), DARK, w))
+        body.append(f'<polyline points="{pts(p)}" fill="none" stroke="{DARK}" stroke-width="{w:.2f}"/>')
     n, inset = S * 0.12, S * 0.07
-    br = " ".join("M%.1f %.1f L%.1f %.1f L%.1f %.1f" % (x, y + dy * n, x, y, x + dx * n, y)
+    br = " ".join(f"M{x:.1f} {y + dy * n:.1f} L{x:.1f} {y:.1f} L{x + dx * n:.1f} {y:.1f}"
                   for x, y, dx, dy in ((inset, inset, 1, 1), (S - inset, inset, -1, 1),
                                        (inset, S - inset, 1, -1), (S - inset, S - inset, -1, -1)))
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">\n'
-            '<rect x="0.5" y="0.5" width="255" height="255" rx="56" fill="%s" stroke="%s"/>\n%s\n'
-            '<path d="%s" fill="none" stroke="%s" stroke-width="4"/>\n</svg>\n'
-            % (DARK, EDGE, "\n".join(body), br, ORANGE))
+            f'<rect x="0.5" y="0.5" width="255" height="255" rx="56" fill="{DARK}" stroke="{EDGE}"/>\n'
+            f'{"\n".join(body)}\n'
+            f'<path d="{br}" fill="none" stroke="{ORANGE}" stroke-width="4"/>\n</svg>\n')
 
 
 ICO_SIZES = [16, 20, 24, 32, 48, 64, 256]
@@ -235,14 +235,14 @@ def main():
             sheet(a.sheet)
         return
     icons = {s: draw_icon(s) for s in ICO_SIZES}
-    icons[256].save(os.path.join(RES, "icon.png"))
-    icons[256].save(os.path.join(RES, "icon.ico"), format="ICO", sizes=[(s, s) for s in ICO_SIZES],
+    icons[256].save(RES / "icon.png")
+    icons[256].save(RES / "icon.ico", format="ICO", sizes=[(s, s) for s in ICO_SIZES],
                     append_images=[icons[s] for s in ICO_SIZES[:-1]])
-    open(os.path.join(RES, "icon.svg"), "w", encoding="utf-8", newline="\n").write(svg())
+    open(RES / "icon.svg", "w", encoding="utf-8", newline="\n").write(svg())
     write_tray()
-    assets = os.path.join(ROOT, "app", "packaging", "identity", "Assets")
+    assets = ROOT / "app" / "packaging" / "identity" / "Assets"
     for s in (44, 50, 150):
-        draw_icon(s).save(os.path.join(assets, "logo%d.png" % s))
+        draw_icon(s).save(assets / f"logo{s}.png")
     print("wrote app icon, tray glyphs and identity logos")
     if a.sheet:
         sheet(a.sheet)
@@ -265,7 +265,7 @@ def sheet(path):
     H = 40 + len(rows) * row_h + 150
     im = Image.new("RGBA", (W, H), "#808080")
     d = ImageDraw.Draw(im)
-    d.text((12, 10), "Foxglove tray glyphs (#403, the fox): 16 / 20 / 24 / 32 px, actual size then x%d" % zoom,
+    d.text((12, 10), f"Foxglove tray glyphs (#403, the fox): 16 / 20 / 24 / 32 px, actual size then x{zoom}",
            fill="#ffffff", font=font)
     bgs = {"white": "#202020", "black": "#f3f3f3"}
     for i, (variant, state) in enumerate(rows):
@@ -274,16 +274,16 @@ def sheet(path):
         fg = "#ffffff" if variant == "white" else "#000000"
         d.rectangle([0, y0, W, y0 + row_h - 4], fill=bg)
         label = {"on": "connected", "off": "no keyboard", "paused": "paused", "screen": "screen glow"}[state]
-        d.text((12, y0 + 8), "%s taskbar" % ("dark" if variant == "white" else "light"), fill=fg, font=font)
+        d.text((12, y0 + 8), f'{"dark" if variant == "white" else "light"} taskbar', fill=fg, font=font)
         d.text((12, y0 + 28), label, fill=fg, font=font)
         x = 12
         for s in TRAY_SIZES:
-            g = Image.open(os.path.join(RES, tray_name(variant, state, s)))
+            g = Image.open(RES / tray_name(variant, state, s))
             im.alpha_composite(g, (x, y0 + 60 + (32 - s) // 2))
             x += s + 6
         x = 140
         for s in TRAY_SIZES:
-            g = Image.open(os.path.join(RES, tray_name(variant, state, s)))
+            g = Image.open(RES / tray_name(variant, state, s))
             big = g.resize((s * zoom, s * zoom), Image.NEAREST)
             im.alpha_composite(big, (x, y0 + 10 + (32 - s) * zoom // 2))
             x += s * zoom + 12
@@ -292,7 +292,7 @@ def sheet(path):
     d.text((12, y0 + 8), "macOS templates (44 px, tinted by the menu bar)", fill="#000000", font=font)
     x = 12
     for state in TRAY_STATES:
-        g = Image.open(os.path.join(RES, tray_name("template", state, 44)))
+        g = Image.open(RES / tray_name("template", state, 44))
         im.alpha_composite(g, (x, y0 + 40))
         im.alpha_composite(g.resize((88, 88), Image.NEAREST), (x + 56, y0 + 40))
         x += 180

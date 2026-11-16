@@ -14,8 +14,9 @@ import colorsys
 import io
 import json
 import os
+from pathlib import Path
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = Path(__file__).resolve().parent.parent
 EFFECTS = ["solid", "breathe", "spectrum", "swirl"]  # index = the keyboard's effect number
 
 PRESETS = [
@@ -45,28 +46,28 @@ PRESETS = [
 
 def hsv_hex(h, s, v=1.0):
     r, g, b = colorsys.hsv_to_rgb(h / 360, s, v)
-    return "#%02x%02x%02x" % (round(r * 255), round(g * 255), round(b * 255))
+    return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
 
 
 def chip(p):
     """64x24 rounded chip: solid fill; breathe fades to dark at the ends; swirl is a rainbow."""
     c, e = p["swatch"], p["effect"]
     if e == "swirl":
-        stops = "".join('<stop offset="%g" stop-color="%s"/>' % (i / 6, hsv_hex(i * 60, 0.9)) for i in range(7))
+        stops = "".join(f'<stop offset="{i / 6:g}" stop-color="{hsv_hex(i * 60, 0.9)}"/>' for i in range(7))
         fill = "url(#g)"
-        defs = '<linearGradient id="g" x1="0" x2="1">%s</linearGradient>' % stops
+        defs = f'<linearGradient id="g" x1="0" x2="1">{stops}</linearGradient>'
     elif e == "breathe":
         fill = "url(#g)"
-        defs = ('<linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="%s" stop-opacity="0.25"/>'
-                '<stop offset="0.5" stop-color="%s"/><stop offset="1" stop-color="%s" stop-opacity="0.25"/>'
-                '</linearGradient>' % (c, c, c))
+        defs = (f'<linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="{c}" stop-opacity="0.25"/>'
+                f'<stop offset="0.5" stop-color="{c}"/><stop offset="1" stop-color="{c}" stop-opacity="0.25"/>'
+                '</linearGradient>')
     else:
         fill, defs = c, ""
-    return ('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="24" viewBox="0 0 64 24">\n'
-            '<defs>%s</defs>\n'
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="24" viewBox="0 0 64 24">\n'
+            f'<defs>{defs}</defs>\n'
             '<rect x="0.5" y="0.5" width="63" height="23" rx="6" fill="#16171b" stroke="#2c2e35"/>\n'
-            '<rect x="3" y="3" width="58" height="18" rx="4" fill="%s"/>\n'
-            '</svg>\n' % (defs, fill))
+            f'<rect x="3" y="3" width="58" height="18" rx="4" fill="{fill}"/>\n'
+            '</svg>\n')
 
 
 ART_LIMIT = 12 * 1024
@@ -79,23 +80,23 @@ def copy_art(res):
     there (the committed copies stay otherwise), plus a preview GIF for the docs."""
     import shutil
 
-    os.makedirs(os.path.join(res, "lighting", "art"), exist_ok=True)
-    gifs = os.path.join(ROOT, "docs", "lighting-art")
-    os.makedirs(gifs, exist_ok=True)
+    (Path(res) / "lighting" / "art").mkdir(parents=True, exist_ok=True)
+    gifs = ROOT / "docs" / "lighting-art"
+    gifs.mkdir(parents=True, exist_ok=True)
     for p in PRESETS:
         art = p["art"]
         if "file" in art:
-            src = os.path.join(WALLPAPERS, "dist", "keyboard", art["from_wallpaper"])
-            dst = os.path.join(res, "lighting", "art", art["file"])
-            if os.path.exists(os.path.join(src, "right.bin")):
-                shutil.copy2(os.path.join(src, "right.bin"), dst)
-                shutil.copy2(os.path.join(src, "preview_right.gif"), os.path.join(gifs, p["id"] + ".gif"))
+            src = Path(WALLPAPERS) / "dist" / "keyboard" / art["from_wallpaper"]
+            dst = Path(res) / "lighting" / "art" / art["file"]
+            if (src / "right.bin").exists():
+                shutil.copy2(src / "right.bin", dst)
+                shutil.copy2(src / "preview_right.gif", gifs / (p["id"] + ".gif"))
             blob = open(dst, "rb").read()
             assert blob[:4] == b"NVA1" and len(blob) <= ART_LIMIT, (p["id"], len(blob))
         else:
-            gif = os.path.join(BANDIT_GIFS, "Bandit_" + art["builtin"][len("Bandit_"):].lower() + ".gif")
-            if os.path.exists(gif):
-                shutil.copy2(gif, os.path.join(gifs, p["id"] + ".gif"))
+            gif = Path(BANDIT_GIFS) / ("Bandit_" + art["builtin"][len("Bandit_"):].lower() + ".gif")
+            if gif.exists():
+                shutil.copy2(gif, gifs / (p["id"] + ".gif"))
 
 
 def main():
@@ -105,13 +106,13 @@ def main():
     for p in PRESETS:
         assert p["effect"] in EFFECTS, p["id"]
     data = {"format": "foxglove-lighting-presets", "version": 1, "effects": EFFECTS, "presets": PRESETS}
-    res = os.path.join(ROOT, "app", "resources")
-    with open(os.path.join(res, "lighting-presets.json"), "w", encoding="utf-8", newline="\n") as f:
+    res = ROOT / "app" / "resources"
+    with open(res / "lighting-presets.json", "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
-    os.makedirs(os.path.join(res, "lighting"), exist_ok=True)
+    (res / "lighting").mkdir(parents=True, exist_ok=True)
     for p in PRESETS:
-        with open(os.path.join(res, "lighting", p["id"] + ".svg"), "w", encoding="utf-8", newline="\n") as f:
+        with open(res / "lighting" / (p["id"] + ".svg"), "w", encoding="utf-8", newline="\n") as f:
             f.write(chip(p))
     copy_art(res)
     print("wrote", len(PRESETS), "presets")
@@ -128,9 +129,9 @@ def main():
             # the LED colour itself, as hue/saturation at full value
             led = hsv_hex(p["color"]["hue"], p["color"]["saturation"] / 100)
             d.rectangle([114, y + 4, 138, y + 28], fill=led)
-            d.text((150, y + 2), "%s  (%s)" % (p["name"], p["effect"]), fill="#ece8e1")
-            d.text((150, y + 18), "%s   LED h%d s%d b%d   %s" % (p["description"], p["color"]["hue"],
-                   p["color"]["saturation"], p["color"]["brightness"], ", ".join(p["wallpapers"]) or "-"),
+            d.text((150, y + 2), f"{p['name']}  ({p['effect']})", fill="#ece8e1")
+            d.text((150, y + 18), f"{p['description']}   LED h{p['color']['hue']} s{p['color']['saturation']}"
+                   f" b{p['color']['brightness']}   {', '.join(p['wallpapers']) or '-'}",
                    fill="#9a968e")
         im.save(a.sheet)
         print("sheet", a.sheet)
