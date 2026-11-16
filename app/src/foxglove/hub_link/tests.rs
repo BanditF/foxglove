@@ -778,9 +778,14 @@ impl Rig {
 
     /// An outside tool asking for `asked`; the test router approves what is asked.
     fn tool(&mut self, asked: &[&str]) -> Tool {
+        self.tool_named(asked, "cli")
+    }
+
+    /// [`Rig::tool`] with its client name (the router's caller key for a tool).
+    fn tool_named(&mut self, asked: &[&str], name: &str) -> Tool {
         let conn = self.router.connect(Origin::Pipe);
         let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "api":"1.13","client":{"name":"cli","version":"1"},"permissions":asked}});
+            "api":"1.13","client":{"name":name,"version":"1"},"permissions":asked}});
         let got = self.deliver(conn, &init.to_string());
         assert!(got[0]["result"].is_object(), "{got:?}");
         Tool { conn }
@@ -859,14 +864,7 @@ fn every_served_name_has_a_router_permission_and_none_is_never_list() {
             .permission
             .unwrap_or_else(|| panic!("{m} needs a permission"));
         assert!(
-            ![
-                "key.events",
-                "hid.raw",
-                "wallpaper.control",
-                "secrets",
-                "modules.manage"
-            ]
-            .contains(&need),
+            !["key.events", "hid.raw", "secrets", "modules.manage"].contains(&need),
             "{m} needs {need}, a never-list permission"
         );
     }
@@ -884,9 +882,6 @@ fn every_served_name_has_a_router_permission_and_none_is_never_list() {
         "focus.set",
         "key.event",
         "hid.raw",
-        "wallpaper-engine.pause",
-        "wallpaper-engine.release",
-        "wallpaper-engine.status",
         "secrets.get",
         "facts.set",
         "modules.manage",
@@ -901,7 +896,12 @@ fn the_hub_registers_every_served_method_and_refuses_none() {
     let steps = rig.connect(&keyboard());
     assert!(steps.contains(&Step::Ready), "{steps:?}");
     assert!(rig.link.take_log().is_empty(), "no rejected registration");
-    let t = rig.tool(&["devices.read", "app.windows", "lighting.write"]);
+    let t = rig.tool(&[
+        "devices.read",
+        "app.windows",
+        "lighting.write",
+        "wallpaper.control",
+    ]);
     for m in SERVED {
         let params = if *m == "overlay.set_shown" {
             json!({"on": true})
@@ -1002,8 +1002,6 @@ fn never_list_and_first_party_methods_are_unreachable_through_the_module() {
         "screens.panel_override",
         "profiles.activate",
         "focus.set",
-        "wallpaper-engine.pause",
-        "wallpaper-engine.status",
         "secrets.get",
         "definitely.not.a.method",
     ] {
@@ -1028,7 +1026,7 @@ fn the_module_answers_only_its_table_even_if_the_hub_forwards_more() {
         "behaviors.invoke",
         "lighting.set",
         "key.event",
-        "wallpaper-engine.pause",
+        "lighting.lease",
         "hid.raw",
     ] {
         let call = json!({"jsonrpc":"2.0","id":5,"method":m,"params":{}});
@@ -1166,10 +1164,19 @@ fn connection_bound_arms() -> Vec<String> {
         .collect()
 }
 
+/// Served names that keep something per connection on purpose: leases under the contract's
+/// lease rules (section 8.5). The router keeps their callers apart, `lease.closed` ends one,
+/// and the link dropping runs `closed(ROUTED_CONN)` (#1120 slice C; tests below).
+const LEASE_ARMS: &[&str] = &[
+    "wallpaper-engine.pause",
+    "wallpaper-engine.release",
+    "wallpaper-engine.status",
+];
+
 #[test]
 fn no_served_name_reaches_a_connection_bound_arm() {
-    // All routed calls share ROUTED_CONN (0) and `closed(0)` never runs, so a served name that
-    // kept anything per connection would share it between callers and never release it.
+    // All routed calls share ROUTED_CONN (0), so a served name that kept anything per
+    // connection would share it between callers; only the lease arms may, under the hub's rules.
     let bound = connection_bound_arms();
     for must in [
         "lighting.lease",
@@ -1183,7 +1190,7 @@ fn no_served_name_reaches_a_connection_bound_arm() {
             "{must} not found in {bound:?}"
         );
     }
-    for m in SERVED {
+    for m in SERVED.iter().filter(|m| !LEASE_ARMS.contains(m)) {
         assert!(
             !bound.iter().any(|b| b == m),
             "{m} uses the connection: {bound:?}"
@@ -1902,4 +1909,282 @@ fn a_module_that_leaves_gives_the_methods_back() {
     assert_eq!(rig.routed().len(), SERVED.len());
     let log = rig.link.take_log();
     assert!(log.iter().any(|l| l.contains("is gone")), "{log:?}");
+}
+
+// ---- #1120 slice C: Wallpaper Engine's pause through the hub, over a fake Wallpaper Engine ----
+
+/// Wallpaper Engine's command line, recorded: it never starts the real exe.
+#[derive(Default)]
+struct FakeRunner {
+    calls: Vec<String>,
+}
+
+impl crate::foxglove::wallpaper_sync::Apply for &mut FakeRunner {
+    fn ready(&mut self) -> bool {
+        true
+    }
+    fn apply(&mut self, _: &str, _: &str) -> Result<(), String> {
+        unreachable!("leases never push properties")
+    }
+    fn control(&mut self, command: &str) -> Result<(), String> {
+        self.calls.push(command.into());
+        Ok(())
+    }
+    fn interfaces(&mut self) -> Vec<(String, String)> {
+        vec![]
+    }
+}
+
+/// The app's lease table and the API's own `wallpaper-engine.*` handling, over [`FakeRunner`]:
+/// what the app does, without the sync worker's thread or a Wallpaper Engine.
+#[derive(Default)]
+struct FakeWe {
+    inner: std::sync::Mutex<(
+        crate::foxglove::wallpaper_leases::Leases,
+        FakeRunner,
+        Vec<u64>,
+    )>,
+}
+
+impl FakeWe {
+    fn calls(&self) -> Vec<String> {
+        self.inner.lock().unwrap().1.calls.clone()
+    }
+    fn leases(&self) -> u32 {
+        self.inner.lock().unwrap().0.count()
+    }
+    /// The connection numbers the handlers were called with.
+    fn conns(&self) -> Vec<u64> {
+        self.inner.lock().unwrap().2.clone()
+    }
+}
+
+impl crate::foxglove::api::WallpaperControl for FakeWe {
+    fn pause(
+        &self,
+        conn: u64,
+        reason: &str,
+    ) -> Result<(String, bool), crate::foxglove::wallpaper_leases::Fail> {
+        let mut g = self.inner.lock().unwrap();
+        let (leases, runner, _) = &mut *g;
+        leases.pause(&mut &mut *runner, conn, reason, false)
+    }
+    fn release(
+        &self,
+        conn: u64,
+        lease: String,
+    ) -> Result<crate::foxglove::wallpaper_leases::Ended, crate::foxglove::wallpaper_leases::Fail>
+    {
+        let mut g = self.inner.lock().unwrap();
+        let (leases, runner, _) = &mut *g;
+        leases.release(&mut &mut *runner, conn, &lease, false)
+    }
+    fn status(&self) -> (bool, u32, bool) {
+        let g = self.inner.lock().unwrap();
+        (true, g.0.count(), g.0.paused_by_lease())
+    }
+}
+
+impl foxglove_plugin_host::Devices for FakeWe {
+    fn call_from(
+        &self,
+        conn: u64,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, foxglove_plugin_api::rpc::Error> {
+        self.inner.lock().unwrap().2.push(conn);
+        crate::foxglove::api::wallpaper_call(self, conn, method, params)
+    }
+    fn closed(&self, conn: u64) {
+        let mut g = self.inner.lock().unwrap();
+        let (leases, runner, _) = &mut *g;
+        leases.drop_conn(&mut &mut *runner, conn, false);
+    }
+    fn lease_closed(&self, conn: u64, lease: &str) {
+        let mut g = self.inner.lock().unwrap();
+        let (leases, runner, _) = &mut *g;
+        leases.hub_closed(&mut &mut *runner, conn, lease, false);
+    }
+}
+
+impl Rig {
+    /// The router's messages for the module, run through the link (inline, no worker); the
+    /// link's answers go back through the router. What the router sent `watch`.
+    fn feed_link(&mut self, out: Vec<Out>, watch: ConnId) -> Vec<Value> {
+        let mut mine = Vec::new();
+        let mut queue = vec![out];
+        while let Some(out) = queue.pop() {
+            for o in out {
+                let Out::Send(to, v) = o else { continue };
+                if to == watch {
+                    mine.push(v);
+                } else if to == self.conn {
+                    self.link.line(&v.to_string()).unwrap();
+                    let sent = std::mem::take(self.link.writer_mut());
+                    for l in String::from_utf8(sent).unwrap().lines() {
+                        queue.push(self.router.receive(self.conn, l, self.now));
+                    }
+                }
+            }
+        }
+        mine
+    }
+}
+
+fn we_rig() -> (Rig, std::sync::Arc<FakeWe>) {
+    let we = std::sync::Arc::new(FakeWe::default());
+    let mut rig = Rig::with_devices(&granted_all(), we.clone());
+    let steps = rig.connect(&keyboard());
+    assert!(steps.contains(&Step::Ready), "{steps:?}");
+    assert!(rig.link.take_log().is_empty(), "every method registered");
+    (rig, we)
+}
+
+fn pause(rig: &mut Rig, t: &Tool, reason: &str) -> Value {
+    rig.call(t, "wallpaper-engine.pause", json!({ "reason": reason }))
+}
+
+fn lease_id(v: &Value) -> String {
+    v["result"]["lease"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{v}"))
+        .to_string()
+}
+
+#[test]
+fn a_pause_lease_whose_caller_disconnects_resumes_wallpaper_engine() {
+    let (mut rig, we) = we_rig();
+    let arete = rig.tool(&["wallpaper.control"]);
+    let r = pause(&mut rig, &arete, "GPU claim");
+    let lease = lease_id(&r);
+    assert!(hideout_contract::lease::valid_id(&lease), "{lease}");
+    assert_eq!(r["result"]["paused"], true);
+    assert_eq!(we.calls(), ["pause"]);
+    assert!(we.conns().iter().all(|c| *c == ROUTED_CONN));
+    // The caller dies: the hub tells the module, and the module plays.
+    let out = rig.router.disconnect(arete.conn);
+    rig.feed_link(out, arete.conn);
+    assert_eq!(we.calls(), ["pause", "play"]);
+    assert_eq!(we.leases(), 0);
+}
+
+#[test]
+fn two_callers_cannot_release_each_others_lease() {
+    let (mut rig, we) = we_rig();
+    let (a, b) = (
+        rig.tool(&["wallpaper.control"]),
+        rig.tool(&["wallpaper.control"]),
+    );
+    let la = lease_id(&pause(&mut rig, &a, "a"));
+    let lb = lease_id(&pause(&mut rig, &b, "b"));
+    assert_ne!(la, lb);
+    // B names A's lease: refused by the hub, never reaches the module.
+    let seen = we.conns().len();
+    let r = rig.call(&b, "wallpaper-engine.release", json!({ "lease": la }));
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    assert_eq!(r["error"]["data"]["id"], "lease.unknown");
+    assert_eq!(we.conns().len(), seen, "the module was never asked");
+    assert_eq!((we.leases(), we.calls()), (2, vec!["pause".to_string()]));
+    // Each releases its own: the first holds, the last plays, once (the release and the hub's
+    // `lease.closed {released}` after it end one lease).
+    let r = rig.call(&a, "wallpaper-engine.release", json!({ "lease": la }));
+    assert_eq!(
+        (&r["result"]["played"], &r["result"]["why"]),
+        (&json!(false), &json!("held"))
+    );
+    let r = rig.call(&b, "wallpaper-engine.release", json!({ "lease": lb }));
+    assert_eq!(r["result"]["played"], true, "{r}");
+    assert_eq!(we.calls(), ["pause", "play"]);
+    // A's lease is dead for A too now.
+    let r = rig.call(&a, "wallpaper-engine.release", json!({ "lease": la }));
+    assert_eq!(r["error"]["data"]["id"], "lease.unknown");
+}
+
+#[test]
+fn lease_closed_with_any_reason_ends_that_lease_only() {
+    let (mut rig, we) = we_rig();
+    let t = rig.tool(&["wallpaper.control"]);
+    let first = lease_id(&pause(&mut rig, &t, "a"));
+    let second = lease_id(&pause(&mut rig, &t, "b"));
+    // A reason this module has never heard of still means ended.
+    for (lease, plays) in [(&first, false), (&second, true)] {
+        let n = json!({"jsonrpc":"2.0","method":"lease.closed",
+                       "params":{"lease": lease, "reason": "some-later-reason"}});
+        rig.link.line(&n.to_string()).unwrap();
+        assert_eq!(we.calls().last().map(String::as_str) == Some("play"), plays);
+    }
+    assert_eq!(
+        (we.leases(), we.calls()),
+        (0, vec!["pause".into(), "play".into()])
+    );
+    // An unknown or repeated id changes nothing.
+    let n = json!({"jsonrpc":"2.0","method":"lease.closed",
+                   "params":{"lease": first, "reason": "disconnect"}});
+    rig.link.line(&n.to_string()).unwrap();
+    assert_eq!(we.calls().len(), 2);
+}
+
+#[test]
+fn the_hub_link_dropping_ends_every_routed_lease() {
+    let (mut rig, we) = we_rig();
+    let (a, b) = (
+        rig.tool(&["wallpaper.control"]),
+        rig.tool(&["wallpaper.control"]),
+    );
+    pause(&mut rig, &a, "a");
+    pause(&mut rig, &b, "b");
+    assert_eq!(we.leases(), 2);
+    drop(rig);
+    assert_eq!(we.leases(), 0);
+    assert_eq!(we.calls(), ["pause", "play"]);
+}
+
+#[test]
+fn one_caller_cannot_fill_the_modules_lease_table() {
+    use hideout_router::MAX_LEASES_PER_CALLER as CAP;
+    let (mut rig, we) = we_rig();
+    let greedy = rig.tool_named(&["wallpaper.control"], "greedy");
+    for _ in 0..CAP {
+        lease_id(&pause(&mut rig, &greedy, "greedy"));
+    }
+    let r = pause(&mut rig, &greedy, "one more");
+    assert_eq!(r["error"]["code"], 8, "{r}");
+    assert_eq!(r["error"]["data"]["id"], "lease.limit");
+    assert_eq!(
+        we.leases() as usize,
+        CAP,
+        "the refused one was ended at once"
+    );
+    // A second connection of the same caller shares its room.
+    let again = rig.tool_named(&["wallpaper.control"], "greedy");
+    assert_eq!(pause(&mut rig, &again, "again")["error"]["code"], 8);
+    // Another caller still gets its lease.
+    let arete = rig.tool_named(&["wallpaper.control"], "arete");
+    lease_id(&pause(&mut rig, &arete, "GPU claim"));
+    assert_eq!(we.leases() as usize, CAP + 1);
+    assert_eq!(we.calls(), ["pause"]);
+}
+
+#[test]
+fn a_lease_made_after_the_link_dropped_is_ended_by_the_worker() {
+    let (mut rig, we) = we_rig();
+    let queue = rig.link.with_worker();
+    let call = json!({"jsonrpc":"2.0","id":3,"method":"wallpaper-engine.pause",
+                      "params":{"reason":"late"}});
+    rig.link.line_at(&call.to_string(), Instant::now()).unwrap();
+    let job = queue.try_pop().expect("queued");
+    // The link goes while the call runs.
+    drop(rig);
+    let reply = execute(we.as_ref(), job, Instant::now()).expect("ran");
+    assert_eq!(we.leases(), 1);
+    let mut delivered = 0;
+    hand_over(&queue, we.as_ref(), reply, &mut |_| delivered += 1);
+    assert_eq!(delivered, 0, "nobody to answer");
+    assert_eq!(we.leases(), 0);
+    assert_eq!(we.calls(), ["pause", "play"]);
+}
+
+#[test]
+fn the_link_names_lease_closed_as_the_contract_does() {
+    assert_eq!(LEASE_CLOSED, hideout_contract::lease::LEASE_CLOSED);
 }

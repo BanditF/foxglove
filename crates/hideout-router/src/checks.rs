@@ -58,8 +58,9 @@ pub const FIRST_PARTY_AREAS: &[&str] = &[
     "wallpaper-engine.*",
 ];
 
-/// The 11 v1 methods the legacy adopted module `foxglove` serves through the router today
-/// (#1143 P6). TEMPORARY (#1155): until the user can grant the legacy module its first-party
+/// The 14 v1 methods the legacy adopted module `foxglove` serves through the router today
+/// (#1143 P6; the `wallpaper-engine.*` three since #1120, whose leases follow §8.5's rules).
+/// TEMPORARY (#1155): until the user can grant the legacy module its first-party
 /// areas explicitly, [`legacy_foxglove_ok`] lets exactly these names through the reserved
 /// areas above, and only for the adopted module `foxglove` holding the user's `provide:` for
 /// each. `hub_link::SERVED` must equal this list (a test pins it).
@@ -75,6 +76,9 @@ pub const LEGACY_FOXGLOVE_METHODS: &[&str] = &[
     "tray.set_panel",
     "pc_lighting.list",
     "pc_lighting.set_zone",
+    "wallpaper-engine.pause",
+    "wallpaper-engine.release",
+    "wallpaper-engine.status",
 ];
 
 /// The id of the legacy module (#1155).

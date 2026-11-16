@@ -133,7 +133,8 @@ The params and results are in the schema. Notes:
 - **Wallpaper Engine's pause (#1120, API 1.15), one owner:** Foxglove's wallpaper sync is the
   only program that sends Wallpaper Engine its command line, so a pause never runs beside a
   push. `wallpaper-engine.pause {reason}` (at most 64 characters) takes a lease and answers
-  `{lease, paused}`: the first lease sends `-control pause`, further ones only join. `paused:
+  `{lease, paused}` (`lease` is a string, such as `we-3-9f1c...`, to give back as it is; the
+  hub's lease rules route it): the first lease sends `-control pause`, further ones only join. `paused:
   false` means Wallpaper Engine was already paused (a paired wallpaper reported it: the user's
   pause), so this lease will not play it. `wallpaper-engine.release {lease}` answers `{played,
   why?}`: `play` goes out only when the last lease ends, never over the user's pause
@@ -143,7 +144,8 @@ The params and results are in the schema. Notes:
   rules), then tells the wallpapers it has gone. Pushes wait while paused; the newest state goes
   once, `RELOAD_QUIET` after the play. `wallpaper-engine.status {}` answers `{running, owner:
   "foxglove", leases, paused_by_lease}`. Errors: 1 Wallpaper Engine isn't installed, 2 it isn't
-  running, 6 the command failed or timed out (5 s), 8 more than 16 leases on one connection,
+  running, 6 the command failed or timed out (5 s), 8 more than 16 leases on one connection
+  (through the hub: 16 per caller, `lease.limit`, and 64 for all its callers together),
   -32602 an unknown lease or one of another connection (or a reason over 64 characters), 5 no
   `wallpaper.control`. The fact `wallpaper_engine.paused_by` holds the live leases' reasons
   (absent when none), and the health view gains `paused N, played N, dropped plays N`. Wallpaper
@@ -465,9 +467,13 @@ this. The app then serves no `foxglove-<user>` pipe; the hub serves that alias a
   answers only the names in `SERVED` (`app/src/foxglove/hub_link.rs`) and treats everything else as
   -32601. The answers are the standalone handlers' answers (a test compares them).
 - Served: `health.read`, `lights.page`, `scenes.page`, `overlay.window|restore|shown|set_shown`,
-  `tray.panel|set_panel`, `pc_lighting.list|set_zone`. The user grants each as `provide:<method>`.
+  `tray.panel|set_panel`, `pc_lighting.list|set_zone`, `wallpaper-engine.pause|release|status`
+  (#1120). The user grants each as `provide:<method>`.
+- `wallpaper-engine.*` through the hub follows the contract's lease rules (section 8.5): only the
+  caller holding a lease can name it, the hub's `lease.closed` (any reason) ends that lease and
+  plays when it was the last, and the link to the hub dropping ends every routed lease. A
+  caller of the hub uses the same three methods with `wallpaper.control`.
 - Not served, because the contract gives an adopted module no first-party area (§6.3): `devices.*`
   (so `foxglove-cli status` still needs the standalone pipe), `lighting.*`, `art.*`, `screens.*`,
-  `behaviors.*`, `profiles.*`, `focus.*`. Not served for lease reasons: `wallpaper-engine.*` (the lease
-  belongs to the calling connection, which a provider behind the router cannot see). Facts come from
-  the hub's cache (`keyboard.*` is published by the module).
+  `behaviors.*`, `profiles.*`, `focus.*`. Facts come from the hub's cache (`keyboard.*` is
+  published by the module).

@@ -89,6 +89,19 @@ const PROVIDE_LINES: &[(&str, &str)] = &[
     ("overlay.set_shown", "Turn the layer overlay on or off"),
     ("tray.set_panel", "Open or close the tray panel"),
     ("pc_lighting.set_zone", "Change a PC lighting zone's colour"),
+    // #1120: Wallpaper Engine's pause, for the programs you let pause it.
+    (
+        "wallpaper-engine.status",
+        "Whether your live wallpaper is paused",
+    ),
+    (
+        "wallpaper-engine.pause",
+        "Pause your live wallpaper for another program",
+    ),
+    (
+        "wallpaper-engine.release",
+        "Let your live wallpaper play again",
+    ),
 ];
 
 /// Other permission strings.
@@ -113,7 +126,8 @@ const OTHER_LINES: &[(&str, &str)] = &[
 fn changes(method: &str) -> bool {
     let last = method.rsplit('.').next().unwrap_or(method);
     [
-        "set", "restore", "toggle", "apply", "start", "stop", "write", "create", "delete",
+        "set", "restore", "toggle", "apply", "start", "stop", "write", "create", "delete", "pause",
+        "release",
     ]
     .iter()
     .any(|v| last == *v || last.starts_with(&format!("{v}_")))

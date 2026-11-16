@@ -400,3 +400,36 @@ fn positional_params_cannot_carry_a_lease_past_the_check() {
         assert_eq!(sends(&out, t.b)[0]["error"]["code"], -32602);
     }
 }
+
+#[test]
+fn one_caller_cannot_take_every_lease_a_provider_has_room_for() {
+    use hideout_router::MAX_LEASES_PER_CALLER as CAP;
+    let mut t = Rig::new();
+    for i in 0..CAP {
+        let id = format!("A{i}");
+        assert_eq!(t.lease(t.a, json!(id))["result"]["lease"], json!(id));
+    }
+    // One more: refused with lease.limit, and the provider is told to drop what it made.
+    let out = t.call(t.a, "example.lessor.lease", json!({}));
+    let p = t.p;
+    let out = t.answer(p, &out, json!({"lease": "OVER"}));
+    let back = &sends(&out, t.a)[0];
+    assert_eq!(back["error"]["code"], 8, "{back}");
+    assert_eq!(back["error"]["data"]["id"], "lease.limit");
+    assert_eq!(closes(&out, t.p), [("OVER".into(), "revoked".into())]);
+    let (reached, err) = t.names(t.a, "example.lessor.release", "OVER");
+    assert!(!reached && unknown(&err), "never recorded");
+    // A second connection of the same caller shares the room: a reconnect buys none.
+    let a2 = connect(&mut t.r, A, t.now);
+    assert_eq!(
+        t.lease(a2, json!("A2-0"))["error"]["data"]["id"],
+        "lease.limit"
+    );
+    // Another caller is unaffected.
+    assert_eq!(t.lease(t.b, json!("B0"))["result"]["lease"], "B0");
+    // A gives one back and has room again.
+    t.names(t.a, "example.lessor.release", "A0");
+    assert_eq!(t.lease(t.a, json!("A-again"))["result"]["lease"], "A-again");
+    // Its own id again is no change, even at the cap.
+    assert_eq!(t.lease(t.a, json!("A1"))["result"]["lease"], "A1");
+}

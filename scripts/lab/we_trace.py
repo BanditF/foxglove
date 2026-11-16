@@ -14,7 +14,13 @@ Trace file: JSON lines {"t": float, "sender": "foxglove"|"arete"|..., "kind": "e
 
 `scenario` drives Arete's real claim()/release() with the fake runner and replays the Foxglove sync worker's
 command shape (wallpaper_sync.rs run_cli: `-control applyProperties ...`) as a fake sender. Exit 2 if Arete
-cannot be imported.
+cannot be imported. Today's Arete still sends pause/play itself (two senders, reported).
+
+`--via-hub` is the #1120 target, on the wire shape Foxglove serves through the hub (slice C, contract 1.15
+section 8.5): `wallpaper-engine.pause {reason}` answers `{lease: "<string id>", paused}`, and
+`wallpaper-engine.release {lease}` answers `{played, why?}`; the first lease pauses, the last one plays, and a
+caller that disconnects holding a lease gets the same play through the hub's `lease.closed`. FakeProvider below
+mirrors app/src/foxglove/wallpaper_leases.rs for that.
 
 On-call, after game over, for the real thing: put a shim named wallpaper64.exe first in the WE path both apps
 use (configured exe path), which appends {"t","sender": <parent process name>,"kind":"exe","args": [self, *argv]}
@@ -64,6 +70,41 @@ class FakePipe:
         return self.provider(method, params or {}) if self.provider else None
 
 
+class FakeProvider:
+    """Foxglove's lease table behind the hub, over the fake runner (wallpaper_leases.rs, no user pause)."""
+
+    def __init__(self, send):
+        self.send, self.live, self.n = send, {}, 0
+
+    def __call__(self, method, params, caller='?'):
+        if method == 'wallpaper-engine.pause':
+            if not self.live:
+                self.send('pause')
+            self.n += 1
+            lease = 'we-%x-%016x' % (self.n, 0)
+            self.live[lease] = caller
+            return {'lease': lease, 'paused': True}
+        if method == 'wallpaper-engine.release':
+            if self.live.get(params.get('lease')) != caller:
+                return {'error': {'code': -32602, 'data': {'id': 'lease.unknown'}}}  # the hub refuses it
+            return self._end(params['lease'])
+        if method == 'wallpaper-engine.status':
+            return {'running': True, 'owner': 'foxglove', 'leases': len(self.live), 'paused_by_lease': bool(self.live)}
+        return {'error': {'code': -32601}}
+
+    def _end(self, lease):
+        self.live.pop(lease, None)
+        if self.live:
+            return {'played': False, 'why': 'held'}
+        self.send('play')
+        return {'played': True}
+
+    def disconnect(self, caller):
+        """The hub's lease.closed {reason: "disconnect"} for each lease the caller held."""
+        for lease in [k for k, v in self.live.items() if v == caller]:
+            self._end(lease)
+
+
 def load(path):
     out = []
     for n, line in enumerate(Path(path).read_text(encoding='utf-8').splitlines(), 1):
@@ -111,15 +152,16 @@ def scenario(arete_src=None, via_hub=False):
     exe = 'C:/fake/wallpaper_engine/wallpaper64.exe'
     fox(exe, '-control', 'applyProperties', '-location', 'monitor0', '-properties', 'RAW~({})~END')
 
-    def provider(method, params):
-        verb = {'wallpaper-engine.pause': 'pause', 'wallpaper-engine.release': 'play'}.get(method)
-        if verb:
-            fox(exe, '-control', verb)
-
     if via_hub:
-        pipe = FakePipe(trace, provider)
-        pipe.call('arete', 'wallpaper-engine.pause')
-        pipe.call('arete', 'wallpaper-engine.release')
+        provider = FakeProvider(lambda verb: fox(exe, '-control', verb))
+        pipe = FakePipe(trace, lambda m, p: provider(m, p, 'arete'))
+        got = pipe.call('arete', 'wallpaper-engine.pause', {'reason': 'Arete GPU claim'})
+        assert isinstance(got['lease'], str), got
+        pipe.call('arete', 'wallpaper-engine.release', {'lease': got['lease']})
+        # A claim whose process dies holding the lease: the hub closes it, Foxglove plays.
+        pipe.call('arete', 'wallpaper-engine.pause', {'reason': 'Arete GPU claim'})
+        provider.disconnect('arete')
+        trace.provider = provider
         return trace
     if arete_src:
         sys.path.insert(0, str(arete_src))

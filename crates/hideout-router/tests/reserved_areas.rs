@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Every area of Foxglove's v1 method table is reserved (#1156 M1, contract section 6.3): no
 //! third-party or other adopted module provides it, as methods or as facts, with the one
-//! temporary exception of the legacy adopted module `foxglove` for the 11 methods it serves
+//! temporary exception of the legacy adopted module `foxglove` for the methods it serves
 //! today (#1143 P6; #1155 replaces the exception with an explicit grant). Plus the per-caller
 //! in-flight cap on live routes (#1156 M2). Window-free.
 
@@ -132,16 +132,17 @@ fn rig(now: Instant) -> (Router, ConnId, ConnId) {
     r.add_module(entry(
         CALLER,
         Holder::FirstParty,
-        &["devices.read", "app.windows", "lighting.write"],
+        &[
+            "devices.read",
+            "app.windows",
+            "lighting.write",
+            "wallpaper.control",
+        ],
         Some(&[]),
     ));
     let f = module(&mut r, FOX, now);
     let rejected = register(&mut r, f, LEGACY_FOXGLOVE_METHODS, &[], now);
-    assert_eq!(
-        rejected,
-        json!([]),
-        "the legacy module keeps its 11 methods"
-    );
+    assert_eq!(rejected, json!([]), "the legacy module keeps its methods");
     let c = module(&mut r, CALLER, now);
     (r, f, c)
 }
@@ -173,7 +174,7 @@ fn the_legacy_list_is_only_v1_methods_with_a_permission() {
 }
 
 #[test]
-fn the_legacy_module_keeps_serving_its_11_methods() {
+fn the_legacy_module_keeps_serving_its_methods() {
     let now = Instant::now();
     let (mut r, f, c) = rig(now);
     for m in LEGACY_FOXGLOVE_METHODS {
@@ -184,7 +185,7 @@ fn the_legacy_module_keeps_serving_its_11_methods() {
 }
 
 #[test]
-fn the_legacy_module_gets_nothing_beyond_the_11() {
+fn the_legacy_module_gets_nothing_beyond_its_list() {
     // Wildcards and names off the list are refused whatever the grant covers.
     let now = Instant::now();
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
@@ -232,21 +233,33 @@ fn the_id_alone_grants_nothing() {
     ));
     let f = module(&mut r, FOX, now);
     let rej = register(&mut r, f, LEGACY_FOXGLOVE_METHODS, &[], now);
-    assert_eq!(rej.as_array().unwrap().len(), 11, "{rej:?}");
+    assert_eq!(
+        rej.as_array().unwrap().len(),
+        LEGACY_FOXGLOVE_METHODS.len(),
+        "{rej:?}"
+    );
     // An adopted module with another id gets nothing either.
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
     r.add_module(adopted("foxglove.twin", &strs(&g)));
     r.apply_manifest(&manifest("foxglove.twin", &strs(&method_decls())));
     let t = module(&mut r, "foxglove.twin", now);
     let rej = register(&mut r, t, LEGACY_FOXGLOVE_METHODS, &[], now);
-    assert_eq!(rej.as_array().unwrap().len(), 11, "{rej:?}");
+    assert_eq!(
+        rej.as_array().unwrap().len(),
+        LEGACY_FOXGLOVE_METHODS.len(),
+        "{rej:?}"
+    );
     // The adopted module `foxglove` without the user's provide: grant gets nothing.
     let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
     r.add_module(adopted(FOX, &[]));
     r.apply_manifest(&manifest(FOX, &strs(&method_decls())));
     let f = module(&mut r, FOX, now);
     let rej = register(&mut r, f, LEGACY_FOXGLOVE_METHODS, &[], now);
-    assert_eq!(rej.as_array().unwrap().len(), 11, "{rej:?}");
+    assert_eq!(
+        rej.as_array().unwrap().len(),
+        LEGACY_FOXGLOVE_METHODS.len(),
+        "{rej:?}"
+    );
 }
 
 #[test]

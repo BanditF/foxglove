@@ -42,6 +42,11 @@ pub const MAX_MESSAGE: usize = 256 * 1024;
 /// last connection ended, and any close that came while it was starting. Past it the oldest go.
 pub const MAX_RESTART_CLOSES: usize = 1024;
 
+/// Live leases one caller (module or tool, by caller key) may hold at one provider (§8.5, v1.15,
+/// #1120): the provider can't tell routed callers apart, so without it one caller could take
+/// every lease the provider has room for. A result over it answers error 8 `lease.limit`.
+pub const MAX_LEASES_PER_CALLER: usize = hideout_contract::lease::MAX_PER_CALLER;
+
 /// The consumer name of the hub's own panel host in `channel.create` (§5.4).
 pub const HOST_CONSUMER: &str = "hub.panel-host";
 
@@ -63,6 +68,7 @@ mod code {
     pub const BUSY: i64 = 3;
     pub const DENIED: i64 = 5;
     pub const VERSION: i64 = 7;
+    pub const RATE_LIMITED: i64 = 8;
 }
 
 pub type ConnId = u64;
@@ -1411,6 +1417,17 @@ impl Router {
         self.keep_close(module, closes);
     }
 
+    /// The live leases at provider `module` whose holder is the same caller as `conn` (its
+    /// caller key, as the in-flight caps count): a second connection of one caller shares the
+    /// room (§8.5, v1.15).
+    fn leases_of(&self, module: &str, conn: ConnId) -> usize {
+        let key = self.caller_key(conn);
+        self.leases
+            .iter()
+            .filter(|((m, _), l)| m == module && self.caller_key(l.holder) == key)
+            .count()
+    }
+
     /// Whether `conn` holds `lease` at provider `module` (§8.5, v1.14).
     fn holds(&self, conn: ConnId, module: &str, lease: &str) -> bool {
         self.leases
@@ -2025,8 +2042,9 @@ impl Router {
                 .methods_decl
                 .get(module)
                 .is_some_and(|d| d.iter().any(|d| covers(d, pattern)));
-            // TEMPORARY (#1155): the legacy adopted module `foxglove` keeps the 11 v1 methods
-            // it serves through the router (#1143 P6) although they lie in reserved areas.
+            // TEMPORARY (#1155): the legacy adopted module `foxglove` keeps the v1 methods it
+            // serves through the router (#1143 P6, `LEGACY_FOXGLOVE_METHODS`) although they lie
+            // in reserved areas.
             // Bound to what the registry knows: an adopted module (registered manifest, no
             // catalog entry) that declares exactly that name in its manifest and holds the
             // user's `provide:` for it (checked above). Never the id string alone; a root
@@ -2562,6 +2580,25 @@ impl Router {
             let disconnect = hideout_contract::lease::reason::DISCONNECT;
             lease_closed_to(provider_conn, &lease, disconnect, out);
             return result;
+        }
+        if !self.leases.contains_key(&key) && self.leases_of(&provider, c) >= MAX_LEASES_PER_CALLER
+        {
+            // One caller can't take every lease a provider has room for (v1.15, #1120): the
+            // provider sees all routed callers as one connection, so the cap per caller lives
+            // here. The lease the provider made is ended at once; the caller is told.
+            log::warn!("router: a caller is over its {MAX_LEASES_PER_CALLER} leases at {provider}; refused");
+            lease_closed_to(
+                provider_conn,
+                &lease,
+                hideout_contract::lease::reason::REVOKED,
+                out,
+            );
+            return Err(json!({
+                "code": code::RATE_LIMITED,
+                "message": "rate-limited",
+                "data": {"id": hideout_contract::lease::error_id::LEASE_LIMIT,
+                         "reason": "Too many leases are held at this provider. Release one first."}
+            }));
         }
         if provider == LEGACY_FOXGLOVE_ID && !self.routes.iter().any(|r| r.module == provider) {
             // No route covers the legacy module any more (the grant was taken away while the

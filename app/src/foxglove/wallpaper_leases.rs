@@ -9,17 +9,46 @@
 //!   the first lease came: a paired wallpaper had reported `Paused`), or with a full-screen
 //!   program in front (Wallpaper Engine's own `playbackfullscreen` brings it back then).
 //! - If the pause command fails, no lease is taken.
+//! - Ids are strings the hub's lease rules accept (contract section 8.5, v1.14): a counter, so
+//!   no id is handed out twice in this process, and 64 random bits, so none can be guessed.
+//! - Through the hub (#1120 slice C) every routed caller is [`ROUTED`]: the router keeps the
+//!   callers apart (only a lease's holder may name it) and caps each one's leases
+//!   (`MAX_LEASES_PER_CALLER`); `lease.closed` ends one lease ([`Leases::hub_closed`]), and the
+//!   hub link dropping ends them all ([`Leases::drop_conn`] of [`ROUTED`]).
+
+use std::collections::VecDeque;
 
 use super::wallpaper_sync::Apply;
 
 /// Leases one connection may hold at once.
 pub const PER_CONNECTION: usize = 16;
 
+/// The connection number of every call the hub routes (`hub_link::ROUTED_CONN`).
+pub const ROUTED: u64 = super::hub_link::ROUTED_CONN;
+
+/// Leases all routed callers together may hold. The router caps each caller at 16
+/// (`hideout_router::MAX_LEASES_PER_CALLER`), which this module can't see; this is only the
+/// module's own bound on its table, room for four callers at their cap.
+pub const ROUTED_TOTAL: usize = 64;
+
+/// Leases the hub ended (`lease.closed`) kept with what ending them did, so a `release` of the
+/// same lease that was already on its way (the hub forwards the release, then closes) still
+/// answers what happened. The oldest go past this.
+const KEPT_ENDS: usize = 64;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Lease {
-    id: u64,
+    id: String,
     conn: u64,
     reason: String,
+}
+
+/// A new lease id: `we-<counter>-<64 random bits>`, at most 36 bytes, no control characters.
+fn new_id(n: u64) -> String {
+    let mut bytes = [0u8; 8];
+    // Without randomness the counter alone keeps ids apart; the hub doesn't rely on guessing.
+    let _ = getrandom::fill(&mut bytes);
+    format!("we-{n:x}-{:016x}", u64::from_le_bytes(bytes))
 }
 
 /// Why a call failed.
@@ -33,7 +62,7 @@ pub enum Fail {
     Command(String),
     /// Not a lease of this connection.
     Unknown,
-    /// This connection holds [`PER_CONNECTION`] leases already.
+    /// This connection holds [`PER_CONNECTION`] leases already ([`ROUTED_TOTAL`] for the hub's).
     TooMany,
 }
 
@@ -52,6 +81,8 @@ pub struct Ended {
 pub struct Leases {
     next: u64,
     live: Vec<Lease>,
+    /// Leases the hub ended, with what that did (see [`KEPT_ENDS`]).
+    ended: VecDeque<(u64, String, Ended)>,
     /// Foxglove sent the `pause` that holds Wallpaper Engine now (it wasn't paused before).
     we_paused: bool,
     pub paused: u64,
@@ -69,8 +100,13 @@ impl Leases {
         conn: u64,
         reason: &str,
         user_paused: bool,
-    ) -> Result<(u64, bool), Fail> {
-        if self.live.iter().filter(|l| l.conn == conn).count() >= PER_CONNECTION {
+    ) -> Result<(String, bool), Fail> {
+        let cap = if conn == ROUTED {
+            ROUTED_TOTAL
+        } else {
+            PER_CONNECTION
+        };
+        if self.live.iter().filter(|l| l.conn == conn).count() >= cap {
             return Err(Fail::TooMany);
         }
         if !apply.ready() {
@@ -82,32 +118,62 @@ impl Leases {
             self.paused += 1;
         }
         self.next += 1;
-        let id = self.next;
+        let id = new_id(self.next);
         self.live.push(Lease {
-            id,
+            id: id.clone(),
             conn,
             reason: reason.to_string(),
         });
         Ok((id, self.we_paused))
     }
 
-    /// Ends one lease of `conn`.
+    /// Ends one lease of `conn`. A lease the hub already ended answers what ending it did.
     pub fn release(
         &mut self,
         apply: &mut impl Apply,
         conn: u64,
-        id: u64,
+        id: &str,
         full: bool,
     ) -> Result<Ended, Fail> {
         if !self.live.iter().any(|l| l.id == id && l.conn == conn) {
-            return Err(Fail::Unknown);
+            let kept = self
+                .ended
+                .iter()
+                .position(|(c, i, _)| *c == conn && i == id);
+            return match kept.and_then(|k| self.ended.remove(k)) {
+                Some((_, _, e)) => Ok(e),
+                None => Err(Fail::Unknown),
+            };
         }
         self.live.retain(|l| l.id != id);
         Ok(self.after(apply, full))
     }
 
+    /// The hub's `lease.closed` (any reason: unknown ones mean ended too) for one lease of
+    /// `conn`: it ends as a release would, the last one plays. `None` for an id that isn't live
+    /// (released already, or never this connection's).
+    pub fn hub_closed(
+        &mut self,
+        apply: &mut impl Apply,
+        conn: u64,
+        id: &str,
+        full: bool,
+    ) -> Option<Ended> {
+        if !self.live.iter().any(|l| l.id == id && l.conn == conn) {
+            return None;
+        }
+        self.live.retain(|l| l.id != id);
+        let e = self.after(apply, full);
+        if self.ended.len() >= KEPT_ENDS {
+            self.ended.pop_front();
+        }
+        self.ended.push_back((conn, id.to_string(), e));
+        Some(e)
+    }
+
     /// Ends every lease of a connection that closed.
     pub fn drop_conn(&mut self, apply: &mut impl Apply, conn: u64, full: bool) -> Option<Ended> {
+        self.ended.retain(|(c, _, _)| *c != conn);
         let before = self.live.len();
         self.live.retain(|l| l.conn != conn);
         (self.live.len() != before).then(|| self.after(apply, full))
@@ -117,6 +183,7 @@ impl Leases {
     pub fn end_all(&mut self, apply: &mut impl Apply, full: bool) -> Option<Ended> {
         let had = !self.live.is_empty();
         self.live.clear();
+        self.ended.clear();
         had.then(|| self.after(apply, full))
     }
 
@@ -221,10 +288,10 @@ mod tests {
         assert_eq!(l.count(), 2);
         assert_eq!(l.reasons(), "model loaded; render");
 
-        let e = l.release(&mut &mut f, 1, a, false).unwrap();
+        let e = l.release(&mut &mut f, 1, &a, false).unwrap();
         assert_eq!((e.played, e.why), (false, Some("held")));
         assert_eq!(f.calls, ["pause"], "the first release does not play");
-        let e = l.release(&mut &mut f, 2, b, false).unwrap();
+        let e = l.release(&mut &mut f, 2, &b, false).unwrap();
         assert_eq!((e.played, e.why, e.last), (true, None, true));
         assert_eq!(f.calls, ["pause", "play"]);
         assert_eq!((l.paused, l.played, l.dropped), (1, 1, 0));
@@ -247,7 +314,7 @@ mod tests {
         let (id, paused) = l.pause(&mut &mut f, 1, "a", true).unwrap();
         assert!(!paused, "already paused: this lease will not play");
         assert!(f.calls.is_empty(), "and sends no pause");
-        let e = l.release(&mut &mut f, 1, id, false).unwrap();
+        let e = l.release(&mut &mut f, 1, &id, false).unwrap();
         assert_eq!((e.played, e.why), (false, Some("user-paused")));
         assert!(f.calls.is_empty());
         assert_eq!(l.dropped, 1);
@@ -257,7 +324,7 @@ mod tests {
     fn a_full_screen_program_in_front_defers_the_play_to_wallpaper_engine() {
         let (mut f, mut l) = (up(), Leases::default());
         let (id, _) = l.pause(&mut &mut f, 1, "a", false).unwrap();
-        let e = l.release(&mut &mut f, 1, id, true).unwrap();
+        let e = l.release(&mut &mut f, 1, &id, true).unwrap();
         assert_eq!((e.played, e.why), (false, Some("fullscreen")));
         assert_eq!(f.calls, ["pause"]);
         assert!(
@@ -271,8 +338,11 @@ mod tests {
     fn unknown_or_foreign_leases_are_refused_and_nothing_runs_when_it_is_not() {
         let (mut f, mut l) = (up(), Leases::default());
         let (id, _) = l.pause(&mut &mut f, 1, "a", false).unwrap();
-        assert_eq!(l.release(&mut &mut f, 2, id, false), Err(Fail::Unknown));
-        assert_eq!(l.release(&mut &mut f, 1, id + 9, false), Err(Fail::Unknown));
+        assert_eq!(l.release(&mut &mut f, 2, &id, false), Err(Fail::Unknown));
+        assert_eq!(
+            l.release(&mut &mut f, 1, "we-1-0", false),
+            Err(Fail::Unknown)
+        );
         assert_eq!(l.count(), 1);
 
         let (mut down, mut l) = (Fake::default(), Leases::default());
@@ -306,5 +376,74 @@ mod tests {
         }
         assert_eq!(l.pause(&mut &mut f, 1, "a", false), Err(Fail::TooMany));
         l.pause(&mut &mut f, 2, "a", false).unwrap();
+    }
+
+    #[test]
+    fn ids_are_hub_lease_ids_and_never_repeat() {
+        let (mut f, mut l) = (up(), Leases::default());
+        let mut seen = std::collections::HashSet::new();
+        for conn in 1..=3 {
+            for _ in 0..PER_CONNECTION {
+                let (id, _) = l.pause(&mut &mut f, conn, "a", false).unwrap();
+                assert!(hideout_contract::lease::valid_id(&id), "{id}");
+                assert!(id.starts_with("we-") && id.len() <= 36, "{id}");
+                assert!(seen.insert(id), "an id handed out twice");
+            }
+        }
+    }
+
+    #[test]
+    fn the_hubs_close_ends_one_lease_and_the_last_plays() {
+        let (mut f, mut l) = (up(), Leases::default());
+        let (a, _) = l.pause(&mut &mut f, ROUTED, "a", false).unwrap();
+        let (b, _) = l.pause(&mut &mut f, ROUTED, "b", false).unwrap();
+        let e = l.hub_closed(&mut &mut f, ROUTED, &a, false).unwrap();
+        assert_eq!((e.played, e.why), (false, Some("held")));
+        assert_eq!(l.reasons(), "b", "only that lease ended");
+        // Again, or an id it never handed out, or another connection's: nothing.
+        assert_eq!(l.hub_closed(&mut &mut f, ROUTED, &a, false), None);
+        assert_eq!(l.hub_closed(&mut &mut f, ROUTED, "we-9-0", false), None);
+        assert_eq!(l.hub_closed(&mut &mut f, 7, &b, false), None);
+        let e = l.hub_closed(&mut &mut f, ROUTED, &b, false).unwrap();
+        assert!(e.played && e.last);
+        assert_eq!(f.calls, ["pause", "play"]);
+    }
+
+    #[test]
+    fn a_release_that_was_on_its_way_when_the_hub_closed_answers_what_happened() {
+        // The hub forwards a release, then sends lease.closed {released}: the close may run
+        // first. The release still answers the play, once.
+        let (mut f, mut l) = (up(), Leases::default());
+        let (id, _) = l.pause(&mut &mut f, ROUTED, "a", false).unwrap();
+        l.hub_closed(&mut &mut f, ROUTED, &id, false).unwrap();
+        let e = l.release(&mut &mut f, ROUTED, &id, false).unwrap();
+        assert!(e.played);
+        assert_eq!(f.calls, ["pause", "play"], "one play");
+        assert_eq!(
+            l.release(&mut &mut f, ROUTED, &id, false),
+            Err(Fail::Unknown)
+        );
+        // Another connection never gets an answer for it.
+        let (id, _) = l.pause(&mut &mut f, ROUTED, "a", false).unwrap();
+        l.hub_closed(&mut &mut f, ROUTED, &id, false).unwrap();
+        assert_eq!(l.release(&mut &mut f, 3, &id, false), Err(Fail::Unknown));
+        // The link dropping forgets what was kept.
+        l.drop_conn(&mut &mut f, ROUTED, false);
+        assert_eq!(
+            l.release(&mut &mut f, ROUTED, &id, false),
+            Err(Fail::Unknown)
+        );
+    }
+
+    #[test]
+    fn routed_callers_share_a_larger_backstop() {
+        let (mut f, mut l) = (up(), Leases::default());
+        for _ in 0..ROUTED_TOTAL {
+            l.pause(&mut &mut f, ROUTED, "a", false).unwrap();
+        }
+        assert_eq!(l.pause(&mut &mut f, ROUTED, "a", false), Err(Fail::TooMany));
+        // The router's per-caller cap is below it: four callers at their cap fill it.
+        assert_eq!(ROUTED_TOTAL, 4 * hideout_contract::lease::MAX_PER_CALLER);
+        assert_eq!(ROUTED, 0, "plugin-host connections count from 1");
     }
 }
