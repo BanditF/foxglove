@@ -20,10 +20,16 @@ function Step($name, [scriptblock]$command) {
 Push-Location (Split-Path -Parent $PSScriptRoot)
 # One of the two cargo build slots for the whole gate, at about half the cores (#347).
 $slot = $null
-try {
+# The cargo slot is taken at the first cargo step, not at the start: the python, ops, relay-sim
+# and node steps before it need no build capacity, and holding a slot through them queues
+# other gates for nothing.
+function Get-CargoSlot {
+    if ($script:slot) { return }
     $queue = [Diagnostics.Stopwatch]::StartNew()
-    $slot = Enter-BuildSlot
+    $script:slot = Enter-BuildSlot
     $script:Timings.Add([pscustomobject]@{ Stage = '(waited for a cargo slot)'; Seconds = [math]::Round($queue.Elapsed.TotalSeconds, 1) })
+}
+try {
     $start = Get-Date
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
     # The recurring ops scripts (#949) on fake inputs; window-free, no network.
@@ -42,6 +48,7 @@ try {
     # app/ are left as upstream has them, so subtree syncs stay clean. Fix with the same commands
     # without --check.
     Step 'format' {
+        Get-CargoSlot
         cargo fmt --all --check
         if (!$LASTEXITCODE) { rustfmt --check --edition 2021 (Get-ChildItem -Recurse app/src/foxglove -Filter *.rs).FullName }
     }
