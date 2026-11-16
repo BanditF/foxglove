@@ -33,6 +33,8 @@ pub enum Opener {
     Header,
     /// Change… in the Permissions section: Allow only records.
     Change,
+    /// Review… on "asks for more": the module already runs, Allow only adds (#1238).
+    More,
 }
 
 /// What follows a successful Allow, done by the page (it holds the supervisor).
@@ -48,7 +50,7 @@ impl Opener {
         match self {
             Opener::TurnOn | Opener::Header => Then::TurnOn,
             Opener::Review => Then::Review,
-            Opener::Change => Then::Nothing,
+            Opener::Change | Opener::More => Then::Nothing,
         }
     }
 }
@@ -141,8 +143,17 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
         on: false,
         expanded: false,
     });
-    let reason = reason.or(v.void.map(|_| Reason::Void));
+    // A kept grant whose update asked for more: only what was never answered is New.
+    let more = reason.is_none() && v.void.is_none() && !asked_pending(&v).is_empty();
+    let reason = reason
+        .or(v.void.map(|_| Reason::Void))
+        .or(more.then_some(Reason::More));
     let mut items = items;
+    if reason == Some(Reason::More) {
+        for i in items.iter_mut() {
+            i.new = i.allowable && v.pending.contains(&i.raw);
+        }
+    }
     items.sort_by_key(|i| (i.group, i.raw.clone()));
     Ok(PermDialog {
         id: id.into(),
@@ -183,7 +194,9 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
             } else {
                 Group::CantBeAllowed
             },
-            word: if allowable {
+            word: if allowable && v.pending.contains(&i.raw) {
+                ItemWord::Waits
+            } else if allowable {
                 ItemWord::Off
             } else {
                 ItemWord::CantBeAllowed
@@ -203,18 +216,30 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
         }
     });
     let note = hideout_shell::permission_dialog::status_note(&name, &items);
+    let waiting = asked_pending(v).len();
     let history = v
         .bound
         .as_ref()
         .map(|b| {
+            let last = b.attested.len().saturating_sub(1);
             b.attested
                 .iter()
-                .map(|a| {
-                    format!(
-                        "Updated to {} on {}. Your OK stayed.",
+                .enumerate()
+                .map(|(n, a)| {
+                    let mut line = format!(
+                        "Updated to {} on {}. Your OK stayed",
                         a.version,
                         date_words(&a.at)
-                    )
+                    );
+                    if n == last && waiting > 0 {
+                        line.push_str(&format!(
+                            "; {waiting} new thing{} wait{} for it",
+                            if waiting == 1 { "" } else { "s" },
+                            if waiting == 1 { "s" } else { "" }
+                        ));
+                    }
+                    line.push('.');
+                    line
                 })
                 .collect()
         })
@@ -230,12 +255,26 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
     })
 }
 
+/// The pending items that can be allowed, in the dialog's order (group, then raw).
+fn asked_pending(v: &View) -> Vec<&hideout_registry::permission::Item> {
+    let mut items: Vec<_> = v
+        .listing
+        .items
+        .iter()
+        .filter(|i| i.state == ItemState::Asked && v.pending.contains(&i.raw))
+        .collect();
+    items.sort_by_key(|i| (group(i.group), i.raw.clone()));
+    items
+}
+
 /// Which header line a module gets, if any. `enabled`: the module is on in the hub's settings.
 pub fn header_kind(v: &View, enabled: bool, cli_seen: bool) -> Option<HeaderKind> {
     if v.void.is_some() {
         Some(HeaderKind::Changed)
     } else if v.bound.is_none() && v.adopted && enabled && !v.pending.is_empty() {
         Some(HeaderKind::Ask)
+    } else if v.bound.is_some() && enabled && !asked_pending(v).is_empty() {
+        Some(HeaderKind::More)
     } else if v.bound.as_ref().is_some_and(|b| b.by == "cli") && !cli_seen {
         Some(HeaderKind::Cli)
     } else {
@@ -269,7 +308,7 @@ pub struct PermUi {
     opener_id: Option<egui::Id>,
     drawn: bool,
     /// Header lines the user answered with Not now / OK, until the next hub start.
-    hidden: Vec<(String, HeaderKind)>,
+    hidden: Vec<(String, HeaderKind, String)>,
     seen: Vec<Option<serde_json::Value>>,
     /// CLI grant requests waiting for the user (#1183).
     queue: crate::grant_queue::GrantQueue,
@@ -523,7 +562,7 @@ impl PermUi {
     /// Modules page.
     pub fn top(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         let mut open: Option<(String, Opener, egui::Id)> = None;
-        let mut hide: Option<(String, HeaderKind)> = None;
+        let mut hide: Option<(String, HeaderKind, String)> = None;
         let mut off: Option<(String, Option<String>)> = None;
         let mut open_queued: Option<(String, egui::Id)> = None;
         for q in self.queue.for_home(&self.home) {
@@ -545,20 +584,38 @@ impl PermUi {
             ui.add_space(8.0);
         }
         for e in &self.entries {
-            let kind = header_kind(&e.view, e.enabled, false)
-                .filter(|k| !self.hidden.iter().any(|(i, h)| i == &e.id && h == k));
+            let kind = header_kind(&e.view, e.enabled, false).filter(|k| {
+                let code = e.view.listing.code();
+                !self
+                    .hidden
+                    .iter()
+                    .any(|(i, h, c)| i == &e.id && h == k && c == code)
+            });
             if let Some(k) = kind {
                 let name = &e.view.listing.name;
-                let cli = e
-                    .view
-                    .bound
-                    .as_ref()
-                    .map(|b| (e.view.granted.len(), date_words(&b.at)));
+                let cli = if k == HeaderKind::More {
+                    let p = asked_pending(&e.view);
+                    p.first().map(|f| (p.len(), f.line.clone()))
+                } else {
+                    e.view
+                        .bound
+                        .as_ref()
+                        .map(|b| (e.view.granted.len(), date_words(&b.at)))
+                };
                 let h: PermHeader =
                     header(k, &e.id, name, cli.as_ref().map(|(n, w)| (*n, w.as_str())));
                 match perm_header_ui(ui, t, &h) {
-                    Some((true, id)) => open = Some((e.id.clone(), Opener::Header, id)),
-                    Some((false, _)) => hide = Some((e.id.clone(), k)),
+                    Some((true, id)) => {
+                        let how = if k == HeaderKind::More {
+                            Opener::More
+                        } else {
+                            Opener::Header
+                        };
+                        open = Some((e.id.clone(), how, id));
+                    }
+                    Some((false, _)) => {
+                        hide = Some((e.id.clone(), k, e.view.listing.code().to_string()))
+                    }
                     None => {}
                 }
                 ui.add_space(8.0);
@@ -966,6 +1023,191 @@ mod tests {
         assert!(d
             .reason_lines()
             .contains(&format!("No longer asked: {}", gone.line)));
+    }
+
+    /// Allows two items, then a signed update (same folder, attested) brings a bigger manifest.
+    fn updated_with_more(tag: &str, more: &[&str]) -> Fx {
+        let mut f = fx(tag, &["hub.notify", "ui.window"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        std::fs::write(&f.exe, b"program v2").unwrap();
+        let mut perms = vec!["hub.notify", "ui.window"];
+        perms.extend_from_slice(more);
+        std::fs::write(f.folder.join("module.toml"), manifest(&f.exe, &perms)).unwrap();
+        let mut reg = Registry::open(&f.home, false).unwrap();
+        reg.register_adopted(&f.folder, NOW).unwrap();
+        reg.attest_update(ID, "1.1.0", "updater", NOW).unwrap();
+        f.ui.refresh();
+        f
+    }
+
+    fn more_header(f: &Fx) -> Option<HeaderKind> {
+        header_kind(&view(f), true, true)
+    }
+
+    #[test]
+    fn an_update_that_asks_for_more_gets_the_more_header_and_allow_only_adds() {
+        let mut f = updated_with_more("more", &["provide:a.read", "provide:a.set"]);
+        let v = view(&f);
+        assert!(v.void.is_none());
+        assert_eq!(v.granted.len(), 2, "the kept grant stays");
+        assert_eq!(more_header(&f), Some(HeaderKind::More));
+        // The module being off shows no header (Turn on goes through the dialog instead).
+        assert_eq!(header_kind(&v, false, true), None);
+        // The header counts the new things and quotes the first one in dialog order.
+        let p = asked_pending(&v);
+        assert_eq!(p.len(), 2);
+        let h = header(HeaderKind::More, ID, "Vulpes", Some((p.len(), &p[0].line)));
+        assert_eq!(h.title, "Vulpes's update asks for more");
+        assert!(h
+            .body
+            .starts_with("Its update asks for 2 new things, like \u{201c}"));
+        // Section: pending says Waits, the kept grant says Allowed; the history says so.
+        let s = section_for(ID, &v).unwrap();
+        let word = |raw: &str| s.items.iter().find(|i| i.raw == raw).unwrap().word;
+        assert_eq!(word("provide:a.read"), ItemWord::Waits);
+        assert_eq!(word("hub.notify"), ItemWord::Allowed);
+        assert_eq!(
+            s.history,
+            ["Updated to 1.1.0 on 13 Nov 2026. Your OK stayed; 2 new things wait for it."]
+        );
+        // Review: only the unanswered items, all New, with the More reason.
+        f.ui.open(ID, Opener::More);
+        let d = f.ui.dialog.clone().unwrap();
+        assert_eq!(d.reason, Some(Reason::More));
+        assert_eq!(d.title(), "Let Vulpes do more?");
+        assert_eq!(d.items.len(), 2);
+        assert!(d.items.iter().all(|i| i.new && i.checked));
+        assert!(d.items[0].said().ends_with(", new, checked"));
+        assert_eq!(
+            d.reason_lines()[1],
+            "What you allowed before stays allowed."
+        );
+        // Allow one of the two: nothing is revoked, the other is declined, the header is gone.
+        let mut d2 = d.clone();
+        d2.set_checked("provide:a.set", false);
+        let done = f.ui.answer(PermAnswer::Allow(d2.allowed())).unwrap();
+        assert_eq!(done.then, Then::Nothing);
+        let v = view(&f);
+        let mut granted: Vec<_> = v.granted.iter().map(|g| g.raw.clone()).collect();
+        granted.sort();
+        assert_eq!(
+            granted,
+            ["hub.notify", "provide:a.read", "ui.window"],
+            "grew by exactly the chosen item"
+        );
+        assert_eq!(more_header(&f), None);
+        // The declined one says Off now, and the history is back to plain.
+        let s = section_for(ID, &v).unwrap();
+        assert_eq!(
+            s.items
+                .iter()
+                .find(|i| i.raw == "provide:a.set")
+                .unwrap()
+                .word,
+            ItemWord::Off
+        );
+        assert_eq!(
+            s.history,
+            ["Updated to 1.1.0 on 13 Nov 2026. Your OK stayed."]
+        );
+        // A declined item never brings the header back; Change opens without New marks.
+        f.ui.open(ID, Opener::Change);
+        let d = f.ui.dialog.clone().unwrap();
+        assert_eq!(d.reason, None);
+        assert!(d.items.iter().all(|i| !i.new));
+    }
+
+    #[test]
+    fn one_new_thing_reads_in_the_singular_and_a_void_update_says_changed() {
+        let f = updated_with_more("one", &["provide:a.read"]);
+        let v = view(&f);
+        let p = asked_pending(&v);
+        let h = header(HeaderKind::More, ID, "Vulpes", Some((1, &p[0].line)));
+        assert!(h.body.starts_with("Its update asks for one new thing: "));
+        assert_eq!(
+            section_for(ID, &v).unwrap().history[0],
+            "Updated to 1.1.0 on 13 Nov 2026. Your OK stayed; 1 new thing waits for it."
+        );
+        // The program then changes without a signed update: Changed wins over More.
+        std::fs::write(&f.exe, b"another program").unwrap();
+        Registry::open_from_env(&f.home)
+            .unwrap()
+            .void_if_changed(ID, NOW)
+            .unwrap();
+        assert_eq!(more_header(&f), Some(HeaderKind::Changed));
+    }
+
+    #[test]
+    fn nothing_asked_more_means_no_header() {
+        let f = updated_with_more("quiet", &[]);
+        assert_eq!(more_header(&f), None);
+        let s = section_for(ID, &view(&f)).unwrap();
+        assert_eq!(
+            s.history,
+            ["Updated to 1.1.0 on 13 Nov 2026. Your OK stayed."]
+        );
+    }
+
+    #[test]
+    fn not_now_hides_the_header_until_the_list_changes() {
+        let mut f = updated_with_more("notnow", &["provide:a.read"]);
+        let code = view(&f).listing.code().to_string();
+        f.ui.hidden
+            .push((ID.into(), HeaderKind::More, code.clone()));
+        let shown = |f: &Fx| {
+            let v = view(f);
+            header_kind(&v, true, true).filter(|k| {
+                !f.ui
+                    .hidden
+                    .iter()
+                    .any(|(i, h, c)| i == ID && h == k && c == v.listing.code())
+            })
+        };
+        assert_eq!(shown(&f), None);
+        // The next update asks for one more: a new list code, the header is back.
+        let perms = ["hub.notify", "ui.window", "provide:a.read", "provide:a.set"];
+        std::fs::write(f.folder.join("module.toml"), manifest(&f.exe, &perms)).unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&f.folder, NOW)
+            .unwrap();
+        assert_ne!(view(&f).listing.code(), code);
+        assert_eq!(shown(&f), Some(HeaderKind::More));
+        // Not now in the dialog writes nothing and leaves Waits.
+        f.ui.open(ID, Opener::More);
+        f.ui.answer(PermAnswer::NotNow);
+        assert!(f.ui.dialog.is_none());
+        assert_eq!(view(&f).pending.len(), 2);
+    }
+
+    #[test]
+    fn the_more_words_avoid_the_banned_ones() {
+        let h = header(
+            HeaderKind::More,
+            ID,
+            "Foxglove",
+            Some((3, "Pause your live wallpaper")),
+        );
+        let d = PermDialog {
+            id: ID.into(),
+            name: "Foxglove".into(),
+            code: "0".into(),
+            path: String::new(),
+            items: Vec::new(),
+            reason: Some(Reason::More),
+            keyboard: None,
+            removed: Vec::new(),
+            error: None,
+        };
+        let mut all = vec![h.title, h.body, d.title()];
+        all.extend(d.reason_lines());
+        all.push(hideout_shell::permission_dialog::WAITS.to_string());
+        for t in all {
+            let t = t.to_lowercase();
+            for bad in ["program", "provide", "method", "palette", "look ", "effect"] {
+                assert!(!t.contains(bad), "{t} says {bad}");
+            }
+        }
     }
 
     #[test]

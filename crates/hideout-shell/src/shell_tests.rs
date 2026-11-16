@@ -3104,8 +3104,298 @@ fn renders_the_permission_dialog_for_review() {
     };
     use crate::permission_dialog_ui::{perm_dialog_ui, perm_header_ui, section_ui};
 
-    // The 13 `foxglove` lines, a sensitive one and one that can't be allowed.
-    let rows: [(&str, &str, Group); 13] = [
+    // The 16 `foxglove` lines (#1238: with the three wallpaper-engine ones), a sensitive one and
+    // one that can't be allowed.
+    let rows: [(&str, &str, Group); 16] = [
+        (
+            "facts.write:keyboard.*",
+            "Share your keyboard's status in Hideout",
+            Group::ShareStatus,
+        ),
+        (
+            "facts.read:module.*",
+            "See which modules are installed and running",
+            Group::ShareStatus,
+        ),
+        (
+            "provide:health.read",
+            "The keyboard's health report",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:lights.page",
+            "What the Lights page shows",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:scenes.page",
+            "Which scenes and wallpaper looks are listed",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:overlay.window",
+            "Where the layer overlay window is",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:overlay.shown",
+            "Whether the layer overlay is on",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:tray.panel",
+            "Whether the tray panel is open",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:pc_lighting.list",
+            "Your PC's lighting zones",
+            Group::AnswerQuestions,
+        ),
+        (
+            "provide:overlay.restore",
+            "Bring the layer overlay back on screen",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:overlay.set_shown",
+            "Turn the layer overlay on or off",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:tray.set_panel",
+            "Open or close the tray panel",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:pc_lighting.set_zone",
+            "Change a PC lighting zone's colour",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:wallpaper-engine.pause",
+            "Pause your live wallpaper",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:wallpaper-engine.release",
+            "Let your live wallpaper play again",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:wallpaper-engine.status",
+            "Whether your live wallpaper is paused",
+            Group::AnswerQuestions,
+        ),
+    ];
+    let dialog = |reason: Option<Reason>, extra: bool| {
+        let mut items: Vec<ListItem> = rows
+            .iter()
+            .map(|(raw, line, g)| ListItem {
+                raw: (*raw).into(),
+                line: (*line).into(),
+                group: *g,
+                allowable: true,
+                sensitive: false,
+                reason: None,
+                checked: true,
+                confirmed: false,
+                new: false,
+            })
+            .collect();
+        if extra {
+            items.push(ListItem {
+                raw: "key.events".into(),
+                line: "See every key you press".into(),
+                group: Group::Sensitive,
+                allowable: true,
+                sensitive: true,
+                reason: None,
+                checked: false,
+                confirmed: false,
+                new: false,
+            });
+            items.push(ListItem {
+                raw: "modules.manage".into(),
+                line: "Turn other modules on and off".into(),
+                group: Group::CantBeAllowed,
+                allowable: false,
+                sensitive: false,
+                reason: Some("Hideout never allows this for this module.".into()),
+                checked: false,
+                confirmed: false,
+                new: false,
+            });
+        }
+        items.sort_by_key(|i| (i.group, i.raw.clone()));
+        PermDialog {
+            id: "foxglove".into(),
+            name: "Foxglove".into(),
+            code: "7f3a91c20b4e55d1".into(),
+            path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+            items,
+            reason,
+            keyboard: Some(KeyboardChoice {
+                on: false,
+                expanded: false,
+            }),
+            removed: Vec::new(),
+            error: None,
+        }
+    };
+    // Every item the list has: the status item and the sensitive one Off, one that can't be
+    // allowed, the rest Allowed (15 allowed, as the command-line header says).
+    let section_items = || {
+        let mut v: Vec<SectionItem> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (raw, line, g))| SectionItem {
+                raw: (*raw).into(),
+                line: (*line).into(),
+                group: *g,
+                word: if i == 0 {
+                    ItemWord::Off
+                } else {
+                    ItemWord::Allowed
+                },
+            })
+            .chain([
+                SectionItem {
+                    raw: "key.events".into(),
+                    line: "See every key you press".into(),
+                    group: Group::Sensitive,
+                    word: ItemWord::Off,
+                },
+                SectionItem {
+                    raw: "modules.manage".into(),
+                    line: "Turn other modules on and off".into(),
+                    group: Group::CantBeAllowed,
+                    word: ItemWord::CantBeAllowed,
+                },
+            ])
+            .collect();
+        v.sort_by_key(|i| (i.group, i.raw.clone()));
+        v
+    };
+    let section = || Section {
+        id: "foxglove".into(),
+        name: "Foxglove".into(),
+        items: section_items(),
+        allowed_on: Some("Allowed from the command line on 13 Nov 2026".into()),
+        history: vec!["Updated to 0.3.1 on 14 Nov 2026. Your OK stayed.".into()],
+        can_change: true,
+        note: crate::permission_dialog::status_note("Foxglove", &section_items()),
+    };
+    for (dark, name) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        // The text that carries meaning draws at 3:1 or better on the window and the cards.
+        assert!(crate::theme::contrast(t.text_muted, t.bg) >= 3.0);
+        assert!(crate::theme::contrast(t.text_muted, t.surface) >= 3.0);
+        for (tag, reason) in [
+            ("pending", None),
+            ("list-changed", Some(Reason::ListChanged)),
+            ("voided", Some(Reason::Void)),
+        ] {
+            let mut d = dialog(reason, true);
+            match tag {
+                "pending" => {
+                    // 18 things, 1 can't be allowed, All 17, Allow 16 (the sensitive one is off).
+                    assert!(d.intro().contains("these 18 things. 1 can't be allowed."));
+                    assert_eq!(
+                        (d.all_label().as_str(), d.allow_label().as_str()),
+                        ("All 17", "Allow 16")
+                    );
+                }
+                "list-changed" => {
+                    // The list the user saw had one more line and lacked one: new code, marks.
+                    let old = d.clone();
+                    d.items.retain(|i| i.raw != "provide:pc_lighting.list");
+                    d.items.push(ListItem {
+                        raw: "provide:lights.set_effect".into(),
+                        line: "Change which lighting effect plays".into(),
+                        group: Group::MakeChanges,
+                        allowable: true,
+                        sensitive: false,
+                        reason: None,
+                        checked: true,
+                        confirmed: false,
+                        new: false,
+                    });
+                    d.items.sort_by_key(|i| (i.group, i.raw.clone()));
+                    d.code = "c41e07ab92d3f6a8".into();
+                    d.mark_changes(&old);
+                    assert_ne!(d.code, old.code);
+                    assert_eq!(d.removed, ["Your PC's lighting zones"]);
+                }
+                _ => {
+                    // The grant was: everything but the sensitive item and one change item.
+                    d.set_checked("provide:pc_lighting.set_zone", false);
+                    assert_eq!(d.allow_label(), "Allow 15");
+                    assert_eq!(d.all_label(), "All 17");
+                }
+            }
+            let (w, h) = (760u32, 1000u32);
+            let Some(rgba) = rasterise(w, h, |ctx| {
+                set_theme(ctx, choice);
+                ctx.style_mut(|s| s.animation_time = 0.0);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Modules").size(24.0).strong());
+                    let h = header(
+                        if reason == Some(Reason::Void) {
+                            HeaderKind::Changed
+                        } else {
+                            HeaderKind::Ask
+                        },
+                        "foxglove",
+                        "Foxglove",
+                        None,
+                    );
+                    perm_header_ui(ui, &t, &h);
+                });
+                perm_dialog_ui(ctx, &t, &mut d, true);
+            }) else {
+                eprintln!("no system font; render test skipped");
+                return;
+            };
+            save_png(&format!("built-permission-{tag}-{name}.png"), w, h, rgba);
+        }
+        // Granted: the CLI header line, then the section with one item off.
+        let (w, h) = (760u32, 900u32);
+        let s = section();
+        let hd = header(
+            HeaderKind::Cli,
+            "foxglove",
+            "Foxglove",
+            Some((15, "13 Nov 2026")),
+        );
+        let rgba = rasterise(w, h, |ctx| {
+            set_theme(ctx, choice);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label(egui::RichText::new("Modules").size(24.0).strong());
+                ui.add_space(8.0);
+                perm_header_ui(ui, &t, &hd);
+                ui.add_space(12.0);
+                section_ui(ui, &t, &s, true);
+            });
+        })
+        .unwrap();
+        save_png(&format!("built-permission-granted-{name}.png"), w, h, rgba);
+    }
+}
+
+/// Review images for the #1238 "asks for more" header, from the real renderer (no window).
+#[test]
+fn renders_the_grants_more_header_for_review() {
+    use crate::permission_dialog::{
+        header, Group, HeaderKind, ItemWord, ListItem, PermDialog, Reason, Section, SectionItem,
+    };
+    use crate::permission_dialog_ui::{perm_dialog_ui, perm_header_ui, section_ui};
+    let old: [(&str, &str, Group); 13] = [
         (
             "facts.write:keyboard.*",
             "Share your keyboard's status in Hideout",
@@ -3172,8 +3462,115 @@ fn renders_the_permission_dialog_for_review() {
             Group::MakeChanges,
         ),
     ];
-    let dialog = |reason: Option<Reason>, extra: bool| {
-        let mut items: Vec<ListItem> = rows
+    let new: [(&str, &str, Group); 3] = [
+        (
+            "provide:wallpaper-engine.pause",
+            "Pause your live wallpaper",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:wallpaper-engine.release",
+            "Let your live wallpaper play again",
+            Group::MakeChanges,
+        ),
+        (
+            "provide:wallpaper-engine.status",
+            "Whether your live wallpaper is paused",
+            Group::AnswerQuestions,
+        ),
+    ];
+    let section = |n_new: usize| {
+        let mut items: Vec<SectionItem> = old
+            .iter()
+            .map(|(raw, line, g)| SectionItem {
+                raw: (*raw).into(),
+                line: (*line).into(),
+                group: *g,
+                word: ItemWord::Allowed,
+            })
+            .chain(new.iter().take(n_new).map(|(raw, line, g)| SectionItem {
+                raw: (*raw).into(),
+                line: (*line).into(),
+                group: *g,
+                word: ItemWord::Waits,
+            }))
+            .collect();
+        items.sort_by_key(|i| (i.group, i.raw.clone()));
+        Section {
+            id: "foxglove".into(),
+            name: "Foxglove".into(),
+            items,
+            allowed_on: Some("Allowed in Hideout on 13 Nov 2026".into()),
+            history: vec![if n_new == 0 {
+                "Updated to 0.3.2 on 16 Nov 2026. Your OK stayed.".to_string()
+            } else {
+                format!("Updated to 0.3.2 on 16 Nov 2026. Your OK stayed; {n_new} new thing{} wait{} for it.",
+                    if n_new == 1 { "" } else { "s" }, if n_new == 1 { "s" } else { "" })
+            }],
+            can_change: true,
+            note: None,
+        }
+    };
+    let page =
+        |name: &str, dark: bool, hdr: Option<(usize, &str)>, n_new: usize, open: bool, h: u32| {
+            let t = crate::theme::tokens(dark);
+            let choice = if dark {
+                ThemeChoice::Dark
+            } else {
+                ThemeChoice::Light
+            };
+            let s = section(n_new);
+            let w = 760u32;
+            let Some(rgba) = rasterise(w, h, |ctx| {
+                set_theme(ctx, choice);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.label(egui::RichText::new("Modules").size(24.0).strong());
+                    ui.add_space(8.0);
+                    if let Some(c) = hdr {
+                        perm_header_ui(
+                            ui,
+                            &t,
+                            &header(HeaderKind::More, "foxglove", "Foxglove", Some(c)),
+                        );
+                        ui.add_space(12.0);
+                    }
+                    section_ui(ui, &t, &s, open);
+                });
+            }) else {
+                eprintln!("no system font; render test skipped");
+                return;
+            };
+            save_png(name, w, h, rgba);
+        };
+    for (dark, tag) in [(true, "dark"), (false, "light")] {
+        page(
+            &format!("grants-1-header-many-{tag}.png"),
+            dark,
+            Some((3, "Pause your live wallpaper")),
+            3,
+            true,
+            900,
+        );
+    }
+    page(
+        "grants-2-header-one-dark.png",
+        true,
+        Some((1, "Pause your live wallpaper")),
+        1,
+        false,
+        330,
+    );
+    page("grants-4-not-now-dark.png", true, None, 3, true, 820);
+    page("grants-5-answered-dark.png", true, None, 0, false, 260);
+    // The Review… dialog: only what the update added, each marked New.
+    for (dark, tag) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let mut items: Vec<ListItem> = new
             .iter()
             .map(|(raw, line, g)| ListItem {
                 raw: (*raw).into(),
@@ -3184,190 +3581,55 @@ fn renders_the_permission_dialog_for_review() {
                 reason: None,
                 checked: true,
                 confirmed: false,
-                new: false,
+                new: true,
             })
             .collect();
-        if extra {
-            items.push(ListItem {
-                raw: "key.events".into(),
-                line: "See every key you press".into(),
-                group: Group::Sensitive,
-                allowable: true,
-                sensitive: true,
-                reason: None,
-                checked: false,
-                confirmed: false,
-                new: false,
-            });
-            items.push(ListItem {
-                raw: "modules.manage".into(),
-                line: "Turn other modules on and off".into(),
-                group: Group::CantBeAllowed,
-                allowable: false,
-                sensitive: false,
-                reason: Some("Hideout never allows this for this module.".into()),
-                checked: false,
-                confirmed: false,
-                new: false,
-            });
-        }
         items.sort_by_key(|i| (i.group, i.raw.clone()));
-        PermDialog {
+        let mut d = PermDialog {
             id: "foxglove".into(),
             name: "Foxglove".into(),
-            code: "7f3a91c20b4e55d1".into(),
+            code: "5be0c7d21a9f4e36".into(),
             path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
             items,
-            reason,
-            keyboard: Some(KeyboardChoice {
-                on: false,
-                expanded: false,
-            }),
+            reason: Some(Reason::More),
+            keyboard: None,
             removed: Vec::new(),
             error: None,
-        }
-    };
-    // Every item the list has: the status item and the sensitive one Off, one that can't be
-    // allowed, the rest Allowed (12 allowed, as the command-line header says).
-    let section_items = || {
-        let mut v: Vec<SectionItem> = rows
-            .iter()
-            .enumerate()
-            .map(|(i, (raw, line, g))| SectionItem {
-                raw: (*raw).into(),
-                line: (*line).into(),
-                group: *g,
-                word: if i == 0 {
-                    ItemWord::Off
-                } else {
-                    ItemWord::Allowed
-                },
-            })
-            .chain([
-                SectionItem {
-                    raw: "key.events".into(),
-                    line: "See every key you press".into(),
-                    group: Group::Sensitive,
-                    word: ItemWord::Off,
-                },
-                SectionItem {
-                    raw: "modules.manage".into(),
-                    line: "Turn other modules on and off".into(),
-                    group: Group::CantBeAllowed,
-                    word: ItemWord::CantBeAllowed,
-                },
-            ])
-            .collect();
-        v.sort_by_key(|i| (i.group, i.raw.clone()));
-        v
-    };
-    let section = || Section {
-        id: "foxglove".into(),
-        name: "Foxglove".into(),
-        items: section_items(),
-        allowed_on: Some("Allowed from the command line on 13 Nov 2026".into()),
-        history: vec!["Updated to 0.3.1 on 14 Nov 2026. Your OK stayed.".into()],
-        can_change: true,
-        note: crate::permission_dialog::status_note("Foxglove", &section_items()),
-    };
-    for (dark, name) in [(true, "dark"), (false, "light")] {
-        let t = crate::theme::tokens(dark);
-        let choice = if dark {
-            ThemeChoice::Dark
-        } else {
-            ThemeChoice::Light
         };
-        // The text that carries meaning draws at 3:1 or better on the window and the cards.
-        assert!(crate::theme::contrast(t.text_muted, t.bg) >= 3.0);
-        assert!(crate::theme::contrast(t.text_muted, t.surface) >= 3.0);
-        for (tag, reason) in [
-            ("pending", None),
-            ("list-changed", Some(Reason::ListChanged)),
-            ("voided", Some(Reason::Void)),
-        ] {
-            let mut d = dialog(reason, true);
-            match tag {
-                "pending" => {
-                    // 15 things, 1 can't be allowed, All 14, Allow 13 (the sensitive one is off).
-                    assert!(d.intro().contains("these 15 things. 1 can't be allowed."));
-                    assert_eq!(
-                        (d.all_label().as_str(), d.allow_label().as_str()),
-                        ("All 14", "Allow 13")
-                    );
-                }
-                "list-changed" => {
-                    // The list the user saw had one more line and lacked one: new code, marks.
-                    let old = d.clone();
-                    d.items.retain(|i| i.raw != "provide:pc_lighting.list");
-                    d.items.push(ListItem {
-                        raw: "provide:lights.set_effect".into(),
-                        line: "Change which lighting effect plays".into(),
-                        group: Group::MakeChanges,
-                        allowable: true,
-                        sensitive: false,
-                        reason: None,
-                        checked: true,
-                        confirmed: false,
-                        new: false,
-                    });
-                    d.items.sort_by_key(|i| (i.group, i.raw.clone()));
-                    d.code = "c41e07ab92d3f6a8".into();
-                    d.mark_changes(&old);
-                    assert_ne!(d.code, old.code);
-                    assert_eq!(d.removed, ["Your PC's lighting zones"]);
-                }
-                _ => {
-                    // The grant was: everything but the sensitive item and one change item.
-                    d.set_checked("provide:pc_lighting.set_zone", false);
-                    assert_eq!(d.allow_label(), "Allow 12");
-                    assert_eq!(d.all_label(), "All 14");
-                }
-            }
-            let (w, h) = (760u32, 1000u32);
-            let Some(rgba) = rasterise(w, h, |ctx| {
-                set_theme(ctx, choice);
-                ctx.style_mut(|s| s.animation_time = 0.0);
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.label(egui::RichText::new("Modules").size(24.0).strong());
-                    let h = header(
-                        if reason == Some(Reason::Void) {
-                            HeaderKind::Changed
-                        } else {
-                            HeaderKind::Ask
-                        },
-                        "foxglove",
-                        "Foxglove",
-                        None,
-                    );
-                    perm_header_ui(ui, &t, &h);
-                });
-                perm_dialog_ui(ctx, &t, &mut d, true);
-            }) else {
-                eprintln!("no system font; render test skipped");
-                return;
-            };
-            save_png(&format!("built-permission-{tag}-{name}.png"), w, h, rgba);
-        }
-        // Granted: the CLI header line, then the section with one item off.
-        let (w, h) = (760u32, 900u32);
-        let s = section();
-        let hd = header(
-            HeaderKind::Cli,
-            "foxglove",
-            "Foxglove",
-            Some((12, "13 Nov 2026")),
-        );
-        let rgba = rasterise(w, h, |ctx| {
+        let (w, h) = (760u32, 720u32);
+        let Some(rgba) = rasterise(w, h, |ctx| {
             set_theme(ctx, choice);
+            ctx.style_mut(|s| s.animation_time = 0.0);
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.label(egui::RichText::new("Modules").size(24.0).strong());
-                ui.add_space(8.0);
-                perm_header_ui(ui, &t, &hd);
-                ui.add_space(12.0);
-                section_ui(ui, &t, &s, true);
+                perm_header_ui(
+                    ui,
+                    &t,
+                    &header(
+                        HeaderKind::More,
+                        "foxglove",
+                        "Foxglove",
+                        Some((3, "Pause your live wallpaper")),
+                    ),
+                );
             });
-        })
-        .unwrap();
-        save_png(&format!("built-permission-granted-{name}.png"), w, h, rgba);
+            perm_dialog_ui(ctx, &t, &mut d, true);
+        }) else {
+            return;
+        };
+        save_png(&format!("grants-3-review-{tag}.png"), w, h, rgba);
+    }
+}
+
+/// "Waits for your OK" is drawn in the attention tone (#1238); its words carry the meaning, the
+/// colour only has to stay readable on the card and the page in both themes.
+#[test]
+fn the_waits_word_keeps_its_contrast_in_both_themes() {
+    for dark in [true, false] {
+        let t = crate::theme::tokens(dark);
+        for bg in [t.surface, t.bg] {
+            let r = crate::theme::contrast(t.attention, bg);
+            assert!(r >= 4.5, "attention on {bg:?} in dark={dark}: {r:.2}");
+        }
     }
 }

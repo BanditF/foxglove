@@ -107,6 +107,9 @@ impl ListItem {
         if self.sensitive {
             s.push_str(", sensitive");
         }
+        if self.new {
+            s.push_str(", new");
+        }
         s.push_str(if self.checked {
             ", checked"
         } else {
@@ -123,6 +126,8 @@ pub enum Reason {
     ListChanged,
     /// The program is new or was moved since the allow.
     Void,
+    /// A kept grant whose signed update asks for more (#1238): only the new items are marked.
+    More,
 }
 
 /// The keyboard section (Foxglove only): off by default.
@@ -175,6 +180,9 @@ pub enum All {
 
 impl PermDialog {
     pub fn title(&self) -> String {
+        if self.reason == Some(Reason::More) {
+            return format!("Let {} do more?", self.name);
+        }
         format!("Let {} run in Hideout?", self.name)
     }
 
@@ -216,6 +224,10 @@ impl PermDialog {
                 v
             }
             Some(Reason::Void) => vec![self.void_line()],
+            Some(Reason::More) => vec![
+                format!("Since its update, {} also asks for these.", self.name),
+                "What you allowed before stays allowed.".into(),
+            ],
             None => Vec::new(),
         }
     }
@@ -348,6 +360,8 @@ pub enum ItemWord {
     Allowed,
     Off,
     CantBeAllowed,
+    /// Asked (by an update, say) and never answered: not the same as turned off (#1238).
+    Waits,
 }
 
 impl ItemWord {
@@ -356,6 +370,7 @@ impl ItemWord {
             ItemWord::Allowed => "Allowed",
             ItemWord::Off => "Off",
             ItemWord::CantBeAllowed => "Can't be allowed",
+            ItemWord::Waits => WAITS,
         }
     }
 }
@@ -414,6 +429,8 @@ pub enum HeaderKind {
     Cli,
     /// A command-line grant waits for the user's confirmation (#1183); nothing is allowed yet.
     Queued,
+    /// Allowed, and a signed update asks for more (#1238); `cli` carries (count, first line).
+    More,
 }
 
 /// A hub-drawn header line.
@@ -450,6 +467,15 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
                 "Nothing is allowed until you review it here.".into(),
                 NOT_NOW,
             )
+        }
+        HeaderKind::More => {
+            let (n, first) = cli.unwrap_or((0, ""));
+            let body = if n == 1 {
+                format!("Its update asks for one new thing: “{first}”. It stays off until you allow it, so apps that ask for it are told no.")
+            } else {
+                format!("Its update asks for {n} new things, like “{first}”. They stay off until you allow them, so apps that ask for them are told no.")
+            };
+            (format!("{name}'s update asks for more"), body, NOT_NOW)
         }
         HeaderKind::Cli => {
             let (n, when) = cli.unwrap_or((0, ""));

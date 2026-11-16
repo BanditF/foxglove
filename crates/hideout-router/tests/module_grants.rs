@@ -236,3 +236,122 @@ fn no_method_a_module_can_call_grants_anything() {
         "a call changed a grant"
     );
 }
+
+/// #1238: a method the module declares but the user has not allowed answers DENIED with a
+/// reason (not "method not found"); after the user's Allow it is served with no restart, even
+/// though the module registered while the grant was missing; a never name stays not found.
+#[test]
+fn a_declared_but_ungranted_method_is_denied_then_served_after_allow_without_a_restart() {
+    let now = Instant::now();
+    let mut r = router();
+    let text = "id = \"foxglove\"
+name = \"foxglove\"
+version = \"0.2.0\"
+kind = \"adopted\"
+family = \"foxglove\"
+hub = \"1.0\"
+run = [\"C:/x/x.exe\"]
+provides = [\"method:health.read\", \"method:wallpaper-engine.pause\", \"method:pc_lighting.set_zone\"]
+";
+    let m = hideout_contract::module::Module::parse(
+        text,
+        &hideout_contract::module::Context::default(),
+    )
+    .expect("manifest");
+    r.apply_manifest(&m);
+    r.add_module(entry("example.caller", &["wallpaper.control"]));
+    let c = connect(&mut r, "foxglove", now);
+    // The module asks for all it declares at start; the missing grant rejects the new one.
+    let rej = register_all(&mut r, c, &["health.read", "wallpaper-engine.pause"], now);
+    assert_eq!(rej.len(), 1, "{rej:?}");
+    let caller = connect(&mut r, "example.caller", now);
+    let m = json!({"jsonrpc":"2.0","id":400,"method":"wallpaper-engine.pause","params":{}});
+    let out = r.receive(caller, &m.to_string(), now);
+    let e = &sends(&out, caller)[0]["error"];
+    assert_eq!(e["code"], 5, "{e}");
+    assert!(e["data"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Not allowed in Hideout yet"));
+    // A name nobody declares stays not found.
+    let m = json!({"jsonrpc":"2.0","id":401,"method":"nobody.declares","params":{}});
+    let out = r.receive(caller, &m.to_string(), now);
+    assert_eq!(sends(&out, caller)[0]["error"]["code"], -32601);
+
+    // The user's Allow adds the item; the call is served at once, no restart, no re-register.
+    r.set_module_grants(
+        "foxglove",
+        vec![
+            "provide:health.read".into(),
+            "provide:tray.set_panel".into(),
+            "provide:wallpaper-engine.pause".into(),
+        ],
+    );
+    let (asked, code) = call_through(&mut r, caller, c, "wallpaper-engine.pause", 402, now);
+    assert_eq!((asked, code), (1, None));
+    // What was held before is still held.
+    assert!(r
+        .module_grants("foxglove")
+        .contains(&"provide:health.read".to_string()));
+}
+
+/// A router with the module `foxglove` (grants as given) declaring the wallpaper pause and a
+/// caller that may call it.
+fn pause_router(granted: &[&str]) -> (Router, ConnId, ConnId, Instant) {
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry("foxglove", granted));
+    let text = "id = \"foxglove\"
+name = \"foxglove\"
+version = \"0.2.0\"
+kind = \"adopted\"
+family = \"foxglove\"
+hub = \"1.0\"
+run = [\"C:/x/x.exe\"]
+provides = [\"method:health.read\", \"method:wallpaper-engine.pause\"]
+";
+    let m = hideout_contract::module::Module::parse(
+        text,
+        &hideout_contract::module::Context::default(),
+    )
+    .expect("manifest");
+    r.apply_manifest(&m);
+    r.add_module(entry("example.caller", &["wallpaper.control"]));
+    let c = connect(&mut r, "foxglove", now);
+    let caller = connect(&mut r, "example.caller", now);
+    (r, c, caller, now)
+}
+
+#[test]
+fn a_wildcard_grant_is_not_told_not_allowed_yet() {
+    // The user already allowed `provide:wallpaper-engine.*`; the module just does not serve the
+    // pause. The grant is not what keeps it out, so the answer is the plain not found.
+    let (mut r, c, caller, now) =
+        pause_router(&["provide:health.read", "provide:wallpaper-engine.*"]);
+    register_all(&mut r, c, &["health.read"], now);
+    let m = json!({"jsonrpc":"2.0","id":500,"method":"wallpaper-engine.pause","params":{}});
+    let out = r.receive(caller, &m.to_string(), now);
+    assert_eq!(sends(&out, caller)[0]["error"]["code"], -32601);
+}
+
+#[test]
+fn a_register_that_wants_nothing_clears_what_the_last_one_wanted() {
+    let (mut r, c, caller, now) = pause_router(&["provide:health.read"]);
+    // First registration asks for the pause too; the missing grant leaves it wanted.
+    assert_eq!(
+        register_all(&mut r, c, &["health.read", "wallpaper-engine.pause"], now).len(),
+        1
+    );
+    // The module registers again without it: the new registration replaces the old one.
+    assert!(register_all(&mut r, c, &["health.read"], now).is_empty());
+    r.set_module_grants(
+        "foxglove",
+        vec![
+            "provide:health.read".into(),
+            "provide:wallpaper-engine.pause".into(),
+        ],
+    );
+    let (asked, code) = call_through(&mut r, caller, c, "wallpaper-engine.pause", 501, now);
+    assert_eq!(asked, 0, "no stale route comes back");
+    assert!(code.is_some(), "the call is refused, not served");
+}

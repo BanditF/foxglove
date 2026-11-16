@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! The routing logic, with no I/O (§8.1 to §8.8).
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use hideout_contract::capability::{check_grantable, Capability, Holder};
@@ -56,6 +56,13 @@ pub use activation::Triggers;
 mod apps;
 mod services;
 pub use services::{all_methods as host_methods, ServiceCall, ServiceError};
+
+/// What a caller reads when the method exists but its module has not been allowed it (#1238).
+const NOT_ALLOWED_YET: &str = "Not allowed in Hideout yet. The user can allow it there.";
+
+/// At most this many (module, method) pairs are remembered for the once-per-run log line: a
+/// declared wildcard (`method:x.*`) lets a caller mint names, so the set must not grow with them.
+const MAX_ASKED_UNGRANTED: usize = 256;
 
 mod code {
     pub const PARSE: i64 = -32700;
@@ -392,7 +399,9 @@ pub struct Router {
     keyboards: HashMap<String, hideout_registry::keyboard::KeyboardGrant>,
     /// The method patterns the legacy module asked for at `module.register`, kept while it is
     /// connected so that a grant that comes back (Turn on after Turn off) brings its routes back
-    /// without Foxglove registering again (#1155-B). Never read for any other module.
+    /// without Foxglove registering again (#1155-B). Since #1238 also kept for any registered
+    /// adopted module, for the patterns only the user's missing `provide:` kept out: the user's
+    /// Allow of an item an update added serves it without a restart.
     wanted: HashMap<String, Vec<String>>,
     /// Each module's `[[actions]]` ids, when known: a button's `action` must name one
     /// (`ui.action`, spec v1.4).
@@ -410,6 +419,9 @@ pub struct Router {
     /// Each module's `provides = ["method:<pattern>"]` from its manifest (§4.5): for an adopted
     /// module (no catalog entry) the only methods it may register (§6.3, #1118).
     methods_decl: HashMap<String, Vec<String>>,
+    /// (module, method) pairs already logged as asked while the user's OK was missing (#1238):
+    /// one log line per pair per run.
+    asked_ungranted: HashSet<(String, String)>,
     /// The `facts:<pattern>` each module's manifest provides (§4.5): what it may register.
     facts_decl: HashMap<String, Vec<String>>,
     /// Method areas the accepted root-signed catalogs assign, with the module id (§6.3, §13.6):
@@ -506,6 +518,7 @@ impl Router {
             secrets_decl: HashMap::new(),
             channels_decl: HashMap::new(),
             methods_decl: HashMap::new(),
+            asked_ungranted: HashSet::new(),
             facts_decl: HashMap::new(),
             root_areas: Vec::new(),
             secret_store: crate::secrets::default_store(),
@@ -951,6 +964,7 @@ impl Router {
     /// Routes, fact ownership and leases follow the grants now in memory.
     fn revalidate_module_grants(&mut self) -> Vec<Out> {
         self.revalidate_adopted_routes();
+        self.restore_wanted();
         let mut out = Vec::new();
         let gone: Vec<(String, String)> = self
             .leases
@@ -1013,14 +1027,24 @@ impl Router {
     /// Gives the legacy module back the patterns it asked for that the grant carries now, when
     /// it is connected, ready and nobody else holds them.
     fn restore_wanted(&mut self) {
-        let m = LEGACY_FOXGLOVE_ID;
+        let mut ids: Vec<String> = self.wanted.keys().cloned().collect();
+        ids.sort();
+        for m in ids {
+            self.restore_wanted_of(&m);
+        }
+    }
+
+    fn restore_wanted_of(&mut self, m: &str) {
         if self.ready_conn(m).is_none() {
             return;
         }
         let Some(asked) = self.wanted.get(m).cloned() else {
             return;
         };
-        let caps = Caps::parse(&self.modules[m].granted);
+        let Some(entry) = self.modules.get(m) else {
+            return;
+        };
+        let caps = Caps::parse(&entry.granted);
         for p in asked {
             let held = self.routes.iter().any(|r| overlap(&r.pattern, &p));
             if !held && self.may_provide(m, &caps, &p) {
@@ -1030,6 +1054,22 @@ impl Router {
                 });
             }
         }
+    }
+
+    /// Whether a registered adopted module would provide `pattern` if the user also allowed
+    /// `provide:<pattern>`: every other test of [`Self::may_provide`] passes (#1238).
+    fn rejected_by_provide_alone(&self, module: &str, pattern: &str) -> bool {
+        let Some(entry) = self.modules.get(module) else {
+            return false;
+        };
+        let mut granted = entry.granted.clone();
+        // A held grant, a wildcard such as `provide:x.*` included, means the grant is not what
+        // keeps the method out.
+        if entry.registered_version.is_none() || Caps::parse(&granted).provides(pattern) {
+            return false;
+        }
+        granted.push(format!("provide:{pattern}"));
+        self.may_provide(module, &Caps::parse(&granted), pattern)
     }
 
     /// Whether `pattern` would be provided by the legacy module if only the keyboard grant held:
@@ -2003,6 +2043,25 @@ impl Router {
         }
     }
 
+    /// The registered module whose manifest declares `method` while the user's `provide:` for it
+    /// is missing (never allowed, declined or turned off). Never for a name that no grant can
+    /// carry, a hub-owned name, the legacy keyboard areas or an area another module is assigned.
+    fn declared_but_ungranted(&self, method: &str) -> Option<String> {
+        if never_name(method) || HUB_OWNED.iter().any(|a| overlap(a, method)) {
+            return None;
+        }
+        self.modules
+            .values()
+            .filter(|m| {
+                m.catalog_provide.is_none()
+                    && !(m.id == LEGACY_FOXGLOVE_ID
+                        && GRANT_AREAS.iter().any(|a| covers(a, method)))
+                    && self.rejected_by_provide_alone(&m.id, method)
+            })
+            .map(|m| m.id.clone())
+            .min()
+    }
+
     /// The one authority check for providing a method pattern (§6.3), used by `module.register`,
     /// by the routing fallback and when the registry reloads: the grant `provide:`, never a
     /// hub-owned name; a module with a catalog entry only what it lists, and a third-party one
@@ -2245,9 +2304,10 @@ impl Router {
             });
             // Only what the grant alone kept out, or what was accepted, comes back when the
             // grant does; a pattern refused for any other reason stays refused (#1155 L5).
-            if module == LEGACY_FOXGLOVE_ID
-                && !taken
-                && (allowed || self.rejected_by_grant_alone(module, &p))
+            if !taken
+                && ((module == LEGACY_FOXGLOVE_ID
+                    && (allowed || self.rejected_by_grant_alone(module, &p)))
+                    || self.rejected_by_provide_alone(module, &p))
             {
                 wanted.push(p.clone());
             }
@@ -2257,8 +2317,12 @@ impl Router {
                 methods.push(p);
             }
         }
-        if module == LEGACY_FOXGLOVE_ID {
+        // A registration replaces the module's old one, so it replaces what it wanted too: a
+        // register that wants nothing clears the rest (the legacy module keeps its empty entry).
+        if module == LEGACY_FOXGLOVE_ID || !wanted.is_empty() {
             self.wanted.insert(module.into(), wanted);
+        } else {
+            self.wanted.remove(module);
         }
         let mut facts = Vec::new();
         for p in list("facts") {
@@ -2789,6 +2853,19 @@ impl Router {
                     .min()
             });
         let Some(owner) = owner else {
+            // A registered module declares the method but the user has not allowed it (#1238):
+            // the caller is told where the answer is, instead of "method not found".
+            if let Some(m) = self.declared_but_ungranted(method) {
+                if self.asked_ungranted.len() < MAX_ASKED_UNGRANTED
+                    && self.asked_ungranted.insert((m.clone(), method.into()))
+                {
+                    log::info!(
+                        "permissions: {m}: {method} asked by {}, not allowed in Hideout",
+                        self.caller_key(conn)
+                    );
+                }
+                return out.push(Out::Send(conn, denied(&id, Some(NOT_ALLOWED_YET))));
+            }
             return out.push(Out::Send(
                 conn,
                 error(&id, code::METHOD_NOT_FOUND, "method not found", None),
