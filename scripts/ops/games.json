@@ -5,5 +5,6 @@
     "Battle\\.net", "GOG Galaxy\\\\Games", "Ubisoft Game Launcher\\\\games"
   ],
   "notGamesPattern": "launcher|helper|crash|overlay|webhelper|wallpaper_engine|Steamworks Shared|SteamVR",
-  "gpuBusyPercent": 40
+  "gpuBusyPercent": 40,
+  "localLlmPattern": "llama-server|llama-cli|LM Studio|lmstudio|lms\\.exe"
 }
