@@ -40,7 +40,7 @@
         "id": 2,
         "method": "ui.event",
         "params": {
-          "panel": "ai",
+          "panel": "page",
           "node": "free-gpu",
           "kind": "click",
           "value": null
