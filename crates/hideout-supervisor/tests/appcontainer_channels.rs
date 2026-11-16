@@ -10,6 +10,8 @@
 //!   no guest for it.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -17,7 +19,6 @@ use std::time::{Duration, Instant};
 use hideout_registry::Registry;
 use hideout_router::server::{folder_suffix, Hub};
 use hideout_router::{Out, Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::instances::Instances;
 use hideout_supervisor::sandbox;
 use hideout_supervisor::win::{Job, Process};
@@ -36,7 +37,7 @@ struct Lab {
     base: PathBuf,
     home: PathBuf,
     hub: Hub,
-    sup: Supervisor,
+    sup: common::Reaped,
     rx: Receiver<Out>,
     ids: Vec<String>,
 }
@@ -83,7 +84,7 @@ fn lab(name: &str, modules: &[Spec]) -> Lab {
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(&folder_suffix(&home));
     hub.serve_pipe(&hub.router_pipe()).unwrap();
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
     Lab {
         base,
         home,

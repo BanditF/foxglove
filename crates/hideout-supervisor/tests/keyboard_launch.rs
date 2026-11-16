@@ -4,6 +4,8 @@
 //! starts is ended by its handle when the test ends.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -11,7 +13,6 @@ use hideout_registry::keyboard::{canonical_path, GrantState, KeyboardState, Void
 use hideout_registry::Registry;
 use hideout_router::server::{folder_suffix, Hub};
 use hideout_router::{Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::win::Process;
 
 const NOW: &str = "2026-11-12T10:00:00Z";
@@ -56,7 +57,7 @@ fn home_with(tag: &str) -> (PathBuf, PathBuf) {
 }
 
 fn run_once(home: &Path) -> Vec<u32> {
-    let sup = Supervisor::start(home, hub(home));
+    let sup = common::start(home, hub(home));
     let pid = sup.pid(ID);
     if let Some(p) = pid {
         let p = Process::open(p).unwrap();
@@ -148,7 +149,7 @@ fn a_record_for_another_path_is_void_even_with_the_right_hash() {
 #[test]
 fn the_running_program_cannot_be_overwritten_renamed_or_deleted() {
     let (home, exe) = home_with("pinned");
-    let sup = Supervisor::start(&home, hub(&home));
+    let sup = common::start(&home, hub(&home));
     let pid = sup.pid(ID).expect("not started");
     assert!(std::fs::write(&exe, b"x").is_err(), "overwritten");
     assert!(

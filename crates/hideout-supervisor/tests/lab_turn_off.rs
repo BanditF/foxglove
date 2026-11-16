@@ -7,6 +7,8 @@
 //! saves it on again. Windowless: the modules' exe doesn't exist, so no process starts.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -14,7 +16,6 @@ use hideout_registry::lab::LAB_MODULES_DIR;
 use hideout_registry::Registry;
 use hideout_router::server::{folder_suffix, Hub};
 use hideout_router::{Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 
 const ART: &str = "example.lab.art";
 const BEAT: &str = "example.lab.beat";
@@ -66,7 +67,7 @@ fn turning_off_a_lab_module_is_saved_and_holds_after_a_restart() {
     let home = lab_home();
     let toml = home.join("hideout.toml");
     let hub = hub_on(&home);
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
     assert!(sup.knows(ART) && sup.knows(BEAT));
     assert!(!toml.exists(), "a lab hub's start wrote hideout.toml");
 
@@ -86,7 +87,7 @@ fn turning_off_a_lab_module_is_saved_and_holds_after_a_restart() {
     let reg = Registry::open_from_env(&home).unwrap();
     assert!(!reg.hub.enabled(ART) && reg.hub.enabled(BEAT));
     let hub = hub_on(&home);
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
     assert_eq!(state(&hub, ART).as_deref(), Some("off"), "Art came back on");
 
     // Turn on saves it on again (it then tries to start; its exe is missing).

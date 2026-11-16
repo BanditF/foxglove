@@ -11,6 +11,8 @@
 //! AppContainer profile are removed at the end.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -18,7 +20,6 @@ use std::time::{Duration, Instant};
 use hideout_registry::Registry;
 use hideout_router::server::{folder_suffix, Hub};
 use hideout_router::{Out, Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::instances::Instances;
 use hideout_supervisor::sandbox;
 use hideout_supervisor::win::{Caps, Job, Process};
@@ -92,7 +93,7 @@ fn ready(rx: &Receiver<Out>, id: &str) -> bool {
 struct Run {
     home: PathBuf,
     hub: Hub,
-    sup: Supervisor,
+    sup: common::Reaped,
     rx: Receiver<Out>,
 }
 
@@ -104,7 +105,7 @@ fn start(id: &str, contain: bool) -> Run {
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(&folder_suffix(&home));
     hub.serve_pipe(&hub.router_pipe()).unwrap();
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
     Run { home, hub, sup, rx }
 }
 

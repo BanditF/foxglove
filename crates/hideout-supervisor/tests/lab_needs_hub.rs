@@ -4,6 +4,8 @@
 //! `needs-hub` at hub start (§7.8), and it is never launched. Windowless; nothing runs.
 #![cfg(windows)]
 
+mod common;
+
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -11,7 +13,6 @@ use hideout_registry::lab::LAB_MODULES_DIR;
 use hideout_registry::Registry;
 use hideout_router::server::{folder_suffix, Hub};
 use hideout_router::{Router, Settings};
-use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::instances::Instances;
 
 const ID: &str = "example.lab.kiln";
@@ -56,7 +57,7 @@ fn a_newer_hub_lab_module_reads_needs_hub_and_never_runs() {
     let (events, _rx) = mpsc::channel();
     let hub = Hub::new(router, events);
     hub.set_folder_suffix(&folder_suffix(&home));
-    let sup = Supervisor::start(&home, hub.clone());
+    let sup = common::start(&home, hub.clone());
 
     let state = hub.read(|r| {
         r.fact(&format!("module.{ID}.state"))
