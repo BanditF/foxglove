@@ -24,7 +24,7 @@
 //! own DEVICE_LIST_UPDATED push, and (only if the user asked) tries again after OpenRGB goes, on
 //! the crate's bounded backoff. Nothing polls; with the setting off there is no socket.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
@@ -315,6 +315,15 @@ pub enum Msg {
     /// Windows let go of the keyboard's lights (its owner report): the keyboard's LampArray
     /// is let go too, and the link draws it again.
     KeyboardLampRelease,
+    /// A lease draws on a board (`board_sources`, #1119): every zone (index, colour), written
+    /// without saving them as the user's. The colours from before the first one are kept for
+    /// [`Msg::LeaseEnd`].
+    LeaseShow {
+        key: String,
+        colors: Vec<(usize, [u8; 3])>,
+    },
+    /// The last lease on a board ended (or Foxglove paused): its colours from before it go back.
+    LeaseEnd(String),
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -381,6 +390,11 @@ pub fn find_row(is: impl Fn(&Row) -> bool) -> Option<(Row, bool)> {
 /// Queues a request; a no-op before [`start`].
 pub fn send(msg: Msg) {
     queue(msg);
+}
+
+/// [`send`], saying whether the worker took it (it didn't before [`start`]).
+pub fn try_send(msg: Msg) -> bool {
+    queue(msg).is_some()
 }
 
 /// Queues a request and waits until the worker has handled it and published its snapshot
@@ -644,6 +658,12 @@ pub struct Worker {
     /// The keyboard's own LampArray, opened for the Keyboard card while Windows Dynamic
     /// Lighting holds the keyboard's lights (#749 b).
     keyboard_lamp: Option<KeyboardLamp>,
+    /// Where leases' colours go and which boards are lease targets (`board_sources`); no sink,
+    /// no lease targets.
+    lease_sink: Option<Arc<dyn super::board_sources::Sink>>,
+    leaseable: BTreeSet<String>,
+    /// Each board a lease draws on, by key: its colours from before the lease.
+    leased: BTreeMap<String, Vec<Option<Rgb>>>,
 }
 
 /// The Keyboard card's pick while a scene draws the held keyboard through Windows (#768).
@@ -725,7 +745,16 @@ impl Worker {
             openrgb_dirty: false,
             openrgb_retry: None,
             keyboard_lamp: None,
+            lease_sink: None,
+            leaseable: BTreeSet::new(),
+            leased: BTreeMap::new(),
         }
+    }
+
+    /// Makes the boards a scan opens lease targets, drawing through `sink`.
+    pub fn with_lease_sink(mut self, sink: Arc<dyn super::board_sources::Sink>) -> Self {
+        self.lease_sink = Some(sink);
+        self
     }
 
     /// OpenRGB's settings (the store's `[openrgb]`), and where its connection's news goes. It
@@ -959,6 +988,12 @@ impl Worker {
             _ => true,
         });
         self.found = now;
+        self.leased.retain(|key, _| self.drivers.contains_key(key));
+        if let Some(sink) = &self.lease_sink {
+            let boards =
+                super::board_sources::boards(&self.found, |k| self.drivers.contains_key(k));
+            super::board_sources::sync(&mut self.leaseable, &boards, sink);
+        }
     }
 
     /// The colour a board's zone shows now (by VID/PID and zone number), as sent: what
@@ -1066,6 +1101,7 @@ impl Worker {
                 | Msg::OpenRgbConnect
                 | Msg::OpenRgbEvent(..)
                 | Msg::KeyboardLampRelease
+                | Msg::LeaseEnd(_)
         );
         if paused && writes {
             let place = place_of(&msg);
@@ -1134,6 +1170,28 @@ impl Worker {
             Msg::Show { key, colors } => {
                 let colors: Vec<_> = colors.into_iter().map(|(i, c)| (i, rgb(c))).collect();
                 self.write(&key, "Showing", |d| d.set_zones(&colors), false);
+            }
+            Msg::LeaseShow { key, colors } => {
+                if let Some(d) = self.drivers.get(&key) {
+                    self.leased.entry(key.clone()).or_insert_with(|| d.colors());
+                }
+                let colors: Vec<_> = colors.into_iter().map(|(i, c)| (i, rgb(c))).collect();
+                self.write(&key, "Leased", |d| d.set_zones(&colors), false);
+            }
+            Msg::LeaseEnd(key) => {
+                // What it showed before the lease, else what the user saved; never dark unless
+                // that's what it had.
+                let Some(before) = self.leased.remove(&key) else {
+                    return;
+                };
+                let saved = self
+                    .found
+                    .iter()
+                    .find(|f| f.key == key)
+                    .map(|f| self.saved_colors(f))
+                    .unwrap_or_default();
+                let colors = pcl::restore_colors(&before, &saved);
+                self.write(&key, "Lease ended", |d| d.set_zones(&colors), false);
             }
             Msg::Recalibrate(key) => {
                 // The palette again: known colours, else saved ones, else white (never dark).
@@ -1881,6 +1939,7 @@ pub fn start() {
             Box::new(lamp_arrays),
         )
         .with_background(super::scene_lamps::identity())
+        .with_lease_sink(Arc::new(super::board_sources::WorkerSink))
         .with_lamp_opener({
             // Windows' AvailabilityChanged, on its thread: one message to this queue.
             let tx = tx.clone();
@@ -2339,6 +2398,70 @@ mod tests {
 
     fn no_wait() -> impl FnMut(std::time::Duration) {
         |_| {}
+    }
+
+    #[test]
+    fn a_scan_makes_a_board_a_lease_target_and_a_lease_gives_the_colours_back() {
+        use super::super::api::AppDevices;
+        use foxglove_plugin_host::Devices as _;
+        struct Nop;
+        impl super::super::board_sources::Sink for Nop {
+            fn show(&self, _: &str, _: &[(usize, [u8; 3])]) -> foxglove_devices::Result<()> {
+                Ok(())
+            }
+            fn release(&self, _: &str) {}
+        }
+        let (w, sent) = worker(Settings::default());
+        let mut w = w.with_lease_sink(Arc::new(Nop));
+        // A serial of its own: the registry is process-wide.
+        let mut hid = case_hid();
+        hid[0].serial = Some("S2WORKER".into());
+        let key = "103c:84fd:S2WORKER";
+        let id = super::super::board_sources::lease_id(key);
+        let lease = |conn| {
+            AppDevices.call_from(
+                conn,
+                "lighting.lease",
+                serde_json::json!({"device": id, "priority": "normal",
+                    "color": {"hue": 0, "saturation": 100, "brightness": 100}}),
+            )
+        };
+        assert!(lease(7301).is_err());
+        w.scan(&hid, &mut nothing(), false, true);
+        assert!(
+            w.drivers.contains_key(key),
+            "{:?}",
+            w.drivers.keys().collect::<Vec<_>>()
+        );
+        assert!(lease(7301).is_ok());
+        // The pump cap (recognised, not controllable) and the mouse (S1's) are not boards.
+        assert_eq!(w.leaseable.len(), 1);
+
+        // The worker's side of a lease: colours before it come back at its end.
+        w.handle(
+            Msg::Set {
+                key: key.into(),
+                colors: vec![(0, [1, 2, 3])],
+            },
+            false,
+            &mut no_wait(),
+        );
+        w.handle(
+            Msg::LeaseShow {
+                key: key.into(),
+                colors: vec![(0, [255, 0, 0])],
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert_eq!(w.drivers[key].colors()[0], Some(rgb([255, 0, 0])));
+        w.handle(Msg::LeaseEnd(key.into()), true, &mut no_wait());
+        assert_eq!(w.drivers[key].colors()[0], Some(rgb([1, 2, 3])));
+        drop(sent);
+
+        w.scan(&[], &mut nothing(), false, false);
+        assert!(w.leaseable.is_empty());
+        assert!(lease(7301).is_err(), "gone with the board");
     }
 
     /// #617: a zone write logs one line, each zone old → new and the result; the saved
