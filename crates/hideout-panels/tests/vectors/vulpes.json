@@ -114,16 +114,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -132,7 +176,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -255,9 +299,38 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI is running."
+                      "text": "Web UI is running."
                     },
                     "type": "label"
                   },
@@ -271,7 +344,7 @@
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -280,7 +353,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -403,9 +476,38 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI is running."
+                      "text": "Web UI is running."
                     },
                     "type": "label"
                   },
@@ -419,7 +521,7 @@
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -428,7 +530,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -551,16 +653,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -569,7 +715,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -692,16 +838,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -710,7 +900,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -833,16 +1023,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -851,7 +1085,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -974,16 +1208,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -992,7 +1270,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -1074,16 +1352,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -1092,7 +1414,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -1190,16 +1512,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -1208,7 +1574,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -1306,6 +1672,35 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
                       "text": "Couldn't open the browser"
@@ -1322,7 +1717,7 @@
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -1331,7 +1726,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -1427,16 +1822,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -1445,7 +1884,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -1463,6 +1902,354 @@
         }
       ],
       "state": "error"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "GPU free"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Nothing loaded"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 1.7 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 1700
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "off",
+                      "value": "GPU free"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Nothing loaded"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 1.7 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 1700
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "chat-text",
+                    "props": {
+                      "text": "No chat profiles yet. Add one in the web UI's Settings."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Web UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "no-profiles"
+    },
+    {
+      "panels": [
+        {
+          "icon": "sparkle",
+          "id": "tile",
+          "slot": "tile",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "id": "glance",
+                "props": {
+                  "tone": "off",
+                  "value": "GPU free"
+                },
+                "type": "value"
+              },
+              {
+                "id": "sub",
+                "props": {
+                  "text": "Nothing loaded"
+                },
+                "type": "label"
+              },
+              {
+                "id": "meter",
+                "props": {
+                  "label": "VRAM 1.7 of 12.0 GiB",
+                  "max": 12288,
+                  "value": 1700
+                },
+                "type": "meter"
+              },
+              {
+                "id": "go",
+                "props": {
+                  "action": "free-gpu",
+                  "label": "Free GPU"
+                },
+                "type": "button"
+              }
+            ],
+            "id": "tile",
+            "type": "column"
+          }
+        },
+        {
+          "icon": "sparkle",
+          "id": "page",
+          "slot": "page",
+          "title": "AI",
+          "tree": {
+            "children": [
+              {
+                "children": [
+                  {
+                    "id": "now-value",
+                    "props": {
+                      "tone": "off",
+                      "value": "GPU free"
+                    },
+                    "type": "value"
+                  },
+                  {
+                    "id": "now-sub",
+                    "props": {
+                      "text": "Nothing loaded"
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "now-meter",
+                    "props": {
+                      "label": "VRAM 1.7 of 12.0 GiB",
+                      "max": 12288,
+                      "value": 1700
+                    },
+                    "type": "meter"
+                  },
+                  {
+                    "id": "now-go",
+                    "props": {
+                      "action": "free-gpu",
+                      "label": "Free GPU"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "now-help",
+                    "props": {
+                      "text": "Unloads every model and keeps the GPU free for gaming. Nothing loads until you release it."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "now",
+                "props": {
+                  "title": "Now"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+                      ],
+                      "value": "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "web-text",
+                    "props": {
+                      "text": "Web UI is running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  }
+                ],
+                "id": "web",
+                "props": {
+                  "title": "Web UI"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
+                    "id": "about-text",
+                    "props": {
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
+                    },
+                    "type": "markdown"
+                  }
+                ],
+                "id": "about",
+                "props": {
+                  "title": "About"
+                },
+                "type": "section"
+              }
+            ],
+            "id": "page",
+            "type": "column"
+          }
+        }
+      ],
+      "state": "long-profile"
     },
     {
       "panels": [
@@ -1541,16 +2328,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -1559,7 +2390,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
@@ -1655,16 +2486,60 @@
               {
                 "children": [
                   {
+                    "id": "chat-profile",
+                    "props": {
+                      "label": "Chat profile",
+                      "options": [
+                        "daily",
+                        "fast",
+                        "smart"
+                      ],
+                      "value": "daily"
+                    },
+                    "type": "choice"
+                  },
+                  {
+                    "id": "chat-help",
+                    "props": {
+                      "text": "The next chat uses it. Switching loads nothing now."
+                    },
+                    "type": "label"
+                  }
+                ],
+                "id": "chat",
+                "props": {
+                  "title": "Chat"
+                },
+                "type": "section"
+              },
+              {
+                "children": [
+                  {
                     "id": "web-text",
                     "props": {
-                      "text": "Arete's web UI isn't running. Start it from Arete, then come back."
+                      "text": "Web UI isn't running."
+                    },
+                    "type": "label"
+                  },
+                  {
+                    "id": "web-open",
+                    "props": {
+                      "disabled": true,
+                      "label": "Open in browser"
+                    },
+                    "type": "button"
+                  },
+                  {
+                    "id": "web-hint",
+                    "props": {
+                      "text": "Start the web UI first"
                     },
                     "type": "label"
                   }
                 ],
                 "id": "web",
                 "props": {
-                  "title": "Full UI"
+                  "title": "Web UI"
                 },
                 "type": "section"
               },
@@ -1673,7 +2548,7 @@
                   {
                     "id": "about-text",
                     "props": {
-                      "text": "Local AI on this PC: who holds the GPU, and the gaming reservation."
+                      "text": "Local AI on this PC: who holds the GPU, chat profile and web UI."
                     },
                     "type": "markdown"
                   }
