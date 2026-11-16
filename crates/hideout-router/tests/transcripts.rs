@@ -602,7 +602,10 @@ fn setup(name: &str) -> Replay {
             r.tool("tool", "example-cli", &[]);
             r
         }
-        "lease-closed-disconnect" | "lease-closed-released" | "lease-addressed-event" => {
+        "lease-closed-disconnect"
+        | "lease-closed-released"
+        | "lease-addressed-event"
+        | "lease-unknown-refused" => {
             let mut r = Replay::new(vec![]);
             r.module(
                 "module",

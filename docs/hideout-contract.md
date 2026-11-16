@@ -1,6 +1,8 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.13** (v1.12 plus the hub's `apps.watch`, the SDK's wait for an
+Status: spec, contract version **1.14** (v1.13 plus provider lease ids: only a lease's holder
+may name it, and `lease.closed` reaches a provider that restarted, #1229; v1.13 was v1.12 plus the
+hub's `apps.watch`, the SDK's wait for an
 app, answered on top of the app watch's facts, #1108; v1.12 was v1.11 plus the hub's host services: the network broker
 `net.*` and the microphone, `mic.*` and `audio.inputs.set_mute`, #1102; v1.11 was v1.10 plus a
 catalog entry's optional `min_hub_release`, the Hideout release Update Hideout links, #991; v1.10
@@ -12,12 +14,31 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.14** (#1229): provider lease ids, the hub's half of §6.3 open item (d) (§8.5). A lease id
+  is a string of 1 to 128 bytes without control characters, never handed out twice by one
+  provider connection; a `lease` that isn't one is passed through and never recorded. Every
+  caller reaches a provider over the hub's one connection, so the hub is what keeps them apart:
+  a routed call whose params carry a string `lease` is forwarded only when the calling
+  connection holds that lease at that provider, else it answers −32602 `lease.unknown` and the
+  provider never sees it (a forged, guessed, ended or another caller's id). A result naming a
+  lease another connection holds is not passed on (error 6, `lease.reused`; the first holder
+  keeps it). A lease handed out to a caller whose connection ended meanwhile is closed at once
+  (`disconnect`). A routed call's params must be an object: positional params answer −32602,
+  since they could carry a lease past the check. When a provider's connection ends, its live leases end with it, and its next
+  connection gets `lease.closed {lease, reason: "restart"}` for each when it sends
+  `module.ready`, before any waiting call, so a provider process that outlived its connection
+  drops them. A provider MUST treat a `lease.closed` reason it doesn't know as ended.
+  `lease.closed` is a hub-owned name (§8.3): a module can't send it. New error ids (§15):
+  `lease.unknown` and `lease.reused`. Contract crate: `lease` (`LeaseClosed`, the reasons, the
+  id rule); schema type `lease.LeaseClosed`. `hub` stays 1.3 (§8.7): one new reason value and
+  two refusals, no message and no manifest key. Vector:
+  `transcripts/lifecycle/lease-unknown-refused.json`.
 - **1.13** (#1108): the hub answers `apps.watch {exe}` (§8.12), the call the SDK's `watch_app`
   makes (Foxglove API 1.3), which the hub answered −32601, so Broadcast Status couldn't tell
   when OBS opens. It is served on top of the app watch (§4.6), with the facts' permission
@@ -1214,8 +1235,12 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   provider is down), so `foxglove-cli status` can say "Foxglove isn't sharing your keyboard in
   Hideout". (c) A panel button needs an `a11y_label` (accessible name different from the label;
   P8's "Open Foxglove settings, Lights page"). (d) `wallpaper-engine.*` through the router needs
-  string lease ids and a `lease.closed` the provider can see; until then it stays standalone-only
-  and out of this grant.
+  string lease ids and a `lease.closed` the provider can see. (v1.14, #1229) The hub's half is
+  done (§8.5: lease ids, only the holder names a lease, `lease.closed` on disconnect, release,
+  revoke and provider restart). Foxglove's own `wallpaper-engine.*` still numbers its leases and
+  keeps them per pipe connection, which every routed caller shares, so it stays standalone-only
+  and out of this grant until Foxglove serves it with string ids and handles `lease.closed`
+  (#1120).
 - (#1118) An `adopted` module has no catalog entry; registering it is the user's act (§7.4). It
   may provide only the `method:` patterns of its registered manifest that its `provide:` grant
   covers, and never a first-party area (the list above) except `gpu.*` (Arete's hub is the GPU
@@ -1906,7 +1931,7 @@ Rules:
   rejected at `module.register` with `permission.provider`), and a hub without one answers
   −32601. `mic.*` facts are the hub's: `facts.set` on one is refused (error 5). A module's
   notification whose name is hub-owned (`net.*`, `audio.inputs.*`, (v1.13) `apps.*` and
-  `app.window.*`, `facts.*`, `channel.*`,
+  `app.window.*`, (v1.14) `lease.closed`, `facts.*`, `channel.*`,
   `ui.*` beyond `ui.patch` and `ui.badge`, `module.*` beyond `module.ready` and
   `module.idle` …) is dropped, never forwarded to a lease holder (§8.5) or broadcast: a module
   can't forge another stream's `net.data` or a `mic.*` change.
@@ -2015,7 +2040,49 @@ Rules:
   provider's release call, a method named `<family>.release` with `lease` in its params; the hub
   forwards that call first, then sends `lease.closed`) or `"revoked"` (the hub ended it, for
   example when the holder's permission was withdrawn). Each lease sends it once. A provider
-  whose own connection ended gets nothing and its leases are forgotten with it.
+  whose own connection ended gets nothing on it and its leases end with it; (v1.14) see
+  provider restart below.
+- **Lease ids (v1.14, #1229).** Every routed caller reaches a provider over the hub's one
+  connection, so the provider can't tell callers apart; the hub does, by the rules below. The
+  hub keeps no lock while it calls out: the router decides and returns the messages, the driver
+  sends them after.
+  - *The id.* A lease id is a JSON string of 1 to 128 bytes with no control characters. A
+    provider MUST NOT hand out the same id twice on one connection, and SHOULD make ids
+    unguessable (64 random bits or more), though the hub's check below doesn't rely on it. A
+    `lease` that isn't such a string isn't a lease to the hub: it is passed through, never
+    recorded, checked or closed. A provider serving leases through the router MUST use
+    string ids.
+  - *Only the holder names it.* A routed call whose params carry a string `lease` is forwarded
+    only when the calling connection holds that lease at the provider the call routes to (any
+    method, not only `<family>.release`). Otherwise (never handed out, ended, another caller's,
+    another provider's, or the provider isn't running) it answers −32602 with `data.id`
+    `lease.unknown`, and nothing is forwarded or started. A guessed id is worth nothing.
+  - *A reused id.* A result whose `lease` another connection holds live at that provider is not
+    passed on: the caller gets error 6 with `data.id` `lease.reused`, and the first holder keeps
+    the lease (nothing is closed: the provider gave out one id twice). The holder getting its
+    own id again is no change.
+  - *A holder that left meanwhile.* A result that hands out a lease to a caller whose
+    connection ended while the call ran is closed at once: `lease.closed {reason:
+    "disconnect"}` to the provider that answered.
+  - *Provider restart.* When a provider's last connection ends, its live leases end. Holders
+    aren't told; their next call naming one answers `lease.unknown`. A provider MUST treat
+    every lease it handed out through a connection as ended when that connection ends. The
+    hub also keeps the ids (at most 1,024 per module; past that the oldest are dropped, logged)
+    and sends `lease.closed {lease, reason: "restart"}` for each to the module's next
+    connection when it sends `module.ready`, before any waiting call is forwarded to it, so a
+    provider process that outlived its connection (a link that reconnects) drops them too. A
+    fresh process that never knew an id ignores it. The ids are forgotten when the module
+    leaves the inventory. During a swap (§7.6) the new instance already holds the module, so
+    nothing ends then. A `lease.closed` due while no connection of the provider is ready (a
+    new instance is starting) waits with these and goes at its `module.ready`.
+  - *By-name params.* A routed call's params are an object (or absent); positional params
+    answer −32602 and are not forwarded, since they could carry a lease past the check above.
+    Only the top-level `lease` key is a lease to the hub.
+  - *Reasons.* `disconnect`, `released`, `revoked` and `restart`. A provider MUST treat a
+    reason it doesn't know as ended; a minor may add reasons.
+  - *Forgery.* `lease.closed` is a hub-owned name (§8.3): a module that sends it, as a
+    notification or with `to:`, is dropped, so no module can make another provider end a
+    lease.
 - **Wallpaper Engine's pause (#1120).** Foxglove serves `wallpaper-engine.pause`,
   `wallpaper-engine.release` and `wallpaper-engine.status` on its pipe (permission
   `wallpaper.control`, never over MCP) with the lease rules above; the `wallpaper-engine` service
@@ -2053,7 +2120,9 @@ and a hub-owned `hideout.toml` table, no message or manifest key). The hub answe
   1.12 is `hub` 1.3 (the host services' messages, §8.10, §8.11). A hub 1.3 reader accepts `1.0`
   to `1.3`. (v1.13) Spec 1.13 stays `hub` 1.3: `apps.watch` is Foxglove API 1.3's call, which
   modules already make, and a hub without it answers −32601, which its callers take as "can't
-  say" (§8.12); no manifest key.
+  say" (§8.12); no manifest key. (v1.14) Spec 1.14 stays `hub` 1.3: a new `lease.closed`
+  reason, which providers take as ended, and two refusals of calls naming a lease the caller
+  doesn't hold (§8.5); no message and no manifest key.
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
 - A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
@@ -2081,7 +2150,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `state.export` | H → M | call | `{}` | `{blob}` (≤ 256 KiB, base64) or `null` | — |
 | `state.import` | H → M | call | `{blob, from_version}` | `{}` | — |
 | `module.exit` | H → M | notification | `{reason}` | — (exit 0 within 5 s, or the Job ends it) | — |
-| `lease.closed` (v1.3) | H → M | notification | `{lease, reason: "disconnect" \| "released" \| "revoked"}` | — | — |
+| `lease.closed` (v1.3) | H → M | notification | `{lease, reason: "disconnect" \| "released" \| "revoked" \| "restart"}` ((v1.14) `restart`; an unknown reason means ended) | — | — |
 
 **Panels and UI**
 
@@ -2704,6 +2773,8 @@ Rust, the exception's `id` in Python). Message text is free; the id is the contr
 | `audio.backend` | (v1.12) Core Audio refused the change or can't be reached: error 6 (§8.11) |
 | `apps.denied` | (v1.13) `apps.watch` without `apps.watch:<name>.exe` for that app, or from a tool: error 5 (§8.12) |
 | `apps.argument` | (v1.13) `apps.watch` with an `exe` that isn't a program's file name `<name>.exe`: −32602 (§8.12) |
+| `lease.unknown` | (v1.14) a routed call whose params carry a string `lease` the calling connection doesn't hold at that provider: −32602, not forwarded (§8.5) |
+| `lease.reused` | (v1.14) a provider's result names a lease another connection holds: error 6 to the caller, the first holder keeps it (§8.5) |
 | `channel.pipe` | (v1.4, #977) a provider answered `channel.create` with no pipe or one that is not `\\.\pipe\hideout-ch-<rest>`: the consumer gets error 6 with this `data.id` (§8.4) |
 | `rpc.*` | JSON-RPC transcripts use the numeric codes of §8.1; the two ids above travel in the error's `data.id` |
 
@@ -2726,7 +2797,8 @@ v1.8: `panels/valid/at-cap-*.json` and `panels/invalid/over-cap-*.json`, each pa
 and one over, and `transcripts/supervisor/backoff-resets-after-quiet.json`; v1.11:
 `trust/hub-release.json`, a catalog entry's `min_hub_release` and the page Update Hideout opens; v1.12:
 `transcripts/net/open-refused.json`, `transcripts/net/stream-refused.json` and
-`transcripts/audio/set-mute-refused.json`; v1.13: `transcripts/apps/watch.json`). The vectors are
+`transcripts/audio/set-mute-refused.json`; v1.13: `transcripts/apps/watch.json`; v1.14:
+`transcripts/lifecycle/lease-unknown-refused.json`). The vectors are
 edited by hand, each in the PR that changes its result: the generator #914 used was never
 committed (`**/tools/*` is git-ignored) and no copy survives. A future generator lives at a tracked
 path (`scripts/`).

@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.13",
+  "spec": "1.14",
   "streams": {
     "nodes": [
       "canvas",
@@ -312,6 +312,23 @@
         }
       },
       "title": "Windows",
+      "type": "object"
+    },
+    "lease.LeaseClosed": {
+      "description": "`lease.closed` (§8.8): which lease ended and why. `reason` is one of [`reason`]; a provider\nMUST treat a reason it doesn't know as ended (v1.14), so it is kept as a string.",
+      "properties": {
+        "lease": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "lease",
+        "reason"
+      ],
+      "title": "LeaseClosed",
       "type": "object"
     },
     "legacy.Manifest": {

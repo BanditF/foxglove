@@ -458,6 +458,8 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         // The app watch (§8.12, v1.13).
         "apps.watch" => typed::<crate::services::AppsWatch>(params),
         "app.window.appeared" | "app.window.closed" => typed::<crate::services::AppWindows>(params),
+        // Lease end (§8.5, v1.3; the id rule v1.14).
+        "lease.closed" => typed::<crate::lease::LeaseClosed>(params),
         _ => Ok(()),
     }
 }
