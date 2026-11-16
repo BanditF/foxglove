@@ -682,7 +682,22 @@ fn job_for_event(e: &foxglove_devices::Event) -> Option<Job> {
 /// it; after Quit the holder's queue is gone, so later events go nowhere).
 fn watch() {
     #[cfg(target_os = "windows")]
-    match super::scene_lamps::watch_lamp_arrays(|w| send(job_for(w))) {
+    // Each device Windows lists is also a lease target (`lamp_sources`, H2.3). Opened on this
+    // thread, in order, never on Windows' event thread (an open waits on Windows).
+    let (sources, events) = mpsc::channel::<Watched>();
+    super::services::spawn_named("lamp-sources", move || {
+        for w in events {
+            super::lamp_sources::watched(&w, &super::scene_lamps::WindowsArrays);
+        }
+    });
+    let sources = Mutex::new(sources);
+    match super::scene_lamps::watch_lamp_arrays(move |w| {
+        let _ = sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .send(w.clone());
+        send(job_for(w));
+    }) {
         Ok(w) => std::mem::forget(w),
         Err(e) => eprintln!("Foxglove: can't watch the Dynamic Lighting devices: {e}"),
     }

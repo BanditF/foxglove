@@ -637,6 +637,54 @@ mod imp {
         Ok(LampWatch(watcher))
     }
 
+    /// Opens one LampArray by Windows' device id (the lease target's lamps).
+    fn open_by_id(id: &str) -> Vec<Box<dyn LampDevice>> {
+        let hid = windows::core::HSTRING::from(id);
+        match LampArray::FromIdAsync(&hid).and_then(|op| op.join()) {
+            Ok(array) => vec![Box::new(Device {
+                count: array.LampCount().unwrap_or(0),
+                array,
+                token: None,
+            }) as Box<dyn LampDevice>],
+            Err(e) => {
+                eprintln!("Foxglove: opening Dynamic Lighting device {id}: {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    impl super::super::lamp_sources::Arrays for super::WindowsArrays {
+        fn listed(&self) -> Vec<String> {
+            let list = LampArray::GetDeviceSelector()
+                .and_then(|s| DeviceInformation::FindAllAsyncAqsFilter(&s))
+                .and_then(|op| op.join());
+            let Ok(list) = list else {
+                return Vec::new();
+            };
+            (&list)
+                .into_iter()
+                .filter_map(|i| i.Id().ok().map(|id| id.to_string()))
+                .collect()
+        }
+
+        fn open(&self, key: &str) -> Option<(String, super::super::lighting_sources::Reopen)> {
+            let hid = windows::core::HSTRING::from(key);
+            let name = DeviceInformation::CreateFromIdAsync(&hid)
+                .and_then(|op| op.join())
+                .ok()?
+                .Name()
+                .map(|n| n.to_string())
+                .unwrap_or_default();
+            let name = if name.is_empty() {
+                "Dynamic Lighting device".to_string()
+            } else {
+                name
+            };
+            let key = key.to_string();
+            Some((name, Box::new(move || open_by_id(&key))))
+        }
+    }
+
     impl Opener for super::WindowsLamps {
         fn open(&mut self, key: &str, changed: Changed) -> Vec<Box<dyn LampDevice>> {
             let arrays = arrays_for(key, &mut self.claimed).unwrap_or_else(|e| {
@@ -777,6 +825,10 @@ pub type Notify = Arc<dyn Fn(&str) + Send + Sync>;
 /// `notify` gets the device's key on each `AvailabilityChanged`.
 #[cfg(target_os = "windows")]
 pub use imp::watch_lamp_arrays;
+
+/// The LampArrays Windows lists, as lease targets (`lamp_sources`).
+#[cfg(target_os = "windows")]
+pub struct WindowsArrays;
 
 #[cfg(target_os = "windows")]
 pub fn worker_opener(notify: Notify) -> super::pc_lights::LampOpener {
