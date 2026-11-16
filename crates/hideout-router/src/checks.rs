@@ -24,6 +24,9 @@ pub const HUB_OWNED: &[&str] = &[
     // The app watch's call and events (§8.12, v1.13).
     "apps.*",
     "app.window.*",
+    // Lease end (§8.5, v1.14): only the hub tells a provider a lease ended, so no module can
+    // make another provider drop a lease it handed out.
+    "lease.closed",
 ];
 
 /// Method areas a first-party catalog assigns (§6.3): a third-party or private module never

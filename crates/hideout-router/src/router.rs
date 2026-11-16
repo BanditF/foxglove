@@ -37,6 +37,11 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// The most one message may be (§8.1).
 pub const MAX_MESSAGE: usize = 256 * 1024;
 
+/// `lease.closed` notices the router keeps for a provider that has no ready connection, sent
+/// at its next `module.ready` (§8.5, v1.14): the `restart` of every lease that was live when its
+/// last connection ended, and any close that came while it was starting. Past it the oldest go.
+pub const MAX_RESTART_CLOSES: usize = 1024;
+
 /// The consumer name of the hub's own panel host in `channel.create` (§5.4).
 pub const HOST_CONSUMER: &str = "hub.panel-host";
 
@@ -53,6 +58,7 @@ mod code {
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
     pub const DISCONNECTED: i64 = 2;
+    pub const BACKEND: i64 = 6;
     pub const TIMEOUT: i64 = 4;
     pub const BUSY: i64 = 3;
     pub const DENIED: i64 = 5;
@@ -366,6 +372,11 @@ pub struct Router {
     faults: HashMap<String, u32>,
     /// Leases by (provider module, lease id) (§8.5).
     leases: HashMap<(String, String), Lease>,
+    /// `lease.closed` notices (lease id, reason) waiting for a provider's next `module.ready`,
+    /// per module (§8.5, v1.14): `restart` for the leases that were live when its last
+    /// connection ended, and closes that came while no connection of it was ready. At most
+    /// [`MAX_RESTART_CLOSES`] per module.
+    restart_closes: HashMap<String, VecDeque<(String, String)>>,
     /// The supervisor's pid and exe-hash check (§7.5); `None` = tokens only (tests, lab).
     launch_check: Option<LaunchCheck>,
     /// The verified program image of each module connection (#1155-B), set at `initialize`.
@@ -430,6 +441,28 @@ fn denied(id: &Value, reason: Option<&str>) -> Value {
     error(id, code::DENIED, "denied", reason)
 }
 
+/// `lease.closed {lease, reason}` to one provider connection (§8.5).
+fn lease_closed_to(conn: ConnId, lease: &str, reason: &str, out: &mut Vec<Out>) {
+    out.push(Out::Send(
+        conn,
+        json!({"jsonrpc": "2.0", "method": hideout_contract::lease::LEASE_CLOSED,
+               "params": {"lease": lease, "reason": reason}}),
+    ));
+}
+
+/// A refusal carrying a §15 id in `data.id` (and the reason for the UI).
+fn refusal(id: &Value, code: i64, message: &str, data_id: &str, reason: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id,
+           "error": {"code": code, "message": message,
+                     "data": {"id": data_id, "reason": reason}}})
+}
+
+/// The string `lease` a call's params (or a result) name, if any (§8.5): a `lease` that isn't
+/// a string is not a lease to the hub (v1.14) and passes through unchecked.
+fn named_lease(params: &Value) -> Option<&str> {
+    params.get("lease").and_then(Value::as_str)
+}
+
 impl Router {
     pub fn new(settings: Settings, approve: Approver) -> Router {
         let mut r = Router {
@@ -449,6 +482,7 @@ impl Router {
             next_sub: 1,
             faults: HashMap::new(),
             leases: HashMap::new(),
+            restart_closes: HashMap::new(),
             launch_check: None,
             identity_lookup: None,
             identities: HashMap::new(),
@@ -1246,7 +1280,7 @@ impl Router {
                 self.fact_owners.retain(|r| r.module != id);
                 self.wanted.remove(&id);
                 self.channels.remove(&id);
-                self.leases.retain(|k, _| k.0 != id);
+                self.provider_gone(&id);
                 self.publish_provides(&id, &mut out);
                 out.push(Out::ModuleGone(id));
             }
@@ -1312,6 +1346,7 @@ impl Router {
         self.fact_owners.retain(|r| r.module != id);
         self.channels.remove(id);
         self.leases.retain(|k, _| k.0 != id);
+        self.restart_closes.remove(id);
         let prefix = format!("module.{id}.");
         let keys: Vec<String> = self
             .facts
@@ -1330,15 +1365,80 @@ impl Router {
         self.modules.contains_key(id)
     }
 
-    /// Tells `provider` a lease it handed out has ended (§8.5, v1.3).
-    fn lease_closed(&self, provider: &str, lease: &str, reason: &str, out: &mut Vec<Out>) {
-        if let Some(p) = self.ready_conn(provider) {
-            out.push(Out::Send(
-                p,
-                json!({"jsonrpc": "2.0", "method": "lease.closed",
-                       "params": {"lease": lease, "reason": reason}}),
-            ));
+    /// Tells `provider` a lease it handed out has ended (§8.5, v1.3). With no ready connection
+    /// of it (a new instance is starting), the notice waits for its `module.ready` (v1.14).
+    fn lease_closed(&mut self, provider: &str, lease: &str, reason: &str, out: &mut Vec<Out>) {
+        match self.ready_conn(provider) {
+            Some(p) => lease_closed_to(p, lease, reason, out),
+            None => self.keep_close(provider, vec![(lease.to_string(), reason.to_string())]),
         }
+    }
+
+    /// Keeps `lease.closed` notices for `module`'s next `module.ready` (§8.5, v1.14).
+    fn keep_close(&mut self, module: &str, closes: Vec<(String, String)>) {
+        let kept = self.restart_closes.entry(module.to_string()).or_default();
+        kept.extend(closes);
+        let over = kept.len().saturating_sub(MAX_RESTART_CLOSES);
+        if over > 0 {
+            kept.drain(..over);
+            log::warn!(
+                "router: {module}: {over} lease.closed notices dropped (over {MAX_RESTART_CLOSES})"
+            );
+        }
+    }
+
+    /// The provider `module`'s last connection ended (§8.5, v1.14): its live leases end with
+    /// it. Their holders are not told (a later call naming one answers `lease.unknown`); the
+    /// ids are kept for the module's next connection, which gets `lease.closed {reason:
+    /// "restart"}` for each at its `module.ready`.
+    fn provider_gone(&mut self, module: &str) {
+        let mut ended: Vec<String> = self
+            .leases
+            .keys()
+            .filter(|k| k.0 == module)
+            .map(|k| k.1.clone())
+            .collect();
+        if ended.is_empty() {
+            return;
+        }
+        ended.sort();
+        self.leases.retain(|k, _| k.0 != module);
+        let restart = hideout_contract::lease::reason::RESTART;
+        let closes = ended
+            .into_iter()
+            .map(|l| (l, restart.to_string()))
+            .collect();
+        self.keep_close(module, closes);
+    }
+
+    /// Whether `conn` holds `lease` at provider `module` (§8.5, v1.14).
+    fn holds(&self, conn: ConnId, module: &str, lease: &str) -> bool {
+        self.leases
+            .get(&(module.to_string(), lease.to_string()))
+            .is_some_and(|l| l.holder == conn)
+    }
+
+    /// A routed call naming a lease is forwarded only for its holder (§8.5, v1.14). `None` when
+    /// it may go on; else the refusal to send back. The id is not echoed (it may be anything).
+    fn lease_refusal(
+        &self,
+        conn: ConnId,
+        module: &str,
+        id: &Value,
+        params: &Value,
+    ) -> Option<Value> {
+        let lease = named_lease(params)?;
+        if self.holds(conn, module, lease) {
+            return None;
+        }
+        log::debug!("router: a call to {module} named a lease its caller doesn't hold; refused");
+        Some(refusal(
+            id,
+            code::INVALID_PARAMS,
+            "invalid params",
+            hideout_contract::lease::error_id::LEASE_UNKNOWN,
+            "That lease isn't yours or has ended.",
+        ))
     }
 
     fn module_conn(&self, id: &str) -> Option<ConnId> {
@@ -2271,6 +2371,11 @@ impl Router {
             let o = self.revalidate_grant();
             out.extend(o);
         }
+        // Leases that ended with the module's last connection, or while it was starting: this
+        // connection hears of them before any waiting call reaches it (§8.5, v1.14).
+        for (lease, reason) in self.restart_closes.remove(module).unwrap_or_default() {
+            lease_closed_to(conn, &lease, &reason, out);
+        }
         self.set_fact(&format!("module.{module}.state"), json!("running"), out);
         out.push(Out::Ready(module.to_string()));
         let mut keep = VecDeque::new();
@@ -2289,6 +2394,12 @@ impl Router {
                         q.caller,
                         error(&q.id, code::DISCONNECTED, "disconnected", None),
                     ));
+                    continue;
+                }
+                // Only a lease's holder names it (§8.5, v1.14); nobody held one at a module
+                // that wasn't running, so this refuses what the route already did.
+                if let Some(e) = self.lease_refusal(q.caller, module, &q.id, &q.params) {
+                    out.push(Out::Send(q.caller, e));
                     continue;
                 }
                 // The same caps as a live route (#1156 review): a burst held while the module
@@ -2366,31 +2477,7 @@ impl Router {
         match p.waiter {
             Waiter::Caller(c, id) => {
                 // A result carrying `lease` makes the caller its holder (§8.5, v1.3).
-                if let (Ok(r), Some(Who::Module { id: provider, .. })) =
-                    (&result, self.conns.get(&conn).map(|x| &x.who))
-                {
-                    if let (Some(lease), true) = (
-                        r.get("lease").and_then(Value::as_str),
-                        self.conns.contains_key(&c),
-                    ) {
-                        let (provider, lease) = (provider.clone(), lease.to_string());
-                        if provider == LEGACY_FOXGLOVE_ID
-                            && !self.routes.iter().any(|r| r.module == provider)
-                        {
-                            // No route covers the legacy module any more (the grant was taken
-                            // away while the call ran): the lease is ended, never kept (#1155-B).
-                            self.lease_closed(&provider, &lease, "revoked", out);
-                        } else {
-                            self.leases.insert(
-                                (provider, lease),
-                                Lease {
-                                    holder: c,
-                                    method: p.method.clone(),
-                                },
-                            );
-                        }
-                    }
-                }
+                let result = self.take_lease(conn, c, &p.method, result, out);
                 out.push(Out::Send(c, envelope(&id, result)))
             }
             Waiter::Channel { caller, id, nonce } => {
@@ -2407,8 +2494,89 @@ impl Router {
                 result: crate::channels::grant(result, &nonce, &self.provider(conn)),
             }),
             Waiter::Hub(tag) => out.push(Out::HubResult { tag, result }),
-            Waiter::Gone => {}
+            Waiter::Gone => {
+                // The caller left while the provider handed out a lease: nobody holds it, so
+                // it ends now (§8.5, v1.14), unless the provider reused an id another caller
+                // holds live (that holder keeps it, and its provider must not drop it).
+                if let Some(lease) = result.as_ref().ok().and_then(named_lease) {
+                    let provider = match self.conns.get(&conn).map(|c| &c.who) {
+                        Some(Who::Module { id, .. }) => id.clone(),
+                        _ => String::new(),
+                    };
+                    if hideout_contract::lease::valid_id(lease)
+                        && !self.leases.contains_key(&(provider, lease.to_string()))
+                    {
+                        lease_closed_to(
+                            conn,
+                            lease,
+                            hideout_contract::lease::reason::DISCONNECT,
+                            out,
+                        );
+                    }
+                }
+            }
         }
+    }
+
+    /// A provider's result for caller `c` (§8.5): a `lease` in it makes `c` the holder. Returns
+    /// what `c` gets: the result, or `lease.reused` when another connection holds that id.
+    fn take_lease(
+        &mut self,
+        provider_conn: ConnId,
+        c: ConnId,
+        method: &str,
+        result: Result<Value, Value>,
+        out: &mut Vec<Out>,
+    ) -> Result<Value, Value> {
+        let Ok(r) = &result else { return result };
+        let Some(Who::Module { id: provider, .. }) = self.conns.get(&provider_conn).map(|x| &x.who)
+        else {
+            return result;
+        };
+        let Some(lease) = named_lease(r) else {
+            return result;
+        };
+        let (provider, lease) = (provider.clone(), lease.to_string());
+        if !hideout_contract::lease::valid_id(&lease) {
+            // Not a lease to the hub (v1.14): passed on, never recorded or closed.
+            log::warn!(
+                "router: {provider} handed out a lease id that breaks the id rule; not kept"
+            );
+            return result;
+        }
+        let key = (provider.clone(), lease.clone());
+        if self.leases.get(&key).is_some_and(|l| l.holder != c) {
+            // The provider gave out a live id twice: the first holder keeps it, and the second
+            // caller is not made a holder of someone else's lease (v1.14).
+            log::warn!("router: {provider} handed out a lease id another caller holds; refused");
+            return Err(json!({
+                "code": code::BACKEND,
+                "message": "backend",
+                "data": {"id": hideout_contract::lease::error_id::LEASE_REUSED,
+                         "reason": "The provider handed out a lease that is already taken."}
+            }));
+        }
+        if !self.conns.contains_key(&c) {
+            // The caller is gone (a disconnect turns its waiter into a tombstone first, so this
+            // is belt and braces): nobody holds it.
+            let disconnect = hideout_contract::lease::reason::DISCONNECT;
+            lease_closed_to(provider_conn, &lease, disconnect, out);
+            return result;
+        }
+        if provider == LEGACY_FOXGLOVE_ID && !self.routes.iter().any(|r| r.module == provider) {
+            // No route covers the legacy module any more (the grant was taken away while the
+            // call ran): the lease is ended, never kept (#1155-B).
+            self.lease_closed(&provider, &lease, "revoked", out);
+            return result;
+        }
+        self.leases.insert(
+            key,
+            Lease {
+                holder: c,
+                method: method.to_string(),
+            },
+        );
+        result
     }
 
     /// Sends a call to `provider` on behalf of `waiter`.
@@ -2494,6 +2662,19 @@ impl Router {
         out: &mut Vec<Out>,
     ) {
         self.last_now = now;
+        // By-name params only (§8.5, v1.14): the lease check reads `lease` by name, so a call
+        // whose params are positional could carry another caller's lease past it.
+        if !(params.is_object() || params.is_null()) {
+            return out.push(Out::Send(
+                conn,
+                error(
+                    &id,
+                    code::INVALID_PARAMS,
+                    "invalid params",
+                    Some("A routed call's params must be an object."),
+                ),
+            ));
+        }
         let deadline = now + self.settings.call_timeout;
         let live = self
             .routes
@@ -2514,6 +2695,11 @@ impl Router {
         }
         if let Some(m) = &live {
             if let Some(p) = self.ready_conn(m) {
+                // A lease is named only by its holder (§8.5, v1.14): a forged, guessed, ended or
+                // another caller's id never reaches the provider.
+                if let Some(e) = self.lease_refusal(conn, m, &id, &params) {
+                    return out.push(Out::Send(conn, e));
+                }
                 // The per-caller bound first: a caller with MAX_INFLIGHT_PER_CALLER calls
                 // unanswered at this provider gets BUSY and nothing is forwarded (#1156 M2).
                 // Counted per caller module or tool, not per connection.
@@ -2524,7 +2710,7 @@ impl Router {
                 // The holder gives a lease back: the provider is told it ended (§8.5).
                 let released = method
                     .ends_with(".release")
-                    .then(|| params.get("lease").and_then(Value::as_str))
+                    .then(|| named_lease(&params))
                     .flatten()
                     .map(|l| (m.clone(), l.to_string()))
                     .filter(|k| self.leases.get(k).is_some_and(|l| l.holder == conn));
@@ -2571,6 +2757,11 @@ impl Router {
                 error(&id, code::METHOD_NOT_FOUND, "method not found", None),
             ));
         };
+        // The provider isn't running, so nobody holds a lease there (they ended with its
+        // connection): a call naming one is refused, and starts nothing (§8.5, v1.14).
+        if let Some(e) = self.lease_refusal(conn, &owner, &id, &params) {
+            return out.push(Out::Send(conn, e));
+        }
         let entry = &self.modules[&owner];
         if entry.activate_on_call {
             // The cap first: a capped caller starts nothing. Counted per caller module (or
