@@ -3371,3 +3371,121 @@ fn renders_the_permission_dialog_for_review() {
         save_png(&format!("built-permission-granted-{name}.png"), w, h, rgba);
     }
 }
+
+/// PROTOTYPE review images for the #1238 UX plan ("asks for more" header). Not for merge.
+#[test]
+fn renders_the_grants_more_header_for_review() {
+    use crate::permission_dialog::{
+        header, Group, HeaderKind, ItemWord, ListItem, PermDialog, Reason, Section, SectionItem,
+    };
+    use crate::permission_dialog_ui::{perm_dialog_ui, perm_header_ui, section_ui};
+    let old: [(&str, &str, Group); 13] = [
+        ("facts.write:keyboard.*", "Share your keyboard's status in Hideout", Group::ShareStatus),
+        ("facts.read:module.*", "See which modules are installed and running", Group::ShareStatus),
+        ("provide:health.read", "The keyboard's health report", Group::AnswerQuestions),
+        ("provide:lights.page", "What the Lights page shows", Group::AnswerQuestions),
+        ("provide:scenes.page", "Which scenes and wallpaper looks are listed", Group::AnswerQuestions),
+        ("provide:overlay.window", "Where the layer overlay window is", Group::AnswerQuestions),
+        ("provide:overlay.shown", "Whether the layer overlay is on", Group::AnswerQuestions),
+        ("provide:tray.panel", "Whether the tray panel is open", Group::AnswerQuestions),
+        ("provide:pc_lighting.list", "Your PC's lighting zones", Group::AnswerQuestions),
+        ("provide:overlay.restore", "Bring the layer overlay back on screen", Group::MakeChanges),
+        ("provide:overlay.set_shown", "Turn the layer overlay on or off", Group::MakeChanges),
+        ("provide:tray.set_panel", "Open or close the tray panel", Group::MakeChanges),
+        ("provide:pc_lighting.set_zone", "Change a PC lighting zone's colour", Group::MakeChanges),
+    ];
+    let new: [(&str, &str, Group); 3] = [
+        ("provide:wallpaper-engine.pause", "Pause your live wallpaper", Group::MakeChanges),
+        ("provide:wallpaper-engine.release", "Let your live wallpaper play again", Group::MakeChanges),
+        ("provide:wallpaper-engine.status", "Whether your live wallpaper is paused", Group::AnswerQuestions),
+    ];
+    let section = |n_new: usize| {
+        let mut items: Vec<SectionItem> = old
+            .iter()
+            .map(|(raw, line, g)| SectionItem { raw: (*raw).into(), line: (*line).into(), group: *g, word: ItemWord::Allowed })
+            .chain(new.iter().take(n_new).map(|(raw, line, g)| SectionItem {
+                raw: (*raw).into(), line: (*line).into(), group: *g, word: ItemWord::Waits,
+            }))
+            .collect();
+        items.sort_by_key(|i| (i.group, i.raw.clone()));
+        Section {
+            id: "foxglove".into(),
+            name: "Foxglove".into(),
+            items,
+            allowed_on: Some("Allowed in Hideout on 13 Nov 2026".into()),
+            history: vec![if n_new == 0 {
+                "Updated to 0.3.2 on 16 Nov 2026. Your OK stayed.".to_string()
+            } else {
+                format!("Updated to 0.3.2 on 16 Nov 2026. Your OK stayed; {n_new} new thing{} wait{} for it.",
+                    if n_new == 1 { "" } else { "s" }, if n_new == 1 { "s" } else { "" })
+            }],
+            can_change: true,
+            note: None,
+        }
+    };
+    let page = |name: &str, dark: bool, hdr: Option<(usize, &str)>, n_new: usize, open: bool, h: u32| {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark { ThemeChoice::Dark } else { ThemeChoice::Light };
+        let s = section(n_new);
+        let w = 760u32;
+        let Some(rgba) = rasterise(w, h, |ctx| {
+            set_theme(ctx, choice);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label(egui::RichText::new("Modules").size(24.0).strong());
+                ui.add_space(8.0);
+                if let Some(c) = hdr {
+                    perm_header_ui(ui, &t, &header(HeaderKind::More, "foxglove", "Foxglove", Some(c)));
+                    ui.add_space(12.0);
+                }
+                section_ui(ui, &t, &s, open);
+            });
+        }) else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        save_png(name, w, h, rgba);
+    };
+    for (dark, tag) in [(true, "dark"), (false, "light")] {
+        page(&format!("grants-1-header-many-{tag}.png"), dark, Some((3, "Pause your live wallpaper")), 3, true, 900);
+    }
+    page("grants-2-header-one-dark.png", true, Some((1, "Pause your live wallpaper")), 1, false, 330);
+    page("grants-4-not-now-dark.png", true, None, 3, true, 820);
+    page("grants-5-answered-dark.png", true, None, 0, false, 260);
+    // The Review… dialog: only what the update added, each marked New.
+    for (dark, tag) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark { ThemeChoice::Dark } else { ThemeChoice::Light };
+        let mut items: Vec<ListItem> = new
+            .iter()
+            .map(|(raw, line, g)| ListItem {
+                raw: (*raw).into(), line: (*line).into(), group: *g, allowable: true, sensitive: false,
+                reason: None, checked: true, confirmed: false, new: true,
+            })
+            .collect();
+        items.sort_by_key(|i| (i.group, i.raw.clone()));
+        let mut d = PermDialog {
+            id: "foxglove".into(),
+            name: "Foxglove".into(),
+            code: "5be0c7d21a9f4e36".into(),
+            path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+            items,
+            reason: Some(Reason::More),
+            keyboard: None,
+            removed: Vec::new(),
+            error: None,
+        };
+        let (w, h) = (760u32, 720u32);
+        let Some(rgba) = rasterise(w, h, |ctx| {
+            set_theme(ctx, choice);
+            ctx.style_mut(|s| s.animation_time = 0.0);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label(egui::RichText::new("Modules").size(24.0).strong());
+                perm_header_ui(ui, &t, &header(HeaderKind::More, "foxglove", "Foxglove", Some((3, "Pause your live wallpaper"))));
+            });
+            perm_dialog_ui(ctx, &t, &mut d, true);
+        }) else {
+            return;
+        };
+        save_png(&format!("grants-3-review-{tag}.png"), w, h, rgba);
+    }
+}

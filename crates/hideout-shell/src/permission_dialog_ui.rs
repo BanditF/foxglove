@@ -352,6 +352,7 @@ fn word_colour(t: &Tokens, w: ItemWord) -> egui::Color32 {
     c(match w {
         ItemWord::Allowed => t.ok,
         ItemWord::Off => t.text_muted,
+        ItemWord::Waits => t.attention,
         ItemWord::CantBeAllowed => t.text,
     })
 }
