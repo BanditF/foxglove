@@ -198,7 +198,7 @@ try {
     $prJson = Join-Path $sr 'prs.json'
     Set-Content $prJson ('[{"number":7,"title":"t","isDraft":false,"updatedAt":"' + (Get-Date).AddHours(-6).ToUniversalTime().ToString('o') + '"}]')
     $env:FOXGLOVE_OPS_GAME_PATHS = ''; $env:FOXGLOVE_OPS_GPU_UTIL = '5'
-    $sa = @('-NoProfile', '-File', (Join-Path $here 'stall-check.ps1'), '-Root', $sr, '-ProjectDir', $sp, '-GitDir', $sg, '-PrFile', $prJson, '-JobsJson', '[]', '-FreeGB', '400')
+    $sa = @('-NoProfile', '-File', (Join-Path $here 'stall-check.ps1'), '-Root', $sr, '-ProjectDir', $sp, '-GitDir', $sg, '-PrFile', $prJson, '-JobsJson', '[]', '-FreeGB', '400', '-NoGh')
     $o1 = & $ps @sa
     Check 'stall script: run 1 exits 0, writes status' ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $st 'stall-status.json')))
     $j1 = Get-Content -Raw (Join-Path $st 'stall-status.json') | ConvertFrom-Json
@@ -216,7 +216,9 @@ try {
     $j4 = Get-Content -Raw (Join-Path $st 'stall-status.json') | ConvertFrom-Json
     Check 'stall script: game running -> none, alarm file cleared' ($j4.action -eq 'none' -and $j4.game_running -and -not (Test-Path (Join-Path $st 'stall-alarm.txt')))
     $env:FOXGLOVE_OPS_GAME_PATHS = ''
-    Check 'stall script: no network or GUI calls' (-not ((Get-Content -Raw (Join-Path $here 'stall-check.ps1')) -match '(?m)^[^#]*(\bgh pr|\bgh issue|Invoke-WebRequest|Invoke-RestMethod|notepad)'))
+    Check 'stall script: no web calls or GUI' (-not ((Get-Content -Raw (Join-Path $here 'stall-check.ps1')) -match '(?m)^[^#]*(Invoke-WebRequest|Invoke-RestMethod|notepad)'))
+    $qb = "intro`n`n| # | Item | What to do | Time | Blocks |`n|---|---|---|---|---|`n| D | a | b | 1 min | x |`n| AB | c | d | 2 min | y |`n`nLabels: x"
+    Check 'stall script: queue count counts the #90 table rows only' ((Get-QueueCount $qb) -eq 2)
     $wi = & $ps -NoProfile -File (Join-Path $here 'register-stall-check.ps1') -WhatIf
     Check 'register-stall-check: -WhatIf registers nothing' ($LASTEXITCODE -eq 0 -and "$wi" -match 'would write' -and -not (Test-Path (Join-Path $here 'stall-check-hidden.vbs')))
 

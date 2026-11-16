@@ -2,7 +2,7 @@
 # registers nothing; a person (or On-call) runs it once:
 #   powershell -File scripts\ops\register-stall-check.ps1 [-Unregister] [-WhatIf]
 # The task runs stall-check.ps1 through wscript and a hidden-window launcher (stall-check-hidden.vbs,
-# written next to this script), as the current user, 5 min limit, no network, no GUI.
+# written next to this script), as the current user, 5 min limit, two bounded gh reads, no GUI.
 # -WhatIf prints what would be registered and changes nothing.
 param([string]$TaskName = 'Foxglove Stall Check', [int]$EveryMin = 60, [switch]$Unregister, [switch]$WhatIf)
 $script = Join-Path $PSScriptRoot 'stall-check.ps1'
@@ -21,5 +21,5 @@ $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -Repetiti
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force `
-    -Description 'Foxglove stall check (#1126): writes worktrees\_tools\stall-status.json, no network, no GUI.' | Out-Null
+    -Description 'Foxglove stall check (#1126): writes worktrees\_tools\stall-status.json, two bounded gh reads, no GUI.' | Out-Null
 Write-Host "registered '$TaskName' every $EveryMin min"
