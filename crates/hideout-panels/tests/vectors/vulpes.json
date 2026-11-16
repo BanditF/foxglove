@@ -160,7 +160,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -699,7 +699,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -884,7 +884,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -1069,7 +1069,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -1254,7 +1254,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -1398,7 +1398,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -1558,7 +1558,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -1868,7 +1868,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -2040,7 +2040,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -2374,7 +2374,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
@@ -2532,7 +2532,7 @@
                   {
                     "id": "web-hint",
                     "props": {
-                      "text": "Start the web UI first"
+                      "text": "Start the web UI from Arete first."
                     },
                     "type": "label"
                   }
