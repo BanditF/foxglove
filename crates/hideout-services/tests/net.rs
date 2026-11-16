@@ -53,13 +53,43 @@ fn hub(modules: &[(&str, Vec<String>)], caps: Caps) -> (Hub, Broker, Receiver<Ou
     (hub, broker, rx)
 }
 
-/// A free loopback port (bound and let go).
+/// A loopback port for the broker to listen on (TCP and UDP both).
+///
+/// Not an OS-assigned ephemeral port: the broker binds with exclusive use, and on Windows that
+/// bind fails with WSAEACCES (os error 10013) when anything else touches the port in the gap
+/// between "let go" and the broker's bind: another gate's outbound connection, which draws from
+/// the same dynamic range (49152 and up), or a range Windows reserves (Hyper-V, WinNAT). So the
+/// port comes from below the dynamic range, from a spread no two gates share by chance
+/// (process id and a counter), and is probed on both protocols; a port that is excluded or in
+/// use is skipped and the next one tried. Each port is handed out once per process.
 fn free_port() -> u16 {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Mutex;
+    const LOW: u32 = 20_000;
+    const SPAN: u32 = 25_000; // 20000..45000, under every dynamic range in use
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    static GIVEN: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+    let start = {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        std::process::id().wrapping_mul(2_654_435_761) ^ t
+    };
+    for _ in 0..SPAN {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let port = (LOW + start.wrapping_add(n.wrapping_mul(7919)) % SPAN) as u16;
+        let mut given = GIVEN.lock().unwrap();
+        if given.contains(&port) {
+            continue;
+        }
+        let tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, port));
+        let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, port));
+        if tcp.is_ok() && udp.is_ok() {
+            given.push(port);
+            return port;
+        }
+    }
+    panic!("no free loopback port in {LOW}..{}", LOW + SPAN);
 }
 
 /// An echo server; `ended` gets one message per connection that reached its end of stream.
