@@ -23,8 +23,8 @@ class Provide(unittest.TestCase):
         self.conn.__exit__ = Mock(return_value=False)
         self.pipe.accept_nonce.return_value = self.conn
         self.patches = [
-            patch("hideout_module.channel.Consumer", return_value=self.consumer),
-            patch("hideout_module.channel.ChannelPipe.create", return_value=self.pipe),
+            patch("hideout_module.channel.Consumer", create=True, return_value=self.consumer),
+            patch("hideout_module.channel.ChannelPipe", create=True, **{"create.return_value": self.pipe}),
         ]
         for p in self.patches:
             p.start()
@@ -54,7 +54,7 @@ class Provide(unittest.TestCase):
         self.conn.read_frame.return_value = b"\xff"
         hc.provide({"consumer_pid": 1, "nonce": "x"})
         last_call = self.say.call_args_list[-1]
-        self.assertEqual(last_call[1], {"accepted": True, "end": b"\xff"})
+        self.assertEqual(last_call[1], {"accepted": True, "end": "ff"})
 
 
 class ProvideError(unittest.TestCase):
@@ -64,8 +64,8 @@ class ProvideError(unittest.TestCase):
         self.pipe = Mock()
         self.conn = Mock()
         self.patches = [
-            patch("hideout_module.channel.Consumer", return_value=self.consumer),
-            patch("hideout_module.channel.ChannelPipe.create", return_value=self.pipe),
+            patch("hideout_module.channel.Consumer", create=True, return_value=self.consumer),
+            patch("hideout_module.channel.ChannelPipe", create=True, **{"create.return_value": self.pipe}),
         ]
         for p in self.patches:
             p.start()
@@ -99,7 +99,7 @@ class Consume(unittest.TestCase):
         frames = [bytes([i]) * 3 for i in range(5)]
         self.conn.read_frame.side_effect = list(frames) + [None]
         self.patches = [
-            patch("hideout_module.channel.connect_grant", return_value=self.conn),
+            patch("hideout_module.channel.connect_grant", create=True, return_value=self.conn),
         ]
         for p in self.patches:
             p.start()
@@ -123,7 +123,7 @@ class ConsumeError(unittest.TestCase):
 
     def setUp(self):
         self.patches = [
-            patch("hideout_module.channel.connect_grant", side_effect=ValueError("bad pipe")),
+            patch("hideout_module.channel.connect_grant", create=True, side_effect=ValueError("bad pipe")),
         ]
         for p in self.patches:
             p.start()
