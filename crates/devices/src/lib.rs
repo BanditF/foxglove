@@ -81,7 +81,7 @@ pub trait Backend: Send + Sync {
 }
 
 /// An open device with optional capability interfaces.
-pub trait Device: Send {
+pub trait Device: Send + Sync {
     /// Returns the identity and discovery metadata.
     fn info(&self) -> &DeviceInfo;
 

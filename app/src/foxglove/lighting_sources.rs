@@ -24,7 +24,7 @@
 // The providers register from H2.3's module wiring; until then only the tests call this.
 #![allow(dead_code)]
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use foxglove_devices::{
     BackendId, Caps, Device, DeviceError, DeviceId, DeviceInfo, DeviceKind, Effect, Lighting,
@@ -34,9 +34,9 @@ use foxglove_devices::{
 use super::pc_lights::hsv_rgb;
 use super::scene_lamps::LampDevice;
 
-static EXTRA: Mutex<Vec<Box<dyn Device>>> = Mutex::new(Vec::new());
+static EXTRA: Mutex<Vec<Arc<dyn Device>>> = Mutex::new(Vec::new());
 
-fn extra() -> std::sync::MutexGuard<'static, Vec<Box<dyn Device>>> {
+fn extra() -> std::sync::MutexGuard<'static, Vec<Arc<dyn Device>>> {
     EXTRA.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -45,7 +45,7 @@ pub fn register(device: Box<dyn Device>) {
     let mut all = extra();
     let id = device.info().id.clone();
     all.retain(|d| d.info().id != id);
-    all.push(device);
+    all.push(Arc::from(device));
 }
 
 /// Forgets the device `id` (unplugged). Its leases end through the usual hand-back.
@@ -55,8 +55,12 @@ pub fn unregister(id: &str) {
 
 /// Runs `f` on the registered device `id`.
 pub fn with_device<R>(id: &str, f: impl FnOnce(&dyn Device) -> R) -> Option<R> {
-    let all = extra();
-    let d = all.iter().find(|d| d.info().id.to_string() == id)?;
+    // The registry's lock is not held while `f` runs: `f` takes the arbiter's, and the arbiter
+    // calls in here with its own held (a lease and a hand-back would deadlock).
+    let d = extra()
+        .iter()
+        .find(|d| d.info().id.to_string() == id)
+        .cloned()?;
     Some(f(d.as_ref()))
 }
 
