@@ -9,7 +9,7 @@ use std::sync::mpsc;
 
 use hideout_registry::keyboard::{canonical_path, GrantState, KeyboardState, VoidReason};
 use hideout_registry::Registry;
-use hideout_router::server::Hub;
+use hideout_router::server::{folder_suffix, Hub};
 use hideout_router::{Router, Settings};
 use hideout_supervisor::driver::Supervisor;
 use hideout_supervisor::win::Process;
@@ -17,10 +17,14 @@ use hideout_supervisor::win::Process;
 const NOW: &str = "2026-11-12T10:00:00Z";
 const ID: &str = "foxglove";
 
-fn hub() -> Hub {
+/// The hub names its jobs by its folder (#1010): without the folder suffix every concurrent
+/// gate would share the default `foxglove` job names (#1207).
+fn hub(home: &Path) -> Hub {
     let router = Router::new(Settings::default(), Box::new(|_, asked| asked.to_vec()));
     let (events, _rx) = mpsc::channel();
-    Hub::new(router, events)
+    let hub = Hub::new(router, events);
+    hub.set_folder_suffix(&folder_suffix(home));
+    hub
 }
 
 /// A hub folder with the adopted `foxglove` (a ping copy, enabled) and its exe path.
@@ -52,7 +56,7 @@ fn home_with(tag: &str) -> (PathBuf, PathBuf) {
 }
 
 fn run_once(home: &Path) -> Vec<u32> {
-    let sup = Supervisor::start(home, hub());
+    let sup = Supervisor::start(home, hub(home));
     let pid = sup.pid(ID);
     if let Some(p) = pid {
         let p = Process::open(p).unwrap();
@@ -144,7 +148,7 @@ fn a_record_for_another_path_is_void_even_with_the_right_hash() {
 #[test]
 fn the_running_program_cannot_be_overwritten_renamed_or_deleted() {
     let (home, exe) = home_with("pinned");
-    let sup = Supervisor::start(&home, hub());
+    let sup = Supervisor::start(&home, hub(&home));
     let pid = sup.pid(ID).expect("not started");
     assert!(std::fs::write(&exe, b"x").is_err(), "overwritten");
     assert!(

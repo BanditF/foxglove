@@ -207,12 +207,12 @@ fn channel_run(
 
 #[test]
 fn a_contained_consumer_reads_a_contained_providers_channel() {
-    const PROV: &str = "example.lab.acch-prov";
-    const CONS: &str = "example.lab.acch-cons";
-    let (prov_pid, prov_sid, _, cons_log, prov_log) = channel_run("both", PROV, "", CONS);
+    let prov = format!("example.lab.acch-prov-{}", std::process::id());
+    let cons = format!("example.lab.acch-cons-{}", std::process::id());
+    let (prov_pid, prov_sid, _, cons_log, prov_log) = channel_run("both", &prov, "", &cons);
     let prov_sid = prov_sid.expect("the provider runs in an AppContainer");
     assert!(
-        cons_log.contains(&format!("probe: channel frame: from {PROV}")),
+        cons_log.contains(&format!("probe: channel frame: from {prov}")),
         "consumer: {cons_log}\nprovider: {prov_log}"
     );
     // Its pipe is in its own namespace, and the grant named its pid.
@@ -228,13 +228,13 @@ fn a_contained_consumer_reads_a_contained_providers_channel() {
 
 #[test]
 fn a_contained_consumer_reads_a_channel_from_outside_a_container() {
-    const PROV: &str = "example.lab.acch-out";
-    const CONS: &str = "example.lab.acch-in";
+    let prov = format!("example.lab.acch-out-{}", std::process::id());
+    let cons = format!("example.lab.acch-in-{}", std::process::id());
     // `net`, granted, keeps the provider outside (§7.7).
-    let (prov_pid, prov_sid, _, cons_log, prov_log) = channel_run("mixed", PROV, "\"net\"", CONS);
+    let (prov_pid, prov_sid, _, cons_log, prov_log) = channel_run("mixed", &prov, "\"net\"", &cons);
     assert_eq!(prov_sid, None, "the provider runs outside");
     assert!(
-        cons_log.contains(&format!("probe: channel frame: from {PROV}")),
+        cons_log.contains(&format!("probe: channel frame: from {prov}")),
         "consumer: {cons_log}\nprovider: {prov_log}"
     );
     assert!(
@@ -249,13 +249,14 @@ fn a_contained_consumer_reads_a_channel_from_outside_a_container() {
 
 #[test]
 fn a_stdio_module_runs_contained() {
-    const ID: &str = "example.lab.acch-stdio";
+    let id = format!("example.lab.acch-stdio-{}", std::process::id());
+    let id = id.as_str();
     let outside = std::env::temp_dir().join(format!("hideout-acch-outside-{}", std::process::id()));
     std::fs::write(&outside, "the user's").unwrap();
     let lab = lab(
         "stdio",
         &[Spec {
-            id: ID,
+            id,
             rest: format!(
                 "transport = \"stdio\"\napi = {{ foxglove = \"1.2\" }}\n\
                  permissions = [\"lighting.write\"]\nrun = [\"probe.exe\", \"--stdio\", '{}']",
@@ -264,18 +265,18 @@ fn a_stdio_module_runs_contained() {
             on: true,
         }],
     );
-    let up = lab.until(|o| matches!(o, Out::Ready(m) if m == ID));
-    let pid = lab.sup.pid(ID);
+    let up = lab.until(|o| matches!(o, Out::Ready(m) if m == id));
+    let pid = lab.sup.pid(id);
     let sid = in_container(pid);
     let guests = lab.hub.pipe_guests();
     // The probe wrote its lines and its file before it connected.
-    let data = installed(&lab.home, ID).map(|d| d.join("data").join("probe.txt"));
+    let data = installed(&lab.home, id).map(|d| d.join("data").join("probe.txt"));
     let wrote = data.as_ref().is_some_and(|d| d.is_file());
-    let log = lab.log(ID);
+    let log = lab.log(id);
     lab.finish();
     let _ = std::fs::remove_file(&outside);
     assert!(up, "the bridged module never got ready; its log: {log}");
-    assert_eq!(sid, sandbox::profile_sid(ID), "in its own AppContainer");
+    assert_eq!(sid, sandbox::profile_sid(id), "in its own AppContainer");
     assert!(sid.is_some(), "not contained");
     assert!(
         guests.is_empty(),

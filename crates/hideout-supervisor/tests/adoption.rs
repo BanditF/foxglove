@@ -91,14 +91,15 @@ fn hub_dies(sup: Supervisor) {
 
 #[test]
 fn a_restarted_hub_takes_the_module_back_and_starts_no_second_one() {
-    const ID: &str = "example.lab.adopt";
-    let (home, exe) = home_with(ID);
+    let id = format!("example.lab.adopt-{}", std::process::id());
+    let id = id.as_str();
+    let (home, exe) = home_with(id);
     let mut reaper = Reaper::default();
 
     let sup = Supervisor::start(&home, hub());
-    let pid = sup.pid(ID).expect("the module was not started");
+    let pid = sup.pid(id).expect("the module was not started");
     let first = reaper.hold(pid);
-    let rec = Instances::load(&home).modules[ID].clone();
+    let rec = Instances::load(&home).modules[id].clone();
     assert_eq!(rec.pid, pid);
     assert_eq!(rec.started, Some(first.started().unwrap()));
     assert!(rec.exe.ends_with("ping.exe") && rec.exe == exe);
@@ -111,16 +112,16 @@ fn a_restarted_hub_takes_the_module_back_and_starts_no_second_one() {
     );
     assert!(first.running());
     // The state file survives the hub.
-    assert_eq!(Instances::load(&home).modules[ID], rec);
+    assert_eq!(Instances::load(&home).modules[id], rec);
 
     let hub2 = hub();
     let sup2 = Supervisor::start(&home, hub2.clone());
-    assert_eq!(sup2.pid(ID), Some(pid), "started a second instance");
-    assert_eq!(state(&hub2, ID).as_deref(), Some("starting"));
+    assert_eq!(sup2.pid(id), Some(pid), "started a second instance");
+    assert_eq!(state(&hub2, id).as_deref(), Some("starting"));
     assert!(hub2.read(|r| r
-        .fact(&format!("module.{ID}.restart"))
+        .fact(&format!("module.{id}.restart"))
         .is_none_or(|v| v.is_null())));
-    let now = Instances::load(&home).modules[ID].clone();
+    let now = Instances::load(&home).modules[id].clone();
     assert_eq!(
         (now.pid, now.started, &now.token),
         (pid, rec.started, &rec.token)
@@ -137,22 +138,23 @@ fn a_restarted_hub_takes_the_module_back_and_starts_no_second_one() {
 
 #[test]
 fn our_process_with_a_changed_exe_is_ended_and_started_fresh() {
-    const ID: &str = "example.lab.orphan";
-    let (home, _) = home_with(ID);
+    let id = format!("example.lab.orphan-{}", std::process::id());
+    let id = id.as_str();
+    let (home, _) = home_with(id);
     let mut reaper = Reaper::default();
 
     let sup = Supervisor::start(&home, hub());
-    let pid = sup.pid(ID).expect("the module was not started");
+    let pid = sup.pid(id).expect("the module was not started");
     let first = reaper.hold(pid);
     hub_dies(sup);
     // The record's hash no longer matches the running exe.
     let mut inst = Instances::load(&home);
-    inst.modules.get_mut(ID).unwrap().sha256 = "0".repeat(64);
+    inst.modules.get_mut(id).unwrap().sha256 = "0".repeat(64);
     inst.save(&home).unwrap();
 
     let sup2 = Supervisor::start(&home, hub());
     assert_eq!(first.wait().unwrap(), 1, "the orphan was not ended");
-    let fresh = sup2.pid(ID).expect("no fresh instance");
+    let fresh = sup2.pid(id).expect("no fresh instance");
     reaper.hold(fresh);
     assert_ne!(fresh, pid);
     drop(sup2);
@@ -162,8 +164,9 @@ fn our_process_with_a_changed_exe_is_ended_and_started_fresh() {
 
 #[test]
 fn a_reused_pid_is_left_alone_and_the_module_starts_fresh() {
-    const ID: &str = "example.lab.reuse";
-    let (home, exe) = home_with(ID);
+    let id = format!("example.lab.reuse-{}", std::process::id());
+    let id = id.as_str();
+    let (home, exe) = home_with(id);
     let mut reaper = Reaper::default();
 
     // A process at the recorded pid, same exe, but started at another time than recorded: not
@@ -177,7 +180,7 @@ fn a_reused_pid_is_left_alone_and_the_module_starts_fresh() {
     let real = other.started().unwrap();
     let mut inst = Instances::default();
     inst.modules.insert(
-        ID.into(),
+        id.into(),
         hideout_supervisor::instances::Record {
             instance: 1,
             pid: stranger.id(),
@@ -191,7 +194,7 @@ fn a_reused_pid_is_left_alone_and_the_module_starts_fresh() {
     inst.save(&home).unwrap();
 
     let sup = Supervisor::start(&home, hub());
-    let fresh = sup.pid(ID).expect("no fresh instance");
+    let fresh = sup.pid(id).expect("no fresh instance");
     reaper.hold(fresh);
     assert_ne!(fresh, stranger.id());
     assert!(reaper.0[0].running(), "a process that isn't ours was ended");
@@ -206,8 +209,9 @@ fn a_reused_pid_is_left_alone_and_the_module_starts_fresh() {
 /// in the same hub, with no restart.
 #[test]
 fn start_normally_leaves_safe_mode_and_starts_the_module() {
-    const ID: &str = "example.lab.safe";
-    let (home, _) = home_with(ID);
+    let id = format!("example.lab.safe-{}", std::process::id());
+    let id = id.as_str();
+    let (home, _) = home_with(id);
     let mut reaper = Reaper::default();
     let mut reg = Registry::open(&home, true).unwrap();
     reg.set_safe_mode(true).unwrap();
@@ -222,23 +226,23 @@ fn start_normally_leaves_safe_mode_and_starts_the_module() {
     let hub = Hub::new(router, events);
     let sup = Supervisor::start(&home, hub.clone());
     assert!(sup.safe_mode());
-    assert_eq!(sup.pid(ID), None, "safe mode started a module");
+    assert_eq!(sup.pid(id), None, "safe mode started a module");
     let safe = |h: &Hub| h.read(|r| r.fact("hub.safe_mode").and_then(|v| v.as_bool()));
     assert_eq!(safe(&hub), Some(true));
 
     sup.start_normally();
-    let pid = sup.pid(ID).expect("Start normally didn't start the module");
+    let pid = sup.pid(id).expect("Start normally didn't start the module");
     reaper.hold(pid);
     assert!(!sup.safe_mode());
     assert_eq!(safe(&hub), Some(false));
-    assert_eq!(state(&hub, ID).as_deref(), Some("starting"));
+    assert_eq!(state(&hub, id).as_deref(), Some("starting"));
     assert!(
         !Registry::open(&home, true).unwrap().hub.safe_mode(),
         "the flag is still in hideout.toml"
     );
     // A second press starts no second instance.
     sup.start_normally();
-    assert_eq!(sup.pid(ID), Some(pid));
+    assert_eq!(sup.pid(id), Some(pid));
     drop(sup);
     drop(reaper);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
@@ -252,8 +256,9 @@ fn start_normally_leaves_safe_mode_and_starts_the_module() {
 fn a_search_round_starts_its_module_and_stop_changes_nothing() {
     use hideout_supervisor::bisect::{words, Act, Exit, Kind, Search};
     use hideout_supervisor::finder::Finder;
-    const ID: &str = "example.lab.bisect";
-    let (home, _) = home_with(ID);
+    let id = format!("example.lab.bisect-{}", std::process::id());
+    let id = id.as_str();
+    let (home, _) = home_with(id);
     let mut reaper = Reaper::default();
     Registry::open(&home, true)
         .unwrap()
@@ -272,9 +277,9 @@ fn a_search_round_starts_its_module_and_stop_changes_nothing() {
     assert_eq!(finder.banner().find, Some(words::check_one("Lab")));
 
     finder.begin();
-    let pid = sup.pid(ID).expect("the round didn't start its module");
+    let pid = sup.pid(id).expect("the round didn't start its module");
     reaper.hold(pid);
-    assert_eq!(state(&hub, ID).as_deref(), Some("starting"));
+    assert_eq!(state(&hub, id).as_deref(), Some("starting"));
     let v = finder.view().unwrap();
     assert_eq!(
         (v.kind, v.title.as_str()),
@@ -296,29 +301,29 @@ fn a_search_round_starts_its_module_and_stop_changes_nothing() {
     assert!(!finder.searching());
     assert!(finder.banner().stopped);
     assert!(!Search::path(&home).exists(), "Stop left the progress file");
-    assert_eq!(state(&hub, ID), None, "the module still runs after Stop");
+    assert_eq!(state(&hub, id), None, "the module still runs after Stop");
     assert!(sup.safe_mode(), "Stop left safe mode");
     let reg = Registry::open(&home, true).unwrap();
     assert!(
-        reg.hub.enabled(ID) && reg.hub.safe_mode(),
+        reg.hub.enabled(id) && reg.hub.safe_mode(),
         "Stop changed what is saved"
     );
 
     // Again; this time it closes (the user says so): found, nothing on until the choice.
     finder.begin();
-    if let Some(pid) = sup.pid(ID) {
+    if let Some(pid) = sup.pid(id) {
         reaper.hold(pid);
     }
     finder.act(Act::Closed);
     let v = finder.view().unwrap();
     assert_eq!(v.kind, Kind::Found);
     assert_eq!(v.title, "Lab seems to make Hideout close.");
-    assert_eq!(state(&hub, ID), None, "the module still runs at the result");
-    assert!(Registry::open(&home, true).unwrap().hub.enabled(ID));
+    assert_eq!(state(&hub, id), None, "the module still runs at the result");
+    assert!(Registry::open(&home, true).unwrap().hub.enabled(id));
     finder.act(Act::TurnOff);
     assert!(!finder.searching());
     let reg = Registry::open(&home, true).unwrap();
-    assert!(!reg.hub.enabled(ID), "Turn off wasn't saved");
+    assert!(!reg.hub.enabled(id), "Turn off wasn't saved");
     assert!(
         !reg.hub.safe_mode(),
         "the result's choice didn't leave safe mode"

@@ -28,7 +28,7 @@ impl Drop for Reaper {
 
 fn adopted_home(name: &str) -> (PathBuf, PathBuf, String) {
     // One id per test: the job name is per user, module and instance.
-    let id = format!("example.lab.perm{name}");
+    let id = format!("example.lab.perm{name}-{}", std::process::id());
     std::env::set_var("HIDEOUT_DEV_UNSIGNED", "1");
     let base = std::env::temp_dir().join(format!("hideout-perm-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
@@ -145,7 +145,16 @@ fn declining_everything_still_lets_the_module_start_and_a_swapped_program_asks_a
     // The program file is replaced: the grant is void and turn_on asks again.
     let mut bytes = std::fs::read(&exe).unwrap();
     bytes.extend_from_slice(b"changed");
-    let _ = std::fs::write(&exe, bytes);
+    // The killed process may still hold its image for a moment on a busy PC (#1207): the write
+    // must land, or the test would check an unchanged program.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::write(&exe, &bytes).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the program file stayed locked"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     let e = sup.turn_on(id).unwrap_err();
     assert!(e.contains("needs your OK"), "{e}");
     drop(sup);
