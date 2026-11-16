@@ -1,6 +1,8 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.15** (v1.14 plus a cap on the leases one caller holds at one
+Status: spec, contract version **1.16** (v1.15 plus the tray menu's quick actions: an `action`
+panel is a tray menu item, a press on a cold module starts it and is delivered, and `tray` is a
+user source, #1234; v1.15 was v1.14 plus a cap on the leases one caller holds at one
 provider, #1120; v1.14 was v1.13 plus provider lease ids: only a lease's holder
 may name it, and `lease.closed` reaches a provider that restarted, #1229; v1.13 was v1.12 plus the
 hub's `apps.watch`, the SDK's wait for an
@@ -15,12 +17,23 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.16** (#1234): the tray menu's quick actions, built. An `action` panel (§5.1) is one tray
+  menu item in the frame's pinned quick actions place; its id names the `[[actions]]` entry it
+  presses (one that names none shows no item, so no manifest that read before is refused), its
+  `title` is the words, its `when` decides whether it shows, from the hub's facts cache. While
+  the module runs, the first `button` of its registered `action` tree may change the words and
+  grey the item. A press is `action.invoke {action, source: "tray"}`. Three rules (§4.6, §8.8):
+  (a) a press on a module with no connection starts it and is delivered once it is ready, at most
+  10 s later, else the hub tells the user in a notification; (b) an `action` panel does not
+  start its module at enable (the UX3 rule now covers bound keys only); (c) `tray` is a user
+  source, accepted wherever `key` is. Nothing but the user's click presses an item (§8.9).
+  Additive: no message, field or manifest key; `hub` stays 1.3 (§8.7).
 - **1.15** (#1120): a caller holds at most 16 live leases at one provider (§8.5), counted by
   the router's caller key (a module's id, a tool's name), so a second connection buys no room;
   a result over it isn't passed on (error 8, `lease.limit`) and the provider hears
@@ -694,10 +707,20 @@ Each entry is `<what>:<argument>`. Unknown `<what>` is refused (`manifest.provid
 | `device:<class>` | short for `fact:devices.present.<class>` (UX12) |
 
 Rules:
-- A module with a key bound to one of its actions, or a pinned quick action, MUST be started at
-  enable, whatever `on` says (UX3). (#1121) The hub starts such a module when the hotkeys start
-  and when a key is bound (an `Activate`, not a timer); a press on a module with no connection
-  is not queued, it answers "disconnected" and starts the module for the next one.
+- A module with a key bound to one of its actions MUST be started at enable, whatever `on` says
+  (UX3). (#1121) The hub starts such a module when the hotkeys start and when a key is bound (an
+  `Activate`, not a timer); a press on a module with no connection is not queued, it answers
+  "disconnected" and starts the module for the next one.
+- **Tray quick actions (v1.16, #1234).** An `action` panel (§5.1) does **not** start its module
+  at enable or at sign-in: an on-demand module stays on demand. Its item is drawn from the
+  manifest and the cached facts while the module is cold. A press on a module with no connection
+  starts it (an `Activate`) and is delivered, once, when the module sends `module.ready`, at most
+  10 s after the press; past that the press is dropped and the hub shows one notification
+  (**<Module> didn't start**, with **Open <Module>**). A second press of the same item while one
+  waits is the same press (busy, not queued twice), and a press must name one of the module's
+  declared `[[actions]]`. A module answering the press with an error gets one notification too
+  (**Couldn't <words>**, its `data.reason` cleaned and cut to 64 bytes, **Open <Module>**); a
+  success says nothing (the item's next words say it).
 - Activation is by events only, never timers.
 - A module started by an event stops by its own decision (exit code 0); the hub does not stop
   idle modules.
@@ -876,6 +899,20 @@ ui.register {instance, panels: [{id, slot, title, icon, tree}]}
   (icon, title, the ··· menu, the module's state, the stale view) from the manifest and
   `module.<id>.state`; the module's tree is only the body, under the tile caps (§5.5). A click
   outside the body's button opens the module's first `page` panel.
+- **Tray menu items (v1.16, #1234).** An `action` panel is one item in the tray menu's pinned
+  quick actions place: after Open Hideout (and a running search's items), between two
+  separators; no items, no separators. Its `id` MUST name one of the module's `[[actions]]`
+  (an item that names none is not shown; the manifest still reads). The item's words are the
+  panel's `title`, and its `when` (§4.6) decides whether it shows, evaluated from the hub's facts
+  cache, so a cold module's item shows the right words (never "Not running"). While the module
+  runs, the first `button` of its registered `action` tree gives the words (`label`) and greys the
+  item (`disabled`); `ui.patch` `set` ops on that button change them in place, and the item keeps
+  its position. The hub cleans the words (no control or format characters, so no tab can fake a
+  key; at most 40 characters) and shows a bound key right-aligned (`Free GPU    Ctrl+Alt+G`).
+  The item shows while the module is installed and not off, crash-stopped, install-failed,
+  revoked, needs-hub or quarantined, and not while safe mode holds it; Pause Hideout greys it. A
+  click sends `action.invoke {action, source: "tray"}` with no confirm (§4.6 for a cold module).
+  The status line and the tooltip never change for an item (the quiet rule).
 - **Icons (v1.4).** `icon` names one of the published icons, listed with the schema
   (`schema/hideout-v1.json`, key `icons`; `ICONS` in the Rust crate and the Python models):
   `module`, `battery`, `bell`, `bluetooth`, `book`, `brush`, `calendar`, `camera`, `chart`,
@@ -2141,7 +2178,8 @@ and a hub-owned `hideout.toml` table, no message or manifest key). The hub answe
   say" (§8.12); no manifest key. (v1.14) Spec 1.14 stays `hub` 1.3: a new `lease.closed`
   reason, which providers take as ended, and two refusals of calls naming a lease the caller
   doesn't hold (§8.5); no message and no manifest key. (v1.15) Spec 1.15 stays `hub` 1.3: one
-  more refusal, `lease.limit` (§8.5).
+  more refusal, `lease.limit` (§8.5). (v1.16) Spec 1.16 stays `hub` 1.3: the `action` slot and
+  the `tray` source were in the vocabulary since 1.0; it adds hub behaviour only (§4.6, §5.1).
 - **Method-family APIs** (`api`): Foxglove's local API (1.13 today), Vulpes's (1.0 when built).
   A provider declares its API version in `module.register`.
 - A minor only adds (methods, optional fields, events, manifest keys, node types, permissions).
@@ -2182,7 +2220,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `ui.window.open` | H → M | call | `{window}` | `{}` | `ui.window` |
 | `ui.badge` (v1.3) | M → H | notification | `{panel, badge: "none" \| "attention" \| "dirty" \| "count", count?}` (`count` ≥ 1 with `count`) | — | the panel is the module's |
 | `ui.visibility` (v1.3) | H → M | notification | `{panel, state: "visible" \| "hidden" \| "closed"}` (v1.4: `page` and `tile` panels) | — | — |
-| `action.invoke` | H → M | call | `{action, source: "key" \| "tray" \| "palette" \| "panel"}` (v1.4: `panel` for a button with `action`) | `{}` | — |
+| `action.invoke` | H → M | call | `{action, source: "key" \| "tray" \| "palette" \| "panel"}` (v1.4: `panel` for a button with `action`; (v1.16) `tray` is the user's click on a tray menu item, a user source: a module MUST accept it wherever it accepts `key`) | `{}` | — |
 | `settings.get` | H → M | call | `{}` | `{values: {name: value}}` | — |
 | `settings.set` | H → M | call | `{name, value}` | `{}`, or an error with `data.reason` | — |
 | `hub.notify` | M → H | call | `{title, body, level: "info" \| "warn" \| "error"}` | `{}` | `hub.notify` |
@@ -2258,6 +2296,13 @@ Provided by the Vulpes module.
   and ending a reservation stays the user's own click or key. Tested window-free at the router
   (`hideout-router/tests/gaming.rs`) and from the bound key through the feed to the router pipe
   (`hideout`'s `panel_feed` tests).
+- (v1.16, #1234) Vulpes's two actions are also tray menu items (§5.1): `free-gpu` with
+  `when = "!gpu.reserved"` and `release-gpu-reservation` with `when = "gpu.reserved"`, so
+  exactly one shows and an unset `gpu.reserved` shows Free GPU. A press is the user's own click,
+  `source: "tray"`; game mode never adds, hides, greys or presses either item, and the hub's
+  game mode row ("Game mode: on", Foxglove's page only) is a status, never an action. Tested at
+  the router (`hideout-router/tests/tray_press.rs`), on the hub's menu model
+  (`hideout-shell` `quick_actions` tests) and through the feed to the router pipe.
 
 ### 8.10 The network broker (v1.12, #1102)
 

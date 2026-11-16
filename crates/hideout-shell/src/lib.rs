@@ -26,6 +26,7 @@ pub mod permission_dialog_ui;
 pub mod placement;
 pub mod popout;
 pub mod prefs;
+pub mod quick_actions;
 pub mod status;
 pub mod tabs;
 pub mod theme;

@@ -17,13 +17,22 @@ use hideout_shell::hideout_panels::feed::Waker;
 use hideout_shell::hideout_panels::stream_io::{system_reduced_motion, StreamIo};
 use hideout_shell::hideout_panels::streams::{StreamCommand, Streams};
 use hideout_shell::hideout_panels::{HubCall, Inbound, Outbound, PanelFeed};
+use hideout_shell::quick_actions::{self, Notice};
 use serde_json::{json, Value};
 
 /// What a call's tag stands for, to route its answer.
 #[derive(Debug)]
 enum Tag {
     Event(u64),
-    Invoke { module: String, action: String },
+    Invoke {
+        module: String,
+        action: String,
+    },
+    /// A tray menu quick action (#1234): a refusal or a start that didn't come is told.
+    Tray {
+        module: String,
+        action: String,
+    },
     SettingsGet(String),
     SettingsSet(String),
     SecretsStatus(String),
@@ -36,6 +45,15 @@ const FIRST_TAG: u64 = 1 << 40;
 /// Bound keys' calls (#991) number from here, apart from the shell's own tags.
 const FIRST_KEY_TAG: u64 = 1 << 41;
 
+/// Tray presses' calls (#1234) number from here.
+const FIRST_TRAY_TAG: u64 = 1 << 42;
+
+/// How long a tray press waits for its module to start (§4.6, v1.16).
+pub const TRAY_COLD_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Shows a notification about a tray press that didn't happen.
+pub type Notifier = Arc<dyn Fn(Notice) + Send + Sync>;
+
 #[derive(Clone)]
 struct Shared {
     tx: mpsc::Sender<Inbound>,
@@ -43,6 +61,24 @@ struct Shared {
     tags: Arc<Mutex<HashMap<u64, Tag>>>,
     /// The router's answers to the panel host's stream opens (`Out::HostChannel`), in order.
     grants: Arc<Mutex<Vec<Grant>>>,
+    notifier: Notifier,
+    next_tray: Arc<AtomicU64>,
+}
+
+/// The real notifier: a toast with **Open <Module>**.
+fn toast(n: Notice) {
+    let arg = format!("open:{}", n.module);
+    hideout_shell::notify::toast(
+        n.title,
+        n.body,
+        vec![(n.button, arg.clone())],
+        arg,
+        Arc::new(|a: &str| {
+            if let Some(("open", id)) = a.split_once(':') {
+                hideout_shell::open_module(id);
+            }
+        }),
+    );
 }
 
 /// One `Out::HostChannel`: module, channel, `{pipe, nonce}` or the error.
@@ -80,12 +116,19 @@ pub struct HubFeed {
 
 /// A feed pair over `hub`.
 pub fn feed(hub: Hub) -> (RouterSide, HubFeed) {
+    feed_with(hub, Arc::new(toast))
+}
+
+/// A feed pair over `hub` whose tray press failures go to `notifier` (tests show no toast).
+pub fn feed_with(hub: Hub, notifier: Notifier) -> (RouterSide, HubFeed) {
     let (tx, rx) = mpsc::channel();
     let shared = Shared {
         tx,
         waker: Arc::new(Mutex::new(None)),
         tags: Arc::new(Mutex::new(HashMap::new())),
         grants: Arc::new(Mutex::new(Vec::new())),
+        notifier,
+        next_tray: Arc::new(AtomicU64::new(FIRST_TRAY_TAG)),
     };
     (
         RouterSide(shared.clone()),
@@ -104,6 +147,41 @@ fn key_params(action: &str) -> Value {
     json!({"action": action, "source": "key"})
 }
 
+/// A tray menu press's `action.invoke` params (§8.8: `source` is `tray`, v1.16 a user source).
+fn tray_params(action: &str) -> Value {
+    json!({"action": action, "source": "tray"})
+}
+
+/// The notification for a tray press the router answered with `e`; `None` for a double press
+/// (busy: the first one is still on its way).
+fn tray_notice(module: &str, action: &str, e: &Value) -> Option<Notice> {
+    let code = e.get("code").and_then(Value::as_i64);
+    if code == Some(3) {
+        return None;
+    }
+    let not_started = e.get("message").and_then(Value::as_str) == Some(hideout_router::NOT_STARTED)
+        || code == Some(2);
+    let (name, title) = quick_actions::words_for(module, action);
+    // The module's own reason; else a press it took but never answered (router timeout).
+    let fallback = if code == Some(4) {
+        "It didn't answer in time."
+    } else {
+        ""
+    };
+    let r = e
+        .pointer("/data/reason")
+        .and_then(Value::as_str)
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or(fallback);
+    Some(quick_actions::failure_notice(
+        &name,
+        &title,
+        module,
+        not_started,
+        r,
+    ))
+}
+
 /// `data.reason` of an error result, else its message.
 fn reason(e: &Value) -> String {
     e.pointer("/data/reason")
@@ -118,11 +196,14 @@ impl RouterSide {
     pub fn manifest(&self, m: hideout_contract::module::Module) {
         // The tray names a stopped module by its name (docs/hideout-supervisor-ux.md).
         hideout_shell::marks::note_name(&m.id, &m.name);
+        // Its `action` panels are tray menu items (#1234).
+        quick_actions::note_manifest(&m);
         self.0.push(Inbound::Manifest(Box::new(m)));
     }
 
     /// The module left the inventory (#1012.4): the shell closes its tabs and pop-outs.
     pub fn removed(&self, module: &str) {
+        quick_actions::note_removed(module);
         self.0.push(Inbound::ModuleRemoved {
             module: module.to_string(),
         });
@@ -152,6 +233,7 @@ impl RouterSide {
                 instance,
                 panels,
             } => {
+                quick_actions::note_panels(module, panels);
                 let params =
                     serde_json::from_value(json!({"instance": instance, "panels": panels}));
                 let Ok(params) = params else {
@@ -168,10 +250,13 @@ impl RouterSide {
                 }
             }
             Out::Patch { module, params } => match serde_json::from_value(params.clone()) {
-                Ok(patch) => Inbound::Patch {
-                    module: module.clone(),
-                    patch,
-                },
+                Ok(patch) => {
+                    quick_actions::note_patch(module, params);
+                    Inbound::Patch {
+                        module: module.clone(),
+                        patch,
+                    }
+                }
                 Err(e) => {
                     log::warn!("panels: {module}: ui.patch not read: {e}");
                     return;
@@ -208,6 +293,8 @@ impl RouterSide {
                 // The tray's dot follows module states and safe mode, even with the window
                 // hidden; it wakes the UI thread only when the dot changes.
                 hideout_shell::marks::note_fact(key, value);
+                // The tray menu's quick actions follow the cached facts (§4.6 `when`).
+                quick_actions::note_fact(key, value);
                 Inbound::Fact {
                     name: key.clone(),
                     value: value.clone(),
@@ -263,6 +350,15 @@ impl RouterSide {
                         return;
                     }
                     (Tag::Invoke { .. }, Ok(_)) => return,
+                    // Silent success: the item's next words say it (#1234, UX Q3).
+                    (Tag::Tray { .. }, Ok(_)) => return,
+                    (Tag::Tray { module, action }, Err(e)) => {
+                        log::info!("panels: {module}: tray {action}: {}", reason(e));
+                        if let Some(n) = tray_notice(&module, &action, e) {
+                            (self.0.notifier)(n);
+                        }
+                        return;
+                    }
                 }
             }
             _ => return,
@@ -306,6 +402,37 @@ impl PanelFeed for HubFeed {
                 let mut out = r.call_module(module, "action.invoke", params, tag, Instant::now());
                 out.extend(r.key_bound(module));
                 out
+            });
+        }))
+    }
+
+    /// A tray menu quick action (#1234): `action.invoke {action, source: "tray"}`. A module with
+    /// no connection is started and gets the press once ready, within [`TRAY_COLD_WAIT`], else
+    /// the user gets a notification (§4.6, v1.16). The tags' lock is let go before the router's
+    /// is taken.
+    fn tray_invoker(&self) -> Option<hideout_shell::hideout_panels::KeyInvoker> {
+        let hub = self.hub.clone();
+        let tags = self.shared.tags.clone();
+        let next = self.shared.next_tray.clone();
+        Some(Arc::new(move |module: &str, action: &str| {
+            let tag = next.fetch_add(1, Ordering::Relaxed);
+            tags.lock().unwrap().insert(
+                tag,
+                Tag::Tray {
+                    module: module.to_string(),
+                    action: action.to_string(),
+                },
+            );
+            let params = tray_params(action);
+            hub.act(|r| {
+                r.call_module_starting(
+                    module,
+                    "action.invoke",
+                    params,
+                    tag,
+                    Instant::now(),
+                    TRAY_COLD_WAIT,
+                )
             });
         }))
     }
@@ -609,6 +736,143 @@ mod tests {
         let call = read();
         assert_eq!(call["method"], "action.invoke");
         assert_eq!(call["params"], json!({"action": "toggle", "source": "key"}));
+    }
+
+    /// A press that never got an answer says so; busy (a double click) says nothing.
+    #[test]
+    fn a_tray_timeout_says_it_did_not_answer() {
+        let n = tray_notice("x.y", "free-gpu", &json!({"code": 4, "message": "timeout"}))
+            .expect("a notice");
+        assert!(n.body.contains("didn't answer in time"), "{n:?}");
+        assert!(!n.title.ends_with("didn't start"), "{n:?}");
+        assert!(tray_notice("x.y", "free-gpu", &json!({"code": 3, "message": "busy"})).is_none());
+    }
+
+    /// A tray menu quick action (#1234), end to end over the router pipe: the press reaches the
+    /// running module as `action.invoke {action, source: "tray"}`; its success says nothing; its
+    /// refusal becomes one notification with the module's reason and Open <Module>; game mode
+    /// presses nothing. No toast is shown: the notifier is the test's.
+    #[test]
+    fn a_tray_press_reaches_the_module_and_a_refusal_is_told_once() {
+        use hideout_contract::module::{Context, Module};
+        const VULPES: &str = "vulpes";
+        let manifest = Module::parse(
+            &format!(
+                "{}\n[[ui.panels]]\nid = \"free-gpu\"\nslot = \"action\"\ntitle = \"Free GPU\"\nicon = \"sparkle\"\nwhen = \"!gpu.reserved\"\n",
+                include_str!("../../hideout-panels/tests/vectors/vulpes.module.toml")
+            ),
+            &Context::default(),
+        )
+        .expect("Arete's manifest with its tray item");
+        let mut router = Router::new(Settings::default(), Box::new(|_, _| Vec::new()));
+        router.add_module(ModuleEntry {
+            id: VULPES.into(),
+            name: "AI".into(),
+            holder: Holder::FirstParty,
+            granted: vec![],
+            catalog_provide: None,
+            channel_risk: Default::default(),
+            activate_on_call: false,
+            panels: None,
+            settings_dir: String::new(),
+            data_dir: String::new(),
+            registered_version: None,
+        });
+        router.set_token(VULPES, "tok-tray");
+        let (events, rx) = mpsc::channel();
+        let hub = Hub::new(router, events);
+        let (notes_tx, notes) = mpsc::channel::<Notice>();
+        let notes_tx = Mutex::new(notes_tx);
+        let (side, feed) = feed_with(
+            hub.clone(),
+            Arc::new(move |n| {
+                let _ = notes_tx.lock().unwrap().send(n);
+            }),
+        );
+        side.manifest(manifest);
+        std::thread::spawn(move || {
+            for o in rx {
+                side.on_router(&o);
+            }
+        });
+        let name = format!(r"\\.\pipe\hideout-tray-press-test-{}", std::process::id());
+        hub.serve_pipe(&name).expect("serve the test pipe");
+        let pipe = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .expect("router pipe");
+        let mut from_hub = BufReader::new(pipe.try_clone().unwrap());
+        let mut to_hub = pipe;
+        writeln!(
+            to_hub,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "id": VULPES, "token": "tok-tray", "instance": "i1", "version": "0.1.0", "hub": "1.0",
+            "api": {}, "client": {"name": "arete", "version": "0.1.0"}}})
+        )
+        .unwrap();
+        // One synchronous pipe handle serialises its reads and writes, so reads happen only
+        // when a line is due; the order of the lines proves nothing came in between.
+        let mut read = move || {
+            let mut line = String::new();
+            from_hub.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        assert!(read()["result"].is_object());
+        let wait = Duration::from_millis(500);
+        let press = feed
+            .tray_invoker()
+            .expect("the hub feed has a tray invoker");
+
+        // Game mode alone sends nothing: the next line is the press's call.
+        hub.act(|r| r.publish("keyboard.game_mode", json!(true)));
+        hub.act(|r| r.publish("keyboard.game_mode", json!(false)));
+
+        // A press: one call with the tray source; success says nothing.
+        press(VULPES, "free-gpu");
+        let call = read();
+        assert_eq!(call["method"], "action.invoke", "game mode sent {call}");
+        assert_eq!(
+            call["params"],
+            json!({"action": "free-gpu", "source": "tray"})
+        );
+        writeln!(
+            to_hub,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": call["id"], "result": {}})
+        )
+        .unwrap();
+        assert!(notes.recv_timeout(wait).is_err(), "success is silent");
+
+        // A refusal: one notification with the module's reason.
+        press(VULPES, "free-gpu");
+        let call = read();
+        assert_eq!(
+            call["params"]["source"], "tray",
+            "exactly one call per press"
+        );
+        writeln!(
+            to_hub,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": call["id"], "error": {"code": 6, "message": "refused",
+                "data": {"reason": "The chat job didn't stop."}}})
+        )
+        .unwrap();
+        let n = notes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("one notice");
+        assert_eq!(n.title, "Couldn't free GPU");
+        assert_eq!(n.body, "The chat job didn't stop.");
+        assert_eq!((n.button.as_str(), n.module.as_str()), ("Open AI", VULPES));
+        assert!(notes.recv_timeout(wait).is_err(), "exactly one notice");
+
+        // A press for a module the hub doesn't know: told it didn't start, nothing sent.
+        press("nobody.here", "free-gpu");
+        let n = notes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a notice");
+        assert!(n.title.ends_with("didn't start"), "{n:?}");
     }
 
     /// The Free GPU key (#1121, H4.7), end to end from the bindings to the router pipe: a key bound

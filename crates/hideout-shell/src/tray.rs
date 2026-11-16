@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! The tray icon and its fixed menu frame (design UX8): a status line, Open Hideout; then the
-//! pinned quick actions (none until modules declare actions); then Pause Hideout, Open log
+//! pinned quick actions (the modules' `action` panels, `crate::quick_actions`, between two
+//! separators, none without any); then Pause Hideout, Open log
 //! folder, Quit Hideout. The icon has three states (`icon::State`). In safe mode **Start
 //! normally** comes right under the status line (docs/hideout-supervisor-ux.md, column Tr).
 //! While a search for the module that breaks Hideout runs (#1033), **Start round k** (between
@@ -32,6 +33,17 @@ pub enum Command {
     StartRound,
     /// **Stop finding** (during a search).
     StopFinding,
+    /// A module's quick action (§5.1 `action` slot, #1234): the item's number
+    /// ([`crate::quick_actions::Item::n`]).
+    QuickAction(u32),
+}
+
+/// A quick action's menu id: `hideout.qa.<n>`.
+const QUICK_PREFIX: &str = "hideout.qa.";
+
+/// The quick action a menu id names, if it is one.
+fn quick_number(id: &str) -> Option<u32> {
+    id.strip_prefix(QUICK_PREFIX)?.parse().ok()
 }
 
 const OPEN: &str = "hideout.open";
@@ -57,6 +69,10 @@ struct Tray {
     stop_finding: MenuItem,
     round_shown: bool,
     stop_shown: bool,
+    /// The quick actions in the menu now, after their separator (#1234), with what each shows.
+    quick: Vec<(MenuItem, crate::quick_actions::Item)>,
+    quick_sep: PredefinedMenuItem,
+    quick_sep_shown: bool,
 }
 
 thread_local! {
@@ -147,6 +163,9 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             stop_finding,
             round_shown: false,
             stop_shown: false,
+            quick: Vec::new(),
+            quick_sep: PredefinedMenuItem::separator(),
+            quick_sep_shown: false,
         })
     });
 
@@ -163,7 +182,10 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             START_NORMALLY => Command::StartNormally,
             START_ROUND => Command::StartRound,
             STOP_FINDING => Command::StopFinding,
-            _ => return,
+            other => match quick_number(other) {
+                Some(n) => Command::QuickAction(n),
+                None => return,
+            },
         };
         menu_cmd(cmd);
     }));
@@ -332,6 +354,71 @@ pub fn set_search(s: Option<&hideout_supervisor::bisect::Tray>) {
     });
 }
 
+/// The modules' quick actions (#1234): after Open Hideout and the search's items, a separator
+/// and one item each, before the separator above Pause Hideout; none, and no separator, for an
+/// empty list. The same items in the same order change their words and grey in place, so an
+/// item keeps its position. A no-op off the UI thread or before `install`.
+pub fn set_quick_actions(items: &[crate::quick_actions::Item]) {
+    TRAY.with(|t| {
+        let mut g = t.borrow_mut();
+        let Some(t) = g.as_mut() else { return };
+        let same =
+            t.quick.len() == items.len() && t.quick.iter().zip(items).all(|((_, a), b)| a.n == b.n);
+        if same {
+            for ((m, shown), it) in t.quick.iter_mut().zip(items) {
+                if shown.text != it.text {
+                    m.set_text(&it.text);
+                }
+                if shown.enabled != it.enabled {
+                    m.set_enabled(it.enabled);
+                }
+                *shown = it.clone();
+            }
+            return;
+        }
+        // Out first, then in again at their place with the words of now.
+        for (m, _) in std::mem::take(&mut t.quick) {
+            if let Err(e) = t.menu.remove(&m) {
+                log::warn!("tray: quick action item: {e}");
+            }
+        }
+        if t.quick_sep_shown && t.menu.remove(&t.quick_sep).is_ok() {
+            t.quick_sep_shown = false;
+        }
+        if items.is_empty() {
+            return;
+        }
+        // Status line, Start normally when shown, Open Hideout, the search's items when shown.
+        let mut at =
+            2 + usize::from(t.safe_shown) + usize::from(t.round_shown) + usize::from(t.stop_shown);
+        match t.menu.insert(&t.quick_sep, at) {
+            Ok(()) => {
+                t.quick_sep_shown = true;
+                at += 1;
+            }
+            Err(e) => {
+                log::warn!("tray: quick action separator: {e}");
+                return;
+            }
+        }
+        for it in items {
+            let m = MenuItem::with_id(
+                format!("{QUICK_PREFIX}{}", it.n),
+                &it.text,
+                it.enabled,
+                None,
+            );
+            match t.menu.insert(&m, at) {
+                Ok(()) => {
+                    t.quick.push((m, it.clone()));
+                    at += 1;
+                }
+                Err(e) => log::warn!("tray: quick action item: {e}"),
+            }
+        }
+    });
+}
+
 /// Removes the icon now (before a quick exit, so no ghost icon stays in the tray).
 pub fn remove() {
     MESSAGE_WINDOW.store(0, std::sync::atomic::Ordering::Release);
@@ -385,6 +472,22 @@ mod tests {
         g.down();
         assert_eq!(g.up(ICON), Some(Command::Flyout(ICON)));
         assert_eq!(g.up(ICON), Some(Command::Flyout(ICON)));
+    }
+
+    /// A quick action's menu id carries its number only: never a module or action id.
+    #[test]
+    fn quick_action_menu_ids() {
+        assert_eq!(quick_number("hideout.qa.0"), Some(0));
+        assert_eq!(quick_number("hideout.qa.17"), Some(17));
+        for bad in [
+            "hideout.qa.",
+            "hideout.qa.x",
+            "hideout.qa.-1",
+            "hideout.open",
+            "qa.1",
+        ] {
+            assert_eq!(quick_number(bad), None, "{bad}");
+        }
     }
 
     #[test]

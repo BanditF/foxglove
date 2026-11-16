@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-//! REVIEW ONLY (#1234 UX plan, not for merge): the proposed game-mode rows on Foxglove's
-//! Keyboard tile and page, beside the AI tile's shipped states, through the real renderer,
-//! window-free. Writes PNGs to `HIDEOUT_REVIEW_DIR`.
+//! Review images for #1234: Foxglove's Keyboard tile and page as the app's vectors give them
+//! (game mode on the page only; the tile never changes for it), beside the AI tile's shipped
+//! states, through the real renderer, window-free. Writes PNGs to `HIDEOUT_REVIEW_DIR`; without
+//! it they go to the temp folder. Skipped without a system font.
 #![cfg(windows)]
 
 use std::collections::HashMap;
@@ -17,6 +18,7 @@ use serde_json::{json, Value};
 const VECTOR: &str = include_str!("vectors/vulpes.json");
 const MANIFEST: &str = include_str!("vectors/vulpes.module.toml");
 const FOX: &str = include_str!("../../../app/src/foxglove/hub_link/module.toml");
+const FOX_VECTORS: &str = include_str!("../../../tests/hideout-vectors/modules/foxglove.json");
 
 fn rasterise(w: u32, h: u32, draw: impl FnMut(&egui::Context)) -> Option<Vec<u8>> {
     rasterise_with(w, h, &[vec![], vec![], vec![]], draw)
@@ -187,7 +189,6 @@ fn save_png(name: &str, w: u32, h: u32, rgba: Vec<u8>) -> PathBuf {
     path
 }
 
-
 fn vector() -> Value {
     serde_json::from_str(VECTOR).unwrap()
 }
@@ -219,7 +220,9 @@ fn ai_host(state: Option<&str>) -> PanelHost {
     host
 }
 
-/// Foxglove's keyboard as the facts give it in a scenario.
+/// Foxglove's keyboard as the facts give it in a scenario: a state of the app's own vectors
+/// (`tests/hideout-vectors/modules/foxglove.json`, written by `hub_panels`' tests), so the
+/// images show what the app sends.
 #[derive(Clone, Copy)]
 enum Kb {
     Off,
@@ -227,85 +230,33 @@ enum Kb {
     Away,
 }
 
-fn label(id: &str, text: &str) -> Value {
-    json!({"type": "label", "id": id, "props": {"text": text}})
-}
-
-fn open_btn(id: &str) -> Value {
-    json!({"type": "button", "id": id, "props": {"label": "Open Foxglove settings"}})
-}
-
-/// The proposed Keyboard tile: the game mode words lead the one sub line, only while on.
-fn fox_tile(kb: Kb) -> Value {
-    let (value, tone, sub) = match kb {
-        Kb::Off => ("Connected over USB", "ok", "Left 77 % \u{b7} Right 91 %"),
-        Kb::On => (
-            "Connected over USB",
-            "ok",
-            "Game mode on \u{b7} Left 77 % \u{b7} Right 91 %",
-        ),
-        Kb::Away => ("Not connected", "off", "Turn it on or plug it in."),
-    };
-    json!({"type": "column", "id": "tile", "children": [
-        {"type": "value", "id": "glance", "props": {"value": value, "tone": tone}},
-        label("sub", sub),
-        open_btn("go"),
-    ]})
-}
-
-/// The proposed page: the Keyboard section gets a Game mode row after Layer (on and off), and
-/// a help line only while on.
-fn fox_page(kb: Kb) -> Value {
-    let mut kbd = vec![];
-    match kb {
-        Kb::Away => kbd.push(label("keyboard-away", "Not connected")),
-        Kb::On | Kb::Off => {
-            kbd.push(label("keyboard-name", "Eyelash Corne"));
-            kbd.push(label("keyboard-link", "Connected over USB"));
-            let on = matches!(kb, Kb::On);
-            kbd.push(label(
-                "keyboard-layer",
-                if on { "Layer GAME" } else { "Layer BASE" },
-            ));
-            kbd.push(label(
-                "keyboard-game",
-                if on { "Game mode: on" } else { "Game mode: off" },
-            ));
-            if on {
-                kbd.push(label(
-                    "keyboard-game-help",
-                    "Follows the GAME layer. It doesn't free the GPU: use Free GPU on the AI page or in the tray menu.",
-                ));
-            }
-            kbd.push(json!({"type": "meter", "id": "keyboard-meter-left", "props": {"value": 77, "max": 100, "label": "Left battery 77 %"}}));
-            kbd.push(json!({"type": "meter", "id": "keyboard-meter-right", "props": {"value": 91, "max": 100, "label": "Right battery 91 %"}}));
+impl Kb {
+    fn state(self) -> &'static str {
+        match self {
+            Kb::Off => "Game mode off",
+            Kb::On => "Game mode on",
+            Kb::Away => "Not connected",
         }
     }
-    kbd.push(open_btn("go-keyboard"));
-    json!({"type": "column", "id": "page", "children": [
-        label("intro", "Your keyboard, its lights and its art, as the Foxglove app sees them."),
-        {"type": "section", "id": "keyboard", "props": {"title": "Keyboard"}, "children": kbd},
-        {"type": "section", "id": "lights", "props": {"title": "Keyboard lights"}, "children": [
-            label("lights-effect", "Effect: Breathe"), open_btn("go-lights")]},
-    ]})
 }
 
 fn fox_host(kb: Kb) -> PanelHost {
     let text = FOX
         .replace("@VERSION@", "0.2.0")
         .replace("@EXE@", "C:/x/foxglove.exe");
+    let vectors: Value = serde_json::from_str(FOX_VECTORS).unwrap();
+    let state = vectors["states"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["state"] == kb.state())
+        .unwrap_or_else(|| panic!("no vector state {:?}", kb.state()));
     let mut host = PanelHost::default();
     host.set_manifest(Module::parse(&text, &Context::default()).expect("foxglove manifest"));
     host.set_fact("module.foxglove.state", json!("running"));
-    let panels = json!([
-        {"id": "keyboard", "slot": "tile", "title": "Keyboard", "icon": "keyboard", "tree": fox_tile(kb)},
-        {"id": "page", "slot": "page", "title": "Foxglove", "icon": "keyboard", "tree": fox_page(kb)},
-    ]);
     let params: Register =
-        serde_json::from_value(json!({"instance": "f1", "panels": panels})).unwrap();
-    let declared: Vec<String> = ["keyboard", "lights", "art", "page"]
-        .map(String::from)
-        .to_vec();
+        serde_json::from_value(json!({"instance": "f1", "panels": state["panels"]})).unwrap();
+    let declared: Vec<String> = serde_json::from_value(vectors["declared"].clone()).unwrap();
     let rej = host.register_with("foxglove", "Foxglove", Some(&declared), Some(&[]), &params);
     assert!(rej.is_empty(), "{rej:?}");
     host
@@ -316,14 +267,38 @@ fn renders_the_game_mode_proposal_for_review() {
     let now = Instant::now();
     // Rows: (caption, keyboard, AI state or None for cold).
     let rows: Vec<(&str, Kb, Option<&str>)> = vec![
-        ("1  game mode off, chat holds the GPU", Kb::Off, Some("held-chat")),
-        ("2  game mode on, chat still holds it: nothing changed", Kb::On, Some("held-chat")),
-        ("3  game mode on, user pressed Free GPU", Kb::On, Some("freeing")),
-        ("4  game mode on, reserved for gaming", Kb::On, Some("reserved")),
-        ("5  game over: game mode off, still reserved", Kb::Off, Some("reserved")),
+        (
+            "1  game mode off, chat holds the GPU",
+            Kb::Off,
+            Some("held-chat"),
+        ),
+        (
+            "2  game mode on, chat holds it: tile unchanged",
+            Kb::On,
+            Some("held-chat"),
+        ),
+        (
+            "3  game mode on, user pressed Free GPU",
+            Kb::On,
+            Some("freeing"),
+        ),
+        (
+            "4  game mode on, reserved for gaming",
+            Kb::On,
+            Some("reserved"),
+        ),
+        (
+            "5  game over: game mode off, still reserved",
+            Kb::Off,
+            Some("reserved"),
+        ),
         ("6  game mode on, AI not running (cold)", Kb::On, None),
         ("7  keyboard away, reserved", Kb::Away, Some("reserved")),
-        ("8  game mode on, freeing failed", Kb::On, Some("free-failed")),
+        (
+            "8  game mode on, freeing failed",
+            Kb::On,
+            Some("free-failed"),
+        ),
     ];
     let mut hosts: Vec<(&str, PanelHost, PanelHost)> = rows
         .into_iter()

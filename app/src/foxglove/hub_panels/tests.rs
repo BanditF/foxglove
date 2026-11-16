@@ -544,6 +544,24 @@ fn the_panels_match_the_hub_vectors() {
         ),
         ("A Foxglove page stopped", panels(&stopped)),
         ("A long piece name", panels(&view(&long))),
+        (
+            "Game mode on",
+            panels(&view(&with(
+                connected(),
+                vec![b("keyboard.game_mode", true)],
+            ))),
+        ),
+        (
+            "Game mode off",
+            panels(&view(&with(
+                connected(),
+                vec![
+                    b("keyboard.game_mode", false),
+                    t("keyboard.layer_name", "BASE"),
+                    i("keyboard.layer", 0),
+                ],
+            ))),
+        ),
     ];
     for (name, all) in &states {
         assert_valid(all);
@@ -572,6 +590,80 @@ fn a_long_effect_name_fits_the_lights_tile_at_full_brightness_and_as_a_scene() {
             assert!(value.ends_with(" · 100 %"));
         }
     }
+}
+
+/// Game mode (#1234): a row on the page only, after the layer, "on" with its help and "off"
+/// without; nothing when the fact isn't reported or the keyboard is away. The Keyboard tile never
+/// changes for it and never says GPU, reserved or free (Hub pick: page only).
+#[test]
+fn game_mode_shows_on_the_page_only() {
+    let page_rows = |f: &[(String, Fact)]| {
+        let all = panels(&view(f));
+        assert_valid(&all);
+        let kids = panel(&all, PAGE)["tree"]["children"]
+            .as_array()
+            .unwrap()
+            .clone();
+        texts(&kids[1])
+    };
+    let on = with(connected(), vec![b("keyboard.game_mode", true)]);
+    assert_eq!(
+        page_rows(&on),
+        [
+            "Eyelash Corne",
+            "Connected over Bluetooth, profile 2",
+            "Layer GAME",
+            GAME_ON,
+            GAME_HELP,
+            "Left battery 77 %",
+            "Right battery 91 %",
+            OPEN
+        ]
+    );
+    let off = with(connected(), vec![b("keyboard.game_mode", false)]);
+    let rows = page_rows(&off);
+    assert!(rows.contains(&GAME_OFF.to_string()));
+    assert!(!rows.contains(&GAME_HELP.to_string()), "help only while on");
+    // Not reported: no row (an older app or board).
+    let rows = page_rows(&connected());
+    assert!(!rows.iter().any(|r| r.starts_with("Game mode")));
+    // Away: "Not connected", no game row even with a stale fact.
+    let away = vec![
+        b("keyboard.connected", false),
+        b("keyboard.game_mode", true),
+    ];
+    assert_eq!(page_rows(&away), [NOT_CONNECTED, OPEN]);
+    // The node ids the plan names.
+    let all = panels(&view(&on));
+    let mut ids = Vec::new();
+    let mut stack = vec![&panel(&all, PAGE)["tree"]];
+    while let Some(n) = stack.pop() {
+        if let Some(id) = n["id"].as_str() {
+            ids.push(id.to_string());
+        }
+        stack.extend(n["children"].as_array().into_iter().flatten());
+    }
+    assert!(ids.contains(&"keyboard-game".to_string()));
+    assert!(ids.contains(&"keyboard-game-help".to_string()));
+    // The tile is the same with game mode on, off or unreported, and never names the GPU.
+    for f in [&on, &off, &connected()] {
+        let all = panels(&view(f));
+        let tile = tile_texts(&all, TILE_KEYBOARD);
+        assert_eq!(
+            tile,
+            ["Connected over Bluetooth", "Left 77 % · Right 91 %", OPEN]
+        );
+        for s in &tile {
+            assert!(s.len() <= 64, "{s}");
+            let l = s.to_lowercase();
+            for w in ["gpu", "reserved", "free", "game"] {
+                assert!(!l.contains(w), "tile says {w:?}: {s}");
+            }
+        }
+    }
+    // The help names the GPU only to say game mode doesn't touch it, and where Free GPU is.
+    assert!(GAME_HELP.contains("doesn't free the GPU"));
+    assert!(!GAME_HELP.to_lowercase().contains("reserv"));
 }
 
 /// The meters carry their own words, so the page has no second row saying the same.
