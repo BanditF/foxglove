@@ -69,8 +69,11 @@ fn lab_home(id: &str, contain: bool) -> (PathBuf, PathBuf) {
     (home, outside)
 }
 
-const ID_ON: &str = "example.lab.ac-on";
-const ID_OFF: &str = "example.lab.ac-off";
+/// Module ids name machine-wide objects (the AppContainer profile and its SID, the job), so
+/// gates running at once in other processes or worktrees must not share one (#1207).
+fn uid(base: &str) -> String {
+    format!("{base}-{}", std::process::id())
+}
 
 /// Waits for `module.ready` from `id` (the stop event); 30 s only as the fallback.
 fn ready(rx: &Receiver<Out>, id: &str) -> bool {
@@ -121,17 +124,18 @@ fn finish(r: Run, id: &str) -> String {
 
 #[test]
 fn a_contained_module_connects_and_is_in_its_container() {
-    let r = start(ID_ON, true);
-    let pid = r.sup.pid(ID_ON).expect("the module was not started");
+    let id_on = uid("example.lab.ac-on");
+    let r = start(&id_on, true);
+    let pid = r.sup.pid(&id_on).expect("the module was not started");
     let p = Process::open(pid).unwrap();
     let inside = sandbox::is_app_container(&p);
     let caps = sandbox::capabilities(&p);
     let own = sandbox::container_sid(&p);
     let hid = sandbox::capability_sid_string("humaninterfacedevice").unwrap();
     let guests = r.hub.pipe_guests();
-    let up = ready(&r.rx, ID_ON);
+    let up = ready(&r.rx, &id_on);
     // The probe writes its lines before it is ready; read them once it is.
-    let log = finish(r, ID_ON);
+    let log = finish(r, &id_on);
     assert!(
         up,
         "no module.ready from the contained module; its log: {log:?}"
@@ -152,12 +156,13 @@ fn a_contained_module_connects_and_is_in_its_container() {
 
 #[test]
 fn without_the_setting_it_runs_outside() {
-    let r = start(ID_OFF, false);
-    let pid = r.sup.pid(ID_OFF).expect("the module was not started");
+    let id_off = uid("example.lab.ac-off");
+    let r = start(&id_off, false);
+    let pid = r.sup.pid(&id_off).expect("the module was not started");
     let inside = sandbox::is_app_container(&Process::open(pid).unwrap());
-    let up = ready(&r.rx, ID_OFF);
+    let up = ready(&r.rx, &id_off);
     let guests = r.hub.pipe_guests();
-    let log = finish(r, ID_OFF);
+    let log = finish(r, &id_off);
     assert!(up, "no module.ready; its log: {log:?}");
     assert!(!inside.unwrap(), "in an AppContainer without the setting");
     assert!(guests.is_empty());
@@ -169,7 +174,8 @@ fn without_the_setting_it_runs_outside() {
 /// server (`HIDEOUT_HUB_PID`, #1089 review); a guest taken off is refused again.
 #[test]
 fn the_router_pipe_admits_a_container_only_once_allowed() {
-    const ID: &str = "example.lab.ac-pipe";
+    let id = uid("example.lab.ac-pipe");
+    let id = id.as_str();
     let base = std::env::temp_dir().join(format!("hideout-ac-pipe-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
@@ -181,10 +187,10 @@ fn the_router_pipe_admits_a_container_only_once_allowed() {
     hub.set_folder_suffix(&format!(".actest{}", std::process::id()));
     let pipe = hub.router_pipe();
     hub.serve_pipe(&pipe).unwrap();
-    let c = sandbox::Container::for_module(ID, &[]).unwrap();
+    let c = sandbox::Container::for_module(id, &[]).unwrap();
     c.grant(&base, false).unwrap();
     let job = Job::create(
-        &Job::name_for("test", ID, std::process::id() as u64),
+        &Job::name_for("test", id, std::process::id() as u64),
         Caps::default(),
     )
     .unwrap();
@@ -196,7 +202,7 @@ fn the_router_pipe_admits_a_container_only_once_allowed() {
             ("HIDEOUT_INSTANCE", "1".to_string()),
             ("HIDEOUT_HUB_PID", hub_pid.to_string()),
         ];
-        let mut args = vec![ID.to_string(), "-".into()];
+        let mut args = vec![id.to_string(), "-".into()];
         if exit {
             args.push("--exit".into());
         }
@@ -231,7 +237,7 @@ fn the_router_pipe_admits_a_container_only_once_allowed() {
     let log = std::fs::read_to_string(base.join("probe.log")).unwrap_or_default();
     job.kill(1);
     drop(c);
-    sandbox::delete_profile(ID);
+    sandbox::delete_profile(id);
     let _ = std::fs::remove_dir_all(&base);
     assert_eq!(
         before, 3,
