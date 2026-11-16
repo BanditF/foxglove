@@ -389,12 +389,14 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
         "button" => {
             let action = s(&p, "action").map(String::from);
             let opens = s(&p, "opens").map(String::from);
+            // `disabled` (#1117): drawn greyed, never clicked, never sends. The module says why beside it.
+            let off = p.get("disabled").and_then(Value::as_bool).unwrap_or(false);
             ui.horizontal(|ui| {
                 let keys = d.keys;
                 let bound = action
                     .as_ref()
                     .and_then(|a| keys.get(&(d.key.module.clone(), a.clone())));
-                let button = ui.button(&label);
+                let button = ui.add_enabled(!off, egui::Button::new(&label));
                 // A screen reader hears the key with the name: "Unmute, F13".
                 if let Some(k) = bound {
                     let (enabled, name) = (ui.is_enabled(), format!("{label}, {k}"));
@@ -402,7 +404,7 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name)
                     });
                 }
-                let pressed = d.press && ui.is_enabled();
+                let pressed = d.press && !off && ui.is_enabled();
                 d.press = false;
                 let clicked = button.clicked() || pressed;
                 // The bound key as a chip beside the button (v1.4).

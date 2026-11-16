@@ -223,6 +223,10 @@ fn panel<'a>(state: &'a Value, id: &str) -> &'a Value {
         .unwrap()
 }
 
+fn state_named_all() -> Vec<Value> {
+    vector()["states"].as_array().unwrap().clone()
+}
+
 fn state_named(name: &str) -> Value {
     vector()["states"]
         .as_array()
@@ -342,7 +346,7 @@ fn every_vulpes_state_registers_and_its_tile_draws_tone_meter_and_button() {
     }
     let v = vector();
     let states = v["states"].as_array().unwrap();
-    assert_eq!(states.len(), 13);
+    assert_eq!(states.len(), 15);
     for s in states {
         let name = s["state"].as_str().unwrap();
         let tree = &panel(s, "tile")["tree"];
@@ -416,7 +420,7 @@ fn the_tile_button_invokes_the_action_or_sends_a_click() {
     assert!(host.take_hub_calls().is_empty());
 }
 
-/// The page: the Now, Full UI and About sections draw their children with tone and meter, and
+/// The page: the Now, Chat, Web UI and About sections draw their children with tone and meter, and
 /// the hub's Keys section follows for the two actions.
 #[test]
 fn the_page_draws_sections_with_tone_meter_button_and_markdown() {
@@ -448,6 +452,96 @@ fn the_page_draws_sections_with_tone_meter_button_and_markdown() {
             value["props"]["tone"].as_str(),
             "{name}"
         );
+    }
+}
+
+fn draw_page(
+    ctx: &egui::Context,
+    host: &mut PanelHost,
+    events: Vec<egui::Event>,
+) -> hideout_panels::DrawReport {
+    let mut r = None;
+    let _ = ctx.run(raw(events), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            r = Some(panel_ui(host, ui, &page_key()));
+        });
+    });
+    r.unwrap()
+}
+
+/// Presses the node `id` of the page with the mouse and returns the `ui.event`s it sent.
+fn press_in_page(host: &mut PanelHost, id: &str) -> usize {
+    let ctx = ctx();
+    let mut rep = draw_page(&ctx, host, vec![]);
+    for _ in 0..2 {
+        rep = draw_page(&ctx, host, vec![]);
+    }
+    let r = rep.rects[id];
+    let at = Pos2::new(r.left() + 24.0, r.center().y);
+    let click = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    draw_page(&ctx, host, vec![egui::Event::PointerMoved(at), click(true)]);
+    draw_page(&ctx, host, vec![click(false)]);
+    host.take_events().len()
+}
+
+/// While the web UI is stopped Open in browser is drawn but disabled, with its hint beside it: a
+/// press sends nothing. Running, the same node sends its click. The chat profile card is on the
+/// page only, never on a tile, and carries its label (the choice's name is the renderer's test).
+#[test]
+fn open_in_browser_is_disabled_while_the_web_ui_is_stopped_and_the_chat_card_is_page_only() {
+    if !has_fonts() {
+        return;
+    }
+    let stopped = state_named("idle");
+    let tree = &panel(&stopped, "page")["tree"];
+    let open = nodes(tree)
+        .into_iter()
+        .find(|n| n["id"] == "web-open")
+        .unwrap();
+    assert_eq!(open["props"]["disabled"], true);
+    let hint = nodes(tree)
+        .into_iter()
+        .find(|n| n["id"] == "web-hint")
+        .unwrap();
+    assert_eq!(hint["props"]["text"], "Start the web UI first");
+    let mut host = host_in(&stopped);
+    assert_eq!(
+        press_in_page(&mut host, "web-open"),
+        0,
+        "a disabled button sends nothing"
+    );
+
+    let mut host = host_in(&state_named("idle-web-running"));
+    let sent = press_in_page(&mut host, "web-open");
+    assert_eq!(sent, 1);
+
+    for s in state_named_all() {
+        let tile = &panel(&s, "tile")["tree"];
+        for n in nodes(tile) {
+            let id = n["id"].as_str().unwrap();
+            assert!(
+                !["chat-profile", "chat-help", "web-open", "web-hint"].contains(&id),
+                "no profile or web control on a tile"
+            );
+        }
+        let page = &panel(&s, "page")["tree"];
+        let choice = nodes(page).into_iter().find(|n| n["type"] == "choice");
+        match s["state"].as_str().unwrap() {
+            "no-profiles" => assert!(choice.is_none()),
+            _ => {
+                let c = choice.unwrap();
+                assert_eq!(c["props"]["label"], "Chat profile");
+                assert!(c["props"]["options"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&c["props"]["value"]));
+            }
+        }
     }
 }
 
@@ -531,7 +625,9 @@ fn renders_the_vulpes_page_and_tile_states_for_review() {
     for s in states {
         hosts.push((s["state"].as_str().unwrap().to_string(), host_in(s)));
     }
-    let (w, h) = (4 * 250 + 20, 4 * 215 + 20);
+    let cols = 4usize;
+    let rows = hosts.len().div_ceil(cols) as u32;
+    let (w, h) = (4 * 250 + 20, rows * 215 + 20);
     let now = Instant::now();
     let Some(px) = rasterise(w, h, |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -554,13 +650,16 @@ fn renders_the_vulpes_page_and_tile_states_for_review() {
     println!("{}", save_png("vulpes-tiles.png", w, h, px).display());
 
     for name in [
+        "idle",
         "idle-web-running",
         "held-chat",
         "reserved-open-failed",
+        "no-profiles",
+        "long-profile",
         "error",
     ] {
         let mut host = host_in(&state_named(name));
-        let (w, h) = (620u32, 520u32);
+        let (w, h) = (620u32, 600u32);
         let px = rasterise(w, h, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading("AI");

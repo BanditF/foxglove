@@ -233,7 +233,8 @@ fn check_stream_props(node: &Node) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks the v1.4 and v1.5 props of one node (§5.2): `tone` is a string; a button's `opens` is
+/// Checks the v1.4 and v1.5 props of one node (§5.2): `tone` is a string; a button's `disabled` is a
+/// boolean; a button's `opens` is
 /// a target of its own module and its `action` an action id, never both; the stream and size
 /// props of [`check_stream_props`]. `actions` is the module's `[[actions]]` ids, when known; an
 /// unknown one is `ui.action`.
@@ -247,6 +248,9 @@ fn check_props(panel: &str, node: &Node, actions: Option<&[String]>) -> Result<(
     check_stream_props(node).or_else(bad)?;
     if node.kind != "button" {
         return Ok(());
+    }
+    if node.props.get("disabled").is_some_and(|d| !d.is_boolean()) {
+        return bad("disabled is true or false".into());
     }
     let opens = node.props.get("opens");
     let action = node.props.get("action");

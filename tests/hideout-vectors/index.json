@@ -4249,6 +4249,22 @@
       },
       "note": "button action (v1.4) names one of the module's [[actions]]: the hub sends action.invoke (source panel) and shows the bound key."
     },
+    "panels/valid/button-disabled.json": {
+      "spec": [
+        "5.2"
+      ],
+      "result": "valid",
+      "note": "button disabled (#1117): true draws it greyed and unclickable, false (or no prop) is the normal button; the node stays so its id and focus are kept."
+    },
+    "panels/invalid/button-disabled-not-bool.json": {
+      "spec": [
+        "5.2",
+        "15"
+      ],
+      "result": "invalid",
+      "id": "ui.prop",
+      "note": "disabled (#1117) must be true or false; a string rejects that panel."
+    },
     "panels/invalid/button-action-unknown.json": {
       "spec": [
         "5.2",

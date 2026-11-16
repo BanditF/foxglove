@@ -902,6 +902,11 @@ Nodes are `{type, id, props, bind?, stream?, children}`.
   `ui.event` as before. `tone`, `opens` and `action` are optional props: a hub of contract 1.3 or
   older ignores them (the button then sends `ui.event`), so a module that must run there also
   answers that `ui.event`.
+- **`disabled` (#1117)** on `button`: `true` draws the button greyed and unclickable; it sends
+  nothing, and no bound key's chip changes. The node stays, so focus and its id are kept, and the
+  module says in a `label` beside it why (for example "Start the web UI first"). Not a boolean:
+  `ui.prop`. Optional, so a hub that doesn't know it draws the button enabled, and a module that
+  must run there also answers the `ui.event` of a click it meant to refuse.
 
 ### 5.3 Updates, input and assets
 
