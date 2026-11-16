@@ -115,9 +115,9 @@ static STATUS: Mutex<Vec<Found>> = Mutex::new(Vec::new());
 /// next scan can withdraw the ones that are gone.
 #[cfg(not(test))]
 static HANDED: Mutex<Vec<((u16, u16), super::key_layout::LayoutSource)>> = Mutex::new(Vec::new());
-/// Tests run side by side and `key_layout` keeps one store per test thread, so what a scan
-/// handed over is per test thread too: a scan in another test must not rewrite this list under
-/// a test that is checking what it withdrew.
+// Tests run side by side and `key_layout` keeps one store per test thread, so what a scan
+// handed over is per test thread too: a scan in another test must not rewrite this list under
+// a test that is checking what it withdrew.
 #[cfg(test)]
 thread_local! {
     static HANDED: std::cell::RefCell<Vec<((u16, u16), super::key_layout::LayoutSource)>> =
