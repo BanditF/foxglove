@@ -166,6 +166,26 @@ pub fn tool_window_ex_style(ex: u32) -> u32 {
     (ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & !WS_EX_APPWINDOW
 }
 
+const WS_BORDER: u32 = 0x0080_0000;
+const WS_DLGFRAME: u32 = 0x0040_0000;
+const WS_CAPTION: u32 = WS_BORDER | WS_DLGFRAME;
+const WS_SYSMENU: u32 = 0x0008_0000;
+const WS_THICKFRAME: u32 = 0x0004_0000;
+
+/// DWM's window corner preference "do not round" (`DWMWCP_DONOTROUND`).
+pub const CORNER_DO_NOT_ROUND: i32 = 1;
+
+/// The overlay window's style without any chrome: no caption, border, system menu or sizing
+/// frame. winit's "undecorated" window (`with_decorations(false)`) still carries `WS_CAPTION |
+/// WS_BORDER | WS_SYSMENU` (winit 0.30 `WindowFlags::to_window_styles`) and only hides the frame by
+/// answering `WM_NCCALCSIZE`; DWM keeps treating it as a captioned window, so on Windows 11 it
+/// rounds the window's corners and composes a caption close button at the top-right into the
+/// DXGI desktop capture (never in GDI). The hook keeps these bits off through every winit style
+/// refresh.
+pub fn borderless_style(style: u32) -> u32 {
+    style & !(WS_CAPTION | WS_SYSMENU | WS_THICKFRAME)
+}
+
 /// Makes the overlay window a tool window ([`tool_window_ex_style`]) and keeps it one: called
 /// as soon as the window exists (its creation), on its own (the UI) thread.
 #[cfg(windows)]
@@ -713,6 +733,47 @@ mod imp {
         }
         subclass(h);
         set_tool_window(h);
+        set_borderless(h);
+    }
+
+    /// Strips the overlay's caption bits ([`super::borderless_style`]) and tells DWM not to
+    /// round its corners; the frame change makes DWM redraw it.
+    pub(super) fn set_borderless(h: isize) {
+        use windows::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
+        };
+        // SAFETY: style reads and writes and a DWM attribute on a window of this thread; a stale
+        // handle just fails. The attribute value outlives the call.
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd(h), GWL_STYLE) as u32;
+            let want = super::borderless_style(style);
+            if want != style {
+                let _ = SetWindowLongPtrW(hwnd(h), GWL_STYLE, want as isize);
+            }
+            let pref: i32 = super::CORNER_DO_NOT_ROUND;
+            let _ = DwmSetWindowAttribute(
+                hwnd(h),
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &pref as *const i32 as *const core::ffi::c_void,
+                core::mem::size_of::<i32>() as u32,
+            );
+            let _ = SetWindowPos(
+                hwnd(h),
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+            );
+        }
+    }
+
+    /// The window's style bits (tests).
+    #[cfg(test)]
+    pub(super) fn style(h: isize) -> u32 {
+        // SAFETY: a style read; a stale handle answers 0.
+        unsafe { GetWindowLongPtrW(hwnd(h), GWL_STYLE) as u32 }
     }
 
     /// Subclasses `h` with `proc` (on `h`'s own thread, as subclassing requires).
@@ -777,6 +838,7 @@ mod imp {
                 let s = &mut *(lparam.0 as *mut STYLESTRUCT);
                 let iconic = IsIconic(window).as_bool();
                 let refresh = IN_REFRESH.load(Ordering::Relaxed);
+                s.styleNew = super::borderless_style(s.styleNew);
                 if let Some(kept) = super::keep_minimized(refresh, iconic, s.styleOld, s.styleNew) {
                     s.styleNew = kept;
                     // Not eprintln: a closed stderr must not panic into Windows.
@@ -973,6 +1035,90 @@ mod tests {
             assert!(!IsWindowVisible(HWND(window.0)).as_bool(), "never shown");
             let _ = DestroyWindow(HWND(window.0));
         }
+    }
+
+    #[test]
+    fn the_overlay_style_has_no_caption_system_menu_or_frame() {
+        let winit_style = WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | 0x8000_0000 /* WS_POPUP */
+            | WS_MINIMIZE | 0x1000_0000 /* WS_VISIBLE */;
+        let s = borderless_style(winit_style);
+        assert_eq!(
+            s & (WS_BORDER | WS_DLGFRAME | WS_SYSMENU | WS_THICKFRAME),
+            0
+        );
+        assert_eq!(
+            s,
+            0x8000_0000 | WS_MINIMIZE | 0x1000_0000,
+            "other bits stay"
+        );
+        assert_eq!(borderless_style(s), s);
+        // DWMWCP_DONOTROUND in dwmapi.h.
+        assert_eq!(CORNER_DO_NOT_ROUND, 1);
+    }
+
+    /// On a hidden test window, the hook strips caption bits and keeps them off through a
+    /// winit-like rewrite of the whole style, and the corner preference is set (read back).
+    #[cfg(windows)]
+    #[test]
+    fn a_hidden_test_window_loses_its_caption_and_stays_square() {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Dwm::{
+            DwmGetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, IsWindowVisible, SetWindowLongW, GWL_STYLE,
+            WINDOW_EX_STYLE, WS_POPUP,
+        };
+        // SAFETY: a hidden captioned window of the built-in STATIC class on this thread,
+        // destroyed below.
+        let window = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                PCWSTR::null(),
+                windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
+                    WS_POPUP.0 | WS_CAPTION | WS_SYSMENU,
+                ),
+                0,
+                0,
+                16,
+                16,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("a hidden test window");
+        let h = window.0 as isize;
+        imp::subclass(h);
+        imp::set_borderless(h);
+        assert_eq!(imp::style(h) & (WS_CAPTION | WS_SYSMENU), 0);
+        // What winit's style refresh does: the whole style, captioned again.
+        // SAFETY: a style write on the test window of this thread.
+        unsafe {
+            SetWindowLongW(
+                HWND(window.0),
+                GWL_STYLE,
+                (WS_POPUP.0 | WS_CAPTION | WS_SYSMENU) as i32,
+            )
+        };
+        assert_eq!(imp::style(h) & (WS_CAPTION | WS_SYSMENU), 0, "kept off");
+        let mut pref: i32 = -1;
+        // SAFETY: reads one i32 attribute into `pref`; then the test window of this thread goes.
+        unsafe {
+            let _ = DwmGetWindowAttribute(
+                HWND(window.0),
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &mut pref as *mut i32 as *mut core::ffi::c_void,
+                core::mem::size_of::<i32>() as u32,
+            );
+            assert!(!IsWindowVisible(HWND(window.0)).as_bool(), "never shown");
+            let _ = DestroyWindow(HWND(window.0));
+        }
+        // Older Windows has no such attribute (the read fails, `pref` stays -1).
+        assert!(pref == CORNER_DO_NOT_ROUND || pref == -1, "pref {pref}");
     }
 
     #[test]
