@@ -508,7 +508,7 @@ fn open_in_browser_is_disabled_while_the_web_ui_is_stopped_and_the_chat_card_is_
         .into_iter()
         .find(|n| n["id"] == "web-hint")
         .unwrap();
-    assert_eq!(hint["props"]["text"], "Start the web UI first");
+    assert_eq!(hint["props"]["text"], "Start the web UI from Arete first.");
     let mut host = host_in(&stopped);
     assert_eq!(
         press_in_page(&mut host, "web-open"),

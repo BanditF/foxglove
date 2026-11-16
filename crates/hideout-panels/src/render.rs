@@ -182,6 +182,52 @@ fn toned(ui: &Ui, p: &Map<String, Value>, text: RichText) -> RichText {
     }
 }
 
+fn lum(c: Color32) -> f32 {
+    let ch = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.039_28 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+}
+
+/// WCAG contrast ratio of two opaque colours.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// Fill and text of a disabled button: the quiet weak text colour, pulled toward the normal text colour only as far
+/// as needed to reach 4.5:1 against the fill (egui's own graying is below that).
+pub fn disabled_button_colors(v: &egui::Visuals) -> (Color32, Color32) {
+    let fill = v.widgets.inactive.weak_bg_fill.to_opaque();
+    let (weak, strong) = (v.weak_text_color(), v.strong_text_color());
+    for i in 0..=20 {
+        let text = weak.lerp_to_gamma(strong, i as f32 / 20.0);
+        if contrast(text, fill) >= 4.5 {
+            return (fill, text);
+        }
+    }
+    (fill, strong)
+}
+
+/// Widest a `choice` dropdown draws, and the most characters of the chosen name it shows.
+const CHOICE_WIDTH: f32 = 240.0;
+const CHOICE_CHARS: usize = 28;
+
+/// `text` cut to `max` characters with a trailing ellipsis; unchanged when it fits.
+pub fn ellipsize(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('\u{2026}');
+    out
+}
+
 struct Draw<'a> {
     key: &'a PanelKey,
     view: &'a mut ViewState,
@@ -396,12 +442,27 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 let bound = action
                     .as_ref()
                     .and_then(|a| keys.get(&(d.key.module.clone(), a.clone())));
-                let button = ui.add_enabled(!off, egui::Button::new(&label));
+                let button = if off {
+                    // Drawn quiet but readable (4.5:1), hover-only so it never clicks.
+                    let (fill, text) = disabled_button_colors(ui.visuals());
+                    let b = egui::Button::new(RichText::new(&label).color(text))
+                        .fill(fill)
+                        .sense(egui::Sense::hover());
+                    ui.add(b)
+                } else {
+                    ui.add(egui::Button::new(&label))
+                };
                 // A screen reader hears the key with the name: "Unmute, F13".
                 if let Some(k) = bound {
-                    let (enabled, name) = (ui.is_enabled(), format!("{label}, {k}"));
+                    let (enabled, name) = (ui.is_enabled() && !off, format!("{label}, {k}"));
                     button.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name)
+                    });
+                }
+                if off && bound.is_none() {
+                    let name = label.clone();
+                    button.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, false, &name)
                     });
                 }
                 let pressed = d.press && !off && ui.is_enabled();
@@ -450,7 +511,11 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                 if !label.is_empty() {
                     ui.label(&label);
                 }
-                let combo = egui::ComboBox::from_id_salt(d.salt(n)).selected_text(&current);
+                // Capped width; a long name is cut with an ellipsis and the full name is the tooltip.
+                let shown = ellipsize(&current, CHOICE_CHARS);
+                let combo = egui::ComboBox::from_id_salt(d.salt(n))
+                    .width(CHOICE_WIDTH)
+                    .selected_text(&shown);
                 let r = combo.show_ui(ui, |ui| {
                     for o in &options {
                         if ui.selectable_label(o == &current, o).clicked() && o != &current {
@@ -458,6 +523,11 @@ fn widget(ui: &mut Ui, n: &Node, d: &mut Draw) {
                         }
                     }
                 });
+                let r = if shown != current {
+                    egui::InnerResponse::new(r.inner, r.response.on_hover_text(&current))
+                } else {
+                    r
+                };
                 let name = if label.is_empty() {
                     current.clone()
                 } else {
@@ -848,6 +918,55 @@ mod tests {
         assert_eq!(host.panel(&bad).unwrap().state, PanelState::Broken);
         assert!(host.panel(&good).unwrap().live());
         assert!(host.breadcrumb().is_none());
+    }
+
+    #[test]
+    fn disabled_button_text_has_4_5_contrast_on_its_fill() {
+        assert!((contrast(Color32::BLACK, Color32::WHITE) - 21.0).abs() < 0.01);
+        for v in [egui::Visuals::dark(), egui::Visuals::light()] {
+            let (fill, text) = disabled_button_colors(&v);
+            let c = contrast(text, fill);
+            assert!(c >= 4.5, "contrast {c} on {fill:?}");
+        }
+    }
+
+    #[test]
+    fn a_long_choice_value_is_cut_with_an_ellipsis() {
+        assert_eq!(ellipsize("daily", 28), "daily");
+        let cut = ellipsize(&"x".repeat(64), 28);
+        assert_eq!(cut.chars().count(), 28);
+        assert!(cut.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn a_long_choice_keeps_its_full_accessible_name() {
+        let Some(fonts) = crate::render::test_fonts() else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        let long = "p".repeat(60);
+        let mut host = PanelHost::default();
+        let tree = json!({"type": "choice", "id": "profile", "props": {
+            "label": "Chat profile", "value": long, "options": [long, "code"]}});
+        let params: Register = serde_json::from_value(json!({"instance": "i1", "panels": [
+            {"id": "p", "slot": "page", "title": "P", "icon": "x", "tree": tree}]}))
+        .unwrap();
+        assert!(host.register("m", "Example", None, &params).is_empty());
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts);
+        ctx.enable_accesskit();
+        let key = PanelKey::new("m", "p");
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                panel_ui(&mut host, ui, &key);
+            });
+        });
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        let want = format!("Chat profile, {long}");
+        assert!(nodes
+            .iter()
+            .any(|(_, n)| n.role() == egui::accesskit::Role::ComboBox
+                && n.label() == Some(want.as_str())));
     }
 
     #[test]
