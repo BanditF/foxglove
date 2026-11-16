@@ -94,10 +94,7 @@ const PROVIDE_LINES: &[(&str, &str)] = &[
         "wallpaper-engine.status",
         "Whether your live wallpaper is paused",
     ),
-    (
-        "wallpaper-engine.pause",
-        "Pause your live wallpaper for another program",
-    ),
+    ("wallpaper-engine.pause", "Pause your live wallpaper"),
     (
         "wallpaper-engine.release",
         "Let your live wallpaper play again",
