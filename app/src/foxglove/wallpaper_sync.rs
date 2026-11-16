@@ -1746,11 +1746,15 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
         let (tx, rx) = mpsc::channel();
         let stop = std::sync::Arc::new(AtomicBool::new(false));
+        // Taken before the typing starts: the run's cap counts from its first change, so a
+        // loaded machine that delays this thread can't make the run look shorter than its cap.
+        let t = Instant::now();
         let typing = {
             let stop = stop.clone();
             std::thread::spawn(move || {
-                // Layers changing for up to 5 s, faster than they settle.
-                let end = Instant::now() + Duration::from_secs(5);
+                // Layers changing for far longer than the cap (stopped as soon as the run is
+                // sent), faster than they settle.
+                let end = Instant::now() + Duration::from_secs(60);
                 while Instant::now() < end && !stop.load(Relaxed) {
                     if tx.send(Wake::Layer).is_err() {
                         break;
@@ -1764,7 +1768,6 @@ mod tests {
             max: Duration::from_millis(300),
             ..Settle::APP
         };
-        let t = Instant::now();
         assert!(matches!(
             next(&rx, settle, &mut windowed()),
             Next::Sync { .. }
@@ -1773,7 +1776,9 @@ mod tests {
         stop.store(true, Relaxed);
         typing.join().unwrap();
         assert!(took >= Duration::from_millis(300), "{took:?}");
-        assert!(took < Duration::from_secs(4), "{took:?}");
+        // Sent at the cap, not when the typing ends (60 s): the bound only has to tell those
+        // apart, so it is generous for a loaded machine.
+        assert!(took < Duration::from_secs(30), "{took:?}");
     }
 
     /// Wallpaper Engine's command line as a channel.
@@ -2205,11 +2210,15 @@ mod tests {
             let (pushes_tx, pushes) = mpsc::channel();
             let (tx, rx) = mpsc::channel();
             let before = health::now();
+            // The worker reads the state once per run, when the run is sent: that is the event
+            // to wait for where a run sends nothing (no Wallpaper Engine push to wait on).
+            let (reads_tx, reads) = mpsc::channel::<()>();
             let worker = {
                 let state = state.clone();
                 let full = screen(&full);
                 std::thread::spawn(move || {
                     let read = move || {
+                        let _ = reads_tx.send(());
                         let s = state.lock().unwrap().clone();
                         (
                             s,
@@ -2238,6 +2247,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(200));
             set("GAME");
             tx.send(Wake::Layer).unwrap();
+            // The held run is read and sent once the reload's quiet is over: the second read
+            // (the first was Start's). Quitting before that would drop the run, and its health
+            // note, on a machine slow enough to stretch the quiet past the windows below.
+            for _ in 0..2 {
+                reads
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("the held run is sent after the reload");
+            }
 
             if stops {
                 for _ in 0..2 {
@@ -2496,12 +2513,13 @@ mod tests {
         ));
         let took = t.elapsed();
         assert!(took >= Duration::from_millis(400), "{took:?}");
-        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert!(took < Duration::from_secs(30), "{took:?}");
 
         // A copy that keeps writing is sent at the cap.
         let (tx, rx) = mpsc::channel();
         let copying = std::thread::spawn(move || {
-            let end = Instant::now() + Duration::from_secs(4);
+            // Far longer than the cap; ends when the receiver is dropped below.
+            let end = Instant::now() + Duration::from_secs(60);
             while Instant::now() < end {
                 if tx.send(Wake::Reinstalled).is_err() {
                     break;
@@ -2518,7 +2536,8 @@ mod tests {
         drop(rx);
         copying.join().unwrap();
         assert!(took >= Duration::from_millis(1500), "{took:?}");
-        assert!(took < Duration::from_millis(3500), "{took:?}");
+        // Sent at the cap, not when the copy ends (60 s); generous for a loaded machine.
+        assert!(took < Duration::from_secs(30), "{took:?}");
     }
 
     /// A wallpaper connecting to the live feed has just loaded from its saved properties: every
