@@ -163,6 +163,63 @@ try {
     Check 'gc: -RemoveWorktrees keeps a dirty tree' (Test-Path (Join-Path $gw 'mid'))
     Check 'gc: -RemoveWorktrees removes a clean merged one' (-not (Test-Path (Join-Path $gw 'merged')))
 
+    # --- stall-check (#1126): the pure decision, then the script on a fake tree ---
+    . (Join-Path $here 'stall-check.ps1')
+    $sn = [datetime]'2026-11-16T12:00:00'
+    function SFacts($o) { $f = @{ game_running = $false; freeze_flag = $false; free_gb = 400; prs = @(); prs_known = $true; jobs = @(); any_min = 10; grace_active = $false }; foreach ($k in $o.Keys) { $f[$k] = $o[$k] }; $f }
+    $emptyState = @{ last_rules = @(); f_reported = $false; since = @{} }
+    $open = [pscustomobject]@{ number = 5; draft = $false; idle_min = 30 }
+    $d1 = Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ prs = @($open); any_min = 200 })
+    Check 'stall: first sighting is a strike, not an alarm' ($d1.action -eq 'none' -and $d1.stalled.Count -eq 1 -and -not $d1.stalled[0].confirmed)
+    $d2 = Get-StallDecision -Now $sn.AddHours(1) -State $d1.state -Facts (SFacts @{ prs = @($open); any_min = 260 })
+    Check 'stall: second run confirms rule a' ($d2.action -eq 'alarm' -and $d2.rules -contains 'a')
+    Check 'stall: since = when progress stopped' ($d2.stalled[0].since -eq $sn.AddHours(1).AddMinutes(-260).ToString('o'))
+    Check 'stall: a game keeps it silent' ((Get-StallDecision -Now $sn -State $d1.state -Facts (SFacts @{ prs = @($open); any_min = 260; game_running = $true })).action -eq 'none')
+    Check 'stall: grace suppresses rule a' (@((Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ prs = @($open); any_min = 260; grace_active = $true })).stalled).Count -eq 0)
+    Check 'stall: freeze flag -> freeze_lifted' ((Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ freeze_flag = $true })).action -eq 'freeze_lifted')
+    Check 'stall: low disk alarms at once' ((Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ free_gb = 20 })).action -eq 'alarm')
+    $dq = Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ any_min = 200 })
+    Check 'stall: quiet and idle -> f once' ($dq.action -eq 'alarm' -and $dq.rules -contains 'f')
+    Check 'stall: quiet again -> pause' ((Get-StallDecision -Now $sn -State $dq.state -Facts (SFacts @{ any_min = 220 })).action -eq 'pause')
+    Check 'stall: unknown PRs are never quiet' ((Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ prs_known = $false; any_min = 200 })).rules -notcontains 'f')
+    $idlePr = [pscustomobject]@{ number = 9; draft = $false; idle_min = 300 }
+    Check 'stall: rule b without a build' ((Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ prs = @($idlePr) })).stalled[0].rule -eq 'b')
+    Check 'stall: rule b off while cargo runs' (@((Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ prs = @($idlePr); jobs = @([pscustomobject]@{ name = 'cargo'; minutes = 5 }) })).stalled).Count -eq 0)
+    Check 'stall: llmster is not an overrun job' ((Get-StallDecision -Now $sn -State $emptyState -Facts (SFacts @{ jobs = @([pscustomobject]@{ name = 'llmster'; minutes = 9999 }) })).rules -notcontains 'c')
+
+    $sr = Join-Path $tmp 'stall'; $st = Join-Path $sr 'worktrees\_tools'; $sp = Join-Path $sr 'proj'; $sg = Join-Path $sr 'git'
+    New-Item -ItemType Directory $st, $sp, $sg | Out-Null
+    $oldT = (Get-Date).AddHours(-6)
+    Set-Content (Join-Path $sp 'aaaa.jsonl') '{"x":1}'; Set-Content (Join-Path $sp '59de466b.jsonl') '{"hub":1}'
+    Set-Content (Join-Path $sp 'cccc.jsonl') 'Foxglove stall check'
+    foreach ($f in Get-ChildItem $sp) { $f.LastWriteTime = $oldT; $f.CreationTime = $oldT }
+    (Get-Item (Join-Path $sp 'cccc.jsonl')).LastWriteTime = Get-Date   # a fresh stall-check transcript must not count
+    Set-Content (Join-Path $sg 'index') 'i'; (Get-Item (Join-Path $sg 'index')).LastWriteTime = $oldT
+    $prJson = Join-Path $sr 'prs.json'
+    Set-Content $prJson ('[{"number":7,"title":"t","isDraft":false,"updatedAt":"' + (Get-Date).AddHours(-6).ToUniversalTime().ToString('o') + '"}]')
+    $env:FOXGLOVE_OPS_GAME_PATHS = ''; $env:FOXGLOVE_OPS_GPU_UTIL = '5'
+    $sa = @('-NoProfile', '-File', (Join-Path $here 'stall-check.ps1'), '-Root', $sr, '-ProjectDir', $sp, '-GitDir', $sg, '-PrFile', $prJson, '-JobsJson', '[]', '-FreeGB', '400')
+    $o1 = & $ps @sa
+    Check 'stall script: run 1 exits 0, writes status' ($LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $st 'stall-status.json')))
+    $j1 = Get-Content -Raw (Join-Path $st 'stall-status.json') | ConvertFrom-Json
+    Check 'stall script: run 1 is a strike (rule a seen once)' ($j1.action -eq 'none' -and @($j1.stalled).Count -ge 1 -and $j1.strikes.a -eq 1 -and $j1.last_check)
+    Check 'stall script: progress ignores hub and stall-check transcripts' ($j1.progress.session_min -ge 350)
+    $null = & $ps @sa
+    $j2 = Get-Content -Raw (Join-Path $st 'stall-status.json') | ConvertFrom-Json
+    Check 'stall script: run 2 confirms the alarm and writes stall-alarm.txt' ($j2.action -eq 'alarm' -and (Test-Path (Join-Path $st 'stall-alarm.txt')))
+    Set-Content (Join-Path $st 'game-freeze.flag') 'x'
+    $null = & $ps @sa
+    $j3 = Get-Content -Raw (Join-Path $st 'stall-status.json') | ConvertFrom-Json
+    Check 'stall script: freeze flag lifted and removed' ($j3.action -eq 'freeze_lifted' -and -not (Test-Path (Join-Path $st 'game-freeze.flag')))
+    $env:FOXGLOVE_OPS_GAME_PATHS = 'C:\Epic Games\Fortnite\f.exe'
+    $null = & $ps @sa
+    $j4 = Get-Content -Raw (Join-Path $st 'stall-status.json') | ConvertFrom-Json
+    Check 'stall script: game running -> none, alarm file cleared' ($j4.action -eq 'none' -and $j4.game_running -and -not (Test-Path (Join-Path $st 'stall-alarm.txt')))
+    $env:FOXGLOVE_OPS_GAME_PATHS = ''
+    Check 'stall script: no network or GUI calls' (-not ((Get-Content -Raw (Join-Path $here 'stall-check.ps1')) -match '(?m)^[^#]*(\bgh pr|\bgh issue|Invoke-WebRequest|Invoke-RestMethod|notepad)'))
+    $wi = & $ps -NoProfile -File (Join-Path $here 'register-stall-check.ps1') -WhatIf
+    Check 'register-stall-check: -WhatIf registers nothing' ($LASTEXITCODE -eq 0 -and "$wi" -match 'would write' -and -not (Test-Path (Join-Path $here 'stall-check-hidden.vbs')))
+
     # --- the local-compute queue (#1128), on stubs ---
     & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-local-queue.ps1')
     Check 'local-queue tests' ($LASTEXITCODE -eq 0)
