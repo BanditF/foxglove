@@ -42,7 +42,7 @@ function Test-RustRelevant {
     $other = @($changed | Where-Object { $_ -notmatch '\.md$' -and $_ -notmatch '^scripts/.*\.py$' })
     return ($other.Count -gt 0)
 }
-# cargo-nextest, or $null: on PATH, else _tools\perf-bin\bin (or worktrees\_tools\perf-bin\bin) in this
+# cargo-nextest (OPTIONAL: when absent, e.g. Defender quarantined it, check.ps1 falls back to plain cargo test), or $null: on PATH, else _tools\perf-bin\bin (or worktrees\_tools\perf-bin\bin) in this
 # checkout's parent folders, so every worktree finds the one copy the machine has.
 function Find-Nextest {
     $onPath = Get-Command cargo-nextest -ErrorAction SilentlyContinue
@@ -107,7 +107,7 @@ try {
                     if (!$LASTEXITCODE) { cargo test --workspace --doc }
                 } finally { $env:PATH = $path }
             } else {
-                Write-Host 'crates: tests run with cargo test (cargo-nextest not found: cargo install cargo-nextest --locked)'
+                Write-Host 'crates: tests run with cargo test (cargo-nextest is optional and was not found; cargo install cargo-nextest --locked)'
                 cargo test --workspace
             }
         }
