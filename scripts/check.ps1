@@ -3,10 +3,17 @@
 # GitHub's Rust and app workflows only run by hand (Actions tab) for a Linux check or an exe.
 $ErrorActionPreference = 'Stop'
 
+# Seconds per stage, printed at the end (also when a stage fails) so the slow ones show in every gate log.
+$script:Timings = [System.Collections.Generic.List[object]]::new()
 function Step($name, [scriptblock]$command) {
     Write-Host "== $name" -ForegroundColor Cyan
-    & $command
-    if ($LASTEXITCODE) { throw "$name failed" }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        & $command
+        if ($LASTEXITCODE) { throw "$name failed" }
+    } finally {
+        $script:Timings.Add([pscustomobject]@{ Stage = $name; Seconds = [math]::Round($clock.Elapsed.TotalSeconds, 1) })
+    }
 }
 
 . "$PSScriptRoot\build-slot.ps1"
@@ -14,7 +21,9 @@ Push-Location (Split-Path -Parent $PSScriptRoot)
 # One of the two cargo build slots for the whole gate, at about half the cores (#347).
 $slot = $null
 try {
+    $queue = [Diagnostics.Stopwatch]::StartNew()
     $slot = Enter-BuildSlot
+    $script:Timings.Add([pscustomobject]@{ Stage = '(waited for a cargo slot)'; Seconds = [math]::Round($queue.Elapsed.TotalSeconds, 1) })
     $start = Get-Date
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
     # The recurring ops scripts (#949) on fake inputs; window-free, no network.
@@ -62,6 +71,10 @@ try {
         catch { Write-Warning "clean-worktrees: $_" }
     }
 } finally {
+    if ($script:Timings.Count) {
+        Write-Host '== stage timings (s)' -ForegroundColor Cyan
+        foreach ($t in $script:Timings) { Write-Host ('stage-time {0,7:N1}  {1}' -f $t.Seconds, $t.Stage) }
+    }
     Exit-BuildSlot $slot
     Pop-Location
 }
