@@ -181,6 +181,36 @@ fn a_cold_press_starts_the_module_and_is_delivered_once_ready() {
     assert!(results(&out).is_empty(), "{out:?}");
 }
 
+/// Clicks while the module is connected but not ready yet (review of #1240): they wait for
+/// `module.ready` like the first, a repeat is busy, and nothing reaches the module early.
+#[test]
+fn a_press_while_starting_waits_for_ready_and_is_not_doubled() {
+    let now = Instant::now();
+    let mut r = rig();
+    let out = r.call_module_starting(ARETE, "action.invoke", press("free-gpu"), 1, now, WAIT);
+    assert_eq!(activations(&out), 1);
+    let (a, _) = connect(&mut r, false, now);
+    let out = r.call_module_starting(ARETE, "action.invoke", press("free-gpu"), 2, now, WAIT);
+    assert!(
+        invokes(&out, a).is_empty(),
+        "went to a module not ready: {out:?}"
+    );
+    assert_eq!(results(&out)[0].1.as_ref().unwrap_err()["code"], 3);
+    // Another item while starting: queued too, no second start.
+    let other = press("release-gpu-reservation");
+    let out = r.call_module_starting(ARETE, "action.invoke", other, 3, now, WAIT);
+    assert_eq!(activations(&out), 0);
+    assert!(invokes(&out, a).is_empty(), "{out:?}");
+    let out = r.receive(
+        a,
+        r#"{"jsonrpc":"2.0","method":"module.ready","params":{"instance":"i"}}"#,
+        now,
+    );
+    let calls = invokes(&out, a);
+    assert_eq!(calls.len(), 2, "{out:?}");
+    assert_eq!(calls[0]["params"], press("free-gpu"));
+}
+
 #[test]
 fn a_cold_press_that_never_starts_fails_once_after_its_wait() {
     let now = Instant::now();

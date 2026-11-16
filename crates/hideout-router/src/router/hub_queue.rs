@@ -61,7 +61,10 @@ impl Router {
                 return out;
             }
         }
-        if self.module_conn(module).is_some() {
+        // Only a ready module takes the press now: one connected but not yet ready (a cold
+        // start under way) gets it from the queue at `module.ready`, so a second click in that
+        // window is the same press (busy), not a second call that overtakes the first.
+        if self.ready_conn(module).is_some() {
             return self.call_module(module, method, params, tag, now);
         }
         if !self.modules.contains_key(module) {
@@ -82,7 +85,8 @@ impl Router {
             self.fail(Waiter::Hub(tag), code::BUSY, "busy", None, &mut out);
             return out;
         }
-        if !self.hub_queue.iter().any(|q| q.module == module) {
+        if self.module_conn(module).is_none() && !self.hub_queue.iter().any(|q| q.module == module)
+        {
             log::info!("router: {module}: activated by a hub call ({method})");
             out.push(Out::Activate(module.into()));
         }
