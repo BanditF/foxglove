@@ -89,6 +89,10 @@ pub struct SyncHealth {
     pub lease_pauses: u64,
     pub lease_plays: u64,
     pub lease_dropped: u64,
+    /// (#1142) Pauses an earlier run left (a crash, a kill, a worker that stopped), ended at
+    /// start; and times Wallpaper Engine quit while a lease held it.
+    pub lease_stale: u64,
+    pub lease_engine_quit: u64,
 }
 
 impl SyncHealth {
@@ -104,6 +108,8 @@ impl SyncHealth {
             lease_pauses: 0,
             lease_plays: 0,
             lease_dropped: 0,
+            lease_stale: 0,
+            lease_engine_quit: 0,
         }
     }
 
@@ -223,15 +229,18 @@ pub fn rows(h: &SyncHealth, now: Instant) -> Vec<HealthRow> {
         ),
     };
     let mut out = vec![pushes, suppressed, last];
-    if h.lease_pauses + h.lease_plays + h.lease_dropped > 0 {
-        out.push(row(
-            "Pause leases",
-            Level::Ok,
-            format!(
-                "paused {}, played {}, dropped plays {}",
-                h.lease_pauses, h.lease_plays, h.lease_dropped
-            ),
-        ));
+    if h.lease_pauses + h.lease_plays + h.lease_dropped + h.lease_stale + h.lease_engine_quit > 0 {
+        let mut detail = format!(
+            "paused {}, played {}, dropped plays {}",
+            h.lease_pauses, h.lease_plays, h.lease_dropped
+        );
+        if h.lease_stale > 0 {
+            detail += &format!(", left by a crash {}", h.lease_stale);
+        }
+        if h.lease_engine_quit > 0 {
+            detail += &format!(", Wallpaper Engine quit {}", h.lease_engine_quit);
+        }
+        out.push(row("Pause leases", Level::Ok, detail));
     }
     out
 }
@@ -320,6 +329,13 @@ mod tests {
         let r = rows(&h, Instant::now());
         assert_eq!(r.len(), 4);
         assert_eq!(r[3].detail, "paused 2, played 1, dropped plays 1");
+        // #1142: the new parts show only once they happened.
+        h.lease_stale = 1;
+        h.lease_engine_quit = 2;
+        assert_eq!(
+            rows(&h, Instant::now())[3].detail,
+            "paused 2, played 1, dropped plays 1, left by a crash 1, Wallpaper Engine quit 2"
+        );
     }
 
     #[test]
