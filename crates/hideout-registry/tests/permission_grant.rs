@@ -594,3 +594,15 @@ fn changed_program_arguments_void_the_grant() {
     assert!(reg.void_if_changed(ID, NOW).unwrap().is_some());
     assert!(reg.inventory.modules[ID].granted.is_empty());
 }
+
+#[test]
+fn a_gpu_provide_is_listed_as_sensitive_with_the_manager_line() {
+    for p in ["provide:gpu.*", "provide:gpu.request"] {
+        let (g, line, sensitive) = describe(p);
+        assert_eq!(g, Group::Sensitive, "{p}");
+        assert!(sensitive, "{p}");
+        assert_eq!(line, "Act as the GPU manager for all apps", "{p}");
+    }
+    // Other provides stay as they were.
+    assert!(!describe("provide:health.read").2);
+}

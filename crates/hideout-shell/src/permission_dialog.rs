@@ -88,6 +88,10 @@ impl ListItem {
     /// "<plain line>. This lets <name> <risk sentence>." under a sensitive item.
     pub fn confirm_line(&self, name: &str) -> String {
         let risk = match self.raw.as_str() {
+            r if r.starts_with("provide:gpu.") => {
+                "see every AI request from every app, \
+             including what you type, and answer them"
+            }
             "key.events" => "see every key you press",
             "hid.raw" => "talk to your devices directly",
             r if r == "net" || r.starts_with("net.") => "use the network",
@@ -235,7 +239,7 @@ impl PermDialog {
     pub fn binding_lines(&self) -> [String; 3] {
         [
             format!("Only for this copy of {}:", self.name),
-            "If the program or this list changes, Hideout asks again.".into(),
+            "If this file or this list changes, Hideout asks again.".into(),
             format!(
                 "You can turn each one off any time in Modules, {}.",
                 self.name
@@ -634,6 +638,11 @@ mod tests {
         assert!(d.items[0]
             .confirm_line("Foxglove")
             .contains("see every key you press"));
+        let gpu = item("provide:gpu.*", Group::Sensitive, true, false);
+        assert_eq!(
+            gpu.confirm_line("Gpu Helper"),
+            "line of provide:gpu.*. This lets Gpu Helper see every AI request from every app, including what you type, and answer them."
+        );
     }
 
     #[test]
