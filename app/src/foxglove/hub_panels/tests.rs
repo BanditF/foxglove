@@ -658,7 +658,7 @@ fn the_wallpaper_engine_section_says_who_holds_it() {
         [
             "Paused by Arete",
             "\u{201c}loading a model\u{201d}",
-            "Resume"
+            "Resume wallpapers"
         ]
     );
     assert_eq!(
@@ -677,7 +677,10 @@ fn the_wallpaper_engine_section_says_who_holds_it() {
             full_screen: true,
             ..held(&["Arete"])
         })[1..],
-        ["Plays when the full-screen app closes.", "Resume"]
+        [
+            "Plays when the full-screen app closes.",
+            "Resume wallpapers"
+        ]
     );
     assert_eq!(
         says(Wallpaper {

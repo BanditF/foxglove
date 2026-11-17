@@ -1759,7 +1759,7 @@ fn the_page_names_the_hubs_holders_and_resume_ends_their_leases() {
         .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
         .unwrap();
     let shown = rig.link.shown.clone().unwrap();
-    assert!(said(&shown, "Paused by Arete") && said(&shown, "Resume"));
+    assert!(said(&shown, "Paused by Arete") && said(&shown, "Resume wallpapers"));
     assert!(
         !said(&shown, "Paused by X"),
         "another family's holder isn't named"

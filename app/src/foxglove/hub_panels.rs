@@ -49,8 +49,8 @@ const CUT: usize = 60;
 /// The Wallpaper Engine section's id, and its Resume button's node.
 pub const WALLPAPER: &str = "wallpaper-engine";
 pub const RESUME_NODE: &str = "we-resume";
-/// The Resume button's words.
-pub const RESUME: &str = "Resume";
+/// The Resume button's words: they name what resumes, so a screen reader says it alone too.
+pub const RESUME: &str = "Resume wallpapers";
 /// The most bytes of one caller's reason shown (in quotes, after the holder's name).
 const REASON_CUT: usize = 48;
 

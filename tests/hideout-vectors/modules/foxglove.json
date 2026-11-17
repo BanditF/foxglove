@@ -3695,7 +3695,7 @@
                   {
                     "id": "we-resume",
                     "props": {
-                      "label": "Resume"
+                      "label": "Resume wallpapers"
                     },
                     "type": "button"
                   }
@@ -3976,7 +3976,7 @@
                   {
                     "id": "we-resume",
                     "props": {
-                      "label": "Resume"
+                      "label": "Resume wallpapers"
                     },
                     "type": "button"
                   }
@@ -4257,7 +4257,7 @@
                   {
                     "id": "we-resume",
                     "props": {
-                      "label": "Resume"
+                      "label": "Resume wallpapers"
                     },
                     "type": "button"
                   }
