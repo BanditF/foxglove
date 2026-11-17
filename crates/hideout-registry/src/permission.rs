@@ -101,6 +101,16 @@ const PROVIDE_LINES: &[(&str, &str)] = &[
     ),
 ];
 
+/// #1134: the line for a `provide:gpu.*` (or any `provide:gpu.` name). The module that holds it
+/// is the GPU manager: every app's AI request goes to it, so it is drawn as Sensitive and the
+/// dialog adds the module's name and what it sees (`confirm_line`).
+pub const GPU_BROKER_LINE: &str = "Act as the GPU manager for all apps";
+
+/// Whether a `provide:` method name makes its holder the GPU manager.
+pub fn is_gpu_broker(method: &str) -> bool {
+    method == "gpu.*" || method.starts_with("gpu.")
+}
+
 /// Other permission strings.
 const OTHER_LINES: &[(&str, &str)] = &[
     (
@@ -144,6 +154,9 @@ fn is_sensitive(raw: &str) -> bool {
 /// the raw string in the Sensitive group (§6.2's "Unknown: <raw>").
 pub fn describe(raw: &str) -> (Group, String, bool) {
     if let Some(m) = raw.strip_prefix("provide:") {
+        if is_gpu_broker(m) {
+            return (Group::Sensitive, GPU_BROKER_LINE.to_string(), true);
+        }
         let group = if changes(m) {
             Group::MakeChanges
         } else {

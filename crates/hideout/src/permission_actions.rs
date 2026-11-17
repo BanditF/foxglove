@@ -1262,6 +1262,34 @@ mod tests {
     }
 
     #[test]
+    fn the_gpu_manager_words_avoid_the_banned_ones() {
+        let (g, line, sensitive) = hideout_registry::permission::describe("provide:gpu.*");
+        assert_eq!(g, hideout_registry::permission::Group::Sensitive);
+        let item = ListItem {
+            raw: "provide:gpu.*".into(),
+            line,
+            group: Group::Sensitive,
+            allowable: true,
+            sensitive,
+            reason: None,
+            checked: false,
+            confirmed: false,
+            new: false,
+        };
+        assert!(item.sensitive);
+        let said = item.said();
+        let confirm = item.confirm_line("Gpu Helper");
+        for t in [item.line.clone(), said, confirm] {
+            let t = t.to_lowercase();
+            for bad in [
+                "program", "provide", "method", "palette", "look ", "effect", "broker",
+            ] {
+                assert!(!t.contains(bad), "{t} says {bad}");
+            }
+        }
+    }
+
+    #[test]
     fn dates_read_in_words() {
         assert_eq!(date_words("2026-11-13T12:00:00Z"), "13 Nov 2026");
         assert_eq!(date_words("later"), "later");

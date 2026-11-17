@@ -3633,3 +3633,65 @@ fn the_waits_word_keeps_its_contrast_in_both_themes() {
         }
     }
 }
+
+/// Review images for #1134: the dialog for a module that asks to be the GPU manager, from the
+/// real renderer (no window). The "I understand" line names the module.
+#[test]
+fn renders_the_gpu_manager_dialog_for_review() {
+    use crate::permission_dialog::{Group, ListItem, PermDialog};
+    use crate::permission_dialog_ui::perm_dialog_ui;
+    for (dark, tag) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let it = |raw: &str, line: &str, g, sensitive, confirmed| ListItem {
+            raw: raw.into(),
+            line: line.into(),
+            group: g,
+            allowable: true,
+            sensitive,
+            reason: None,
+            checked: true,
+            confirmed,
+            new: false,
+        };
+        let mut d = PermDialog {
+            id: "example.gpu-helper".into(),
+            name: "GPU Helper".into(),
+            code: "9c41e07b3a5d8f26".into(),
+            path: r"C:\Program Files\GPU Helper\gpu-helper.exe".into(),
+            items: vec![
+                it(
+                    "provide:gpu.*",
+                    "Act as the GPU manager for all apps",
+                    Group::Sensitive,
+                    true,
+                    false,
+                ),
+                it(
+                    "provide:wallpaper-engine.status",
+                    "Whether your live wallpaper is paused",
+                    Group::AnswerQuestions,
+                    false,
+                    false,
+                ),
+            ],
+            reason: None,
+            keyboard: None,
+            removed: Vec::new(),
+            error: None,
+        };
+        let (w, h) = (760u32, 620u32);
+        let Some(rgba) = rasterise(w, h, |ctx| {
+            set_theme(ctx, choice);
+            ctx.style_mut(|s| s.animation_time = 0.0);
+            perm_dialog_ui(ctx, &t, &mut d, true);
+        }) else {
+            return;
+        };
+        save_png(&format!("gpu-manager-{tag}.png"), w, h, rgba);
+    }
+}
