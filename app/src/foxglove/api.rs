@@ -119,16 +119,21 @@ const WALLPAPER_REASON_MAX: usize = 64;
 /// A character a `reason` may not hold (#1142): it is shown to the user next to the holder's
 /// name, so nothing that starts a new line, reorders the text around it (bidi overrides and
 /// isolates, direction marks) or hides in it (zero-width characters) can make it read as
-/// another line or another app's name.
+/// another line or another app's name. The same set a module's name drops
+/// (`hideout_contract::module` `hidden_in_name`, §4.1), plus line and paragraph separators.
 fn spoofing_char(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{061C}'
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
                 | '\u{200B}'..='\u{200F}'
                 | '\u{2028}'..='\u{202E}'
                 | '\u{2060}'..='\u{2069}'
                 | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
         )
 }
 
@@ -1902,6 +1907,8 @@ mod parity_tests {
             "zero\u{200B}width",
             "tab\there",
             "\u{FEFF}bom",
+            "soft\u{00AD}hyphen",
+            "tag\u{E0041}",
         ] {
             let e = AppDevices
                 .call_from(1, "wallpaper-engine.pause", json!({ "reason": bad }))
