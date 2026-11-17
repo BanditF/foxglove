@@ -459,7 +459,13 @@ fn holders_are_named_and_resume_ends_every_lease_of_the_family() {
     // Another family at the same provider is left alone; the fact goes out to the panel host.
     let out = t.r.end_leases(P, "example.other");
     assert!(closes(&out, t.p).is_empty());
-    let out = t.r.end_leases(P, "example.lessor");
+    let out = t.r.resume_leases(P, "example.lessor");
+    let notes: Vec<Value> = sends(&out, t.p)
+        .into_iter()
+        .filter(|m| m["method"] == "lease.end")
+        .collect();
+    assert_eq!(notes.len(), 1, "the provider hears the tray's Resume");
+    assert_eq!(notes[0]["params"], json!({ "family": "example.lessor" }));
     let mut ended = closes(&out, t.p);
     ended.sort();
     assert_eq!(

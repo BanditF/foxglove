@@ -1570,6 +1570,20 @@ impl Router {
         out
     }
 
+    /// The tray's Resume (§8.5, v1.18): [`Router::end_leases`], then the provider hears
+    /// `lease.end {family}` (a notification) so it ends the holds it keeps outside the hub too.
+    pub fn resume_leases(&mut self, provider: &str, family: &str) -> Vec<Out> {
+        let mut out = self.end_leases(provider, family);
+        if let Some(p) = self.ready_conn(provider) {
+            out.push(Out::Send(
+                p,
+                json!({"jsonrpc": "2.0", "method": hideout_contract::lease::LEASE_END,
+                       "params": {"family": family}}),
+            ));
+        }
+        out
+    }
+
     /// The name people know a lease's holder by (§8.5, v1.17): a module's display name, a
     /// tool's `initialize` name, hidden characters dropped and cut at
     /// [`hideout_contract::lease::HOLDER_NAME_MAX`] characters.
