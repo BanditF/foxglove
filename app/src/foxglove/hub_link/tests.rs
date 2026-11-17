@@ -2254,3 +2254,22 @@ fn a_lease_made_after_the_link_dropped_is_ended_by_the_worker() {
 fn the_link_names_lease_closed_as_the_contract_does() {
     assert_eq!(LEASE_CLOSED, hideout_contract::lease::LEASE_CLOSED);
 }
+
+#[test]
+fn the_link_names_lease_end_as_the_contract_does() {
+    assert_eq!(LEASE_END, hideout_contract::lease::LEASE_END);
+}
+
+/// #1248: the hub's `lease.end {family}` (the tray's Resume) is the hub's word, not ours to
+/// echo: the link sends no `lease.end` request back.
+#[test]
+fn the_hubs_lease_end_is_not_sent_back() {
+    let (mut rig, _we) = we_rig();
+    let n = json!({"jsonrpc":"2.0","method":"lease.end",
+                   "params":{"family": WE_FAMILY}});
+    rig.link.line(&n.to_string()).unwrap();
+    assert!(
+        std::mem::take(rig.link.writer_mut()).is_empty(),
+        "no echo to the hub"
+    );
+}

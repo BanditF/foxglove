@@ -1,6 +1,6 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.17** (v1.16 plus who holds a provider's leases as a hub fact
+Status: spec, contract version **1.18** (v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
 and the user's Resume that ends them, #1142; v1.16 was v1.15 plus the tray menu's quick actions: an `action`
 panel is a tray menu item, a press on a cold module starts it and is delivered, and `tray` is a
 user source, #1234; v1.15 was v1.14 plus a cap on the leases one caller holds at one
@@ -18,12 +18,18 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.18** (#1248): the tray's Resume reaches the provider. After the hub ends a family's leases
+  for the user (the tray's *Resume wallpapers*), it sends the provider `lease.end {family}`
+  (H → M, §8.8), a notification, so the provider ends the holds it keeps itself, such as
+  Foxglove's local API callers, which the hub can't see. The provider answers nothing and MUST
+  NOT send `lease.end` back for it. A provider that doesn't know it ignores it. `lease.end`
+  stays M → H as a request too (v1.17); the two directions don't meet. `hub` stays 1.3 (§8.7).
 - **1.17** (#1142): who holds a provider's leases, and a way for the user to end them (§8.5).
   The hub keeps the fact `module.<provider>.lease_holders` = `{"<family>": ["<name>", ...]}`
   while somebody holds a lease there: each holder by the name people know it by (a module's
@@ -2119,7 +2125,11 @@ Rules:
   hub ends only the calling module's own leases and answers `{ended}`, the number. Each lease
   closes with `lease.closed {reason: "revoked"}`. Holders aren't told; their next call naming
   one answers `lease.unknown`, which a holder MUST treat as ended. There is no time limit on a
-  lease: it lasts while its holder's connection does, until released or ended.
+  lease: it lasts while its holder's connection does, until released or ended. (v1.18) After the
+  hub's own Resume (the tray's) it also sends the provider the notification `lease.end
+  {family}` (H → M), once the `lease.closed` notices: the provider ends the holds it keeps
+  outside the hub (Foxglove: its local API's callers), so the tray's Resume ends the same
+  pauses as the provider's own page.
 - **Lease ids (v1.14, #1229).** Every routed caller reaches a provider over the hub's one
   connection, so the provider can't tell callers apart; the hub does, by the rules below. The
   hub keeps no lock while it calls out: the router decides and returns the messages, the driver
@@ -2241,6 +2251,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `state.import` | H → M | call | `{blob, from_version}` | `{}` | — |
 | `module.exit` | H → M | notification | `{reason}` | — (exit 0 within 5 s, or the Job ends it) | — |
 | `lease.end` (v1.17) | M → H | request | `{family}` | `{ended}` | −32602 without a family; denied for a tool |
+| `lease.end` (v1.18) | H → M | notification | `{family}` (after the user's Resume at the hub's tray: end the holds you keep outside the hub too) | — | — |
 | `lease.closed` (v1.3) | H → M | notification | `{lease, reason: "disconnect" \| "released" \| "revoked" \| "restart"}` ((v1.14) `restart`; an unknown reason means ended) | — | — |
 
 **Panels and UI**

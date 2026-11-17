@@ -135,6 +135,8 @@ pub const SERVED: &[&str] = &[
 
 /// The hub's notice that a lease the module handed out ended (contract section 8.5).
 const LEASE_CLOSED: &str = "lease.closed";
+/// The hub tells the provider the user pressed Resume at its tray (contract v1.18).
+const LEASE_END: &str = "lease.end";
 
 /// Routed calls waiting for the worker, all callers together (#1156 M2). The router already
 /// caps one caller at `hideout_router::MAX_INFLIGHT_PER_CALLER` forwarded and unanswered calls
@@ -378,6 +380,15 @@ impl Handler for Hub {
             // hub can send this (a hub-owned name, section 8.3).
             if let (Some(d), Some(lease)) = (self.devices.as_ref(), params["lease"].as_str()) {
                 d.lease_closed(ROUTED_CONN, lease);
+            }
+            return;
+        }
+        if method == LEASE_END {
+            // The user's Resume at the hub's tray (v1.18, #1248): the hub ended its routed
+            // leases already; the local API's callers end here, so the tray ends the same
+            // pauses as the page's Resume. Nothing goes back to the hub.
+            if params["family"].as_str() == Some(WE_FAMILY) {
+                super::wallpaper_sync::resume_all();
             }
             return;
         }
