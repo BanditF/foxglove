@@ -15,6 +15,10 @@
 //!   callers apart (only a lease's holder may name it) and caps each one's leases
 //!   (`MAX_LEASES_PER_CALLER`); `lease.closed` ends one lease ([`Leases::hub_closed`]), and the
 //!   hub link dropping ends them all ([`Leases::drop_conn`] of [`ROUTED`]).
+//! - The table lives only in the sync worker; the worker keeps a pause mark on disk while
+//!   Foxglove's pause holds Wallpaper Engine (#1142, `wallpaper_sync::PauseMark`), so a pause
+//!   whose table died with a crash is ended at the next start ([`Leases::recover`]). Wallpaper
+//!   Engine quitting ends Foxglove's part in its pause ([`Leases::engine_gone`]).
 
 use std::collections::VecDeque;
 
@@ -71,7 +75,8 @@ pub enum Fail {
 pub struct Ended {
     /// `play` went out.
     pub played: bool,
-    /// Why it didn't: `held` (other leases remain), `user-paused` or `fullscreen`.
+    /// Why it didn't: `held` (other leases remain), `user-paused`, `fullscreen` or (#1142)
+    /// `restarted` (Wallpaper Engine quit meanwhile and came back playing).
     pub why: Option<&'static str>,
     /// The last lease ended, whatever was sent.
     pub last: bool,
@@ -85,9 +90,16 @@ pub struct Leases {
     ended: VecDeque<(u64, String, Ended)>,
     /// Foxglove sent the `pause` that holds Wallpaper Engine now (it wasn't paused before).
     we_paused: bool,
+    /// Wallpaper Engine quit while it was ours (#1142): it came back playing, so the live
+    /// leases no longer hold it and their last release answers `restarted`.
+    restarted: bool,
     pub paused: u64,
     pub played: u64,
     pub dropped: u64,
+    /// Pauses an earlier Foxglove (or worker) left behind, ended at start (#1142).
+    pub stale: u64,
+    /// Times Wallpaper Engine quit while a lease held it (#1142).
+    pub engine_quit: u64,
 }
 
 impl Leases {
@@ -187,6 +199,29 @@ impl Leases {
         had.then(|| self.after(apply, full))
     }
 
+    /// A pause an earlier Foxglove left (the pause mark, #1142: it crashed, was killed, or its
+    /// worker panicked with leases live): no lease holds it now, so it ends as a last release
+    /// would. The mark is only ever written for Foxglove's own pause, never over the user's.
+    pub fn recover(&mut self, apply: &mut impl Apply, full: bool) -> Ended {
+        self.stale += 1;
+        self.we_paused = true;
+        self.after(apply, full)
+    }
+
+    /// Wallpaper Engine isn't running any more while Foxglove held it paused (#1142): it starts
+    /// again playing, so the pause is no longer Foxglove's. The leases stay live (their holders
+    /// still hold them); their last release plays nothing and answers `restarted`. `true` when
+    /// this changed anything.
+    pub fn engine_gone(&mut self) -> bool {
+        if !self.we_paused {
+            return false;
+        }
+        self.we_paused = false;
+        self.restarted = !self.live.is_empty();
+        self.engine_quit += 1;
+        true
+    }
+
     fn after(&mut self, apply: &mut impl Apply, full: bool) -> Ended {
         if !self.live.is_empty() {
             return Ended {
@@ -195,11 +230,15 @@ impl Leases {
             };
         }
         let mine = std::mem::take(&mut self.we_paused);
+        let restarted = std::mem::take(&mut self.restarted);
         let last = |played, why| Ended {
             played,
             why,
             last: true,
         };
+        if restarted {
+            return last(false, Some("restarted"));
+        }
         if !mine {
             self.dropped += 1;
             return last(false, Some("user-paused"));
@@ -433,6 +472,57 @@ mod tests {
             l.release(&mut &mut f, ROUTED, &id, false),
             Err(Fail::Unknown)
         );
+    }
+
+    /// #1142: a pause an earlier run left plays once, under the full-screen rule.
+    #[test]
+    fn a_stale_pause_is_ended_like_a_last_release() {
+        let (mut f, mut l) = (up(), Leases::default());
+        let e = l.recover(&mut &mut f, false);
+        assert_eq!((e.played, e.why, e.last), (true, None, true));
+        assert_eq!(f.calls, ["play"]);
+        assert!(!l.paused_by_lease());
+        let e = l.recover(&mut &mut f, true);
+        assert_eq!((e.played, e.why), (false, Some("fullscreen")));
+        assert_eq!(f.calls, ["play"], "Wallpaper Engine's own setting plays it");
+        let mut down = Fake::default();
+        let e = l.recover(&mut &mut down, false);
+        assert_eq!(
+            (e.played, e.why),
+            (false, None),
+            "not running: nothing to play"
+        );
+        assert!(down.calls.is_empty(), "its command line would start it");
+        assert_eq!((l.stale, l.played, l.dropped), (3, 1, 1));
+    }
+
+    /// #1142: Wallpaper Engine quitting mid-lease ends Foxglove's part in the pause; the leases
+    /// stay, and the last one plays nothing and says why.
+    #[test]
+    fn wallpaper_engine_quitting_ends_our_pause_but_not_the_leases() {
+        let (mut f, mut l) = (up(), Leases::default());
+        assert!(!l.engine_gone(), "nothing of ours to end");
+        let (a, _) = l.pause(&mut &mut f, 1, "a", false).unwrap();
+        let (b, _) = l.pause(&mut &mut f, 1, "b", false).unwrap();
+        assert!(l.engine_gone());
+        assert!(!l.paused_by_lease());
+        assert!(!l.engine_gone(), "once");
+        assert_eq!(l.count(), 2);
+        let e = l.release(&mut &mut f, 1, &a, false).unwrap();
+        assert_eq!(e.why, Some("held"));
+        let e = l.release(&mut &mut f, 1, &b, false).unwrap();
+        assert_eq!((e.played, e.why, e.last), (false, Some("restarted"), true));
+        assert_eq!(
+            f.calls,
+            ["pause"],
+            "no play over a restarted Wallpaper Engine"
+        );
+        assert_eq!(l.engine_quit, 1);
+        // The next lease pauses again, and its release plays as before.
+        let (c, paused) = l.pause(&mut &mut f, 1, "c", false).unwrap();
+        assert!(paused);
+        assert!(l.release(&mut &mut f, 1, &c, false).unwrap().played);
+        assert_eq!(f.calls, ["pause", "pause", "play"]);
     }
 
     #[test]

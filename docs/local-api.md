@@ -150,6 +150,14 @@ The params and results are in the schema. Notes:
   `wallpaper.control`. The fact `wallpaper_engine.paused_by` holds the live leases' reasons
   (absent when none), and the health view gains `paused N, played N, dropped plays N`. Wallpaper
   Engine has no "am I paused" query, so the user's pause is seen only through a paired wallpaper.
+  (#1142) A pause outlives nothing: while Foxglove's pause holds Wallpaper Engine the file
+  `wallpaper-engine-paused` sits beside `foxglove.toml` (written before the `pause` goes out), and
+  a Foxglove that starts and finds it (after a crash, a kill or a stopped sync worker) plays
+  Wallpaper Engine under the rules above, or just removes it when Wallpaper Engine isn't running.
+  If Wallpaper Engine quits while paused for a lease (seen at the next change or lease call), it
+  comes back playing: pushes go on, the leases stay, and the last release answers `why:
+  "restarted"` without a play. The health row adds `left by a crash N` and `Wallpaper Engine
+  quit N` once they happen.
 - **Show layer overlay (API 1.13):** `overlay.shown` answers `{on}`, the Keyboard page's
   **Show layer overlay** checkbox; `overlay.set_shown {on}` sets it as the checkbox does (saved
   in the store's `[overlay_shown]`, one `Foxglove: layer overlay on|off` line when it changed)

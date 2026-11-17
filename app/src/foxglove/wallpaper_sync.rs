@@ -712,6 +712,29 @@ fn forget(worker: u64) {
     });
     if forgot {
         eprintln!("Foxglove: wallpaper sync: the worker stopped; the next wallpaper change starts it again");
+        // Its leases went with it: a pause it held is played now (#1142).
+        stale_pause();
+    }
+}
+
+/// A pause mark and no worker to hold it (#1142): an earlier Foxglove, or a worker that
+/// stopped, left Wallpaper Engine paused. Running: a worker starts and plays it (under the
+/// full-screen rule). Not running: it starts playing anyway, so the mark goes.
+fn stale_pause() {
+    if with(|s| s.wake.is_some() || s.quitting) {
+        return;
+    }
+    let mut mark = PauseMark::app();
+    if !mark.is_set() {
+        return;
+    }
+    if super::wallpaper_engine::running_now() {
+        start_worker();
+    } else {
+        eprintln!(
+            "Foxglove: wallpaper sync: Wallpaper Engine was left paused by an earlier run; it isn't running, so it starts playing"
+        );
+        mark.set(false);
     }
 }
 
@@ -795,6 +818,7 @@ pub fn scene_stopped() {
 /// under a full-screen program (`playbackfullscreen: "stop"`). The first non-empty list starts
 /// the worker.
 pub fn wallpapers(targets: Vec<Target>, reloads: bool) {
+    stale_pause();
     let start = with(|s| s.wake.is_none() && !s.quitting && !targets.is_empty());
     if start {
         start_worker();
@@ -897,6 +921,7 @@ fn start_worker() {
             || with(|s| (s.state.clone(), s.targets.clone(), s.reloads)),
             Settle::APP,
             super::live_feed::fullscreen_now,
+            PauseMark::app(),
         );
     });
     let _ = tx.send(Wake::Changed(Reason::Start));
@@ -914,13 +939,16 @@ fn set_layers(active: Option<Vec<u8>>) {
 
 /// The worker: waits for a change and the run it starts ([`next`]), then pushes the newest
 /// state from `read` (the state, the targets, and whether Wallpaper Engine stops wallpapers
-/// under a full-screen program). `full` says whether a full-screen program is in front.
+/// under a full-screen program). `full` says whether a full-screen program is in front. `mark`
+/// is kept set while Foxglove's pause holds Wallpaper Engine (#1142); found set at start, that
+/// pause is played first.
 fn run(
     rx: &Receiver<Wake>,
     apply: impl Apply,
     read: impl Fn() -> (State, Vec<Target>, bool),
     settle: Settle,
     full: impl FnMut() -> bool,
+    mut mark: PauseMark,
 ) {
     let mut pusher = Pusher::new(apply);
     let mut screen = Screen::new(full);
@@ -930,20 +958,41 @@ fn run(
     let mut leases = Leases::default();
     // A run a lease call interrupted, and the quiet after a play.
     let mut carry: Option<Run> = None;
+    if mark.is_set() {
+        let e = leases.recover(pusher.apply_mut(), screen.now());
+        eprintln!(
+            "Foxglove: wallpaper sync: Wallpaper Engine was left paused by an earlier run; {}",
+            match (e.played, e.why) {
+                (true, _) => "played it",
+                (false, Some(why)) => why,
+                (false, None) => "it isn't running",
+            }
+        );
+        mark.set(leases.paused_by_lease());
+        announce(&leases);
+        if e.played {
+            carry = Some(quiet_after_play(None, settle));
+        }
+    }
     loop {
         let (mut reason, left_full, reconnected) =
             match next_from(rx, settle, &mut screen, carry.take()) {
                 Next::Control(ctl, run) => {
                     carry = run;
                     let full = screen.now();
+                    if engine_check(&mut leases, pusher.apply_mut()) {
+                        mark.set(false);
+                    }
+                    if matches!(ctl, Ctl::Pause { .. }) && !leases.paused_by_lease() {
+                        // Marked before the pause goes out, so a crash right after it still
+                        // leaves the mark; corrected below when no pause was sent.
+                        mark.set(true);
+                    }
                     if serve(ctl, &mut leases, pusher.apply_mut(), full) {
                         // Wallpaper Engine resumes: a `-control` command meanwhile lands in it.
-                        let now = Instant::now();
-                        let r =
-                            carry.get_or_insert_with(|| Run::new(Reason::Wallpapers, None, now));
-                        let until = now + settle.reload;
-                        r.quiet_until = Some(r.quiet_until.map_or(until, |q| q.max(until)));
+                        carry = Some(quiet_after_play(carry.take(), settle));
                     }
+                    mark.set(leases.paused_by_lease());
                     announce(&leases);
                     continue;
                 }
@@ -958,6 +1007,7 @@ fn run(
                     if leases.end_all(pusher.apply_mut(), full).is_some() {
                         announce(&leases);
                     }
+                    mark.set(leases.paused_by_lease());
                     pusher.quit();
                     let _ = ack.send(());
                     return;
@@ -966,6 +1016,10 @@ fn run(
             };
         let (state, targets, reloads) = read();
         resend |= left_full && reloads;
+        if engine_check(&mut leases, pusher.apply_mut()) {
+            mark.set(leases.paused_by_lease());
+            announce(&leases);
+        }
         if leases.paused_by_lease() {
             // Paused for a lease: the newest state goes once it plays (the sent state is kept).
             continue;
@@ -1027,6 +1081,32 @@ fn run(
             );
         }
     }
+}
+
+/// The run that waits out Wallpaper Engine resuming after a `play` (`carry`, or a new one).
+fn quiet_after_play(carry: Option<Run>, settle: Settle) -> Run {
+    let now = Instant::now();
+    let mut r = carry.unwrap_or_else(|| Run::new(Reason::Wallpapers, None, now));
+    let until = now + settle.reload;
+    r.quiet_until = Some(r.quiet_until.map_or(until, |q| q.max(until)));
+    r
+}
+
+/// While Foxglove's pause holds Wallpaper Engine: is it still running? If not, it starts again
+/// playing, so the pause is no longer ours (#1142) and pushes go on. Checked only at a wake (a
+/// change or a lease call), never on a timer; `true` when that ended our pause.
+fn engine_check(leases: &mut Leases, apply: &mut impl Apply) -> bool {
+    if !leases.paused_by_lease() || apply.ready() {
+        return false;
+    }
+    let gone = leases.engine_gone();
+    if gone {
+        eprintln!(
+            "Foxglove: wallpaper sync: Wallpaper Engine quit while paused for {} lease(s); it starts again playing",
+            leases.count()
+        );
+    }
+    gone
 }
 
 /// Runs one lease call; `true` when it sent `play`.
@@ -1104,6 +1184,8 @@ fn announce(leases: &Leases) {
         h.lease_pauses = leases.paused;
         h.lease_plays = leases.played;
         h.lease_dropped = leases.dropped;
+        h.lease_stale = leases.stale;
+        h.lease_engine_quit = leases.engine_quit;
     });
 }
 
@@ -1190,6 +1272,66 @@ pub fn lease_closed(conn: u64, lease: &str) {
         conn,
         lease: lease.to_string(),
     }));
+}
+
+/// "Foxglove's pause holds Wallpaper Engine" kept on disk (#1142): the lease table lives only
+/// in the worker, so after a crash, a kill or a worker panic nothing would remember to play.
+/// The file `wallpaper-engine-paused` beside the settings store (its own folder for a test app
+/// with `FOXGLOVE_CONFIG_DIR`) is there while the worker's pause holds Wallpaper Engine; a worker
+/// that starts and finds it ends that pause ([`Leases::recover`]). Only its presence counts.
+pub(crate) struct PauseMark {
+    path: Option<PathBuf>,
+    on: bool,
+}
+
+/// The pause mark's file name, beside `foxglove.toml`.
+const PAUSE_MARK: &str = "wallpaper-engine-paused";
+
+impl PauseMark {
+    /// The app's mark, as it is on disk now.
+    fn app() -> PauseMark {
+        PauseMark::at(super::store::path().and_then(|p| p.parent().map(|d| d.join(PAUSE_MARK))))
+    }
+
+    /// A mark kept in `path` (`None`: in memory only).
+    fn at(path: Option<PathBuf>) -> PauseMark {
+        let on = path.as_deref().is_some_and(std::path::Path::is_file);
+        PauseMark { path, on }
+    }
+
+    fn is_set(&self) -> bool {
+        self.on
+    }
+
+    /// Sets or clears it; a write that fails is logged, and the next change tries again.
+    fn set(&mut self, on: bool) {
+        if on == self.on {
+            return;
+        }
+        let Some(path) = &self.path else {
+            self.on = on;
+            return;
+        };
+        let done = if on {
+            std::fs::write(
+                path,
+                "Foxglove paused Wallpaper Engine; the next Foxglove start plays it.\n",
+            )
+        } else {
+            match std::fs::remove_file(path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            }
+        };
+        match done {
+            Ok(()) => self.on = on,
+            Err(e) => eprintln!(
+                "Foxglove: wallpaper sync: can't {} the pause mark {}: {e}",
+                if on { "write" } else { "remove" },
+                path.display()
+            ),
+        }
+    }
 }
 
 /// Wallpaper Engine's command line.
@@ -1847,7 +1989,14 @@ mod tests {
                         false,
                     )
                 };
-                run(&rx, Wire(pushes_tx), read, settle, || false);
+                run(
+                    &rx,
+                    Wire(pushes_tx),
+                    read,
+                    settle,
+                    || false,
+                    PauseMark::at(None),
+                );
             })
         };
         let set = |layer: &str| state.lock().unwrap().layer = Some(layer.into());
@@ -1890,6 +2039,8 @@ mod tests {
         log: std::sync::Arc<Mutex<Vec<String>>>,
         gate: std::sync::Arc<(Mutex<bool>, std::sync::Condvar)>,
         pushing: Sender<()>,
+        /// Wallpaper Engine runs (#1142: a test can make it quit).
+        down: Flag,
     }
 
     impl Logged {
@@ -1899,6 +2050,7 @@ mod tests {
                 log: Default::default(),
                 gate: std::sync::Arc::new((Mutex::new(open), std::sync::Condvar::new())),
                 pushing,
+                down: Flag::default(),
             };
             (one, seen)
         }
@@ -1913,7 +2065,7 @@ mod tests {
 
     impl Apply for Logged {
         fn ready(&mut self) -> bool {
-            true
+            !self.down.load(std::sync::atomic::Ordering::SeqCst)
         }
         fn apply(&mut self, _: &str, props: &str) -> Result<(), String> {
             self.log.lock().unwrap().push("apply start".into());
@@ -1979,6 +2131,16 @@ mod tests {
         state: &std::sync::Arc<Mutex<State>>,
         full: &Flag,
     ) -> (Sender<Wake>, std::thread::JoinHandle<()>) {
+        spawn_marked(apply, state, full, None)
+    }
+
+    /// [`spawn_worker`] with its pause mark in `mark` (#1142).
+    fn spawn_marked(
+        apply: Logged,
+        state: &std::sync::Arc<Mutex<State>>,
+        full: &Flag,
+        mark: Option<PathBuf>,
+    ) -> (Sender<Wake>, std::thread::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel();
         let (state, full) = (state.clone(), full.clone());
         let worker = std::thread::spawn(move || {
@@ -1989,9 +2151,207 @@ mod tests {
                     false,
                 )
             };
-            run(&rx, apply, read, gaming(), screen(&full));
+            run(
+                &rx,
+                apply,
+                read,
+                gaming(),
+                screen(&full),
+                PauseMark::at(mark),
+            );
         });
         (tx, worker)
+    }
+
+    /// A pause mark's path in a folder of this test's own, removed first.
+    fn mark_path(name: &str) -> PathBuf {
+        let dir = crate::foxglove::store::test_config_dir()
+            .join("pause-marks")
+            .join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(PAUSE_MARK)
+    }
+
+    fn status_of(tx: &Sender<Wake>) -> (bool, u32, bool) {
+        let (status, answer) = mpsc::channel();
+        tx.send(Wake::Control(Ctl::Status(status))).unwrap();
+        match answer.recv_timeout(Duration::from_secs(5)).unwrap() {
+            Reply::Status {
+                running,
+                leases,
+                paused_by_lease,
+            } => (running, leases, paused_by_lease),
+            _ => panic!("a status answers Status"),
+        }
+    }
+
+    /// #1142: the mark is on disk exactly while Foxglove's pause holds Wallpaper Engine, and is
+    /// written before the `pause` goes out; the user's own pause leaves none.
+    #[test]
+    fn the_pause_mark_follows_foxgloves_own_pause() {
+        let wait = Duration::from_secs(5);
+        let path = mark_path("follows");
+        let (apply, _pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_marked(apply.clone(), &state, &full, Some(path.clone()));
+        let (pause, paused) = pause_ctl(1, false);
+        tx.send(pause).unwrap();
+        let a = lease_of(paused.recv_timeout(wait).unwrap());
+        assert!(path.is_file(), "marked while ours");
+        let (pause, paused) = pause_ctl(2, false);
+        tx.send(pause).unwrap();
+        let b = lease_of(paused.recv_timeout(wait).unwrap());
+        let (release, released) = release_ctl(1, &a);
+        tx.send(release).unwrap();
+        released.recv_timeout(wait).unwrap();
+        assert!(path.is_file(), "still held by the second lease");
+        let (release, released) = release_ctl(2, &b);
+        tx.send(release).unwrap();
+        released.recv_timeout(wait).unwrap();
+        // The mark follows the reply: a status call after it waits for that.
+        status_of(&tx);
+        assert!(!path.exists(), "played: no mark");
+
+        // The user's own pause: no pause sent, no mark.
+        let (pause, paused) = pause_ctl(3, true);
+        tx.send(pause).unwrap();
+        assert!(matches!(
+            paused.recv_timeout(wait).unwrap(),
+            Reply::Paused { paused: false, .. }
+        ));
+        status_of(&tx);
+        assert!(!path.exists(), "never over the user's pause");
+        tx.send(Wake::Control(Ctl::Closed(3))).unwrap();
+
+        // Quitting with a lease plays and clears it.
+        let (pause, paused) = pause_ctl(4, false);
+        tx.send(pause).unwrap();
+        paused.recv_timeout(wait).unwrap();
+        assert!(path.is_file());
+        quit(&tx, worker);
+        assert!(!path.exists(), "quit played it");
+        assert_eq!(apply.log(), ["pause", "play", "pause", "play"]);
+    }
+
+    /// #1142: a failed pause leaves no mark.
+    #[test]
+    fn a_failed_pause_leaves_no_mark() {
+        let wait = Duration::from_secs(5);
+        let path = mark_path("failed");
+        let (apply, _pushing) = Logged::new(true);
+        apply.down.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_marked(apply.clone(), &state, &full, Some(path.clone()));
+        let (pause, paused) = pause_ctl(1, false);
+        tx.send(pause).unwrap();
+        assert!(matches!(
+            paused.recv_timeout(wait).unwrap(),
+            Reply::Failed(Fail::NotRunning)
+        ));
+        status_of(&tx);
+        assert!(!path.exists());
+        quit(&tx, worker);
+        assert!(apply.log().is_empty(), "{:?}", apply.log());
+    }
+
+    /// #1142, restart parity: a worker that died holding a pause (no quit: a crash or a panic)
+    /// leaves the mark; a fresh worker on the same mark plays it once, then pushes go on.
+    #[test]
+    fn a_pause_left_by_a_dead_worker_is_played_by_the_next() {
+        let wait = Duration::from_secs(5);
+        let path = mark_path("dead");
+        let (apply, pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_marked(apply.clone(), &state, &full, Some(path.clone()));
+        let (pause, paused) = pause_ctl(1, false);
+        tx.send(pause).unwrap();
+        paused.recv_timeout(wait).unwrap();
+        // Dies without quitting: its channel closes, the lease table goes with it.
+        drop(tx);
+        worker.join().unwrap();
+        assert!(path.is_file(), "the pause outlives the worker");
+        assert_eq!(apply.log(), ["pause"]);
+
+        let (tx, worker) = spawn_marked(apply.clone(), &state, &full, Some(path.clone()));
+        assert_eq!(status_of(&tx), (true, 0, false), "no lease, not paused");
+        assert!(!path.exists(), "played: the mark is gone");
+        assert_eq!(apply.log(), ["pause", "play"]);
+        state.lock().unwrap().layer = Some("B".into());
+        tx.send(Wake::Changed(Reason::Layer)).unwrap();
+        pushing
+            .recv_timeout(wait)
+            .expect("pushes go on after the quiet");
+        quit(&tx, worker);
+        assert_eq!(
+            apply.log().iter().filter(|c| *c == "play").count(),
+            1,
+            "{:?}",
+            apply.log()
+        );
+    }
+
+    /// #1142: a mark found under a full-screen app is left to Wallpaper Engine, and one found
+    /// while Wallpaper Engine isn't running sends nothing (its command line would start it).
+    #[test]
+    fn a_stale_mark_follows_the_full_screen_and_not_running_rules() {
+        for (name, in_front, down) in [("full", true, false), ("down", false, true)] {
+            let path = mark_path(name);
+            std::fs::write(&path, "x").unwrap();
+            let (apply, _pushing) = Logged::new(true);
+            apply.down.store(down, std::sync::atomic::Ordering::SeqCst);
+            let (state, full) = (layer_state("A"), Flag::default());
+            full.store(in_front, std::sync::atomic::Ordering::SeqCst);
+            let (tx, worker) = spawn_marked(apply.clone(), &state, &full, Some(path.clone()));
+            assert_eq!(status_of(&tx).1, 0);
+            assert!(!path.exists(), "{name}: the mark is cleared");
+            quit(&tx, worker);
+            assert!(
+                !apply.log().iter().any(|c| c == "play" || c == "pause"),
+                "{name}: {:?}",
+                apply.log()
+            );
+        }
+    }
+
+    /// #1142: Wallpaper Engine quitting while a lease holds it (seen at the next wake) clears
+    /// the mark and lets pushes go; the lease stays, and its release plays nothing.
+    #[test]
+    fn wallpaper_engine_quitting_mid_lease_frees_the_pushes() {
+        let wait = Duration::from_secs(5);
+        let path = mark_path("quit");
+        let (apply, pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_marked(apply.clone(), &state, &full, Some(path.clone()));
+        let (pause, paused) = pause_ctl(1, false);
+        tx.send(pause).unwrap();
+        let lease = lease_of(paused.recv_timeout(wait).unwrap());
+        assert!(path.is_file());
+
+        // Quits, and comes back (playing) before the next change.
+        apply.down.store(true, std::sync::atomic::Ordering::SeqCst);
+        tx.send(Wake::Changed(Reason::Wallpapers)).unwrap();
+        assert_eq!(status_of(&tx), (false, 1, false), "the lease stays");
+        assert!(!path.exists(), "no longer ours");
+        apply.down.store(false, std::sync::atomic::Ordering::SeqCst);
+        state.lock().unwrap().layer = Some("B".into());
+        tx.send(Wake::Changed(Reason::Layer)).unwrap();
+        pushing
+            .recv_timeout(wait)
+            .expect("pushes are no longer held");
+
+        let (release, released) = release_ctl(1, &lease);
+        tx.send(release).unwrap();
+        match released.recv_timeout(wait).unwrap() {
+            Reply::Released(e) => assert_eq!((e.played, e.why), (false, Some("restarted"))),
+            _ => panic!("a release answers Released"),
+        }
+        quit(&tx, worker);
+        assert!(
+            !apply.log().iter().any(|c| c == "play"),
+            "{:?}",
+            apply.log()
+        );
     }
 
     fn quit(tx: &Sender<Wake>, worker: std::thread::JoinHandle<()>) {
@@ -2277,7 +2637,14 @@ mod tests {
                             stops,
                         )
                     };
-                    run(&rx, Wire(pushes_tx), read, gaming(), full);
+                    run(
+                        &rx,
+                        Wire(pushes_tx),
+                        read,
+                        gaming(),
+                        full,
+                        PauseMark::at(None),
+                    );
                 })
             };
             let set = |layer: &str| state.lock().unwrap().layer = Some(layer.into());
@@ -2363,7 +2730,14 @@ mod tests {
                     };
                     (s, vec![target(WE_LEFT, "hud")], true)
                 };
-                run(&rx, Wire(pushes_tx), read, gaming(), full);
+                run(
+                    &rx,
+                    Wire(pushes_tx),
+                    read,
+                    gaming(),
+                    full,
+                    PauseMark::at(None),
+                );
             })
         };
         let wait = Duration::from_secs(5);
@@ -2615,7 +2989,14 @@ mod tests {
                     false,
                 )
             };
-            run(&rx, Wire(pushes_tx), read, settle, || false);
+            run(
+                &rx,
+                Wire(pushes_tx),
+                read,
+                settle,
+                || false,
+                PauseMark::at(None),
+            );
         });
         let wait = Duration::from_secs(5);
         tx.send(Wake::Changed(Reason::Start)).unwrap();
