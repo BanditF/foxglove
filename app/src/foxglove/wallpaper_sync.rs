@@ -440,6 +440,8 @@ pub enum Ctl {
         conn: u64,
         lease: String,
     },
+    /// The user's Resume on the Foxglove page (#1142): every lease ends, whoever holds it.
+    Resume,
 }
 
 /// The worker's answer to a [`Ctl`].
@@ -1176,6 +1178,9 @@ fn serve(ctl: Ctl, leases: &mut Leases, apply: &mut impl Apply, full: bool) -> b
         Ctl::HubClosed { conn, lease } => leases
             .hub_closed(apply, conn, &lease, full)
             .is_some_and(|ended| ended.played),
+        Ctl::Resume => leases
+            .end_all(apply, full)
+            .is_some_and(|ended| ended.played),
     }
 }
 
@@ -1271,6 +1276,28 @@ pub fn status() -> (bool, u32, bool) {
 /// A connection of the local API closed: its leases end (no answer is waited for).
 pub fn connection_closed(conn: u64) {
     wake(Wake::Control(Ctl::Closed(conn)));
+}
+
+/// The user's Resume (#1142): every lease ends, the local API's and the hub's callers' alike,
+/// and Wallpaper Engine plays under the usual rules (not over the user's own pause or a
+/// full-screen app). The hub is told separately (`lease.end`), so its holders hear
+/// `lease.unknown` next. No answer is waited for.
+pub fn resume_all() {
+    wake(Wake::Control(Ctl::Resume));
+}
+
+/// The live leases' reasons as the `wallpaper_engine.paused_by` fact has them, one each.
+#[cfg_attr(test, allow(dead_code))]
+pub fn reasons_now() -> Vec<String> {
+    match super::devices::bus().facts().get(PAUSED_BY) {
+        Some(foxglove_devices::facts::Value::Text(t)) => t
+            .split("; ")
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(String::from)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The hub ended one lease of `conn` (`lease.closed`, any reason): it ends as a release would,
@@ -2240,6 +2267,35 @@ mod tests {
         quit(&tx, worker);
         assert!(!path.exists(), "quit played it");
         assert_eq!(apply.log(), ["pause", "play", "pause", "play"]);
+    }
+
+    /// #1142: the page's Resume ends every lease, whoever holds it, plays once and clears the
+    /// mark; a holder's later release is unknown.
+    #[test]
+    fn resume_ends_every_lease_and_plays_once() {
+        let wait = Duration::from_secs(5);
+        let path = mark_path("resume");
+        let (apply, _pushing) = Logged::new(true);
+        let (state, full) = (layer_state("A"), Flag::default());
+        let (tx, worker) = spawn_marked(apply.clone(), &state, &full, Some(path.clone()));
+        let (pause, paused) = pause_ctl(1, false);
+        tx.send(pause).unwrap();
+        let a = lease_of(paused.recv_timeout(wait).unwrap());
+        let routed = super::super::wallpaper_leases::ROUTED;
+        let (pause, paused) = pause_ctl(routed, false);
+        tx.send(pause).unwrap();
+        paused.recv_timeout(wait).unwrap();
+        tx.send(Wake::Control(Ctl::Resume)).unwrap();
+        status_of(&tx);
+        assert!(!path.exists(), "played: no mark");
+        let (release, released) = release_ctl(1, &a);
+        tx.send(release).unwrap();
+        assert!(matches!(
+            released.recv_timeout(wait).unwrap(),
+            Reply::Failed(Fail::Unknown)
+        ));
+        quit(&tx, worker);
+        assert_eq!(apply.log(), ["pause", "play"]);
     }
 
     /// #1142: a failed pause leaves no mark.

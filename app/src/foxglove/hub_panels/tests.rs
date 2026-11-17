@@ -562,12 +562,167 @@ fn the_panels_match_the_hub_vectors() {
                 ],
             ))),
         ),
+        (
+            "Wallpaper Engine playing",
+            panels(&we_view(Wallpaper {
+                running: true,
+                ..Wallpaper::default()
+            })),
+        ),
+        (
+            "Wallpapers paused by Arete",
+            panels(&we_view(held(&["Arete"]))),
+        ),
+        (
+            "Wallpapers paused by two apps",
+            panels(&we_view(Wallpaper {
+                reasons: vec!["loading a model".into(), "rendering".into()],
+                ..held(&["Arete", "Render queue"])
+            })),
+        ),
+        (
+            "Wallpapers paused with a full-screen app in front",
+            panels(&we_view(Wallpaper {
+                full_screen: true,
+                ..held(&["Arete"])
+            })),
+        ),
+        (
+            "Wallpapers paused by you, an app waiting too",
+            panels(&we_view(Wallpaper {
+                user_paused: true,
+                ..held(&["Arete"])
+            })),
+        ),
+        (
+            "Wallpaper Engine not running",
+            panels(&we_view(Wallpaper::default())),
+        ),
     ];
     for (name, all) in &states {
         assert_valid(all);
         let _ = name;
     }
     foxglove_plugin::ui::check_vectors("foxglove.json", (&m.id, &m.name, &declared, &[]), states);
+}
+
+/// The page with a Wallpaper Engine section (#1142).
+fn we_view(w: Wallpaper) -> View {
+    view(&connected()).with_wallpaper(Some(w))
+}
+
+/// Wallpaper Engine running, held by `names` for "loading a model".
+fn held(names: &[&str]) -> Wallpaper {
+    Wallpaper {
+        running: true,
+        holders: names.iter().map(|n| n.to_string()).collect(),
+        reasons: vec!["loading a model".into()],
+        ..Wallpaper::default()
+    }
+}
+
+/// The Wallpaper Engine section's texts (value, line, button), or `None` without one.
+fn we_texts(v: &View) -> Option<Vec<String>> {
+    let all = panels(v);
+    let page = &panel(&all, PAGE)["tree"];
+    let section = page["children"]
+        .as_array()?
+        .iter()
+        .find(|n| n["id"] == WALLPAPER)?;
+    Some(texts(section))
+}
+
+/// #1142, plan §3: every state's words, Resume only while a caller holds it (never over the
+/// user's own pause), and no section without Wallpaper Engine.
+#[test]
+fn the_wallpaper_engine_section_says_who_holds_it() {
+    assert_eq!(
+        we_texts(&view(&connected())),
+        None,
+        "not installed: no section"
+    );
+    // The intro names Wallpaper Engine only while its section is there.
+    let intro = |v: &View| panel(&panels(v), PAGE)["tree"]["children"][0]["props"]["text"].clone();
+    assert_eq!(intro(&view(&connected())), INTRO);
+    assert_eq!(intro(&we_view(Wallpaper::default())), INTRO_WE);
+    let says = |w: Wallpaper| we_texts(&we_view(w)).unwrap();
+    assert_eq!(
+        says(Wallpaper {
+            running: true,
+            ..Wallpaper::default()
+        }),
+        ["Playing"]
+    );
+    assert_eq!(
+        says(held(&["Arete"])),
+        [
+            "Paused by Arete",
+            "\u{201c}loading a model\u{201d}",
+            "Resume wallpapers"
+        ]
+    );
+    assert_eq!(
+        says(Wallpaper {
+            reasons: vec!["loading a model".into(), "rendering".into()],
+            ..held(&["Arete", "Render queue"])
+        })[0..2],
+        [
+            "Paused by Arete and Render queue",
+            "\u{201c}loading a model\u{201d} \u{b7} \u{201c}rendering\u{201d}"
+        ]
+    );
+    assert_eq!(says(held(&["A", "B", "C"]))[0], "Paused by A and 2 more");
+    assert_eq!(
+        says(Wallpaper {
+            full_screen: true,
+            ..held(&["Arete"])
+        })[1..],
+        [
+            "Plays when the full-screen app closes.",
+            "Resume wallpapers"
+        ]
+    );
+    assert_eq!(
+        says(Wallpaper {
+            user_paused: true,
+            ..held(&["Arete"])
+        })[..],
+        [
+            "Paused by you",
+            "Arete is waiting too. It won't press Play for you."
+        ]
+    );
+    assert_eq!(
+        says(Wallpaper {
+            running: true,
+            user_paused: true,
+            ..Wallpaper::default()
+        })[..],
+        ["Paused by you", "Press Play in Wallpaper Engine."]
+    );
+    assert_eq!(
+        says(Wallpaper::default())[..],
+        ["Not running", "Wallpaper Engine isn't running."]
+    );
+    // A local API caller the hub can't name.
+    assert_eq!(
+        says(Wallpaper {
+            holders: vec![],
+            ..held(&[])
+        })[0],
+        "Paused by an app"
+    );
+    // A long reason is cut; it stays in quotes after the hub's name for the caller.
+    let long = says(Wallpaper {
+        reasons: vec!["x".repeat(200)],
+        ..held(&["Arete"])
+    });
+    assert!(
+        long[1].len() < 60 && long[1].ends_with("\u{2026}\u{201d}"),
+        "{long:?}"
+    );
+    assert!(is_resume(PAGE, RESUME_NODE) && !is_resume(TILE_ART, RESUME_NODE));
+    assert_valid(&panels(&we_view(held(&["Arete"]))));
 }
 
 /// A user-chosen effect name never takes a tile past its 64-byte text cap, with the brightness.

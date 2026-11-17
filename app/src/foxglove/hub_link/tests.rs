@@ -1720,6 +1720,72 @@ fn a_click_opens_settings_at_the_matching_page_and_nothing_else_does() {
     assert_eq!(answers.lines().count(), 3, "{answers}");
 }
 
+/// Wallpaper Engine installed and running, held by whoever the hub names (#1142).
+fn we_probe(holders: &[String]) -> Option<super::super::hub_panels::Wallpaper> {
+    Some(super::super::hub_panels::Wallpaper {
+        running: true,
+        holders: holders.to_vec(),
+        reasons: if holders.is_empty() {
+            vec![]
+        } else {
+            vec!["loading a model".into()]
+        },
+        ..Default::default()
+    })
+}
+
+/// #1142: the hub's `module.foxglove.lease_holders` names who holds the pause on the page;
+/// Resume asks the hub to end the family's leases (`lease.end`) and answers the click.
+#[test]
+fn the_page_names_the_hubs_holders_and_resume_ends_their_leases() {
+    let mut rig = Rig::new(&[GRANT]);
+    rig.link = Link::new(Vec::new(), launch()).with_wallpaper(we_probe);
+    let facts = board();
+    rig.connect(&facts);
+    assert!(said(&rig.panels, "Playing"), "nobody holds it yet");
+    let holders = |v: Value| {
+        json!({"jsonrpc":"2.0","method":"facts.changed","params":
+            {"subscription":1,"key":"module.foxglove.lease_holders","value":v}})
+        .to_string()
+    };
+    rig.link
+        .line(&holders(
+            json!({"wallpaper-engine": ["Arete"], "lighting": ["X"]}),
+        ))
+        .unwrap();
+    assert!(rig.link.take_panels_stale());
+    assert!(!rig.link.take_panels_stale(), "once");
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    let shown = rig.link.shown.clone().unwrap();
+    assert!(said(&shown, "Paused by Arete") && said(&shown, "Resume wallpapers"));
+    assert!(
+        !said(&shown, "Paused by X"),
+        "another family's holder isn't named"
+    );
+    written(&mut rig);
+    let click = json!({"jsonrpc":"2.0","id":9,"method":"ui.event","params":
+        {"panel":"page","node":"we-resume","kind":"click","value":null}});
+    rig.link.line(&click.to_string()).unwrap();
+    let out = written(&mut rig);
+    assert!(
+        out.iter()
+            .any(|m| m["id"] == 9 && m.get("result").is_some()),
+        "{out:?}"
+    );
+    let ask: Vec<&Value> = out.iter().filter(|m| m["method"] == "lease.end").collect();
+    assert_eq!(ask.len(), 1, "{out:?}");
+    assert_eq!(ask[0]["params"], json!({"family": "wallpaper-engine"}));
+    // The hub drops the fact: the page plays again.
+    rig.link.line(&holders(Value::Null)).unwrap();
+    assert!(rig.link.take_panels_stale());
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    assert!(said(rig.link.shown.as_ref().unwrap(), "Playing"));
+}
+
 #[test]
 fn before_the_hub_has_the_module_nothing_registers_and_a_click_opens_nothing() {
     use crate::foxglove::shell::Page;
