@@ -587,6 +587,8 @@ impl Router {
     pub fn set_root_areas(&mut self, areas: Vec<(String, String)>) {
         self.root_areas = areas;
         self.revalidate_adopted_routes();
+        // A route the reload dropped may now go to a module that was refused it as `taken` (#1135).
+        self.restore_wanted();
     }
 
     /// Fills a known module's entry from its manifest (§4.7, §4.10): the name people read, the
@@ -1336,6 +1338,8 @@ impl Router {
                 self.routes.retain(|r| r.module != id);
                 self.fact_owners.retain(|r| r.module != id);
                 self.wanted.remove(&id);
+                // What this module held may go to one that was refused it as `taken` (#1135).
+                self.restore_wanted();
                 self.channels.remove(&id);
                 self.provider_gone(&id);
                 self.publish_provides(&id, &mut out);
@@ -2433,10 +2437,14 @@ impl Router {
             });
             // Only what the grant alone kept out, or what was accepted, comes back when the
             // grant does; a pattern refused for any other reason stays refused (#1155 L5).
-            if !taken
-                && ((module == LEGACY_FOXGLOVE_ID
-                    && (allowed || self.rejected_by_grant_alone(module, &p)))
-                    || self.rejected_by_provide_alone(module, &p))
+            // A pattern refused only because another module held it is kept too, so that it is
+            // applied when that route is dropped (#1135); `restore_wanted_of` rechecks the grants
+            // and that nobody holds it then (the legacy module's refusals stay refused, #1155 L5). Only this connection's own registration lands here.
+            if (taken && allowed && module != LEGACY_FOXGLOVE_ID)
+                || (!taken
+                    && ((module == LEGACY_FOXGLOVE_ID
+                        && (allowed || self.rejected_by_grant_alone(module, &p)))
+                        || self.rejected_by_provide_alone(module, &p)))
             {
                 wanted.push(p.clone());
             }
