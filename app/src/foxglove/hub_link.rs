@@ -333,6 +333,31 @@ struct Hub {
     opener: Option<Opener>,
     /// `module.<id>.provides` facts the hub sent (`facts.changed`), for the link to read.
     changes: Vec<(String, Value)>,
+    /// Who holds this module's Wallpaper Engine leases, by the hub's names (#1142, the hub
+    /// fact `module.foxglove.lease_holders`), and whether that changed since the panels last
+    /// looked.
+    holders: Vec<String>,
+    holders_changed: bool,
+    /// The page's Resume was pressed: the link ends the hub's leases (`lease.end`).
+    resume_asked: bool,
+}
+
+/// The hub fact naming who holds this module's leases (contract section 8.5, v1.16).
+fn holders_key() -> String {
+    format!("module.{ID}.lease_holders")
+}
+
+/// The lease family Wallpaper Engine's pause belongs to.
+const WE_FAMILY: &str = "wallpaper-engine";
+
+/// The holder names of the Wallpaper Engine family in a `lease_holders` value.
+fn we_holders(value: &Value) -> Vec<String> {
+    value[WE_FAMILY]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| n.as_str().map(String::from))
+        .collect()
 }
 
 /// What a panel's button opens Settings with.
@@ -359,6 +384,10 @@ impl Handler for Hub {
         if method != "facts.changed" {
             return;
         }
+        if params["key"].as_str() == Some(holders_key().as_str()) {
+            self.set_holders(we_holders(&params["value"]));
+            return;
+        }
         if let Some(key) = params["key"].as_str().filter(|k| is_provides(k)) {
             self.changes
                 .push((key.to_string(), params["value"].clone()));
@@ -369,6 +398,13 @@ impl Handler for Hub {
     fn ui_event(&mut self, event: UiEvent) -> Result<Value, RpcError> {
         if !self.live {
             return Err(RpcError::new(code::DISCONNECTED, "disconnected"));
+        }
+        if event.kind == "click" && super::hub_panels::is_resume(&event.panel, &event.node) {
+            // The user's word (#1142): every hold ends, the local API's at once, the hub's
+            // callers' through `lease.end` (sent by the link after this answer).
+            super::wallpaper_sync::resume_all();
+            self.resume_asked = true;
+            return Ok(json!({}));
         }
         if event.kind == "click" {
             if let Some(part) = super::hub_panels::Part::of_event(&event.panel, &event.node) {
@@ -395,6 +431,15 @@ impl Handler for Hub {
             return Err(RpcError::new(code::DISCONNECTED, "disconnected"));
         };
         run_handler(devices.as_ref(), method, params)
+    }
+}
+
+impl Hub {
+    fn set_holders(&mut self, names: Vec<String>) {
+        if names != self.holders {
+            self.holders = names;
+            self.holders_changed = true;
+        }
     }
 }
 
@@ -639,6 +684,37 @@ pub struct Link<W: Write> {
     provided: std::collections::BTreeMap<String, Vec<String>>,
     /// The features switched off for another module's sake now.
     off: Vec<&'static str>,
+    /// Wallpaper Engine as the page shows it, for the hub's holder names (#1142); the app's
+    /// reads Wallpaper Engine at each refresh, tests give their own.
+    wallpaper: WallpaperProbe,
+}
+
+/// Reads Wallpaper Engine for the page's section, given the hub's holder names.
+pub type WallpaperProbe = fn(&[String]) -> Option<super::hub_panels::Wallpaper>;
+
+/// Wallpaper Engine now, read when the panels refresh (an event: a fact, a guard, a hub line),
+/// never on a timer. `None` while it isn't installed (no section).
+#[cfg(not(test))]
+fn wallpaper_now(holders: &[String]) -> Option<super::hub_panels::Wallpaper> {
+    if !super::wallpaper_engine::presence().installed() {
+        return None;
+    }
+    Some(super::hub_panels::Wallpaper {
+        running: super::wallpaper_engine::running_now(),
+        user_paused: super::live_feed::wallpaper_paused(),
+        full_screen: !matches!(
+            super::screen_glow::full_screen_now(),
+            super::screen_glow::FullScreen::Nothing
+        ),
+        holders: holders.to_vec(),
+        reasons: super::wallpaper_sync::reasons_now(),
+    })
+}
+
+/// Tests read no Wallpaper Engine unless they give a probe ([`Link::with_wallpaper`]).
+#[cfg(test)]
+fn wallpaper_now(_: &[String]) -> Option<super::hub_panels::Wallpaper> {
+    None
 }
 
 impl<W: Write> Drop for Link<W> {
@@ -671,7 +747,20 @@ impl<W: Write> Link<W> {
             watching: false,
             provided: Default::default(),
             off: Vec::new(),
+            wallpaper: wallpaper_now,
         }
+    }
+
+    /// Reads Wallpaper Engine for the page through `probe` (tests).
+    #[cfg(test)]
+    pub fn with_wallpaper(mut self, probe: WallpaperProbe) -> Self {
+        self.wallpaper = probe;
+        self
+    }
+
+    /// The hub's holder names changed since the panels last looked (#1142).
+    pub fn take_panels_stale(&mut self) -> bool {
+        std::mem::take(&mut self.hub.holders_changed)
     }
 
     /// The features that are off in this module because another module provides their methods.
@@ -774,7 +863,9 @@ impl<W: Write> Link<W> {
         if self.phase != Phase::Live {
             return Ok(());
         }
-        let panels = super::hub_panels::panels(&super::hub_panels::View::of(facts, stopped));
+        let view = super::hub_panels::View::of(facts, stopped)
+            .with_wallpaper((self.wallpaper)(&self.hub.holders));
+        let panels = super::hub_panels::panels(&view);
         if self.shown.as_ref() == Some(&panels) {
             return Ok(());
         }
@@ -950,6 +1041,12 @@ impl<W: Write> Link<W> {
         if self.hub.exit {
             return Ok(Step::Exit);
         }
+        if std::mem::take(&mut self.hub.resume_asked) {
+            self.log
+                .push("Foxglove: Resume pressed; every Wallpaper Engine pause ends".into());
+            self.session
+                .request("lease.end", json!({ "family": WE_FAMILY }))?;
+        }
         let changes = std::mem::take(&mut self.hub.changes);
         if !changes.is_empty() {
             self.absorb(changes);
@@ -998,7 +1095,12 @@ impl<W: Write> Link<W> {
                             .as_array()
                             .into_iter()
                             .flatten()
-                            .filter(|f| f["key"].as_str().is_some_and(is_provides))
+                            .filter(|f| {
+                                if f["key"].as_str() == Some(holders_key().as_str()) {
+                                    self.hub.set_holders(we_holders(&f["value"]));
+                                }
+                                f["key"].as_str().is_some_and(is_provides)
+                            })
                             .map(|f| {
                                 (
                                     f["key"].as_str().unwrap_or_default().to_string(),
@@ -1058,6 +1160,15 @@ impl<W: Write> Link<W> {
             ("ui.register", Err(e)) => {
                 self.say(format!(
                     "Foxglove: the hub refused the panels: {}",
+                    reason(&e)
+                ));
+                Ok(Step::Nothing)
+            }
+            ("lease.end", Err(e)) => {
+                // An older hub (no `lease.end`): its callers' leases stay with it; the local
+                // ones ended already.
+                self.say(format!(
+                    "Foxglove: the hub would not end the wallpaper pauses: {}",
                     reason(&e)
                 ));
                 Ok(Step::Nothing)
@@ -1330,6 +1441,17 @@ mod runner {
                 }
             }
         });
+        // The Wallpaper Engine section follows the pause's reasons (#1142): told by the fact's
+        // change, never polled.
+        let held = facts.subscribe(crate::foxglove::wallpaper_sync::PAUSED_BY);
+        let wtx = tx.clone();
+        crate::foxglove::services::spawn_named("hub-link-wallpaper", move || {
+            for _ in held {
+                if wtx.send(Msg::Guard).is_err() {
+                    break;
+                }
+            }
+        });
         // The panels follow the page guard (P8): told by its change, never polled.
         let gtx = tx.clone();
         crate::foxglove::hub_panels::on_guard_change(move || {
@@ -1537,7 +1659,18 @@ mod runner {
             };
             let step = match msg {
                 Msg::Line(g, line) if g == generation => match link.line(&line) {
-                    Ok(step) => step,
+                    Ok(step) => {
+                        // The hub's holder names changed (#1142): the page says who now.
+                        if link.take_panels_stale() {
+                            if let Err(e) = link.refresh_panels(
+                                &facts.list(FACTS),
+                                crate::foxglove::hub_panels::Stopped::now(),
+                            ) {
+                                return lost(e, live);
+                            }
+                        }
+                        step
+                    }
                     Err(e) => return lost(e, live),
                 },
                 Msg::Closed(g) if g == generation => {

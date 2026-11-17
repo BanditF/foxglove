@@ -4,7 +4,10 @@
 //!
 //! Read-only: each tile and each page section has one button, "Open Foxglove settings", which
 //! sends a plain `ui.event`; the module opens its own settings window at the matching page
-//! (`hub_link`, `settings_open`). Nothing is changed from here.
+//! (`hub_link`, `settings_open`). The one exception is the page's **Wallpaper Engine** section
+//! (#1142, UX plan `review/ux-we-holder-1142.md` §3), shown while Wallpaper Engine is installed:
+//! who holds the wallpapers paused, by the names the hub knows them by, and **Resume**, which
+//! ends every hold (`hub_link` sends `lease.end` and the sync worker ends the local ones).
 //!
 //! The hub draws the frame states (off, starting, restarting, stopped, greyed cached values);
 //! this draws only the bodies: waiting for the first facts, connected, not connected, lights off,
@@ -39,6 +42,51 @@ pub const GAME_HELP: &str =
 
 /// The most bytes of a name shown (a tile's text cap is 64; the cut adds "…").
 const CUT: usize = 60;
+
+/// The Wallpaper Engine section's id, and its Resume button's node.
+pub const WALLPAPER: &str = "wallpaper-engine";
+pub const RESUME_NODE: &str = "we-resume";
+/// The Resume button's words.
+pub const RESUME: &str = "Resume";
+/// The most bytes of one caller's reason shown (in quotes, after the holder's name).
+const REASON_CUT: usize = 48;
+
+/// Wallpaper Engine as the section shows it (#1142). `None` in [`View`]: not installed, no
+/// section.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Wallpaper {
+    pub running: bool,
+    /// A paired wallpaper reports itself paused: the user's own pause.
+    pub user_paused: bool,
+    /// A full-screen app is in front: a play waits for it to close.
+    pub full_screen: bool,
+    /// Who holds it paused, by the names the hub knows them by (`module.foxglove.lease_holders`).
+    pub holders: Vec<String>,
+    /// The holders' own reasons (`wallpaper_engine.paused_by`), shown in quotes after the names.
+    pub reasons: Vec<String>,
+}
+
+impl Wallpaper {
+    fn held(&self) -> bool {
+        !self.holders.is_empty() || !self.reasons.is_empty()
+    }
+}
+
+/// Whether a click on `node` of `panel` is the Wallpaper Engine section's Resume.
+pub fn is_resume(panel: &str, node: &str) -> bool {
+    panel == PAGE && node == RESUME_NODE
+}
+
+/// "Arete", "Arete and Render queue", "Arete and 2 more"; "an app" when the hub named nobody
+/// (an older hub, or a caller of the local API).
+fn holder_words(names: &[String]) -> String {
+    match names {
+        [] => "an app".into(),
+        [a] => cut(a),
+        [a, b] => format!("{} and {}", cut(a), cut(b)),
+        [a, rest @ ..] => format!("{} and {} more", cut(a), rest.len()),
+    }
+}
 
 /// Which of the three things a panel is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,6 +248,8 @@ pub struct View {
     /// The piece's name and where it comes from (`built_in`, `kept`, `sent`).
     pub art: Option<(String, String)>,
     pub stopped: Stopped,
+    /// Wallpaper Engine (#1142); `None` while it isn't installed.
+    pub wallpaper: Option<Wallpaper>,
 }
 
 impl View {
@@ -260,7 +310,14 @@ impl View {
             },
             art: text("keyboard.art.name").zip(text("keyboard.art.from")),
             stopped,
+            wallpaper: None,
         }
+    }
+
+    /// The view with Wallpaper Engine's section (#1142).
+    pub fn with_wallpaper(mut self, w: Option<Wallpaper>) -> View {
+        self.wallpaper = w;
+        self
     }
 }
 
@@ -543,11 +600,70 @@ fn section(part: Part, v: &View) -> Value {
     ui::section(part.tile_id(), part.title(), kids)
 }
 
+/// The Wallpaper Engine section (#1142, plan §3): what holds the wallpapers and Resume while a
+/// caller does. A reason is the caller's own words, so it comes after the hub's name for it, in
+/// quotes and cut; Resume is offered only while a caller's pause holds (never over the user's).
+fn wallpaper_section(w: &Wallpaper) -> Value {
+    let id = |s: &str| format!("we-{s}");
+    let (value, tone, sub, resume) = if !w.running {
+        (
+            "Not running".to_string(),
+            "off",
+            Some("Wallpaper Engine isn't running.".to_string()),
+            false,
+        )
+    } else if w.user_paused {
+        let sub = if w.held() {
+            let who = w
+                .holders
+                .first()
+                .map_or_else(|| "An app".into(), |n| cut(n));
+            format!("{who} is waiting too. It won't press Play for you.")
+        } else {
+            "Press Play in Wallpaper Engine.".into()
+        };
+        ("Paused by you".into(), "off", Some(sub), false)
+    } else if w.held() {
+        let sub = if w.full_screen {
+            Some("Plays when the full-screen app closes.".to_string())
+        } else {
+            let quoted: Vec<String> = w
+                .reasons
+                .iter()
+                .map(|r| format!("\u{201c}{}\u{201d}", cut_to(r, REASON_CUT)))
+                .collect();
+            (!quoted.is_empty()).then(|| quoted.join(" \u{b7} "))
+        };
+        (
+            format!("Paused by {}", holder_words(&w.holders)),
+            "active",
+            sub,
+            true,
+        )
+    } else {
+        ("Playing".into(), "ok", None, false)
+    };
+    let mut kids = vec![ui::value(&id("state"), &value, tone)];
+    if let Some(s) = sub {
+        kids.push(ui::label(&id("sub"), &s));
+    }
+    if resume {
+        kids.push(ui::button(
+            "",
+            &Button::new(RESUME, Press::Event(RESUME_NODE)),
+        ));
+    }
+    ui::section(WALLPAPER, "Wallpaper Engine", kids)
+}
+
 /// The three tiles and the page, for `ui.register`.
 pub fn panels(v: &View) -> Vec<Value> {
     let mut out: Vec<Value> = Part::ALL.into_iter().map(|p| tile(p, v)).collect();
     let mut page = vec![ui::label("intro", INTRO)];
     page.extend(Part::ALL.into_iter().map(|p| section(p, v)));
+    if let Some(w) = &v.wallpaper {
+        page.push(wallpaper_section(w));
+    }
     out.push(ui::panel(
         PAGE,
         "page",

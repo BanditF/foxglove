@@ -158,6 +158,11 @@ The params and results are in the schema. Notes:
   comes back playing: pushes go on, the leases stay, and the last release answers `why:
   "restarted"` without a play. The health row adds `left by a crash N` and `Wallpaper Engine
   quit N` once they happen.
+  (#1142) The user sees who holds it: Foxglove's hub page has a **Wallpaper Engine** section
+  ("Paused by Arete", the callers' reasons in quotes after the name) and, while a caller holds
+  it, **Resume**, which ends every lease (a later `release` answers −32602 "not a lease of this
+  connection" here, `lease.unknown` through the hub) and plays under the rules above; Hideout's tray menu has **Resume wallpapers
+  (paused by Arete)** for the same while it lasts. There is no time limit on a pause.
 - **Show layer overlay (API 1.13):** `overlay.shown` answers `{on}`, the Keyboard page's
   **Show layer overlay** checkbox; `overlay.set_shown {on}` sets it as the checkbox does (saved
   in the store's `[overlay_shown]`, one `Foxglove: layer overlay on|off` line when it changed)
