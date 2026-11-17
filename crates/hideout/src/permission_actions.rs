@@ -697,6 +697,10 @@ mod tests {
     }
 
     fn fx(tag: &str, perms: &[&str]) -> Fx {
+        fx_from(tag, |exe| manifest(exe, perms))
+    }
+
+    fn fx_from(tag: &str, text: impl Fn(&Path) -> String) -> Fx {
         let base = std::env::temp_dir().join(format!("hideout-pact-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let install = base.join("install");
@@ -705,7 +709,7 @@ mod tests {
         std::fs::write(&exe, b"program v1").unwrap();
         let folder = base.join("manifest");
         std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join("module.toml"), manifest(&exe, perms)).unwrap();
+        std::fs::write(folder.join("module.toml"), text(&exe)).unwrap();
         let home = base.join("home");
         let mut reg = Registry::open(&home, false).unwrap();
         reg.register_adopted(&folder, NOW).unwrap();
@@ -727,10 +731,57 @@ mod tests {
             .unwrap()
     }
 
+    fn view_of(f: &Fx, id: &str) -> View {
+        Registry::open_from_env(&f.home)
+            .unwrap()
+            .permission_view(id)
+            .unwrap()
+    }
+
     fn allow_all(f: &mut Fx, how: Opener) -> Option<Done> {
         f.ui.open(ID, how);
         let a = f.ui.dialog.as_ref().unwrap().allowed();
         f.ui.answer(PermAnswer::Allow(a))
+    }
+
+    /// #1178 as the supervised run saw it: foxglove's own shipped manifest adopted, nothing
+    /// granted, everything pending, module off. Turn on must lead to the dialog (never a dead
+    /// end), the user's Allow records the shown list, and only then does Turn on go through.
+    #[test]
+    fn the_shipped_foxglove_manifest_adopted_is_started_through_the_dialog() {
+        const FX: &str = "foxglove";
+        let mut f = fx_from("foxglove", |exe| {
+            include_str!("../../../app/src/foxglove/hub_link/module.toml")
+                .replace("@VERSION@", "0.3.0")
+                .replace("@EXE@", &exe.display().to_string().replace('\\', "/"))
+        });
+        let v = view_of(&f, FX);
+        let asked = v.pending.len();
+        assert!(asked >= 13, "the manifest asks for {asked}");
+        assert!(v.granted.is_empty(), "adopt grants nothing");
+        assert!(v.bound.is_none() && v.adopted);
+        // What Supervisor::turn_on refuses on, and what routes Turn on to the dialog.
+        assert!(f.ui.needs_ok(FX));
+        // Off: no header line yet; on (enabled, still unanswered): the first-run Ask header.
+        assert_eq!(header_kind(&v, false, true), None);
+        assert_eq!(header_kind(&v, true, true), Some(HeaderKind::Ask));
+        // Turn on opens the dialog, listing every ask; the user's Allow records them all.
+        f.ui.open(FX, Opener::TurnOn);
+        let d = f.ui.dialog.clone().expect("Turn on opens the dialog");
+        assert_eq!(d.items.iter().filter(|i| i.allowable).count(), asked);
+        let done = {
+            f.ui.open(FX, Opener::TurnOn);
+            let a = f.ui.dialog.as_ref().unwrap().allowed();
+            f.ui.answer(PermAnswer::Allow(a))
+        }
+        .unwrap();
+        assert_eq!(done.then, Then::TurnOn);
+        let v = view_of(&f, FX);
+        assert_eq!(v.granted.len(), asked);
+        assert!(v.pending.is_empty());
+        // turn_on's gate is open now, and the header is gone.
+        assert!(!f.ui.needs_ok(FX));
+        assert_eq!(header_kind(&v, true, true), None);
     }
 
     #[test]
