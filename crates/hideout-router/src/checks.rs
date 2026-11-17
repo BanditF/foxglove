@@ -27,6 +27,8 @@ pub const HUB_OWNED: &[&str] = &[
     // Lease end (§8.5, v1.14): only the hub tells a provider a lease ended, so no module can
     // make another provider drop a lease it handed out.
     "lease.closed",
+    // (v1.17) A provider ends its own leases through the hub; no module serves it.
+    "lease.end",
 ];
 
 /// Method areas a first-party catalog assigns (§6.3): a third-party or private module never

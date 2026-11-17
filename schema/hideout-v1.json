@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.16",
+  "spec": "1.17",
   "streams": {
     "nodes": [
       "canvas",
@@ -329,6 +329,20 @@
         "reason"
       ],
       "title": "LeaseClosed",
+      "type": "object"
+    },
+    "lease.LeaseEnd": {
+      "additionalProperties": false,
+      "description": "`lease.end` (§8.8, v1.17): the family of the provider's own leases to end, as in its\n`<family>.release`. Answered `{ended}`, the number that ended.",
+      "properties": {
+        "family": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "family"
+      ],
+      "title": "LeaseEnd",
       "type": "object"
     },
     "legacy.Manifest": {

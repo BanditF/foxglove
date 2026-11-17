@@ -15,7 +15,7 @@
 //!   v1.11)
 //! - [`error`]: the §15 error ids
 //! - [`services`]: the hub's host services, the network broker and the microphone (§8.10, §8.11)
-//! - [`lease`]: lease ids, `lease.closed` and the per-caller cap (§8.5, v1.14, v1.15)
+//! - [`lease`]: lease ids, `lease.closed` and the per-caller cap, holders and Resume (§8.5, v1.14 to v1.17)
 //!
 //! `foxglove-plugin-api` re-exports this crate, so plugins built against it are unchanged.
 
@@ -48,7 +48,7 @@ pub const HUB_VERSION: Version = Version { major: 1, minor: 3 };
 
 /// The spec version this crate implements (docs/hideout-contract.md's status line, the test
 /// vectors' `index.json` and README). A drift test keeps them equal.
-pub const SPEC_VERSION: &str = "1.16";
+pub const SPEC_VERSION: &str = "1.17";
 
 /// Crash-restart delays in seconds (§7.7, spec v1.1): the last step repeats.
 pub const BACKOFF_STEPS_S: &[u64] = &[1, 2, 4, 8, 16, 32, 60];
@@ -185,6 +185,7 @@ pub fn schema() -> serde_json::Value {
         services::AppsWatch,
         services::AppWindows,
         lease::LeaseClosed,
+        lease::LeaseEnd,
     );
     serde_json::json!({
         "hub": HUB_VERSION.to_string(),

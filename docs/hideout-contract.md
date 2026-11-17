@@ -1,6 +1,7 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.16** (v1.15 plus the tray menu's quick actions: an `action`
+Status: spec, contract version **1.17** (v1.16 plus who holds a provider's leases as a hub fact
+and the user's Resume that ends them, #1142; v1.16 was v1.15 plus the tray menu's quick actions: an `action`
 panel is a tray menu item, a press on a cold module starts it and is delivered, and `tray` is a
 user source, #1234; v1.15 was v1.14 plus a cap on the leases one caller holds at one
 provider, #1120; v1.14 was v1.13 plus provider lease ids: only a lease's holder
@@ -17,12 +18,24 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.17** (#1142): who holds a provider's leases, and a way for the user to end them (§8.5).
+  The hub keeps the fact `module.<provider>.lease_holders` = `{"<family>": ["<name>", ...]}`
+  while somebody holds a lease there: each holder by the name people know it by (a module's
+  display name, a tool's `initialize` name; hidden characters dropped, at most 32 characters),
+  never lease ids or reasons; absent while nothing is held. The hub's tray offers Resume for a
+  family it has words for (`wallpaper-engine`), and a provider ends its own leases of a family
+  with `lease.end {family}` → `{ended}` (M → H, §8.8) on the user's word in its page; either
+  way each lease closes `revoked`, the holders aren't told and their next call naming one
+  answers `lease.unknown`. `lease.end` is a hub-owned name (§8.3). Contract crate:
+  `lease::LEASE_END`, `LeaseEnd`, `HOLDERS_FACT`, `holders_key`, `family`; schema type
+  `lease.LeaseEnd`. `hub` stays 1.3 (§8.7): an older hub answers `lease.end` −32601, which a
+  provider takes as "no Resume here".
 - **1.16** (#1234): the tray menu's quick actions, built. An `action` panel (§5.1) is one tray
   menu item in the frame's pinned quick actions place; its id names the `[[actions]]` entry it
   presses (one that names none shows no item, so no manifest that read before is refused), its
@@ -2088,9 +2101,25 @@ Rules:
   `"disconnect"` (the holder's connection ended), `"released"` (the holder gave it back with the
   provider's release call, a method named `<family>.release` with `lease` in its params; the hub
   forwards that call first, then sends `lease.closed`) or `"revoked"` (the hub ended it, for
-  example when the holder's permission was withdrawn). Each lease sends it once. A provider
+  example when the holder's permission was withdrawn, or (v1.17) the user's Resume). Each
+  lease sends it once. A provider
   whose own connection ended gets nothing on it and its leases end with it; (v1.14) see
   provider restart below.
+- **Who holds them (v1.17, #1142).** While any lease at a provider is live, the hub keeps the
+  fact `module.<provider>.lease_holders` = `{"<family>": ["<name>", ...]}`, the family being
+  the handing-out method without its last part (the `<family>` of `<family>.release`), each
+  holder once, sorted, by the name people know it by: a module's display name (§4.1), a tool's
+  `initialize` name, hidden characters dropped (as a module's name, §4.1) and cut at 32
+  characters. Never lease ids or a caller's reasons. It is removed when the last lease there
+  ends. Readers hold `facts.read` on it like any `module.*` fact; a provider reads its own to
+  name who holds it.
+- **Resume (v1.17, #1142).** The user can end every live lease of one family at a provider at
+  once: from the hub's tray (for a family the hub has words for, `wallpaper-engine`: *Resume
+  wallpapers*), or in the provider's own page, which calls `lease.end {family}` (M → H); the
+  hub ends only the calling module's own leases and answers `{ended}`, the number. Each lease
+  closes with `lease.closed {reason: "revoked"}`. Holders aren't told; their next call naming
+  one answers `lease.unknown`, which a holder MUST treat as ended. There is no time limit on a
+  lease: it lasts while its holder's connection does, until released or ended.
 - **Lease ids (v1.14, #1229).** Every routed caller reaches a provider over the hub's one
   connection, so the provider can't tell callers apart; the hub does, by the rules below. The
   hub keeps no lock while it calls out: the router decides and returns the messages, the driver
@@ -2211,6 +2240,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `state.export` | H → M | call | `{}` | `{blob}` (≤ 256 KiB, base64) or `null` | — |
 | `state.import` | H → M | call | `{blob, from_version}` | `{}` | — |
 | `module.exit` | H → M | notification | `{reason}` | — (exit 0 within 5 s, or the Job ends it) | — |
+| `lease.end` (v1.17) | M → H | request | `{family}` | `{ended}` | −32602 without a family; denied for a tool |
 | `lease.closed` (v1.3) | H → M | notification | `{lease, reason: "disconnect" \| "released" \| "revoked" \| "restart"}` ((v1.14) `restart`; an unknown reason means ended) | — | — |
 
 **Panels and UI**

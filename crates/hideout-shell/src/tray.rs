@@ -36,6 +36,8 @@ pub enum Command {
     /// A module's quick action (§5.1 `action` slot, #1234): the item's number
     /// ([`crate::quick_actions::Item::n`]).
     QuickAction(u32),
+    /// **Resume wallpapers** (while somebody holds a pause, #1142): the hub ends those leases.
+    Resume,
 }
 
 /// A quick action's menu id: `hideout.qa.<n>`.
@@ -53,6 +55,7 @@ const QUIT: &str = "hideout.quit";
 const START_NORMALLY: &str = "hideout.start-normally";
 const START_ROUND: &str = "hideout.start-round";
 const STOP_FINDING: &str = "hideout.stop-finding";
+const RESUME: &str = "hideout.resume";
 /// The menu item's words (the banner's button says the same).
 pub const START_NORMALLY_LABEL: &str = hideout_supervisor::words::START_NORMALLY;
 
@@ -73,6 +76,9 @@ struct Tray {
     quick: Vec<(MenuItem, crate::quick_actions::Item)>,
     quick_sep: PredefinedMenuItem,
     quick_sep_shown: bool,
+    /// **Resume wallpapers (paused by …)** (#1142) and whether it is in the menu now.
+    resume: MenuItem,
+    resume_shown: bool,
 }
 
 thread_local! {
@@ -130,6 +136,7 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
         true,
         None,
     );
+    let resume = MenuItem::with_id(RESUME, "", true, None);
     let menu = Menu::new();
     menu.append_items(&[
         &status,
@@ -166,6 +173,8 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             quick: Vec::new(),
             quick_sep: PredefinedMenuItem::separator(),
             quick_sep_shown: false,
+            resume,
+            resume_shown: false,
         })
     });
 
@@ -182,6 +191,7 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             START_NORMALLY => Command::StartNormally,
             START_ROUND => Command::StartRound,
             STOP_FINDING => Command::StopFinding,
+            RESUME => Command::Resume,
             other => match quick_number(other) {
                 Some(n) => Command::QuickAction(n),
                 None => return,
@@ -388,9 +398,13 @@ pub fn set_quick_actions(items: &[crate::quick_actions::Item]) {
         if items.is_empty() {
             return;
         }
-        // Status line, Start normally when shown, Open Hideout, the search's items when shown.
-        let mut at =
-            2 + usize::from(t.safe_shown) + usize::from(t.round_shown) + usize::from(t.stop_shown);
+        // Status line, Start normally when shown, Open Hideout, the search's items and Resume
+        // wallpapers (#1142) when shown.
+        let mut at = 2
+            + usize::from(t.safe_shown)
+            + usize::from(t.round_shown)
+            + usize::from(t.stop_shown)
+            + usize::from(t.resume_shown);
         match t.menu.insert(&t.quick_sep, at) {
             Ok(()) => {
                 t.quick_sep_shown = true;
@@ -414,6 +428,38 @@ pub fn set_quick_actions(items: &[crate::quick_actions::Item]) {
                     at += 1;
                 }
                 Err(e) => log::warn!("tray: quick action item: {e}"),
+            }
+        }
+    });
+}
+
+/// **Resume wallpapers (paused by Arete)** (#1142) right after Open Hideout and the search's
+/// items while a pause is held; `None` takes it out. One line: a native menu item has no
+/// second line. A no-op off the UI thread or before `install`.
+pub fn set_resume(label: Option<&str>) {
+    TRAY.with(|t| {
+        let mut g = t.borrow_mut();
+        let Some(t) = g.as_mut() else { return };
+        match label {
+            Some(l) => {
+                // A holder's name is drawn as written: `&` would mark a mnemonic in a menu.
+                t.resume.set_text(l.replace('&', "&&"));
+                if !t.resume_shown {
+                    // Status line, Start normally when shown, Open Hideout, the search's items.
+                    let at = 2
+                        + usize::from(t.safe_shown)
+                        + usize::from(t.round_shown)
+                        + usize::from(t.stop_shown);
+                    match t.menu.insert(&t.resume, at) {
+                        Ok(()) => t.resume_shown = true,
+                        Err(e) => log::warn!("tray: Resume item: {e}"),
+                    }
+                }
+            }
+            None => {
+                if t.resume_shown && t.menu.remove(&t.resume).is_ok() {
+                    t.resume_shown = false;
+                }
             }
         }
     });

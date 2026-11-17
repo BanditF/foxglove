@@ -173,6 +173,9 @@ fn tray_sync() {
     if let Some(items) = crate::quick_actions::take_change() {
         tray::set_quick_actions(&items);
     }
+    if let Some(r) = crate::marks::take_resume_change() {
+        tray::set_resume(r.as_deref());
+    }
 }
 
 /// When the crash bar's countdown next needs a frame: once a second while it counts, never at
@@ -526,6 +529,7 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
                 crate::quick_actions::press(n);
             }
         }
+        tray::Command::Resume => crate::marks::resume(),
     }
     // A hidden or minimised window draws nothing: it repaints when Windows shows it again (#935).
     if platform::main_window_on_screen() {
