@@ -75,9 +75,12 @@ fn restore_on_connect() {
     });
 }
 
-/// Until the Plugins tab asks the user (next PR), tools get what they ask for except the sensitive
-/// permissions (key events, raw HID), which stay off. Any program of this user could already
-/// read the same state; the pipe admits no one else.
+/// No prompt yet (#1142): a tool is granted what it asks for when it connects, except the
+/// sensitive permissions (key events, raw HID), which stay off until the per-tool permission
+/// dialog (contract §6.4) asks. What that grants is what any process of this user can already
+/// do: read the same state, or (`wallpaper.control`) pause Wallpaper Engine, which its own
+/// `-control pause` does too. The pipe admits this user only, not remote clients and not their
+/// low-integrity (sandboxed) processes (`plugin-host` pipe tests).
 fn approve(_client: &ClientInfo, asked: &[Permission]) -> Vec<Permission> {
     asked.iter().filter(|p| !p.sensitive()).cloned().collect()
 }
@@ -112,6 +115,22 @@ fn params<T: serde::de::DeserializeOwned>(p: Value) -> Result<T, Error> {
 
 /// The longest `reason` of a `wallpaper-engine.pause`.
 const WALLPAPER_REASON_MAX: usize = 64;
+
+/// A character a `reason` may not hold (#1142): it is shown to the user next to the holder's
+/// name, so nothing that starts a new line, reorders the text around it (bidi overrides and
+/// isolates, direction marks) or hides in it (zero-width characters) can make it read as
+/// another line or another app's name.
+fn spoofing_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
+}
 
 /// A lease call that failed, as the API says it (#1120): 1 not installed, 2 not running, 6 the
 /// command failed or timed out, -32602 not a lease of this connection, 8 too many leases.
@@ -175,6 +194,13 @@ pub(crate) fn wallpaper_call(
                 return Err(Error {
                     code: code::INVALID_PARAMS,
                     message: format!("reason is longer than {WALLPAPER_REASON_MAX} characters"),
+                    data: None,
+                });
+            }
+            if p.reason.chars().any(spoofing_char) {
+                return Err(Error {
+                    code: code::INVALID_PARAMS,
+                    message: "reason has a control or direction character".into(),
                     data: None,
                 });
             }
@@ -1839,7 +1865,8 @@ mod parity_tests {
     }
 
     /// #1120 (API 1.15): the Wallpaper Engine lease calls need `wallpaper.control`, which a tool
-    /// is approved for once like any other that is not sensitive; the calls refuse bad input and
+    /// is granted when it connects like any other that is not sensitive (#1142: no prompt yet;
+    /// the per-tool permission dialog will ask); the calls refuse bad input and
     /// say why they fail with the codes the Arete side relies on.
     #[test]
     fn wallpaper_engine_calls_use_wallpaper_control() {
@@ -1866,6 +1893,25 @@ mod parity_tests {
             .call_from(1, "wallpaper-engine.pause", json!({"reason": long}))
             .unwrap_err();
         assert_eq!(e.code, code::INVALID_PARAMS);
+        // #1142: the reason is shown beside the holder's name, so nothing in it may start a
+        // line, reorder or hide text; refused before anything runs.
+        for bad in [
+            "model\nPaused by Windows",
+            "a\u{202E}etrA",
+            "x\u{2066}y\u{2069}",
+            "zero\u{200B}width",
+            "tab\there",
+            "\u{FEFF}bom",
+        ] {
+            let e = AppDevices
+                .call_from(1, "wallpaper-engine.pause", json!({ "reason": bad }))
+                .unwrap_err();
+            assert_eq!(e.code, code::INVALID_PARAMS, "{bad:?}");
+            assert!(e.message.contains("direction"), "{bad:?}: {}", e.message);
+        }
+        for fine in ["loading a model", "Modell lädt · 3/4", "モデル読み込み"] {
+            assert!(!fine.chars().any(spoofing_char), "{fine}");
+        }
         let e = AppDevices
             .call_from(1, "wallpaper-engine.pause", json!({}))
             .unwrap_err();

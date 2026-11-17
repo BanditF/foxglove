@@ -1911,7 +1911,7 @@ impl Router {
             }
             return;
         }
-        // An outside tool (§8.2): approved once per tool (§6.4).
+        // An outside tool (§8.2): granted by the approver (§6.4; no dialog yet, #1142).
         let name = params["client"]["name"].as_str().unwrap_or("").to_string();
         if name.is_empty() {
             return refuse(
