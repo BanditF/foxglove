@@ -1431,6 +1431,12 @@ mod runner {
     /// Reader threads running now (tests: none is left behind after a connection ends).
     pub(super) static READERS: AtomicUsize = AtomicUsize::new(0);
 
+    /// Tests only: told each time a reader thread has gone, so a test waits on the event
+    /// instead of racing `stop_reader`'s bound under load.
+    #[cfg(test)]
+    pub(super) static READER_GONE: (std::sync::Mutex<()>, std::sync::Condvar) =
+        (std::sync::Mutex::new(()), std::sync::Condvar::new());
+
     /// Backoff between attempts: 0.5 s doubling to 8 s, within [`GRACE`] of the last time the
     /// hub was there.
     pub(super) fn delay(attempt: u32) -> Duration {
@@ -1605,6 +1611,11 @@ mod runner {
             }
             let _ = ltx.send(Msg::Closed(generation));
             READERS.fetch_sub(1, Ordering::SeqCst);
+            #[cfg(test)]
+            {
+                let _held = READER_GONE.0.lock();
+                READER_GONE.1.notify_all();
+            }
         });
         let (ended, live) = converse(launch, conn, generation, tx, rx, pending, facts);
         stop_reader(&canceller, &done_rx, &stop);
