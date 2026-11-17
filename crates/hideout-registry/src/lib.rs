@@ -1022,12 +1022,12 @@ impl Registry {
         if m.source == ADOPTED {
             // Path and version only (§7.4): no hashes; the version is checked at `initialize`.
             self.verify_adopted(id)?;
-            // A grant bound to another program file is void (#1178): not launched.
+            // A grant bound to another app file is void (#1178): not launched.
             if let Some(why) = self.binding_void(id) {
                 return Err(Error::new(
                     ErrorId::TrustMismatch,
                     format!(
-                        "{id}: its program file is new or was moved since you allowed it ({why:?})"
+                        "{id}: its app file is new or was moved since you allowed it ({why:?})"
                     ),
                 )
                 .into());

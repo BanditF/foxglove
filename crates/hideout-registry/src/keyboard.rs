@@ -43,7 +43,7 @@ pub enum GrantState {
     On,
     /// The user turned it off at `at`. Nothing is routed; the path and hash are dropped.
     Off,
-    /// The program file's path or hash changed since Allow: void until the user allows again.
+    /// The app file's path or hash changed since Allow: void until the user allows again.
     Void,
     /// A state this hub does not know (a newer or edited file): never a grant.
     #[serde(other)]
@@ -245,7 +245,7 @@ impl Registry {
         if !same_path(&here, path) || !is_hash(sha256) || is_unc(&here) {
             return Err(Failure::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "the program is not where the grant was asked for",
+                "the app is not where the grant was asked for",
             )));
         }
         let grant = KeyboardGrant {

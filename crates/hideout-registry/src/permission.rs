@@ -74,7 +74,7 @@ pub struct Item {
 
 /// The reason lines under "Can't be allowed".
 pub const REASON_NEVER: &str = "Hideout never allows this for this module.";
-pub const REASON_OVERLAP: &str = "Another program already answers these.";
+pub const REASON_OVERLAP: &str = "Another app already answers these.";
 
 /// The plain line for `provide:<method>`.
 const PROVIDE_LINES: &[(&str, &str)] = &[
@@ -595,7 +595,7 @@ impl Registry {
         }
     }
 
-    /// The check at every turn on and launch: if the program is not the one the grant is bound
+    /// The check at every turn on and launch: if the app is not the one the grant is bound
     /// to, the grant is **void**: `granted` goes back to pending (the choices kept as
     /// `last_choice`), the binding's hash is cleared (the old file does not revive it) and the
     /// keyboard record goes void. Returns the reason when it voided now.
@@ -632,7 +632,7 @@ impl Registry {
         Ok(Some(reason))
     }
 
-    /// The install or update path vouches that the program file now at the module's `run[0]` is
+    /// The install or update path vouches that the app file now at the module's `run[0]` is
     /// the next version of the one the grant is bound to (#1178). Hub-side only: no router
     /// method or module request reaches it. The caller (the updater or installer) has verified
     /// the signed `latest.json` / package for `version` before calling.
@@ -668,7 +668,7 @@ impl Registry {
         };
         if !crate::keyboard::same_path(&folder(&path), &folder(&b.exe_path)) {
             return Err(io_invalid(
-                "the program is in another folder than the one allowed",
+                "the app is in another folder than the one allowed",
             ));
         }
         if hash.eq_ignore_ascii_case(&b.exe_sha256)

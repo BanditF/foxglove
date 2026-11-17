@@ -45,16 +45,16 @@ pub fn dialog_path(home: &Path, id: &str) -> Result<String, String> {
     hideout_registry::keyboard::canonical_path(Path::new(&exe)).map_err(|e| e.to_string())
 }
 
-/// Allow: the program file is pinned (write-locked) and hashed through that one handle, and the
+/// Allow: the app file is pinned (write-locked) and hashed through that one handle, and the
 /// grant records that path and hash. `shown_path` is the path the dialog showed the user: Allow
 /// is refused unless it is the very file that was pinned (the binding line must be true), and
-/// for a network path. Refused when the program isn't where the module is registered.
+/// for a network path. Refused when the app isn't where the module is registered.
 pub fn allow(home: &Path, hub: &Hub, id: &str, shown_path: &str) -> Result<(), String> {
     let mut reg = Registry::open_from_env(home).map_err(|e| format!("{e:?}"))?;
     let exe = reg.keyboard_exe(id).map_err(|e| format!("{e:?}"))?;
     let pin = hideout_supervisor::pin::Pin::open(Path::new(&exe)).map_err(|e| e.to_string())?;
     if hideout_registry::keyboard::is_unc(&pin.path) {
-        return Err("the program is on a network path".into());
+        return Err("the app is on a network path".into());
     }
     if !hideout_registry::keyboard::same_path(shown_path, &pin.path) {
         return Err(MISMATCH.into());
@@ -66,7 +66,7 @@ pub fn allow(home: &Path, hub: &Hub, id: &str, shown_path: &str) -> Result<(), S
 }
 
 /// `allow`'s refusal when the path the dialog showed isn't the file that was pinned.
-pub const MISMATCH: &str = "the program is not the one the dialog showed";
+pub const MISMATCH: &str = "the app is not the one the dialog showed";
 
 /// Not now, Esc or the close box: remembered in `hideout.toml`, never asked by itself again.
 pub fn decline(home: &Path, id: &str) -> Result<(), String> {
@@ -161,7 +161,7 @@ impl GrantUi {
             }
             Err(e) => {
                 log::warn!("keyboard grant: the dialog can't open ({e})");
-                self.note = Some("Foxglove's program file couldn't be found.".into());
+                self.note = Some("Foxglove's app file couldn't be found.".into());
             }
         }
     }
@@ -180,7 +180,7 @@ impl GrantUi {
             self.note = Some(
                 match a {
                     Answer::Allow if e == MISMATCH => {
-                        "Foxglove wasn't allowed: its program file isn't the one shown."
+                        "Foxglove wasn't allowed: its app file isn't the one shown."
                     }
                     Answer::Allow => "Foxglove couldn't be allowed. Try again from Turn on\u{2026}",
                     Answer::NotNow => "Your answer couldn't be saved.",
@@ -456,7 +456,7 @@ mod tests {
         g.answer(Answer::Allow);
         assert!(matches!(g.situation, Situation::Granted { .. }));
         assert_eq!(row_button(&g), "Turn off");
-        // The program file changes under the grant: void, the supervisor's check.
+        // The app file changes under the grant: void, the supervisor's check.
         let mut reg = Registry::open_from_env(&home).unwrap();
         reg.void_keyboard(
             "foxglove",
