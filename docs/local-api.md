@@ -11,7 +11,7 @@ Plugins tab).
 | Who | Door | Permissions |
 |---|---|---|
 | **Plugins** (plugins Foxglove starts) | the plugin's stdin/stdout | what its `plugin.toml` declares, approved by the user at install |
-| **Outside tools** (Stream Deck, Wallpaper Engine #39, scripts) | named pipe `\\.\pipe\foxglove-<user>`, current user only | what `initialize` asks for, approved by the user once per tool |
+| **Outside tools** (Stream Deck, Wallpaper Engine #39, scripts) | named pipe `\\.\pipe\foxglove-<user>`, current user only | what `initialize` asks for. No prompt yet (#1142): everything not sensitive is granted when the tool connects, the sensitive ones (key events, raw HID) never; the per-tool dialog will ask once. The pipe admits this user's processes only, not remote or low-integrity (sandboxed) ones |
 | **foxglove-cli** | the same pipe | as an outside tool |
 
 There is no network listener. A localhost WebSocket for browser-based tools (Wallpaper Engine
@@ -57,7 +57,7 @@ same messages.
 | `scene.status` / `scene.repaint` / `scene.stop` | call | `devices.read` / `lighting.write` / `lighting.write` (API 1.16): see below |
 | `focus.get` / `focus.set` | call | `devices.read` / `focus.write` (API 1.12) |
 | `overlay.shown` / `overlay.set_shown` | call | `devices.read` / `app.windows` (API 1.13) |
-| `wallpaper-engine.pause` / `.release` / `.status` | call | `wallpaper.control` (API 1.15, #1120): see below. Never granted over MCP. |
+| `wallpaper-engine.pause` / `.release` / `.status` | call | `wallpaper.control` (API 1.15, #1120): see below. Never granted over MCP. Grants nothing a process of this user can't do itself (Wallpaper Engine's own `-control pause`); the `reason` refuses control, direction and zero-width characters (#1142). |
 | `screens.info_override` / `screens.info_release` | call | `screens.write` (API 1.14): the Info screen names of `screens.panel_override` / `screens.panel_release`, which stay as deprecated aliases. SDK: `info_screen_*`, the `panel_*` methods are deprecated. |
 
 The params and results are in the schema. Notes:

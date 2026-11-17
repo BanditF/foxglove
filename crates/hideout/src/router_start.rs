@@ -13,8 +13,9 @@ use hideout_supervisor::driver::Supervisor;
 
 use crate::panel_feed::{self, HubFeed};
 
-/// Outside tools until the permission dialog exists (lab only, Phase 2): what isn't sensitive is
-/// approved once per tool; sensitive asks (red in the dialog, §6.1) are left out.
+/// Outside tools until the permission dialog exists (Phase 2): what isn't sensitive is granted
+/// when the tool connects, without asking (#1142: docs never say "approved" where no prompt
+/// ran); sensitive asks (red in the dialog, §6.1) are left out.
 fn approver() -> hideout_router::Approver {
     Box::new(|tool, asked| {
         let (yes, no): (Vec<_>, Vec<_>) = asked.iter().cloned().partition(|c| !c.sensitive());

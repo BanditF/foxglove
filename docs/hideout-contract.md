@@ -1315,7 +1315,11 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
 - Catalog, private and sideloaded modules show the permission dialog at enable.
 - An update that adds permissions keeps the old version running and shows "Update waiting for
   you" (§7.8). Never a modal at sign-in.
-- Outside tools ask in `initialize` and are approved once per tool.
+- Outside tools ask in `initialize` and are approved once per tool, in the permission dialog.
+  (#1142) Until that dialog ships, nothing asks: the hub (and Foxglove's own pipe) grants an
+  outside tool every non-sensitive permission it asks for when it connects, and leaves the
+  sensitive ones out. Only this user's own processes reach the pipes (not remote clients, not
+  low-integrity ones), and `wallpaper.control` is still never granted over MCP.
 - The cut-over from Foxglove carries every existing grant over silently. Only new permissions ask.
 - Grants are machine state: they are stored in `inventory.json` (`granted`), in canonical form,
   sorted, never in `hideout.toml`.
@@ -1923,7 +1927,7 @@ Rules:
   outside tool that wants a lab hub is given that hub's name.
 - **Modules** connect with their launch token.
 - **Outside tools** (`foxglove-cli`, the `hideout` CLI, `hideout mcp`, scripts) connect without a
-  token and are approved once each.
+  token and are approved once each (§6.4; until the dialog ships, granted without asking).
 - **Legacy stdio plugins** (`transport = "stdio"`) are bridged by the hub.
 - **The bridge carries panels (v1.4).** A bridged connection is the module's connection: the
   hub reads its identity from the bridge, not a token, and treats its messages as any module's.

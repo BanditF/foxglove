@@ -251,4 +251,113 @@ mod tests {
             "a squatted name is refused"
         );
     }
+
+    /// Opens `name` read/write as this thread, impersonating this process's own token lowered to
+    /// low integrity (a browser or other sandboxed process of the same user): the OS error, or
+    /// `None` when it opened.
+    fn open_at_low_integrity(name: &str) -> Option<u32> {
+        use windows_sys::Win32::Foundation::{
+            GetLastError, LocalFree, GENERIC_READ, GENERIC_WRITE,
+        };
+        use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows_sys::Win32::Security::{
+            DuplicateTokenEx, GetLengthSid, RevertToSelf, SecurityImpersonation,
+            SetTokenInformation, TokenImpersonation, TokenIntegrityLevel, SID_AND_ATTRIBUTES,
+            TOKEN_ADJUST_DEFAULT, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_MANDATORY_LABEL,
+            TOKEN_QUERY,
+        };
+        use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, OpenProcessToken, SetThreadToken,
+        };
+        unsafe {
+            let mut own: HANDLE = std::ptr::null_mut();
+            assert_ne!(
+                OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut own),
+                0
+            );
+            let own = Handle(own);
+            let mut low: HANDLE = std::ptr::null_mut();
+            assert_ne!(
+                DuplicateTokenEx(
+                    own.0,
+                    TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
+                    std::ptr::null(),
+                    SecurityImpersonation,
+                    TokenImpersonation,
+                    &mut low,
+                ),
+                0
+            );
+            let low = Handle(low);
+            let mut sid = std::ptr::null_mut();
+            assert_ne!(
+                ConvertStringSidToSidW(wide("S-1-16-4096").as_ptr(), &mut sid),
+                0
+            );
+            let label = TOKEN_MANDATORY_LABEL {
+                Label: SID_AND_ATTRIBUTES {
+                    Sid: sid,
+                    // SE_GROUP_INTEGRITY
+                    Attributes: 0x20,
+                },
+            };
+            let set = SetTokenInformation(
+                low.0,
+                TokenIntegrityLevel,
+                &label as *const _ as *const _,
+                std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32 + GetLengthSid(sid),
+            );
+            LocalFree(sid);
+            assert_ne!(set, 0, "lowering the token");
+            assert_ne!(SetThreadToken(std::ptr::null(), low.0), 0);
+            let h = CreateFileW(
+                wide(name).as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            );
+            let err = GetLastError();
+            RevertToSelf();
+            if h == INVALID_HANDLE_VALUE {
+                Some(err)
+            } else {
+                drop(Handle(h));
+                None
+            }
+        }
+    }
+
+    /// #1142: the pipe admits this user's own processes only, and not their sandboxed ones: a
+    /// low-integrity client (a browser tab's process, say) can't open it, so a grant like
+    /// `wallpaper.control` never reaches one.
+    #[test]
+    fn a_low_integrity_process_of_the_same_user_is_refused() {
+        let name = format!(r"\\.\pipe\foxglove-test-low-{}", std::process::id());
+        let sd = Descriptor::owner_only().unwrap();
+        let _a = create(&wide(&name), true, &sd).unwrap();
+        let _b = create(&wide(&name), false, &sd).unwrap();
+        let err = std::thread::spawn({
+            let name = name.clone();
+            move || open_at_low_integrity(&name)
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            err,
+            Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED),
+            "low integrity is refused"
+        );
+        assert!(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&name)
+                .is_ok(),
+            "the same user at its own level opens it"
+        );
+    }
 }
