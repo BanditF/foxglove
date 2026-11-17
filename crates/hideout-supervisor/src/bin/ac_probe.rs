@@ -89,13 +89,18 @@ fn module(id: &str, mode: Mode) {
     };
     if matches!(mode, Mode::Wait | Mode::Exit) {
         // Said without waiting for answers: the pipe test's hub knows no module.
-        let said = s
-            .request(
-                "initialize",
-                json!({"id": id, "version": "0.1.0", "instance": launch.instance,
-                       "token": launch.token, "hub": "1.0", "api": {}}),
-            )
-            .and_then(|_| s.notify("module.ready", json!({})));
+        let initialized = s.request(
+            "initialize",
+            json!({"id": id, "version": "0.1.0", "instance": launch.instance,
+                   "token": launch.token, "hub": "1.0", "api": {}}),
+        );
+        // The pipe test's hub knows no module, so it may close the connection as soon as it has
+        // read `initialize`: a `module.ready` that then meets the closed pipe (BrokenPipe) is
+        // not a failure of getting in. With `--exit`, only `initialize` getting written counts.
+        let said = initialized.and_then(|_| match s.notify("module.ready", json!({})) {
+            Err(_) if matches!(mode, Mode::Exit) => Ok(()),
+            other => other,
+        });
         match said {
             Ok(()) if matches!(mode, Mode::Exit) => std::process::exit(0),
             Ok(()) => eprintln!("probe: ready sent"),
