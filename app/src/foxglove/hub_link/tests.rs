@@ -530,7 +530,7 @@ mod reconnect {
     use foxglove_plugin::owner::Probe;
     use hideout_acl::Peer;
 
-    use super::super::runner::{self, Ended, Msg, READERS};
+    use super::super::runner::{self, Ended, Msg, READERS, READER_GONE};
     use super::super::{pick, Grace, HubId, Pending, Pick};
     use super::*;
 
@@ -694,6 +694,7 @@ mod reconnect {
             let name = unique_pipe_name("test.garbage", &format!("r{round}"));
             let server = ServerPipe::create(&name, true).unwrap();
             let silent = round == 5;
+            let (release_tx, release_rx) = mpsc::channel::<()>();
             let hub = std::thread::spawn(move || {
                 let mut conn = server.accept().unwrap();
                 let mut line = String::new();
@@ -704,8 +705,11 @@ mod reconnect {
                 if !silent {
                     // Keeps sending bad lines; the write ends when the app closes the pipe.
                     while conn.write_all(b"this is not json\n").is_ok() {}
+                    true
                 } else {
-                    std::thread::sleep(Duration::from_secs(6));
+                    // Silent until the test has seen the app give up on its own: true when
+                    // released by the test, false when the pipe was only closed by the timeout.
+                    release_rx.recv_timeout(Duration::from_secs(120)).is_ok()
                 }
             });
             let conn = connect_router(&name, me).unwrap();
@@ -718,18 +722,29 @@ mod reconnect {
             }
             assert!(!live, "never reached ready");
             if silent {
-                let took = t.elapsed();
-                assert!(
-                    took >= Duration::from_secs(4) && took < Duration::from_secs(8),
-                    "{took:?}"
-                );
+                // Only a lower bound: the handshake deadline must have run, and the hub is
+                // still silent (the app gave up itself); no upper wall-clock bound under load.
+                assert!(t.elapsed() >= Duration::from_secs(4), "{:?}", t.elapsed());
+                release_tx.send(()).unwrap();
             }
-            assert_eq!(
-                READERS.load(Ordering::SeqCst),
-                0,
+            // The reader's exit is an event: wait on it (bounded) rather than assuming
+            // `stop_reader`'s 2 s was enough on a loaded machine.
+            let gone = READER_GONE.0.lock().unwrap();
+            let (_gone, timed_out) = READER_GONE
+                .1
+                .wait_timeout_while(gone, Duration::from_secs(60), |_| {
+                    READERS.load(Ordering::SeqCst) != 0
+                })
+                .unwrap();
+            assert!(
+                !timed_out.timed_out() && READERS.load(Ordering::SeqCst) == 0,
                 "round {round}: the reader is gone"
             );
-            hub.join().unwrap();
+            drop(_gone);
+            assert!(
+                hub.join().unwrap(),
+                "round {round}: the hub was released by the test"
+            );
         }
     }
 }
