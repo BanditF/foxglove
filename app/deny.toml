@@ -44,6 +44,7 @@ version = 2
 # (glib 0.20) needs gtk4, and tray-icon is still on gtk 0.18. RustSec has no entry for it, so
 # cargo-deny doesn't flag it; the same chain's RustSec notices are ignored below with that reason.
 ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono, flagged unmaintained: dates and times only; no known vulnerability, no drop-in successor yet" },
     # quick-xml 0.39 (RUSTSEC-2026-0194, -0195): only wayland-scanner, a Linux build-time macro that
     # parses Wayland's own bundled protocol XML, never input from users or the network.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml only in wayland-scanner at build time (Linux), on bundled XML" },
