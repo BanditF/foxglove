@@ -11,7 +11,7 @@ from typing import Any, ClassVar, Literal, Optional, Union
 from ._model import Model
 
 HUB = '1.3'
-SPEC = '1.16'
+SPEC = '1.17'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -152,6 +152,19 @@ MUST treat a reason it doesn't know as ended (v1.14), so it is kept as a string.
         'lease': ('lease', 'str'),
         'reason': ('reason', 'str'),
     }
+
+
+@dataclass(kw_only=True)
+class LeaseEnd(Model):
+    """`lease.end` (§8.8, v1.17): the family of the provider's own leases to end, as in its
+`<family>.release`. Answered `{ended}`, the number that ended."""
+
+    family: str
+
+    FIELDS: ClassVar[dict] = {
+        'family': ('family', 'str'),
+    }
+    CLOSED: ClassVar[bool] = True
 
 
 @dataclass(kw_only=True)
@@ -1002,6 +1015,7 @@ TYPES = {
     'config.Config': Config,
     'config.Windows': Windows,
     'lease.LeaseClosed': LeaseClosed,
+    'lease.LeaseEnd': LeaseEnd,
     'legacy.Manifest': Manifest,
     'messages.ActionInvoke': ActionInvoke,
     'messages.ChannelCreate': ChannelCreate,

@@ -433,3 +433,111 @@ fn one_caller_cannot_take_every_lease_a_provider_has_room_for() {
     // Its own id again is no change, even at the cap.
     assert_eq!(t.lease(t.a, json!("A1"))["result"]["lease"], "A1");
 }
+
+/// The hub fact `module.<provider>.lease_holders` (v1.17, #1142) the hub's panel host watches.
+fn holders(t: &Rig) -> Option<Value> {
+    t.r.fact(&format!("module.{P}.lease_holders")).cloned()
+}
+
+/// Who holds a lease is a hub fact by name (never ids or reasons), kept on every change; the
+/// user's Resume ends every lease of a family at once, each with `revoked`, and the holders'
+/// next calls naming them answer `lease.unknown`.
+#[test]
+fn holders_are_named_and_resume_ends_every_lease_of_the_family() {
+    let mut t = Rig::new();
+    let _ = t.r.watch_facts(vec![String::new()]);
+    assert_eq!(holders(&t), None);
+    t.lease(t.a, json!("LA"));
+    assert_eq!(holders(&t), Some(json!({ "example.lessor": [A] })));
+    t.lease(t.a, json!("LA2"));
+    t.lease(t.b, json!("LB"));
+    assert_eq!(holders(&t), Some(json!({ "example.lessor": [A, B] })));
+    // A release by B leaves A named.
+    t.names(t.b, "example.lessor.release", "LB");
+    assert_eq!(holders(&t), Some(json!({ "example.lessor": [A] })));
+    t.lease(t.b, json!("LB2"));
+    // Another family at the same provider is left alone; the fact goes out to the panel host.
+    let out = t.r.end_leases(P, "example.other");
+    assert!(closes(&out, t.p).is_empty());
+    let out = t.r.end_leases(P, "example.lessor");
+    let mut ended = closes(&out, t.p);
+    ended.sort();
+    assert_eq!(
+        ended,
+        [
+            ("LA".into(), "revoked".into()),
+            ("LA2".into(), "revoked".into()),
+            ("LB2".into(), "revoked".into())
+        ]
+    );
+    assert!(
+        sends(&out, t.a).is_empty() && sends(&out, t.b).is_empty(),
+        "holders aren't told"
+    );
+    assert!(out.contains(&Out::Fact {
+        key: format!("module.{P}.lease_holders"),
+        value: Value::Null
+    }));
+    assert_eq!(holders(&t), None);
+    for (from, id) in [(t.a, "LA"), (t.b, "LB2")] {
+        let (reached, err) = t.names(from, "example.lessor.release", id);
+        assert!(!reached && unknown(&err), "{id} ended");
+    }
+    // The caps' counts dropped with them: a disconnect closes nothing more.
+    assert!(closes(&t.r.disconnect(t.a), t.p).is_empty());
+}
+
+/// A holder's name is drawn: hidden characters dropped, a long one cut; a disconnect takes
+/// it off the fact.
+#[test]
+fn a_holders_name_is_safe_to_draw() {
+    let mut t = Rig::new();
+    let mut e = entry("example.spoof", &[]);
+    e.name = format!("Ar\u{202e}ete\n{}", "x".repeat(60));
+    t.r.add_module(e);
+    let s = connect(&mut t.r, "example.spoof", t.now);
+    t.lease(s, json!("LS"));
+    let v = holders(&t).unwrap();
+    let name = v["example.lessor"][0].as_str().unwrap().to_string();
+    assert!(name.starts_with("Arete x"), "{name}");
+    assert!(!name.contains('\u{202e}') && !name.contains('\n'), "{name}");
+    assert_eq!(
+        name.chars().count(),
+        hideout_contract::lease::HOLDER_NAME_MAX
+    );
+    t.r.disconnect(s);
+    assert_eq!(holders(&t), None);
+}
+/// A provider's own Resume (`lease.end`, v1.17): it ends only its own leases of the family,
+/// each closing `revoked`, and the answer counts them.
+#[test]
+fn a_provider_ends_its_own_leases_of_a_family() {
+    let mut t = Rig::new();
+    t.lease(t.a, json!("LA"));
+    t.lease(t.b, json!("LB"));
+    let p = t.p;
+    let out = t.call(p, "lease.end", json!({"family": "example.lessor"}));
+    let mut ended = closes(&out, p);
+    ended.sort();
+    assert_eq!(
+        ended,
+        [
+            ("LA".into(), "revoked".into()),
+            ("LB".into(), "revoked".into())
+        ]
+    );
+    let back: Vec<Value> = sends(&out, p)
+        .into_iter()
+        .filter(|m| m.get("id").is_some())
+        .collect();
+    assert_eq!(back[0]["result"], json!({"ended": 2}), "{back:?}");
+    assert_eq!(holders(&t), None);
+    // A caller can't end the provider's leases: it holds no provider leases of its own.
+    t.lease(t.a, json!("LA2"));
+    let out = t.call(t.a, "lease.end", json!({"family": "example.lessor"}));
+    assert!(closes(&out, p).is_empty());
+    assert_eq!(sends(&out, t.a)[0]["result"], json!({"ended": 0}));
+    // A missing family is refused.
+    let out = t.call(p, "lease.end", json!({}));
+    assert_eq!(sends(&out, p)[0]["error"]["code"], -32602);
+}

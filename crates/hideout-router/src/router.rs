@@ -392,6 +392,8 @@ pub struct Router {
     /// connection ended, and closes that came while no connection of it was ready. At most
     /// [`MAX_RESTART_CLOSES`] per module.
     restart_closes: HashMap<String, VecDeque<(String, String)>>,
+    /// The providers whose `module.<id>.lease_holders` fact is set (§8.5, v1.17).
+    holders_shown: std::collections::BTreeSet<String>,
     /// The supervisor's pid and exe-hash check (§7.5); `None` = tokens only (tests, lab).
     launch_check: Option<LaunchCheck>,
     /// The verified program image of each module connection (#1155-B), set at `initialize`.
@@ -505,6 +507,7 @@ impl Router {
             faults: HashMap::new(),
             leases: HashMap::new(),
             restart_closes: HashMap::new(),
+            holders_shown: Default::default(),
             launch_check: None,
             identity_lookup: None,
             identities: HashMap::new(),
@@ -989,6 +992,7 @@ impl Router {
             self.leases.remove(&k);
             self.lease_closed(&k.0, &k.1, "revoked", &mut out);
         }
+        self.sync_lease_holders(&mut out);
         out
     }
 
@@ -1026,6 +1030,7 @@ impl Router {
             self.leases.remove(&k);
             self.lease_closed(&k.0, &k.1, "revoked", &mut out);
         }
+        self.sync_lease_holders(&mut out);
         out
     }
 
@@ -1337,6 +1342,7 @@ impl Router {
                 out.push(Out::ModuleGone(id));
             }
         }
+        self.sync_lease_holders(&mut out);
         out
     }
 
@@ -1370,6 +1376,7 @@ impl Router {
             json!({"version": version, "reason": reason}),
             &mut out,
         );
+        self.sync_lease_holders(&mut out);
         out
     }
 
@@ -1521,6 +1528,100 @@ impl Router {
 
     /// One line from a connection.
     pub fn receive(&mut self, conn: ConnId, line: &str, now: Instant) -> Vec<Out> {
+        let mut out = self.receive_line(conn, line, now);
+        self.sync_lease_holders(&mut out);
+        out
+    }
+
+    /// The user's Resume (§8.5, v1.17): every live lease at `provider` whose method is of
+    /// `family` ends now, and the provider hears `lease.closed {reason: "revoked"}` for each.
+    /// Holders aren't told; a later call naming one answers `lease.unknown`.
+    pub fn end_leases(&mut self, provider: &str, family: &str) -> Vec<Out> {
+        let mut out = Vec::new();
+        let mut gone: Vec<(String, String)> = self
+            .leases
+            .iter()
+            .filter(|(k, l)| {
+                k.0 == provider && hideout_contract::lease::family(&l.method) == family
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        gone.sort();
+        if !gone.is_empty() {
+            log::info!(
+                "router: the user ended {} {family} leases at {provider}",
+                gone.len()
+            );
+        }
+        for k in gone {
+            self.leases.remove(&k);
+            self.lease_closed(
+                &k.0,
+                &k.1,
+                hideout_contract::lease::reason::REVOKED,
+                &mut out,
+            );
+        }
+        self.sync_lease_holders(&mut out);
+        out
+    }
+
+    /// The name people know a lease's holder by (§8.5, v1.17): a module's display name, a
+    /// tool's `initialize` name, hidden characters dropped and cut at
+    /// [`hideout_contract::lease::HOLDER_NAME_MAX`] characters.
+    fn holder_name(&self, conn: ConnId) -> String {
+        let raw = match self.conns.get(&conn).map(|c| &c.who) {
+            Some(Who::Module { id, .. }) => self
+                .modules
+                .get(id)
+                .map_or_else(|| id.clone(), |m| m.name.clone()),
+            Some(Who::Tool { name, .. }) => name.clone(),
+            _ => String::new(),
+        };
+        let name = hideout_contract::module::display_name(&raw, "An app");
+        let max = hideout_contract::lease::HOLDER_NAME_MAX;
+        if name.chars().count() <= max {
+            return name;
+        }
+        let cut: String = name.chars().take(max - 1).collect();
+        format!("{}\u{2026}", cut.trim_end())
+    }
+
+    /// Keeps the hub fact `module.<provider>.lease_holders` (§8.5, v1.17) on the live leases:
+    /// set where somebody holds one, removed where nobody does. Called after every change.
+    fn sync_lease_holders(&mut self, out: &mut Vec<Out>) {
+        if self.leases.is_empty() && self.holders_shown.is_empty() {
+            return;
+        }
+        type Families = BTreeMap<String, std::collections::BTreeSet<String>>;
+        let mut held: BTreeMap<String, Families> = BTreeMap::new();
+        for ((provider, _), l) in &self.leases {
+            held.entry(provider.clone())
+                .or_default()
+                .entry(hideout_contract::lease::family(&l.method).to_string())
+                .or_default()
+                .insert(self.holder_name(l.holder));
+        }
+        let gone: Vec<String> = self
+            .holders_shown
+            .iter()
+            .filter(|p| !held.contains_key(*p))
+            .cloned()
+            .collect();
+        for p in gone {
+            self.set_fact(&hideout_contract::lease::holders_key(&p), Value::Null, out);
+        }
+        self.holders_shown = held.keys().cloned().collect();
+        for (p, families) in held {
+            let key = hideout_contract::lease::holders_key(&p);
+            let value = json!(families);
+            if self.facts.get(&key) != Some(&value) {
+                self.set_fact(&key, value, out);
+            }
+        }
+    }
+
+    fn receive_line(&mut self, conn: ConnId, line: &str, now: Instant) -> Vec<Out> {
         let mut out = Vec::new();
         self.last_now = now;
         if !self.conns.contains_key(&conn) {
@@ -1667,6 +1768,27 @@ impl Router {
                     None => denied(&id, Some("only modules register")),
                 };
                 out.push(answer(reply));
+            }
+            // (v1.17) A provider ends the live leases it handed out of one family, on the user's
+            // word in its own page (a Resume): each closes `revoked`, as the hub's own Resume.
+            hideout_contract::lease::LEASE_END => {
+                let family = params.get("family").and_then(Value::as_str);
+                match (&module, family) {
+                    (Some(m), Some(f)) if !f.is_empty() => {
+                        let m = m.clone();
+                        let before = self.leases.len();
+                        out.extend(self.end_leases(&m, f));
+                        let ended = before - self.leases.len();
+                        out.push(answer(ok(&id, json!({ "ended": ended }))));
+                    }
+                    (Some(_), _) => out.push(answer(error(
+                        &id,
+                        code::INVALID_PARAMS,
+                        "invalid params",
+                        Some("family is a method family"),
+                    ))),
+                    (None, _) => out.push(answer(denied(&id, Some("only providers end leases")))),
+                }
             }
             "ui.register" => {
                 let reply = match &module {

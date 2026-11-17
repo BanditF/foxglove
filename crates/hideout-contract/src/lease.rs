@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 /// The notification that tells a provider a lease it handed out ended (H → M, §8.8, v1.3).
 pub const LEASE_CLOSED: &str = "lease.closed";
 
+/// (v1.17) A provider ends every live lease it handed out of one family (M → H, §8.8):
+/// `{family}` → `{ended}`; each closes with `lease.closed {reason: "revoked"}`, as the hub's
+/// own Resume does. The holders aren't told; a later call naming one answers `lease.unknown`.
+pub const LEASE_END: &str = "lease.end";
+
 /// The longest lease id, in bytes (v1.14).
 pub const MAX_ID_BYTES: usize = 128;
 
@@ -24,6 +29,14 @@ pub fn valid_id(id: &str) -> bool {
 pub struct LeaseClosed {
     pub lease: String,
     pub reason: String,
+}
+
+/// `lease.end` (§8.8, v1.17): the family of the provider's own leases to end, as in its
+/// `<family>.release`. Answered `{ended}`, the number that ended.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LeaseEnd {
+    pub family: String,
 }
 
 /// Why a lease ended (§8.5).
@@ -46,6 +59,27 @@ pub mod reason {
 /// result over it is not passed on ([`error_id::LEASE_LIMIT`]) and the provider hears
 /// `lease.closed {reason: "revoked"}` for it.
 pub const MAX_PER_CALLER: usize = 16;
+
+/// (v1.17) The hub fact `module.<provider>.<HOLDERS_FACT>`: who holds live leases at that
+/// provider, `{"<family>": ["<name>", ...]}` with the family of the handing-out method
+/// ([`family`]) and each holder by the name people know it by (a module's display
+/// name, a tool's `initialize` name; hidden characters dropped, at most [`HOLDER_NAME_MAX`]
+/// characters), sorted, once each. Absent while nothing is held. Never lease ids or reasons.
+pub const HOLDERS_FACT: &str = "lease_holders";
+
+/// (v1.17) The longest holder name in [`HOLDERS_FACT`], in characters; a longer one is cut.
+pub const HOLDER_NAME_MAX: usize = 32;
+
+/// The fact key of [`HOLDERS_FACT`] for `provider`.
+pub fn holders_key(provider: &str) -> String {
+    format!("module.{provider}.{HOLDERS_FACT}")
+}
+
+/// The family of a lease-handing method, the part before its last `.`, as in the family's
+/// `<family>.release` (`wallpaper-engine.pause` → `wallpaper-engine`).
+pub fn family(method: &str) -> &str {
+    method.rsplit_once('.').map_or(method, |(f, _)| f)
+}
 
 /// The `data.id`s of a lease refusal (§15, v1.14).
 pub mod error_id {
@@ -91,5 +125,13 @@ mod tests {
         let c: LeaseClosed = serde_json::from_value(v).unwrap();
         assert_eq!(c.reason, "later");
         assert!(reason::ALL.contains(&reason::RESTART));
+    }
+
+    #[test]
+    fn a_family_is_the_method_without_its_last_part() {
+        assert_eq!(family("wallpaper-engine.pause"), "wallpaper-engine");
+        assert_eq!(family("example.lessor.lease"), "example.lessor");
+        assert_eq!(family("odd"), "odd");
+        assert_eq!(holders_key("foxglove"), "module.foxglove.lease_holders");
     }
 }

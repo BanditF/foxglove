@@ -121,6 +121,11 @@ pub fn feed(hub: Hub) -> (RouterSide, HubFeed) {
 
 /// A feed pair over `hub` whose tray press failures go to `notifier` (tests show no toast).
 pub fn feed_with(hub: Hub, notifier: Notifier) -> (RouterSide, HubFeed) {
+    // The tray's Resume (#1142): the router ends the family's leases at the provider.
+    let resumer = hub.clone();
+    hideout_shell::marks::set_resumer(Box::new(move |provider: &str, family: &str| {
+        resumer.act(|r| r.end_leases(provider, family));
+    }));
     let (tx, rx) = mpsc::channel();
     let shared = Shared {
         tx,

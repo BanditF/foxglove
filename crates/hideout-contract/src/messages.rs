@@ -460,6 +460,8 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         "app.window.appeared" | "app.window.closed" => typed::<crate::services::AppWindows>(params),
         // Lease end (§8.5, v1.3; the id rule v1.14).
         "lease.closed" => typed::<crate::lease::LeaseClosed>(params),
+        // A provider's own Resume (§8.5, v1.17).
+        crate::lease::LEASE_END => typed::<crate::lease::LeaseEnd>(params),
         _ => Ok(()),
     }
 }
