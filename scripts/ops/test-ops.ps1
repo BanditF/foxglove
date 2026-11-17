@@ -64,6 +64,10 @@ try {
     $lf = (@(Get-HealthFlags -Now $low -Prev $p -Leak $null)) -join '|'
     Check 'flags: low disk and reboot suggested' ($lf -match 'C: free' -and $lf -match 'reboot suggested')
 
+    $as = Get-AtomSummary @('WindowOnEdge', 'WindowOnEdge', 'x', '', $null)
+    Check 'atoms: counts used and WindowOnEdge' ($as.atoms -eq 3 -and $as.window_on_edge -eq 2)
+    Check 'atoms: live table readable' ((Get-AtomSummary (Get-AtomNames)).atoms -ge 0)
+
     # --- digest ---
     . (Join-Path $here 'foxglove-digest.ps1')
     $facts = Format-Facts -OpenPrs @([pscustomobject]@{ number = 7; title = 'A'; baseRefName = 'main'; isDraft = $true; updatedAt = 'x' }) `
