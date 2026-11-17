@@ -41,6 +41,7 @@ ignore = [
     { id = "RUSTSEC-2026-0371", reason = "zbus_names, unmaintained: only via accesskit_unix (Linux-only) in eframe" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, unmaintained: only via accesskit_unix (Linux-only) in eframe" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, unmaintained: only via glib-macros in Linux-only gtk 0.18 (tray-icon)" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono, flagged unmaintained: dates and times in our tools only; no known vulnerability, no drop-in successor yet" },
 ]
 
 [bans]
