@@ -212,7 +212,7 @@ impl PermDialog {
 
     pub fn void_line(&self) -> String {
         format!(
-            "{}'s program file is new or was moved since you allowed it.",
+            "{}'s app file is new or was moved since you allowed it.",
             self.name
         )
     }
@@ -457,7 +457,7 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
         ),
         HeaderKind::Changed => (
             format!("{name} changed since you allowed it"),
-            "Its program file is new or was moved, so Hideout stopped it until you allow it again."
+            "Its app file is new or was moved, so Hideout stopped it until you allow it again."
                 .into(),
             NOT_NOW,
         ),
@@ -653,13 +653,13 @@ mod tests {
         d.reason = Some(Reason::Void);
         assert_eq!(
             d.reason_lines(),
-            ["Foxglove's program file is new or was moved since you allowed it."]
+            ["Foxglove's app file is new or was moved since you allowed it."]
         );
         let h = header(HeaderKind::Changed, "foxglove", "Foxglove", None);
         assert_eq!(h.title, "Foxglove changed since you allowed it");
         assert_eq!(
             h.body,
-            "Its program file is new or was moved, so Hideout stopped it until you allow it again."
+            "Its app file is new or was moved, so Hideout stopped it until you allow it again."
         );
         let h = header(HeaderKind::Ask, "foxglove", "Foxglove", None);
         assert_eq!(h.body, "Until you allow it, Foxglove stays off.");

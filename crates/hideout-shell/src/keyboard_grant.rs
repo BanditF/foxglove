@@ -21,7 +21,7 @@ pub enum Situation {
     Declined,
     /// The user turned it off.
     Revoked,
-    /// The program file changed or moved since it was allowed (void).
+    /// The app file changed or moved since it was allowed (void).
     Changed { at: String, moved: bool },
 }
 
@@ -98,7 +98,7 @@ pub const HEADER_ASK_BODY: &str =
     "Until you allow it, apps that use your keyboard through Hideout can't reach it.";
 pub const HEADER_CHANGED_TITLE: &str = "Foxglove changed since you allowed it";
 pub const HEADER_CHANGED_BODY: &str =
-    "Its program file is new or was moved, so Hideout turned keyboard sharing off.";
+    "Its app file is new or was moved, so Hideout turned keyboard sharing off.";
 
 pub const DIALOG_TITLE: &str = "Let Foxglove handle your keyboard in Hideout?";
 pub const DIALOG_INTRO: &str = "Apps you have allowed to use your keyboard will reach it through Foxglove. With this on, Foxglove can do these for them:";
@@ -114,9 +114,9 @@ pub const DIALOG_FOOTER: [&str; 2] = [
 ];
 pub const DIALOG_BINDING: [&str; 2] = [
     "Only for this copy of Foxglove:",
-    "If the program file changes or moves, Hideout asks again.",
+    "If the app file changes or moves, Hideout asks again.",
 ];
-pub const DIALOG_REASON: &str = "Foxglove's program file is new or was moved since you allowed it.";
+pub const DIALOG_REASON: &str = "Foxglove's app file is new or was moved since you allowed it.";
 
 /// "12 Nov 2026" from `2026-11-12T10:00:00Z`; the text itself when it isn't a date.
 pub fn date_words(at: &str) -> String {
@@ -190,7 +190,7 @@ pub fn row(s: &Situation) -> Option<Row> {
         Situation::Changed { at, moved } => (
             RowState::AsksAgain,
             format!(
-                "Foxglove's program file {} on {}.",
+                "Foxglove's app file {} on {}.",
                 if *moved { "was moved" } else { "changed" },
                 date_words(at)
             ),
@@ -237,7 +237,7 @@ pub enum Key {
 /// you" can reuse it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dialog {
-    /// "Foxglove's program file is new or was moved ..." on top, after a change.
+    /// "Foxglove's app file is new or was moved ..." on top, after a change.
     pub reason: Option<&'static str>,
     /// The full path of this copy of Foxglove the answer binds to.
     pub path: String,
@@ -421,13 +421,13 @@ mod tests {
             assert_eq!(h.title, "Foxglove changed since you allowed it");
             assert_eq!(
                 h.body,
-                "Its program file is new or was moved, so Hideout turned keyboard sharing off."
+                "Its app file is new or was moved, so Hideout turned keyboard sharing off."
             );
             let r = row(&s).unwrap();
             assert_eq!(r.state.word(), "Asks again");
             assert_eq!(
                 r.line,
-                format!("Foxglove's program file {word} on 12 Nov 2026.")
+                format!("Foxglove's app file {word} on 12 Nov 2026.")
             );
             assert_eq!(
                 (r.button, r.main, r.ask),
