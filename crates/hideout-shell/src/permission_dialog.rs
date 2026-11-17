@@ -239,7 +239,7 @@ impl PermDialog {
     pub fn binding_lines(&self) -> [String; 3] {
         [
             format!("Only for this copy of {}:", self.name),
-            "If the program or this list changes, Hideout asks again.".into(),
+            "If this file or this list changes, Hideout asks again.".into(),
             format!(
                 "You can turn each one off any time in Modules, {}.",
                 self.name
