@@ -170,6 +170,9 @@ fn tray_sync() {
     if let Some(b) = crate::marks::take_search_change() {
         tray::set_search(b.as_ref());
     }
+    if let Some(items) = crate::quick_actions::take_change() {
+        tray::set_quick_actions(&items);
+    }
 }
 
 /// When the crash bar's countdown next needs a frame: once a second while it counts, never at
@@ -364,6 +367,8 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
             // Facts that change the tray wake the loop once; `tray_sync` applies them.
             let marks_ctx = ctx.clone();
             crate::marks::set_waker(Box::new(move || marks_ctx.request_repaint()));
+            let qa_ctx = ctx.clone();
+            crate::quick_actions::set_waker(Arc::new(move || qa_ctx.request_repaint()));
             tray_sync();
             let open_ctx = ctx.clone();
             *OPEN_WAKER.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -478,6 +483,7 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
             shared.paused.store(on, Ordering::Release);
             log::info!("{}", if on { "paused" } else { "resumed" });
             crate::marks::note_paused(on);
+            crate::quick_actions::note_paused(on);
             tray_sync();
         }
         tray::Command::OpenLogs => {
@@ -509,6 +515,15 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
             match f {
                 Some(f) => f.act(act),
                 None => log::warn!("{act:?} from the tray: no search in this hub"),
+            }
+        }
+        // The user's own click (#1234): `action.invoke {source: "tray"}`; no confirm, the menu
+        // has closed. Paused, the item is grey and nothing is pressed.
+        tray::Command::QuickAction(n) => {
+            if shared.paused.load(Ordering::Acquire) {
+                log::info!("tray: quick action {n} while paused; nothing pressed");
+            } else {
+                crate::quick_actions::press(n);
             }
         }
     }
@@ -1017,6 +1032,10 @@ impl Hub {
     /// Registers the bound keys system-wide (#991): a press sends `action.invoke` through the
     /// router from the hotkey thread, so it works with the window in the tray.
     fn start_hotkeys(&mut self, ctx: &egui::Context) {
+        // The tray menu's quick actions (#1234): their presses, and the bound keys they show.
+        // An item's module is not started here: a press starts it (§4.6, v1.16).
+        crate::quick_actions::set_invoker(self.feed.as_ref().and_then(|f| f.tray_invoker()));
+        crate::quick_actions::note_keys(&self.panels.bound_keys());
         let Some(invoke) = self.feed.as_ref().and_then(|f| f.key_invoker()) else {
             return;
         };
@@ -1126,6 +1145,7 @@ impl Hub {
                     log::warn!("saving {}: {e}", self.shared.paths.prefs_file().display());
                 }
             }
+            crate::quick_actions::note_keys(&list);
             if let Some(h) = &self.hotkeys {
                 h.set(list);
             }

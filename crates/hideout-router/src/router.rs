@@ -54,6 +54,8 @@ mod activation;
 pub use activation::Triggers;
 
 mod apps;
+mod hub_queue;
+pub use hub_queue::{MAX_HUB_QUEUED, NOT_STARTED};
 mod services;
 pub use services::{all_methods as host_methods, ServiceCall, ServiceError};
 
@@ -438,6 +440,8 @@ pub struct Router {
     /// The apps each connection watches with `apps.watch` (§8.12, v1.13): app label → `exe`
     /// as asked. Ends with the connection.
     app_watches: HashMap<ConnId, BTreeMap<String, String>>,
+    /// The hub's calls waiting for their module to start (§4.6, v1.16): a tray press.
+    hub_queue: Vec<hub_queue::HubQueued>,
 }
 
 /// The file in a v1 plugin's settings folder where the hub keeps the values the user changed.
@@ -527,6 +531,7 @@ impl Router {
             triggers: BTreeMap::new(),
             services: Default::default(),
             app_watches: HashMap::new(),
+            hub_queue: Vec::new(),
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -1179,7 +1184,7 @@ impl Router {
         let p = self.pending.values().map(|p| p.deadline);
         let q = self.queue.iter().map(|q| q.deadline);
         let h = self.host_calls.values().map(|h| h.deadline);
-        p.chain(q).chain(h).min()
+        p.chain(q).chain(h).chain(self.hub_queue_deadline()).min()
     }
 
     /// Fails every call past its deadline with error 4 (§8.1).
@@ -1204,6 +1209,7 @@ impl Router {
                 error(&q.id, code::TIMEOUT, "timeout", None),
             ));
         }
+        self.expire_hub_queue(Some(now), None, &mut out);
         // The panel host draws only on the hub's frames; a hub that never takes its answer
         // (closed for good) fails the call like any provider.
         let mut late: Vec<u64> = self
@@ -1393,6 +1399,7 @@ impl Router {
         self.channels.remove(id);
         self.leases.retain(|k, _| k.0 != id);
         self.restart_closes.remove(id);
+        self.expire_hub_queue(None, Some(id), &mut out);
         let prefix = format!("module.{id}.");
         let keys: Vec<String> = self
             .facts
@@ -2497,6 +2504,8 @@ impl Router {
             }
         }
         self.queue = keep;
+        // The hub's own calls that waited for it (a tray press, v1.16).
+        self.flush_hub_queue(conn, module, out);
     }
 
     fn notification(&mut self, conn: ConnId, method: &str, params: Value, out: &mut Vec<Out>) {

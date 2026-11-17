@@ -120,6 +120,12 @@ pub trait PanelFeed: Send {
     fn key_invoker(&self) -> Option<KeyInvoker> {
         None
     }
+    /// Sends `action.invoke {action, source: "tray"}` for a tray menu quick action (§5.1 `action`
+    /// slot, v1.16), from the UI thread: a module that isn't running is started and gets the
+    /// press once it is ready (§4.6). A feed without a router has none.
+    fn tray_invoker(&self) -> Option<KeyInvoker> {
+        None
+    }
 }
 
 /// What [`PanelFeed::key_invoker`] gives: called with (module, action) per key press.

@@ -30,6 +30,12 @@ pub const OPEN: &str = "Open Foxglove settings";
 pub const INTRO: &str = "Your keyboard, its lights and its art, as the Foxglove app sees them.";
 /// The notice while one of Foxglove's own pages is stopped by its guard.
 pub const STOPPED: &str = "Foxglove's page stopped working.";
+/// The page's game mode row (#1234), after the layer: a status, never an action.
+pub const GAME_ON: &str = "Game mode: on";
+pub const GAME_OFF: &str = "Game mode: off";
+/// The help under it while game mode is on: game mode frees, reserves and ends nothing (§8.9).
+pub const GAME_HELP: &str =
+    "Follows the GAME layer. It doesn't free the GPU: use Free GPU on the AI page or in the tray menu.";
 
 /// The most bytes of a name shown (a tile's text cap is 64; the cut adds "…").
 const CUT: usize = 60;
@@ -188,6 +194,8 @@ pub struct View {
     pub batteries: Vec<(String, i64)>,
     pub layer: Option<i64>,
     pub layer_name: Option<String>,
+    /// `keyboard.game_mode` (#1149): a GAME layer is active. `None`: not reported.
+    pub game_mode: Option<bool>,
     pub lights: Lights,
     /// The piece's name and where it comes from (`built_in`, `kept`, `sent`).
     pub art: Option<(String, String)>,
@@ -236,6 +244,7 @@ impl View {
             batteries,
             layer: int("keyboard.layer"),
             layer_name: text("keyboard.layer_name"),
+            game_mode: flag("keyboard.game_mode"),
             lights: Lights {
                 on: flag("keyboard.lighting.on"),
                 effect: text("keyboard.lighting.effect"),
@@ -449,6 +458,16 @@ fn rows(part: Part, v: &View) -> Vec<Value> {
                 (Some(n), _) => out.push(line("layer", &format!("Layer {}", cut(n)))),
                 (None, Some(n)) => out.push(line("layer", &format!("Layer {n}"))),
                 _ => {}
+            }
+            // Game mode on the page only (#1234, Hub pick B): words, no tone or glyph, so it
+            // never pairs with the AI tile's "Reserved for gaming".
+            match v.game_mode {
+                Some(true) => {
+                    out.push(line("game", GAME_ON));
+                    out.push(line("game-help", GAME_HELP));
+                }
+                Some(false) => out.push(line("game", GAME_OFF)),
+                None => {}
             }
             if v.batteries.is_empty() {
                 out.push(line(

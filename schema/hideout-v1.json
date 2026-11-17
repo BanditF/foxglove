@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.15",
+  "spec": "1.16",
   "streams": {
     "nodes": [
       "canvas",
