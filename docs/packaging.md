@@ -35,12 +35,21 @@ starts this exe.
 
 **Start with Windows** belongs to the app alone. The switch is in **App -> Startup and
 updates -> Start with Windows** and is on by default.
-- It writes and removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Foxglove`, the
-  quoted exe path. Windows' Settings › Apps › Startup lists it with its own toggle.
-- At startup, with the switch on, it fixes a missing value or one naming another exe. Turned off,
-  the value is removed and never added back.
-- The MSI writes no Run value. On uninstall (not on an upgrade), it runs
-  `foxglove.exe --uninstall-cleanup` as the user, which removes the value if it starts that exe.
+- It is a shortcut, `Foxglove.lnk`, in the user's Startup folder. Its command line is
+  `foxglove.exe --tray`. Windows' on/off state for it is the `Foxglove.lnk` value under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder`,
+  so Windows' Settings › Apps › Startup lists it with its own toggle and the switch follows it.
+  Until 0.2 the entry was the `HKCU\...\Run` value `Foxglove`; at startup the app moves such a
+  value (one starting this exe) to the shortcut, with its on/off state.
+- Turning the switch on or off writes what Windows' own toggle writes (StartupApproved enabled or
+  disabled). Turning it on also makes the shortcut when it is missing or starts another exe.
+- Startup never turns it back on: disabled in Windows, the switch shows off, and a shortcut that
+  was removed stays removed. With the switch on, the app makes the shortcut only when it never
+  made one, and repairs it when the file it starts is gone. One starting another exe that exists
+  (a second install) is left alone. Dev builds and test runs never write it.
+- The MSI writes no startup entry. On uninstall (not on an upgrade), it runs
+  `foxglove.exe --uninstall-cleanup` as the user, which removes the shortcut and its
+  StartupApproved value, and any old Run value, each only if it starts that exe.
 
 A start without arguments (by hand, the Start menu entry) opens the Settings window.
 `foxglove.exe --tray` starts in the tray instead: Settings stays closed until the tray opens it,
@@ -50,9 +59,9 @@ rewritten in place with it at startup (Windows' on/off toggle for it stays). On-
 use it, and so do the app's own relaunches (after a GPU reset, after registering the identity
 package).
 
-Uninstall removes the installed files, the shortcut, the installer's registry values and the
-app's Run value. It never removes user settings or cached keymaps. Major upgrades replace the
-previous package and reject downgrades. Quit the running app before upgrading or uninstalling;
+Uninstall removes the installed files, the Startup and Start menu shortcuts, the installer's
+registry values and the app's old Run value (if still there). It never removes user settings or
+cached keymaps. Major upgrades replace the previous package and reject downgrades. Quit the running app before upgrading or uninstalling;
 the in-app updater does this for you.
 
 ### Moving from 0.1 (per machine) to the per-user MSI
@@ -72,7 +81,7 @@ The clean migration:
    is the old per-machine package. Settings and keymaps in `%APPDATA%\Foxglove\config` stay.
    If 0.1's "Start with Windows" option was on, its Run value goes with it.
 3. Run the new MSI. No UAC. Start Foxglove; with the switch on (the default, or as you left it),
-   it writes the Run value for its new path.
+   it makes the Startup shortcut for its new path.
 
 If the message still appears right after uninstalling 0.1, the old exe was still running and
 Windows removes it at the next restart: restart, then run the MSI again.
@@ -118,8 +127,8 @@ On a Windows test account, also verify:
 - a silent install (`msiexec /i foxglove-x64.msi /qn`, no elevation);
 - upgrade and downgrade handling;
 - the 0.1 per-machine guard message;
-- uninstall with settings and cache files present: the Run entry and the shortcut go, and those
-  files stay.
+- uninstall with settings and cache files present: the Startup shortcut (and any old Run entry) and the Start menu shortcut go,
+  and those files stay.
 
 ## Auto-update
 
