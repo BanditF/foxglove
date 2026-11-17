@@ -355,3 +355,104 @@ fn a_register_that_wants_nothing_clears_what_the_last_one_wanted() {
     assert_eq!(asked, 0, "no stale route comes back");
     assert!(code.is_some(), "the call is refused, not served");
 }
+
+/// The catalog (accepted after the first registrations) now assigns `zonex.*` to `cat.x`.
+fn assign_to_cat_x(r: &mut Router, granted: &[&str]) {
+    let mut x = entry("cat.x", granted);
+    x.registered_version = None;
+    x.catalog_provide = Some(vec!["zonex.*".into()]);
+    r.add_module(x);
+    r.set_root_areas(vec![("cat.x".into(), "zonex.*".into())]);
+}
+
+fn adopted_manifest(id: &str, method: &str) -> hideout_contract::module::Module {
+    let text = format!(
+        "id = \"{id}\"\nname = \"{id}\"\nversion = \"0.1.0\"\nkind = \"adopted\"\nfamily = \"foxglove\"\nhub = \"1.0\"\nrun = [\"C:/x/x.exe\"]\nprovides = [\"method:{method}\"]\n"
+    );
+    hideout_contract::module::Module::parse(&text, &hideout_contract::module::Context::default())
+        .expect("manifest")
+}
+
+/// A catalog module refused a method as `taken` gets it when a registry reload drops the adopted
+/// holder's route: no restart, no second `module.register` (#1135). Its grants are rechecked.
+#[test]
+fn a_refused_taken_registration_applies_when_the_adopted_route_is_dropped() {
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry("adopted.y", &["provide:zonex.set"]));
+    r.apply_manifest(&adopted_manifest("adopted.y", "zonex.set"));
+    let mut x = entry("cat.x", &["provide:zonex.set"]);
+    x.registered_version = None;
+    r.add_module(x);
+    r.add_module(entry("example.caller", &[]));
+    let y = connect(&mut r, "adopted.y", now);
+    assert!(register(&mut r, y, "zonex.set", now).is_empty());
+    let cx = connect(&mut r, "cat.x", now);
+    let rej = register(&mut r, cx, "zonex.set", now);
+    assert_eq!(rej.len(), 1, "refused as taken: {rej:?}");
+    let caller = connect(&mut r, "example.caller", now);
+    // Before the reload Y serves it.
+    assert_eq!(call_through(&mut r, caller, y, "zonex.set", 1, now).0, 1);
+
+    assign_to_cat_x(&mut r, &["provide:zonex.set"]);
+    let (asked, code) = call_through(&mut r, caller, cx, "zonex.set", 2, now);
+    assert_eq!(
+        (asked, code),
+        (1, None),
+        "the retained registration applied"
+    );
+    assert_eq!(call_through(&mut r, caller, y, "zonex.set", 3, now).0, 0);
+}
+
+/// Grants are rechecked at apply time: a grant taken away while the registration was retained
+/// leaves the route unbound, and a disconnect drops the retained registration.
+#[test]
+fn a_retained_registration_needs_its_grant_and_its_connection() {
+    let now = Instant::now();
+    let build = || {
+        let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+        r.add_module(entry("adopted.y", &["provide:zonex.set"]));
+        r.apply_manifest(&adopted_manifest("adopted.y", "zonex.set"));
+        let mut x = entry("cat.x", &["provide:zonex.set"]);
+        x.registered_version = None;
+        r.add_module(x);
+        r.add_module(entry("example.caller", &[]));
+        let y = connect(&mut r, "adopted.y", now);
+        register(&mut r, y, "zonex.set", now);
+        let cx = connect(&mut r, "cat.x", now);
+        assert_eq!(register(&mut r, cx, "zonex.set", now).len(), 1);
+        let caller = connect(&mut r, "example.caller", now);
+        (r, cx, caller)
+    };
+    // Grant removed meanwhile: nothing is bound.
+    let (mut r, cx, caller) = build();
+    assign_to_cat_x(&mut r, &[]);
+    assert_eq!(call_through(&mut r, caller, cx, "zonex.set", 1, now).0, 0);
+    // Disconnected: the retained registration is gone, a reconnect must register itself.
+    let (mut r, cx, caller) = build();
+    r.disconnect(cx);
+    assign_to_cat_x(&mut r, &["provide:zonex.set"]);
+    let cx2 = connect(&mut r, "cat.x", now);
+    assert_eq!(call_through(&mut r, caller, cx2, "zonex.set", 2, now).0, 0);
+}
+
+/// A route the adopted module still owns is never taken: nothing is dropped, nothing moves.
+#[test]
+fn a_retained_registration_never_takes_a_route_still_owned() {
+    let now = Instant::now();
+    let mut r = Router::new(Settings::default(), Box::new(|_, a| a.to_vec()));
+    r.add_module(entry("adopted.y", &["provide:zonex.set"]));
+    r.apply_manifest(&adopted_manifest("adopted.y", "zonex.set"));
+    let mut x = entry("cat.x", &["provide:zonex.set"]);
+    x.registered_version = None;
+    r.add_module(x);
+    r.add_module(entry("example.caller", &[]));
+    let y = connect(&mut r, "adopted.y", now);
+    register(&mut r, y, "zonex.set", now);
+    let cx = connect(&mut r, "cat.x", now);
+    assert_eq!(register(&mut r, cx, "zonex.set", now).len(), 1);
+    let caller = connect(&mut r, "example.caller", now);
+    r.set_root_areas(vec![]);
+    assert_eq!(call_through(&mut r, caller, cx, "zonex.set", 1, now).0, 0);
+    assert_eq!(call_through(&mut r, caller, y, "zonex.set", 2, now).0, 1);
+}
