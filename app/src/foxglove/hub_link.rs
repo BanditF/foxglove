@@ -342,7 +342,7 @@ struct Hub {
     resume_asked: bool,
 }
 
-/// The hub fact naming who holds this module's leases (contract section 8.5, v1.16).
+/// The hub fact naming who holds this module's leases (contract section 8.5, v1.17).
 fn holders_key() -> String {
     format!("module.{ID}.lease_holders")
 }
