@@ -983,9 +983,17 @@ fn run(
                     if engine_check(&mut leases, pusher.apply_mut()) {
                         mark.set(false);
                     }
-                    if matches!(ctl, Ctl::Pause { .. }) && !leases.paused_by_lease() {
-                        // Marked before the pause goes out, so a crash right after it still
-                        // leaves the mark; corrected below when no pause was sent.
+                    if matches!(
+                        ctl,
+                        Ctl::Pause {
+                            user_paused: false,
+                            ..
+                        }
+                    ) && leases.count() == 0
+                    {
+                        // Marked before the pause goes out (only when one will: the first
+                        // lease, not over the user's pause), so a crash right after it still
+                        // leaves the mark; corrected below when the pause failed.
                         mark.set(true);
                     }
                     if serve(ctl, &mut leases, pusher.apply_mut(), full) {
