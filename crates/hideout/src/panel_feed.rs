@@ -820,6 +820,13 @@ mod tests {
             serde_json::from_str::<Value>(&line).unwrap()
         };
         assert!(read()["result"].is_object());
+        // A press waits for `module.ready` (review of #1240), so the module says it.
+        writeln!(
+            to_hub,
+            "{}",
+            json!({"jsonrpc": "2.0", "method": "module.ready", "params": {"instance": "i1"}})
+        )
+        .unwrap();
         let wait = Duration::from_millis(500);
         let press = feed
             .tray_invoker()
