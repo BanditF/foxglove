@@ -442,7 +442,8 @@ pub fn set_resume(label: Option<&str>) {
         let Some(t) = g.as_mut() else { return };
         match label {
             Some(l) => {
-                t.resume.set_text(l);
+                // A holder's name is drawn as written: `&` would mark a mnemonic in a menu.
+                t.resume.set_text(l.replace('&', "&&"));
                 if !t.resume_shown {
                     // Status line, Start normally when shown, Open Hideout, the search's items.
                     let at = 2
