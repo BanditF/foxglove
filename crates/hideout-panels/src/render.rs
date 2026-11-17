@@ -157,7 +157,7 @@ fn panel_body(host: &mut PanelHost, ui: &mut Ui, key: &PanelKey, body: Body) -> 
 fn tone_color(ui: &Ui, p: &Map<String, Value>) -> Option<Color32> {
     let word = s(p, "tone")?;
     if word == "off" {
-        return Some(ui.visuals().weak_text_color());
+        return Some(off_color(ui.visuals()));
     }
     tone_rgb(word, ui.visuals().dark_mode).map(|(r, g, b)| Color32::from_rgb(r, g, b))
 }
@@ -198,6 +198,32 @@ fn lum(c: Color32) -> f32 {
 pub fn contrast(a: Color32, b: Color32) -> f32 {
     let (x, y) = (lum(a), lum(b));
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// The `off` tone: the weak text colour as it lands on the panel and window fills, pulled toward
+/// the text colour only as far as needed for 4.5:1 on both (egui's weak text is 4.4:1 on the
+/// light panel, #1142 review).
+pub fn off_color(v: &egui::Visuals) -> Color32 {
+    let fills = [v.panel_fill.to_opaque(), v.window_fill.to_opaque()];
+    let (weak, text) = (v.weak_text_color(), v.text_color());
+    for i in 0..=20 {
+        let c = weak.lerp_to_gamma(text, i as f32 / 20.0);
+        if fills.iter().all(|f| contrast(over(c, *f), *f) >= 4.5) {
+            return over(c, fills[0]);
+        }
+    }
+    text
+}
+
+/// `top` (premultiplied, maybe translucent) drawn over the opaque `fill`.
+fn over(top: Color32, fill: Color32) -> Color32 {
+    let k = 1.0 - f32::from(top.a()) / 255.0;
+    let ch = |t: u8, f: u8| (f32::from(t) + f32::from(f) * k).round().min(255.0) as u8;
+    Color32::from_rgb(
+        ch(top.r(), fill.r()),
+        ch(top.g(), fill.g()),
+        ch(top.b(), fill.b()),
+    )
 }
 
 /// Fill and text of a disabled button: the quiet weak text colour, pulled toward the normal text colour only as far
@@ -927,6 +953,23 @@ mod tests {
             let (fill, text) = disabled_button_colors(&v);
             let c = contrast(text, fill);
             assert!(c >= 4.5, "contrast {c} on {fill:?}");
+        }
+    }
+
+    /// The `off` tone reads at 4.5:1 on the panel and window fills, on egui's themes and on
+    /// Hideout's light panel (#fa f8 f6, where the plain weak text is 4.4:1).
+    #[test]
+    fn the_off_tone_has_4_5_contrast() {
+        let mut hideout_light = egui::Visuals::light();
+        hideout_light.panel_fill = Color32::from_rgb(0xfa, 0xf8, 0xf6);
+        hideout_light.widgets.noninteractive.fg_stroke.color = Color32::from_rgb(0x1f, 0x1b, 0x18);
+        for v in [egui::Visuals::dark(), egui::Visuals::light(), hideout_light] {
+            let c = off_color(&v);
+            for f in [v.panel_fill, v.window_fill] {
+                let r = contrast(c, f);
+                assert!(r >= 4.5, "contrast {r} of {c:?} on {f:?}");
+            }
+            assert_ne!(c, v.text_color(), "still quieter than the text");
         }
     }
 

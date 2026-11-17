@@ -31,6 +31,9 @@ pub const PAGE: &str = "page";
 pub const OPEN: &str = "Open Foxglove settings";
 /// The page's one line of introduction.
 pub const INTRO: &str = "Your keyboard, its lights and its art, as the Foxglove app sees them.";
+/// The intro while the page has the Wallpaper Engine section (#1142).
+pub const INTRO_WE: &str =
+    "Your keyboard, its lights, its art and Wallpaper Engine, as the Foxglove app sees them.";
 /// The notice while one of Foxglove's own pages is stopped by its guard.
 pub const STOPPED: &str = "Foxglove's page stopped working.";
 /// The page's game mode row (#1234), after the layer: a status, never an action.
@@ -659,7 +662,12 @@ fn wallpaper_section(w: &Wallpaper) -> Value {
 /// The three tiles and the page, for `ui.register`.
 pub fn panels(v: &View) -> Vec<Value> {
     let mut out: Vec<Value> = Part::ALL.into_iter().map(|p| tile(p, v)).collect();
-    let mut page = vec![ui::label("intro", INTRO)];
+    let intro = if v.wallpaper.is_some() {
+        INTRO_WE
+    } else {
+        INTRO
+    };
+    let mut page = vec![ui::label("intro", intro)];
     page.extend(Part::ALL.into_iter().map(|p| section(p, v)));
     if let Some(w) = &v.wallpaper {
         page.push(wallpaper_section(w));

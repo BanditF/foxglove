@@ -641,6 +641,10 @@ fn the_wallpaper_engine_section_says_who_holds_it() {
         None,
         "not installed: no section"
     );
+    // The intro names Wallpaper Engine only while its section is there.
+    let intro = |v: &View| panel(&panels(v), PAGE)["tree"]["children"][0]["props"]["text"].clone();
+    assert_eq!(intro(&view(&connected())), INTRO);
+    assert_eq!(intro(&we_view(Wallpaper::default())), INTRO_WE);
     let says = |w: Wallpaper| we_texts(&we_view(w)).unwrap();
     assert_eq!(
         says(Wallpaper {
