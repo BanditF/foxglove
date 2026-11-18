@@ -70,7 +70,7 @@ fn lab(name: &str, modules: &[Spec]) -> Lab {
         reg.install(&folder, NOW).unwrap();
         let list = reg.permission_list(m.id).unwrap();
         let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
-        reg.approve_listed(m.id, list.code(), &all, &[], NOW, "dialog")
+        reg.approve_listed(m.id, list.code(), &all, &[], NOW, "dialog", false)
             .unwrap();
         reg.set_enabled(m.id, m.on).unwrap();
     }

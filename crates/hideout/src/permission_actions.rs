@@ -1034,8 +1034,16 @@ mod tests {
         let v = view(&f);
         let list = v.listing.code().to_string();
         let mut reg = Registry::open_from_env(&f.home).unwrap();
-        reg.approve_listed(ID, &list, &["hub.notify".to_string()], &[], NOW, "cli")
-            .unwrap();
+        reg.approve_listed(
+            ID,
+            &list,
+            &["hub.notify".to_string()],
+            &[],
+            NOW,
+            "cli",
+            false,
+        )
+        .unwrap();
         let v = view(&f);
         assert_eq!(header_kind(&v, false, false), Some(HeaderKind::Cli));
         assert_eq!(

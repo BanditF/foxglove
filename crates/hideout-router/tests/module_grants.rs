@@ -206,6 +206,10 @@ fn no_method_a_module_can_call_grants_anything() {
         "modules.permissions",
         "modules.attest_update",
         "modules.attest",
+        "modules.follow",
+        "modules.keep_followed",
+        "modules.permissions.follow",
+        "permission.follow",
         "permission.grant",
         "permission.approve",
         "permissions.grant",
@@ -220,7 +224,8 @@ fn no_method_a_module_can_call_grants_anything() {
     .enumerate()
     {
         let msg = json!({"jsonrpc":"2.0","id":100 + n,"method":m,
-            "params":{"id":"foxglove","items":["net"],"granted":["net"],"list":"0","version":"9"}});
+            "params":{"id":"foxglove","items":["net"],"granted":["net"],"list":"0","version":"9",
+                "follow":true}});
         let out = r.receive(c, &msg.to_string(), now);
         let answered = sends(&out, c);
         assert!(

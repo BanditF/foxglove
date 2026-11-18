@@ -170,7 +170,7 @@ fn grants_wait_for_approval_and_skip_the_never_list() {
     let list = reg.permission_list(id_).unwrap();
     let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
     let out = reg
-        .approve_listed(id_, list.code(), &all, &[], NOW, "dialog")
+        .approve_listed(id_, list.code(), &all, &[], NOW, "dialog", false)
         .unwrap();
     assert_eq!(out.refused.len(), 1);
     assert_eq!(out.refused[0].1.id(), "permission.never");

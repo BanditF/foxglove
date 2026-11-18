@@ -849,6 +849,29 @@ mod tests {
         assert!(state(&f).0.is_empty());
     }
 
+    /// The follow-folder grant ("Keep my OK after updates in this folder") is the dialog's
+    /// alone: no pipe word sets it, and a pipe grant binds without one.
+    #[test]
+    fn the_pipe_cannot_set_a_follow_folder_grant() {
+        let f = fx("follow", &ping());
+        let good = code(&f);
+        for word in ["--follow", "--follow-folder", "--keep-folder", "--keep-ok"] {
+            let line = format!("grant {} --all-listed {word} --listed {good}", f.id);
+            let (c, t) = ask(&f.pipe, &line);
+            assert_eq!(c, USAGE, "{line}: {t}");
+        }
+        assert!(state(&f).0.is_empty());
+        let (c, t) = ask(
+            &f.pipe,
+            &format!("grant {} --all-listed --listed {good}", f.id),
+        );
+        assert_eq!(c, DONE, "{t}");
+        let r = Registry::open_from_env(&f.paths.root).unwrap();
+        let b = r.inventory.modules[&f.id].bound.clone().unwrap();
+        assert_eq!(b.by, "cli");
+        assert!(b.follow.is_none(), "{b:?}");
+    }
+
     #[test]
     fn deny_and_revoke_still_apply_directly_and_only_narrow() {
         let f = fx("narrow", &ping());

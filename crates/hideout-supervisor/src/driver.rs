@@ -1432,6 +1432,13 @@ impl Supervisor {
     }
 
     fn launch(&self, id: &str) -> Result<(), String> {
+        // A new build a follow-folder grant keeps is recorded (history, keyboard record) before
+        // the check; any other change is left to the check, which refuses it.
+        if let Ok(mut r) = Registry::open_from_env(&self.0.home) {
+            if let Ok(true) = r.keep_followed(id, &crate::now_utc()) {
+                log::info!("supervisor: {id}: new build kept by the folder grant");
+            }
+        }
         let reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
         let l = reg.pre_launch(id).map_err(|e| match e.id() {
             Some(NEEDS_HUB) => NEEDS_HUB.to_string(),
@@ -2006,6 +2013,9 @@ pub fn grant_listed_in(
             declined,
             &hideout_registry::catalogs::now_utc(),
             by,
+            // Follow-folder grants come only from the dialog's switch, not built yet; neither
+            // this path nor the control pipe sets one.
+            false,
         )
         .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))?;
     for (item, e) in &out.refused {

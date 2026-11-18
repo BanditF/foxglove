@@ -58,7 +58,7 @@ fn lab_home(id: &str, contain: bool) -> (PathBuf, PathBuf) {
     // The plan reads granted permissions: approve its device.hid as the dialog would.
     let list = reg.permission_list(id).unwrap();
     let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
-    reg.approve_listed(id, list.code(), &all, &[], NOW, "dialog")
+    reg.approve_listed(id, list.code(), &all, &[], NOW, "dialog", false)
         .unwrap();
     reg.set_enabled(id, true).unwrap();
     if contain {
