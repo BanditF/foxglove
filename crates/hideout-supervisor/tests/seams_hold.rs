@@ -299,7 +299,8 @@ fn the_update_hand_off_keeps_one_path_and_three_users() {
         if r.contains("/tests/") {
             continue;
         }
-        let text = read(&f);
+        // The app's sign-in module (H5.5) is not the update hand-off.
+        let text = read(&f).replace("signin_handoff::", "");
         if !hits(&text, &["handoff::"]).is_empty() {
             users.push(r.clone());
         }
