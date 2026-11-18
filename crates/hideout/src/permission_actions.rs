@@ -16,13 +16,14 @@ use hideout_registry::Registry;
 use hideout_router::server::Hub;
 use hideout_shell::egui;
 use hideout_shell::permission_dialog::{
-    file_of, header, keep_allow_first, keep_changed_open, keep_history, keep_off_note,
-    keep_void_line, Allowed, Group, HeaderKind, ItemWord, Keep, KeepAnswer, KeepConfirm, KeepRow,
-    KeepState, KeyboardChoice, ListItem, PermAnswer, PermDialog, PermHeader, Reason, Section,
-    SectionItem, BUSY, KEEP_NOT_SAVED, KEEP_REFUSED, NOT_SAVED,
+    file_of, first_run_header, header, keep_allow_first, keep_changed_open, keep_history,
+    keep_off_note, keep_void_line, Allowed, FirstRun, Group, HeaderKind, ItemWord, Keep,
+    KeepAnswer, KeepConfirm, KeepRow, KeepState, KeyboardChoice, ListItem, PermAnswer, PermDialog,
+    PermHeader, Reason, Section, SectionItem, BUSY, KEEP_NOT_SAVED, KEEP_REFUSED, NOT_SAVED,
 };
 use hideout_shell::permission_dialog_ui::{
-    keep_confirm_ui, perm_dialog_ui, perm_header_ui, section_ui, SectionAsk,
+    first_run_dialog_ui, keep_confirm_ui, perm_dialog_ui, perm_header_ui, section_ui,
+    FirstRunAnswer, SectionAsk,
 };
 use hideout_shell::theme::Tokens;
 
@@ -468,6 +469,11 @@ pub struct PermUi {
     /// The small confirm of Turn on for "Keep my OK after updates in this folder".
     pub keep_confirm: Option<KeepConfirm>,
     keep_drawn: bool,
+    /// The first-run review: one dialog, a section per app (UX cut 3).
+    pub first_run: Option<FirstRun>,
+    first_run_drawn: bool,
+    /// The first-run header the user answered Not now, by (app, list code), until a list changes.
+    first_hidden: Vec<(String, String)>,
 }
 
 impl PermUi {
@@ -485,6 +491,9 @@ impl PermUi {
             queue: crate::grant_queue::GrantQueue::default(),
             keep_confirm: None,
             keep_drawn: false,
+            first_run: None,
+            first_run_drawn: false,
+            first_hidden: Vec::new(),
         };
         p.refresh();
         p
@@ -677,6 +686,138 @@ impl PermUi {
         }
     }
 
+    /// The apps that wait for their first OK: adopted, never allowed, with something to allow.
+    fn first_run_ids(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|e| {
+                e.view.adopted
+                    && e.view.bound.is_none()
+                    && e.view.void.is_none()
+                    && !e.view.pending.is_empty()
+            })
+            .map(|e| e.id.clone())
+            .collect()
+    }
+
+    /// Whether the one first-run header shows: two or more apps wait and the user has not
+    /// answered Not now for this very set of lists.
+    fn first_run_shown(&self) -> bool {
+        let ids = self.first_run_ids();
+        ids.len() >= 2 && self.first_run_key(&ids) != self.first_hidden
+    }
+
+    fn first_run_key(&self, ids: &[String]) -> Vec<(String, String)> {
+        ids.iter()
+            .filter_map(|i| self.entries.iter().find(|e| &e.id == i))
+            .map(|e| (e.id.clone(), e.view.listing.code().to_string()))
+            .collect()
+    }
+
+    /// Opens the first-run review (only from the user's click). Each section is the app's own
+    /// dialog, checked exactly as the single dialog would check it.
+    pub fn open_first_run(&mut self) {
+        let ids = self.first_run_ids();
+        let sections: Vec<PermDialog> = ids
+            .iter()
+            .filter_map(|id| build_dialog(&self.home, id, None).ok())
+            .collect();
+        if sections.is_empty() {
+            return;
+        }
+        log::info!(
+            "permissions: first run: dialog shown for {} apps",
+            sections.len()
+        );
+        self.first_run = Some(FirstRun {
+            sections,
+            error: None,
+        });
+        self.first_run_drawn = false;
+    }
+
+    /// The answer to the first-run review. Not now grants nothing. Allow records each section
+    /// with that section's own list code and counted items, one by one; a section whose list
+    /// changed is not granted and stays with the reason, the others are recorded and returned.
+    pub fn answer_first_run(&mut self, a: FirstRunAnswer) -> Vec<Done> {
+        let FirstRunAnswer::Allow(each) = a else {
+            if let Some(f) = self.first_run.take() {
+                let ids: Vec<String> = f.sections.iter().map(|d| d.id.clone()).collect();
+                self.first_hidden = self.first_run_key(&ids);
+            }
+            return Vec::new();
+        };
+        let Some(mut f) = self.first_run.take() else {
+            return Vec::new();
+        };
+        f.error = None;
+        let mut done = Vec::new();
+        let mut left: Vec<PermDialog> = Vec::new();
+        for d in std::mem::take(&mut f.sections) {
+            let Some((_, al)) = each.iter().find(|(i, _)| i == &d.id) else {
+                left.push(d);
+                continue;
+            };
+            let Allowed {
+                code,
+                chosen,
+                declined,
+                keyboard,
+                keep,
+            } = al.clone();
+            self.queue.clear(&self.home, &d.id);
+            let r = hideout_supervisor::driver::grant_listed_dialog_in(
+                &self.home, &self.hub, &d.id, &code, &chosen, &declined, keep,
+            );
+            match r {
+                Ok(_) => {
+                    if d.keyboard.is_some() {
+                        self.keyboard(&d.id, keyboard);
+                    }
+                    done.push(Done {
+                        id: d.id,
+                        code,
+                        chosen,
+                        declined,
+                        then: Then::TurnOn,
+                    });
+                }
+                Err(e) if e.contains("list_changed") => {
+                    log::warn!(
+                        "permissions: {}: not allowed: list changed (shown {code})",
+                        d.id
+                    );
+                    match build_dialog(&self.home, &d.id, Some(Reason::ListChanged)) {
+                        Ok(mut n) => {
+                            n.mark_changes(&d);
+                            left.push(n);
+                        }
+                        Err(_) => left.push(d),
+                    }
+                }
+                Err(e) => {
+                    log::warn!("permissions: {}: allow failed ({e})", d.id);
+                    f.error = Some(
+                        if e.contains("lock") || e.contains("busy") {
+                            BUSY
+                        } else {
+                            NOT_SAVED
+                        }
+                        .into(),
+                    );
+                    left.push(d);
+                }
+            }
+        }
+        self.refresh();
+        if !left.is_empty() {
+            f.sections = left;
+            self.first_run = Some(f);
+            self.first_run_drawn = false;
+        }
+        done
+    }
+
     /// The keyboard section: ticked is the #1155-B Allow for the same program; left off is its
     /// Not now, so the keyboard dialog does not follow.
     fn keyboard(&self, id: &str, on: bool) {
@@ -813,6 +954,7 @@ impl PermUi {
         let mut open_queued: Option<(String, egui::Id)> = None;
         let mut keep_on: Option<(String, egui::Id)> = None;
         let mut keep_stop: Option<String> = None;
+        let mut open_first: Option<egui::Id> = None;
         for q in self.queue.for_home(&self.home) {
             let Some(e) = self.entries.iter().find(|e| e.id == q.id) else {
                 continue;
@@ -831,7 +973,26 @@ impl PermUi {
             }
             ui.add_space(8.0);
         }
+        let first_ids = if self.first_run_shown() {
+            self.first_run_ids()
+        } else {
+            Vec::new()
+        };
+        if !first_ids.is_empty() {
+            let h = first_run_header(first_ids.len());
+            match perm_header_ui(ui, t, &h) {
+                Some((true, id)) => open_first = Some(id),
+                Some((false, _)) => {
+                    self.first_hidden = self.first_run_key(&first_ids);
+                }
+                None => {}
+            }
+            ui.add_space(8.0);
+        }
         for e in &self.entries {
+            if first_ids.contains(&e.id) {
+                continue;
+            }
             let kind = header_kind(&e.view, e.enabled, false).filter(|k| {
                 let code = e.view.listing.code();
                 !self
@@ -884,6 +1045,10 @@ impl PermUi {
             }
             ui.add_space(12.0);
         }
+        if let Some(btn) = open_first {
+            self.opener_id = Some(btn);
+            self.open_first_run();
+        }
         if let Some((id, btn)) = open_queued {
             self.opener_id = Some(btn);
             self.open_queued(&id);
@@ -912,20 +1077,41 @@ impl PermUi {
 
     /// Draws the dialog while it is open. An Allow that was recorded comes back so the page can
     /// turn the module on; the focus goes back to the button that opened it.
-    pub fn dialog(&mut self, ctx: &egui::Context, t: &Tokens) -> Option<Done> {
+    pub fn dialog(&mut self, ctx: &egui::Context, t: &Tokens) -> Vec<Done> {
+        if self.first_run.is_some() {
+            let first = !self.first_run_drawn;
+            self.first_run_drawn = true;
+            let a = self
+                .first_run
+                .as_mut()
+                .and_then(|d| first_run_dialog_ui(ctx, t, d, first));
+            let done = a.map(|a| self.answer_first_run(a)).unwrap_or_default();
+            if self.first_run.is_none() {
+                if let Some(id) = self.opener_id.take() {
+                    ctx.memory_mut(|m| m.request_focus(id));
+                }
+            }
+            return done;
+        }
         if self.dialog.is_none() {
-            return self.keep_dialog(ctx, t);
+            return self.keep_dialog(ctx, t).into_iter().collect();
         }
         let first = !self.drawn;
         self.drawn = true;
-        let a = perm_dialog_ui(ctx, t, self.dialog.as_mut()?, first)?;
+        let Some(a) = self
+            .dialog
+            .as_mut()
+            .and_then(|d| perm_dialog_ui(ctx, t, d, first))
+        else {
+            return Vec::new();
+        };
         let done = self.answer(a);
         if self.dialog.is_none() {
             if let Some(id) = self.opener_id.take() {
                 ctx.memory_mut(|m| m.request_focus(id));
             }
         }
-        done
+        done.into_iter().collect()
     }
 
     /// Draws the Turn on confirm while it is open; the focus goes back to Turn on when it closes.
@@ -1853,5 +2039,207 @@ mod tests {
         let mut unsaved = v;
         unsaved.void = Some(hideout_registry::keyboard::VoidReason::Moved);
         assert!(line(&unsaved).is_none());
+    }
+    const FOX: &str = "fennec";
+
+    /// A second adopted app next to vulpes, in the same home.
+    fn add_second(f: &mut Fx, perms: &[&str]) {
+        let install = f.exe.parent().unwrap().to_path_buf();
+        let exe = install.join("fennec.exe");
+        std::fs::write(&exe, b"program v1").unwrap();
+        let folder = f.folder.parent().unwrap().join("manifest2");
+        std::fs::create_dir_all(&folder).unwrap();
+        let text = manifest(&exe, perms)
+            .replace("id = \"vulpes\"", "id = \"fennec\"")
+            .replace("name = \"Vulpes\"", "name = \"Fennec\"");
+        std::fs::write(folder.join("module.toml"), text).unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&folder, NOW)
+            .unwrap();
+        f.ui.refresh();
+    }
+
+    fn two(tag: &str) -> Fx {
+        let mut f = fx(tag, &["hub.notify", "net"]);
+        add_second(&mut f, &["ui.window", "device.hid:lighting"]);
+        f
+    }
+
+    #[test]
+    fn two_apps_waiting_get_one_header_and_one_dialog_with_a_section_each() {
+        let mut f = two("fr-open");
+        assert_eq!(f.ui.first_run_ids().len(), 2);
+        assert!(f.ui.first_run_shown());
+        f.ui.open_first_run();
+        let d = f.ui.first_run.clone().unwrap();
+        assert_eq!(d.sections.len(), 2);
+        assert_eq!(d.title(), "Let 2 apps run in Hideout?");
+        // Opening grants nothing.
+        assert!(view(&f).bound.is_none() && view_of(&f, FOX).bound.is_none());
+    }
+
+    #[test]
+    fn one_app_waiting_keeps_its_own_header_and_no_first_run_header() {
+        let f = fx("fr-one", &["hub.notify"]);
+        assert!(!f.ui.first_run_shown());
+    }
+
+    #[test]
+    fn first_run_not_now_grants_and_starts_nothing_and_hides_the_header() {
+        let mut f = two("fr-notnow");
+        f.ui.open_first_run();
+        let done = f.ui.answer_first_run(FirstRunAnswer::NotNow);
+        assert!(done.is_empty());
+        assert!(f.ui.first_run.is_none());
+        assert!(view(&f).bound.is_none() && view_of(&f, FOX).bound.is_none());
+        assert!(view(&f).granted.is_empty() && view_of(&f, FOX).granted.is_empty());
+        assert!(!f.ui.first_run_shown());
+    }
+
+    #[test]
+    fn first_run_allow_grants_each_section_its_own_counted_items_only() {
+        let mut f = two("fr-allow");
+        f.ui.open_first_run();
+        {
+            let d = f.ui.first_run.as_mut().unwrap();
+            // Vulpes: its sensitive item is ticked AND understood. Fennec: ticked, not understood.
+            let v = d.sections.iter_mut().find(|s| s.id == ID).unwrap();
+            v.set_checked("net", true);
+            v.items
+                .iter_mut()
+                .find(|i| i.raw == "net")
+                .unwrap()
+                .confirmed = true;
+            let n = d.sections.iter_mut().find(|s| s.id == FOX).unwrap();
+            n.set_checked("device.hid:lighting", true);
+        }
+        let a = f.ui.first_run.as_ref().unwrap().allowed();
+        let done = f.ui.answer_first_run(FirstRunAnswer::Allow(a));
+        assert_eq!(done.len(), 2);
+        assert!(done.iter().all(|d| d.then == Then::TurnOn));
+        let v = view(&f);
+        assert!(v.granted.iter().any(|g| g.raw == "net"));
+        assert!(v.granted.iter().any(|g| g.raw == "hub.notify"));
+        let n = view_of(&f, FOX);
+        assert!(n.granted.iter().any(|g| g.raw == "ui.window"));
+        // Not understood means not counted, so not granted.
+        assert!(!n.granted.iter().any(|g| g.raw == "device.hid:lighting"));
+        assert!(f.ui.first_run.is_none());
+    }
+
+    #[test]
+    fn a_sensitive_item_in_first_run_starts_unchecked_and_unconfirmed() {
+        let mut f = two("fr-sens");
+        f.ui.open_first_run();
+        for s in &f.ui.first_run.as_ref().unwrap().sections {
+            for i in s.items.iter().filter(|i| i.sensitive) {
+                assert!(!i.checked && !i.confirmed, "{}", i.raw);
+            }
+        }
+    }
+
+    #[test]
+    fn a_list_that_changed_in_one_section_is_not_granted_and_the_other_is() {
+        let mut f = two("fr-changed");
+        f.ui.open_first_run();
+        // Fennec's list changes while the dialog is open.
+        let folder = f.folder.parent().unwrap().join("manifest2");
+        let exe = f.exe.parent().unwrap().join("fennec.exe");
+        let text = manifest(
+            &exe,
+            &["ui.window", "device.hid:lighting", "lighting.lease"],
+        )
+        .replace("id = \"vulpes\"", "id = \"fennec\"")
+        .replace("name = \"Vulpes\"", "name = \"Fennec\"");
+        std::fs::write(folder.join("module.toml"), text).unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&folder, NOW)
+            .unwrap();
+        let a = f.ui.first_run.as_ref().unwrap().allowed();
+        let done = f.ui.answer_first_run(FirstRunAnswer::Allow(a));
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].id, ID);
+        assert!(view_of(&f, FOX).granted.is_empty());
+        assert!(view_of(&f, FOX).bound.is_none());
+        let d = f.ui.first_run.clone().expect("stays open for the app left");
+        assert_eq!(d.sections.len(), 1);
+        assert_eq!(d.sections[0].id, FOX);
+        assert_eq!(d.sections[0].reason, Some(Reason::ListChanged));
+    }
+
+    #[test]
+    fn the_first_run_words_avoid_the_banned_ones() {
+        let f = two("fr-words");
+        let d = FirstRun {
+            sections: Vec::new(),
+            error: None,
+        };
+        let h = first_run_header(2);
+        let all = [
+            h.title,
+            h.body,
+            d.title(),
+            hideout_shell::permission_dialog::FIRST_RUN_INTRO.to_string(),
+            f.ui.first_run_ids().len().to_string(),
+        ];
+        for t in all {
+            let t = t.to_lowercase();
+            for bad in ["program", "provide", "method", "palette", "look ", "effect"] {
+                assert!(!t.contains(bad), "{t} says {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn first_run_allow_label_counts_items_not_apps() {
+        let mut f = two("fr-label");
+        f.ui.open_first_run();
+        let d = f.ui.first_run.as_ref().unwrap();
+        assert!(d.allow_label().ends_with(" items"), "{}", d.allow_label());
+    }
+
+    #[test]
+    fn a_section_that_cannot_be_saved_stays_with_its_error_and_the_other_is_granted() {
+        let mut f = two("fr-savefail");
+        f.ui.open_first_run();
+        // Fennec's save fails (the module is not known any more), vulpes's goes through.
+        f.ui.first_run
+            .as_mut()
+            .unwrap()
+            .sections
+            .iter_mut()
+            .find(|s| s.id == FOX)
+            .unwrap()
+            .id = "ghost".into();
+        let a = f.ui.first_run.as_ref().unwrap().allowed();
+        let done = f.ui.answer_first_run(FirstRunAnswer::Allow(a));
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].id, ID);
+        assert!(!view(&f).granted.is_empty());
+        assert!(view_of(&f, FOX).granted.is_empty());
+        let d = f.ui.first_run.clone().expect("stays open");
+        assert_eq!(d.sections.len(), 1);
+        assert!(d.error.is_some());
+    }
+
+    #[test]
+    fn one_apps_allow_never_grants_or_returns_another() {
+        let mut f = two("fr-isolated");
+        f.ui.open_first_run();
+        let a: Vec<_> =
+            f.ui.first_run
+                .as_ref()
+                .unwrap()
+                .allowed()
+                .into_iter()
+                .filter(|(i, _)| i == ID)
+                .collect();
+        let done = f.ui.answer_first_run(FirstRunAnswer::Allow(a));
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].id, ID);
+        assert!(view_of(&f, FOX).granted.is_empty() && view_of(&f, FOX).bound.is_none());
+        assert_eq!(f.ui.first_run.as_ref().unwrap().sections[0].id, FOX);
     }
 }

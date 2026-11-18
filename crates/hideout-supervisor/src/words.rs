@@ -16,6 +16,11 @@ pub const TRY_AGAIN: &str = "Try again";
 pub const OK: &str = "OK";
 /// `module.<id>.reason` after a launch failure (the card's title already says "Couldn't start").
 pub const DIDNT_START: &str = "It didn't start. Open log to see why.";
+/// `module.<id>.reason` when the launch was refused only because the user's OK is missing (the
+/// app file is new or moved since it was allowed). Never the crash wording (UX cut 2).
+pub const WAITS_FOR_OK: &str = "Waits for your OK";
+/// The row's button for it: opens the permission dialog.
+pub const REVIEW_OK: &str = "Review\u{2026}";
 /// The ladder's second step line.
 pub const DIDNT_HELP: &str = "Starting again didn't help last time.";
 /// `install-failed` after a failed pid or exe-hash check at `initialize` (#959).
@@ -547,6 +552,8 @@ pub fn every_string() -> Vec<String> {
         DIDNT_HELP,
         OK,
         DIDNT_START,
+        WAITS_FOR_OK,
+        REVIEW_OK,
         COULDNT_START,
         OPEN,
         TURN_ON,

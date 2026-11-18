@@ -282,6 +282,7 @@ pub mod lab;
 const NEEDS_HUB: &str = "manifest.hub";
 /// A launch error that is the program missing: the text after it is its path.
 const NOT_INSTALLED: &str = "not installed: ";
+const NEEDS_OK: &str = "needs-ok";
 /// How [`Supervisor::launch`]'s answer starts when containment is on and the module may not
 /// run without one (§7.7).
 const NO_SANDBOX: &str = "no sandbox";
@@ -1295,6 +1296,10 @@ impl Supervisor {
                             log::warn!("supervisor: {id} not started: needs a newer hub");
                             self.feed(Ev::NeedsHub { id });
                         }
+                        Err(r) if r == NEEDS_OK => {
+                            log::warn!("supervisor: {id} not started: waits for the user's OK");
+                            self.feed(Ev::NeedsOk { id });
+                        }
                         Err(r) if r.starts_with(NO_SANDBOX) => {
                             log::warn!("supervisor: {id} not started: {r}");
                             self.feed(Ev::LaunchFailed {
@@ -1447,6 +1452,18 @@ impl Supervisor {
         let reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
         let l = reg.pre_launch(id).map_err(|e| match e.id() {
             Some(NEEDS_HUB) => NEEDS_HUB.to_string(),
+            // Only a refusal because the app file is new or moved since the user allowed it
+            // waits for the OK; every other refusal keeps its own wording.
+            Some("trust.mismatch")
+                if reg.binding_void(id).is_some()
+                    && reg
+                        .inventory
+                        .modules
+                        .get(id)
+                        .is_some_and(|m| m.source == hideout_registry::inventory::ADOPTED) =>
+            {
+                NEEDS_OK.to_string()
+            }
             _ => format!("{e:?}"),
         })?;
         let run = l.run.clone().ok_or("no run in the manifest")?;

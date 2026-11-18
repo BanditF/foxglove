@@ -3960,3 +3960,227 @@ fn the_keep_confirm_answers_cancel_by_default_and_traps_tab() {
     let f = ctx.memory(|m| m.focused());
     assert!(f.is_some_and(|f| ids.contains(&f)));
 }
+
+/// Two apps for the first-run review (UX cut 3): each with its own list and its own sensitive item.
+fn first_run_test_dialog() -> crate::permission_dialog::FirstRun {
+    use crate::permission_dialog::{FirstRun, Group, ListItem, PermDialog};
+    let it = |raw: &str, line: &str, g, sensitive| ListItem {
+        raw: raw.into(),
+        line: line.into(),
+        group: g,
+        allowable: true,
+        sensitive,
+        reason: None,
+        checked: !sensitive,
+        confirmed: false,
+        new: false,
+    };
+    let sec = |id: &str, name: &str, code: &str, items| PermDialog {
+        id: id.into(),
+        name: name.into(),
+        code: code.into(),
+        path: format!(r"C:\Program Files\{name}\{id}.exe"),
+        items,
+        reason: None,
+        keyboard: None,
+        keep: None,
+        removed: Vec::new(),
+        error: None,
+    };
+    FirstRun {
+        sections: vec![
+            sec(
+                "foxglove",
+                "Foxglove",
+                "7f3a91c20b4e55d1",
+                vec![
+                    it(
+                        "hub.notify",
+                        "Show notifications",
+                        Group::MakeChanges,
+                        false,
+                    ),
+                    it("net", "Use the network", Group::Sensitive, true),
+                ],
+            ),
+            sec(
+                "vulpes",
+                "Vulpes",
+                "11c0d4e9a8b73f02",
+                vec![
+                    it(
+                        "ui.window",
+                        "Open its own window",
+                        Group::MakeChanges,
+                        false,
+                    ),
+                    it(
+                        "device.hid:lighting",
+                        "Talk to your lighting devices",
+                        Group::Sensitive,
+                        true,
+                    ),
+                ],
+            ),
+        ],
+        error: None,
+    }
+}
+
+/// Foxglove's real kind of list (three HID classes, the network, notifications, the keyboard
+/// choice, the Keep box) next to a second, smaller app.
+fn first_run_realistic_dialog() -> crate::permission_dialog::FirstRun {
+    use crate::permission_dialog::{Group, Keep, KeyboardChoice, ListItem};
+    let mut d = first_run_test_dialog();
+    let it = |raw: &str, line: &str, g, sensitive| ListItem {
+        raw: raw.into(),
+        line: line.into(),
+        group: g,
+        allowable: true,
+        sensitive,
+        reason: None,
+        checked: !sensitive,
+        confirmed: false,
+        new: false,
+    };
+    let fox = &mut d.sections[0];
+    fox.items = vec![
+        it(
+            "device.hid:keyboard",
+            "Talk to your keyboards",
+            Group::Sensitive,
+            true,
+        ),
+        it(
+            "device.hid:lighting",
+            "Talk to your lighting devices",
+            Group::Sensitive,
+            true,
+        ),
+        it(
+            "device.hid:vendor",
+            "Talk to devices in their own way",
+            Group::Sensitive,
+            true,
+        ),
+        it("net", "Use the network", Group::Sensitive, true),
+        it(
+            "hub.notify",
+            "Show notifications",
+            Group::MakeChanges,
+            false,
+        ),
+        it(
+            "ui.window",
+            "Open its own window",
+            Group::MakeChanges,
+            false,
+        ),
+    ];
+    fox.keyboard = Some(KeyboardChoice {
+        on: false,
+        expanded: false,
+    });
+    fox.keep = Some(Keep::offered(false));
+    d
+}
+
+/// Review images for UX cut 3: the one first-run dialog with a section per app, real renderer.
+#[test]
+fn renders_the_first_run_dialog_for_review() {
+    use crate::permission_dialog_ui::first_run_dialog_ui;
+    for (dark, tag) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let mut d = first_run_realistic_dialog();
+        let (w, h) = (760u32, 720u32);
+        let Some(rgba) = rasterise_events(w, h, vec![Vec::new(); 10], |ctx| {
+            set_theme(ctx, choice);
+            ctx.style_mut(|s| s.animation_time = 0.0);
+            first_run_dialog_ui(ctx, &t, &mut d, true);
+        }) else {
+            return;
+        };
+        save_png(&format!("firstrun-1-dialog-{tag}.png"), w, h, rgba);
+    }
+}
+
+/// Tab stays inside, every section has its own boxes, Allow and Not now stay on a 720 px
+/// window, and the dialog is named and described.
+#[test]
+fn the_first_run_dialog_traps_tab_names_itself_and_keeps_its_buttons_on_screen() {
+    use crate::permission_dialog_ui::first_run_dialog_ids;
+    let t = crate::theme::tokens(true);
+    let mut d = first_run_test_dialog();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut ids = Vec::new();
+    let mut out = None;
+    for i in 0..6 {
+        out = Some(ctx.run(input(900.0, 720.0, vec![]), |c| {
+            ids = first_run_dialog_ids(c, &t, &mut d, i == 0).1;
+        }));
+    }
+    // Per app: its All box and two items; then Allow and Not now.
+    assert_eq!(ids.len(), 2 * 3 + 2, "{ids:?}");
+    for id in &ids[ids.len() - 2..] {
+        let r = ctx.read_response(*id).expect("drawn").rect;
+        assert!(r.bottom() <= 720.0 && r.top() >= 0.0, "{r:?}");
+    }
+    let upd = out.unwrap().platform_output.accesskit_update.unwrap();
+    assert!(upd.nodes.iter().any(|(_, n)| {
+        n.role() == egui::accesskit::Role::Dialog && n.label() == Some("Let 2 apps run in Hideout?")
+    }));
+}
+
+/// Esc and Not now grant nothing; Allow carries one entry per app with its own list code, and
+/// a sensitive item that is ticked but not understood is not in it.
+#[test]
+fn the_first_run_dialog_answers_per_app_and_counts_only_understood_sensitive_items() {
+    let mut d = first_run_test_dialog();
+    d.sections[0].set_checked("net", true);
+    let a = d.allowed();
+    assert_eq!(a.len(), 2);
+    assert_eq!(a[0].1.code, "7f3a91c20b4e55d1");
+    assert_eq!(a[1].1.code, "11c0d4e9a8b73f02");
+    assert!(!a[0].1.chosen.iter().any(|r| r == "net"));
+    d.sections[0]
+        .items
+        .iter_mut()
+        .find(|i| i.raw == "net")
+        .unwrap()
+        .confirmed = true;
+    assert!(d.allowed()[0].1.chosen.iter().any(|r| r == "net"));
+    // The other app's sensitive item is untouched.
+    assert!(!d.allowed()[1]
+        .1
+        .chosen
+        .iter()
+        .any(|r| r == "device.hid:lighting"));
+    // Esc answers Not now.
+    use crate::permission_dialog_ui::{first_run_dialog_ids, FirstRunAnswer};
+    let t = crate::theme::tokens(true);
+    let ctx = egui::Context::default();
+    let mut ans = None;
+    for i in 0..3 {
+        let ev = if i == 2 {
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]
+        } else {
+            vec![]
+        };
+        let _ = ctx.run(input(900.0, 800.0, ev), |c| {
+            ans = first_run_dialog_ids(c, &t, &mut d, i == 0).0;
+        });
+    }
+    assert_eq!(ans, Some(FirstRunAnswer::NotNow));
+}

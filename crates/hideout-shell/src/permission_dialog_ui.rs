@@ -9,10 +9,10 @@ use crate::egui;
 use crate::keyboard_grant::{DIALOG_FOOTER, DIALOG_ITEMS};
 use crate::keyboard_grant_ui::rgb as c;
 use crate::permission_dialog::{
-    earlier_label, keep_understand_said, keep_warning, keyboard_line, All, Group, ItemWord, Keep,
-    KeepAnswer, KeepConfirm, PermAnswer, PermDialog, PermHeader, Section, CANCEL, CHANGE,
-    HISTORY_SHOWN, KEEP_CONFIRM_OK, KEEP_CONFIRM_TITLE, KEEP_LABEL, NOT_NOW, TURN_ALL_OFF,
-    TURN_OFF, UNDERSTAND,
+    earlier_label, keep_understand_said, keep_warning, keyboard_line, All, FirstRun, Group,
+    ItemWord, Keep, KeepAnswer, KeepConfirm, PermAnswer, PermDialog, PermHeader, Section, CANCEL,
+    CHANGE, FIRST_RUN_INTRO, HISTORY_SHOWN, KEEP_CONFIRM_OK, KEEP_CONFIRM_TITLE, KEEP_LABEL,
+    NOT_NOW, TURN_ALL_OFF, TURN_OFF, UNDERSTAND,
 };
 use crate::theme::Tokens;
 
@@ -118,130 +118,12 @@ pub(crate) fn perm_dialog_ids(
             .max_height((screen_h * 0.8 - fixed).max(140.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                for g in Group::ALL {
-                    let n = d.group(g).count();
-                    if n == 0 {
-                        continue;
-                    }
-                    let said =
-                        format!("{}, {n} item{}", g.heading(), if n == 1 { "" } else { "s" });
-                    let grp = ui.vertical(|ui| {
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(g.heading())
-                                .strong()
-                                .color(group_colour(t, g)),
-                        );
-                        let name = d.name.clone();
-                        for item in d.items.iter_mut().filter(|i| i.group == g) {
-                            if !item.allowable {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(&item.line).color(c(t.text)));
-                                    if item.new {
-                                        ui.label(fine(ui, "New").strong().color(c(t.attention)));
-                                    }
-                                });
-                                if let Some(r) = &item.reason {
-                                    ui.label(
-                                        fine(ui, r.replace("this module", &name))
-                                            .color(c(t.text_muted)),
-                                    );
-                                }
-                                continue;
-                            }
-                            let r = ui
-                                .horizontal(|ui| {
-                                    let r = check(ui, t, &mut item.checked, &item.line);
-                                    if item.new {
-                                        ui.label(fine(ui, "New").strong().color(c(t.attention)));
-                                    }
-                                    r
-                                })
-                                .inner;
-                            let said = item.said();
-                            ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(said));
-                            if r.changed() && !item.checked {
-                                item.confirmed = false;
-                            }
-                            ids.push(r.id);
-                            if let Some(s) = item.sub_line() {
-                                ui.horizontal(|ui| {
-                                    ui.add_space(24.0);
-                                    ui.label(fine(ui, s).color(c(t.text_muted)));
-                                });
-                            }
-                            if item.sensitive && item.checked {
-                                ui.horizontal(|ui| {
-                                    ui.add_space(24.0);
-                                    ui.vertical(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(item.confirm_line(&name))
-                                                .color(c(t.attention)),
-                                        );
-                                        let u = check(ui, t, &mut item.confirmed, UNDERSTAND);
-                                        ids.push(u.id);
-                                    });
-                                });
-                            }
-                        }
-                    });
-                    ui.ctx().accesskit_node_builder(grp.response.id, |n| {
-                        n.set_role(egui::accesskit::Role::Group);
-                        n.set_label(said);
-                    });
-                }
-                if let Some(k) = d.keyboard.as_mut() {
-                    ui.add_space(10.0);
-                    let word = keyboard_line(&d.name, k.on);
-                    let sign = if k.expanded { "\u{2212}" } else { "+" };
-                    let b = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(format!("{sign}  {word}")).color(c(t.accent)),
-                        )
-                        .frame(false),
-                    );
-                    if b.clicked() {
-                        k.expanded = !k.expanded;
-                    }
-                    ids.push(b.id);
-                    if k.expanded {
-                        ui.horizontal(|ui| {
-                            ui.add_space(24.0);
-                            ui.vertical(|ui| {
-                                for i in DIALOG_ITEMS {
-                                    ui.label(format!("\u{2022} {i}"));
-                                }
-                                for f in DIALOG_FOOTER {
-                                    ui.label(egui::RichText::new(f).color(c(t.text_muted)));
-                                }
-                                let on = check(ui, t, &mut k.on, "Allow this too");
-                                ids.push(on.id);
-                            });
-                        });
-                    }
-                }
+                list_ui(ui, t, d, &mut ids);
             });
         let scroll_h = scroll.inner_rect.height();
         ui.add_space(8.0);
         ui.separator();
-        let [b0, b1, b2] = d.binding_lines();
-        ui.label(b0);
-        if !d.path.is_empty() {
-            ui.add(
-                egui::Label::new(egui::RichText::new(&d.path).monospace())
-                    .wrap()
-                    .selectable(true),
-            );
-        }
-        ui.label(fine(ui, b1).color(c(t.text_muted)));
-        ui.label(fine(ui, b2).color(c(t.text_muted)));
-        if let Some(k) = d.keep.as_mut() {
-            keep_block(ui, t, &d.name, &d.path, k, &mut ids);
-        }
-        ui.add(
-            egui::Label::new(fine(ui, format!("List code {}", d.code)).color(c(t.text_muted)))
-                .selectable(true),
-        );
+        binding_ui(ui, t, d, &mut ids);
         if let Some(e) = &d.error {
             ui.add_space(4.0);
             let l = ui.label(egui::RichText::new(e).color(c(t.attention)));
@@ -297,6 +179,258 @@ pub(crate) fn perm_dialog_ids(
         answer = answer.or(Some(PermAnswer::NotNow));
     }
     (answer, ids)
+}
+
+/// What the first-run dialog answered: Allow carries each section's own choice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FirstRunAnswer {
+    Allow(Vec<(String, crate::permission_dialog::Allowed)>),
+    NotNow,
+}
+
+pub fn first_run_dialog_ui(
+    ctx: &egui::Context,
+    t: &Tokens,
+    d: &mut FirstRun,
+    first: bool,
+) -> Option<FirstRunAnswer> {
+    first_run_dialog_ids(ctx, t, d, first).0
+}
+
+/// The first-run review (UX cut 3): one dialog, a section per app. Every section keeps its own
+/// list, its own "I understand" for sensitive items and its own keep box; Allow sends each
+/// section's own list code with its own counted items. Not now, Esc and close grant nothing.
+pub(crate) fn first_run_dialog_ids(
+    ctx: &egui::Context,
+    t: &Tokens,
+    d: &mut FirstRun,
+    first: bool,
+) -> (Option<FirstRunAnswer>, Vec<egui::Id>) {
+    let mut answer = None;
+    let mut ids: Vec<egui::Id> = Vec::new();
+    let screen_h = ctx.content_rect().height();
+    let title = d.title();
+    let modal = egui::Modal::new(egui::Id::new("hideout.first-run-dialog")).show(ctx, |ui| {
+        ui.set_width(620.0);
+        ui.label(egui::RichText::new(&title).heading().color(c(t.text)));
+        ui.add_space(6.0);
+        ui.label(FIRST_RUN_INTRO);
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .max_height((screen_h * 0.8 - 190.0).max(160.0))
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for sec in d.sections.iter_mut() {
+                    ui.push_id(sec.id.clone(), |ui| {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        let head =
+                            ui.label(egui::RichText::new(&sec.name).heading().color(c(t.text)));
+                        let said = format!("{}, its permissions", sec.name);
+                        ui.ctx()
+                            .accesskit_node_builder(head.id, |n| n.set_label(said));
+                        for (i, line) in sec.reason_lines().iter().enumerate() {
+                            let rt = egui::RichText::new(line).color(c(t.attention));
+                            ui.label(if i == 0 { rt.strong() } else { rt });
+                        }
+                        ui.label(sec.intro());
+                        ui.add_space(6.0);
+                        let state = sec.all_state();
+                        let mut all_on = state == All::All;
+                        let all = outlined(ui, t, |ui| {
+                            ui.add(
+                                egui::Checkbox::new(
+                                    &mut all_on,
+                                    egui::RichText::new(sec.all_label())
+                                        .strong()
+                                        .color(c(t.text)),
+                                )
+                                .indeterminate(state == All::Some),
+                            )
+                        });
+                        if all.changed() {
+                            sec.toggle_all();
+                        }
+                        ids.push(all.id);
+                        ui.add_space(4.0);
+                        list_ui(ui, t, sec, &mut ids);
+                        ui.add_space(8.0);
+                        binding_ui(ui, t, sec, &mut ids);
+                    });
+                }
+            });
+        if let Some(e) = &d.error {
+            ui.add_space(4.0);
+            let l = ui.label(egui::RichText::new(e).color(c(t.attention)));
+            ui.ctx().accesskit_node_builder(l.id, |n| {
+                n.set_live(egui::accesskit::Live::Polite);
+            });
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let allow = ui.add(
+                egui::Button::new(egui::RichText::new(d.allow_label()).color(c(t.accent)))
+                    .stroke(egui::Stroke::new(1.0_f32, c(t.accent))),
+            );
+            if allow.clicked() {
+                answer = Some(FirstRunAnswer::Allow(d.allowed()));
+            }
+            let not_now = ui.add(
+                egui::Button::new(egui::RichText::new(NOT_NOW).color(c(t.on_accent)))
+                    .fill(c(t.accent)),
+            );
+            if first {
+                not_now.request_focus();
+            }
+            if not_now.clicked() {
+                answer = Some(FirstRunAnswer::NotNow);
+            }
+            ids.push(allow.id);
+            ids.push(not_now.id);
+        });
+    });
+    let (tab, shift) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.modifiers.shift));
+    if tab
+        && !ctx
+            .memory(|m| m.focused())
+            .is_some_and(|f| ids.contains(&f))
+    {
+        let to = if shift { ids.last() } else { ids.first() };
+        if let Some(to) = to {
+            ctx.memory_mut(|m| m.request_focus(*to));
+        }
+    }
+    let said = d.said();
+    ctx.accesskit_node_builder(modal.response.id, |n| {
+        n.set_role(egui::accesskit::Role::Dialog);
+        n.set_label(title);
+        n.set_description(said);
+    });
+    if modal.should_close() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        answer = answer.or(Some(FirstRunAnswer::NotNow));
+    }
+    (answer, ids)
+}
+
+/// The groups of items and the keyboard choice of one dialog, in Tab order.
+fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui::Id>) {
+    for g in Group::ALL {
+        let n = d.group(g).count();
+        if n == 0 {
+            continue;
+        }
+        let said = format!("{}, {n} item{}", g.heading(), if n == 1 { "" } else { "s" });
+        let grp = ui.vertical(|ui| {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(g.heading())
+                    .strong()
+                    .color(group_colour(t, g)),
+            );
+            let name = d.name.clone();
+            for item in d.items.iter_mut().filter(|i| i.group == g) {
+                if !item.allowable {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&item.line).color(c(t.text)));
+                        if item.new {
+                            ui.label(fine(ui, "New").strong().color(c(t.attention)));
+                        }
+                    });
+                    if let Some(r) = &item.reason {
+                        ui.label(fine(ui, r.replace("this module", &name)).color(c(t.text_muted)));
+                    }
+                    continue;
+                }
+                let r = ui
+                    .horizontal(|ui| {
+                        let r = check(ui, t, &mut item.checked, &item.line);
+                        if item.new {
+                            ui.label(fine(ui, "New").strong().color(c(t.attention)));
+                        }
+                        r
+                    })
+                    .inner;
+                let said = item.said();
+                ui.ctx().accesskit_node_builder(r.id, |n| n.set_label(said));
+                if r.changed() && !item.checked {
+                    item.confirmed = false;
+                }
+                ids.push(r.id);
+                if let Some(s) = item.sub_line() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        ui.label(fine(ui, s).color(c(t.text_muted)));
+                    });
+                }
+                if item.sensitive && item.checked {
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(item.confirm_line(&name)).color(c(t.attention)),
+                            );
+                            let u = check(ui, t, &mut item.confirmed, UNDERSTAND);
+                            ids.push(u.id);
+                        });
+                    });
+                }
+            }
+        });
+        ui.ctx().accesskit_node_builder(grp.response.id, |n| {
+            n.set_role(egui::accesskit::Role::Group);
+            n.set_label(said);
+        });
+    }
+    if let Some(k) = d.keyboard.as_mut() {
+        ui.add_space(10.0);
+        let word = keyboard_line(&d.name, k.on);
+        let sign = if k.expanded { "\u{2212}" } else { "+" };
+        let b = ui.add(
+            egui::Button::new(egui::RichText::new(format!("{sign}  {word}")).color(c(t.accent)))
+                .frame(false),
+        );
+        if b.clicked() {
+            k.expanded = !k.expanded;
+        }
+        ids.push(b.id);
+        if k.expanded {
+            ui.horizontal(|ui| {
+                ui.add_space(24.0);
+                ui.vertical(|ui| {
+                    for i in DIALOG_ITEMS {
+                        ui.label(format!("\u{2022} {i}"));
+                    }
+                    for f in DIALOG_FOOTER {
+                        ui.label(egui::RichText::new(f).color(c(t.text_muted)));
+                    }
+                    let on = check(ui, t, &mut k.on, "Allow this too");
+                    ids.push(on.id);
+                });
+            });
+        }
+    }
+}
+
+/// The binding lines, the app path, the keep box and the list code of one dialog.
+fn binding_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui::Id>) {
+    let [b0, b1, b2] = d.binding_lines();
+    ui.label(b0);
+    if !d.path.is_empty() {
+        ui.add(
+            egui::Label::new(egui::RichText::new(&d.path).monospace())
+                .wrap()
+                .selectable(true),
+        );
+    }
+    ui.label(fine(ui, b1).color(c(t.text_muted)));
+    ui.label(fine(ui, b2).color(c(t.text_muted)));
+    if let Some(k) = d.keep.as_mut() {
+        keep_block(ui, t, &d.name, &d.path, k, ids);
+    }
+    ui.add(
+        egui::Label::new(fine(ui, format!("List code {}", d.code)).color(c(t.text_muted)))
+            .selectable(true),
+    );
 }
 
 /// The "Keep my OK after updates in this folder" box in the dialog, under the binding lines (so
