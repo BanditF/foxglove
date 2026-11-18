@@ -1,6 +1,6 @@
 # Hideout module contract, v1
 
-Status: spec, contract version **1.18** (v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
+Status: spec, contract version **1.19** (v1.18 plus `hub.show` and the app's read of `module.foxglove.state` over the verified hub pipe, H5.5; v1.18 was v1.17 plus the hub telling a provider about the tray's Resume, #1248; v1.17 was v1.16 plus who holds a provider's leases as a hub fact
 and the user's Resume that ends them, #1142; v1.16 was v1.15 plus the tray menu's quick actions: an `action`
 panel is a tray menu item, a press on a cold module starts it and is delivered, and `tray` is a
 user source, #1234; v1.15 was v1.14 plus a cap on the leases one caller holds at one
@@ -18,12 +18,26 @@ and the page caps in the schema; v1.7 was v1.6 plus the routed `ui.asset.put` an
 watch's `apps.running.<name>`, #991; additive, no breaking change; every v1.1 addition is marked
 "(v1.1)", every v1.2 one "(v1.2)", every v1.3 one "(v1.3)", every v1.4 one "(v1.4)", every v1.5
 one "(v1.5)", every v1.6 one "(v1.6)", every v1.7 one "(v1.7)", every v1.8 one "(v1.8)", every
-v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
+v1.9 one "(v1.9)", every v1.10 one "(v1.10)", every v1.11 one "(v1.11)", every v1.12 one "(v1.12)", every v1.13 one "(v1.13)", every v1.14 one "(v1.14)", every v1.15 one "(v1.15)", every v1.16 one "(v1.16)", every v1.17 one "(v1.17)", every v1.18 one "(v1.18)", every v1.19 one "(v1.19)"; v1.1 was v1.0 plus the decisions of #918), originally **1.0** (#905), hub-first design (re-scoped 11/09). Nothing in it
 is built yet beyond what Foxglove's plugin system already does. Rationale lives in the Hideout
 design, `review/hideout-modular-design.md` ("the design"); this spec links to it by section and
 does not repeat it. Test vectors: `tests/hideout-vectors/` (#906).
 
 **Changelog.**
+- **1.19** (H5.5, the sign-in double start): the hub can be asked to show a module's page, and an
+  outside tool can read the hub's state fact for one module. (a) `hub.show {id}` (C -> H, §8.8):
+  the hub brings the page of module `id` to the front, as the Open button on a notification
+  does. It carries no secret and needs no permission: the check is the caller. Only a process
+  the hub verified on the router pipe (same user, the pipe's own admission, §2.3, §7.7) that
+  runs in no AppContainer may send it; a bridged plugin, a connection whose process is unknown
+  and a contained process are refused with error 5, and an id that is not a module the hub
+  knows is -32602. It changes which page shows and nothing else. Contract crate:
+  `messages::HUB_SHOW`, `HubShow`; schema type `messages.HubShow`. (b) No new message for the
+  state: a tool granted `facts.read:module.<id>.state` reads it with `facts.get` as any fact
+  (§6.1, §8.6), which is how `foxglove.exe` learns that the hub runs Foxglove (`"running"`)
+  before it decides to defer to it (§8.6, one-owner rule). `hub` is 1.4 (§8.7): a client that
+  sends `hub.show` to an older hub gets -32601, which it takes as "can't ask" and starts
+  normally.
 - **1.18** (#1248): the tray's Resume reaches the provider. After the hub ends a family's leases
   for the user (the tray's *Resume wallpapers*), it sends the provider `lease.end {family}`
   (H → M, §8.8), a notification, so the provider ends the holds it keeps itself, such as
@@ -2208,13 +2222,22 @@ Rules:
 - Modules come only from manifests in configured module sources (§13.4). The hub has no built-in
   list.
 - **One-owner rule (pick G):** at start, `foxglove.exe` and `hideout.exe` each try the other's
-  pipe. If the other answers, the starting app asks it to show its window, then exits. "Go back to
+  pipe. If the other answers, the starting app asks it to show its window, then exits.
+  (v1.19) Built for the app's side, in this order, every doubt starting normally: `foxglove.exe`
+  first verifies who serves `foxglove-<user>` (the server's process, never a reply, §8.7's
+  `owner` check) and only over that same verified connection initialises as a tool asking
+  `facts.read:module.foxglove.state`. It defers to the hub only when that fact is `"running"`
+  (the row of a module-mode Foxglove that is up); any other value, a refusal, a timeout or an
+  unverified server starts the app as before. A start by hand (no `--tray`) then sends
+  `hub.show {id: "foxglove"}` before it exits 0; a `--tray` start exits quietly. The opt-in is
+  module mode itself: with it off the hub's row is not `running`, so nothing defers. "Go back to
   Foxglove" in the tray restores Foxglove's Run value and Start entry.
 
 ### 8.7 Versioning
 
 - **`hub`** (this contract, `MAJOR.MINOR`): manifests, the inventory, catalogs, the panel
-  vocabulary and the hub messages below. Spec versions and `hub` move separately: spec 1.0 to 1.3
+  vocabulary and the hub messages below. (v1.19) Spec 1.19 is `hub` 1.4: the hub message
+  `hub.show` (§8.8); an older hub answers it -32601. Spec versions and `hub` move separately: spec 1.0 to 1.3
   are `hub` 1.0; spec 1.4 is `hub` 1.1 (a new setting kind and key), and so is spec 1.5 (only
   optional panel props and stream rules, no manifest key), and so is spec 1.6 (hub window rules
 and a hub-owned `hideout.toml` table, no message or manifest key). The hub answers `initialize`
@@ -2276,6 +2299,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `settings.get` | H → M | call | `{}` | `{values: {name: value}}` | — |
 | `settings.set` | H → M | call | `{name, value}` | `{}`, or an error with `data.reason` | — |
 | `hub.notify` | M → H | call | `{title, body, level: "info" \| "warn" \| "error"}` | `{}` | `hub.notify` |
+| `hub.show` (v1.19) | C → H | call | `{id}` | `{}`; -32602 for an id that is not a module | — (the caller must be a verified same-user process on the router pipe outside an AppContainer; else error 5; at most one takes effect every 2 s hub-wide, else error 8 `rate-limited`) |
 
 **Facts and channels**
 

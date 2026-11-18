@@ -45,7 +45,14 @@ fn main() {
     if foxglove::autostart::uninstall_entry() {
         return;
     } // Foxglove (#444): MSI uninstall
-      // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
+      // Foxglove (H5.5): a hub that already runs Foxglove as its module keeps the keyboard; this start
+      // asks it to show Foxglove when started by hand, then exits 0. Before the single-instance claim,
+      // so the deferral is decided first (the claim would otherwise end or show a start first). Only
+      // with that hub fact: else today.
+    if foxglove::signin_handoff::at_startup() {
+        return;
+    }
+    // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
     if !foxglove::single_instance::claim(!foxglove::settings_open::tray_start()) {
         return;
     }

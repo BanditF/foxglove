@@ -2,16 +2,21 @@
 //!
 //! With module mode on, `Foxglove.lnk` and `Hideout.lnk` both fire at sign-in, so a
 //! `foxglove.exe --tray` start can find a hub that already hosts Foxglove. This file is only the
-//! decision table, as pure functions of facts the caller gathers: nothing here opens a pipe,
-//! starts a process, exits or writes a file, and nothing calls it yet (UNWIRED: wiring is the
-//! module-mode go, with the lab sign-in test). No credential, token or secret is involved:
-//! "sign-in" is the Windows sign-in.
+//! decision table, as pure functions of facts the caller gathers, and [`at_startup`], the one
+//! caller (app main, just before the single-instance claim). No credential, token or secret is
+//! involved: "sign-in" is the Windows sign-in.
+//!
+//! Opt-in is module mode itself, no separate switch: the hub fact `module.foxglove.state` reads
+//! "running" only when the hub supervises Foxglove as its module, and only that fact makes the
+//! app defer. With module mode off the fact is absent, so the answer is "not hosted" and the
+//! start is today's. The fact is read only when a hub verifiably holds the `foxglove-<user>`
+//! name, so with no hub nothing is opened or asked.
 //!
 //! Safety rule of the table: no keyboard app at sign-in is the failure to avoid, so every doubt
 //! (hub not verified, hosting not confirmed, own module mode) resolves to [`Start::Normally`],
 //! which is today's behaviour.
 
-#![allow(dead_code)] // unwired until the module-mode go
+#![allow(dead_code)] // `hub_side` is the hub supervisor's half, not wired in the app
 
 use super::one_owner::Coexistence;
 
@@ -26,8 +31,9 @@ pub enum Launch {
     Module,
 }
 
-/// What the hub says about Foxglove's row. `Unknown` until the hub can be asked (open question
-/// in review/h55-open-questions.md); the table treats it like `OnItsOwn`.
+/// What the hub says about Foxglove's row (the fact `module.foxglove.state`, read over the
+/// verified hub pipe by `hub_fact`). `Unknown` when it could not be asked; the table treats it
+/// like `OnItsOwn`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hosting {
     Unknown,
@@ -101,6 +107,87 @@ pub fn orphaned(is_module: bool, hub_exe_present: bool, already_restarted: bool)
     }
 }
 
+/// The decision for a start, reading the hub fact only when it can matter: a hub verifiably on
+/// the name and a start that is not the hub's own child. `hosting` is the (bounded) read.
+pub fn resolve(launch: Launch, hub: &Coexistence, hosting: impl FnOnce() -> Hosting) -> Start {
+    let ask = launch != Launch::Module && matches!(hub, Coexistence::HubHasTheName { .. });
+    decide(
+        true,
+        launch,
+        hub,
+        if ask { hosting() } else { Hosting::Unknown },
+    )
+}
+
+/// [`resolve`] over a hub connection, and the `hub.show` the decision calls for.
+pub fn handoff<C: super::hub_fact::Connect>(
+    launch: Launch,
+    hub: &Coexistence,
+    conn: std::sync::Arc<C>,
+    limit: std::time::Duration,
+) -> Start {
+    let start = resolve(launch, hub, || {
+        super::hub_fact::hosting(conn.clone(), limit)
+    });
+    if start == (Start::DeferToHub { show: true }) {
+        super::hub_fact::show(conn, limit);
+    }
+    start
+}
+
+/// The launch kind from this process's flags.
+pub fn launch_of(module: bool, tray: bool) -> Launch {
+    if module {
+        Launch::Module
+    } else if tray {
+        Launch::Tray
+    } else {
+        Launch::Window
+    }
+}
+
+/// App start-up, before the single-instance claim: true when a hub already hosts Foxglove and
+/// this process should exit 0 (it has asked the hub to show Foxglove's page when it was a start
+/// by hand). Skipped (false) under `FOXGLOVE_CONFIG_DIR` or a test sandbox, so tests never touch
+/// the real hub, and off Windows.
+pub fn at_startup() -> bool {
+    #[cfg(windows)]
+    {
+        if std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some()
+            || super::store::test_sandbox().is_some()
+        {
+            return false;
+        }
+        let launch = launch_of(
+            super::hub_link::module_mode(),
+            super::settings_open::tray_start(),
+        );
+        if launch == Launch::Module {
+            return false;
+        }
+        let pipe = foxglove_plugin_host::pipe::name();
+        let hub = super::one_owner::log_for(&pipe, foxglove_plugin::owner::Expect::HIDEOUT);
+        let start = handoff(
+            launch,
+            &hub,
+            std::sync::Arc::new(super::hub_fact::HubPipe),
+            super::hub_fact::LIMIT,
+        );
+        if let Start::DeferToHub { show } = start {
+            super::app_log::early(&format!(
+                "Foxglove: the hub already runs Foxglove as its module; exiting{}",
+                if show {
+                    " after asking it to show Foxglove"
+                } else {
+                    ""
+                }
+            ));
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,28 +256,112 @@ mod tests {
         assert_eq!(orphaned(false, false, false), Orphan::Nothing);
     }
 
-    #[test]
-    fn unwired_nothing_outside_this_file_calls_it() {
-        // Guard: enabling this is the module-mode go. Fails when a caller appears, to be
-        // replaced by the wiring's own tests.
-        fn walk(d: &std::path::Path, hits: &mut Vec<String>) {
-            for e in std::fs::read_dir(d).unwrap().flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    walk(&p, hits);
-                } else if p.extension().is_some_and(|x| x == "rs")
-                    && p.file_name().unwrap() != "signin_handoff.rs"
-                {
-                    let t = std::fs::read_to_string(&p).unwrap_or_default();
-                    if t.contains(concat!("signin_handoff", "::")) {
-                        hits.push(p.display().to_string());
-                    }
-                }
-            }
+    use super::super::hub_fact::{Connect, Ends, Refused};
+    use std::sync::{Arc, Mutex};
+
+    /// A hub that answers in `reply` and records what it was sent and how often it was opened.
+    struct Hub {
+        reply: String,
+        wrote: Arc<Mutex<Vec<u8>>>,
+        opened: Arc<Mutex<u32>>,
+    }
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
         }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut hits = Vec::new();
-        walk(&root, &mut hits);
-        assert!(hits.is_empty(), "{hits:?}");
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Connect for Hub {
+        fn open(&self) -> Result<Ends, Refused> {
+            *self.opened.lock().unwrap() += 1;
+            Ok((
+                Box::new(std::io::Cursor::new(self.reply.clone().into_bytes())),
+                Box::new(Sink(self.wrote.clone())),
+            ))
+        }
+    }
+    type Mock = (Arc<Hub>, Arc<Mutex<Vec<u8>>>, Arc<Mutex<u32>>);
+    fn hub(state: &str) -> Mock {
+        let wrote = Arc::new(Mutex::new(Vec::new()));
+        let opened = Arc::new(Mutex::new(0));
+        let init = r#"{"jsonrpc":"2.0","id":0,"result":{}}"#;
+        let reply = format!(
+            "{init}\n{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"value\":\"{state}\"}}}}\n"
+        );
+        let h = Hub {
+            reply,
+            wrote: wrote.clone(),
+            opened: opened.clone(),
+        };
+        (Arc::new(h), wrote, opened)
+    }
+    const L: std::time::Duration = std::time::Duration::from_secs(2);
+
+    #[test]
+    fn the_hand_off_check_runs_before_the_single_instance_claim() {
+        let main = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .unwrap();
+        let ask = main.find("signin_handoff::at_startup()").expect("wired");
+        let claim = main.find("single_instance::claim(").expect("claim");
+        assert!(ask < claim, "the deferral must be decided before the claim");
+    }
+
+    #[test]
+    fn launch_kind_follows_the_flags() {
+        assert_eq!(launch_of(true, true), Launch::Module);
+        assert_eq!(launch_of(false, true), Launch::Tray);
+        assert_eq!(launch_of(false, false), Launch::Window);
+    }
+
+    #[test]
+    fn no_hub_on_the_name_asks_nothing_and_starts_normally() {
+        for co in [Coexistence::Alone, fake()] {
+            let (h, wrote, opened) = hub("running");
+            assert_eq!(handoff(Launch::Tray, &co, h, L), Start::Normally);
+            assert_eq!(*opened.lock().unwrap(), 0);
+            assert!(wrote.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn module_mode_off_is_todays_start_even_with_a_hub_running() {
+        // The hub runs but does not host Foxglove: the fact is not "running".
+        let (h, _, _) = hub("restarting");
+        assert_eq!(handoff(Launch::Tray, &HUB, h, L), Start::Normally);
+    }
+
+    #[test]
+    fn the_hubs_own_child_never_asks() {
+        let (h, _, opened) = hub("running");
+        assert_eq!(handoff(Launch::Module, &HUB, h, L), Start::Normally);
+        assert_eq!(*opened.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_hosted_tray_start_defers_without_asking_to_show() {
+        let (h, wrote, _) = hub("running");
+        assert_eq!(
+            handoff(Launch::Tray, &HUB, h, L),
+            Start::DeferToHub { show: false }
+        );
+        let text = String::from_utf8(wrote.lock().unwrap().clone()).unwrap();
+        assert!(!text.contains("hub.show"), "{text}");
+    }
+
+    #[test]
+    fn a_hosted_start_by_hand_defers_and_asks_the_hub_to_show() {
+        let (h, wrote, _) = hub("running");
+        assert_eq!(
+            handoff(Launch::Window, &HUB, h, L),
+            Start::DeferToHub { show: true }
+        );
+        let text = String::from_utf8(wrote.lock().unwrap().clone()).unwrap();
+        assert!(text.contains(r#""method":"hub.show""#), "{text}");
     }
 }

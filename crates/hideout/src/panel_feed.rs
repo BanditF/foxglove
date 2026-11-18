@@ -294,6 +294,11 @@ impl RouterSide {
                     return;
                 }
             },
+            // `hub.show` (v1.19): a verified same-user peer asked for this module's page.
+            Out::Show { module } => {
+                hideout_shell::open_module(module);
+                return;
+            }
             Out::Fact { key, value } => {
                 // The tray's dot follows module states and safe mode, even with the window
                 // hidden; it wakes the UI thread only when the dot changes.

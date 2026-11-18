@@ -21,5 +21,5 @@ pub use router::{
     fresh_secret, host_methods, Approver, ConnId, IdentityLookup, LaunchCheck, ModuleEntry, Origin,
     Out, Router, ServiceCall, ServiceError, Settings, Triggers, CALL_TIMEOUT, HOST_CONSUMER,
     MAX_HUB_QUEUED, MAX_INFLIGHT_PER_CALLER, MAX_INFLIGHT_PER_PROVIDER, MAX_LEASES_PER_CALLER,
-    NOT_STARTED,
+    NOT_STARTED, SHOW_GAP,
 };
