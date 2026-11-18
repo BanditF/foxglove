@@ -338,6 +338,10 @@ fn watch_inventory(
             let grants = hideout_supervisor::driver::keyboard_grants(&reg)
                 .into_iter()
                 .collect();
+            // A kept build moved the record to a new hash of the same file (attested update or
+            // follow-folder, #1267): follow that first, then narrow as ever.
+            let moves = reg.attested_keyboard_moves();
+            hub.act(|r| r.adopt_keyboard_moves(&moves));
             // The file can only narrow a grant; widening is the user's Allow or the hub's start.
             hub.act(|r| r.narrow_keyboard_grants(&grants));
             // Every other grant the same way: effective = in memory ∩ file (#1178).

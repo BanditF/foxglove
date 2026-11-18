@@ -208,6 +208,8 @@ fn no_method_a_module_can_call_grants_anything() {
         "modules.attest",
         "modules.follow",
         "modules.keep_followed",
+        "modules.adopt_keyboard_moves",
+        "keyboard.adopt",
         "modules.permissions.follow",
         "permission.follow",
         "permission.grant",

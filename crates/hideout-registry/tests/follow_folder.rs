@@ -449,3 +449,186 @@ fn keeping_an_existing_allow_with_no_new_items_leaves_the_grants() {
     std::fs::write(&f.exe, b"build 2").unwrap();
     assert_eq!(f.reg.binding_void(ID), None);
 }
+
+// ---- #1267: the router may follow a recorded keyboard-record move ----
+
+/// Allows by `by` (follow on or off), turns the keyboard grant on, then puts a new build in place.
+/// Returns the old hash.
+fn keyboard_on_then_rebuild(f: &mut Fx, by: &str, follow: bool) -> String {
+    allow(f, by, follow).unwrap();
+    let (path, old) = f.reg.current_program(ID).unwrap();
+    f.reg.allow_keyboard(ID, &path, &old, NOW).unwrap();
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    old
+}
+
+#[test]
+fn a_followed_build_yields_a_move_from_the_old_hash() {
+    let mut f = fx("mv-follow");
+    let old = keyboard_on_then_rebuild(&mut f, "dialog", true);
+    assert!(
+        f.reg.attested_keyboard_moves().is_empty(),
+        "nothing recorded yet"
+    );
+    assert!(f.reg.keep_followed(ID, LATER).unwrap());
+    let mv = f.reg.attested_keyboard_moves();
+    assert_eq!(mv.len(), 1);
+    assert_eq!(mv[0].id, ID);
+    assert_eq!(mv[0].ancestors.len(), 1);
+    assert_eq!(mv[0].ancestors[0].1, old);
+    assert_eq!(
+        mv[0].to,
+        f.reg.inventory.modules[ID].keyboard.clone().unwrap()
+    );
+    // A second kept build keeps the whole chain, oldest first.
+    std::fs::write(&f.exe, b"build 3").unwrap();
+    assert!(f.reg.keep_followed(ID, LATER).unwrap());
+    let mv = f.reg.attested_keyboard_moves();
+    assert_eq!(mv[0].ancestors.len(), 2);
+    assert_eq!(mv[0].ancestors[0].1, old);
+}
+
+#[test]
+fn an_attested_update_yields_a_move_without_a_follow() {
+    let mut f = fx("mv-attest");
+    let old = keyboard_on_then_rebuild(&mut f, "dialog", false);
+    f.reg.attest_update(ID, "1.1.0", "updater", LATER).unwrap();
+    let mv = f.reg.attested_keyboard_moves();
+    assert_eq!(mv.len(), 1);
+    assert_eq!(mv[0].ancestors[0].1, old);
+}
+
+#[test]
+fn no_move_for_an_unattested_change() {
+    let mut f = fx("mv-unattested");
+    keyboard_on_then_rebuild(&mut f, "dialog", false);
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn no_move_when_the_binding_was_not_set_by_the_dialog() {
+    let mut f = fx("mv-cli");
+    keyboard_on_then_rebuild(&mut f, "cli", false);
+    f.reg.attest_update(ID, "1.1.0", "updater", LATER).unwrap();
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn no_move_without_an_on_keyboard_record() {
+    let mut f = fx("mv-nokb");
+    allow(&mut f, "dialog", true).unwrap();
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    assert!(f.reg.keep_followed(ID, LATER).unwrap());
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+    // A record that is off gives nothing either.
+    let (path, hash) = f.reg.current_program(ID).unwrap();
+    f.reg.allow_keyboard(ID, &path, &hash, NOW).unwrap();
+    f.reg.revoke_keyboard(ID, NOW).unwrap();
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn no_move_for_a_void_or_moved_binding() {
+    let mut f = fx("mv-void");
+    keyboard_on_then_rebuild(&mut f, "dialog", false);
+    f.reg.attest_update(ID, "1.1.0", "updater", LATER).unwrap();
+    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
+    // The program moves to another path: void, never a move.
+    let other = temp("mv-void-other").join("foxglove.exe");
+    std::fs::write(&other, b"build 9").unwrap();
+    f.readopt(&[&other.display().to_string()]);
+    assert_eq!(
+        f.reg.void_if_changed(ID, LATER).unwrap(),
+        Some(VoidReason::Moved)
+    );
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn no_move_when_the_program_arguments_changed() {
+    let mut f = fx("mv-args");
+    keyboard_on_then_rebuild(&mut f, "dialog", false);
+    f.reg.attest_update(ID, "1.1.0", "updater", LATER).unwrap();
+    let exe = f.exe.display().to_string();
+    f.readopt(&[&exe, "--extra"]);
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn no_move_when_the_chain_is_broken_or_changes_the_path() {
+    let mut f = fx("mv-chain");
+    keyboard_on_then_rebuild(&mut f, "dialog", false);
+    f.reg.attest_update(ID, "1.1.0", "updater", LATER).unwrap();
+    // A step whose path differs from the bound file ends the chain: no move.
+    let mut moved = Registry::open(&f.home, true).unwrap();
+    moved
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap()
+        .attested[0]
+        .from_path = r"C:\Elsewhere\foxglove.exe".into();
+    assert!(moved.attested_keyboard_moves().is_empty());
+    // A step whose new hash is not the bound hash is no link.
+    let mut broken = Registry::open(&f.home, true).unwrap();
+    broken
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap()
+        .attested[0]
+        .to_sha256 = "0".repeat(64);
+    assert!(broken.attested_keyboard_moves().is_empty());
+    // An unknown voucher is no attestation.
+    let mut odd = Registry::open(&f.home, true).unwrap();
+    odd.inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap()
+        .attested[0]
+        .by = "module".into();
+    assert!(odd.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn a_folder_step_needs_the_follow_still_set_by_the_dialog() {
+    let mut f = fx("mv-forged");
+    keyboard_on_then_rebuild(&mut f, "dialog", true);
+    assert!(f.reg.keep_followed(ID, LATER).unwrap());
+    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
+    // The follow is cleared or set by anyone but the dialog: the folder step no longer counts.
+    let mut cleared = Registry::open(&f.home, true).unwrap();
+    cleared
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap()
+        .follow = None;
+    assert!(cleared.attested_keyboard_moves().is_empty());
+    let mut forged = Registry::open(&f.home, true).unwrap();
+    forged
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap()
+        .follow
+        .as_mut()
+        .unwrap()
+        .by = "cli".into();
+    assert!(forged.attested_keyboard_moves().is_empty());
+}

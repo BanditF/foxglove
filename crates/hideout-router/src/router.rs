@@ -936,6 +936,39 @@ impl Router {
         self.revalidate_grant()
     }
 
+    /// Follows a keyboard-record move the registry recorded (#1267), so the areas stay on after a
+    /// kept build. Narrow-only otherwise: a record is replaced only when all hold: memory holds
+    /// it `on` for exactly one of the move's ancestors (the file memory was allowed for), the
+    /// move's record is `on` for the same canonical path (never a moved path), a different valid
+    /// hash, and not a network path. Anything else changes nothing. Only the hub calls this (no
+    /// module request reaches it), with moves from [`hideout_registry::Registry::attested_keyboard_moves`];
+    /// call it before [`Router::narrow_keyboard_grants`].
+    pub fn adopt_keyboard_moves(
+        &mut self,
+        moves: &[hideout_registry::keyboard::KeyboardMove],
+    ) -> Vec<Out> {
+        use hideout_registry::keyboard::{is_unc, same_path, GrantState};
+        for mv in moves {
+            let Some(cur) = self.keyboards.get_mut(&mv.id) else {
+                continue;
+            };
+            let to = &mv.to;
+            let hash = |s: &str| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit());
+            if cur.state != GrantState::On
+                || to.state != GrantState::On
+                || !hash(&to.sha256)
+                || to.sha256.eq_ignore_ascii_case(&cur.sha256)
+                || !same_path(&to.path, &cur.path)
+                || is_unc(&to.path)
+                || !mv.ancestors.iter().any(|(p, h)| cur.allows(p, h))
+            {
+                continue;
+            }
+            *cur = to.clone();
+        }
+        self.revalidate_grant()
+    }
+
     /// The user's Allow (and the hub's start): sets what module `id` holds. The only way a
     /// module's grants widen while the hub runs (#1178).
     pub fn set_module_grants(&mut self, id: &str, granted: Vec<String>) -> Vec<Out> {

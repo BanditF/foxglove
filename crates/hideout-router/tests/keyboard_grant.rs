@@ -640,3 +640,129 @@ fn losing_one_area_ends_that_areas_leases_only() {
         .collect();
     assert_eq!(closed, ["D1"], "{out:?}");
 }
+
+// ---- #1267: following a registry-recorded move of the keyboard record ----
+
+const NEWER: &str = "ef56ef56ef56ef56ef56ef56ef56ef56ef56ef56ef56ef56ef56ef56ef56ef56";
+
+fn mv(ancestors: &[(&str, &str)], to: KeyboardGrant) -> hideout_registry::keyboard::KeyboardMove {
+    hideout_registry::keyboard::KeyboardMove {
+        id: FOX.into(),
+        ancestors: ancestors
+            .iter()
+            .map(|(p, h)| (p.to_string(), h.to_string()))
+            .collect(),
+        to,
+    }
+}
+
+fn moved_to(sha: &str) -> KeyboardGrant {
+    let mut g = grant(GrantState::On);
+    g.sha256 = sha.into();
+    g
+}
+
+/// The router holds `on` for HASH, then adopts `m`; the module connects as `sha` and asks a
+/// routed call. Returns whether the areas work.
+fn adopt_and_try(m: hideout_registry::keyboard::KeyboardMove, sha: &str) -> bool {
+    let now = Instant::now();
+    let id = identity(PATH, sha);
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    r.adopt_keyboard_moves(&[m]);
+    // The file's record is narrowed against afterwards, as the hub does.
+    r.narrow_keyboard_grants(&grants(Some(moved_to(sha))));
+    let (f, c) = connect_both(&mut r, now);
+    register(&mut r, f, &strs(&areas()), now);
+    try_call(&mut r, c, f, "devices.list", now).0.len() == 1
+}
+
+#[test]
+fn a_recorded_move_keeps_the_areas_on_for_the_new_build() {
+    assert!(adopt_and_try(mv(&[(PATH, HASH)], moved_to(NEWER)), NEWER));
+    // An older ancestor of a longer chain works too.
+    assert!(adopt_and_try(
+        mv(&[(PATH, HASH), (PATH, OTHER)], moved_to(NEWER)),
+        NEWER
+    ));
+    // Case of the hash or path does not matter.
+    assert!(adopt_and_try(
+        mv(
+            &[(&PATH.to_lowercase(), &HASH.to_uppercase())],
+            moved_to(NEWER)
+        ),
+        NEWER
+    ));
+}
+
+#[test]
+fn without_the_move_the_file_alone_still_voids_the_areas() {
+    let now = Instant::now();
+    let id = identity(PATH, NEWER);
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    r.narrow_keyboard_grants(&grants(Some(moved_to(NEWER))));
+    let (f, c) = connect_both(&mut r, now);
+    register(&mut r, f, &strs(&areas()), now);
+    assert!(try_call(&mut r, c, f, "devices.list", now).0.is_empty());
+}
+
+#[test]
+fn a_move_is_refused_unless_every_condition_holds() {
+    // Memory not `on` (off, never allowed, void): a move never widens.
+    for st in [GrantState::Off, GrantState::Void] {
+        let now = Instant::now();
+        let id = identity(PATH, NEWER);
+        let mut r = rig(&id);
+        r.set_keyboard_grants(grants(Some(grant(st))));
+        r.adopt_keyboard_moves(&[mv(&[(PATH, HASH)], moved_to(NEWER))]);
+        let (f, c) = connect_both(&mut r, now);
+        register(&mut r, f, &strs(&areas()), now);
+        assert!(try_call(&mut r, c, f, "devices.list", now).0.is_empty());
+    }
+    let mut r = rig(&identity(PATH, NEWER));
+    r.adopt_keyboard_moves(&[mv(&[(PATH, HASH)], moved_to(NEWER))]);
+    let (f, c) = connect_both(&mut r, Instant::now());
+    register(&mut r, f, &strs(&areas()), Instant::now());
+    assert!(try_call(&mut r, c, f, "devices.list", Instant::now())
+        .0
+        .is_empty());
+
+    // No ancestor is the file memory was allowed for: no link, no move.
+    assert!(!adopt_and_try(mv(&[(PATH, OTHER)], moved_to(NEWER)), NEWER));
+    assert!(!adopt_and_try(mv(&[], moved_to(NEWER)), NEWER));
+    // The ancestor's path is not the allowed path.
+    assert!(!adopt_and_try(
+        mv(&[(r"C:\Other\foxglove.exe", HASH)], moved_to(NEWER)),
+        NEWER
+    ));
+    // The moved record names another path (a move of the program, not a new build).
+    let mut other_path = moved_to(NEWER);
+    other_path.path = r"C:\Other\foxglove.exe".into();
+    assert!(!adopt_and_try(mv(&[(PATH, HASH)], other_path), NEWER));
+    // The moved record is a network path.
+    let mut unc = moved_to(NEWER);
+    unc.path = r"\host\share\foxglove.exe".into();
+    assert!(!adopt_and_try(mv(&[(PATH, HASH)], unc), NEWER));
+    // The moved record is not `on`, or has no valid hash.
+    let mut off = moved_to(NEWER);
+    off.state = GrantState::Void;
+    assert!(!adopt_and_try(mv(&[(PATH, HASH)], off), NEWER));
+    assert!(!adopt_and_try(mv(&[(PATH, HASH)], moved_to("")), NEWER));
+    assert!(!adopt_and_try(mv(&[(PATH, HASH)], moved_to("zz")), NEWER));
+    // A move to the very hash memory holds is no move.
+    assert!(adopt_and_try(mv(&[(PATH, HASH)], moved_to(HASH)), HASH));
+}
+
+#[test]
+fn a_move_does_not_let_another_image_in() {
+    // The grant still binds the connecting image: a module with any other hash gets nothing.
+    let now = Instant::now();
+    let id = identity(PATH, OTHER);
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    r.adopt_keyboard_moves(&[mv(&[(PATH, HASH)], moved_to(NEWER))]);
+    let (f, c) = connect_both(&mut r, now);
+    register(&mut r, f, &strs(&areas()), now);
+    assert!(try_call(&mut r, c, f, "devices.list", now).0.is_empty());
+}
