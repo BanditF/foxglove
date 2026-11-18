@@ -52,7 +52,8 @@
 //!   reset and the updater's manual install are planned exits ([`planned_exit`], #1143 P7).
 //! - **Liveness (§7.9).** When the hub's pipe closes the app keeps running, retries with a
 //!   bounded backoff for the 30-second grace period, and then hands everything back and exits 0.
-//!   `module.exit` does the same at once. A hub that refuses `initialize` ends the module.
+//!   `module.exit` does the same at once. If the hub's exe is gone for good (the image recorded
+//!   at start no longer exists), the exit is instead one restart as standalone `--tray`, once per run (H5.5). A hub that refuses `initialize` ends the module.
 //!
 //! The wire is the SDK's [`Session`]; the state machine here ([`Link`]) is generic over the
 //! writer so the tests drive it against the hub's own `Router` with no pipe and no window.
@@ -1343,6 +1344,29 @@ fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
     a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
 }
 
+/// Whether a hub image is there. Only a definite "not found" counts as gone: access denied or any
+/// other error answers present, so an unreadable image never restarts the module.
+pub(super) fn image_present(p: &std::path::Path) -> bool {
+    present_from(p.try_exists())
+}
+
+pub(super) fn present_from(r: std::io::Result<bool>) -> bool {
+    r.unwrap_or(true)
+}
+
+/// What a module does at the end of the grace period (H5.5): restart standalone only when the
+/// hub's recorded image no longer exists and this run has not restarted yet. No recorded image
+/// (the hub's process could not be read) counts as "still there": the old exit stands.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn orphan_after_grace(
+    hub: &HubId,
+    exists: impl Fn(&std::path::Path) -> bool,
+    already_restarted: bool,
+) -> crate::foxglove::signin_handoff::Orphan {
+    let present = hub.path.as_ref().is_none_or(|p| exists(p));
+    crate::foxglove::signin_handoff::orphaned(true, present, already_restarted)
+}
+
 /// The grace period: it starts when the app starts and restarts only after a connection reached
 /// `module.ready`, so a server that accepts and sends garbage cannot keep the app waiting.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1518,6 +1542,23 @@ mod runner {
                             "Foxglove: no hub for {} s ({why}); handing everything back and exiting",
                             GRACE.as_secs()
                         ));
+                        // H5.5: the hub's exe is gone for good (uninstalled, replaced): nothing
+                        // will bring the hub back, so the keyboard app starts itself once as a
+                        // standalone tray app instead of leaving no keyboard app at all.
+                        let already = RESTARTED.load(Ordering::SeqCst);
+                        let gone = |h: &HubId| {
+                            orphan_after_grace(h, image_present, already)
+                                == crate::foxglove::signin_handoff::Orphan::RestartStandalone
+                        };
+                        // Checked twice, a moment apart: a hub that is mid-update has no exe
+                        // for an instant.
+                        if gone(&hub) && {
+                            std::thread::sleep(Duration::from_secs(2));
+                            gone(&hub)
+                        } {
+                            RESTARTED.store(true, Ordering::SeqCst);
+                            restart_standalone();
+                        }
                         finish("the hub is gone", 0);
                     }
                     crate::foxglove::app_log::line(&format!(
@@ -1545,6 +1586,42 @@ mod runner {
             planned_exit("a handed-off feature is wanted back");
         }
         false
+    }
+
+    /// The once-per-run marker of the orphan restart (H5.5).
+    static RESTARTED: AtomicBool = AtomicBool::new(false);
+
+    /// Hands everything back, lets go of the single-instance guard, starts this exe again as
+    /// `--tray` (no `--module`, no hub values: a standalone app) and ends this process. If the
+    /// start fails the process still ends as it always did when the hub was gone.
+    fn restart_standalone() {
+        crate::foxglove::quit::hand_back("the hub's exe is gone; restarting standalone");
+        let spawned = std::env::current_exe().and_then(|exe| {
+            crate::foxglove::single_instance::release();
+            let null = std::process::Stdio::null;
+            std::process::Command::new(exe)
+                .arg(crate::foxglove::settings_open::TRAY_ARG)
+                .stdin(null())
+                .stdout(null())
+                .stderr(null())
+                .spawn()
+        });
+        match spawned {
+            Ok(_) => {
+                crate::foxglove::app_log::early(
+                    "Foxglove: the hub's exe is gone for good; started again standalone in the tray",
+                );
+                std::process::exit(0);
+            }
+            Err(e) => {
+                // Everything is already handed back: end as the old exit did, without a
+                // second hand-back.
+                crate::foxglove::app_log::early(&format!(
+                    "Foxglove: the hub's exe is gone and a standalone start failed ({e}); exiting"
+                ));
+                std::process::exit(0);
+            }
+        }
     }
 
     /// Hands the app's devices back and ends the process, as the tray's Quit does.
