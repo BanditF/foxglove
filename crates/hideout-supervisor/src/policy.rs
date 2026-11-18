@@ -1029,7 +1029,9 @@ impl Policy {
                         } else {
                             self.set_state(&id, State::Idle, None, &mut out);
                         }
-                    } else if !held && matches!(s.state, State::InstallFailed | State::CrashStopped)
+                    } else if s.at_enable
+                        && !held
+                        && matches!(s.state, State::InstallFailed | State::CrashStopped)
                     {
                         // The user's OK was given and the module turned on: it starts as Start
                         // again does. Safe mode, a withdrawn or blocked module start nothing.
@@ -2166,6 +2168,60 @@ mod withdrawn_tests {
         running(&mut p, t, None);
         let cmds = p.handle(Ev::Enable { id: ID.into() }, t);
         assert_eq!(count(&cmds, |c| matches!(c, Cmd::Launch { .. })), 0);
+    }
+
+    fn known_slot(p: &mut Policy, id: &str, at_enable: bool, t: Instant) {
+        p.handle(
+            Ev::Known {
+                id: id.into(),
+                name: id.into(),
+                enabled: true,
+                at_enable,
+                previous: None,
+            },
+            t,
+        );
+    }
+
+    /// An on-demand module (`at_enable` false) is not launched by an Allow or Turn on, even
+    /// when it waited for the OK.
+    #[test]
+    fn an_on_demand_module_that_waited_for_the_ok_is_not_started_by_enable() {
+        let t = Instant::now();
+        let mut p = Policy::new();
+        known_slot(&mut p, ID, false, t);
+        p.handle(Ev::NeedsOk { id: ID.into() }, t);
+        let cmds = p.handle(Ev::Enable { id: ID.into() }, t);
+        assert_eq!(
+            count(&cmds, |c| matches!(c, Cmd::Launch { .. })),
+            0,
+            "{cmds:?}"
+        );
+    }
+
+    /// A missing OK raises no stopped or crash toast, and an Enable for one module never
+    /// launches another module that also waits for its OK.
+    #[test]
+    fn a_missing_ok_raises_no_toast_and_one_enable_never_starts_another_module() {
+        let t = Instant::now();
+        let mut p = Policy::new();
+        known_slot(&mut p, "a", true, t);
+        known_slot(&mut p, "b", true, t);
+        let cmds = p.handle(Ev::NeedsOk { id: "b".into() }, t);
+        assert_eq!(
+            count(&cmds, |c| matches!(c, Cmd::Notify { .. })),
+            0,
+            "{cmds:?}"
+        );
+        p.handle(Ev::NeedsOk { id: "a".into() }, t);
+        let cmds = p.handle(Ev::Enable { id: "a".into() }, t);
+        let launched: Vec<&Cmd> = cmds
+            .iter()
+            .filter(|c| matches!(c, Cmd::Launch { .. }))
+            .collect();
+        assert_eq!(launched.len(), 1, "{cmds:?}");
+        assert!(format!("{:?}", launched[0]).contains("\"a\""));
+        assert_eq!(p.state("b"), Some(State::InstallFailed));
     }
 
     /// An adopted module whose program is gone, or that says another version than its

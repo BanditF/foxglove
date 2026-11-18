@@ -4027,6 +4027,64 @@ fn first_run_test_dialog() -> crate::permission_dialog::FirstRun {
     }
 }
 
+/// Foxglove's real kind of list (three HID classes, the network, notifications, the keyboard
+/// choice, the Keep box) next to a second, smaller app.
+fn first_run_realistic_dialog() -> crate::permission_dialog::FirstRun {
+    use crate::permission_dialog::{Group, Keep, KeyboardChoice, ListItem};
+    let mut d = first_run_test_dialog();
+    let it = |raw: &str, line: &str, g, sensitive| ListItem {
+        raw: raw.into(),
+        line: line.into(),
+        group: g,
+        allowable: true,
+        sensitive,
+        reason: None,
+        checked: !sensitive,
+        confirmed: false,
+        new: false,
+    };
+    let fox = &mut d.sections[0];
+    fox.items = vec![
+        it(
+            "device.hid:keyboard",
+            "Talk to your keyboards",
+            Group::Sensitive,
+            true,
+        ),
+        it(
+            "device.hid:lighting",
+            "Talk to your lighting devices",
+            Group::Sensitive,
+            true,
+        ),
+        it(
+            "device.hid:vendor",
+            "Talk to devices in their own way",
+            Group::Sensitive,
+            true,
+        ),
+        it("net", "Use the network", Group::Sensitive, true),
+        it(
+            "hub.notify",
+            "Show notifications",
+            Group::MakeChanges,
+            false,
+        ),
+        it(
+            "ui.window",
+            "Open its own window",
+            Group::MakeChanges,
+            false,
+        ),
+    ];
+    fox.keyboard = Some(KeyboardChoice {
+        on: false,
+        expanded: false,
+    });
+    fox.keep = Some(Keep::offered(false));
+    d
+}
+
 /// Review images for UX cut 3: the one first-run dialog with a section per app, real renderer.
 #[test]
 fn renders_the_first_run_dialog_for_review() {
@@ -4038,8 +4096,8 @@ fn renders_the_first_run_dialog_for_review() {
         } else {
             ThemeChoice::Light
         };
-        let mut d = first_run_test_dialog();
-        let (w, h) = (760u32, 1100u32);
+        let mut d = first_run_realistic_dialog();
+        let (w, h) = (760u32, 720u32);
         let Some(rgba) = rasterise_events(w, h, vec![Vec::new(); 10], |ctx| {
             set_theme(ctx, choice);
             ctx.style_mut(|s| s.animation_time = 0.0);

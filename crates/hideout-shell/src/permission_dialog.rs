@@ -709,7 +709,7 @@ impl Section {
 /// Modules page, one dialog with a section per app. Plain words ("app"); nothing here
 /// pre-confirms or allows anything.
 pub const FIRST_RUN_BODY: &str =
-    "Each app stays off until you allow it. You review each app's permissions on their own.";
+    "Each app stays off until you allow it. You review each app's permissions one by one.";
 pub const FIRST_RUN_INTRO: &str = "Each app has its own list. Nothing is allowed until you press Allow, and each sensitive item needs its own “I understand”.";
 
 /// "2 apps wait for your OK".
@@ -745,7 +745,7 @@ impl FirstRun {
     pub fn allow_label(&self) -> String {
         match self.count() {
             0 => ALLOW_NONE.into(),
-            n => format!("Allow {n}"),
+            n => format!("Allow {n} items"),
         }
     }
 

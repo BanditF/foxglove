@@ -2191,4 +2191,55 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn first_run_allow_label_counts_items_not_apps() {
+        let mut f = two("fr-label");
+        f.ui.open_first_run();
+        let d = f.ui.first_run.as_ref().unwrap();
+        assert!(d.allow_label().ends_with(" items"), "{}", d.allow_label());
+    }
+
+    #[test]
+    fn a_section_that_cannot_be_saved_stays_with_its_error_and_the_other_is_granted() {
+        let mut f = two("fr-savefail");
+        f.ui.open_first_run();
+        // Fennec's save fails (the module is not known any more), vulpes's goes through.
+        f.ui.first_run
+            .as_mut()
+            .unwrap()
+            .sections
+            .iter_mut()
+            .find(|s| s.id == FOX)
+            .unwrap()
+            .id = "ghost".into();
+        let a = f.ui.first_run.as_ref().unwrap().allowed();
+        let done = f.ui.answer_first_run(FirstRunAnswer::Allow(a));
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].id, ID);
+        assert!(!view(&f).granted.is_empty());
+        assert!(view_of(&f, FOX).granted.is_empty());
+        let d = f.ui.first_run.clone().expect("stays open");
+        assert_eq!(d.sections.len(), 1);
+        assert!(d.error.is_some());
+    }
+
+    #[test]
+    fn one_apps_allow_never_grants_or_returns_another() {
+        let mut f = two("fr-isolated");
+        f.ui.open_first_run();
+        let a: Vec<_> =
+            f.ui.first_run
+                .as_ref()
+                .unwrap()
+                .allowed()
+                .into_iter()
+                .filter(|(i, _)| i == ID)
+                .collect();
+        let done = f.ui.answer_first_run(FirstRunAnswer::Allow(a));
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].id, ID);
+        assert!(view_of(&f, FOX).granted.is_empty() && view_of(&f, FOX).bound.is_none());
+        assert_eq!(f.ui.first_run.as_ref().unwrap().sections[0].id, FOX);
+    }
 }

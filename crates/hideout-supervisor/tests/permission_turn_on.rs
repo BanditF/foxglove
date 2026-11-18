@@ -321,3 +321,45 @@ fn a_job_with_a_leftover_process_stays_checkable_after_its_instance_ended() {
     drop(sup);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
+
+/// A module that is not adopted (a sideload or catalog one whose files changed) is never worded
+/// as waiting for the OK: the wording is for adopted apps only (the driver also checks the
+/// source). This guards the outcome; the void flag is only set on the adopted path.
+#[test]
+fn a_changed_module_that_is_not_adopted_is_never_worded_as_waiting_for_the_ok() {
+    let (home, exe, id) = adopted_home("notadopted");
+    let id = id.as_str();
+    let hub = hub();
+    let sup = common::start(&home, hub.clone());
+    let list = Registry::open_from_env(&home)
+        .unwrap()
+        .permission_list(id)
+        .unwrap();
+    let shown: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    sup.grant_listed(id, list.code(), &shown, &[], "dialog")
+        .unwrap();
+    let mut bytes = std::fs::read(&exe).unwrap();
+    bytes.extend_from_slice(b"tampered");
+    std::fs::write(&exe, &bytes).unwrap();
+    let inv = home.join("inventory.json");
+    let text = std::fs::read_to_string(&inv).unwrap();
+    let re: Vec<&str> = text.split("\"source\"").collect();
+    assert_eq!(re.len(), 2, "one module");
+    let tail = re[1].replacen("\"adopted\"", "\"sideload\"", 1);
+    assert_ne!(tail, re[1]);
+    std::fs::write(&inv, format!("{}\"source\"{tail}", re[0])).unwrap();
+    {
+        let mut reg = Registry::open_from_env(&home).unwrap();
+        reg.set_enabled(id, true).unwrap();
+    }
+    sup.feed(hideout_supervisor::policy::Ev::Enable { id: id.into() });
+    assert!(sup.pid(id).is_none(), "started a changed module");
+    let fact = |k: &str| hub.read(|r| r.fact(&format!("module.{id}.{k}")).cloned());
+    assert_ne!(fact("failed"), Some(serde_json::json!("ok")));
+    assert_ne!(
+        fact("reason"),
+        Some(serde_json::json!(hideout_supervisor::words::WAITS_FOR_OK))
+    );
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}

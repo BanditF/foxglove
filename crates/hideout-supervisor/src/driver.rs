@@ -1454,7 +1454,16 @@ impl Supervisor {
             Some(NEEDS_HUB) => NEEDS_HUB.to_string(),
             // Only a refusal because the app file is new or moved since the user allowed it
             // waits for the OK; every other refusal keeps its own wording.
-            Some("trust.mismatch") if reg.binding_void(id).is_some() => NEEDS_OK.to_string(),
+            Some("trust.mismatch")
+                if reg.binding_void(id).is_some()
+                    && reg
+                        .inventory
+                        .modules
+                        .get(id)
+                        .is_some_and(|m| m.source == hideout_registry::inventory::ADOPTED) =>
+            {
+                NEEDS_OK.to_string()
+            }
             _ => format!("{e:?}"),
         })?;
         let run = l.run.clone().ok_or("no run in the manifest")?;
