@@ -84,15 +84,15 @@ function Get-GuiCounts {
     $r
 }
 
-# Global atom table (limit 16384, ids 0xC000..0xFFFF): used count and how many carry the name
-# 'WindowOnEdge' (a Windows shell string that leaked 16k dead-window atoms on 2026-11-17 and made
+# Global atom table (limit 16384, ids 0xC000..0xFFFF): used count and how many carry a name starting
+# 'WindowOnEdge' (the real names are WindowOnEdge:<hwnd>:<n>, one per window) (a Windows shell string that leaked 16k dead-window atoms on 2026-11-17 and made
 # every new window fail with 0x80070008). Pure counting over names; Get-AtomNames reads the table.
 function Get-AtomSummary {
     param([string[]]$Names)
     $used = @($Names | Where-Object { $_ })
     [pscustomobject]@{
         atoms = $used.Count
-        window_on_edge = @($used | Where-Object { $_ -eq 'WindowOnEdge' }).Count
+        window_on_edge = @($used | Where-Object { $_ -like 'WindowOnEdge*' }).Count
     }
 }
 

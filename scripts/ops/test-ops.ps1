@@ -64,7 +64,7 @@ try {
     $lf = (@(Get-HealthFlags -Now $low -Prev $p -Leak $null)) -join '|'
     Check 'flags: low disk and reboot suggested' ($lf -match 'C: free' -and $lf -match 'reboot suggested')
 
-    $as = Get-AtomSummary @('WindowOnEdge', 'WindowOnEdge', 'x', '', $null)
+    $as = Get-AtomSummary @('WindowOnEdge:00010083:3', 'WindowOnEdge:000200AA:1', 'x', '', $null)
     Check 'atoms: counts used and WindowOnEdge' ($as.atoms -eq 3 -and $as.window_on_edge -eq 2)
     Check 'atoms: live table readable' ((Get-AtomSummary (Get-AtomNames)).atoms -ge 0)
 
