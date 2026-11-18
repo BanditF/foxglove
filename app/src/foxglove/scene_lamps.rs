@@ -450,11 +450,10 @@ mod imp {
                 .map(|k| windows::core::HSTRING::from(*k))
                 .collect::<Vec<_>>(),
         );
-        let list = DeviceInformation::FindAllAsyncAqsFilterAndAdditionalProperties(
-            &selector, &keys,
-        )
-        .and_then(|op| op.join())
-        .or_else(|_| DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join())?;
+        let list =
+            DeviceInformation::FindAllAsyncAqsFilterAndAdditionalProperties(&selector, &keys)
+                .and_then(|op| op.join())
+                .or_else(|_| DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join())?;
         let mut c = Counted {
             found: Vec::new(),
             listed: list.Size()? as usize,
@@ -545,7 +544,10 @@ mod imp {
                 let v = props
                     .Lookup(&windows::core::HSTRING::from(k))
                     .ok()
-                    .and_then(|v| windows::core::Interface::cast::<windows::Foundation::IPropertyValue>(&v).ok())
+                    .and_then(|v| {
+                        windows::core::Interface::cast::<windows::Foundation::IPropertyValue>(&v)
+                            .ok()
+                    })
                     .and_then(|v| v.GetBoolean().ok());
                 let short = k.rsplit('.').next().unwrap_or(k);
                 out.push_str(&format!(", {short}={}", flag(v)));

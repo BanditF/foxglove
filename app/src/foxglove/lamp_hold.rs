@@ -1119,14 +1119,14 @@ mod tests {
         }
     }
 
-    fn run(
-        w: &mut FakeWindows,
-        pending: &[&str],
-    ) -> (Retried<String>, Vec<std::time::Duration>) {
+    fn run(w: &mut FakeWindows, pending: &[&str]) -> (Retried<String>, Vec<std::time::Duration>) {
         let mut waits = Vec::new();
         let r = retry_not_found(
             w,
-            pending.iter().map(|id| (id.to_string(), not_found())).collect(),
+            pending
+                .iter()
+                .map(|id| (id.to_string(), not_found()))
+                .collect(),
             &RETRY_BACKOFF,
             &mut |d| waits.push(d),
         );
@@ -1139,7 +1139,11 @@ mod tests {
         let (r, waits) = run(&mut w, &["usb"]);
         assert_eq!(r.opened, vec![("usb".to_string(), "array usb".to_string())]);
         assert!(r.gone.is_empty() && r.failed.is_empty());
-        assert_eq!(waits.as_slice(), RETRY_BACKOFF, "refused once more, opened on the last round");
+        assert_eq!(
+            waits.as_slice(),
+            RETRY_BACKOFF,
+            "refused once more, opened on the last round"
+        );
         assert_eq!(w.lists, 2, "re-listed before each retry");
     }
 
@@ -1150,8 +1154,16 @@ mod tests {
         assert!(r.opened.is_empty() && r.gone.is_empty());
         assert_eq!(r.failed.len(), 1);
         assert_eq!(r.failed[0].1.code, NOT_FOUND);
-        assert_eq!(waits.as_slice(), RETRY_BACKOFF, "every round waited, no more");
-        assert_eq!(w.opens.len(), RETRY_BACKOFF.len(), "one open per round, no loop");
+        assert_eq!(
+            waits.as_slice(),
+            RETRY_BACKOFF,
+            "every round waited, no more"
+        );
+        assert_eq!(
+            w.opens.len(),
+            RETRY_BACKOFF.len(),
+            "one open per round, no loop"
+        );
         let total: std::time::Duration = waits.iter().sum();
         assert!(total <= std::time::Duration::from_secs(2), "{total:?}");
     }
