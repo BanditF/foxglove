@@ -13,6 +13,8 @@ pub struct SettingsPage {
     version: &'static str,
     /// Forget seen apps was pressed since the page was made (its line shows).
     forgotten: bool,
+    /// The Start with Windows switch (H5.2): off by default; `None` where the hub gives none.
+    startup: Option<Box<dyn hideout_shell::startup_switch::StartupControl>>,
 }
 
 impl SettingsPage {
@@ -21,7 +23,17 @@ impl SettingsPage {
             home,
             version,
             forgotten: false,
+            startup: None,
         }
+    }
+
+    /// Gives the page its Start with Windows row.
+    pub fn with_startup(
+        mut self,
+        s: Box<dyn hideout_shell::startup_switch::StartupControl>,
+    ) -> Self {
+        self.startup = Some(s);
+        self
     }
 
     /// Forget seen apps: the file goes, and a running watch forgets too (no wait).
@@ -51,8 +63,19 @@ impl hideout_shell::Page for SettingsPage {
     }
 
     fn ui(&mut self, ui: &mut hideout_shell::egui::Ui, t: &hideout_shell::theme::Tokens) {
-        if hideout_shell::settings_view::settings_ui(ui, t, self.version, self.forgotten) {
+        let row = self.startup.as_mut().map(|s| s.row());
+        let acts = hideout_shell::settings_view::settings_ui_with(
+            ui,
+            t,
+            self.version,
+            self.forgotten,
+            row.as_ref(),
+        );
+        if acts.forget {
             self.forget();
+        }
+        if let (Some(c), Some(s)) = (acts.startup, self.startup.as_mut()) {
+            s.click(c);
         }
     }
 }

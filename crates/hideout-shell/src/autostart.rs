@@ -4,7 +4,8 @@
 //! `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder`.
 //!
 //! Clean-room: written from the behaviour spec in `docs/packaging.md` (the Start with Windows
-//! rules), not from any app code. UNWIRED: nothing calls it yet (H5.2 wires the switch).
+//! rules), not from any app code. H5.2 wires the user's switch ([`crate::startup_switch`]); the
+//! startup pass [`ensure`] is NOT called by anything and the switch is off by default.
 //!
 //! Rules:
 //! - Startup never turns the entry back on (#684). Disabled in Windows stays disabled, and a
@@ -88,7 +89,7 @@ pub enum Outcome {
     SkippedLabRun,
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| {
         p.to_string_lossy()
             .replace('/', "\\")

@@ -2940,6 +2940,31 @@ fn renders_the_settings_page_for_review() {
     save_png("built-settings-page.png", w, h, rgba);
 }
 
+/// The Start with Windows section with its dialog open, for the UX review (H5.2).
+#[test]
+fn renders_the_start_with_windows_dialog_for_review() {
+    let t = theme::tokens(true);
+    let (w, h) = (720u32, 520u32);
+    let row = crate::startup_switch::Row {
+        status: crate::startup_switch::STATUS_OFF.to_string(),
+        dialog: Some(false),
+        ..Default::default()
+    };
+    let rgba = rasterise(w, h, |c| {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(t.bg.0, t.bg.1, t.bg.2))
+                    .inner_margin(egui::Margin::same(24)),
+            )
+            .show(c, |ui| {
+                crate::settings_view::settings_ui_with(ui, &t, "0.3.0", false, Some(&row));
+            });
+    })
+    .unwrap();
+    save_png("built-settings-start-with-windows.png", w, h, rgba);
+}
+
 /// The keyboard grant's dialog (#1155-B), window-free: Esc answers Not now, no key answers
 /// nothing, Enter on the opening focus answers Not now (it never allows by itself).
 #[test]
