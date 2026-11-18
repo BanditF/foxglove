@@ -64,6 +64,7 @@ try {
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
     # The recurring ops scripts (#949) on fake inputs; window-free, no network.
     Step 'scripts: ops tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-ops.ps1 }
+    Step 'scripts: demo-up tests' { powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ops/test-demo-up.ps1 }
     # Functions over 120 lines and files over 1,500 lines, listed as warnings; never fails.
     Step 'size budget' { python scripts/size_budget.py }
     if ($rustRelevant) {
