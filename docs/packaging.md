@@ -151,7 +151,7 @@ What it contains (Hideout only, MIT; no Foxglove file, firmware or art):
   files, the shortcut, the registry values and the (empty) folders it made. `%LOCALAPPDATA%\Hideout`
   and `%APPDATA%\Hideout` are kept; Foxglove is never touched.
 
-Checks without WiX or running anything: `python -m unittest scripts/test_wix_hideout.py`
+Checks without WiX or running anything: `python -m unittest discover -s scripts -p "test_wix_hideout.py"`
 (structure of the `.wxs`, the dry-run listing, the script never installing).
 
 **On-call lab-verify checklist.** The user's or the Hub's go is needed before any run on the
@@ -159,16 +159,17 @@ user's PC; use the Windows test account, never the user's desktop. The artifact 
 until then.
 1. Clean test account, no `HKCU\Software\Hideout`. Record `HKCU\Software`, the Start menu and Startup
    folders, and `%LOCALAPPDATA%\Programs` before.
-2. Install `hideout-x64.msi` (default, then `msiexec /i ... /qn` on a second clean account): no UAC;
-   files, shortcut and Apps entry exist; Startup folder unchanged (no `Hideout.lnk`).
+2. Install `hideout-x64.msi` (default, then `msiexec /i ... /qn` on a second clean account): no UAC (the MSI is unsigned, so an "Unknown publisher" / SmartScreen prompt is expected; note
+   it); files, shortcut and the Apps entry (Settings > Apps > Installed apps) exist; Startup folder unchanged (no `Hideout.lnk`).
 3. Record check: `HKCU\Software\Hideout\Installer` `App` is the install folder, and
    `hideout.exe --autostart-status` prints `missing` (the row can show Turn on...).
 4. Reinstall the same version (upgrade in place) and an older one (refused).
-5. Turn Start with Windows on, then uninstall: `Hideout.lnk`, its approval value, the files, the
+5. Turn Start with Windows on, then uninstall (no window opens during it): `Hideout.lnk`, its approval value, the files, the
    Start shortcut and the whole `Software\Hideout` key are gone; the before/after snapshots match
    except the kept home/settings folders.
 6. With Foxglove 0.3 installed, repeat 2 and 5: Foxglove's folder, `Foxglove.lnk` and data are
-   byte-identical.
+   byte-identical, and `%LOCALAPPDATA%\Programs` still exists after uninstalling Hideout (Foxglove's
+   folder is in it).
 7. Rollback is uninstalling Hideout; if the install is wedged, delete `Software\Hideout` and the
    folder by hand on the test account.
 

@@ -15,7 +15,6 @@
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited" Platform="x64" />
     <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Hideout is already installed." />
     <MediaTemplate EmbedCab="yes" />
-    <Property Id="INSTALLLEVEL" Value="1" />
 
     <!-- The hub's trust rules fail closed on a UNC folder, so do not install there. -->
     <Condition Message="Hideout can only be installed on a local drive.">
@@ -59,7 +58,7 @@
          major upgrade) the hub removes a Hideout.lnk the user turned on, only if it starts this
          exe, as the user, before the exe goes. The hub's Home and settings folders stay. -->
     <Feature Id="App" Title="Hideout" Description="The Hideout hub and its Start menu entry."
-             Level="1" Absent="disallow" Display="expand">
+             Level="1" Absent="disallow">
       <ComponentRef Id="Application" />
       <ComponentRef Id="StartMenu" />
     </Feature>
