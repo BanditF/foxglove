@@ -1409,6 +1409,11 @@ impl Supervisor {
             return;
         };
         if g.state != hideout_registry::keyboard::GrantState::On || g.allows(canon, sha256) {
+            // The file may hold a kept build's moved record the router doesn't know yet (#1267).
+            let moves = reg.attested_keyboard_moves();
+            if !moves.is_empty() {
+                self.0.hub.act(|r| r.adopt_keyboard_moves(&moves));
+            }
             return;
         }
         let reason = if hideout_registry::keyboard::same_path(&g.path, canon) {

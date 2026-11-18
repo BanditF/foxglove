@@ -96,6 +96,21 @@ impl KeyboardGrant {
     }
 }
 
+/// A keyboard-record move the registry itself recorded (#1267): the file's `on` record now names
+/// a new hash of the same file, reached from `ancestors` by attested steps (an attested update or
+/// a follow-folder grant). Built only by [`Registry::attested_keyboard_moves`]; the router
+/// adopts it only over a record it holds `on` for exactly one of the ancestors.
+///
+/// [`Registry::attested_keyboard_moves`]: crate::Registry::attested_keyboard_moves
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyboardMove {
+    pub id: String,
+    /// `(canonical path, sha256)` of each earlier file of the chain, oldest first.
+    pub ancestors: Vec<(String, String)>,
+    /// The record as the file holds it now (`on`, same path, the chain's last hash).
+    pub to: KeyboardGrant,
+}
+
 /// A network path (`\\host\share`, or the verbatim `\\?\UNC\` form): never carries the grant,
 /// because a remote file is not under this machine's write lock.
 pub fn is_unc(p: &str) -> bool {

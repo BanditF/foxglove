@@ -914,4 +914,77 @@ impl Registry {
         }
         Ok(())
     }
+
+    /// The keyboard-record moves in the file the router may follow (#1267): for an adopted
+    /// module, an `on` record that sits on a binding that is not void, was set by the
+    /// dialog, is pinned to the same canonical local-fixed-drive file with the same `run[1..]`,
+    /// and was reached from earlier hashes of that same file only by attested steps
+    /// (`updater`, `installer`, or `folder` while the follow still holds). A step that changed
+    /// the path, broke the hash chain, or has another `by` ends the chain there, so a moved,
+    /// void or unattested record yields nothing. Read-only; hub-side only.
+    pub fn attested_keyboard_moves(&self) -> Vec<crate::keyboard::KeyboardMove> {
+        self.inventory
+            .modules
+            .keys()
+            .filter_map(|id| self.attested_keyboard_move(id))
+            .collect()
+    }
+
+    fn attested_keyboard_move(&self, id: &str) -> Option<crate::keyboard::KeyboardMove> {
+        let m = self.inventory.modules.get(id)?;
+        let (k, b) = (m.keyboard.as_ref()?, m.bound.as_ref()?);
+        let hash = |s: &str| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit());
+        if m.source != ADOPTED
+            || k.state != crate::keyboard::GrantState::On
+            || b.void
+            || b.by != FOLLOW_SET_BY
+            || !hash(&k.sha256)
+            || !k.sha256.eq_ignore_ascii_case(&b.exe_sha256)
+            || !crate::keyboard::same_path(&k.path, &b.exe_path)
+            || crate::keyboard::is_unc(&k.path)
+            || !on_local_fixed_drive(&k.path)
+            || self.run_args(id) != b.run_args
+        {
+            return None;
+        }
+        let mut ancestors: Vec<(String, String)> = Vec::new();
+        let mut next = b.exe_sha256.clone();
+        for a in b.attested.iter().rev() {
+            // Only steps made under this binding: a re-Allow carries older steps over, which
+            // this binding never vouched for. Hashes never repeat (no loop, no fork).
+            if a.at.as_str() < b.at.as_str()
+                || a.from_sha256.eq_ignore_ascii_case(&b.exe_sha256)
+                || ancestors
+                    .iter()
+                    .any(|(_, h)| h.eq_ignore_ascii_case(&a.from_sha256))
+            {
+                break;
+            }
+            let by_ok = match a.by.as_str() {
+                "updater" | "installer" => true,
+                FOLLOW_ATTESTED_BY => self.follows(id, b, &b.exe_path),
+                _ => false,
+            };
+            if !by_ok
+                || !a.to_sha256.eq_ignore_ascii_case(&next)
+                || !hash(&a.from_sha256)
+                || a.from_sha256.eq_ignore_ascii_case(&a.to_sha256)
+                || !crate::keyboard::same_path(&a.from_path, &b.exe_path)
+                || !crate::keyboard::same_path(&a.to_path, &b.exe_path)
+            {
+                break;
+            }
+            ancestors.push((a.from_path.clone(), a.from_sha256.to_ascii_lowercase()));
+            next = a.from_sha256.clone();
+        }
+        if ancestors.is_empty() {
+            return None;
+        }
+        ancestors.reverse();
+        Some(crate::keyboard::KeyboardMove {
+            id: id.into(),
+            ancestors,
+            to: k.clone(),
+        })
+    }
 }
