@@ -28,6 +28,8 @@ pub const MODULE: &str = "foxglove";
 pub const LIMIT: Duration = Duration::from_millis(1500);
 /// Lines read while waiting for one answer (events may come first).
 const MAX_LINES: usize = 16;
+/// The longest line read: a hub that never ends a line costs this much memory, not more.
+const MAX_LINE: u64 = 64 * 1024;
 
 /// Why no verified connection exists.
 #[derive(Debug, PartialEq, Eq)]
@@ -85,7 +87,8 @@ fn request(id: i64, method: &str, params: Value) -> String {
 fn answer<R: BufRead>(r: &mut R, id: i64) -> Option<Value> {
     for _ in 0..MAX_LINES {
         let mut line = String::new();
-        if r.read_line(&mut line).ok()? == 0 {
+        let n = r.by_ref().take(MAX_LINE + 1).read_line(&mut line).ok()?;
+        if n == 0 || (n as u64 > MAX_LINE && !line.ends_with('\n')) {
             return None;
         }
         let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
@@ -309,6 +312,13 @@ mod tests {
         assert_eq!(got, Hosting::Unknown);
         assert!(t.elapsed() < Duration::from_secs(2));
         drop(tx);
+    }
+
+    #[test]
+    fn a_line_that_never_ends_is_cut_off_not_buffered() {
+        let long = "x".repeat(200 * 1024);
+        let (m, _) = mock(Ok(&format!("{INIT}\n{long}")));
+        assert_eq!(hosting(m, T), Hosting::Unknown);
     }
 
     #[test]

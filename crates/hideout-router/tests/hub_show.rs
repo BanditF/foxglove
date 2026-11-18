@@ -197,3 +197,26 @@ fn a_tool_reads_the_one_state_fact_it_was_granted_and_no_other() {
     );
     assert_eq!(error_code(&out, d), 5, "{out:?}");
 }
+
+#[test]
+fn a_peer_cannot_keep_stealing_the_focus() {
+    let mut r = router();
+    let a = tool(&mut r, Some(4242), None, &[]);
+    let b = tool(&mut r, Some(4243), None, &[]);
+    let t0 = Instant::now();
+    let at = |r: &mut Router, c: ConnId, id: i64, t: Instant| {
+        let msg = json!({"jsonrpc":"2.0","id":id,"method":"hub.show","params":{"id": M}});
+        r.receive(c, &msg.to_string(), t)
+    };
+    let out = at(&mut r, a, 1, t0);
+    assert_eq!(shows(&out), [M]);
+    // Inside the gap: refused (rate-limited), for the same peer and for another one.
+    for (c, id) in [(a, 2), (b, 3)] {
+        let out = at(&mut r, c, id, t0 + std::time::Duration::from_millis(500));
+        assert_eq!(error_code(&out, c), 8, "{out:?}");
+        assert!(shows(&out).is_empty());
+    }
+    // A refused call does not extend the gap: after SHOW_GAP from the last shown one, it works.
+    let out = at(&mut r, b, 4, t0 + hideout_router::SHOW_GAP);
+    assert_eq!(shows(&out), [M]);
+}

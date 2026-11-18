@@ -361,6 +361,9 @@ struct Lease {
     method: String,
 }
 
+/// The least time between two `hub.show` calls that take effect (v1.19), hub-wide.
+pub const SHOW_GAP: Duration = Duration::from_secs(2);
+
 pub struct Router {
     settings: Settings,
     approve: Approver,
@@ -385,6 +388,8 @@ pub struct Router {
     provider_load: HashMap<ConnId, usize>,
     /// The latest clock the router was given, for the remaining deadline a forward carries.
     last_now: Instant,
+    /// When `hub.show` last brought a page forward (v1.19): one every [`SHOW_GAP`], hub-wide.
+    last_show: Option<Instant>,
     next_call: i64,
     queue: VecDeque<Queued>,
     faults: HashMap<String, u32>,
@@ -520,6 +525,7 @@ impl Router {
             slots: HashMap::new(),
             provider_load: HashMap::new(),
             last_now: Instant::now(),
+            last_show: None,
             next_call: 1,
             queue: VecDeque::new(),
             actions: HashMap::new(),
@@ -1866,7 +1872,7 @@ impl Router {
             // (v1.19) A verified same-user peer asks for a module's page. No permission, no
             // secret; the peer's identity is the check (see `may_show`).
             hideout_contract::messages::HUB_SHOW => {
-                let reply = self.hub_show(conn, &id, &params, out);
+                let reply = self.hub_show(conn, &id, &params, now, out);
                 out.push(answer(reply));
             }
             "channel.open" => self.channel_open(conn, &who, &caps, id, &params, now, out),
@@ -1902,7 +1908,14 @@ impl Router {
     /// process and a contained process are refused (error 5). The id must be a module the hub
     /// has (-32602), so the call can't probe for anything else. It changes which page shows,
     /// nothing more.
-    fn hub_show(&mut self, conn: ConnId, id: &Value, params: &Value, out: &mut Vec<Out>) -> Value {
+    fn hub_show(
+        &mut self,
+        conn: ConnId,
+        id: &Value,
+        params: &Value,
+        now: Instant,
+        out: &mut Vec<Out>,
+    ) -> Value {
         let c = &self.conns[&conn];
         if c.origin != Origin::Pipe || c.pid.is_none() || c.app_container.is_some() {
             return denied(id, Some("only a verified process of this user may ask"));
@@ -1928,6 +1941,20 @@ impl Router {
                 Some("not a module"),
             );
         }
+        // A peer must not keep the focus away from the user: one show per SHOW_GAP for the whole
+        // hub, whoever asks. The refused call changes nothing.
+        if self
+            .last_show
+            .is_some_and(|t| now.saturating_duration_since(t) < SHOW_GAP)
+        {
+            return error(
+                id,
+                code::RATE_LIMITED,
+                "rate-limited",
+                Some("hub.show is limited; try again in a moment"),
+            );
+        }
+        self.last_show = Some(now);
         out.push(Out::Show { module });
         ok(id, json!({}))
     }

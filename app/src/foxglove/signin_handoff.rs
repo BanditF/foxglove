@@ -3,7 +3,7 @@
 //! With module mode on, `Foxglove.lnk` and `Hideout.lnk` both fire at sign-in, so a
 //! `foxglove.exe --tray` start can find a hub that already hosts Foxglove. This file is only the
 //! decision table, as pure functions of facts the caller gathers, and [`at_startup`], the one
-//! caller (app main, right after the single-instance claim). No credential, token or secret is
+//! caller (app main, just before the single-instance claim). No credential, token or secret is
 //! involved: "sign-in" is the Windows sign-in.
 //!
 //! Opt-in is module mode itself, no separate switch: the hub fact `module.foxglove.state` reads
@@ -146,7 +146,7 @@ pub fn launch_of(module: bool, tray: bool) -> Launch {
     }
 }
 
-/// App start-up, after the single-instance claim: true when a hub already hosts Foxglove and
+/// App start-up, before the single-instance claim: true when a hub already hosts Foxglove and
 /// this process should exit 0 (it has asked the hub to show Foxglove's page when it was a start
 /// by hand). Skipped (false) under `FOXGLOVE_CONFIG_DIR` or a test sandbox, so tests never touch
 /// the real hub, and off Windows.
@@ -300,6 +300,17 @@ mod tests {
         (Arc::new(h), wrote, opened)
     }
     const L: std::time::Duration = std::time::Duration::from_secs(2);
+
+    #[test]
+    fn the_hand_off_check_runs_before_the_single_instance_claim() {
+        let main = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .unwrap();
+        let ask = main.find("signin_handoff::at_startup()").expect("wired");
+        let claim = main.find("single_instance::claim(").expect("claim");
+        assert!(ask < claim, "the deferral must be decided before the claim");
+    }
 
     #[test]
     fn launch_kind_follows_the_flags() {

@@ -2299,7 +2299,7 @@ Every message named in this spec. "M" = module, "H" = hub, "T" = outside tool, "
 | `settings.get` | H → M | call | `{}` | `{values: {name: value}}` | — |
 | `settings.set` | H → M | call | `{name, value}` | `{}`, or an error with `data.reason` | — |
 | `hub.notify` | M → H | call | `{title, body, level: "info" \| "warn" \| "error"}` | `{}` | `hub.notify` |
-| `hub.show` (v1.19) | C → H | call | `{id}` | `{}`; -32602 for an id that is not a module | — (the caller must be a verified same-user process on the router pipe outside an AppContainer; else error 5) |
+| `hub.show` (v1.19) | C → H | call | `{id}` | `{}`; -32602 for an id that is not a module | — (the caller must be a verified same-user process on the router pipe outside an AppContainer; else error 5; at most one takes effect every 2 s hub-wide, else error 8 `rate-limited`) |
 
 **Facts and channels**
 
