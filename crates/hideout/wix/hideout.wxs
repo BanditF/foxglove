@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- H5.6 (review/design-h5-rebrand.md): the Hideout installer. Its own product, its own
+       UpgradeCode (a test pins it different from Foxglove's 40F2C6EE-...), per user, no UAC.
+       Hideout only: no Foxglove file, no firmware, no art. Built by scripts/build-hideout-installer.ps1
+       (candle + light, WiX 3.14). docs/packaging.md "Building the Hideout installer". -->
+  <?ifndef HideoutExe?>
+  <?define HideoutExe = "$(sys.SOURCEFILEDIR)..\..\..\target\release\hideout.exe" ?>
+  <?endif?>
+  <?ifndef Version?>
+  <?define Version = "0.1.0" ?>
+  <?endif?>
+  <Product Id="*" Name="Hideout" Language="1033" Version="$(var.Version)"
+           Manufacturer="BanditF" UpgradeCode="0A0A820B-B3AE-427A-91A7-E7FF56509254">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited" Platform="x64" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Hideout is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Property Id="INSTALLLEVEL" Value="1" />
+
+    <!-- The hub's trust rules fail closed on a UNC folder, so do not install there. -->
+    <Condition Message="Hideout can only be installed on a local drive.">
+      <![CDATA[Installed OR NOT (LocalAppDataFolder >< "\\")]]>
+    </Condition>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="UserPrograms" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="Hideout">
+            <!-- Files in the profile take an HKCU key path (ICE38) and remove their folders on
+                 uninstall (ICE64). The record is what H5.2's autostart requires: the hub exe
+                 must sit in the folder "App" names. -->
+            <Component Id="Application" Guid="8367F575-2952-46A6-A27C-E7D63E5BFC48" Win64="yes">
+              <File Id="HideoutExe" Name="hideout.exe" Source="$(var.HideoutExe)" />
+              <File Id="LicenseHideout" Name="LICENSE-hideout" Source="$(sys.SOURCEFILEDIR)LICENSE-hideout" />
+              <RegistryValue Root="HKCU" Key="Software\Hideout\Installer" Name="App"
+                             Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+              <RegistryValue Root="HKCU" Key="Software\Hideout\Installer" Name="Exe"
+                             Type="string" Value="[INSTALLFOLDER]hideout.exe" />
+              <RegistryValue Root="HKCU" Key="Software\Hideout\Installer" Name="Version"
+                             Type="string" Value="$(var.Version)" />
+              <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+              <RemoveFolder Id="RemoveUserPrograms" Directory="UserPrograms" On="uninstall" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="StartMenu" Guid="*" Win64="yes">
+          <Shortcut Id="StartMenuShortcut" Name="Hideout"
+                    Target="[INSTALLFOLDER]hideout.exe" WorkingDirectory="INSTALLFOLDER" />
+          <RegistryValue Root="HKCU" Key="Software\Hideout\Installer" Name="Shortcut"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </Directory>
+
+    <!-- "Start with Windows" stays OFF: this installer never writes Hideout.lnk, a Startup
+         entry or a Run value (H5.2: only the user's own Turn on writes it). On uninstall (not a
+         major upgrade) the hub removes a Hideout.lnk the user turned on, only if it starts this
+         exe, as the user, before the exe goes. The hub's Home and settings folders stay. -->
+    <Feature Id="App" Title="Hideout" Description="The Hideout hub and its Start menu entry."
+             Level="1" Absent="disallow" Display="expand">
+      <ComponentRef Id="Application" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+    <CustomAction Id="RemoveAutostart" FileKey="HideoutExe" ExeCommand="--autostart-remove"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="RemoveAutostart" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+    <UIRef Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(sys.SOURCEFILEDIR)license.rtf" />
+  </Product>
+</Wix>
