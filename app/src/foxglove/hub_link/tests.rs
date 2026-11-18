@@ -2288,3 +2288,23 @@ fn the_hubs_lease_end_is_not_sent_back() {
         "no echo to the hub"
     );
 }
+
+#[test]
+fn an_orphaned_module_restarts_standalone_only_when_the_hubs_exe_is_gone_and_once() {
+    use crate::foxglove::signin_handoff::Orphan;
+    let hub = HubId {
+        pid: 1,
+        path: Some(std::path::PathBuf::from(r"C:\gone\hideout.exe")),
+    };
+    assert_eq!(
+        orphan_after_grace(&hub, |_| false, false),
+        Orphan::RestartStandalone
+    );
+    // Once per run.
+    assert_eq!(orphan_after_grace(&hub, |_| false, true), Orphan::Nothing);
+    // The hub's exe is still there (only restarting): the old exit stands, no restart.
+    assert_eq!(orphan_after_grace(&hub, |_| true, false), Orphan::Stay);
+    // The hub's image was never readable: never a restart on a guess.
+    let unknown = HubId { pid: 1, path: None };
+    assert_eq!(orphan_after_grace(&unknown, |_| false, false), Orphan::Stay);
+}
