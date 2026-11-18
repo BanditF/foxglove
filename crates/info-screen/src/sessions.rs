@@ -664,6 +664,9 @@ mod imp {
         Volume(String, f32, bool, bool),
         Disconnected(String),
         Device,
+        /// An endpoint came, went or changed state, or the PC resumed (`follow`): the default
+        /// device is looked at again.
+        Endpoint(crate::follow::Event),
         /// What the tray row says of an app on a device Foxglove sets the volume of (#1064).
         AppVolume(String, SyncSender<Option<AppVolume>>),
         /// "Reset app levels": whether it can run, the reset, its Undo, and whether Undo is
@@ -757,13 +760,27 @@ mod imp {
     #[implement(IMMNotificationClient)]
     struct Devices(Sender<Req>);
     impl IMMNotificationClient_Impl for Devices_Impl {
-        fn OnDeviceStateChanged(&self, _: &PCWSTR, _: DEVICE_STATE) -> Result<()> {
+        fn OnDeviceStateChanged(&self, id: &PCWSTR, state: DEVICE_STATE) -> Result<()> {
+            if let Some(id) = pcwstr(id) {
+                let active = state == DEVICE_STATE_ACTIVE;
+                let _ = self
+                    .0
+                    .send(Req::Endpoint(crate::follow::Event::State { id, active }));
+            }
             Ok(())
         }
-        fn OnDeviceAdded(&self, _: &PCWSTR) -> Result<()> {
+        fn OnDeviceAdded(&self, id: &PCWSTR) -> Result<()> {
+            if let Some(id) = pcwstr(id) {
+                let _ = self.0.send(Req::Endpoint(crate::follow::Event::Added(id)));
+            }
             Ok(())
         }
-        fn OnDeviceRemoved(&self, _: &PCWSTR) -> Result<()> {
+        fn OnDeviceRemoved(&self, id: &PCWSTR) -> Result<()> {
+            if let Some(id) = pcwstr(id) {
+                let _ = self
+                    .0
+                    .send(Req::Endpoint(crate::follow::Event::Removed(id)));
+            }
             Ok(())
         }
         fn OnDefaultDeviceChanged(&self, flow: EDataFlow, role: ERole, _: &PCWSTR) -> Result<()> {
@@ -775,6 +792,30 @@ mod imp {
         fn OnPropertyValueChanged(&self, _: &PCWSTR, _: &PROPERTYKEY) -> Result<()> {
             Ok(())
         }
+    }
+
+    /// An endpoint id Windows passed to a notification (valid for the call).
+    fn pcwstr(p: &PCWSTR) -> Option<String> {
+        // SAFETY: a NUL-terminated string valid for the notification's duration, or null.
+        (!p.is_null())
+            .then(|| unsafe { p.to_string().ok() })
+            .flatten()
+    }
+
+    /// Resume from standby (`PBT_APMRESUMEAUTOMATIC`, `PBT_APMRESUMESUSPEND`): the default device
+    /// is looked at again, a bounded series (`follow`). `context` is a leaked `Sender<Req>`.
+    unsafe extern "system" fn resumed(
+        context: *const std::ffi::c_void,
+        kind: u32,
+        _: *const std::ffi::c_void,
+    ) -> u32 {
+        if kind == 0x12 || kind == 0x7 {
+            // SAFETY: the leaked sender registered in `start`, never freed.
+            if let Some(tx) = unsafe { (context as *const Sender<Req>).as_ref() } {
+                let _ = tx.send(Req::Endpoint(crate::follow::Event::Resumed));
+            }
+        }
+        0
     }
 
     /// Takes a string Windows allocated (CoTaskMemAlloc), and frees it.
@@ -1346,6 +1387,8 @@ mod imp {
         stopped: bool,
         /// The "no output device" line's rate limit.
         no_device_log: super::LogLimit,
+        /// When to look at the default device again after an endpoint arrived or a resume.
+        follow: crate::follow::Follow,
     }
 
     impl Worker {
@@ -1873,8 +1916,60 @@ mod imp {
                 Req::Device => {
                     self.release();
                     self.open();
+                    // A series for an arriving endpoint goes on, or ends if this is it.
+                    self.looked();
+                }
+                Req::Endpoint(ev) => {
+                    let current = self.device.as_ref().map(|d| d.endpoint.clone());
+                    let act = self.follow.event(ev, current.as_deref(), Instant::now());
+                    self.look(act);
                 }
             }
+        }
+
+        /// The default render device's endpoint id now.
+        fn default_id(&self) -> Option<String> {
+            let devices = self.devices.as_ref()?;
+            // SAFETY: COM calls on this MTA thread.
+            let d = unsafe { devices.GetDefaultAudioEndpoint(eRender, eConsole) }.ok()?;
+            Some(take(unsafe { d.GetId() })).filter(|s| !s.is_empty())
+        }
+
+        /// Tells the series what the default device and the hold are now.
+        fn looked(&mut self) {
+            if !self.follow.active() {
+                return;
+            }
+            let default = self.default_id();
+            let held = self.soft.as_ref().and_then(Soft::engaged).is_some_and(|e| {
+                default
+                    .as_deref()
+                    .is_some_and(|d| d.eq_ignore_ascii_case(e))
+            });
+            self.follow.looked(default.as_deref(), held, Instant::now());
+        }
+
+        /// Looks at the default device again (an endpoint arrived, the PC resumed, or a wait of
+        /// the series is over). A different device, or none opened, or `force`: switched to as
+        /// when the default changes (off for the old, on for the new, one line each). The same
+        /// device: its facts read again and evaluated, which logs nothing unless it changes.
+        fn look(&mut self, act: crate::follow::Act) {
+            let crate::follow::Act::Look { force } = act else {
+                return;
+            };
+            let followed = self.device.as_ref().map(|d| d.endpoint.clone());
+            let default = self.default_id();
+            let same = match (&followed, &default) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                _ => false,
+            };
+            if force || !same || self.endpoint.is_none() {
+                self.release();
+                self.open();
+            } else {
+                self.handle(Req::Recheck);
+            }
+            self.looked();
         }
 
         /// Re-applies an app's coalesced level when its deadline comes (#1064).
@@ -2073,6 +2168,31 @@ mod imp {
                         let _ = d.RegisterEndpointNotificationCallback(&devices_client);
                     }
                 }
+                // Resume from standby: one registration for the life of the app; its context is a
+                // sender that is never freed.
+                {
+                    use windows::Win32::System::Power::{
+                        PowerRegisterSuspendResumeNotification, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS,
+                    };
+                    use windows::Win32::UI::WindowsAndMessaging::DEVICE_NOTIFY_CALLBACK;
+                    let context = Box::into_raw(Box::new(worker_tx.clone())) as *const _;
+                    let params = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+                        Callback: Some(resumed),
+                        Context: context as *mut _,
+                    }));
+                    let mut registration = Default::default();
+                    // SAFETY: the parameters and the context live for the program.
+                    let r = unsafe {
+                        PowerRegisterSuspendResumeNotification(
+                            DEVICE_NOTIFY_CALLBACK,
+                            HANDLE(params as *mut _ as *mut _),
+                            &mut registration,
+                        )
+                    };
+                    if r != ERROR_SUCCESS {
+                        eprintln!("Foxglove: audio sessions: no resume events: {r:?}");
+                    }
+                }
                 let mut w = Worker {
                     tx: worker_tx.clone(),
                     notify,
@@ -2090,18 +2210,28 @@ mod imp {
                     device: None,
                     stopped: false,
                     no_device_log: Default::default(),
+                    follow: Default::default(),
                 };
                 w.open();
                 loop {
                     master::publish_master(w.soft.as_ref().and_then(Soft::master));
                     // The only wait besides the channel: an app's coalesced re-apply (#1064).
-                    let due = w.soft.as_ref().and_then(Soft::next_due);
+                    // And a look at the default device in a series after an arrival (`follow`).
+                    let due = [
+                        w.soft.as_ref().and_then(Soft::next_due),
+                        w.follow.next_due(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .min();
                     let req = match due {
                         Some(at) => {
                             match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                                 Ok(req) => req,
                                 Err(RecvTimeoutError::Timeout) => {
                                     w.run_due();
+                                    let act = w.follow.due(Instant::now());
+                                    w.look(act);
                                     continue;
                                 }
                                 Err(RecvTimeoutError::Disconnected) => break,

@@ -29,6 +29,8 @@ windows = { version = "0.62", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
     "Win32_System_Threading",
+    # Resume from standby re-evaluates the master volume device.
+    "Win32_System_Power",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Accessibility",
     "Win32_Storage_FileSystem",
