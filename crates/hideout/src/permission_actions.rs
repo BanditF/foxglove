@@ -249,6 +249,7 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
         keyboard,
         keep,
         removed: Vec::new(),
+        same_place: v.same_place,
         error: None,
     })
 }
@@ -1488,6 +1489,7 @@ mod tests {
         // Sensitive: unchecked, unconfirmed, not marked, though it was allowed before.
         let net = item(&d, "net");
         assert!(net.sensitive && !net.checked && !net.confirmed && !net.before);
+        assert!(d.void_line().contains("file changed since"));
         assert_eq!(d.allow_label(), "Allow 2");
         assert!(d.before_lines()[0].contains("Allowed before"));
         // Allow grants the two, never the sensitive one.
@@ -1573,6 +1575,96 @@ mod tests {
         assert!(v.granted.is_empty(), "Not now grants nothing");
         assert!(v.void.is_some());
         assert!(f.ui.needs_ok(ID));
+    }
+
+    fn rebuilt_dialog(f: &mut Fx) -> PermDialog {
+        std::fs::write(&f.exe, b"program v2").unwrap();
+        Registry::open_from_env(&f.home)
+            .unwrap()
+            .void_if_changed(ID, NOW)
+            .unwrap();
+        f.ui.refresh();
+        f.ui.open(ID, Opener::Header);
+        f.ui.dialog.clone().unwrap()
+    }
+
+    fn with_args(exe: &Path, args: &str) -> String {
+        manifest(exe, &["hub.notify", "lighting.lease"]).replace(
+            &format!("run = ['{}']", exe.display().to_string().replace('\\', "/")),
+            &format!(
+                "run = ['{}'{args}]",
+                exe.display().to_string().replace('\\', "/")
+            ),
+        )
+    }
+
+    fn readopt(f: &Fx, text: String) {
+        std::fs::write(f.folder.join("module.toml"), text).unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&f.folder, NOW)
+            .unwrap();
+    }
+
+    #[test]
+    fn changed_run_args_after_the_void_get_the_full_ask_bound_empty_or_not() {
+        // Bound with no args, then the manifest adds one.
+        let mut f = fx("cut4-args-empty", &["hub.notify", "lighting.lease"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        readopt(&f, with_args(&f.exe, ", '--new-flag'"));
+        let d = rebuilt_dialog(&mut f);
+        assert!(!view(&f).same_place);
+        assert!(d.items.iter().all(|i| !i.checked && !i.before));
+        // Bound with args, then they change.
+        let mut f = fx("cut4-args-set", &["hub.notify", "lighting.lease"]);
+        readopt(&f, with_args(&f.exe, ", '--a'"));
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        readopt(&f, with_args(&f.exe, ", '--b'"));
+        let d = rebuilt_dialog(&mut f);
+        assert!(d.items.iter().all(|i| !i.checked && !i.before));
+    }
+
+    #[test]
+    fn an_item_turned_off_before_the_rebuild_is_not_prechecked_or_marked() {
+        let mut f = fx("cut4-revoked", &["hub.notify", "lighting.lease"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        f.ui.turn_off(ID, "lighting.lease");
+        let d = rebuilt_dialog(&mut f);
+        let off = item(&d, "lighting.lease");
+        assert!(!off.checked && !off.before);
+        assert!(item(&d, "hub.notify").before);
+    }
+
+    #[test]
+    fn an_unknown_item_kind_counts_as_sensitive_so_it_is_never_prechecked() {
+        let (_, _, sensitive) = hideout_registry::permission::describe("mystery.kind:x");
+        assert!(sensitive);
+        // The pre-check rule needs `!sensitive`, so such an item stays unchecked and unmarked.
+    }
+
+    #[test]
+    fn another_module_at_the_same_exe_path_inherits_no_earlier_answer() {
+        let mut f = fx("cut4-other", &["hub.notify", "lighting.lease"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        // A second module, its own id and folder, adopted with the very same exe.
+        let other = f.folder.parent().unwrap().join("manifest2");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("module.toml"),
+            manifest(&f.exe, &["hub.notify", "lighting.lease"])
+                .replace(&format!("id = \"{ID}\""), "id = \"fennec\""),
+        )
+        .unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&other, NOW)
+            .unwrap();
+        f.ui.refresh();
+        f.ui.open("fennec", Opener::TurnOn);
+        let d = f.ui.dialog.clone().unwrap();
+        assert!(d.items.iter().all(|i| !i.before));
+        assert!(!view_of(&f, "fennec").same_place);
+        assert!(view_of(&f, "fennec").last_choice.is_empty());
     }
 
     #[test]
@@ -1899,6 +1991,7 @@ mod tests {
             keyboard: None,
             keep: None,
             removed: Vec::new(),
+            same_place: false,
             error: None,
         };
         let mut all = vec![h.title, h.body, d.title()];

@@ -3282,6 +3282,7 @@ fn renders_the_permission_dialog_for_review() {
             }),
             keep: None,
             removed: Vec::new(),
+            same_place: false,
             error: None,
         }
     };
@@ -3643,6 +3644,7 @@ fn renders_the_grants_more_header_for_review() {
             keyboard: None,
             keep: None,
             removed: Vec::new(),
+            same_place: false,
             error: None,
         };
         let (w, h) = (760u32, 720u32);
@@ -3731,6 +3733,7 @@ fn renders_the_reask_with_allowed_before_for_review() {
             keyboard: None,
             keep: None,
             removed: Vec::new(),
+            same_place: false,
             error: None,
         };
         assert_eq!(d.allow_label(), "Allow 2");
@@ -3810,6 +3813,7 @@ fn renders_the_gpu_manager_dialog_for_review() {
             keyboard: None,
             keep: None,
             removed: Vec::new(),
+            same_place: false,
             error: None,
         };
         let (w, h) = (760u32, 620u32);
@@ -3854,6 +3858,7 @@ fn keep_test_dialog(
         keyboard: None,
         keep,
         removed: Vec::new(),
+        same_place: false,
         error: None,
     }
 }
@@ -4070,6 +4075,7 @@ fn first_run_test_dialog() -> crate::permission_dialog::FirstRun {
         keyboard: None,
         keep: None,
         removed: Vec::new(),
+        same_place: false,
         error: None,
     };
     FirstRun {

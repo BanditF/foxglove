@@ -492,8 +492,9 @@ impl Registry {
         granted.sort_by(|a, b| (a.group, &a.raw).cmp(&(b.group, &b.raw)));
         let same_place = m.source == ADOPTED
             && m.bound.as_ref().is_some_and(|b| {
-                reask_same_place(&listing.exe_path, &b.exe_path)
-                    && (b.run_args.is_empty() || self.run_args(id) == b.run_args)
+                // Args compared exactly (fail closed): a grant bound with no args does not
+                // match a manifest that now has some.
+                reask_same_place(&listing.exe_path, &b.exe_path) && self.run_args(id) == b.run_args
             });
         Ok(View {
             listing,

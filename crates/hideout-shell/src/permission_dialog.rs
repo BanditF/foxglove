@@ -428,6 +428,8 @@ pub struct PermDialog {
     pub keep: Option<Keep>,
     /// After a changed list: the lines of items the old list asked for and this one doesn't.
     pub removed: Vec<String>,
+    /// The app is at the very path the grant was bound to (so its file changed, not moved).
+    pub same_place: bool,
     /// An inline failure under the buttons (busy, not saved).
     pub error: Option<String>,
 }
@@ -495,6 +497,9 @@ impl PermDialog {
     }
 
     pub fn void_line(&self) -> String {
+        if self.same_place {
+            return format!("{}'s app file changed since you allowed it.", self.name);
+        }
         format!(
             "{}'s app file is new or was moved since you allowed it.",
             self.name
@@ -935,6 +940,7 @@ mod tests {
             }),
             keep: None,
             removed: Vec::new(),
+            same_place: false,
             error: None,
         }
     }
