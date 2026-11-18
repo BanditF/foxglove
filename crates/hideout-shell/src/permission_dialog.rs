@@ -584,13 +584,31 @@ impl PermDialog {
         }
     }
 
+    /// The items the All box covers: can be allowed and not sensitive. A sensitive item is
+    /// only ever set by hand, and it keeps its own "I understand".
+    fn others(&self) -> impl Iterator<Item = &ListItem> {
+        self.items.iter().filter(|i| i.allowable && !i.sensitive)
+    }
+
+    /// Whether the All box has anything to cover (it is hidden when not).
+    pub fn has_all(&self) -> bool {
+        self.others().next().is_some()
+    }
+
+    /// "All 9", or "All 8 other items" when sensitive items sit outside it.
     pub fn all_label(&self) -> String {
-        format!("{ALL_PREFIX} {}", self.allowable().count())
+        let n = self.others().count();
+        if self.allowable().any(|i| i.sensitive) {
+            let w = if n == 1 { "item" } else { "items" };
+            format!("{ALL_PREFIX} {n} other {w}")
+        } else {
+            format!("{ALL_PREFIX} {n}")
+        }
     }
 
     pub fn all_state(&self) -> All {
-        let n = self.allowable().count();
-        let on = self.allowable().filter(|i| i.checked).count();
+        let n = self.others().count();
+        let on = self.others().filter(|i| i.checked).count();
         match on {
             0 => All::None,
             x if x == n => All::All,
@@ -598,14 +616,16 @@ impl PermDialog {
         }
     }
 
-    /// The All box: checks everything, or clears everything when it is already all.
+    /// The All box: checks every non-sensitive item, or clears them when they are all checked.
+    /// Sensitive items are left exactly as the user set them.
     pub fn toggle_all(&mut self) {
         let to = self.all_state() != All::All;
-        for i in self.items.iter_mut().filter(|i| i.allowable) {
+        for i in self
+            .items
+            .iter_mut()
+            .filter(|i| i.allowable && !i.sensitive)
+        {
             i.checked = to;
-            if !to {
-                i.confirmed = false;
-            }
         }
     }
 
@@ -955,7 +975,7 @@ mod tests {
              still needs its own permission. Nothing leaves this PC."
         );
         assert_eq!(d.allow_label(), "Allow 2");
-        assert_eq!(d.all_label(), "All 3");
+        assert_eq!(d.all_label(), "All 2 other items");
         assert_eq!(
             d.binding_lines()[2],
             "You can turn each one off any time in Modules, Foxglove."
@@ -990,7 +1010,6 @@ mod tests {
     fn nothing_checked_reads_allow_none_and_declines_everything_asked() {
         let mut d = dialog();
         d.toggle_all();
-        d.toggle_all();
         assert_eq!(d.all_state(), All::None);
         assert_eq!(d.allow_label(), "Allow none");
         let a = d.allowed();
@@ -1000,8 +1019,78 @@ mod tests {
     }
 
     #[test]
+    fn the_all_box_skips_sensitive_items() {
+        let mut d = dialog();
+        d.toggle_all(); // both others were on: clears them
+        assert!(!d.items[1].checked && !d.items[2].checked);
+        d.toggle_all();
+        assert!(!d.items[0].checked, "key.events stays off");
+        assert!(d.items[1].checked && d.items[2].checked);
+        d.toggle_all();
+        assert!(!d.items[0].checked);
+        // The user's own choice on a sensitive item is left alone, both ways.
+        d.set_checked("key.events", true);
+        d.items[0].confirmed = true;
+        d.toggle_all();
+        assert!(d.items[0].checked && d.items[0].confirmed);
+        d.toggle_all();
+        assert!(d.items[0].checked && d.items[0].confirmed);
+        d.set_checked("key.events", false);
+        d.toggle_all();
+        assert!(!d.items[0].checked);
+        // Unknown kinds arrive sensitive (describe) and stay off.
+        d.items
+            .push(item("what.is.this", Group::Sensitive, true, false));
+        d.toggle_all();
+        assert!(!d.items.last().unwrap().checked);
+        d.toggle_all();
+        assert!(!d.items.last().unwrap().checked);
+        assert_eq!(d.all_label(), "All 2 other items");
+        assert_eq!(d.all_state(), All::All);
+    }
+
+    #[test]
+    fn allow_with_all_checked_grants_no_sensitive_without_understanding() {
+        let mut d = dialog();
+        d.toggle_all();
+        d.toggle_all();
+        d.items[0].checked = true; // checked by hand, not understood
+        d.toggle_all();
+        d.toggle_all();
+        let a = d.allowed();
+        assert_eq!(a.chosen, ["provide:a.set", "provide:b.read"]);
+        assert_eq!(a.declined, ["key.events"]);
+    }
+
+    #[test]
+    fn the_all_box_hides_with_no_other_items_and_reads_plain_without_sensitive() {
+        let mut d = dialog();
+        assert!(d.has_all());
+        d.items.retain(|i| i.sensitive || !i.allowable);
+        assert!(!d.has_all());
+        d.toggle_all();
+        assert!(!d.items[0].checked);
+        let mut e = dialog();
+        e.items.retain(|i| !i.sensitive);
+        assert_eq!(e.all_label(), "All 2");
+    }
+
+    #[test]
+    fn re_ask_before_items_stay_checked_and_the_all_box_counts_them() {
+        let mut d = dialog();
+        d.items[1].before = true;
+        d.items[2].checked = false;
+        assert!(d.items[1].checked && d.items[1].before);
+        assert_eq!(d.all_state(), All::Some);
+        d.toggle_all();
+        assert!(d.items[1].checked && d.items[2].checked && !d.items[0].checked);
+    }
+
+    #[test]
     fn the_all_box_is_tri_state() {
         let mut d = dialog();
+        assert_eq!(d.all_state(), All::All);
+        d.set_checked("provide:b.read", false);
         assert_eq!(d.all_state(), All::Some);
         d.toggle_all();
         assert_eq!(d.all_state(), All::All);

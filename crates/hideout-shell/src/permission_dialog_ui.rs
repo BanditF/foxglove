@@ -97,22 +97,24 @@ pub(crate) fn perm_dialog_ids(
         ui.label(d.intro());
         ui.add_space(6.0);
         // All N: tri-state.
-        let state = d.all_state();
-        let mut all_on = state == All::All;
-        let all = outlined(ui, t, |ui| {
-            ui.add(
-                egui::Checkbox::new(
-                    &mut all_on,
-                    egui::RichText::new(d.all_label()).strong().color(c(t.text)),
+        if d.has_all() {
+            let state = d.all_state();
+            let mut all_on = state == All::All;
+            let all = outlined(ui, t, |ui| {
+                ui.add(
+                    egui::Checkbox::new(
+                        &mut all_on,
+                        egui::RichText::new(d.all_label()).strong().color(c(t.text)),
+                    )
+                    .indeterminate(state == All::Some),
                 )
-                .indeterminate(state == All::Some),
-            )
-        });
-        if all.changed() {
-            d.toggle_all();
+            });
+            if all.changed() {
+                d.toggle_all();
+            }
+            ids.push(all.id);
+            ui.add_space(4.0);
         }
-        ids.push(all.id);
-        ui.add_space(4.0);
         // Scrolls inside when the list is taller than the window allows; the buttons stay.
         let scroll = egui::ScrollArea::vertical()
             .max_height((screen_h * 0.8 - fixed).max(140.0))
@@ -235,24 +237,26 @@ pub(crate) fn first_run_dialog_ids(
                         }
                         ui.label(sec.intro());
                         ui.add_space(6.0);
-                        let state = sec.all_state();
-                        let mut all_on = state == All::All;
-                        let all = outlined(ui, t, |ui| {
-                            ui.add(
-                                egui::Checkbox::new(
-                                    &mut all_on,
-                                    egui::RichText::new(sec.all_label())
-                                        .strong()
-                                        .color(c(t.text)),
+                        if sec.has_all() {
+                            let state = sec.all_state();
+                            let mut all_on = state == All::All;
+                            let all = outlined(ui, t, |ui| {
+                                ui.add(
+                                    egui::Checkbox::new(
+                                        &mut all_on,
+                                        egui::RichText::new(sec.all_label())
+                                            .strong()
+                                            .color(c(t.text)),
+                                    )
+                                    .indeterminate(state == All::Some),
                                 )
-                                .indeterminate(state == All::Some),
-                            )
-                        });
-                        if all.changed() {
-                            sec.toggle_all();
+                            });
+                            if all.changed() {
+                                sec.toggle_all();
+                            }
+                            ids.push(all.id);
+                            ui.add_space(4.0);
                         }
-                        ids.push(all.id);
-                        ui.add_space(4.0);
                         list_ui(ui, t, sec, &mut ids);
                         ui.add_space(8.0);
                         binding_ui(ui, t, sec, &mut ids);

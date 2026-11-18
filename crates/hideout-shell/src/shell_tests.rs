@@ -3353,7 +3353,7 @@ fn renders_the_permission_dialog_for_review() {
                     assert!(d.intro().contains("these 18 things. 1 can't be allowed."));
                     assert_eq!(
                         (d.all_label().as_str(), d.allow_label().as_str()),
-                        ("All 17", "Allow 16")
+                        ("All 16 other items", "Allow 16")
                     );
                 }
                 "list-changed" => {
@@ -3382,7 +3382,7 @@ fn renders_the_permission_dialog_for_review() {
                     // The grant was: everything but the sensitive item and one change item.
                     d.set_checked("provide:pc_lighting.set_zone", false);
                     assert_eq!(d.allow_label(), "Allow 15");
-                    assert_eq!(d.all_label(), "All 17");
+                    assert_eq!(d.all_label(), "All 16 other items");
                 }
             }
             let (w, h) = (760u32, 1000u32);
