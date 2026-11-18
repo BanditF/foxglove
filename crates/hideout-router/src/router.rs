@@ -960,6 +960,8 @@ impl Router {
                 || to.sha256.eq_ignore_ascii_case(&cur.sha256)
                 || !same_path(&to.path, &cur.path)
                 || is_unc(&to.path)
+                || !std::path::Path::new(&to.path).is_absolute()
+                || !hideout_registry::permission::on_local_fixed_drive(&to.path)
                 || !mv.ancestors.iter().any(|(p, h)| cur.allows(p, h))
             {
                 continue;

@@ -341,9 +341,13 @@ fn watch_inventory(
             // A kept build moved the record to a new hash of the same file (attested update or
             // follow-folder, #1267): follow that first, then narrow as ever.
             let moves = reg.attested_keyboard_moves();
-            hub.act(|r| r.adopt_keyboard_moves(&moves));
-            // The file can only narrow a grant; widening is the user's Allow or the hub's start.
-            hub.act(|r| r.narrow_keyboard_grants(&grants));
+            // One act: no module request is served between the follow and the narrow.
+            hub.act(|r| {
+                let mut out = r.adopt_keyboard_moves(&moves);
+                // The file can only narrow a grant; widening is the user's Allow or the hub's start.
+                out.extend(r.narrow_keyboard_grants(&grants));
+                out
+            });
             // Every other grant the same way: effective = in memory ∩ file (#1178).
             let files: std::collections::HashMap<String, Vec<String>> = reg
                 .inventory

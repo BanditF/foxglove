@@ -766,3 +766,13 @@ fn a_move_does_not_let_another_image_in() {
     register(&mut r, f, &strs(&areas()), now);
     assert!(try_call(&mut r, c, f, "devices.list", now).0.is_empty());
 }
+
+#[test]
+fn the_router_refuses_a_moved_record_with_a_relative_or_non_fixed_path() {
+    let mut rel = moved_to(NEWER);
+    rel.path = r"foxglove.exe".into();
+    assert!(!adopt_and_try(mv(&[(PATH, HASH)], rel), NEWER));
+    let mut dev = moved_to(NEWER);
+    dev.path = r"\.\C:\Apps\Foxglove\foxglove.exe".into();
+    assert!(!adopt_and_try(mv(&[(PATH, HASH)], dev), NEWER));
+}

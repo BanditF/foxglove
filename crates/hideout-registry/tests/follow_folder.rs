@@ -632,3 +632,118 @@ fn a_folder_step_needs_the_follow_still_set_by_the_dialog() {
         .by = "cli".into();
     assert!(forged.attested_keyboard_moves().is_empty());
 }
+
+// ---- #1267 security review: replay, loops, forks, stop_keeping ----
+
+const T1: &str = "2026-11-17T13:00:00Z";
+const T2: &str = "2026-11-17T14:00:00Z";
+const T3: &str = "2026-11-17T15:00:00Z";
+
+fn allow_at(f: &mut Fx, by: &str, follow: bool, at: &str) {
+    let list = f.reg.permission_list(ID).unwrap();
+    let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    f.reg
+        .approve_listed(ID, list.code(), &all, &[], at, by, follow)
+        .unwrap();
+    f.reg.set_enabled(ID, true).unwrap();
+}
+
+fn keyboard_now(f: &mut Fx, at: &str) {
+    let (path, h) = f.reg.current_program(ID).unwrap();
+    f.reg.allow_keyboard(ID, &path, &h, at).unwrap();
+}
+
+#[test]
+fn a_cli_attestation_carried_over_a_dialog_re_allow_is_not_replayed() {
+    let mut f = fx("mv-replay-cli");
+    allow_at(&mut f, "cli", false, NOW);
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    f.reg.attest_update(ID, "1.1.0", "updater", T1).unwrap();
+    // The user then allows from the dialog at the attested hash, and turns the keyboard on.
+    allow_at(&mut f, "dialog", false, T2);
+    keyboard_now(&mut f, T2);
+    assert_eq!(f.bound().attested.len(), 1, "the old step is carried over");
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+    // A step made under the dialog binding counts, and only it.
+    std::fs::write(&f.exe, b"build 3").unwrap();
+    f.reg.attest_update(ID, "1.2.0", "updater", T3).unwrap();
+    let mv = f.reg.attested_keyboard_moves();
+    assert_eq!(mv.len(), 1);
+    assert_eq!(mv[0].ancestors.len(), 1);
+}
+
+#[test]
+fn a_void_then_re_allow_at_an_old_attested_hash_has_no_move() {
+    let mut f = fx("mv-replay-void");
+    allow_at(&mut f, "dialog", false, NOW);
+    keyboard_now(&mut f, NOW);
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    f.reg.attest_update(ID, "1.1.0", "updater", T1).unwrap();
+    // An unattested swap voids; the user allows again at that file.
+    std::fs::write(&f.exe, b"build 3").unwrap();
+    assert_eq!(
+        f.reg.void_if_changed(ID, T2).unwrap(),
+        Some(VoidReason::Changed)
+    );
+    allow_at(&mut f, "dialog", false, T3);
+    keyboard_now(&mut f, T3);
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn loops_and_forks_in_the_history_end_the_chain() {
+    let mut f = fx("mv-loop");
+    keyboard_on_then_rebuild(&mut f, "dialog", false);
+    f.reg.attest_update(ID, "1.1.0", "updater", LATER).unwrap();
+    let mut reg = Registry::open(&f.home, true).unwrap();
+    let b = reg
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap();
+    let step = b.attested[0].clone();
+    assert_eq!(reg.attested_keyboard_moves().len(), 1);
+    // Loop: a step back to the hash the chain ends on (H0 -> H1 -> H0 shape).
+    let mut looped = step.clone();
+    looped.from_sha256 = step.to_sha256.clone();
+    looped.to_sha256 = step.from_sha256.clone();
+    let b = reg
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap();
+    b.attested.insert(0, looped);
+    let mv = reg.attested_keyboard_moves();
+    assert_eq!(mv[0].ancestors.len(), 1, "the walk stops at the loop");
+    // Fork: two steps with the same `from`.
+    let mut reg = Registry::open(&f.home, true).unwrap();
+    let b = reg
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .bound
+        .as_mut()
+        .unwrap();
+    let mut fork = step.clone();
+    fork.to_sha256 = "1".repeat(64);
+    b.attested.insert(0, fork);
+    let mv = reg.attested_keyboard_moves();
+    assert_eq!(mv[0].ancestors.len(), 1, "the walk stops at the fork");
+}
+
+#[test]
+fn stop_keeping_through_the_api_ends_the_folder_steps() {
+    let mut f = fx("mv-stop");
+    keyboard_on_then_rebuild(&mut f, "dialog", true);
+    assert!(f.reg.keep_followed(ID, LATER).unwrap());
+    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
+    assert!(f.reg.stop_keeping(ID).unwrap());
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}

@@ -947,9 +947,19 @@ impl Registry {
         {
             return None;
         }
-        let mut ancestors = Vec::new();
+        let mut ancestors: Vec<(String, String)> = Vec::new();
         let mut next = b.exe_sha256.clone();
         for a in b.attested.iter().rev() {
+            // Only steps made under this binding: a re-Allow carries older steps over, which
+            // this binding never vouched for. Hashes never repeat (no loop, no fork).
+            if a.at.as_str() < b.at.as_str()
+                || a.from_sha256.eq_ignore_ascii_case(&b.exe_sha256)
+                || ancestors
+                    .iter()
+                    .any(|(_, h)| h.eq_ignore_ascii_case(&a.from_sha256))
+            {
+                break;
+            }
             let by_ok = match a.by.as_str() {
                 "updater" | "installer" => true,
                 FOLLOW_ATTESTED_BY => self.follows(id, b, &b.exe_path),
