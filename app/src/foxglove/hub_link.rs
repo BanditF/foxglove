@@ -1344,6 +1344,16 @@ fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
     a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
 }
 
+/// Whether a hub image is there. Only a definite "not found" counts as gone: access denied or any
+/// other error answers present, so an unreadable image never restarts the module.
+pub(super) fn image_present(p: &std::path::Path) -> bool {
+    present_from(p.try_exists())
+}
+
+pub(super) fn present_from(r: std::io::Result<bool>) -> bool {
+    r.unwrap_or(true)
+}
+
 /// What a module does at the end of the grace period (H5.5): restart standalone only when the
 /// hub's recorded image no longer exists and this run has not restarted yet. No recorded image
 /// (the hub's process could not be read) counts as "still there": the old exit stands.
@@ -1536,9 +1546,16 @@ mod runner {
                         // will bring the hub back, so the keyboard app starts itself once as a
                         // standalone tray app instead of leaving no keyboard app at all.
                         let already = RESTARTED.load(Ordering::SeqCst);
-                        if orphan_after_grace(&hub, |p| p.exists(), already)
-                            == crate::foxglove::signin_handoff::Orphan::RestartStandalone
-                        {
+                        let gone = |h: &HubId| {
+                            orphan_after_grace(h, image_present, already)
+                                == crate::foxglove::signin_handoff::Orphan::RestartStandalone
+                        };
+                        // Checked twice, a moment apart: a hub that is mid-update has no exe
+                        // for an instant.
+                        if gone(&hub) && {
+                            std::thread::sleep(Duration::from_secs(2));
+                            gone(&hub)
+                        } {
                             RESTARTED.store(true, Ordering::SeqCst);
                             restart_standalone();
                         }
@@ -1578,8 +1595,8 @@ mod runner {
     /// `--tray` (no `--module`, no hub values: a standalone app) and ends this process. If the
     /// start fails the process still ends as it always did when the hub was gone.
     fn restart_standalone() {
+        crate::foxglove::quit::hand_back("the hub's exe is gone; restarting standalone");
         let spawned = std::env::current_exe().and_then(|exe| {
-            crate::foxglove::quit::hand_back("the hub's exe is gone; restarting standalone");
             crate::foxglove::single_instance::release();
             let null = std::process::Stdio::null;
             std::process::Command::new(exe)
@@ -1596,9 +1613,14 @@ mod runner {
                 );
                 std::process::exit(0);
             }
-            Err(e) => crate::foxglove::app_log::early(&format!(
-                "Foxglove: the hub's exe is gone and a standalone start failed ({e}); exiting"
-            )),
+            Err(e) => {
+                // Everything is already handed back: end as the old exit did, without a
+                // second hand-back.
+                crate::foxglove::app_log::early(&format!(
+                    "Foxglove: the hub's exe is gone and a standalone start failed ({e}); exiting"
+                ));
+                std::process::exit(0);
+            }
         }
     }
 

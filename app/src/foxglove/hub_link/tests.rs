@@ -2308,3 +2308,15 @@ fn an_orphaned_module_restarts_standalone_only_when_the_hubs_exe_is_gone_and_onc
     let unknown = HubId { pid: 1, path: None };
     assert_eq!(orphan_after_grace(&unknown, |_| false, false), Orphan::Stay);
 }
+
+#[test]
+fn an_unreadable_hub_image_counts_as_present() {
+    use std::io::{Error, ErrorKind};
+    assert!(super::present_from(Err(Error::from(
+        ErrorKind::PermissionDenied
+    ))));
+    assert!(super::present_from(Ok(true)));
+    assert!(!super::present_from(Ok(false)));
+    let nowhere = std::env::temp_dir().join("foxglove-no-such-hub-image.exe");
+    assert!(!super::image_present(&nowhere));
+}
