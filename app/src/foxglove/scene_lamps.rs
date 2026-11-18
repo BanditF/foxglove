@@ -413,7 +413,9 @@ mod imp {
         skip: &dyn Fn(&str) -> bool,
         one_only: bool,
     ) -> windows::core::Result<Vec<(String, LampArray)>> {
-        matching_counted(vid, pid, skip, one_only).map(|c| c.found)
+        // Scenes and the Lights worker open on every start, outside the holder's once-per-
+        // episode gate: no retry there, so a refusing Windows costs them nothing extra.
+        matching_counted(vid, pid, skip, one_only, false).map(|c| c.found)
     }
 
     /// What [`matching_counted`] found.
@@ -437,16 +439,34 @@ mod imp {
         pid: u16,
         skip: &dyn Fn(&str) -> bool,
         one_only: bool,
+        retry: bool,
     ) -> windows::core::Result<Counted> {
-        use super::super::lamp_hold::NotHeld;
+        use super::super::lamp_hold::{
+            retry_not_found, NotHeld, OpenFail, NOT_FOUND, RETRY_BACKOFF,
+        };
         let selector = LampArray::GetDeviceSelector()?;
-        let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
+        // The enabled/present/connected state rides along so a failed open can say it (the
+        // plain listing when Windows refuses the extra keys).
+        let keys = windows_collections::IIterable::from(
+            STATE_KEYS
+                .iter()
+                .map(|k| windows::core::HSTRING::from(*k))
+                .collect::<Vec<_>>(),
+        );
+        let list =
+            DeviceInformation::FindAllAsyncAqsFilterAndAdditionalProperties(&selector, &keys)
+                .and_then(|op| op.join())
+                .or_else(|_| DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join())?;
         let mut c = Counted {
             found: Vec::new(),
             listed: list.Size()? as usize,
             skipped: 0,
             not_held: Vec::new(),
         };
+        // Opens Windows answered with 0x80070490 (Element not found): settled after the
+        // loop by a fresh listing and a bounded retry, with the interface's state.
+        let mut pending: Vec<(String, OpenFail)> = Vec::new();
+        let mut states: BTreeMap<String, String> = BTreeMap::new();
         for (n, info) in (&list).into_iter().enumerate() {
             let Ok(id) = info.Id().map(|i| i.to_string()) else {
                 c.not_held.push(NotHeld {
@@ -469,29 +489,129 @@ mod imp {
                 not("another light or transport has it".into());
                 continue;
             }
-            let hid = windows::core::HSTRING::from(id.as_str());
-            let array = match LampArray::FromIdAsync(&hid).and_then(|op| op.join()) {
-                Ok(a) => a,
-                Err(e) => {
-                    not(format!(
-                        "Windows didn't open it (LampArray.FromIdAsync: {e})"
-                    ));
-                    continue;
+            match open_id(&id) {
+                Ok(array) => classify(&mut c, id, array, vid, pid),
+                Err(e) if retry && e.code == NOT_FOUND => {
+                    states.insert(id.clone(), interface_state(&info));
+                    pending.push((id, e));
                 }
-            };
-            let ids = array
-                .HardwareVendorId()
-                .and_then(|v| array.HardwareProductId().map(|p| (v, p)));
-            match ids {
-                Ok(ids) if ids == (vid, pid) => c.found.push((id, array)),
-                Ok((v, p)) => {
-                    c.skipped += 1;
-                    not(format!("another device ({v:04x}:{p:04x})"));
-                }
-                Err(e) => not(format!("its vendor and product can't be read: {e}")),
+                Err(e) => not(format!(
+                    "Windows didn't open it (LampArray.FromIdAsync: {})",
+                    e.text
+                )),
+            }
+        }
+        if !pending.is_empty() {
+            let mut src = Windows;
+            let done = retry_not_found(&mut src, pending, &RETRY_BACKOFF, &mut |d| {
+                std::thread::sleep(d)
+            });
+            for (id, array) in done.opened {
+                classify(&mut c, id, array, vid, pid);
+            }
+            for id in done.gone {
+                c.not_held.push(NotHeld {
+                    id,
+                    reason: "no longer listed by Windows after a fresh listing (gone)".into(),
+                });
+            }
+            for (id, e) in done.failed {
+                let state = states.remove(&id).unwrap_or_default();
+                c.not_held.push(NotHeld {
+                    id,
+                    reason: format!(
+                        "Windows didn't open it (LampArray.FromIdAsync: {}) after {} retries \
+                         with a fresh listing; interface {state}",
+                        e.text,
+                        RETRY_BACKOFF.len()
+                    ),
+                });
             }
         }
         Ok(c)
+    }
+
+    /// The device-interface properties asked with the listing.
+    const STATE_KEYS: [&str; 3] = [
+        "System.Devices.InterfaceEnabled",
+        "System.Devices.DevicePresent",
+        "System.Devices.Connected",
+    ];
+
+    /// `info`'s enabled flag and the [`STATE_KEYS`] it carries, as one phrase for the log.
+    fn interface_state(info: &DeviceInformation) -> String {
+        let flag = |b: Option<bool>| b.map_or("?".to_string(), |b| b.to_string());
+        let mut out = format!("IsEnabled={}", flag(info.IsEnabled().ok()));
+        if let Ok(props) = info.Properties() {
+            for k in STATE_KEYS {
+                let v = props
+                    .Lookup(&windows::core::HSTRING::from(k))
+                    .ok()
+                    .and_then(|v| {
+                        windows::core::Interface::cast::<windows::Foundation::IPropertyValue>(&v)
+                            .ok()
+                    })
+                    .and_then(|v| v.GetBoolean().ok());
+                let short = k.rsplit('.').next().unwrap_or(k);
+                out.push_str(&format!(", {short}={}", flag(v)));
+            }
+        }
+        out
+    }
+
+    /// One `LampArray.FromIdAsync`, joined (on the caller's worker thread).
+    fn open_id(id: &str) -> Result<LampArray, super::super::lamp_hold::OpenFail> {
+        let hid = windows::core::HSTRING::from(id);
+        LampArray::FromIdAsync(&hid)
+            .and_then(|op| op.join())
+            .map_err(|e| super::super::lamp_hold::OpenFail {
+                code: e.code().0,
+                text: e.to_string(),
+            })
+    }
+
+    /// Windows for [`retry_not_found`].
+    struct Windows;
+
+    impl super::super::lamp_hold::Reopen for Windows {
+        type Item = LampArray;
+
+        fn list(&mut self) -> Result<Vec<String>, String> {
+            let selector = LampArray::GetDeviceSelector().map_err(|e| e.to_string())?;
+            let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)
+                .and_then(|op| op.join())
+                .map_err(|e| e.to_string())?;
+            Ok((&list)
+                .into_iter()
+                .filter_map(|i| i.Id().ok().map(|i| i.to_string()))
+                .collect())
+        }
+
+        fn open(&mut self, id: &str) -> Result<LampArray, super::super::lamp_hold::OpenFail> {
+            open_id(id)
+        }
+    }
+
+    /// Takes `array` when it is the wanted vendor and product, else says why not.
+    fn classify(c: &mut Counted, id: String, array: LampArray, vid: u16, pid: u16) {
+        use super::super::lamp_hold::NotHeld;
+        let ids = array
+            .HardwareVendorId()
+            .and_then(|v| array.HardwareProductId().map(|p| (v, p)));
+        match ids {
+            Ok(ids) if ids == (vid, pid) => c.found.push((id, array)),
+            Ok((v, p)) => {
+                c.skipped += 1;
+                c.not_held.push(NotHeld {
+                    id,
+                    reason: format!("another device ({v:04x}:{p:04x})"),
+                });
+            }
+            Err(e) => c.not_held.push(NotHeld {
+                id,
+                reason: format!("its vendor and product can't be read: {e}"),
+            }),
+        }
     }
 
     /// The LampArrays behind a Lights page key: those whose vendor and product match, not
@@ -535,7 +655,7 @@ mod imp {
                 listed,
                 skipped,
                 not_held,
-            } = matching_counted(vid, pid, &|_| false, false).unwrap_or_else(|e| {
+            } = matching_counted(vid, pid, &|_| false, false, true).unwrap_or_else(|e| {
                 eprintln!("Foxglove: holding the keyboard's Dynamic Lighting devices: {e}");
                 Counted {
                     found: Vec::new(),
