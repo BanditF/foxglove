@@ -331,3 +331,83 @@ fn sha_hex(b: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(b))
 }
+
+#[test]
+fn an_attested_update_moves_the_keyboard_record_to_the_new_file() {
+    use hideout_registry::keyboard::{GrantState, KeyboardGrant};
+    let (home, exe, id) = home("kbd", None);
+    let sup = sup(&home);
+    allow(&sup, &home, &id);
+    // The keyboard record is on and pinned to the file the grant is bound to.
+    let reg = Registry::open_from_env(&home).unwrap();
+    let b = reg.inventory.modules[&id].bound.clone().unwrap();
+    let old = KeyboardGrant {
+        state: GrantState::On,
+        path: b.exe_path.clone(),
+        sha256: b.exe_sha256.clone(),
+        at: NOW.into(),
+        reason: None,
+    };
+    hideout_registry::inventory::Inventory::update(&home.join("inventory.json"), |inv| {
+        inv.modules.get_mut(&id).unwrap().keyboard = Some(old.clone());
+    })
+    .unwrap();
+
+    std::fs::write(&exe, b"program v2").unwrap();
+    let (json, sig, key) = signed("1.1.0", 7);
+    let v = Verified::from_signed(&json, &sig, &key).unwrap();
+    sup.attest_verified_update(&id, &v).unwrap();
+
+    let reg = Registry::open_from_env(&home).unwrap();
+    let m = &reg.inventory.modules[&id];
+    let nb = m.bound.as_ref().unwrap();
+    let k = m.keyboard.as_ref().unwrap();
+    assert!(
+        k.allows(&nb.exe_path, &nb.exe_sha256),
+        "the new file is allowed"
+    );
+    assert!(!k.allows(&old.path, &old.sha256), "the old file is not");
+    assert_eq!(k.state, GrantState::On);
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+#[test]
+fn an_attested_update_never_turns_a_keyboard_record_on() {
+    use hideout_registry::keyboard::{GrantState, KeyboardGrant};
+    let (home, exe, id) = home("kbdoff", None);
+    let sup = sup(&home);
+    allow(&sup, &home, &id);
+    let reg = Registry::open_from_env(&home).unwrap();
+    let b = reg.inventory.modules[&id].bound.clone().unwrap();
+    // A record that is off, and a record for some other file, stay as they are.
+    for g in [
+        KeyboardGrant {
+            state: GrantState::Off,
+            path: b.exe_path.clone(),
+            sha256: String::new(),
+            at: NOW.into(),
+            reason: None,
+        },
+        KeyboardGrant {
+            state: GrantState::On,
+            path: b.exe_path.clone(),
+            sha256: "a".repeat(64),
+            at: NOW.into(),
+            reason: None,
+        },
+    ] {
+        hideout_registry::inventory::Inventory::update(&home.join("inventory.json"), |inv| {
+            inv.modules.get_mut(&id).unwrap().keyboard = Some(g.clone());
+        })
+        .unwrap();
+        std::fs::write(&exe, format!("program {}", g.sha256).as_bytes()).unwrap();
+        let (json, sig, key) = signed(&format!("1.{}.0", g.sha256.len() + 1), 7);
+        let v = Verified::from_signed(&json, &sig, &key).unwrap();
+        sup.attest_verified_update(&id, &v).unwrap();
+        let reg = Registry::open_from_env(&home).unwrap();
+        assert_eq!(reg.inventory.modules[&id].keyboard.as_ref(), Some(&g));
+    }
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}

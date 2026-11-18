@@ -857,6 +857,21 @@ impl Registry {
             by: by.into(),
         };
         let inv = crate::inventory::Inventory::update(&self.home.join("inventory.json"), |inv| {
+            if let Some(m) = inv.modules.get_mut(id) {
+                // The keyboard record follows the same file, but only a record that is `on`
+                // **and** pinned to exactly the bound old file (never one for another file),
+                // and only to the file the grant itself moved to.
+                if let (Some(g), Some(b)) = (m.keyboard.as_mut(), m.bound.as_ref()) {
+                    if g.state == crate::keyboard::GrantState::On
+                        && g.sha256.eq_ignore_ascii_case(&b.exe_sha256)
+                        && crate::keyboard::same_path(&g.path, &b.exe_path)
+                    {
+                        g.path = path.clone();
+                        g.sha256 = hash.to_ascii_lowercase();
+                        g.at = now.into();
+                    }
+                }
+            }
             if let Some(b) = inv.modules.get_mut(id).and_then(|m| m.bound.as_mut()) {
                 b.exe_path = path.clone();
                 b.exe_sha256 = hash.clone();
