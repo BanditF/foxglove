@@ -124,6 +124,41 @@ are, and no data is moved or copied when Hideout is installed.
   the app, and Hideout never reads or writes `Foxglove.lnk`.
 - Rolling back is uninstalling Hideout. Foxglove was never moved, so it keeps running as before.
 
+### Hideout's Start with Windows (H5.2, built and tested only)
+
+The switch is in **Settings -> Start with Windows** of the Hideout hub. It is **off by default**
+and nothing turns it on: not an install, not the first run, not a startup pass (the startup pass,
+`autostart::ensure`, has no caller; a test guards that).
+- Turning it on is the user's click on **Turn on** in the dialog that **Turn on...** opens. Cancel
+  and closing change nothing. Turning it on writes `Hideout.lnk` (`hideout.exe --tray`) in the
+  user's Startup folder and the enabled `Hideout.lnk` value under `StartupApproved\StartupFolder`.
+- **Turn off** writes Windows' disabled state and keeps the shortcut. **Remove shortcut** is the
+  rollback: it deletes `Hideout.lnk` and its approval value, only when the shortcut starts this
+  exe. Without a window: `hideout.exe --autostart-remove` (and `--autostart-status`, read-only:
+  missing, on, off, foreign).
+- It writes only from an installed hub: this exe must sit in the folder that
+  `HKCU\Software\Hideout\Installer` value `App` names (a UNC folder never counts). Until the
+  Hideout MSI (H5.6) writes that value no hub is installed, so the row says "Available once Hideout
+  is installed" and writes nothing. A run on `HIDEOUT_CONFIG_DIR` / `HIDEOUT_HOME` writes nothing.
+- Foxglove's `Foxglove.lnk` and its own autostart are never read or written.
+- Fault avoided from the old autostart code: Windows' disabled state is never turned back on by
+  the app (#684), and there is no default-on switch.
+
+**On-call must lab-verify before this is enabled on the user's PC** (Windows test account, not the
+user's desktop; the exe from an installed or lab-registered folder):
+1. Fresh account, no record: the row says it is unavailable; Startup folder and registry unchanged.
+2. Record `HKCU\Software\Hideout\Installer` `App` pointing at the exe's folder. Row shows **Turn
+   on...**; the dialog opens; **Cancel** writes nothing; **Turn on** makes `Hideout.lnk` with the
+   `--tray` argument and an enabled approval value; Settings -> Apps -> Startup lists it on.
+3. Sign out and in: Hideout starts in the tray, once. Foxglove's own sign-in behaviour unchanged.
+4. Turn it off in Windows' list, restart Hideout: it stays off (#684). Turn on again from the row.
+5. **Turn off** then sign in: no start. **Remove shortcut** and `--autostart-remove`: file and value
+   gone, `Foxglove.lnk` byte-identical before and after every step.
+6. A second shortcut that starts another exe: row says another copy; the dialog warns it replaces
+   it; `--autostart-remove` leaves it alone.
+7. A `HIDEOUT_CONFIG_DIR` run: nothing is written at any step.
+The user's go is still needed before the first enable on the user's PC.
+
 ## Current settings paths
 
 Installation does not change these. With `FOXGLOVE_CONFIG_DIR` set, all of them go to that

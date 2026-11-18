@@ -327,6 +327,9 @@ fn main() {
     if let Some(code) = adopt_client(&paths, std::env::args_os().skip(1)) {
         std::process::exit(code);
     }
+    if let Some(code) = autostart_client(&paths, std::env::args_os().skip(1)) {
+        std::process::exit(code);
+    }
     // Lab control only where the registry allows lab mode (never on the user's folder).
     hideout_shell::lab_control::allow(hideout_registry::lab::lab_mode_from_env(&paths.root).on());
     let mut started = start(&paths);
@@ -363,10 +366,14 @@ fn main() {
         }),
     );
     // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
-    pages.push(Box::new(settings_page::SettingsPage::new(
-        paths.root.clone(),
-        env!("CARGO_PKG_VERSION"),
-    )));
+    let mut settings =
+        settings_page::SettingsPage::new(paths.root.clone(), env!("CARGO_PKG_VERSION"));
+    // Start with Windows (H5.2): OFF until the user's click in its dialog; nothing here turns it
+    // on, and a hub that is not the installed one (or a test run) cannot write it.
+    if let Some(sw) = startup_switch(&paths) {
+        settings = settings.with_startup(Box::new(sw));
+    }
+    pages.push(Box::new(settings));
     let opts = hideout_shell::ShellOptions {
         paths,
         pages,
@@ -425,6 +432,88 @@ fn capture_client(
                 paths.root.display(),
                 capture::ENV
             );
+            Some(1)
+        }
+    }
+}
+
+/// The Start with Windows switch over the real Startup folder, for this exe.
+#[cfg(windows)]
+fn startup_switch(
+    paths: &hideout_shell::paths::HubPaths,
+) -> Option<
+    hideout_shell::startup_switch::Switch<
+        hideout_shell::startup_win::RealStartup,
+        hideout_shell::startup_win::RealApproval,
+    >,
+> {
+    let exe = std::env::current_exe().ok()?;
+    match hideout_shell::startup_win::real(exe, paths.overridden) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            log::info!("start with Windows: switch not shown: {e}");
+            None
+        }
+    }
+}
+
+/// `hideout.exe --autostart-status` / `--autostart-remove`: the rollback without a window.
+/// Status prints one of missing, on, off, foreign and writes nothing. Remove deletes
+/// `Hideout.lnk` and its StartupApproved value only when the shortcut starts this exe, prints
+/// one line and exits; it never turns anything on and never touches `Foxglove.lnk`. `None` for
+/// any other command line. Exit 0 done, 1 failed, 2 refused (a test run).
+#[cfg(windows)]
+fn autostart_client(
+    paths: &hideout_shell::paths::HubPaths,
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Option<i32> {
+    use hideout_shell::autostart::{self, Outcome, State};
+    let which = args.next()?;
+    let remove = match which.to_str()? {
+        "--autostart-remove" => true,
+        "--autostart-status" => false,
+        _ => return None,
+    };
+    let exe = std::env::current_exe().ok()?;
+    let ctx = autostart::Context {
+        exe,
+        overridden: paths.overridden,
+    };
+    let (mut folder, mut approval) = match (
+        hideout_shell::startup_win::RealStartup::new(),
+        hideout_shell::startup_win::RealApproval::new(),
+    ) {
+        (Ok(f), Ok(a)) => (f, a),
+        (Err(e), _) | (_, Err(e)) => {
+            println!("hideout: {e}");
+            return Some(2);
+        }
+    };
+    if !remove {
+        let s = match autostart::state(&ctx, &folder, &approval) {
+            State::Missing => "missing",
+            State::On => "on",
+            State::Off => "off",
+            State::Foreign => "foreign",
+        };
+        println!("{s}");
+        return Some(0);
+    }
+    match autostart::remove(&ctx, &mut folder, &mut approval) {
+        Ok(Outcome::Changed) => {
+            println!("removed the Hideout startup shortcut");
+            Some(0)
+        }
+        Ok(Outcome::Unchanged) => {
+            println!("nothing to remove (no Hideout startup shortcut for this exe)");
+            Some(0)
+        }
+        Ok(Outcome::SkippedLabRun) => {
+            println!("hideout: a test run writes nothing");
+            Some(2)
+        }
+        Err(e) => {
+            println!("hideout: {e}");
             Some(1)
         }
     }

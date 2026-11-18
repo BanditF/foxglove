@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 //! The hub's built-in **Settings** page (#991, the #1087 design review): the page the plans
 //! name beside Modules (`hideout-tabs-ux.md`), shown in safe mode too. Sections in order:
-//! **Privacy** (what the app watch keeps, and **Forget seen apps**), then **About** (the
-//! version). The hub binary owns the page and its action; this draws it.
+//! **Privacy** (what the app watch keeps, and **Forget seen apps**), then **Start with Windows**
+//! (H5.2, only when the hub gives it a row), then **About** (the version). The hub binary owns the page and its action; this draws it.
 
+use crate::startup_switch::{self, Click, Row};
 use crate::theme::{Rgb, Tokens};
 use eframe::egui::{self, RichText};
 
@@ -35,9 +36,82 @@ fn heading(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     ui.add_space(4.0);
 }
 
-/// Draws the page. `forgotten`: Forget seen apps was pressed (its line shows beside the button,
-/// which stays, so the focus stays on it). Returns whether it was pressed now.
+/// Draws the page without a Start with Windows section.
 pub fn settings_ui(ui: &mut egui::Ui, t: &Tokens, version: &str, forgotten: bool) -> bool {
+    settings_ui_with(ui, t, version, forgotten, None).forget
+}
+
+/// What a frame of the page did.
+#[derive(Default)]
+pub struct Actions {
+    pub forget: bool,
+    pub startup: Option<Click>,
+}
+
+fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
+    let mut click = None;
+    heading(ui, t, startup_switch::HEADING);
+    ui.add(egui::Label::new(RichText::new(&row.status).color(c(t.text))).wrap());
+    ui.add_space(8.0);
+    if let Some(replaces) = row.dialog {
+        // The confirmation: the only way to Turn on. Cancel is the first button, so Enter on
+        // the opening focus never turns it on by itself.
+        egui::Frame::new()
+            .stroke(egui::Stroke::new(1.0_f32, c(t.text_muted)))
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(startup_switch::DIALOG_TITLE)
+                        .strong()
+                        .color(c(t.text)),
+                );
+                ui.add(
+                    egui::Label::new(RichText::new(startup_switch::DIALOG_BODY).color(c(t.text)))
+                        .wrap(),
+                );
+                if replaces {
+                    ui.label(RichText::new(startup_switch::DIALOG_REPLACES).color(c(t.text)));
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button(startup_switch::DIALOG_CANCEL).clicked() {
+                        click = Some(Click::Cancel);
+                    }
+                    if ui.button(startup_switch::DIALOG_CONFIRM).clicked() {
+                        click = Some(Click::Confirm);
+                    }
+                });
+            });
+        ui.add_space(8.0);
+    }
+    ui.horizontal_wrapped(|ui| {
+        if row.turn_on && ui.button(startup_switch::TURN_ON).clicked() {
+            click = Some(Click::Ask);
+        }
+        if row.turn_off && ui.button(startup_switch::TURN_OFF).clicked() {
+            click = Some(Click::TurnOff);
+        }
+        if row.remove && ui.button(startup_switch::REMOVE).clicked() {
+            click = Some(Click::Remove);
+        }
+        if let Some(m) = &row.message {
+            ui.label(RichText::new(m).color(c(t.text_muted)));
+        }
+    });
+    ui.add_space(20.0);
+    click
+}
+
+/// Draws the page. `forgotten`: Forget seen apps was pressed (its line shows beside the button,
+/// which stays, so the focus stays on it). `startup`: the Start with Windows row, when the hub
+/// has one.
+pub fn settings_ui_with(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    version: &str,
+    forgotten: bool,
+    startup: Option<&Row>,
+) -> Actions {
     heading(ui, t, PRIVACY);
     ui.add(egui::Label::new(RichText::new(PRIVACY_LINE).color(c(t.text))).wrap());
     ui.add_space(8.0);
@@ -51,9 +125,13 @@ pub fn settings_ui(ui: &mut egui::Ui, t: &Tokens, version: &str, forgotten: bool
         })
         .inner;
     ui.add_space(20.0);
+    let startup = startup.and_then(|row| startup_section(ui, t, row));
     heading(ui, t, ABOUT);
     ui.label(RichText::new(version_line(version)).color(c(t.text)));
-    pressed
+    Actions {
+        forget: pressed,
+        startup,
+    }
 }
 
 #[cfg(test)]

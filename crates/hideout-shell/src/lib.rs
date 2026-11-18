@@ -28,6 +28,7 @@ pub mod placement;
 pub mod popout;
 pub mod prefs;
 pub mod quick_actions;
+pub mod startup_switch;
 pub mod status;
 pub mod tabs;
 pub mod theme;
@@ -52,6 +53,8 @@ mod platform;
 pub mod settings_view;
 #[cfg(windows)]
 mod shell;
+#[cfg(windows)]
+pub mod startup_win;
 #[cfg(windows)]
 pub mod strip;
 #[cfg(windows)]
