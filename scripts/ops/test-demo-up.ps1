@@ -53,16 +53,56 @@ try {
     Check '-Adopt: child env is the demo folder' (($l -join '|') -like "*cfg=$home1\hub fg=$home1\foxglove-data*")
     Check '-Adopt: env not leaked to the caller' (-not $env:HIDEOUT_CONFIG_DIR)
     $ft = Get-Content -Raw (Join-Path $home1 'adopt\foxglove\module.toml')
-    $bs = [string][char]92; $escaped = $fox.Replace($bs, $bs + $bs)
-    Check 'foxglove manifest: exe filled, version from app/Cargo.toml, no placeholders' ($ft.Contains($escaped) -and $ft -notmatch '@EXE@|@VERSION@' -and $ft -match 'version = "\d+\.\d+\.\d+')
+    $bs = [string][char]92
+    $fixed1 = Join-Path $home1 'apps\foxglove\foxglove.exe'; $escaped = $fixed1.Replace($bs, $bs + $bs)
+    Check 'foxglove manifest: FIXED app-folder exe filled (not the build path), version from app/Cargo.toml, no placeholders' ($ft.Contains($escaped) -and -not $ft.Contains($fox.Replace($bs, $bs + $bs)) -and $ft -notmatch '@EXE@|@VERSION@' -and $ft -match 'version = "\d+\.\d+\.\d+')
+    Check '-Adopt: the build was copied into the fixed app folder' ((Test-Path $fixed1) -and ((Get-Content -Raw $fixed1) -eq (Get-Content -Raw $fox)))
     Check 'vulpes manifest copied as given' ((Get-Content -Raw (Join-Path $home1 'adopt\vulpes\module.toml')) -match 'id = "vulpes"')
     Check '-Adopt: no pid file (hub not started)' (-not (Test-Path (Join-Path $home1 'hub.pid')))
 
     # already registered: skipped
-    Set-Content (Join-Path $home1 'hub\inventory.json') '{"modules":{"vulpes":{},"foxglove":{}}}'
+    function Register-Fake([string]$HubHome, [string]$FoxRun) {
+        $m = Join-Path $HubHome 'modules\foxglove\0.3.0'; New-Item -ItemType Directory -Force $m | Out-Null
+        Set-Content (Join-Path $m 'module.toml') ("id = `"foxglove`"`nversion = `"0.3.0`"`nrun = [`"" + $FoxRun.Replace($bs, $bs + $bs) + "`", `"--module`"]`n")
+        Set-Content (Join-Path $HubHome 'inventory.json') '{"modules":{"vulpes":{"version":"0.1.0"},"foxglove":{"version":"0.3.0"}}}'
+    }
+    Register-Fake (Join-Path $home1 'hub') $fixed1
     Remove-Item $log
     $o = & $ps @common -Adopt 2>&1 | Out-String
-    Check 'registered modules are skipped' ($LASTEXITCODE -eq 0 -and -not (Test-Path $log) -and $o -match 'already registered')
+    Check 'registered at the fixed path: skipped, no warning' ($LASTEXITCODE -eq 0 -and -not (Test-Path $log) -and $o -match 'already registered' -and $o -notmatch 'WARNING')
+
+    # a rebuild: new bytes land in the SAME fixed path (no re-adopt needed, so the exe path never changes)
+    $fox2 = Join-Path $tmp 'foxglove2.exe'; Set-Content $fox2 'newer build'
+    $o = & $ps -NoProfile -File $script_ -AreteModuleDir $mdir -HideoutExe $mock -FoxgloveExe $fox2 -DemoHome $home1 -Adopt 2>&1 | Out-String
+    Check 'rebuild: copied over the fixed exe, path unchanged, no re-adopt' ($LASTEXITCODE -eq 0 -and $o -match 'copied this build' -and ((Get-Content -Raw $fixed1) -match 'newer build') -and -not (Test-Path $log))
+    # dry run of a rebuild writes nothing
+    $o = & $ps -NoProfile -File $script_ -AreteModuleDir $mdir -HideoutExe $mock -FoxgloveExe $fox -DemoHome $home1 2>&1 | Out-String
+    Check 'dry run of another build leaves the fixed exe alone' ($LASTEXITCODE -eq 0 -and ((Get-Content -Raw $fixed1) -match 'newer build'))
+
+    # the trap: registered at an OLD path (a cargo target): reported and re-adopted at the fixed path (hub not running)
+    $old = Join-Path $tmp 'target\debug\foxglove.exe'; New-Item -ItemType Directory -Force (Split-Path $old) | Out-Null; Set-Content $old 'old'
+    Register-Fake (Join-Path $home1 'hub') $old
+    $o = & $ps @common -Adopt 2>&1 | Out-String
+    $l = @(Get-Content $log)
+    Check 'moved path: WARNING names the old path and the fixed folder' ($o -match 'WARNING.*registered at .*target.*not the fixed folder')
+    Check 'moved path: re-adopts foxglove only (one --adopt call), manifest points at the fixed exe' ($LASTEXITCODE -eq 0 -and $l.Count -eq 1 -and (Get-Content -Raw (Join-Path $home1 'adopt\foxglove\module.toml')).Contains($escaped))
+    $o = & $ps @common 2>&1 | Out-String
+    Check 'moved path, dry run: plans the re-adopt, writes nothing more' ($o -match 'plan\s+: foxglove\s+register' -and $o -match 're-adopt')
+    # unreadable record counts as moved too (never silently trusted)
+    Set-Content (Join-Path $home1 'hub\inventory.json') '{"modules":{"vulpes":{},"foxglove":{}}}'
+    $o = & $ps @common 2>&1 | Out-String
+    Check 'unreadable registered path is reported, not trusted' ($o -match 'WARNING.*\(unreadable\)')
+
+    # the hub is running (a process named hideout): no re-adopt, exact manual step, exit 1
+    $ping = (Get-Command ping.exe).Source; $fakeHub = Join-Path $tmp 'hideout.exe'; Copy-Item $ping $fakeHub
+    $hp = Start-Process -FilePath $fakeHub -ArgumentList '-n', '30', '127.0.0.1' -PassThru -WindowStyle Hidden
+    try {
+        Set-Content (Join-Path $home1 'hub.pid') $hp.Id
+        Register-Fake (Join-Path $home1 'hub') $old
+        Remove-Item $log -ErrorAction SilentlyContinue
+        $o = & $ps @common -Adopt 2>&1 | Out-String
+        Check 'moved path + running hub: PROBLEM with the manual step, nothing adopted' ($LASTEXITCODE -eq 1 -and $o -match 'PROBLEM.*hub is running.*Manual step.*-Down' -and -not (Test-Path $log))
+    } finally { Stop-Process -Id $hp.Id -ErrorAction SilentlyContinue; Remove-Item (Join-Path $home1 'hub.pid') -ErrorAction SilentlyContinue }
 
     # -Launch with the mock: starts exactly the hub (the mock), writes the pid file
     $home2 = Join-Path $tmp 'demo2'
