@@ -22,6 +22,8 @@ pub mod installed;
 pub mod inventory;
 pub mod keyboard;
 pub mod lab;
+/// The Foxglove to Hideout data copy engine (H5.2a). Dead code: only tests call it.
+pub mod migrate;
 pub mod permission;
 pub mod trust;
 
