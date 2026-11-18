@@ -34,7 +34,7 @@ pub struct Product {
     pub id: &'static str,
     /// What the Modules page calls it.
     pub name: &'static str,
-    /// Image file names, first match wins.
+    /// Image paths relative to the install folder, first match wins.
     pub exes: &'static [&'static str],
     /// The installer record: `HKCU\<key>`, value `App` = install folder.
     pub record_key: &'static str,
@@ -57,9 +57,10 @@ pub const PRODUCTS: &[Product] = &[
     Product {
         id: "vulpes",
         name: "Vulpes",
-        exes: &["vulpes.exe", "arete.exe"],
+        // A pip console script in the install folder's venv; there is no vulpes.exe.
+        exes: &[r"venv\Scripts\arete.exe"],
         record_key: r"Software\Vulpes\Installer",
-        known: &[("LOCALAPPDATA", r"Programs\Vulpes")],
+        known: &[("LOCALAPPDATA", r"Programs\Arete")],
         manifest: ManifestSource::InstallFolder(r"hideout\module.toml"),
     },
 ];
@@ -93,14 +94,54 @@ pub struct Found {
     pub exe: PathBuf,
     pub version: String,
     pub source: Source,
+    /// The install folder, when known.
+    pub folder: Option<PathBuf>,
+    /// The record's own `Manifest` value (a rendered manifest), when it gave one.
+    pub manifest: Option<PathBuf>,
+}
+
+/// An absolute, local path: never relative, never UNC (`\server\share`, `//server/share`).
+fn is_local(p: &Path) -> bool {
+    let s = p.to_string_lossy();
+    p.is_absolute() && !s.starts_with(r"\\") && !s.starts_with("//")
 }
 
 /// The installed copy of `p`, if any. A record that names a missing exe falls through to the
 /// known folders; a UNC folder is never accepted.
 pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
     let mut folders: Vec<(PathBuf, Source)> = Vec::new();
-    if let Some(dir) = m.registry_string(p.record_key, "App") {
-        folders.push((PathBuf::from(dir), Source::Record));
+    let record_dir = m.registry_string(p.record_key, "App").map(PathBuf::from);
+    let record_exe = m.registry_string(p.record_key, "Exe").map(PathBuf::from);
+    let record_manifest = m
+        .registry_string(p.record_key, "Manifest")
+        .map(PathBuf::from)
+        .filter(|x| is_local(x));
+    let record_version = m
+        .registry_string(p.record_key, "Version")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    // The record's own Exe first: it is what the installer wrote. It must be local, a real
+    // file, and one of this product's image names.
+    if let Some(exe) = record_exe {
+        let known_name = p.exes.iter().any(|rel| {
+            let leaf = rel.rsplit('\\').next().unwrap_or(rel);
+            file_name_is(&exe, leaf)
+        });
+        if known_name && is_local(&exe) && m.is_file(&exe) {
+            if let Some(version) = m.exe_version(&exe).or_else(|| record_version.clone()) {
+                return Some(Found {
+                    id: p.id,
+                    exe,
+                    version,
+                    source: Source::Record,
+                    folder: record_dir.filter(|d| is_local(d)),
+                    manifest: record_manifest,
+                });
+            }
+        }
+    }
+    if let Some(dir) = record_dir {
+        folders.push((dir, Source::Record));
     }
     for (var, rel) in p.known {
         if let Some(base) = m.env(var) {
@@ -108,18 +149,30 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
         }
     }
     for (dir, source) in folders {
-        if dir.to_string_lossy().starts_with(r"\\") {
+        if !is_local(&dir) {
             continue;
         }
         for name in p.exes {
             let exe = dir.join(name);
             if m.is_file(&exe) {
-                if let Some(version) = m.exe_version(&exe) {
+                // A pip launcher has no file-version resource: the record's Version stands in,
+                // for record hits only.
+                let version = m.exe_version(&exe).or_else(|| {
+                    (source == Source::Record)
+                        .then(|| record_version.clone())
+                        .flatten()
+                });
+                if let Some(version) = version {
+                    let manifest = (source == Source::Record)
+                        .then(|| record_manifest.clone())
+                        .flatten();
                     return Some(Found {
                         id: p.id,
                         exe,
                         version,
                         source,
+                        folder: Some(dir),
+                        manifest,
                     });
                 }
             }
@@ -166,7 +219,13 @@ fn manifest_text(m: &dyn Machine, p: &Product, f: &Found) -> Result<String, Stri
     let template = match &p.manifest {
         ManifestSource::Builtin(t) => (*t).to_string(),
         ManifestSource::InstallFolder(rel) => {
-            let at = f.exe.parent().unwrap_or(Path::new("")).join(rel);
+            // From the record's Manifest value, else from the install folder (never exe.parent():
+            // the exe sits in venv\Scripts).
+            let at = match (&f.manifest, &f.folder) {
+                (Some(x), _) => x.clone(),
+                (None, Some(dir)) => dir.join(rel),
+                (None, None) => return Err(format!("{} has no manifest for Hideout yet", p.name)),
+            };
             m.read_text(&at)
                 .ok_or_else(|| format!("{} has no manifest for Hideout yet", p.name))?
         }
@@ -463,12 +522,16 @@ mod tests {
             exe: r"C:\R\foxglove.exe".into(),
             version: "0.3.0".into(),
             source: Source::Record,
+            folder: None,
+            manifest: None,
         };
         let known = Found {
             id: "vulpes",
             exe: r"C:\K\vulpes.exe".into(),
             version: "0.1.0".into(),
             source: Source::KnownFolder,
+            folder: None,
+            manifest: None,
         };
         let p = InstalledPeers {
             found: vec![rec, known],
@@ -484,6 +547,224 @@ mod tests {
             vec![PathBuf::from(r"C:\A\FOXGLOVE.EXE")]
         );
         assert!(p.run0("hideout.exe").is_empty());
+    }
+
+    const VKEY: &str = r"Software\Vulpes\Installer";
+    const VAPP: &str = r"C:\Users\t\AppData\Local\Programs\Arete";
+    const VEXE: &str = r"C:\Users\t\AppData\Local\Programs\Arete\venv\Scripts\arete.exe";
+    const VMAN: &str = r"C:\Users\t\AppData\Local\Programs\Arete\hideout\module.toml";
+
+    fn vul() -> &'static Product {
+        product("vulpes").unwrap()
+    }
+
+    /// A Vulpes machine as the installer leaves it: all four record values, a launcher with no
+    /// file-version resource (empty version), and the rendered manifest.
+    fn vulpes_machine() -> Fake {
+        let mut f = Fake::default();
+        for (k, v) in [
+            ("App", VAPP),
+            ("Exe", VEXE),
+            ("Version", "0.9.2"),
+            ("Manifest", VMAN),
+        ] {
+            f.reg.insert((VKEY.into(), k.into()), v.into());
+        }
+        f.files.insert(PathBuf::from(VEXE), (String::new(), None));
+        f.files.insert(
+            PathBuf::from(VMAN),
+            (String::new(), Some("id = \"vulpes\"\n".into())),
+        );
+        f
+    }
+
+    /// Fake with a version resource only when `version` is non-empty.
+    struct NoResource(Fake);
+    impl Machine for NoResource {
+        fn registry_string(&self, k: &str, v: &str) -> Option<String> {
+            self.0.registry_string(k, v)
+        }
+        fn env(&self, n: &str) -> Option<String> {
+            self.0.env(n)
+        }
+        fn is_file(&self, p: &Path) -> bool {
+            self.0.is_file(p)
+        }
+        fn exe_version(&self, p: &Path) -> Option<String> {
+            self.0.exe_version(p).filter(|v| !v.is_empty())
+        }
+        fn read_text(&self, p: &Path) -> Option<String> {
+            self.0.read_text(p)
+        }
+    }
+
+    #[test]
+    fn vulpes_record_gives_the_venv_exe_and_the_record_version() {
+        let m = NoResource(vulpes_machine());
+        let found = find(&m, vul()).unwrap();
+        assert_eq!(found.source, Source::Record);
+        assert_eq!(found.exe, PathBuf::from(VEXE));
+        assert_eq!(
+            found.version, "0.9.2",
+            "no file-version resource: the record's Version"
+        );
+        assert_eq!(found.folder, Some(PathBuf::from(VAPP)));
+        assert_eq!(found.manifest, Some(PathBuf::from(VMAN)));
+    }
+
+    #[test]
+    fn a_file_version_beats_the_record_version() {
+        let mut f = vulpes_machine();
+        f.files.insert(PathBuf::from(VEXE), ("1.0.0".into(), None));
+        assert_eq!(find(&NoResource(f), vul()).unwrap().version, "1.0.0");
+    }
+
+    #[test]
+    fn without_exe_value_the_exe_comes_from_the_app_folder() {
+        let mut f = vulpes_machine();
+        f.reg.remove(&(VKEY.into(), "Exe".into()));
+        f.reg.remove(&(VKEY.into(), "Manifest".into()));
+        let found = find(&NoResource(f), vul()).unwrap();
+        assert_eq!(found.source, Source::Record);
+        assert_eq!(found.exe, PathBuf::from(VEXE));
+        assert_eq!(found.version, "0.9.2");
+        assert_eq!(found.manifest, None);
+    }
+
+    #[test]
+    fn vulpes_known_folder_is_programs_arete_and_not_trusted() {
+        let mut f = Fake::default();
+        f.env
+            .insert("LOCALAPPDATA".into(), r"C:\Users\t\AppData\Local".into());
+        f.files.insert(PathBuf::from(VEXE), ("0.9.2".into(), None));
+        let found = find(&f, vul()).unwrap();
+        assert_eq!(found.source, Source::KnownFolder);
+        assert_eq!(found.exe, PathBuf::from(VEXE));
+        // A known folder never reads the record's Version, and gives no peer trust.
+        let peers = InstalledPeers {
+            found: vec![found],
+            adopted: vec![],
+        };
+        assert_eq!(peers.installed_exe("arete.exe"), None);
+        // No version resource and no record: nothing to report, so no find.
+        let mut g = Fake::default();
+        g.env
+            .insert("LOCALAPPDATA".into(), r"C:\Users\t\AppData\Local".into());
+        g.files.insert(PathBuf::from(VEXE), (String::new(), None));
+        assert!(find(&NoResource(g), vul()).is_none());
+    }
+
+    #[test]
+    fn record_values_on_a_network_share_are_refused() {
+        // UNC Exe: skipped; the (local) App folder still finds the exe.
+        let mut f = vulpes_machine();
+        let unc = r"\\server\share\Arete\venv\Scripts\arete.exe";
+        f.reg.insert((VKEY.into(), "Exe".into()), unc.into());
+        f.files.insert(PathBuf::from(unc), ("9.9.9".into(), None));
+        let found = find(&NoResource(f), vul()).unwrap();
+        assert_eq!(found.exe, PathBuf::from(VEXE));
+        // UNC Manifest: dropped, so the manifest falls back to the App folder.
+        let mut g = vulpes_machine();
+        g.reg.insert(
+            (VKEY.into(), "Manifest".into()),
+            r"\\server\share\module.toml".into(),
+        );
+        assert_eq!(find(&NoResource(g), vul()).unwrap().manifest, None);
+        // Everything UNC: no find.
+        let mut h = Fake::default();
+        for (k, v) in [("App", r"\\s\a"), ("Exe", r"\\s\a\venv\Scripts\arete.exe")] {
+            h.reg.insert((VKEY.into(), k.into()), v.into());
+        }
+        h.files.insert(
+            PathBuf::from(r"\\s\a\venv\Scripts\arete.exe"),
+            ("1.0.0".into(), None),
+        );
+        assert!(find(&h, vul()).is_none());
+    }
+
+    #[test]
+    fn a_record_exe_with_another_name_is_not_taken() {
+        let mut f = vulpes_machine();
+        f.reg.insert(
+            (VKEY.into(), "Exe".into()),
+            r"C:\Windows\System32\cmd.exe".into(),
+        );
+        f.files.insert(
+            PathBuf::from(r"C:\Windows\System32\cmd.exe"),
+            ("10.0.0".into(), None),
+        );
+        assert_eq!(
+            find(&NoResource(f), vul()).unwrap().exe,
+            PathBuf::from(VEXE)
+        );
+    }
+
+    #[test]
+    fn adopt_reads_the_manifest_from_the_record_or_the_app_folder_not_the_exe_folder() {
+        let install = temp("vr-install");
+        let exe = install.join(r"venv\Scripts\arete.exe");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, b"x").unwrap();
+        let rendered = format!(
+            "id =\"vulpes\"\nname = \"AI\"\nversion = \"0.9.2\"\nkind = \"adopted\"\n\
+            family = \"vulpes\"\nhub = \"1.1\"\nrun = ['{}', 'hub']\n\
+            api = {{ vulpes = \"1.0\" }}\n[activation]\non = [\"open\", \"call\"]\n",
+            exe.display().to_string().replace('\\', "/")
+        );
+        let man = install.join(r"hideout\module.toml");
+        let mut m = Fake::default();
+        // Only the exe's own folder holds a manifest: not used.
+        m.files.insert(
+            exe.parent().unwrap().join(r"hideout\module.toml"),
+            (String::new(), Some(rendered.clone())),
+        );
+        let mut found = Found {
+            id: "vulpes",
+            exe: exe.clone(),
+            version: "0.9.2".into(),
+            source: Source::Record,
+            folder: Some(install.clone()),
+            manifest: None,
+        };
+        let no = adopt(
+            &m,
+            &temp("vr-h0"),
+            &temp("vr-s0"),
+            &found,
+            "2026-11-18T08:00:00Z",
+        );
+        assert_eq!(no.unwrap_err(), "Vulpes has no manifest for Hideout yet");
+        // The App folder's hideout\module.toml.
+        m.files
+            .insert(man.clone(), (String::new(), Some(rendered.clone())));
+        let ok = adopt(
+            &m,
+            &temp("vr-h1"),
+            &temp("vr-s1"),
+            &found,
+            "2026-11-18T08:00:00Z",
+        );
+        assert_eq!(
+            ok.unwrap(),
+            "registered vulpes 0.9.2 (installed separately)"
+        );
+        // The record's own Manifest value wins over the App folder.
+        let other = install.join("elsewhere.toml");
+        m.files.insert(man, (String::new(), None));
+        m.files
+            .insert(other.clone(), (String::new(), Some(rendered.clone())));
+        found.manifest = Some(other);
+        let ok = adopt(
+            &m,
+            &temp("vr-h2"),
+            &temp("vr-s2"),
+            &found,
+            "2026-11-18T08:00:00Z",
+        );
+        assert_eq!(
+            ok.unwrap(),
+            "registered vulpes 0.9.2 (installed separately)"
+        );
     }
 
     fn temp(name: &str) -> PathBuf {
@@ -515,6 +796,8 @@ mod tests {
             exe,
             version: "0.3.0".into(),
             source: Source::Record,
+            folder: None,
+            manifest: None,
         };
         let m = Fake::default();
         let line = adopt(&m, &home, &staging, &found, "2026-11-18T08:00:00Z").unwrap();
@@ -547,6 +830,8 @@ mod tests {
             exe,
             version: "0.1.0".into(),
             source: Source::Record,
+            folder: None,
+            manifest: None,
         };
         let e = adopt(
             &Fake::default(),
@@ -569,6 +854,8 @@ mod tests {
             exe: exe.clone(),
             version: "0.3.0".into(),
             source: Source::Record,
+            folder: None,
+            manifest: None,
         };
         let a = |granted, version: &str| AdoptedFacts {
             run0: exe.clone(),
