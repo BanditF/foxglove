@@ -93,8 +93,8 @@ per user and silent.
 
 ## Two products: Hideout and Foxglove (planned, not yet shipped)
 
-Status: **planned.** No Hideout installer exists yet (plan H5.6), `hideout.exe` is in no MSI,
-and no `hideout-v*` tag or release exists. Everything marked "planned" here describes the
+Status: **planned.** A Hideout installer can be built locally (H5.6, below) but is unsigned,
+unpublished and not yet lab-verified; no `hideout-v*` tag or release exists. Everything marked "planned" here describes the
 target, not what a download does today. Foxglove's installer, described above, is unchanged.
 
 Hideout is its own app: the host that runs Foxglove, Vulpes and other modules. **Foxglove is not
@@ -123,6 +123,60 @@ are, and no data is moved or copied when Hideout is installed.
 - The Hideout MSI will write no Startup entry (planned): **Start with Windows** stays a switch in
   the app, and Hideout never reads or writes `Foxglove.lnk`.
 - Rolling back is uninstalling Hideout. Foxglove was never moved, so it keeps running as before.
+
+### Building the Hideout installer (H5.6, local and unsigned)
+
+The Hideout installer is built, never published: no signing, no tag, no release, and nothing in
+this repo runs it. It is a WiX 3.14 MSI (the same toolchain as Foxglove's) from
+`crates/hideout/wix/hideout.wxs`, built with `candle` and `light` directly.
+
+```powershell
+# Lists what the MSI would write. Builds and installs nothing; needs no WiX or cargo.
+powershell -File scripts/build-hideout-installer.ps1 -DryRun
+# Builds target\hideout-installer\hideout-x64.msi (CARGO_TARGET_DIR is honoured). Needs WiX 3.14 on PATH.
+powershell -File scripts/build-hideout-installer.ps1 [-Version 0.1.0] [-OutDir <folder>]
+```
+
+What it contains (Hideout only, MIT; no Foxglove file, firmware or art):
+- `hideout.exe` and `LICENSE-hideout` in `%LOCALAPPDATA%\Programs\Hideout`, per user, no UAC.
+- `HKCU\Software\Hideout\Installer`: `App` (install folder, trailing backslash; H5.2's Start with
+  Windows requires the hub exe in it), `Exe`, `Version`, `Shortcut`.
+- A Start menu shortcut "Hideout", and an uninstall (Apps) entry from Windows Installer.
+- A new UpgradeCode (`0A0A820B-B3AE-427A-91A7-E7FF56509254`, pinned by a test, different from
+  Foxglove's), a downgrade refusal, and a launch condition against a UNC profile.
+- **No Startup entry.** The installer never creates `Hideout.lnk` in Startup; Start with Windows
+  stays off until the user turns it on in the app (H5.2).
+- Uninstall (not an upgrade) runs `hideout.exe --autostart-remove` as the user, which removes a
+  `Hideout.lnk` the user turned on only if it starts this exe, then Windows Installer removes the
+  files, the shortcut, the registry values and the (empty) folders it made. `%LOCALAPPDATA%\Hideout`
+  and `%APPDATA%\Hideout` are kept; Foxglove is never touched.
+
+Checks without WiX or running anything: `python -m unittest discover -s scripts -p "test_wix_hideout.py"`
+(structure of the `.wxs`, the dry-run listing, the script never installing).
+
+**On-call lab-verify checklist.** The user's or the Hub's go is needed before any run on the
+user's PC; use the Windows test account, never the user's desktop. The artifact is untested
+until then.
+1. Clean test account, no `HKCU\Software\Hideout`. Record `HKCU\Software`, the Start menu and Startup
+   folders, and `%LOCALAPPDATA%\Programs` before.
+2. Install `hideout-x64.msi` (default, then `msiexec /i ... /qn` on a second clean account): no UAC (the MSI is unsigned, so an "Unknown publisher" / SmartScreen prompt is expected; note
+   it); files, shortcut and the Apps entry (Settings > Apps > Installed apps) exist; Startup folder unchanged (no `Hideout.lnk`).
+3. Record check: `HKCU\Software\Hideout\Installer` `App` is the install folder, and
+   `hideout.exe --autostart-status` prints `missing` (the row can show Turn on...).
+4. Reinstall the same version (upgrade in place) and an older one (refused).
+5. Turn Start with Windows on, then uninstall (no window opens during it): `Hideout.lnk`, its approval value, the files, the
+   Start shortcut and the whole `Software\Hideout` key are gone; the before/after snapshots match
+   except the kept home/settings folders.
+6. With Foxglove 0.3 installed, repeat 2 and 5: Foxglove's folder, `Foxglove.lnk` and data are
+   byte-identical, and `%LOCALAPPDATA%\Programs` still exists after uninstalling Hideout (Foxglove's
+   folder is in it).
+7. Rollback is uninstalling Hideout; if the install is wedged, delete `Software\Hideout` and the
+   folder by hand on the test account.
+
+Not in this build (follow-ups for the UX review and H5.7): the finish page text "Hideout is
+installed. Foxglove stays as it is." with **Open Hideout now**, the folder-DACL health row, the
+packaged-context refusal, an installer icon, `--uninstall-cleanup` (the MSI calls
+`--autostart-remove`, which does the same job today), and the release workflow.
 
 ### Hideout's Start with Windows (H5.2, built and tested only)
 
