@@ -25,7 +25,7 @@ serde_json = "1"
 # The inventory change watch (#1012.4): FindFirstChangeNotificationW and its wait. Already in
 # the tree through hideout-supervisor (MIT/Apache-2.0).
 # WinHTTP (#1049): the catalog fetch over the OS's own HTTPS stack, so no new crate.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Time"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Threading", "Win32_System_Time"] }
 
 [dev-dependencies]
 # The catalog fetch tests sign their own catalogs with keys made per run (minisign, MIT).

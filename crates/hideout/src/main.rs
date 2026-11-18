@@ -17,6 +17,7 @@ mod adopt;
 mod catalog_fetch;
 #[cfg(windows)]
 mod control;
+mod find_installed;
 #[cfg(windows)]
 mod grant_queue;
 #[cfg(windows)]
