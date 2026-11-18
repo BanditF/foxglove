@@ -393,6 +393,13 @@ The hub MUST NOT contain:
   catalog is verified again under it and saved with it, or no longer used. The file is replaced
   in one atomic rename, written before `seen` is raised (§12.4), and verified again in full at
   every hub start. Its sequence and accepted time go to Copy diagnostics only once verified.
+- **Install folder (note, no rule change; planned, not yet shipped).** The files above are the
+  hub's data, not its program files. The hub's own exe is planned to install per user in
+  `%LOCALAPPDATA%\Programs\Hideout`, a folder of its own beside Foxglove's
+  `%LOCALAPPDATA%\Programs\Foxglove` (two products, two UpgradeCodes; see
+  [packaging.md](packaging.md#two-products-hideout-and-foxglove-planned-not-yet-shipped)).
+  Nothing in `%LOCALAPPDATA%\Hideout` or `%APPDATA%\Hideout` moves with an install or an
+  uninstall, and Foxglove's data stays in `%APPDATA%\Foxglove`.
 - `HIDEOUT_HOME`, when set, replaces `%LOCALAPPDATA%\Hideout` and `%APPDATA%\Hideout` (tests).
 - Every file and pipe here MUST have a current-user-only ACL.
 - (v1.10, #983) One exception, only while modules run in AppContainers (§7.7): the router pipe

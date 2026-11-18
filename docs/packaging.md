@@ -91,6 +91,39 @@ says automatic updates are off and links to the releases page. So users meet thi
 when they run the new MSI themselves. Nothing is half-installed. After step 2 every update is
 per user and silent.
 
+## Two products: Hideout and Foxglove (planned, not yet shipped)
+
+Status: **planned.** No Hideout installer exists yet (plan H5.6), `hideout.exe` is in no MSI,
+and no `hideout-v*` tag or release exists. Everything marked "planned" here describes the
+target, not what a download does today. Foxglove's installer, described above, is unchanged.
+
+Hideout is its own app: the host that runs Foxglove, Vulpes and other modules. **Foxglove is not
+renamed.** It keeps its name, exe, MSI, UpgradeCode, tags, shortcuts, config and data where they
+are, and no data is moved or copied when Hideout is installed.
+
+| | Foxglove (shipped, unchanged) | Hideout (planned) |
+|---|---|---|
+| Install folder | `%LOCALAPPDATA%\Programs\Foxglove` | `%LOCALAPPDATA%\Programs\Hideout` |
+| Installer | `foxglove-x64.msi`, UpgradeCode `40F2C6EE-F034-4FE5-91BC-65F1E74F7D24` | `hideout-x64.msi`, a **new** UpgradeCode (a test pins it different from Foxglove's) |
+| Install record | `HKCU\Software\Foxglove\Installer` | `HKCU\Software\Hideout\Installer` |
+| Release tags | `app-vMAJOR.MINOR.PATCH` (`.github/workflows/app.yml`) | `hideout-vMAJOR.MINOR.PATCH`, its own workflow |
+| Updater reads | `app-v*` only | `hideout-v*` only; refuses a manifest whose `product` is not `hideout` |
+| Sign-in shortcut | `Foxglove.lnk` (`--tray`) | `Hideout.lnk` (`--tray`), only if the user turns it on (needs its own go) |
+| Data | `%APPDATA%\Foxglove\`, `%LOCALAPPDATA%\Foxglove\updates\` | `%LOCALAPPDATA%\Hideout\`, `%APPDATA%\Hideout\modules\<id>\settings\` ([contract](hideout-contract.md) 2.3) |
+
+- The two install in separate folders, in either order, or one without the other. Neither installer
+  touches the other's files, shortcut, registry key or data. Uninstalling one leaves the other
+  working; Hideout's home folder stays after uninstall, as Foxglove's does.
+- Because the UpgradeCodes differ, Windows Installer never treats one as an upgrade of the other.
+  A Foxglove release can never install over Hideout, nor the reverse, because each updater reads
+  only its own tag prefix.
+- Hideout finds an installed Foxglove through Windows Installer's own records (planned, H5.4) and
+  offers **Use in Hideout**. Until the user turns that on, Foxglove runs on its own and owns the
+  keyboard as it does today.
+- The Hideout MSI will write no Startup entry (planned): **Start with Windows** stays a switch in
+  the app, and Hideout never reads or writes `Foxglove.lnk`.
+- Rolling back is uninstalling Hideout. Foxglove was never moved, so it keeps running as before.
+
 ## Current settings paths
 
 Installation does not change these. With `FOXGLOVE_CONFIG_DIR` set, all of them go to that
@@ -114,7 +147,9 @@ is ([profiles.md](profiles.md), Decision 1); loading it falls back to KeyPeek's
 
 ## Releases and validation
 
-`.github/workflows/app.yml` runs only by manual dispatch or an `app-v*` tag.
+`.github/workflows/app.yml` runs only by manual dispatch or an `app-v*` tag. It is Foxglove's
+pipeline; Hideout's releases will use `hideout-v*` tags in their own workflow (planned, see
+[Two products](#two-products-hideout-and-foxglove-planned-not-yet-shipped)).
 Tags must use `app-vMAJOR.MINOR.PATCH`; CI uses that version for the MSI. Both
 Windows and Linux checks must pass before the release job creates/reuses the
 GitHub release and uploads the MSI and exe. Manual runs retain both as workflow
