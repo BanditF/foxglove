@@ -10,8 +10,8 @@ from typing import Any, ClassVar, Literal, Optional, Union
 
 from ._model import Model
 
-HUB = '1.3'
-SPEC = '1.18'
+HUB = '1.4'
+SPEC = '1.19'
 # The published icon names (unknown draws the generic 'module' icon) and tone words.
 ICONS = ('module', 'battery', 'bell', 'bluetooth', 'book', 'brush', 'calendar', 'camera', 'chart', 'chat', 'cloud', 'folder', 'gamepad', 'gear', 'headphones', 'image', 'info', 'key', 'keyboard', 'lights', 'link', 'lock', 'mic', 'music', 'palette', 'play', 'screen', 'sparkle', 'speaker', 'terminal', 'timer', 'video', 'wifi')
 TONES = ('neutral', 'active', 'live', 'ok', 'attention', 'off')
@@ -358,6 +358,22 @@ class HubNotify(Model):
         'level': ('level', ('ref', 'NotifyLevel')),
         'title': ('title', 'str'),
     }
+
+
+@dataclass(kw_only=True)
+class HubShow(Model):
+    """`hub.show` (C -> H, v1.19): the hub brings the page of module `id` to the front, as the Open
+button on a notification does. Carries no secret and no permission: only a verified
+same-user process on the router pipe may send it (the hub refuses a container, a bridged
+plugin and an unverified peer), and it changes nothing but which page shows. Answered `{}`;
+-32602 for an id that is not a module the hub knows."""
+
+    id: str
+
+    FIELDS: ClassVar[dict] = {
+        'id': ('id', 'str'),
+    }
+    CLOSED: ClassVar[bool] = True
 
 
 @dataclass(kw_only=True)
@@ -1023,6 +1039,7 @@ TYPES = {
     'messages.ChannelOpened': ChannelOpened,
     'messages.DrainResult': DrainResult,
     'messages.HubNotify': HubNotify,
+    'messages.HubShow': HubShow,
     'messages.InitializeModule': InitializeModule,
     'messages.InitializeTool': InitializeTool,
     'messages.ModuleDrain': ModuleDrain,

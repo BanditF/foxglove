@@ -1,7 +1,7 @@
 {
   "format": "hideout-vectors-index-v1",
   "spec": "docs/hideout-contract.md",
-  "contract": "1.18",
+  "contract": "1.19",
   "reader_hub": "1.3",
   "now": "2026-11-09T12:00:00Z",
   "how_to_read": "Keys are paths relative to this folder. result valid | invalid (id = section 15 id) | table (rows carry their own results). 'normalized' lists fields a reader must produce after defaults. Transcripts are checked by the 'final' assertions plus the step list.",
@@ -574,7 +574,7 @@
       ],
       "result": "invalid",
       "id": "manifest.hub",
-      "note": "Written for a newer minor than a v1.0 reader serves. (v1.4: this reader serves 1.1, so the vector said 1.2; v1.10: it serves 1.2, so the vector said 1.3; v1.12: it serves 1.3, so the vector says 1.4.)"
+      "note": "Written for a newer minor than a v1.0 reader serves. (v1.4: this reader serves 1.1, so the vector said 1.2; v1.10: it serves 1.2, so the vector said 1.3; v1.12: it serves 1.3, so the vector says 1.4; v1.19: it serves 1.4, so the vector says 1.5.)"
     },
     "manifests/invalid/hub-newer-minor-new-key.toml": {
       "spec": [

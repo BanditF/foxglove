@@ -124,6 +124,9 @@ pub enum Out {
     ModuleFault(String),
     /// `hub.notify` from a module, already permission-checked.
     Notify { module: String, params: Value },
+    /// `hub.show` (v1.19) from a verified same-user peer: the shell brings this module's page to
+    /// the front. The module is one the hub knows.
+    Show { module: String },
     /// Accepted panels from `ui.register`, for the panel host (§5.1), with the instance that
     /// registered them.
     Panels {
@@ -1860,6 +1863,12 @@ impl Router {
                 }
                 _ => out.push(answer(denied(&id, None))),
             },
+            // (v1.19) A verified same-user peer asks for a module's page. No permission, no
+            // secret; the peer's identity is the check (see `may_show`).
+            hideout_contract::messages::HUB_SHOW => {
+                let reply = self.hub_show(conn, &id, &params, out);
+                out.push(answer(reply));
+            }
             "channel.open" => self.channel_open(conn, &who, &caps, id, &params, now, out),
             // The app watch's call (§8.12, v1.13), on top of the app facts.
             hideout_contract::services::APPS_WATCH => {
@@ -1885,6 +1894,33 @@ impl Router {
                 self.route(conn, id, m, params, now, out);
             }
         }
+    }
+
+    /// `hub.show {id}` (v1.19, section 8.8). Only a peer on the router pipe whose process the
+    /// transport verified (`admit`: same user, Medium integrity or the hub's own container) and
+    /// that runs in no AppContainer may ask: a bridged plugin, a connection with no known
+    /// process and a contained process are refused (error 5). The id must be a module the hub
+    /// has (-32602), so the call can't probe for anything else. It changes which page shows,
+    /// nothing more.
+    fn hub_show(&mut self, conn: ConnId, id: &Value, params: &Value, out: &mut Vec<Out>) -> Value {
+        let c = &self.conns[&conn];
+        if c.origin != Origin::Pipe || c.pid.is_none() || c.app_container.is_some() {
+            return denied(id, Some("only a verified process of this user may ask"));
+        }
+        let Some(module) = hideout_contract::messages::check_params(
+            hideout_contract::messages::HUB_SHOW,
+            params,
+        )
+        .ok()
+        .and_then(|()| params.get("id").and_then(Value::as_str))
+        .map(str::to_string) else {
+            return error(id, code::INVALID_PARAMS, "invalid params", Some("id is a module id"));
+        };
+        if !self.modules.contains_key(&module) {
+            return error(id, code::INVALID_PARAMS, "invalid params", Some("not a module"));
+        }
+        out.push(Out::Show { module });
+        ok(id, json!({}))
     }
 
     /// The refusal text for a call the caller has no permission for: names the module the call

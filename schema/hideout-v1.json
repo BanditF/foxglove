@@ -1,5 +1,5 @@
 {
-  "hub": "1.3",
+  "hub": "1.4",
   "icons": [
     "module",
     "battery",
@@ -59,7 +59,7 @@
     "smooth",
     "pixel"
   ],
-  "spec": "1.18",
+  "spec": "1.19",
   "streams": {
     "nodes": [
       "canvas",
@@ -699,6 +699,20 @@
         "level"
       ],
       "title": "HubNotify",
+      "type": "object"
+    },
+    "messages.HubShow": {
+      "additionalProperties": false,
+      "description": "`hub.show` (C -> H, v1.19): the hub brings the page of module `id` to the front, as the Open\nbutton on a notification does. Carries no secret and no permission: only a verified\nsame-user process on the router pipe may send it (the hub refuses a container, a bridged\nplugin and an unverified peer), and it changes nothing but which page shows. Answered `{}`;\n-32602 for an id that is not a module the hub knows.",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "HubShow",
       "type": "object"
     },
     "messages.InitializeModule": {

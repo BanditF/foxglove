@@ -232,6 +232,20 @@ pub struct HubNotify {
     pub level: NotifyLevel,
 }
 
+/// The method name of [`HubShow`] (v1.19).
+pub const HUB_SHOW: &str = "hub.show";
+
+/// `hub.show` (C -> H, v1.19): the hub brings the page of module `id` to the front, as the Open
+/// button on a notification does. Carries no secret and no permission: only a verified
+/// same-user process on the router pipe may send it (the hub refuses a container, a bridged
+/// plugin and an unverified peer), and it changes nothing but which page shows. Answered `{}`;
+/// -32602 for an id that is not a module the hub knows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HubShow {
+    pub id: String,
+}
+
 /// Crashes in ten minutes that stop a module (§7.7).
 pub const CRASH_LIMIT: u32 = 5;
 
@@ -462,6 +476,8 @@ pub fn check_params(method: &str, params: &serde_json::Value) -> Result<(), Stri
         "lease.closed" => typed::<crate::lease::LeaseClosed>(params),
         // A provider's own Resume (§8.5, v1.17).
         crate::lease::LEASE_END => typed::<crate::lease::LeaseEnd>(params),
+        // Bring a module's page to the front (section 8.8, v1.19).
+        HUB_SHOW => typed::<HubShow>(params),
         _ => Ok(()),
     }
 }

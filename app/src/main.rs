@@ -49,6 +49,11 @@ fn main() {
     if !foxglove::single_instance::claim(!foxglove::settings_open::tray_start()) {
         return;
     }
+    // Foxglove (H5.5): a hub that already runs Foxglove as its module keeps the keyboard; this start
+    // asks it to show Foxglove when started by hand, then exits 0. Only with that hub fact: else today.
+    if foxglove::signin_handoff::at_startup() {
+        return;
+    }
     // Foxglove: settings and log redirected into another app's package (started from it)?
     foxglove::store_split::start();
     foxglove::update::start();
