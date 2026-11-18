@@ -1907,17 +1907,26 @@ impl Router {
         if c.origin != Origin::Pipe || c.pid.is_none() || c.app_container.is_some() {
             return denied(id, Some("only a verified process of this user may ask"));
         }
-        let Some(module) = hideout_contract::messages::check_params(
-            hideout_contract::messages::HUB_SHOW,
-            params,
-        )
-        .ok()
-        .and_then(|()| params.get("id").and_then(Value::as_str))
-        .map(str::to_string) else {
-            return error(id, code::INVALID_PARAMS, "invalid params", Some("id is a module id"));
+        let Some(module) =
+            hideout_contract::messages::check_params(hideout_contract::messages::HUB_SHOW, params)
+                .ok()
+                .and_then(|()| params.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+        else {
+            return error(
+                id,
+                code::INVALID_PARAMS,
+                "invalid params",
+                Some("id is a module id"),
+            );
         };
         if !self.modules.contains_key(&module) {
-            return error(id, code::INVALID_PARAMS, "invalid params", Some("not a module"));
+            return error(
+                id,
+                code::INVALID_PARAMS,
+                "invalid params",
+                Some("not a module"),
+            );
         }
         out.push(Out::Show { module });
         ok(id, json!({}))

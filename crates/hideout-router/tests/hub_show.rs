@@ -78,7 +78,9 @@ fn tool(r: &mut Router, pid: Option<u32>, container: Option<&str>, perms: &[&str
 }
 
 fn error_code(out: &[Out], c: ConnId) -> i64 {
-    sends(out, c)[0]["error"]["code"].as_i64().expect("an error")
+    sends(out, c)[0]["error"]["code"]
+        .as_i64()
+        .expect("an error")
 }
 
 #[test]
@@ -168,12 +170,30 @@ fn a_tool_reads_the_one_state_fact_it_was_granted_and_no_other() {
     r.publish("module.foxglove.state", json!("running"));
     r.publish("module.other.state", json!("running"));
     let c = tool(&mut r, Some(1), None, &["facts.read:module.foxglove.state"]);
-    let out = call(&mut r, c, 1, "facts.get", json!({"key": "module.foxglove.state"}));
+    let out = call(
+        &mut r,
+        c,
+        1,
+        "facts.get",
+        json!({"key": "module.foxglove.state"}),
+    );
     assert_eq!(sends(&out, c)[0]["result"]["value"], "running");
-    let out = call(&mut r, c, 2, "facts.get", json!({"key": "module.other.state"}));
+    let out = call(
+        &mut r,
+        c,
+        2,
+        "facts.get",
+        json!({"key": "module.other.state"}),
+    );
     assert_eq!(error_code(&out, c), 5, "{out:?}");
     // Not granted at all: refused, and hub.show still needs no grant.
     let d = tool(&mut r, Some(2), None, &[]);
-    let out = call(&mut r, d, 1, "facts.get", json!({"key": "module.foxglove.state"}));
+    let out = call(
+        &mut r,
+        d,
+        1,
+        "facts.get",
+        json!({"key": "module.foxglove.state"}),
+    );
     assert_eq!(error_code(&out, d), 5, "{out:?}");
 }
