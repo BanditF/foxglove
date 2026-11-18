@@ -51,6 +51,28 @@ Run from the checkout in PowerShell. `$exe` values are your paths.
    - Vulpes (`crates/hideout-panels/tests/vulpes.rs` and `vectors/vulpes.json`): GPU holder and
      the gaming reservation, with the actions "Free GPU" and "Release GPU reservation".
 
+## One fixed app folder (rebuilds keep the same exe path)
+
+Foxglove is never adopted from the build's own path (a cargo target rotates and is deleted).
+`-Adopt`/`-Launch` copy the build to `<demo>\apps\foxglove\foxglove.exe` (skipped when the bytes
+are identical) and adopt THAT path. Every rebuild (yours or On-call's) overwrites the same file,
+so the path in the hub's record never changes and the Keep-my-OK switch, once the user turns it
+on, stays valid (0 clicks per rebuild). A dry run copies nothing. Rollback still starts the
+`-FoxgloveExe` you pass, as before. Grants and the trust default are unchanged.
+
+If a still-running Foxglove holds the fixed exe, the copy fails with a PROBLEM line: stop it, then
+run again.
+
+**Already registered at another path (the old trap).** The script reads the registered `run[0]`
+(from `<demo>\hub\modules\foxglove\<version>\module.toml`). If it is not the fixed path (or cannot be
+read) it prints `WARNING: foxglove is registered at ...` and
+- hub not running: re-adopts at the fixed path (`hideout.exe --adopt` again; grants stay, the
+  binding to the exe is re-asked once, as any moved exe);
+- hub running: adopts nothing and exits 1 with the manual step: run `demo-up.ps1 -DemoHome <demo> -Down`,
+  then run again with `-Adopt`.
+It never leaves the hub quietly on an older build. Vulpes (Arete's own exe) is unchanged: skipped
+when registered.
+
 ## Rollback to standalone Foxglove (one step)
 
 ```powershell
