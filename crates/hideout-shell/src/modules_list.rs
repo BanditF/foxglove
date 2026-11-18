@@ -295,6 +295,13 @@ pub fn row_in(
             true,
             primary(words::TRY_AGAIN, Does::TryAgain),
         ),
+        // Refused only because the user's OK is missing: not a crash. Review… opens the dialog
+        // (a Turn on that waits for the OK), and Allow then starts it.
+        Some("install-failed") if get("failed").as_deref() == Some("ok") => (
+            words::WAITS_FOR_OK.into(),
+            true,
+            primary(words::REVIEW_OK, Does::TurnOn),
+        ),
         Some("install-failed") if get("failed").as_deref() == Some("launch") => (
             words::COULDNT_START.into(),
             true,
@@ -683,6 +690,16 @@ mod tests {
             ),
             (
                 true,
+                vec![
+                    ("module.m.art.state", json!("install-failed")),
+                    ("module.m.art.failed", json!("ok")),
+                ],
+                None,
+                "Waits for your OK",
+                true,
+            ),
+            (
+                true,
                 vec![("module.m.art.state", json!("install-failed"))],
                 None,
                 "Couldn't install or update",
@@ -770,6 +787,14 @@ mod tests {
                     ("module.m.art.failed", json!("launch")),
                 ],
                 Some(("Try again", Does::TryAgain)),
+            ),
+            (
+                true,
+                vec![
+                    ("module.m.art.state", json!("install-failed")),
+                    ("module.m.art.failed", json!("ok")),
+                ],
+                Some((words::REVIEW_OK, Does::TurnOn)),
             ),
             (
                 true,

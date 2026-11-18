@@ -705,6 +705,65 @@ impl Section {
     }
 }
 
+/// First run (UX cut 3): several adopted apps wait for their first OK. One header on the
+/// Modules page, one dialog with a section per app. Plain words ("app"); nothing here
+/// pre-confirms or allows anything.
+pub const FIRST_RUN_BODY: &str =
+    "Each app stays off until you allow it. You review each app's permissions on their own.";
+pub const FIRST_RUN_INTRO: &str = "Each app has its own list. Nothing is allowed until you press Allow, and each sensitive item needs its own “I understand”.";
+
+/// "2 apps wait for your OK".
+pub fn first_run_title(n: usize) -> String {
+    format!("{n} apps wait for your OK")
+}
+
+/// The one header line for apps that wait for their first OK.
+pub fn first_run_header(n: usize) -> PermHeader {
+    header(HeaderKind::FirstRun, "", "", Some((n, "")))
+}
+
+/// The first-run dialog: one section per app, each the app's own permission dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstRun {
+    pub sections: Vec<PermDialog>,
+    /// An inline failure under the buttons.
+    pub error: Option<String>,
+}
+
+impl FirstRun {
+    pub fn title(&self) -> String {
+        let n = self.sections.len();
+        format!("Let {n} apps run in Hideout?")
+    }
+
+    /// How many items Allow would grant across the sections.
+    pub fn count(&self) -> usize {
+        self.sections.iter().map(PermDialog::count).sum()
+    }
+
+    /// "Allow 9", or "Allow none" with nothing counted (the same rule as one dialog).
+    pub fn allow_label(&self) -> String {
+        match self.count() {
+            0 => ALLOW_NONE.into(),
+            n => format!("Allow {n}"),
+        }
+    }
+
+    /// What Allow sends, per section: each section's own list code and its own counted items.
+    pub fn allowed(&self) -> Vec<(String, Allowed)> {
+        self.sections
+            .iter()
+            .map(|d| (d.id.clone(), d.allowed()))
+            .collect()
+    }
+
+    /// The accessible description: the intro and the names of the apps.
+    pub fn said(&self) -> String {
+        let names: Vec<&str> = self.sections.iter().map(|d| d.name.as_str()).collect();
+        format!("{FIRST_RUN_INTRO} {}.", names.join(", "))
+    }
+}
+
 /// Which header line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HeaderKind {
@@ -718,6 +777,8 @@ pub enum HeaderKind {
     Queued,
     /// Allowed, and a signed update asks for more (#1238); `cli` carries (count, first line).
     More,
+    /// Two or more adopted apps wait for their first OK: one header, one dialog (UX cut 3).
+    FirstRun,
 }
 
 /// A hub-drawn header line.
@@ -764,6 +825,11 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
             };
             (format!("{name}'s update asks for more"), body, NOT_NOW)
         }
+        HeaderKind::FirstRun => (
+            first_run_title(cli.map_or(0, |c| c.0)),
+            FIRST_RUN_BODY.into(),
+            NOT_NOW,
+        ),
         HeaderKind::Cli => {
             let (n, when) = cli.unwrap_or((0, ""));
             (

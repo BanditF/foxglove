@@ -149,6 +149,79 @@ fn declining_everything_still_lets_the_module_start_and_a_swapped_program_asks_a
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
 
+/// UX cut 2: a rebuilt app is refused at launch because the OK is missing, which reads "Waits
+/// for your OK" (not the crash wording); the user's Allow then starts it with no Start again.
+/// While the OK is missing nothing runs, and a refusal for another reason is not relabelled.
+#[test]
+fn an_allow_starts_a_module_that_waited_for_the_ok_and_the_row_never_blames_a_crash() {
+    let (home, exe, id) = adopted_home("waits");
+    let id = id.as_str();
+    let hub = hub();
+    let sup = common::start(&home, hub.clone());
+    let code = || {
+        Registry::open_from_env(&home)
+            .unwrap()
+            .permission_list(id)
+            .unwrap()
+            .code()
+            .to_string()
+    };
+    let all = strs(&["hub.notify", "ui.window"]);
+    sup.grant_listed(id, &code(), &all, &[], "dialog").unwrap();
+    sup.turn_on(id).unwrap();
+    let running = sup.pid(id).map(|pid| Process::open(pid).unwrap());
+    sup.turn_off(id);
+    if let Some(p) = running {
+        p.kill(1);
+        let _ = p.wait();
+    }
+    let mut bytes = std::fs::read(&exe).unwrap();
+    bytes.extend_from_slice(b"rebuilt");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::fs::write(&exe, &bytes).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the file stayed locked"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // The hub tries to start it (it is on): refused, not started, worded as waiting.
+    {
+        let mut reg = Registry::open_from_env(&home).unwrap();
+        reg.set_enabled(id, true).unwrap();
+    }
+    sup.feed(hideout_supervisor::policy::Ev::Enable { id: id.into() });
+    assert!(sup.pid(id).is_none(), "started without the OK");
+    let fact = |k: &str| hub.read(|r| r.fact(&format!("module.{id}.{k}")).cloned());
+    assert_eq!(fact("state"), Some(serde_json::json!("install-failed")));
+    assert_eq!(fact("failed"), Some(serde_json::json!("ok")));
+    assert_eq!(
+        fact("reason"),
+        Some(serde_json::json!(hideout_supervisor::words::WAITS_FOR_OK))
+    );
+    // Start again with the OK still missing: still refused, still not started.
+    sup.start_again(id);
+    assert!(sup.pid(id).is_none());
+    assert_eq!(fact("failed"), Some(serde_json::json!("ok")));
+    // The user's Allow for the new file, then Turn on: it runs, no Start again.
+    let list = Registry::open_from_env(&home)
+        .unwrap()
+        .permission_list(id)
+        .unwrap();
+    let shown: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    sup.grant_listed(id, list.code(), &shown, &[], "dialog")
+        .unwrap();
+    sup.turn_on(id).unwrap();
+    let state = fact("state");
+    let pid = sup
+        .pid(id)
+        .unwrap_or_else(|| panic!("not started after the Allow: {state:?}"));
+    assert!(sup.in_module_job(pid));
+    assert_ne!(fact("failed"), Some(serde_json::json!("ok")));
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
 #[test]
 fn an_allow_widens_the_router_only_by_what_it_granted() {
     let (home, _exe, id) = adopted_home("widen");

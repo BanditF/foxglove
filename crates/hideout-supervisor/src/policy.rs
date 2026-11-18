@@ -209,7 +209,15 @@ pub enum Ev {
         version: String,
         previous: String,
     },
+    /// The module is on (Turn on, or the user's Allow that turns it on). From `off` it starts as
+    /// before; from `install-failed` / `crash-stopped` it starts as Start again does (UX cut 2:
+    /// an Allow means running, so the user does not press Start again).
     Enable {
+        id: String,
+    },
+    /// A launch was refused only because the user's OK is missing (the app file is new or moved
+    /// since it was allowed): `install-failed`, worded "Waits for your OK", not a crash.
+    NeedsOk {
         id: String,
     },
     Disable {
@@ -724,6 +732,14 @@ impl Policy {
                 // It came from launching: "Couldn't start <Module>" (UX plan, #983).
                 publish(&mut out, format!("module.{id}.failed"), json!("launch"));
             }
+            Ev::NeedsOk { id } => {
+                if let Some(s) = self.slots.get_mut(&id) {
+                    s.ready_by = None;
+                    let line = words::WAITS_FOR_OK.to_string();
+                    self.set_state(&id, State::InstallFailed, Some(line), &mut out);
+                    publish(&mut out, format!("module.{id}.failed"), json!("ok"));
+                }
+            }
             Ev::NotInstalled { id, path } => {
                 if let Some(s) = self.slots.get_mut(&id) {
                     s.ready_by = None;
@@ -1013,6 +1029,11 @@ impl Policy {
                         } else {
                             self.set_state(&id, State::Idle, None, &mut out);
                         }
+                    } else if !held && matches!(s.state, State::InstallFailed | State::CrashStopped)
+                    {
+                        // The user's OK was given and the module turned on: it starts as Start
+                        // again does. Safe mode, a withdrawn or blocked module start nothing.
+                        self.start_by_hand(&id, false, &mut out);
                     }
                 }
             }
@@ -1554,6 +1575,7 @@ fn history_line(ev: &Ev, p: &Policy) -> Option<(String, String)> {
         Ev::Started { id, instance } => (id.clone(), format!("started instance {instance}")),
         Ev::LaunchFailed { id, reason } => (id.clone(), format!("launch failed: {reason}")),
         Ev::NotInstalled { id, path } => (id.clone(), format!("not installed: {path}")),
+        Ev::NeedsOk { id } => (id.clone(), "launch refused: waits for the user's OK".into()),
         Ev::VersionMismatch {
             id,
             said,
@@ -2059,6 +2081,91 @@ mod withdrawn_tests {
         let cmds = p.handle(revoked(None), t);
         assert_eq!(p.state(ID), Some(State::Off));
         assert!(cmds.iter().all(|c| !matches!(c, Cmd::Notify { .. })));
+    }
+
+    /// A launch refused only for the missing OK reads "Waits for your OK" and `failed` is `ok`,
+    /// never the crash wording; a plain launch failure still says `launch` (not misreported).
+    #[test]
+    fn a_missing_ok_is_worded_as_waiting_and_a_failed_start_is_not_misreported() {
+        let t = Instant::now();
+        let mut p = Policy::new();
+        running(&mut p, t, None);
+        let cmds = p.handle(Ev::NeedsOk { id: ID.into() }, t);
+        assert_eq!(p.state(ID), Some(State::InstallFailed));
+        assert_eq!(fact(&cmds, "failed"), Some(&json!("ok")));
+        assert_eq!(fact(&cmds, "reason"), Some(&json!(words::WAITS_FOR_OK)));
+        let mut p = Policy::new();
+        running(&mut p, t, None);
+        let cmds = p.handle(
+            Ev::LaunchFailed {
+                id: ID.into(),
+                reason: words::DIDNT_START.into(),
+            },
+            t,
+        );
+        assert_eq!(fact(&cmds, "failed"), Some(&json!("launch")));
+        assert_eq!(fact(&cmds, "reason"), Some(&json!(words::DIDNT_START)));
+    }
+
+    /// The user's Allow turns the module on: a module that sat in `install-failed` is started,
+    /// as Start again does. Safe mode and a module that is off for another reason start nothing
+    /// extra, and a module that is already running is not started twice.
+    #[test]
+    fn turn_on_after_the_ok_starts_a_module_that_could_not_start() {
+        let t = Instant::now();
+        let mut p = Policy::new();
+        p.handle(
+            Ev::Known {
+                id: ID.into(),
+                name: "Art".into(),
+                enabled: true,
+                at_enable: true,
+                previous: None,
+            },
+            t,
+        );
+        p.handle(Ev::NeedsOk { id: ID.into() }, t);
+        let cmds = p.handle(Ev::Enable { id: ID.into() }, t);
+        assert_eq!(
+            count(&cmds, |c| matches!(c, Cmd::Launch { .. })),
+            1,
+            "{cmds:?}"
+        );
+        // Not turned on (no Enable): a missing OK alone starts nothing.
+        let mut p = Policy::new();
+        p.handle(
+            Ev::Known {
+                id: ID.into(),
+                name: "Art".into(),
+                enabled: true,
+                at_enable: true,
+                previous: None,
+            },
+            t,
+        );
+        let cmds = p.handle(Ev::NeedsOk { id: ID.into() }, t);
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Launch { .. })), 0);
+        // Safe mode: held, nothing starts.
+        let mut p = Policy::new();
+        p.handle(
+            Ev::Known {
+                id: ID.into(),
+                name: "Art".into(),
+                enabled: true,
+                at_enable: true,
+                previous: None,
+            },
+            t,
+        );
+        p.handle(Ev::NeedsOk { id: ID.into() }, t);
+        p.safe_mode = true;
+        let cmds = p.handle(Ev::Enable { id: ID.into() }, t);
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Launch { .. })), 0);
+        // A running module: Enable starts nothing.
+        let mut p = Policy::new();
+        running(&mut p, t, None);
+        let cmds = p.handle(Ev::Enable { id: ID.into() }, t);
+        assert_eq!(count(&cmds, |c| matches!(c, Cmd::Launch { .. })), 0);
     }
 
     /// An adopted module whose program is gone, or that says another version than its

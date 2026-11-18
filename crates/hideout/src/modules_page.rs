@@ -483,8 +483,12 @@ impl hideout_shell::Page for ModulesPage {
             g.dialog(ui.ctx(), t);
         }
         // The module permission dialog: Allow records the grant, then the module turns on.
-        let done = self.perm.as_mut().and_then(|p| p.dialog(ui.ctx(), t));
-        if let Some(done) = done {
+        let done = self
+            .perm
+            .as_mut()
+            .map(|p| p.dialog(ui.ctx(), t))
+            .unwrap_or_default();
+        for done in done {
             self.after_allow(done);
         }
         // Only while a row counts down and the page is drawn (no frames while hidden).
