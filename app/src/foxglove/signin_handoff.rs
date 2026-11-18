@@ -288,10 +288,9 @@ mod tests {
     fn hub(state: &str) -> Mock {
         let wrote = Arc::new(Mutex::new(Vec::new()));
         let opened = Arc::new(Mutex::new(0));
+        let init = r#"{"jsonrpc":"2.0","id":0,"result":{}}"#;
         let reply = format!(
-            "{}\n{}\n",
-            r#"{"jsonrpc":"2.0","id":0,"result":{}}"#,
-            format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"value":"{state}"}}}}"#),
+            "{init}\n{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"value\":\"{state}\"}}}}\n"
         );
         let h = Hub {
             reply,
