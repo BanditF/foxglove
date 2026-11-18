@@ -1044,9 +1044,26 @@ mod tests {
         f.ui.open(FX, Opener::TurnOn);
         let d = f.ui.dialog.clone().expect("Turn on opens the dialog");
         assert_eq!(d.items.iter().filter(|i| i.allowable).count(), asked);
+        // What Foxglove does itself (HID classes, `net`) is drawn red and starts unchecked: the
+        // user ticks each one.
+        let red = [
+            "device.hid:keyboard",
+            "device.hid:lighting",
+            "device.hid:vendor",
+            "net",
+        ];
+        for r in red {
+            let i = d.items.iter().find(|i| i.raw == r).unwrap();
+            assert!(i.sensitive && !i.checked, "{r}");
+        }
         let done = {
             f.ui.open(FX, Opener::TurnOn);
-            let a = f.ui.dialog.as_ref().unwrap().allowed();
+            let dlg = f.ui.dialog.as_mut().unwrap();
+            for r in red {
+                dlg.set_checked(r, true);
+                dlg.items.iter_mut().find(|i| i.raw == r).unwrap().confirmed = true;
+            }
+            let a = dlg.allowed();
             f.ui.answer(PermAnswer::Allow(a))
         }
         .unwrap();
