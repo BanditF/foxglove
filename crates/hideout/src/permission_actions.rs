@@ -315,14 +315,13 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
     });
     let note = hideout_shell::permission_dialog::status_note(&name, &items);
     let waiting = asked_pending(v).len();
-    // Newest first, so the page can fold the older ones under "and N earlier".
+    // Oldest first; the page shows the last few and folds the rest under "and N earlier".
     let history = v
         .bound
         .as_ref()
         .map(|b| {
             let last = b.attested.len().saturating_sub(1);
-            let mut lines: Vec<String> = b
-                .attested
+            b.attested
                 .iter()
                 .enumerate()
                 .map(|(n, a)| {
@@ -345,22 +344,22 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
                     line.push('.');
                     line
                 })
-                .collect();
-            lines.reverse();
-            lines
+                .collect()
         })
         .unwrap_or_default();
     // A kept binding that went void says when and why (and that the choice is now off).
+    // Only once the void is saved (then `at` is the time it went void); moved or changed comes
+    // from where the app runs now against where it was allowed, never from `binding_void`.
     let kept_void = v
         .bound
         .as_ref()
-        .filter(|b| b.follow.is_some())
-        .zip(v.void)
-        .map(|(b, why)| {
-            keep_void_line(
-                why == hideout_registry::keyboard::VoidReason::Moved,
-                &time_words(&b.at),
-            )
+        .filter(|b| b.follow.is_some() && b.void)
+        .map(|b| {
+            let moved = !b.exe_path.is_empty()
+                && (v.listing.exe_path.is_empty()
+                    || !hideout_registry::keyboard::same_path(&b.exe_path, &v.listing.exe_path)
+                    || !Path::new(&v.listing.exe_path).exists());
+            keep_void_line(moved, &time_words(&b.at))
         });
     let keep = keep_row(&name, v);
     Some(Section {
@@ -374,6 +373,16 @@ pub fn section_for(id: &str, v: &View) -> Option<Section> {
         can_change,
         note,
     })
+}
+
+/// Whether the choice can be turned on for this fresh view: the OK is live (not void, grants
+/// stay), the app is an adopted one on this PC's own drive.
+fn keep_can_turn_on(v: &View) -> bool {
+    v.adopted
+        && v.void.is_none()
+        && !v.granted.is_empty()
+        && v.bound.as_ref().is_some_and(|b| !b.void)
+        && hideout_registry::permission::on_local_fixed_drive(&v.listing.exe_path)
 }
 
 /// The Permissions section's row for the choice; `None` for a module with no app path.
@@ -691,6 +700,11 @@ impl PermUi {
         let Ok(v) = reg.permission_view(id) else {
             return self.note(id, KEEP_NOT_SAVED.into());
         };
+        // A rebuilt, never-checked app must not get the old OK bound to it by this switch.
+        if !keep_can_turn_on(&v) {
+            self.refresh();
+            return self.note(id, keep_allow_first(&v.listing.name));
+        }
         let path = v.listing.exe_path.clone();
         self.keep_confirm = Some(KeepConfirm {
             id: id.into(),
@@ -710,6 +724,15 @@ impl PermUi {
             return;
         };
         if a == KeepAnswer::Cancel {
+            return;
+        }
+        // Looked at again: the app may have been rebuilt while the confirm was open.
+        let fresh = Registry::open_from_env(&self.home)
+            .ok()
+            .and_then(|r| r.permission_view(&k.id).ok());
+        if !fresh.as_ref().is_some_and(keep_can_turn_on) {
+            self.refresh();
+            self.note(&k.id, keep_allow_first(&k.name));
             return;
         }
         let r = hideout_supervisor::driver::grant_listed_dialog_in(
@@ -1730,6 +1753,11 @@ mod tests {
         reg.register_adopted(&f.folder, NOW).unwrap();
         let v = view(&f);
         assert!(v.void.is_some());
+        // Not saved yet: no line (the time would be the Allow time).
+        assert!(section_for(ID, &v).unwrap().kept_void.is_none());
+        reg.void_if_changed(ID, NOW).unwrap();
+        let v = view(&f);
+        assert!(v.void.is_some());
         let s = section_for(ID, &v).unwrap();
         assert!(s
             .kept_void
@@ -1751,5 +1779,62 @@ mod tests {
         assert_eq!(w.len(), "17 Nov 2026, 12:30".len());
         assert_eq!(time_words("2026-11-17"), "17 Nov 2026");
         assert_eq!(time_words("soon"), "soon");
+    }
+
+    #[test]
+    fn a_rebuilt_app_never_gets_the_old_ok_bound_by_the_switch() {
+        let mut f = fx("keep-rebuilt", &["hub.notify", "ui.window"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        let before = view(&f).bound.unwrap();
+        // A new build lands while the choice is off: Turn on refuses and says Allow first.
+        std::fs::write(&f.exe, b"program v2 never checked").unwrap();
+        f.ui.open_keep_confirm(ID);
+        assert!(f.ui.keep_confirm.is_none());
+        let name = view(&f).listing.name;
+        let note =
+            f.ui.entries
+                .iter()
+                .find(|e| e.id == ID)
+                .unwrap()
+                .note
+                .clone();
+        assert_eq!(note, Some(keep_allow_first(&name)));
+        assert!(follow_of(&f).is_none());
+        assert_eq!(view(&f).bound.unwrap().exe_sha256, before.exe_sha256);
+        // And one that lands while the confirm is open: Keep my OK changes nothing.
+        let mut g = fx("keep-rebuilt-open", &["hub.notify", "ui.window"]);
+        allow_all(&mut g, Opener::TurnOn).unwrap();
+        let before = view(&g).bound.unwrap();
+        g.ui.open_keep_confirm(ID);
+        assert!(g.ui.keep_confirm.is_some());
+        std::fs::write(&g.exe, b"program v2 never checked").unwrap();
+        g.ui.answer_keep(KeepAnswer::Keep);
+        assert!(follow_of(&g).is_none());
+        let after = view(&g).bound.unwrap();
+        assert_eq!(after.exe_sha256, before.exe_sha256);
+        assert!(!after.void || after.exe_sha256 == before.exe_sha256);
+    }
+
+    #[test]
+    fn the_void_line_needs_a_saved_void_and_tells_moved_from_changed() {
+        let mut f = fx("keep-void-line", &["hub.notify", "ui.window"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        allow_keeping(&mut f, Opener::Change, true);
+        let v = view(&f);
+        let line = |v: &View| section_for(ID, v).unwrap().kept_void;
+        assert!(line(&v).is_none());
+        let mut saved = v.clone();
+        saved.bound.as_mut().unwrap().void = true;
+        // Void, same place: starts in a new way.
+        assert!(line(&saved)
+            .unwrap()
+            .starts_with("Starts in a new way since "));
+        // Void, runs from elsewhere now: moved.
+        saved.bound.as_mut().unwrap().exe_path = r"C:\Elsewhereulpes.exe".into();
+        assert!(line(&saved).unwrap().starts_with("Moved or removed on "));
+        // Not saved (the Allow time would show): no line.
+        let mut unsaved = v;
+        unsaved.void = Some(hideout_registry::keyboard::VoidReason::Moved);
+        assert!(line(&unsaved).is_none());
     }
 }

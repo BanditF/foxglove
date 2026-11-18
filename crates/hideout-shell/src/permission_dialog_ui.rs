@@ -554,19 +554,18 @@ pub fn section_ui(
             if let Some(v) = &s.kept_void {
                 ui.label(fine(ui, v).color(c(t.attention)));
             }
-            for h in s.history.iter().take(HISTORY_SHOWN) {
-                ui.label(fine(ui, h).color(c(t.text_muted)));
+            let older = s.history.len().saturating_sub(HISTORY_SHOWN);
+            if older > 0 {
+                egui::CollapsingHeader::new(fine(ui, earlier_label(older)).color(c(t.text_muted)))
+                    .id_salt(("hideout.permissions.earlier", &s.id))
+                    .show(ui, |ui| {
+                        for h in s.history.iter().take(older) {
+                            ui.label(fine(ui, h).color(c(t.text_muted)));
+                        }
+                    });
             }
-            if s.history.len() > HISTORY_SHOWN {
-                egui::CollapsingHeader::new(
-                    fine(ui, earlier_label(s.history.len() - HISTORY_SHOWN)).color(c(t.text_muted)),
-                )
-                .id_salt(("hideout.permissions.earlier", &s.id))
-                .show(ui, |ui| {
-                    for h in s.history.iter().skip(HISTORY_SHOWN) {
-                        ui.label(fine(ui, h).color(c(t.text_muted)));
-                    }
-                });
+            for h in s.history.iter().skip(older) {
+                ui.label(fine(ui, h).color(c(t.text_muted)));
             }
             egui::CollapsingHeader::new(
                 egui::RichText::new("Show each permission").color(c(t.text)),
