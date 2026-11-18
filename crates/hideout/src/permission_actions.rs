@@ -1155,6 +1155,11 @@ mod tests {
             "grew by exactly the chosen item"
         );
         assert_eq!(more_header(&f), None);
+        // The old grants never went back to pending, and the binding stayed (growth-only).
+        let reg = Registry::open_from_env(&f.home).unwrap();
+        let m = &reg.inventory.modules[ID];
+        assert!(m.pending_permissions.is_empty());
+        assert!(m.bound.as_ref().is_some_and(|b| !b.void));
         // The declined one says Off now, and the history is back to plain.
         let s = section_for(ID, &v).unwrap();
         assert_eq!(
@@ -1194,6 +1199,28 @@ mod tests {
             .void_if_changed(ID, NOW)
             .unwrap();
         assert_eq!(more_header(&f), Some(HeaderKind::Changed));
+    }
+
+    #[test]
+    fn a_smaller_update_drops_only_the_item_no_longer_asked_and_shows_no_header() {
+        let mut f = fx("less", &["hub.notify", "ui.window"]);
+        allow_all(&mut f, Opener::TurnOn).unwrap();
+        std::fs::write(&f.exe, b"program v2").unwrap();
+        std::fs::write(
+            f.folder.join("module.toml"),
+            manifest(&f.exe, &["hub.notify"]),
+        )
+        .unwrap();
+        let mut reg = Registry::open(&f.home, false).unwrap();
+        reg.register_adopted(&f.folder, NOW).unwrap();
+        reg.attest_update(ID, "1.1.0", "updater", NOW).unwrap();
+        f.ui.refresh();
+        let v = view(&f);
+        assert!(v.void.is_none());
+        let granted: Vec<_> = v.granted.iter().map(|g| g.raw.clone()).collect();
+        assert_eq!(granted, ["hub.notify"], "the remaining grant stays");
+        assert!(asked_pending(&v).is_empty());
+        assert_eq!(more_header(&f), None);
     }
 
     #[test]

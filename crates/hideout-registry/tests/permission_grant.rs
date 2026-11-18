@@ -436,6 +436,83 @@ fn an_attested_update_keeps_the_grants_and_is_recorded() {
     assert!(again.pre_launch(ID).is_ok());
 }
 
+/// The update puts a new program and a new manifest (`perms`) in place and is attested.
+fn update_with(f: &mut Fx, perms: &[&str]) {
+    std::fs::write(&f.exe, b"program v2").unwrap();
+    std::fs::write(f.folder.join("module.toml"), manifest(&f.exe, perms)).unwrap();
+    f.reg.register_adopted(&f.folder, NOW).unwrap();
+    f.reg.attest_update(ID, "1.1.0", "updater", NOW).unwrap();
+}
+
+#[test]
+fn an_attested_update_that_asks_for_more_keeps_the_old_grants_and_only_the_new_wait() {
+    let mut f = fx("grow", &["hub.notify", "ui.window"]);
+    allow_all(&mut f);
+    update_with(
+        &mut f,
+        &[
+            "hub.notify",
+            "ui.window",
+            "provide:a.read",
+            "lighting.lease",
+        ],
+    );
+    let m = &f.reg.inventory.modules[ID];
+    assert_eq!(
+        m.granted,
+        ["hub.notify", "ui.window"],
+        "nothing old is lost"
+    );
+    assert_eq!(
+        m.pending_permissions,
+        ["lighting.lease", "provide:a.read"],
+        "only the new asks wait, and are not granted"
+    );
+    assert!(
+        f.reg.pre_launch(ID).is_ok(),
+        "the kept grant still launches"
+    );
+    assert!(f.reg.void_if_changed(ID, NOW).unwrap().is_none());
+}
+
+#[test]
+fn an_attested_update_that_asks_for_less_drops_only_what_is_no_longer_asked() {
+    let mut f = fx("shrink", &["hub.notify", "ui.window"]);
+    allow_all(&mut f);
+    update_with(&mut f, &["hub.notify"]);
+    let m = &f.reg.inventory.modules[ID];
+    assert_eq!(
+        m.granted,
+        ["hub.notify"],
+        "the item still asked keeps its OK"
+    );
+    assert!(m.pending_permissions.is_empty(), "nothing is asked again");
+    assert!(m.declined_permissions.is_empty());
+    assert!(f.reg.pre_launch(ID).is_ok());
+    assert!(f.reg.void_if_changed(ID, NOW).unwrap().is_none());
+}
+
+#[test]
+fn a_bigger_manifest_without_an_attestation_keeps_nothing() {
+    let mut f = fx("grow-unattested", &["hub.notify"]);
+    allow_all(&mut f);
+    std::fs::write(&f.exe, b"program v2").unwrap();
+    std::fs::write(
+        f.folder.join("module.toml"),
+        manifest(&f.exe, &["hub.notify", "ui.window"]),
+    )
+    .unwrap();
+    f.reg.register_adopted(&f.folder, NOW).unwrap();
+    assert_eq!(
+        f.reg.pre_launch(ID).unwrap_err().id(),
+        Some("trust.mismatch")
+    );
+    assert!(f.reg.void_if_changed(ID, NOW).unwrap().is_some());
+    let m = &f.reg.inventory.modules[ID];
+    assert!(m.granted.is_empty(), "no attestation, no kept grant");
+    assert_eq!(m.pending_permissions, ["hub.notify", "ui.window"]);
+}
+
 #[test]
 fn an_unattested_swap_voids_even_after_an_earlier_attested_update() {
     let mut f = fx("unattested", &["hub.notify"]);
