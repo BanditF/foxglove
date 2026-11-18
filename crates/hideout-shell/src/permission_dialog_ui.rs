@@ -91,7 +91,7 @@ pub(crate) fn perm_dialog_ids(
             let rt = egui::RichText::new(line).color(c(t.attention));
             ui.label(if i == 0 { rt.strong() } else { rt });
         }
-        if d.reason.is_some() {
+        if d.reason.is_some() || !d.before_lines().is_empty() {
             ui.add_space(6.0);
         }
         ui.label(d.intro());
@@ -346,6 +346,12 @@ fn list_ui(ui: &mut egui::Ui, t: &Tokens, d: &mut PermDialog, ids: &mut Vec<egui
                         let r = check(ui, t, &mut item.checked, &item.line);
                         if item.new {
                             ui.label(fine(ui, "New").strong().color(c(t.attention)));
+                        }
+                        if item.before {
+                            ui.label(
+                                fine(ui, crate::permission_dialog::BEFORE_MARK)
+                                    .color(c(t.text_muted)),
+                            );
                         }
                         r
                     })

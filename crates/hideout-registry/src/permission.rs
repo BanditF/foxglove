@@ -240,6 +240,10 @@ pub struct View {
     pub declined: Vec<String>,
     pub pending: Vec<String>,
     pub last_choice: Vec<String>,
+    /// The program runs from exactly the path the grant was bound to (same `run[1..]`), on this
+    /// PC's own fixed drive. Only then may a re-ask show the earlier answer as pre-checked
+    /// (display only). Moved, network, removable or unbound: false.
+    pub same_place: bool,
     pub bound: Option<Bound>,
     /// The program changed or moved since the allow (or the binding was already voided).
     pub void: Option<VoidReason>,
@@ -272,6 +276,16 @@ fn io_invalid(msg: &str) -> Failure {
 pub const FOLLOW_SET_BY: &str = "dialog";
 /// `attested[].by` of a program change kept by a follow-folder grant.
 pub const FOLLOW_ATTESTED_BY: &str = "folder";
+
+/// Whether a re-ask may show the earlier answer as pre-checked: the program is at exactly the
+/// path the grant was bound to, and that path is on this PC's own fixed drive (never a network,
+/// removable or other-host path). Display only; it never grants anything.
+pub fn reask_same_place(current: &str, bound: &str) -> bool {
+    !bound.is_empty()
+        && crate::keyboard::same_path(current, bound)
+        && on_local_fixed_drive(current)
+        && on_local_fixed_drive(bound)
+}
 
 /// Whether a canonical path is on one of this PC's fixed drives: a drive letter (not UNC, not a
 /// `\\.\` device path) whose drive Windows reports as fixed (not network, removable, optical or
@@ -476,12 +490,19 @@ impl Registry {
             })
             .collect();
         granted.sort_by(|a, b| (a.group, &a.raw).cmp(&(b.group, &b.raw)));
+        let same_place = m.source == ADOPTED
+            && m.bound.as_ref().is_some_and(|b| {
+                // Args compared exactly (fail closed): a grant bound with no args does not
+                // match a manifest that now has some.
+                reask_same_place(&listing.exe_path, &b.exe_path) && self.run_args(id) == b.run_args
+            });
         Ok(View {
             listing,
             granted,
             declined: m.declined_permissions.clone(),
             pending: m.pending_permissions.clone(),
             last_choice: m.last_choice.clone(),
+            same_place,
             bound: m.bound.clone(),
             void: self.binding_void(id),
             adopted: m.source == ADOPTED,

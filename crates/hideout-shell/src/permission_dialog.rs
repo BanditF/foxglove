@@ -283,6 +283,14 @@ impl KeepRow {
     }
 }
 
+/// The mark on an item checked from the user's earlier answer.
+pub const BEFORE_MARK: &str = "Allowed before";
+/// Under the reason lines when something is checked from before.
+pub const BEFORE_LINES: [&str; 2] = [
+    "Items marked \"Allowed before\" are checked from your last answer.",
+    "You can uncheck any. Nothing is allowed until you press Allow.",
+];
+
 /// The groups, in the dialog's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
@@ -329,6 +337,9 @@ pub struct ListItem {
     pub confirmed: bool,
     /// Not in the list the user saw before it changed (marked "New").
     pub new: bool,
+    /// Checked from the user's earlier answer for this same app file (display only; nothing is
+    /// allowed until Allow). Never set for a sensitive item.
+    pub before: bool,
 }
 
 impl ListItem {
@@ -370,6 +381,9 @@ impl ListItem {
         }
         if self.new {
             s.push_str(", new");
+        }
+        if self.before {
+            s.push_str(", allowed before");
         }
         s.push_str(if self.checked {
             ", checked"
@@ -414,6 +428,8 @@ pub struct PermDialog {
     pub keep: Option<Keep>,
     /// After a changed list: the lines of items the old list asked for and this one doesn't.
     pub removed: Vec<String>,
+    /// The app is at the very path the grant was bound to (so its file changed, not moved).
+    pub same_place: bool,
     /// An inline failure under the buttons (busy, not saved).
     pub error: Option<String>,
 }
@@ -471,7 +487,19 @@ impl PermDialog {
         s
     }
 
+    /// The lines that say what is pre-checked from before; none when nothing is.
+    pub fn before_lines(&self) -> Vec<String> {
+        if self.items.iter().any(|i| i.before) {
+            BEFORE_LINES.iter().map(|l| (*l).into()).collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     pub fn void_line(&self) -> String {
+        if self.same_place {
+            return format!("{}'s app file changed since you allowed it.", self.name);
+        }
         format!(
             "{}'s app file is new or was moved since you allowed it.",
             self.name
@@ -480,6 +508,12 @@ impl PermDialog {
 
     /// The reason lines on top.
     pub fn reason_lines(&self) -> Vec<String> {
+        let mut v = self.reason_lines_base();
+        v.extend(self.before_lines());
+        v
+    }
+
+    fn reason_lines_base(&self) -> Vec<String> {
         match self.reason {
             Some(Reason::ListChanged) => {
                 let mut v: Vec<String> = LIST_CHANGED.iter().map(|s| (*s).into()).collect();
@@ -878,6 +912,7 @@ mod tests {
             checked,
             confirmed: false,
             new: false,
+            before: false,
         }
     }
 
@@ -905,6 +940,7 @@ mod tests {
             }),
             keep: None,
             removed: Vec::new(),
+            same_place: false,
             error: None,
         }
     }
