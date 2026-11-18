@@ -23,6 +23,13 @@ You can quit the app at any time and the keyboard keeps typing.
 4. **Start with Windows** is on from the first start. Turn it off under **App → Startup and
    updates**.
 
+**Hideout (planned, not available yet).** Hideout is a separate app that will run Foxglove and
+other modules. It will install on its own, into `%LOCALAPPDATA%\Programs\Hideout`, next to
+Foxglove and in either order. Foxglove is not renamed and nothing of yours is moved: its folder,
+settings and Start with Windows shortcut stay as they are, and removing Hideout leaves Foxglove
+working. Until Hideout ships, this section is all you need. Details:
+[packaging.md](packaging.md#two-products-hideout-and-foxglove-planned-not-yet-shipped).
+
 Foxglove then appears in the system tray (the fox icon near the clock; it may be hidden under
 the **^** arrow). Right-click it for the menu:
 
