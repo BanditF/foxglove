@@ -214,10 +214,21 @@ pub fn unheld_rows(
             SUBSYSTEM,
             format!("Keyboard LampArray over {via}"),
             Level::Fail,
-            format!(
-                "Listed by Windows, not held: Foxglove didn't open the keyboard's {via} \
-                 LampArray, so Windows' own background controller may take it. Last open: {last}"
-            ),
+            if last.contains(super::lamp_hold::NOT_FOUND_TEXT) {
+                // Windows' own refusal, after Foxglove's bounded retries: not Foxglove's to fix.
+                format!(
+                    "Windows lists the keyboard's {via} LampArray but won't open it (Element not \
+                     found, 0x80070490). Foxglove already retried with a fresh listing and tries \
+                     again on the next device change. Windows' Dynamic Lighting settings show \
+                     whether Windows itself has it. Last open: {last}"
+                )
+            } else {
+                format!(
+                    "Listed by Windows, not held: Foxglove didn't open the keyboard's {via} \
+                     LampArray, so Windows' own background controller may take it. Last open: \
+                     {last}"
+                )
+            },
         )
     })
     .collect()
@@ -597,6 +608,11 @@ mod tests {
             r[0].detail
         );
         assert!(unheld_rows(usb_only, (true, false), false, None).is_empty());
+        let refused = "keyboard LampArrays after a reopen: USB MISSED, BLE MISSED (Element not \
+                       found 0x80070490)";
+        let r = unheld_rows(usb_only, (true, true), false, Some(refused));
+        assert!(r[0].detail.contains("won't open it"), "{}", r[0].detail);
+        assert!(r[0].detail.contains("retried"), "{}", r[0].detail);
         let both = Holds {
             usb: Some(true),
             ble: Some(false),

@@ -107,6 +107,97 @@ pub struct NotHeld {
     pub reason: String,
 }
 
+impl NotHeld {
+    /// Windows listed this LampArray but answered its open with "Element not found"
+    /// (0x80070490): the interface is in the device database but cannot be activated.
+    pub fn is_not_found(&self) -> bool {
+        self.reason.contains(NOT_FOUND_TEXT)
+    }
+}
+
+/// HRESULT_FROM_WIN32(ERROR_NOT_FOUND): what `LampArray.FromIdAsync` returns for a listed
+/// interface Windows cannot resolve to a live device.
+pub const NOT_FOUND: i32 = 0x8007_0490_u32 as i32;
+
+/// How the 0x80070490 shows in a [`NotHeld::reason`] (the error's own text carries the code).
+pub const NOT_FOUND_TEXT: &str = "0x80070490";
+
+/// Waits between re-list and retry rounds after a 0x80070490: two rounds, one second in all.
+/// Bounded and event-free: it runs once per open on the opener's own worker thread (never the
+/// UI or render thread), and the next retry waits for Windows' next device change.
+pub const RETRY_BACKOFF: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(250),
+    std::time::Duration::from_millis(750),
+];
+
+/// One failed open: the HRESULT and Windows' text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenFail {
+    pub code: i32,
+    pub text: String,
+}
+
+/// What [`retry_not_found`] needs from Windows (or a fake).
+pub trait Reopen {
+    /// What an opened array is.
+    type Item;
+    /// The ids Windows lists now.
+    fn list(&mut self) -> Result<Vec<String>, String>;
+    /// Opens one id.
+    fn open(&mut self, id: &str) -> Result<Self::Item, OpenFail>;
+}
+
+/// What [`retry_not_found`] settled.
+pub struct Retried<T> {
+    /// Opened on a retry.
+    pub opened: Vec<(String, T)>,
+    /// No longer listed: gone, not a failure.
+    pub gone: Vec<String>,
+    /// Still refused (0x80070490 after every round, or another error), with the last error.
+    pub failed: Vec<(String, OpenFail)>,
+}
+
+/// Retries ids whose open answered 0x80070490: after each wait in `backoff` it lists again,
+/// drops the ids no longer listed, and opens the rest. Another error is final at once. A
+/// listing that fails keeps the ids for the next round. Bounded by `backoff`'s length; `sleep`
+/// is the wait (a no-op in tests).
+pub fn retry_not_found<R: Reopen>(
+    src: &mut R,
+    pending: Vec<(String, OpenFail)>,
+    backoff: &[std::time::Duration],
+    sleep: &mut dyn FnMut(std::time::Duration),
+) -> Retried<R::Item> {
+    let mut out = Retried {
+        opened: Vec::new(),
+        gone: Vec::new(),
+        failed: Vec::new(),
+    };
+    let mut pending = pending;
+    for wait in backoff {
+        if pending.is_empty() {
+            break;
+        }
+        sleep(*wait);
+        if let Ok(listed) = src.list() {
+            let (still, gone): (Vec<_>, Vec<_>) =
+                pending.into_iter().partition(|(id, _)| listed.contains(id));
+            out.gone.extend(gone.into_iter().map(|(id, _)| id));
+            pending = still;
+        }
+        let mut next = Vec::new();
+        for (id, _) in pending {
+            match src.open(&id) {
+                Ok(a) => out.opened.push((id, a)),
+                Err(e) if e.code == NOT_FOUND => next.push((id, e)),
+                Err(e) => out.failed.push((id, e)),
+            }
+        }
+        pending = next;
+    }
+    out.failed.extend(pending);
+    out
+}
+
 /// Finds the host-link keyboard's VID/PID when the holder has none yet (waiting for a
 /// discovery in progress; on the holder's own thread only).
 pub type Find = Box<dyn Fn() -> Option<(u16, u16)> + Send>;
@@ -174,6 +265,10 @@ struct Core {
     notify: Arc<dyn Fn() + Send + Sync>,
     /// What the last open found, as logged.
     last: Option<String>,
+    /// The not-held lines of the last open, so a repeat of the same set is not logged again.
+    shown: Vec<NotHeld>,
+    /// A 0x80070490 failure episode is under way (said once; its end is said once).
+    refused: bool,
     /// An open came before the keyboard was known (at startup the watch's first listing and
     /// the Lights worker's scan run before discovery): said once, then quiet until the
     /// keyboard's connect opens them.
@@ -402,9 +497,14 @@ impl Core {
             let _ = tx.send(Job::Changed);
         });
         let opened = self.opener.open(vid, pid, changed);
-        for n in &opened.not_held {
-            eprintln!("Foxglove: LampArray {}: not held: {}", n.id, n.reason);
+        // One set of lines per change, not per reopen: the same refusals again are quiet.
+        if opened.not_held != self.shown {
+            for n in &opened.not_held {
+                eprintln!("Foxglove: LampArray {}: not held: {}", n.id, n.reason);
+            }
+            self.shown = opened.not_held.clone();
         }
+        let refused_now = opened.not_held.iter().any(NotHeld::is_not_found);
         for a in opened.held {
             // A second handle on one held is dropped (closed) here.
             if !self.held.iter().any(|h| h.id == a.id) {
@@ -412,14 +512,37 @@ impl Core {
             }
         }
         let (usb, ble) = (self.listed)(vid, pid);
-        self.record(format!(
+        let line = format!(
             "keyboard LampArrays after {why}: USB {}, BLE {} ({} LampArrays listed, {} skipped \
              by VID/PID, {vid:04x}:{pid:04x} wanted)",
             claim_words(self.has(false), usb),
             claim_words(self.has(true), ble),
             opened.listed,
             opened.skipped
-        ));
+        );
+        match (self.refused, refused_now) {
+            // The episode goes on: the health rows keep the newest line, the log stays quiet.
+            (true, true) => {
+                *LAST_OPEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(line.clone());
+                self.last = Some(line);
+            }
+            (false, true) => {
+                self.refused = true;
+                eprintln!(
+                    "Foxglove: Windows lists the keyboard's LampArray but won't open it \
+                     (Element not found, 0x80070490): retried with a fresh listing, will try \
+                     again on the next device change; quiet until it changes"
+                );
+                self.record(line);
+            }
+            (was, _) => {
+                if was {
+                    self.refused = false;
+                    eprintln!("Foxglove: the keyboard's LampArray opens again (recovered)");
+                }
+                self.record(line);
+            }
+        }
     }
 
     /// Logs an open's outcome and keeps it for [`last_open`].
@@ -591,6 +714,8 @@ fn spawn(
         paused,
         notify,
         last: None,
+        shown: Vec::new(),
+        refused: false,
         waiting: false,
         told_ble: false,
         loss: super::lamp_loss::Tracker::new(super::lamp_loss::Policy::default()),
@@ -941,6 +1066,208 @@ mod tests {
         }
     }
 
+    /// A fake Windows: a listing, and an open that answers 0x80070490 a number of times.
+    struct FakeWindows {
+        listed: Vec<String>,
+        /// Refusals left per id before an open succeeds; `u32::MAX` never succeeds.
+        refusals: std::collections::BTreeMap<String, u32>,
+        /// The ids listed from the second listing on (a call to `list`), when set.
+        later: Option<Vec<String>>,
+        lists: u32,
+        opens: Vec<String>,
+    }
+
+    impl Reopen for FakeWindows {
+        type Item = String;
+
+        fn list(&mut self) -> Result<Vec<String>, String> {
+            self.lists += 1;
+            Ok(self.later.clone().unwrap_or_else(|| self.listed.clone()))
+        }
+
+        fn open(&mut self, id: &str) -> Result<String, OpenFail> {
+            self.opens.push(id.into());
+            match self.refusals.get_mut(id) {
+                Some(n) if *n > 0 => {
+                    if *n != u32::MAX {
+                        *n -= 1;
+                    }
+                    Err(OpenFail {
+                        code: NOT_FOUND,
+                        text: "Element not found. (0x80070490)".into(),
+                    })
+                }
+                _ => Ok(format!("array {id}")),
+            }
+        }
+    }
+
+    fn not_found() -> OpenFail {
+        OpenFail {
+            code: NOT_FOUND,
+            text: "Element not found. (0x80070490)".into(),
+        }
+    }
+
+    fn fake(listed: &[&str], refusals: &[(&str, u32)]) -> FakeWindows {
+        FakeWindows {
+            listed: listed.iter().map(|s| s.to_string()).collect(),
+            refusals: refusals.iter().map(|(k, n)| (k.to_string(), *n)).collect(),
+            later: None,
+            lists: 0,
+            opens: Vec::new(),
+        }
+    }
+
+    fn run(
+        w: &mut FakeWindows,
+        pending: &[&str],
+    ) -> (Retried<String>, Vec<std::time::Duration>) {
+        let mut waits = Vec::new();
+        let r = retry_not_found(
+            w,
+            pending.iter().map(|id| (id.to_string(), not_found())).collect(),
+            &RETRY_BACKOFF,
+            &mut |d| waits.push(d),
+        );
+        (r, waits)
+    }
+
+    #[test]
+    fn a_refused_open_that_then_succeeds_is_opened_on_the_retry() {
+        let mut w = fake(&["usb", "ble"], &[("usb", 1)]);
+        let (r, waits) = run(&mut w, &["usb"]);
+        assert_eq!(r.opened, vec![("usb".to_string(), "array usb".to_string())]);
+        assert!(r.gone.is_empty() && r.failed.is_empty());
+        assert_eq!(waits.as_slice(), RETRY_BACKOFF, "refused once more, opened on the last round");
+        assert_eq!(w.lists, 2, "re-listed before each retry");
+    }
+
+    #[test]
+    fn an_open_that_never_succeeds_stops_at_the_bound_and_fails_with_its_error() {
+        let mut w = fake(&["usb"], &[("usb", u32::MAX)]);
+        let (r, waits) = run(&mut w, &["usb"]);
+        assert!(r.opened.is_empty() && r.gone.is_empty());
+        assert_eq!(r.failed.len(), 1);
+        assert_eq!(r.failed[0].1.code, NOT_FOUND);
+        assert_eq!(waits.as_slice(), RETRY_BACKOFF, "every round waited, no more");
+        assert_eq!(w.opens.len(), RETRY_BACKOFF.len(), "one open per round, no loop");
+        let total: std::time::Duration = waits.iter().sum();
+        assert!(total <= std::time::Duration::from_secs(2), "{total:?}");
+    }
+
+    #[test]
+    fn an_id_that_vanishes_from_the_relisting_is_gone_not_failed() {
+        let mut w = fake(&["usb", "ble"], &[("ble", u32::MAX)]);
+        w.later = Some(vec!["usb".into()]);
+        let (r, _) = run(&mut w, &["ble"]);
+        assert_eq!(r.gone, vec!["ble".to_string()]);
+        assert!(r.failed.is_empty() && r.opened.is_empty());
+        assert!(w.opens.is_empty(), "a gone id is not opened again");
+    }
+
+    #[test]
+    fn another_error_is_final_at_once() {
+        struct Denied(u32);
+        impl Reopen for Denied {
+            type Item = ();
+            fn list(&mut self) -> Result<Vec<String>, String> {
+                Ok(vec!["usb".into()])
+            }
+            fn open(&mut self, _: &str) -> Result<(), OpenFail> {
+                self.0 += 1;
+                Err(OpenFail {
+                    code: 0x8007_0005_u32 as i32,
+                    text: "Access is denied.".into(),
+                })
+            }
+        }
+        let mut w = Denied(0);
+        let r = retry_not_found(
+            &mut w,
+            vec![("usb".into(), not_found())],
+            &RETRY_BACKOFF,
+            &mut |_| {},
+        );
+        assert_eq!((r.failed.len(), w.0), (1, 1), "no second try");
+    }
+
+    #[test]
+    fn a_listing_that_fails_keeps_the_ids_for_the_next_round() {
+        struct Flaky(u32);
+        impl Reopen for Flaky {
+            type Item = ();
+            fn list(&mut self) -> Result<Vec<String>, String> {
+                self.0 += 1;
+                if self.0 == 1 {
+                    Err("busy".into())
+                } else {
+                    Ok(vec!["usb".into()])
+                }
+            }
+            fn open(&mut self, _: &str) -> Result<(), OpenFail> {
+                if self.0 < 2 {
+                    Err(not_found())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let r = retry_not_found(
+            &mut Flaky(0),
+            vec![("usb".into(), not_found())],
+            &RETRY_BACKOFF,
+            &mut |_| {},
+        );
+        assert_eq!(r.opened.len(), 1);
+    }
+
+    /// An opener that reports what it is told, for the episode log.
+    struct Scripted(Arc<Mutex<Vec<NotHeld>>>);
+
+    impl HoldOpener for Scripted {
+        fn open(&mut self, _: u16, _: u16, _: Changed) -> Opened {
+            Opened {
+                held: Vec::new(),
+                listed: 2,
+                skipped: 0,
+                not_held: self.0.lock().unwrap().clone(),
+            }
+        }
+    }
+
+    fn refusal(id: &str) -> NotHeld {
+        NotHeld {
+            id: id.into(),
+            reason: "Windows didn't open it (LampArray.FromIdAsync: Element not found. \
+                     (0x80070490)) after 2 retries"
+                .into(),
+        }
+    }
+
+    #[test]
+    fn a_failure_episode_is_one_episode_and_ends_once() {
+        let mut r = rig();
+        let script = Arc::new(Mutex::new(vec![refusal("usb"), refusal("ble")]));
+        r.core.opener = Box::new(Scripted(script.clone()));
+        r.core.keyboard = Some(CORNE);
+        assert!(!r.core.refused);
+        r.core.open("start");
+        assert!(r.core.refused, "the first refusal starts the episode");
+        assert_eq!(r.core.shown.len(), 2);
+        r.core.open("a reopen");
+        r.core.open("another reopen");
+        assert!(r.core.refused, "still the one episode");
+        assert!(
+            r.core.last.clone().unwrap().contains("another reopen"),
+            "the health rows keep the newest line"
+        );
+        script.lock().unwrap().clear();
+        r.core.open("a device change");
+        assert!(!r.core.refused, "the recovery ends it");
+        assert!(r.core.shown.is_empty());
+    }
+
     struct Rig {
         core: Core,
         rx: mpsc::Receiver<Job>,
@@ -993,6 +1320,8 @@ mod tests {
                 t.fetch_add(1, Ordering::SeqCst);
             }),
             last: None,
+            shown: Vec::new(),
+            refused: false,
             waiting: false,
             told_ble: false,
             loss: crate::foxglove::lamp_loss::Tracker::new(Default::default()),
