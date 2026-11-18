@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! The permission grant bound to the list that was shown (#1178): TOCTOU, narrowing, void on a
-//! program change, and the 13 `foxglove` lines.
+//! program change, and the `foxglove` lines.
 
 use std::path::{Path, PathBuf};
 
@@ -368,11 +368,12 @@ fn every_foxglove_permission_has_a_line_and_a_group() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(perms.len(), 16);
-    let (mut share, mut changes, mut answers) = (0, 0, 0);
+    assert_eq!(perms.len(), 21);
+    let (mut share, mut changes, mut answers, mut red) = (0, 0, 0, 0);
     for p in perms {
         let (g, line, sensitive) = describe(p);
-        assert!(!sensitive, "{p}");
+        // What Foxglove does itself (S4): the HID classes and `net` are drawn red; `files` is not.
+        assert_eq!(sensitive, p == "net" || p.starts_with("device.hid:"), "{p}");
         assert!(
             !line.is_empty() && !line.starts_with("Unknown") && line != p,
             "{p}: {line}"
@@ -381,10 +382,11 @@ fn every_foxglove_permission_has_a_line_and_a_group() {
             Group::ShareStatus => share += 1,
             Group::MakeChanges => changes += 1,
             Group::AnswerQuestions => answers += 1,
+            Group::Sensitive => red += 1,
             other => panic!("{p}: {other:?}"),
         }
     }
-    assert_eq!((share, answers, changes), (2, 8, 6));
+    assert_eq!((share, answers, changes, red), (2, 8, 7, 4));
 }
 
 fn allow_all(f: &mut Fx) {

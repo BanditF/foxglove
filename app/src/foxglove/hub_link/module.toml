@@ -47,6 +47,17 @@ permissions = [
   "provide:wallpaper-engine.pause",
   "provide:wallpaper-engine.release",
   "provide:wallpaper-engine.status",
+  # What Foxglove itself does, outside the hub's brokering (S4, review/sandbox-parking.md): it opens
+  # HID devices (the keyboard's raw-HID link and VIA, the PC's lighting devices, Logitech's
+  # vendor collections), reads and writes its own config folder and the files the user picks,
+  # and opens its own sockets (HTTPS to GitHub for updates and the plugin catalog, a listening
+  # socket on 127.0.0.1 for the wallpaper feed). Each of the last two takes it out of an
+  # AppContainer by design (contract §7.7: `net` and `files` run outside).
+  "device.hid:keyboard",
+  "device.hid:lighting",
+  "device.hid:vendor",
+  "files",
+  "net",
 ]
 
 # Foxglove's panels in the hub (P8): three tiles and one page, built from the keyboard.* facts

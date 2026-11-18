@@ -124,6 +124,13 @@ const OTHER_LINES: &[(&str, &str)] = &[
     ("key.events", "See every key you press"),
     ("hid.raw", "Talk to your devices directly"),
     ("net", "Use the network"),
+    ("files", "Read and write your files"),
+    ("device.hid:keyboard", "Talk to your keyboard directly"),
+    (
+        "device.hid:lighting",
+        "Talk to your PC's lighting devices directly",
+    ),
+    ("device.hid:vendor", "Talk to Logitech devices directly"),
     ("hub.notify", "Show notifications"),
     ("ui.window", "Open a window"),
     ("lighting.lease", "Take over lighting"),
