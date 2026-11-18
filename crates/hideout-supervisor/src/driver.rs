@@ -2003,6 +2003,48 @@ pub fn grant_listed_in(
     declined: &[String],
     by: &str,
 ) -> Result<hideout_registry::permission::Outcome, String> {
+    // Neither the control pipe nor any other caller of this function can set a follow-folder
+    // grant: `keep` is false here, and the registry refuses a follow from any `by` but the
+    // dialog.
+    grant_listed_inner(home, hub, id, list_code, chosen, declined, by, false)
+}
+
+/// [`grant_listed_in`] for the hub's own dialog only (`by` is `dialog`): `keep` is the dialog's
+/// "Keep my OK after updates in this folder", checked and confirmed. The Modules page's
+/// confirm calls it with nothing chosen and nothing declined, so the grants stay as they are.
+pub fn grant_listed_dialog_in(
+    home: &Path,
+    hub: &Hub,
+    id: &str,
+    list_code: &str,
+    chosen: &[String],
+    declined: &[String],
+    keep: bool,
+) -> Result<hideout_registry::permission::Outcome, String> {
+    grant_listed_inner(home, hub, id, list_code, chosen, declined, "dialog", keep)
+}
+
+/// Turn off "Keep my OK after updates in this folder": clears only the follow
+/// ([`Registry::stop_keeping`]). Narrows, so it needs no list code and never asks.
+pub fn stop_keeping_in(home: &Path, id: &str) -> Result<bool, String> {
+    let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
+        .map_err(|e| format!("{e:?}"))?;
+    let was = reg.stop_keeping(id).map_err(|e| format!("{e:?}"))?;
+    log::info!("permissions: {id}: keeping the OK for the folder turned off by user");
+    Ok(was)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grant_listed_inner(
+    home: &Path,
+    hub: &Hub,
+    id: &str,
+    list_code: &str,
+    chosen: &[String],
+    declined: &[String],
+    by: &str,
+    follow: bool,
+) -> Result<hideout_registry::permission::Outcome, String> {
     let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
         .map_err(|e| format!("{e:?}"))?;
     let out = reg
@@ -2013,9 +2055,7 @@ pub fn grant_listed_in(
             declined,
             &hideout_registry::catalogs::now_utc(),
             by,
-            // Follow-folder grants come only from the dialog's switch, not built yet; neither
-            // this path nor the control pipe sets one.
-            false,
+            follow,
         )
         .map_err(|e| e.id().map_or_else(|| format!("{e:?}"), String::from))?;
     for (item, e) in &out.refused {

@@ -646,6 +646,26 @@ impl Registry {
         Ok(left)
     }
 
+    /// Turn off "Keep my OK after updates in this folder": only `bound.follow` is cleared. The
+    /// binding's hash, path, list, history and every grant stay as they are, so the next new
+    /// build voids as it does without a follow, and a build that landed but was not yet checked
+    /// is not recorded as kept. Narrows (like [`Registry::revoke_items`]), so any hub caller may
+    /// use it. Returns whether a follow was cleared.
+    pub fn stop_keeping(&mut self, id: &str) -> Result<bool, Failure> {
+        self.reload_inventory()?;
+        let m = self
+            .inventory
+            .modules
+            .get_mut(id)
+            .ok_or_else(|| Failure::NotInstalled(id.into()))?;
+        let Some(b) = m.bound.as_mut().filter(|b| b.follow.is_some()) else {
+            return Ok(false);
+        };
+        b.follow = None;
+        self.save_inventory()?;
+        Ok(true)
+    }
+
     /// Whether a grant of `id` is bound and the program no longer matches (or was already
     /// voided). Read-only; [`Registry::void_if_changed`] writes.
     pub fn binding_void(&self, id: &str) -> Option<VoidReason> {

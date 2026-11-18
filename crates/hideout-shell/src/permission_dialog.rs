@@ -26,6 +26,263 @@ pub const BUSY: &str = "Hideout is busy. Try again in a moment.";
 pub const NOT_SAVED: &str = "Hideout couldn't save your choice. Nothing changed.";
 pub const SECTION_LABEL: &str = "Permissions";
 
+/// "Keep my OK after updates in this folder" (slice 4 of the rebuild-trust note,
+/// `review/ux-keep-ok-switch.md`). Plain words: "app", never "program", "hash", "grant",
+/// "follow" or an id.
+pub const KEEP_LABEL: &str = "Keep my OK after updates in this folder";
+/// Why the box is off and disabled: a network, removable or unreadable folder.
+pub const KEEP_REFUSED: &str = "Hideout keeps your OK only for a folder on this PC's own drive.";
+/// Binding line 2 while the box is checked.
+pub const KEEP_BINDING: &str = "If the app asks for more or moves, Hideout asks again.";
+pub const KEEP_CONFIRM_TITLE: &str = "Keep your OK for this folder?";
+pub const KEEP_CONFIRM_OK: &str = "Keep my OK";
+pub const CANCEL: &str = "Cancel";
+pub const TURN_ON_KEEP: &str = "Turn on\u{2026}";
+/// The spoken names of the row's buttons (no ellipsis when spoken).
+pub const KEEP_TURN_ON_SAID: &str = "Turn on keep my OK after updates, opens a confirm";
+pub const KEEP_TURN_OFF_SAID: &str = "Turn off keep my OK after updates";
+/// Shown when the choice could not be saved.
+pub const KEEP_NOT_SAVED: &str = "Hideout couldn't save your choice. Nothing was changed.";
+/// How many of the newest history lines show before "and N earlier".
+pub const HISTORY_SHOWN: usize = 3;
+
+/// The last part of a path (`C:\Apps\Foxglove\foxglove.exe` gives `foxglove.exe`).
+pub fn file_of(path: &str) -> String {
+    path.rsplit(['\\', '/']).next().unwrap_or("").to_string()
+}
+
+/// The helper under the label.
+pub fn keep_helper(name: &str, file: &str) -> String {
+    format!(
+        "A new build of {name} saved here as {file} keeps what you allowed. Hideout asks again \
+         if the new build wants more, or if the app moves."
+    )
+}
+
+/// After checking, in the attention colour.
+pub fn keep_warning(name: &str, file: &str) -> String {
+    format!(
+        "Any app saved in this folder as {file} gets what you allowed {name}. Only do this for \
+         a folder where only you put apps."
+    )
+}
+
+/// The accessible name of the "I understand" under the box.
+pub fn keep_understand_said(name: &str, file: &str) -> String {
+    format!("{UNDERSTAND}: any app saved in this folder as {file} gets what you allowed {name}")
+}
+
+/// The polite note after Turn off.
+pub fn keep_off_note(name: &str) -> String {
+    format!("Off. A new build of {name} will need your OK again.")
+}
+
+/// The muted text instead of a button when Turn on is not offered yet.
+pub fn keep_allow_first(name: &str) -> String {
+    format!("Allow {name} first.")
+}
+
+/// Shown when the list changed while the confirm was open.
+pub fn keep_changed_open(name: &str) -> String {
+    format!("{name} changed while this was open. Nothing was changed.")
+}
+
+/// "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder)." and, when the
+/// new build asks for more, "...; 2 new things wait for it." `when` is the local time as
+/// words ("17 Nov 2026, 20:40").
+pub fn keep_history(when: &str, grew: usize) -> String {
+    let mut line = format!("New build on {when}. Your OK stayed (kept for this folder)");
+    if grew > 0 {
+        line.push_str(&format!(
+            "; {grew} new thing{} wait{} for it",
+            if grew == 1 { "" } else { "s" },
+            if grew == 1 { "s" } else { "" }
+        ));
+    }
+    line.push('.');
+    line
+}
+
+/// The line after a kept binding went void: the app moved (or is gone), or starts in a new way.
+pub fn keep_void_line(moved: bool, when: &str) -> String {
+    if moved {
+        format!("Moved or removed on {when}. Keeping your OK after updates is now off.")
+    } else {
+        format!("Starts in a new way since {when}. Keeping your OK after updates is now off.")
+    }
+}
+
+/// "and 4 earlier", over the history when more than [`HISTORY_SHOWN`] lines exist.
+pub fn earlier_label(n: usize) -> String {
+    format!("and {n} earlier")
+}
+
+/// Whether the dialog offers the box or says why not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeepOffer {
+    Offered,
+    Refused(String),
+}
+
+/// The dialog's "Keep my OK after updates in this folder" (None on `PermDialog` for a module with
+/// no app path). Off by default; it starts on, with the understanding done, only when the
+/// choice is already live (so an Allow that leaves the box alone does not turn it off).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Keep {
+    pub offer: KeepOffer,
+    pub on: bool,
+    pub understood: bool,
+}
+
+impl Keep {
+    /// The box on offer; `already`: the choice is live now.
+    pub fn offered(already: bool) -> Keep {
+        Keep {
+            offer: KeepOffer::Offered,
+            on: already,
+            understood: already,
+        }
+    }
+
+    /// The box refused for a folder that is not on this PC's own drive.
+    pub fn refused() -> Keep {
+        Keep {
+            offer: KeepOffer::Refused(KEEP_REFUSED.into()),
+            on: false,
+            understood: false,
+        }
+    }
+
+    pub fn is_refused(&self) -> bool {
+        matches!(self.offer, KeepOffer::Refused(_))
+    }
+
+    /// Allow sends it only when it is offered, checked and understood.
+    pub fn active(&self) -> bool {
+        !self.is_refused() && self.on && self.understood
+    }
+
+    /// The box: unchecking clears the understanding; a refused box stays off.
+    pub fn set_on(&mut self, on: bool) {
+        if self.is_refused() {
+            return;
+        }
+        self.on = on;
+        if !on {
+            self.understood = false;
+        }
+    }
+
+    /// The accessible name: the label and its state.
+    pub fn said(&self) -> String {
+        format!(
+            "{KEEP_LABEL}, {}",
+            if self.on { "checked" } else { "not checked" }
+        )
+    }
+
+    /// The accessible description: the helper, or the reason when disabled.
+    pub fn description(&self, name: &str, file: &str) -> String {
+        match &self.offer {
+            KeepOffer::Offered => keep_helper(name, file),
+            KeepOffer::Refused(r) => r.clone(),
+        }
+    }
+}
+
+/// The small confirm of the Modules page's Turn on…: what it names and the list code it takes
+/// when it opens (the code covers the app's file, so a build that lands meanwhile fails it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeepConfirm {
+    pub id: String,
+    pub name: String,
+    pub file: String,
+    pub folder: String,
+    pub code: String,
+    /// An inline failure under the buttons.
+    pub error: Option<String>,
+}
+
+impl KeepConfirm {
+    /// Line 1 of the body.
+    pub fn line(&self) -> String {
+        keep_warning(&self.name, &self.file)
+    }
+
+    /// The dialog's description: line 1, then the folder.
+    pub fn said(&self) -> String {
+        format!("{} {}", self.line(), self.folder)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeepAnswer {
+    Keep,
+    Cancel,
+}
+
+/// How the Modules page's row stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeepState {
+    On,
+    /// Off, with Turn on… offered.
+    Off,
+    /// Off, no button: the muted reason (a drive that is not local, or "Allow {name} first.").
+    Unavailable(String),
+}
+
+/// The Permissions section's row for the choice: label, state word, one button.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeepRow {
+    pub state: KeepState,
+    pub name: String,
+    pub file: String,
+    pub folder: String,
+}
+
+impl KeepRow {
+    pub fn word(&self) -> &'static str {
+        match self.state {
+            KeepState::On => "On",
+            _ => "Off",
+        }
+    }
+
+    /// The button's text, where one is offered.
+    pub fn button(&self) -> Option<&'static str> {
+        match self.state {
+            KeepState::On => Some(TURN_OFF),
+            KeepState::Off => Some(TURN_ON_KEEP),
+            KeepState::Unavailable(_) => None,
+        }
+    }
+
+    pub fn button_said(&self) -> Option<&'static str> {
+        match self.state {
+            KeepState::On => Some(KEEP_TURN_OFF_SAID),
+            KeepState::Off => Some(KEEP_TURN_ON_SAID),
+            KeepState::Unavailable(_) => None,
+        }
+    }
+
+    /// The muted line under the label.
+    pub fn helper(&self) -> String {
+        match &self.state {
+            KeepState::Unavailable(r) => r.clone(),
+            _ => keep_helper(&self.name, &self.file),
+        }
+    }
+
+    /// The row's accessible name.
+    pub fn said(&self) -> String {
+        format!(
+            "{KEEP_LABEL}, {}, {}",
+            self.word().to_lowercase(),
+            self.folder
+        )
+    }
+}
+
 /// The groups, in the dialog's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
@@ -153,6 +410,8 @@ pub struct PermDialog {
     pub items: Vec<ListItem>,
     pub reason: Option<Reason>,
     pub keyboard: Option<KeyboardChoice>,
+    /// "Keep my OK after updates in this folder"; `None` for a module with no app path.
+    pub keep: Option<Keep>,
     /// After a changed list: the lines of items the old list asked for and this one doesn't.
     pub removed: Vec<String>,
     /// An inline failure under the buttons (busy, not saved).
@@ -166,6 +425,8 @@ pub struct Allowed {
     pub chosen: Vec<String>,
     pub declined: Vec<String>,
     pub keyboard: bool,
+    /// Keep the OK for a new build in this folder: offered, checked and understood.
+    pub keep: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,10 +497,20 @@ impl PermDialog {
         }
     }
 
+    /// The app's file name (last part of `path`).
+    pub fn file(&self) -> String {
+        file_of(&self.path)
+    }
+
     pub fn binding_lines(&self) -> [String; 3] {
+        let keeping = self.keep.as_ref().is_some_and(|k| !k.is_refused() && k.on);
         [
             format!("Only for this copy of {}:", self.name),
-            "If this file or this list changes, Hideout asks again.".into(),
+            if keeping {
+                KEEP_BINDING.into()
+            } else {
+                "If this file or this list changes, Hideout asks again.".into()
+            },
             format!(
                 "You can turn each one off any time in Modules, {}.",
                 self.name
@@ -340,13 +611,21 @@ impl PermDialog {
             chosen,
             declined,
             keyboard: self.keyboard.as_ref().is_some_and(|k| k.on),
+            keep: self.keep.as_ref().is_some_and(Keep::active),
         }
     }
 
-    /// The accessible description: intro plus the binding lines.
+    /// The accessible description: intro plus the binding lines, and the state of the keep box.
     pub fn said(&self) -> String {
         let [a, b, c] = self.binding_lines();
-        format!("{} {a} {} {b} {c}", self.intro(), self.path)
+        let mut s = format!("{} {a} {} {b} {c}", self.intro(), self.path);
+        if let Some(k) = &self.keep {
+            s.push_str(&format!(
+                " {KEEP_LABEL}: {}.",
+                if k.on { "on" } else { "off" }
+            ));
+        }
+        s
     }
 }
 
@@ -397,6 +676,10 @@ pub struct Section {
     pub allowed_on: Option<String>,
     /// "Updated to 0.3.1 on 12 Nov 2026. Your OK stayed." per attested update, oldest first.
     pub history: Vec<String>,
+    /// "Moved or removed on ..." while a kept binding is void; only then.
+    pub kept_void: Option<String>,
+    /// The "Keep my OK after updates in this folder" row; `None` for a module with no app path.
+    pub keep: Option<KeepRow>,
     /// Something Off or waiting can be turned on in the dialog.
     pub can_change: bool,
     /// A line under the section (a turn-off's consequence, or a failure).
@@ -554,6 +837,7 @@ mod tests {
                 on: false,
                 expanded: false,
             }),
+            keep: None,
             removed: Vec::new(),
             error: None,
         }
@@ -714,5 +998,242 @@ mod tests {
             status_note("Foxglove", &mk(ItemWord::Off)).as_deref(),
             Some("Foxglove can't share its status. Its tiles stay empty.")
         );
+    }
+
+    fn kept() -> PermDialog {
+        PermDialog {
+            keep: Some(Keep::offered(false)),
+            ..dialog()
+        }
+    }
+
+    #[test]
+    fn keep_is_off_by_default_and_sent_only_when_checked_and_understood() {
+        let mut d = kept();
+        let k = d.keep.as_ref().unwrap();
+        assert!(!k.on && !k.understood && !k.active());
+        assert!(!d.allowed().keep);
+        d.keep.as_mut().unwrap().set_on(true);
+        assert!(!d.allowed().keep, "checked but not understood");
+        d.keep.as_mut().unwrap().understood = true;
+        assert!(d.allowed().keep);
+        d.keep.as_mut().unwrap().set_on(false);
+        let k = d.keep.as_ref().unwrap();
+        assert!(!k.understood, "unchecking clears the understanding");
+        assert!(!d.allowed().keep);
+        // No keep section at all (a module with no app path): never sent.
+        assert!(!dialog().allowed().keep);
+    }
+
+    #[test]
+    fn a_refused_keep_never_sends_and_stays_off() {
+        let mut d = PermDialog {
+            keep: Some(Keep::refused()),
+            ..dialog()
+        };
+        let k = d.keep.as_mut().unwrap();
+        k.set_on(true);
+        k.understood = true;
+        assert!(!k.on, "a refused box cannot be checked");
+        assert!(!d.allowed().keep);
+        assert_eq!(
+            d.keep
+                .as_ref()
+                .unwrap()
+                .description("Foxglove", "foxglove.exe"),
+            "Hideout keeps your OK only for a folder on this PC's own drive."
+        );
+        assert_eq!(
+            d.binding_lines()[1],
+            "If this file or this list changes, Hideout asks again."
+        );
+    }
+
+    #[test]
+    fn a_live_choice_starts_checked_and_understood() {
+        let d = PermDialog {
+            keep: Some(Keep::offered(true)),
+            ..dialog()
+        };
+        assert!(
+            d.allowed().keep,
+            "an Allow that leaves the box alone keeps it"
+        );
+        assert!(d
+            .said()
+            .ends_with("Keep my OK after updates in this folder: on."));
+    }
+
+    #[test]
+    fn the_binding_line_changes_while_the_box_is_checked() {
+        let mut d = kept();
+        assert_eq!(
+            d.binding_lines()[1],
+            "If this file or this list changes, Hideout asks again."
+        );
+        d.keep.as_mut().unwrap().set_on(true);
+        assert_eq!(
+            d.binding_lines()[1],
+            "If the app asks for more or moves, Hideout asks again."
+        );
+        assert_eq!(
+            d.binding_lines()[2],
+            "You can turn each one off any time in Modules, Foxglove."
+        );
+    }
+
+    #[test]
+    fn the_dialog_says_the_state_of_the_box() {
+        let mut d = kept();
+        let plain = dialog().said();
+        assert_eq!(
+            d.said(),
+            format!("{plain} Keep my OK after updates in this folder: off.")
+        );
+        d.keep.as_mut().unwrap().set_on(true);
+        assert!(d
+            .said()
+            .ends_with("Keep my OK after updates in this folder: on."));
+        let k = d.keep.as_ref().unwrap();
+        assert_eq!(k.said(), "Keep my OK after updates in this folder, checked");
+        assert_eq!(
+            Keep::offered(false).said(),
+            "Keep my OK after updates in this folder, not checked"
+        );
+    }
+
+    #[test]
+    fn the_keep_words_use_the_exact_copy() {
+        assert_eq!(file_of(r"C:\Apps\Fox\foxglove.exe"), "foxglove.exe");
+        assert_eq!(
+            keep_helper("Foxglove", "foxglove.exe"),
+            "A new build of Foxglove saved here as foxglove.exe keeps what you allowed. Hideout \
+             asks again if the new build wants more, or if the app moves."
+        );
+        assert_eq!(
+            keep_warning("Foxglove", "foxglove.exe"),
+            "Any app saved in this folder as foxglove.exe gets what you allowed Foxglove. Only \
+             do this for a folder where only you put apps."
+        );
+        assert_eq!(
+            keep_understand_said("Foxglove", "foxglove.exe"),
+            "I understand: any app saved in this folder as foxglove.exe gets what you allowed \
+             Foxglove"
+        );
+        assert_eq!(
+            keep_off_note("Foxglove"),
+            "Off. A new build of Foxglove will need your OK again."
+        );
+        assert_eq!(keep_allow_first("Foxglove"), "Allow Foxglove first.");
+        assert_eq!(
+            keep_changed_open("Foxglove"),
+            "Foxglove changed while this was open. Nothing was changed."
+        );
+        assert_eq!(KEEP_CONFIRM_TITLE, "Keep your OK for this folder?");
+        assert_eq!((KEEP_CONFIRM_OK, CANCEL), ("Keep my OK", "Cancel"));
+        assert_eq!(earlier_label(4), "and 4 earlier");
+    }
+
+    #[test]
+    fn the_history_says_the_time_and_what_waits() {
+        assert_eq!(
+            keep_history("17 Nov 2026, 20:40", 0),
+            "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder)."
+        );
+        assert_eq!(
+            keep_history("17 Nov 2026, 20:40", 2),
+            "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder); 2 new \
+             things wait for it."
+        );
+        assert_eq!(
+            keep_history("17 Nov 2026, 20:40", 1),
+            "New build on 17 Nov 2026, 20:40. Your OK stayed (kept for this folder); 1 new \
+             thing waits for it."
+        );
+        assert_eq!(
+            keep_void_line(true, "17 Nov 2026, 20:40"),
+            "Moved or removed on 17 Nov 2026, 20:40. Keeping your OK after updates is now off."
+        );
+        assert_eq!(
+            keep_void_line(false, "17 Nov 2026, 20:40"),
+            "Starts in a new way since 17 Nov 2026, 20:40. Keeping your OK after updates is now \
+             off."
+        );
+    }
+
+    #[test]
+    fn the_keep_row_says_state_button_and_folder() {
+        let row = |state| KeepRow {
+            state,
+            name: "Foxglove".into(),
+            file: "foxglove.exe".into(),
+            folder: r"C:\Apps\Fox".into(),
+        };
+        let on = row(KeepState::On);
+        assert_eq!((on.word(), on.button()), ("On", Some("Turn off")));
+        assert_eq!(
+            on.said(),
+            r"Keep my OK after updates in this folder, on, C:\Apps\Fox"
+        );
+        assert_eq!(on.button_said(), Some("Turn off keep my OK after updates"));
+        let off = row(KeepState::Off);
+        assert_eq!((off.word(), off.button()), ("Off", Some("Turn on\u{2026}")));
+        assert_eq!(
+            off.button_said(),
+            Some("Turn on keep my OK after updates, opens a confirm")
+        );
+        assert!(!off.button_said().unwrap().contains('\u{2026}'));
+        let no = row(KeepState::Unavailable(keep_allow_first("Foxglove")));
+        assert_eq!((no.word(), no.button()), ("Off", None));
+        assert_eq!(no.helper(), "Allow Foxglove first.");
+        assert_eq!(off.helper(), keep_helper("Foxglove", "foxglove.exe"));
+    }
+
+    #[test]
+    fn the_keep_confirm_names_the_folder_and_what_it_means() {
+        let c = KeepConfirm {
+            id: "foxglove".into(),
+            name: "Foxglove".into(),
+            file: "foxglove.exe".into(),
+            folder: r"C:\Apps\Fox".into(),
+            code: "7f3a91c20b4e55d1".into(),
+            error: None,
+        };
+        assert_eq!(c.line(), keep_warning("Foxglove", "foxglove.exe"));
+        assert_eq!(c.said(), format!("{} C:\\Apps\\Fox", c.line()));
+    }
+
+    /// The new strings use the plain words: never "program", "hash", "grant", "follow", "bound"
+    /// or an id.
+    #[test]
+    fn the_keep_strings_keep_to_plain_words() {
+        let all = [
+            KEEP_LABEL.to_string(),
+            KEEP_REFUSED.into(),
+            KEEP_BINDING.into(),
+            KEEP_CONFIRM_TITLE.into(),
+            KEEP_CONFIRM_OK.into(),
+            CANCEL.into(),
+            KEEP_TURN_ON_SAID.into(),
+            KEEP_TURN_OFF_SAID.into(),
+            KEEP_NOT_SAVED.into(),
+            keep_helper("Foxglove", "foxglove.exe"),
+            keep_warning("Foxglove", "foxglove.exe"),
+            keep_understand_said("Foxglove", "foxglove.exe"),
+            keep_off_note("Foxglove"),
+            keep_allow_first("Foxglove"),
+            keep_changed_open("Foxglove"),
+            keep_history("17 Nov 2026, 20:40", 0),
+            keep_history("17 Nov 2026, 20:40", 3),
+            keep_void_line(true, "17 Nov 2026, 20:40"),
+            keep_void_line(false, "17 Nov 2026, 20:40"),
+            earlier_label(3),
+        ];
+        for t in all {
+            let l = t.to_lowercase();
+            for bad in ["program", "hash", "grant", "follow", "bound", "sha"] {
+                assert!(!l.contains(bad), "{bad:?} in {t:?}");
+            }
+        }
     }
 }
