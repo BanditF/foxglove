@@ -180,17 +180,27 @@ pub fn set_enabled(
         return Ok(Outcome::SkippedLabRun);
     }
     let mut changed = false;
+    let before = approval.read();
+    if before != Some(on) {
+        // Off with no shortcut still records the value: that is how "removed" stays removed.
+        // Written first: a shortcut with no value reads as On, a value with no shortcut as Off,
+        // so a failure between the two writes can never leave autostart on.
+        approval.write(on)?;
+        changed = true;
+    }
     if on {
         let want = wanted(ctx);
         if folder.read().as_ref() != Some(&want) {
-            folder.write(&want)?;
+            if let Err(e) = folder.write(&want) {
+                // Put the value back as it was.
+                let _ = match before {
+                    Some(v) => approval.write(v),
+                    None => approval.delete(),
+                };
+                return Err(e);
+            }
             changed = true;
         }
-    }
-    if approval.read() != Some(on) {
-        // Off with no shortcut still records the value: that is how "removed" stays removed.
-        approval.write(on)?;
-        changed = true;
     }
     Ok(if changed {
         Outcome::Changed
@@ -426,6 +436,51 @@ mod tests {
         );
         assert_eq!(state(&ctx(), &f, &r), State::On);
         assert_eq!(remove(&ctx(), &mut f, &mut r), Ok(Outcome::Changed));
+    }
+
+    #[test]
+    fn a_failed_write_never_leaves_it_on() {
+        struct BadReg(Reg);
+        impl Approval for BadReg {
+            fn read(&self) -> Option<bool> {
+                self.0.read()
+            }
+            fn write(&mut self, _: bool) -> Result<(), String> {
+                Err("registry".into())
+            }
+            fn delete(&mut self) -> Result<(), String> {
+                self.0.delete()
+            }
+        }
+        struct BadFolder(Folder);
+        impl StartupFolder for BadFolder {
+            fn read(&self) -> Option<Link> {
+                self.0.read()
+            }
+            fn write(&mut self, _: &Link) -> Result<(), String> {
+                Err("disk".into())
+            }
+            fn delete(&mut self) -> Result<(), String> {
+                self.0.delete()
+            }
+            fn exists(&self, p: &Path) -> bool {
+                self.0.exists(p)
+            }
+        }
+        // The value cannot be written: no shortcut is made.
+        let (f, r) = world(None, None);
+        let (mut f, mut r) = (f, BadReg(r));
+        assert!(set_enabled(&ctx(), true, &mut f, &mut r).is_err());
+        assert!(f.link.is_none());
+        assert_ne!(state(&ctx(), &f, &r), State::On);
+        // The shortcut cannot be written: the value goes back to what it was.
+        for before in [None, Some(false)] {
+            let (f, r) = world(None, before);
+            let (mut f, mut r) = (BadFolder(f), r);
+            assert!(set_enabled(&ctx(), true, &mut f, &mut r).is_err());
+            assert_eq!(r.v, before);
+            assert_ne!(state(&ctx(), &f, &r), State::On);
+        }
     }
 
     #[test]

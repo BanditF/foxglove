@@ -41,13 +41,15 @@ pub const DIALOG_TITLE: &str = "Start Hideout when you sign in?";
 pub const DIALOG_BODY: &str = "Hideout adds a shortcut to your Startup folder. It then opens in \
 the tray each time you sign in to Windows. You can turn it off here, or in Windows Settings under \
 Apps, then Startup.";
-pub const DIALOG_REPLACES: &str = "This replaces the other copy's startup shortcut.";
+pub const DIALOG_REPLACES: &str =
+    "The other copy of Hideout will no longer start when you sign in.";
 pub const DIALOG_CONFIRM: &str = "Turn on";
 pub const DIALOG_CANCEL: &str = "Cancel";
 pub const DONE_ON: &str = "Turned on. Hideout starts when you sign in.";
 pub const DONE_OFF: &str = "Turned off. Hideout does not start when you sign in.";
 pub const DONE_REMOVED: &str = "Removed the startup shortcut.";
-pub const FAILED: &str = "That did not work. Nothing was changed that you need to undo.";
+pub const FAILED: &str =
+    "That did not work. You can check Windows Settings under Apps, then Startup.";
 
 // ---- Gate ----------------------------------------------------------------------------------
 
@@ -81,18 +83,23 @@ pub fn availability(ctx: &Context, installed: Option<&std::path::Path>) -> Avail
 
 // ---- The dialog and the user's OK ----------------------------------------------------------
 
-/// Proof the user clicked **Turn on** in the dialog. Cannot be made anywhere else.
+/// Proof the user clicked **Turn on** in the dialog. Both fields are private to this module:
+/// only [`Switch::ask`] makes a [`Dialog`], and only a `Click::Confirm` on it makes this.
 pub struct UserOk(());
 
 /// The open dialog. Dropping it is Cancel.
 #[derive(Debug)]
 pub struct Dialog {
-    pub replaces_other: bool,
+    replaces_other: bool,
 }
 
 impl Dialog {
+    pub fn replaces_other(&self) -> bool {
+        self.replaces_other
+    }
+
     /// The user's click on **Turn on**.
-    pub fn turn_on(self) -> UserOk {
+    fn turn_on(self) -> UserOk {
         UserOk(())
     }
 }
@@ -228,7 +235,7 @@ impl<F: StartupFolder, A: Approval> StartupControl for Switch<F, A> {
                 && matches!(state, State::On | State::Off)
                 && has_link,
             message: self.message.clone(),
-            dialog: self.dialog.as_ref().map(|d| d.replaces_other),
+            dialog: self.dialog.as_ref().map(Dialog::replaces_other),
         }
     }
 
@@ -514,8 +521,17 @@ mod tests {
                     }
                     let bad_call = code.contains("autostart::ensure(")
                         || code.contains("autostart::set_enabled(");
-                    // The one allowed on-write is Switch::turn_on / turn_off here.
-                    if bad_call && name != "startup_switch.rs" {
+                    // The one allowed on-write is Switch::turn_on / turn_off here; only the
+                    // switch and the page's drawing name the dialog's OK.
+                    // (Other dialogs have their own Click and Dialog types: only files that
+                    // use this module count.)
+                    let ok_path = text.contains("startup_switch")
+                        && (code.contains("Click::Confirm")
+                            || code.contains("Dialog {")
+                            || code.contains("UserOk("));
+                    let allowed_ok = ["startup_switch.rs", "settings_view.rs", "shell_tests.rs"]
+                        .contains(&name.as_str());
+                    if (bad_call && name != "startup_switch.rs") || (ok_path && !allowed_ok) {
                         hits.push(format!("{name}:{}", i + 1));
                     }
                 }
