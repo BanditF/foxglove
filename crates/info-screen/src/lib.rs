@@ -9,6 +9,7 @@
 
 pub mod changes;
 pub mod clock;
+pub mod follow;
 pub mod master;
 pub mod mic;
 pub mod panel_lock;
