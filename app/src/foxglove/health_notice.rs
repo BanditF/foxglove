@@ -91,9 +91,55 @@ pub fn due(
     (out, now)
 }
 
+/// Most separate notifications one check sends; more are folded into one summary.
+const MAX_SEPARATE: usize = 2;
+
+/// What goes out for the rows due at a check: nothing for the first check in the hub's module
+/// mode (the baseline: the warnings already there when it connects stay on the health card,
+/// where the hub's own surface shows them), else one notification per row, or one summary
+/// when more than [`MAX_SEPARATE`] are due at once.
+pub fn outgoing(
+    first_check: bool,
+    module: bool,
+    due: &[HealthRow],
+) -> Vec<(String, String, super::live_wire::Level)> {
+    use super::live_wire::Level as Wire;
+    if due.is_empty() || (first_check && module) {
+        return Vec::new();
+    }
+    let wire = |r: &HealthRow| {
+        if r.level == Level::Fail {
+            Wire::Warn
+        } else {
+            Wire::Info
+        }
+    };
+    if due.len() <= MAX_SEPARATE {
+        return due
+            .iter()
+            .map(|r| {
+                let (t, b) = text(r);
+                (t, b, wire(r))
+            })
+            .collect();
+    }
+    let items: Vec<&str> = due.iter().map(|r| r.item.as_str()).collect();
+    let level = if due.iter().any(|r| r.level == Level::Fail) {
+        Wire::Warn
+    } else {
+        Wire::Info
+    };
+    vec![(
+        format!("Keyboard health: {} new warnings", due.len()),
+        format!("{}. See Keyboard health on the App page.", items.join(", ")),
+        level,
+    )]
+}
+
 /// After a health check: notifies the new warnings and failures, and keeps the days sent.
 pub fn check(rows: &[HealthRow]) {
     let mut before = BEFORE.lock().unwrap_or_else(|e| e.into_inner());
+    let first_check = before.is_none();
     // Only this section, read just now and written back on its own.
     let mut sent: Sent = super::store::section(STORE_OWNER, SECTION)
         .try_load()
@@ -107,13 +153,14 @@ pub fn check(rows: &[HealthRow]) {
     if let Err(e) = super::store::section(STORE_OWNER, SECTION).save(&sent) {
         eprintln!("Foxglove: can't keep the health notices' days: {e}");
     }
-    for r in &notify {
-        let (title, body) = text(r);
-        let level = if r.level == Level::Fail {
-            super::live_wire::Level::Warn
-        } else {
-            super::live_wire::Level::Info
-        };
+    let module = super::hub_link::module_mode();
+    if first_check && module {
+        eprintln!(
+            "Foxglove: {} health warning(s) at connect stay on the health card (module mode)",
+            notify.len()
+        );
+    }
+    for (title, body, level) in outgoing(first_check, module, &notify) {
         super::notice::show(super::notice::Kind::Health, &title, &body, level);
     }
 }
@@ -194,6 +241,24 @@ mod tests {
         );
         assert!(n.is_empty());
         assert_eq!(sent.last["relay|Link to the right half"], "2026-11-06");
+    }
+
+    #[test]
+    fn module_mode_connect_is_quiet_and_bursts_fold() {
+        let rows: Vec<HealthRow> = (0..6)
+            .map(|i| row("x", &format!("Item {i}"), Level::Warn, "d"))
+            .collect();
+        assert!(outgoing(true, true, &rows).is_empty(), "module first check");
+        let standalone = outgoing(true, false, &rows);
+        assert_eq!(standalone.len(), 1, "a burst folds into one summary");
+        assert!(standalone[0].0.contains("6 new warnings"));
+        assert_eq!(
+            outgoing(false, true, &rows[..2]).len(),
+            2,
+            "later, up to two"
+        );
+        assert_eq!(outgoing(false, true, &rows[..1]).len(), 1);
+        assert!(outgoing(false, true, &[]).is_empty());
     }
 
     #[test]
