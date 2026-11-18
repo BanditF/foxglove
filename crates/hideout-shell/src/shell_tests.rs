@@ -3239,6 +3239,7 @@ fn renders_the_permission_dialog_for_review() {
                 checked: true,
                 confirmed: false,
                 new: false,
+                before: false,
             })
             .collect();
         if extra {
@@ -3252,6 +3253,7 @@ fn renders_the_permission_dialog_for_review() {
                 checked: false,
                 confirmed: false,
                 new: false,
+                before: false,
             });
             items.push(ListItem {
                 raw: "modules.manage".into(),
@@ -3263,6 +3265,7 @@ fn renders_the_permission_dialog_for_review() {
                 checked: false,
                 confirmed: false,
                 new: false,
+                before: false,
             });
         }
         items.sort_by_key(|i| (i.group, i.raw.clone()));
@@ -3366,6 +3369,7 @@ fn renders_the_permission_dialog_for_review() {
                         checked: true,
                         confirmed: false,
                         new: false,
+                        before: false,
                     });
                     d.items.sort_by_key(|i| (i.group, i.raw.clone()));
                     d.code = "c41e07ab92d3f6a8".into();
@@ -3625,6 +3629,7 @@ fn renders_the_grants_more_header_for_review() {
                 checked: true,
                 confirmed: false,
                 new: true,
+                before: false,
             })
             .collect();
         items.sort_by_key(|i| (i.group, i.raw.clone()));
@@ -3665,6 +3670,83 @@ fn renders_the_grants_more_header_for_review() {
     }
 }
 
+/// Review images for the re-ask that starts at the user's last answer (window-free): the
+/// non-sensitive items allowed before are checked and marked, the sensitive one is not.
+#[test]
+fn renders_the_reask_with_allowed_before_for_review() {
+    use crate::permission_dialog::{Group, ListItem, PermDialog, Reason};
+    use crate::permission_dialog_ui::perm_dialog_ui;
+    let it = |raw: &str, line: &str, g, sensitive: bool, before: bool| ListItem {
+        raw: raw.into(),
+        line: line.into(),
+        group: g,
+        allowable: true,
+        sensitive,
+        reason: None,
+        checked: before,
+        confirmed: false,
+        new: false,
+        before,
+    };
+    for (dark, tag) in [(true, "dark"), (false, "light")] {
+        let t = crate::theme::tokens(dark);
+        let choice = if dark {
+            ThemeChoice::Dark
+        } else {
+            ThemeChoice::Light
+        };
+        let mut items = vec![
+            it("net", "Use the network", Group::Sensitive, true, false),
+            it(
+                "provide:overlay.shown",
+                "Whether the layer overlay is on",
+                Group::AnswerQuestions,
+                false,
+                true,
+            ),
+            it(
+                "provide:tray.set_panel",
+                "Open or close the tray panel",
+                Group::MakeChanges,
+                false,
+                true,
+            ),
+            it(
+                "provide:wallpaper-engine.pause",
+                "Pause your live wallpaper",
+                Group::MakeChanges,
+                false,
+                false,
+            ),
+        ];
+        items[3].new = true;
+        items.sort_by_key(|i| (i.group, i.raw.clone()));
+        let mut d = PermDialog {
+            id: "foxglove".into(),
+            name: "Foxglove".into(),
+            code: "5be0c7d21a9f4e36".into(),
+            path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+            items,
+            reason: Some(Reason::Void),
+            keyboard: None,
+            keep: None,
+            removed: Vec::new(),
+            error: None,
+        };
+        assert_eq!(d.allow_label(), "Allow 2");
+        let (w, h) = (760u32, 720u32);
+        let Some(rgba) = rasterise(w, h, |ctx| {
+            set_theme(ctx, choice);
+            ctx.style_mut(|s| s.animation_time = 0.0);
+            perm_dialog_ui(ctx, &t, &mut d, true);
+        }) else {
+            eprintln!("no system font; render test skipped");
+            return;
+        };
+        save_png(&format!("reask-allowed-before-{tag}.png"), w, h, rgba);
+    }
+}
+
 /// "Waits for your OK" is drawn in the attention tone (#1238); its words carry the meaning, the
 /// colour only has to stay readable on the card and the page in both themes.
 #[test]
@@ -3701,6 +3783,7 @@ fn renders_the_gpu_manager_dialog_for_review() {
             checked: true,
             confirmed,
             new: false,
+            before: false,
         };
         let mut d = PermDialog {
             id: "example.gpu-helper".into(),
@@ -3758,6 +3841,7 @@ fn keep_test_dialog(
             checked: true,
             confirmed: false,
             new: false,
+            before: false,
         })
         .collect();
     PermDialog {
@@ -3974,6 +4058,7 @@ fn first_run_test_dialog() -> crate::permission_dialog::FirstRun {
         checked: !sensitive,
         confirmed: false,
         new: false,
+        before: false,
     };
     let sec = |id: &str, name: &str, code: &str, items| PermDialog {
         id: id.into(),
@@ -4042,6 +4127,7 @@ fn first_run_realistic_dialog() -> crate::permission_dialog::FirstRun {
         checked: !sensitive,
         confirmed: false,
         new: false,
+        before: false,
     };
     let fox = &mut d.sections[0];
     fox.items = vec![

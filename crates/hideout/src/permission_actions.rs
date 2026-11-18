@@ -166,8 +166,9 @@ pub fn date_words(at: &str) -> String {
 }
 
 /// The dialog for `id` as the registry lists it now. Normal-risk items start checked, sensitive
-/// ones and items the user turned off start unchecked; after a void the last choice is the
-/// default (still needing Allow).
+/// ones and items the user turned off start unchecked. After a void (a re-ask) only the
+/// non-sensitive items the user allowed before, for the same file path on a local drive, start
+/// checked and marked "Allowed before"; all else starts unchecked. Display only: Allow decides.
 pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<PermDialog, String> {
     let reg = Registry::open_from_env(home).map_err(|e| format!("{e:?}"))?;
     let v = reg.permission_view(id).map_err(|e| format!("{e:?}"))?;
@@ -178,14 +179,21 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
         .iter()
         .map(|i| {
             let allowable = i.state == ItemState::Asked;
-            let checked = allowable
-                && if after_void && v.last_choice.contains(&i.raw) {
-                    true
-                } else if after_void && v.declined.contains(&i.raw) {
-                    false
-                } else {
-                    !i.sensitive && !v.declined.contains(&i.raw)
-                };
+            // A re-ask (after a void) is display-only help: an item is pre-checked only when the
+            // user allowed it before, it is not sensitive, and the app is at exactly the same
+            // place on this PC's own drive. Everything else (new items, sensitive items, a
+            // moved or network path) starts unchecked. Allow is still the user's click.
+            let before = after_void
+                && allowable
+                && !i.sensitive
+                && v.same_place
+                && v.last_choice.contains(&i.raw)
+                && !v.declined.contains(&i.raw);
+            let checked = if after_void {
+                before
+            } else {
+                allowable && !i.sensitive && !v.declined.contains(&i.raw)
+            };
             ListItem {
                 raw: i.raw.clone(),
                 line: i.line.clone(),
@@ -204,6 +212,7 @@ pub fn build_dialog(home: &Path, id: &str, reason: Option<Reason>) -> Result<Per
                 checked,
                 confirmed: false,
                 new: false,
+                before,
             }
         })
         .collect();
@@ -1438,6 +1447,134 @@ mod tests {
         assert!(!f.ui.needs_ok(ID));
     }
 
+    /// Allows `hub.notify` + `lighting.lease` + sensitive `net` (understood), then changes the
+    /// program file so the next launch voids the grant.
+    fn allowed_then_rebuilt(tag: &str) -> Fx {
+        let mut f = fx(tag, &["hub.notify", "lighting.lease", "net"]);
+        f.ui.open(ID, Opener::TurnOn);
+        {
+            let d = f.ui.dialog.as_mut().unwrap();
+            for i in d.items.iter_mut().filter(|i| i.raw == "net") {
+                i.checked = true;
+                i.confirmed = true;
+            }
+        }
+        let a = f.ui.dialog.as_ref().unwrap().allowed();
+        assert_eq!(a.chosen.len(), 3);
+        f.ui.answer(PermAnswer::Allow(a)).unwrap();
+        std::fs::write(&f.exe, b"program v2").unwrap();
+        Registry::open_from_env(&f.home)
+            .unwrap()
+            .void_if_changed(ID, NOW)
+            .unwrap();
+        f.ui.refresh();
+        f
+    }
+
+    fn item<'a>(d: &'a PermDialog, raw: &str) -> &'a ListItem {
+        d.items.iter().find(|i| i.raw == raw).unwrap()
+    }
+
+    #[test]
+    fn a_rebuild_prechecks_only_non_sensitive_items_allowed_before() {
+        let mut f = allowed_then_rebuilt("cut4-same");
+        assert!(view(&f).same_place);
+        f.ui.open(ID, Opener::Header);
+        let d = f.ui.dialog.clone().unwrap();
+        for raw in ["hub.notify", "lighting.lease"] {
+            let i = item(&d, raw);
+            assert!(i.checked && i.before && !i.sensitive, "{raw}");
+        }
+        // Sensitive: unchecked, unconfirmed, not marked, though it was allowed before.
+        let net = item(&d, "net");
+        assert!(net.sensitive && !net.checked && !net.confirmed && !net.before);
+        assert_eq!(d.allow_label(), "Allow 2");
+        assert!(d.before_lines()[0].contains("Allowed before"));
+        // Allow grants the two, never the sensitive one.
+        let a = d.allowed();
+        assert!(!a.chosen.contains(&"net".to_string()));
+        assert!(a.declined.contains(&"net".to_string()));
+    }
+
+    #[test]
+    fn a_new_item_after_a_rebuild_starts_unchecked() {
+        let mut f = allowed_then_rebuilt("cut4-new");
+        std::fs::write(
+            f.folder.join("module.toml"),
+            manifest(
+                &f.exe,
+                &["hub.notify", "lighting.lease", "net", "ui.window"],
+            ),
+        )
+        .unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&f.folder, NOW)
+            .unwrap();
+        f.ui.refresh();
+        f.ui.open(ID, Opener::Header);
+        let d = f.ui.dialog.clone().unwrap();
+        let w = item(&d, "ui.window");
+        assert!(!w.checked && !w.before);
+        assert!(item(&d, "hub.notify").checked && item(&d, "hub.notify").before);
+    }
+
+    #[test]
+    fn a_moved_app_gets_the_full_ask_with_nothing_prechecked() {
+        let mut f = allowed_then_rebuilt("cut4-moved");
+        let moved = f.exe.parent().unwrap().parent().unwrap().join("other");
+        std::fs::create_dir_all(&moved).unwrap();
+        let exe2 = moved.join("vulpes.exe");
+        std::fs::write(&exe2, b"program v2").unwrap();
+        std::fs::write(
+            f.folder.join("module.toml"),
+            manifest(&exe2, &["hub.notify", "lighting.lease", "net"]),
+        )
+        .unwrap();
+        Registry::open(&f.home, false)
+            .unwrap()
+            .register_adopted(&f.folder, NOW)
+            .unwrap();
+        f.ui.refresh();
+        assert!(!view(&f).same_place);
+        f.ui.open(ID, Opener::Header);
+        let d = f.ui.dialog.clone().unwrap();
+        assert!(d.items.iter().all(|i| !i.checked && !i.before));
+        assert_eq!(d.allow_label(), "Allow none");
+        assert!(d.before_lines().is_empty());
+    }
+
+    #[test]
+    fn a_network_or_other_host_path_is_never_the_same_place() {
+        use hideout_registry::permission::reask_same_place as same;
+        assert!(!same(
+            r"\\server\share\a\vulpes.exe",
+            r"\\server\share\a\vulpes.exe"
+        ));
+        assert!(!same(
+            r"\\?\UNC\server\share\vulpes.exe",
+            r"\\?\UNC\server\share\vulpes.exe"
+        ));
+        assert!(!same("", ""));
+        assert!(!same(r"C:\a\vulpes.exe", r"C:\b\vulpes.exe"));
+        assert!(!same(r"C:\a\vulpes.exe", ""));
+    }
+
+    #[test]
+    fn not_now_after_a_rebuild_grants_nothing_and_keep_stays_off() {
+        let mut f = allowed_then_rebuilt("cut4-cancel");
+        f.ui.open(ID, Opener::Header);
+        let d = f.ui.dialog.clone().unwrap();
+        // Keep is never pre-set, and sending Allow does not turn it on.
+        assert_eq!(d.keep, Some(Keep::offered(false)));
+        assert!(!d.allowed().keep);
+        assert!(f.ui.answer(PermAnswer::NotNow).is_none());
+        let v = view(&f);
+        assert!(v.granted.is_empty(), "Not now grants nothing");
+        assert!(v.void.is_some());
+        assert!(f.ui.needs_ok(ID));
+    }
+
     #[test]
     fn turning_off_only_narrows_and_change_offers_it_again_through_the_full_dialog() {
         let mut f = fx("narrow", &["hub.notify", "ui.window"]);
@@ -1789,6 +1926,7 @@ mod tests {
             checked: false,
             confirmed: false,
             new: false,
+            before: false,
         };
         assert!(item.sensitive);
         let said = item.said();
