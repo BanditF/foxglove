@@ -86,6 +86,7 @@ fn allow_grants_only_the_listed_chosen_items_and_binds_the_program() {
             &strs(&["ui.window"]),
             NOW,
             "dialog",
+            false,
         )
         .unwrap();
     assert_eq!(out.granted, ["hub.notify", "provide:a.read"]);
@@ -115,9 +116,15 @@ fn a_list_that_changed_after_it_was_shown_is_refused_and_writes_nothing() {
     let mut other = Registry::open(&f.home, true).unwrap();
     other.register_adopted(&f.folder, NOW).unwrap();
     let before = std::fs::read(f.home.join("inventory.json")).unwrap();
-    let r = f
-        .reg
-        .approve_listed(ID, shown.code(), &strs(&["hub.notify"]), &[], NOW, "dialog");
+    let r = f.reg.approve_listed(
+        ID,
+        shown.code(),
+        &strs(&["hub.notify"]),
+        &[],
+        NOW,
+        "dialog",
+        false,
+    );
     assert_eq!(id_of(r), "permission.list_changed");
     assert_eq!(
         std::fs::read(f.home.join("inventory.json")).unwrap(),
@@ -127,16 +134,22 @@ fn a_list_that_changed_after_it_was_shown_is_refused_and_writes_nothing() {
     // Also the program: swapped after the dialog opened.
     let shown = f.reg.permission_list(ID).unwrap();
     std::fs::write(&f.exe, b"program swapped").unwrap();
-    let r = f
-        .reg
-        .approve_listed(ID, shown.code(), &strs(&["hub.notify"]), &[], NOW, "cli");
+    let r = f.reg.approve_listed(
+        ID,
+        shown.code(),
+        &strs(&["hub.notify"]),
+        &[],
+        NOW,
+        "cli",
+        false,
+    );
     assert_eq!(id_of(r), "permission.list_changed");
     // A made-up code, a short one and an empty one are refused too.
     let now = f.reg.permission_list(ID).unwrap();
     for bad in ["", "abc", "0000000000000000"] {
         let r = f
             .reg
-            .approve_listed(ID, bad, &strs(&["hub.notify"]), &[], NOW, "cli");
+            .approve_listed(ID, bad, &strs(&["hub.notify"]), &[], NOW, "cli", false);
         assert_eq!(id_of(r), "permission.list_changed", "{bad:?}");
     }
     // The full 64 digits, in upper case, are accepted.
@@ -147,6 +160,7 @@ fn a_list_that_changed_after_it_was_shown_is_refused_and_writes_nothing() {
         &[],
         NOW,
         "cli",
+        false,
     );
     assert!(ok.is_ok(), "{ok:?}");
 }
@@ -162,6 +176,7 @@ fn chosen_items_must_be_in_the_shown_list_and_disjoint_from_declined() {
         &[],
         NOW,
         "cli",
+        false,
     );
     assert!(matches!(r, Err(Failure::Io(_))), "{r:?}");
     let r = f.reg.approve_listed(
@@ -171,6 +186,7 @@ fn chosen_items_must_be_in_the_shown_list_and_disjoint_from_declined() {
         &strs(&["hub.notify"]),
         NOW,
         "cli",
+        false,
     );
     assert!(matches!(r, Err(Failure::Io(_))), "{r:?}");
     assert!(f.reg.inventory.modules[ID].granted.is_empty());
@@ -196,6 +212,7 @@ fn items_in_neither_set_stay_pending_and_never_items_are_refused() {
             &[],
             NOW,
             "cli",
+            false,
         )
         .unwrap();
     assert_eq!(out.granted, ["hub.notify"]);
@@ -218,6 +235,7 @@ fn after_a_grant_the_registry_only_narrows() {
             &[],
             NOW,
             "dialog",
+            false,
         )
         .unwrap();
     let left = f.reg.revoke_items(ID, Some(&strs(&["ui.window"]))).unwrap();
@@ -245,6 +263,7 @@ fn a_manifest_that_asks_for_less_drops_what_it_no_longer_asks() {
             &[],
             NOW,
             "dialog",
+            false,
         )
         .unwrap();
     std::fs::write(
@@ -268,6 +287,7 @@ fn a_new_program_file_voids_the_grant_and_the_old_file_does_not_revive_it() {
             &[],
             NOW,
             "dialog",
+            false,
         )
         .unwrap();
     f.reg.set_enabled(ID, true).unwrap();
@@ -300,6 +320,7 @@ fn a_new_program_file_voids_the_grant_and_the_old_file_does_not_revive_it() {
             &[],
             NOW,
             "dialog",
+            false,
         )
         .unwrap();
     assert!(f.reg.pre_launch(ID).is_ok());
@@ -328,6 +349,7 @@ fn a_provide_that_overlaps_another_adopted_grant_is_listed_as_overlap() {
             &[],
             NOW,
             "dialog",
+            false,
         )
         .unwrap();
     let mine = f.reg.permission_list(ID).unwrap();
@@ -369,7 +391,7 @@ fn allow_all(f: &mut Fx) {
     let list = f.reg.permission_list(ID).unwrap();
     let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
     f.reg
-        .approve_listed(ID, list.code(), &all, &[], NOW, "dialog")
+        .approve_listed(ID, list.code(), &all, &[], NOW, "dialog", false)
         .unwrap();
     f.reg.set_enabled(ID, true).unwrap();
 }
@@ -480,6 +502,9 @@ fn scan(dir: &Path, hits: &mut Vec<String>) {
                 "attest_update",
                 "revoke_items",
                 "deny_listed",
+                // The follow-folder grant: set only by the dialog's Allow, kept hub-side.
+                "keep_followed",
+                "FollowFolder",
             ] {
                 if t.contains(name) {
                     hits.push(format!("{}: {name}", p.display()));
@@ -528,6 +553,7 @@ fn permission_view_reports_pending_granted_declined_void_and_last_choice() {
             &strs(&["ui.window"]),
             NOW,
             "dialog",
+            false,
         )
         .unwrap();
     let v = f.reg.permission_view(ID).unwrap();
@@ -579,8 +605,16 @@ fn changed_program_arguments_void_the_grant() {
     reg.register_adopted(&folder, NOW).unwrap();
     let list = reg.permission_list(ID).unwrap();
     assert_eq!(list.run_args, ["--quiet"]);
-    reg.approve_listed(ID, list.code(), &strs(&["hub.notify"]), &[], NOW, "dialog")
-        .unwrap();
+    reg.approve_listed(
+        ID,
+        list.code(),
+        &strs(&["hub.notify"]),
+        &[],
+        NOW,
+        "dialog",
+        false,
+    )
+    .unwrap();
     assert_eq!(
         reg.inventory.modules[ID].bound.as_ref().unwrap().run_args,
         ["--quiet"]

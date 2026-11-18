@@ -96,6 +96,27 @@ pub struct Bound {
     /// follows the install, not one file hash. Shown on the Modules page.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attested: Vec<Attestation>,
+    /// "Keep my OK after updates in this folder" (#1178 follow-up, design note option A): a new
+    /// hash of the same file is kept, and recorded in `attested` with `by: "folder"`, while the
+    /// program stays at this exact canonical path on a local fixed drive with the same
+    /// `run[1..]`. Set only by an Allow from the hub's dialog ([`Registry::approve_listed`]
+    /// with `follow`); none = the hash binds as before.
+    ///
+    /// [`Registry::approve_listed`]: crate::Registry::approve_listed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<FollowFolder>,
+}
+
+/// The folder and file name a follow-folder grant was set for, and when (always `by: "dialog"`;
+/// any other `by` read from the file is no follow).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FollowFolder {
+    /// Canonical folder of `run[0]` at the Allow.
+    pub folder: String,
+    /// File name of `run[0]` at the Allow.
+    pub file_name: String,
+    pub at: String,
+    pub by: String,
 }
 
 /// One program change the update path vouched for: old file to new file, same install folder.

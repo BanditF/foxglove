@@ -43,7 +43,7 @@ fn the_room_maps_preview_streams_from_its_appcontainer() {
     reg.install(&folder, NOW).unwrap();
     let list = reg.permission_list(ID).unwrap();
     let all: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
-    reg.approve_listed(ID, list.code(), &all, &[], NOW, "dialog")
+    reg.approve_listed(ID, list.code(), &all, &[], NOW, "dialog", false)
         .unwrap();
     reg.set_enabled(ID, true).unwrap();
     let toml = home.join("hideout.toml");

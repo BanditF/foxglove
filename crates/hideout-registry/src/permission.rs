@@ -14,7 +14,7 @@ use hideout_contract::capability::{check_grantable, Capability};
 use hideout_contract::{Error, ErrorId};
 use serde::Serialize;
 
-use crate::inventory::{Bound, ADOPTED};
+use crate::inventory::{Bound, FollowFolder, ADOPTED};
 use crate::keyboard::{canonical_path, VoidReason};
 use crate::{adopted_exe, Failure, Registry};
 
@@ -261,6 +261,53 @@ fn io_invalid(msg: &str) -> Failure {
     Failure::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))
 }
 
+/// The only `by` that may set a follow-folder grant: the hub's own dialog.
+pub const FOLLOW_SET_BY: &str = "dialog";
+/// `attested[].by` of a program change kept by a follow-folder grant.
+pub const FOLLOW_ATTESTED_BY: &str = "folder";
+
+/// Whether a canonical path is on one of this PC's fixed drives: a drive letter (not UNC, not a
+/// `\\.\` device path) whose drive Windows reports as fixed (not network, removable, optical or
+/// RAM disk). A mapped network drive canonicalizes to its UNC form and fails too.
+pub fn on_local_fixed_drive(path: &str) -> bool {
+    let p = crate::keyboard::strip_verbatim(path).replace('/', "\\");
+    if crate::keyboard::is_unc(&p) || p.starts_with("\\\\") {
+        return false;
+    }
+    let b = p.as_bytes();
+    if b.len() < 4 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+        return false;
+    }
+    drive_is_fixed(&p[..3])
+}
+
+#[cfg(windows)]
+fn drive_is_fixed(root: &str) -> bool {
+    // DRIVE_FIXED (winbase.h).
+    const DRIVE_FIXED: u32 = 3;
+    let wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe { windows_sys::Win32::Storage::FileSystem::GetDriveTypeW(wide.as_ptr()) == DRIVE_FIXED }
+}
+
+#[cfg(not(windows))]
+fn drive_is_fixed(_: &str) -> bool {
+    false
+}
+
+/// Folder and file name of a canonical path (`\\?\` stripped, backslashes).
+fn split_program(path: &str) -> (String, String) {
+    let p = std::path::PathBuf::from(crate::keyboard::strip_verbatim(path).replace('/', "\\"));
+    (
+        p.parent()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    )
+}
+
 impl Registry {
     /// The program of a module now: canonical path and SHA-256 of the file for an adopted one.
     /// A module the hub installed itself has no external program: its path is empty and its
@@ -444,6 +491,14 @@ impl Registry {
     ///
     /// Called only from the hub's dialog and the control pipe's handler; `by` is `dialog` or
     /// `cli`.
+    ///
+    /// `follow` is the dialog's "Keep my OK after updates in this folder": the binding then
+    /// keeps a new hash of the same file ([`FollowFolder`]). Only `by == "dialog"` may set it,
+    /// and only for an adopted program on a local fixed drive; anything else is refused and
+    /// nothing is written. Every Allow states it again: `false` leaves no follow.
+    ///
+    /// [`FollowFolder`]: crate::inventory::FollowFolder
+    #[allow(clippy::too_many_arguments)]
     pub fn approve_listed(
         &mut self,
         id: &str,
@@ -452,12 +507,35 @@ impl Registry {
         declined: &[String],
         now: &str,
         by: &str,
+        follow: bool,
     ) -> Result<Outcome, Failure> {
         self.reload_inventory()?;
         let list = self.permission_list(id)?;
         if !list.matches(list_code) {
             return Err(list_changed(list_code, list.code()));
         }
+        let follow = if follow {
+            if by != FOLLOW_SET_BY {
+                return Err(Failure::Check(Error::new(
+                    ErrorId::PermissionCaller,
+                    "only the Hideout window can keep the OK for a folder",
+                )));
+            }
+            if list.exe_path.is_empty() || !on_local_fixed_drive(&list.exe_path) {
+                return Err(io_invalid(
+                    "the OK can be kept only for an app in a folder on this PC's own drive",
+                ));
+            }
+            let (folder, file_name) = split_program(&list.exe_path);
+            Some(FollowFolder {
+                folder,
+                file_name,
+                at: now.into(),
+                by: FOLLOW_SET_BY.into(),
+            })
+        } else {
+            None
+        };
         let shown = |r: &String| list.items.iter().any(|i| &i.raw == r);
         if chosen.iter().chain(declined).any(|r| !shown(r)) {
             return Err(io_invalid("an item is not in the list that was shown"));
@@ -509,6 +587,7 @@ impl Registry {
             run_args: list.run_args.clone(),
             void: false,
             attested: m.bound.take().map(|b| b.attested).unwrap_or_default(),
+            follow,
         });
         self.save_inventory()?;
         let refused: Vec<(String, Error)> = refused_raw.into_iter().zip(refused).collect();
@@ -530,7 +609,7 @@ impl Registry {
         now: &str,
         by: &str,
     ) -> Result<Outcome, Failure> {
-        self.approve_listed(id, list_code, &[], declined, now, by)
+        self.approve_listed(id, list_code, &[], declined, now, by, false)
     }
 
     /// Narrows: `items` (or every grant for `None`) stop being granted and are recorded as
@@ -585,7 +664,11 @@ impl Registry {
                 } else if !crate::keyboard::same_path(&path, &b.exe_path) {
                     Some(VoidReason::Moved)
                 } else if !hash.eq_ignore_ascii_case(&b.exe_sha256) {
-                    Some(VoidReason::Changed)
+                    if self.follows(id, b, &path) {
+                        None
+                    } else {
+                        Some(VoidReason::Changed)
+                    }
                 } else {
                     None
                 }
@@ -595,11 +678,99 @@ impl Registry {
         }
     }
 
+    /// Whether `b`'s follow-folder grant keeps a new hash of the program now at `path`
+    /// (canonical, as [`Registry::program`] read it): a follow set by the dialog, the binding
+    /// not void, `path` exactly the bound path and exactly the follow's folder and file name, on
+    /// a local fixed drive, and `run[1..]` exactly as at the Allow (an empty list included).
+    /// The path is canonical, so a junction, symlink or 8.3 name that leads elsewhere is
+    /// another path and never follows.
+    fn follows(&self, id: &str, b: &Bound, path: &str) -> bool {
+        let Some(f) = b.follow.as_ref() else {
+            return false;
+        };
+        let (folder, file_name) = split_program(path);
+        f.by == FOLLOW_SET_BY
+            && !b.void
+            && !b.exe_sha256.is_empty()
+            && crate::keyboard::same_path(path, &b.exe_path)
+            && crate::keyboard::same_path(&folder, &f.folder)
+            && file_name.eq_ignore_ascii_case(&f.file_name)
+            && on_local_fixed_drive(path)
+            && self.run_args(id) == b.run_args
+    }
+
+    /// Records a program change a follow-folder grant keeps (#1178 follow-up): the binding's
+    /// hash moves to the new file and `attested` gets an entry `by: "folder"`; an `on` keyboard
+    /// record for the old file moves with it. Does nothing (false) without a follow, with no
+    /// change, or with a change the follow does not keep (that one voids as before). Hub-side
+    /// only; the turn-on check and the launch call it before they check the binding.
+    pub fn keep_followed(&mut self, id: &str, now: &str) -> Result<bool, Failure> {
+        let Some(m) = self.inventory.modules.get(id) else {
+            return Ok(false);
+        };
+        let Some(b) = m.bound.as_ref().filter(|b| b.follow.is_some()) else {
+            return Ok(false);
+        };
+        if m.source != ADOPTED {
+            return Ok(false);
+        }
+        let Ok((path, hash)) = self.program(id) else {
+            return Ok(false);
+        };
+        if hash.eq_ignore_ascii_case(&b.exe_sha256) || !self.follows(id, b, &path) {
+            return Ok(false);
+        }
+        let (old, follow, version) = (b.exe_sha256.clone(), b.follow.clone(), m.version.clone());
+        let rec = crate::inventory::Attestation {
+            from_sha256: old.clone(),
+            to_sha256: hash.clone(),
+            from_path: b.exe_path.clone(),
+            to_path: path.clone(),
+            version,
+            at: now.into(),
+            by: FOLLOW_ATTESTED_BY.into(),
+        };
+        let mut kept = false;
+        let inv = crate::inventory::Inventory::update(&self.home.join("inventory.json"), |inv| {
+            let Some(m) = inv.modules.get_mut(id) else {
+                return;
+            };
+            // Only the binding that was checked: another writer meanwhile (a void, a new
+            // Allow, an attested update) wins.
+            let Some(b) = m.bound.as_mut().filter(|b| {
+                !b.void
+                    && b.exe_sha256.eq_ignore_ascii_case(&old)
+                    && b.follow == follow
+                    && crate::keyboard::same_path(&b.exe_path, &path)
+            }) else {
+                return;
+            };
+            b.exe_sha256 = hash.clone();
+            b.attested.push(rec.clone());
+            let n = b.attested.len();
+            if n > 20 {
+                b.attested.drain(..n - 20);
+            }
+            if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&path, &old)) {
+                k.sha256 = hash.clone();
+            }
+            kept = true;
+        })?;
+        if let Some(m) = inv.modules.get(id) {
+            self.inventory.modules.insert(id.into(), m.clone());
+        }
+        Ok(kept)
+    }
+
     /// The check at every turn on and launch: if the app is not the one the grant is bound
     /// to, the grant is **void**: `granted` goes back to pending (the choices kept as
     /// `last_choice`), the binding's hash is cleared (the old file does not revive it) and the
     /// keyboard record goes void. Returns the reason when it voided now.
+    ///
+    /// A change a follow-folder grant keeps is recorded first ([`Registry::keep_followed`]) and
+    /// does not void.
     pub fn void_if_changed(&mut self, id: &str, now: &str) -> Result<Option<VoidReason>, Failure> {
+        self.keep_followed(id, now)?;
         let Some(reason) = self.binding_void(id) else {
             return Ok(None);
         };
