@@ -3239,6 +3239,7 @@ fn renders_the_permission_dialog_for_review() {
                 on: false,
                 expanded: false,
             }),
+            keep: None,
             removed: Vec::new(),
             error: None,
         }
@@ -3284,6 +3285,8 @@ fn renders_the_permission_dialog_for_review() {
         allowed_on: Some("Allowed from the command line on 13 Nov 2026".into()),
         history: vec!["Updated to 0.3.1 on 14 Nov 2026. Your OK stayed.".into()],
         can_change: true,
+        kept_void: None,
+        keep: None,
         note: crate::permission_dialog::status_note("Foxglove", &section_items()),
     };
     for (dark, name) in [(true, "dark"), (false, "light")] {
@@ -3508,6 +3511,8 @@ fn renders_the_grants_more_header_for_review() {
                     if n_new == 1 { "" } else { "s" }, if n_new == 1 { "s" } else { "" })
             }],
             can_change: true,
+            kept_void: None,
+            keep: None,
             note: None,
         }
     };
@@ -3593,6 +3598,7 @@ fn renders_the_grants_more_header_for_review() {
             items,
             reason: Some(Reason::More),
             keyboard: None,
+            keep: None,
             removed: Vec::new(),
             error: None,
         };
@@ -3681,6 +3687,7 @@ fn renders_the_gpu_manager_dialog_for_review() {
             ],
             reason: None,
             keyboard: None,
+            keep: None,
             removed: Vec::new(),
             error: None,
         };
@@ -3694,4 +3701,224 @@ fn renders_the_gpu_manager_dialog_for_review() {
         };
         save_png(&format!("gpu-manager-{tag}.png"), w, h, rgba);
     }
+}
+
+/// A dialog with `n` allowable items for the keep-box tests.
+fn keep_test_dialog(
+    n: usize,
+    keep: Option<crate::permission_dialog::Keep>,
+) -> crate::permission_dialog::PermDialog {
+    use crate::permission_dialog::{Group, ListItem, PermDialog};
+    let items = (0..n)
+        .map(|i| ListItem {
+            raw: format!("answer:thing.{i:02}"),
+            line: format!("Answer question number {i}"),
+            group: Group::AnswerQuestions,
+            allowable: true,
+            sensitive: false,
+            reason: None,
+            checked: true,
+            confirmed: false,
+            new: false,
+        })
+        .collect();
+    PermDialog {
+        id: "foxglove".into(),
+        name: "Foxglove".into(),
+        code: "7f3a91c20b4e55d1".into(),
+        path: r"C:\Program Files\Foxglove\foxglove.exe".into(),
+        items,
+        reason: None,
+        keyboard: None,
+        keep,
+        removed: Vec::new(),
+        error: None,
+    }
+}
+
+/// The keep box sits after the list and before Allow in Tab order; the "I understand" appears
+/// only once it is checked; Tab stays inside; the dialog says the box's state and the box has
+/// the helper as its description.
+#[test]
+fn the_keep_box_has_its_place_in_tab_order_and_is_described() {
+    use crate::permission_dialog::{Keep, KEEP_LABEL};
+    use crate::permission_dialog_ui::perm_dialog_ids;
+    let t = crate::theme::tokens(true);
+    for checked in [false, true] {
+        let mut d = keep_test_dialog(3, Some(Keep::offered(false)));
+        if checked {
+            d.keep.as_mut().unwrap().set_on(true);
+        }
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut ids = Vec::new();
+        let mut last = None;
+        for i in 0..3 {
+            last = Some(ctx.run(input(800.0, 900.0, vec![]), |c| {
+                ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
+            }));
+        }
+        // All, 3 items, the keep box, [I understand], Allow, Not now.
+        assert_eq!(ids.len(), 1 + 3 + 1 + usize::from(checked) + 2, "{ids:?}");
+        let upd = last.unwrap().platform_output.accesskit_update.unwrap();
+        let find = |l: &str| {
+            upd.nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some(l))
+                .map(|(id, n)| (*id, n.description().map(str::to_owned)))
+        };
+        let state = if checked { "checked" } else { "not checked" };
+        let (_, desc) = find(&format!("{KEEP_LABEL}, {state}")).expect("the box is named");
+        assert_eq!(
+            desc.as_deref(),
+            Some(crate::permission_dialog::keep_helper("Foxglove", "foxglove.exe").as_str())
+        );
+        let dialog = upd
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == egui::accesskit::Role::Dialog)
+            .map(|(_, n)| n.description().unwrap().to_owned())
+            .unwrap();
+        assert!(
+            dialog.ends_with(&format!(
+                "{KEEP_LABEL}: {}.",
+                if checked { "on" } else { "off" }
+            )),
+            "{dialog}"
+        );
+        let understand = crate::permission_dialog::keep_understand_said("Foxglove", "foxglove.exe");
+        assert_eq!(find(&understand).is_some(), checked);
+        // Tab stays inside.
+        let tab = key(Key::Tab, Modifiers::NONE);
+        for _ in 0..(ids.len() + 3) {
+            let _ = ctx.run(input(800.0, 900.0, vec![tab.clone()]), |c| {
+                ids = perm_dialog_ids(c, &t, &mut d, false).1;
+            });
+            let f = ctx.memory(|m| m.focused());
+            assert!(f.is_some_and(|f| ids.contains(&f)), "focus left: {f:?}");
+        }
+    }
+}
+
+/// A refused box is disabled, outside Tab order, and says why.
+#[test]
+fn a_refused_keep_box_is_disabled_and_says_why() {
+    use crate::permission_dialog::{Keep, KEEP_REFUSED};
+    use crate::permission_dialog_ui::perm_dialog_ids;
+    let t = crate::theme::tokens(true);
+    let mut d = keep_test_dialog(2, Some(Keep::refused()));
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut ids = Vec::new();
+    let mut out = None;
+    for i in 0..3 {
+        out = Some(ctx.run(input(800.0, 900.0, vec![]), |c| {
+            ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
+        }));
+    }
+    assert_eq!(ids.len(), 1 + 2 + 2, "no keep box in Tab order: {ids:?}");
+    let upd = out.unwrap().platform_output.accesskit_update.unwrap();
+    assert!(upd
+        .nodes
+        .iter()
+        .any(|(_, n)| n.description() == Some(KEEP_REFUSED)));
+    assert!(!d.allowed().keep);
+}
+
+/// On a 720 px high window a long list scrolls inside and Allow / Not now stay on screen, with
+/// the keep box checked (the tallest the fixed part gets).
+#[test]
+fn the_keep_box_leaves_the_buttons_on_a_720_px_window() {
+    use crate::permission_dialog::Keep;
+    use crate::permission_dialog_ui::perm_dialog_ids;
+    let t = crate::theme::tokens(true);
+    for n in [3usize, 30] {
+        let mut d = keep_test_dialog(n, Some(Keep::offered(false)));
+        d.keep.as_mut().unwrap().set_on(true);
+        let ctx = egui::Context::default();
+        let mut ids = Vec::new();
+        for i in 0..6 {
+            let _ = ctx.run(input(900.0, 720.0, vec![]), |c| {
+                ids = perm_dialog_ids(c, &t, &mut d, i == 0).1;
+            });
+        }
+        let n_ids = ids.len();
+        for id in &ids[n_ids - 2..] {
+            let r = ctx.read_response(*id).expect("drawn").rect;
+            assert!(r.bottom() <= 720.0, "n={n}: button bottom {}", r.bottom());
+            assert!(r.top() >= 0.0);
+        }
+        // The keep box and its understanding are on screen too.
+        for id in &ids[n_ids - 4..n_ids - 2] {
+            let r = ctx.read_response(*id).expect("drawn").rect;
+            assert!(r.bottom() <= 720.0 && r.top() >= 0.0, "n={n}: {r:?}");
+        }
+    }
+}
+
+/// The Modules confirm: Cancel is focused on open, Enter does not keep, Esc cancels, Tab stays
+/// inside, and the dialog is named and described.
+#[test]
+fn the_keep_confirm_answers_cancel_by_default_and_traps_tab() {
+    use crate::permission_dialog::{KeepAnswer, KeepConfirm, KEEP_CONFIRM_TITLE};
+    use crate::permission_dialog_ui::keep_confirm_ids;
+    let k = KeepConfirm {
+        id: "foxglove".into(),
+        name: "Foxglove".into(),
+        file: "foxglove.exe".into(),
+        folder: r"C:\Apps\Fox".into(),
+        code: "7f3a91c20b4e55d1".into(),
+        error: None,
+    };
+    let t = crate::theme::tokens(true);
+    let run = |frames: Vec<Vec<Event>>| {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut got = Vec::new();
+        let mut ids = Vec::new();
+        let mut last = None;
+        for (i, ev) in frames.into_iter().enumerate() {
+            last = Some(ctx.run(input(800.0, 600.0, ev), |c| {
+                let (a, v) = keep_confirm_ids(c, &t, &k, i == 0);
+                got.push(a);
+                ids = v;
+            }));
+        }
+        (got, ids, ctx, last.unwrap())
+    };
+    let (got, ids, ctx, out) = run(vec![vec![], vec![], vec![key(Key::Enter, Modifiers::NONE)]]);
+    assert_eq!(
+        ctx.memory(|m| m.focused()),
+        Some(ids[1]),
+        "Cancel is focused"
+    );
+    assert!(got.iter().all(|a| *a != Some(KeepAnswer::Keep)), "{got:?}");
+    let dialog = out
+        .platform_output
+        .accesskit_update
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|(_, n)| n.role() == egui::accesskit::Role::Dialog)
+        .map(|(_, n)| {
+            (
+                n.label().map(str::to_owned),
+                n.description().map(str::to_owned),
+            )
+        })
+        .unwrap();
+    assert_eq!(dialog.0.as_deref(), Some(KEEP_CONFIRM_TITLE));
+    assert_eq!(dialog.1.as_deref(), Some(k.said().as_str()));
+    let (got, _, _, _) = run(vec![vec![], vec![key(Key::Escape, Modifiers::NONE)]]);
+    assert_eq!(got.last().unwrap(), &Some(KeepAnswer::Cancel));
+    let tab = key(Key::Tab, Modifiers::NONE);
+    let (_, ids, ctx, _) = run(vec![
+        vec![],
+        vec![],
+        vec![tab.clone()],
+        vec![tab.clone()],
+        vec![tab],
+    ]);
+    let f = ctx.memory(|m| m.focused());
+    assert!(f.is_some_and(|f| ids.contains(&f)));
 }

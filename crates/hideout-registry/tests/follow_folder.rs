@@ -385,3 +385,67 @@ fn a_void_binding_is_not_revived_by_its_follow() {
     assert!(f.reg.pre_launch(ID).is_err());
     assert!(f.granted().is_empty());
 }
+
+#[test]
+fn stop_keeping_clears_only_the_follow() {
+    let mut f = fx("stop");
+    allow(&mut f, "dialog", true).unwrap();
+    let before = f.bound();
+    let granted = f.granted();
+    assert!(f.reg.stop_keeping(ID).unwrap());
+    let after = f.bound();
+    assert!(after.follow.is_none());
+    // The hash, path, list, history, void flag and grants are as they were.
+    let mut expect = before.clone();
+    expect.follow = None;
+    assert_eq!(after, expect);
+    assert_eq!(f.granted(), granted);
+    // On disk too, and asking again changes nothing.
+    let mut again = Registry::open(&f.home, true).unwrap();
+    assert!(again.inventory.modules[ID]
+        .bound
+        .as_ref()
+        .unwrap()
+        .follow
+        .is_none());
+    assert!(!again.stop_keeping(ID).unwrap());
+    // The next new build voids as it does without a follow.
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    f.reg = Registry::open(&f.home, true).unwrap();
+    assert_voids(&mut f, VoidReason::Changed);
+}
+
+#[test]
+fn stop_keeping_does_not_record_a_build_that_landed_unchecked() {
+    let mut f = fx("stop-landed");
+    allow(&mut f, "dialog", true).unwrap();
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    assert!(f.reg.stop_keeping(ID).unwrap());
+    assert!(f.bound().attested.is_empty());
+    assert_voids(&mut f, VoidReason::Changed);
+}
+
+#[test]
+fn stop_keeping_on_an_unknown_module_fails_and_without_a_follow_does_nothing() {
+    let mut f = fx("stop-none");
+    assert!(f.reg.stop_keeping("nope").is_err());
+    allow(&mut f, "dialog", false).unwrap();
+    assert!(!f.reg.stop_keeping(ID).unwrap());
+}
+
+#[test]
+fn keeping_an_existing_allow_with_no_new_items_leaves_the_grants() {
+    // The Modules page's "Turn on…": the same call with nothing chosen and nothing declined.
+    let mut f = fx("turn-on");
+    allow(&mut f, "dialog", false).unwrap();
+    let granted = f.granted();
+    assert!(!granted.is_empty());
+    let list = f.reg.permission_list(ID).unwrap();
+    f.reg
+        .approve_listed(ID, list.code(), &[], &[], LATER, "dialog", true)
+        .unwrap();
+    assert_eq!(f.granted(), granted);
+    assert!(f.bound().follow.is_some());
+    std::fs::write(&f.exe, b"build 2").unwrap();
+    assert_eq!(f.reg.binding_void(ID), None);
+}
