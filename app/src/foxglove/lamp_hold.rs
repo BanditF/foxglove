@@ -520,6 +520,7 @@ impl Core {
             opened.listed,
             opened.skipped
         );
+        REFUSED.store(refused_now, std::sync::atomic::Ordering::Relaxed);
         match (self.refused, refused_now) {
             // The episode goes on: the health rows keep the newest line, the log stays quiet.
             (true, true) => {
@@ -538,7 +539,13 @@ impl Core {
             (was, _) => {
                 if was {
                     self.refused = false;
-                    eprintln!("Foxglove: the keyboard's LampArray opens again (recovered)");
+                    // Held again is a recovery; unplugged or another failure is only the
+                    // end of the refusal.
+                    if self.held.is_empty() {
+                        eprintln!("Foxglove: the keyboard's LampArray is no longer refused");
+                    } else {
+                        eprintln!("Foxglove: the keyboard's LampArray opens again (recovered)");
+                    }
                 }
                 self.record(line);
             }
@@ -629,6 +636,14 @@ pub fn paused() -> bool {
 }
 
 static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the last open was refused by Windows (0x80070490) for the keyboard's LampArrays and
+/// is still: the typed failure the health rows read, set and cleared with `Core::refused`.
+pub fn refused() -> bool {
+    REFUSED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// One transport in the open's log line: held, missed (Windows lists it, nothing held), or not
 /// listed.
@@ -1267,6 +1282,19 @@ mod tests {
         r.core.open("start");
         assert!(r.core.refused, "the first refusal starts the episode");
         assert_eq!(r.core.shown.len(), 2);
+        // The real path feeds the health row: the typed failure, not the log line.
+        let rows = crate::foxglove::lamp_health::unheld_rows(
+            Holds::default(),
+            (true, true),
+            false,
+            r.core.last.as_deref(),
+            r.core.refused,
+        );
+        assert!(
+            rows[0].detail.contains("won't let Foxglove open it"),
+            "{}",
+            rows[0].detail
+        );
         r.core.open("a reopen");
         r.core.open("another reopen");
         assert!(r.core.refused, "still the one episode");

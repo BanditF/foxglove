@@ -71,6 +71,7 @@ pub fn rows_now() -> Vec<HealthRow> {
                 listed,
                 super::lamp_hold::paused(),
                 super::lamp_hold::last_open().as_deref(),
+                super::lamp_hold::refused(),
             ));
         }
     }
@@ -191,13 +192,15 @@ pub fn loss_row(c: &super::lamp_loss::Counts) -> HealthRow {
 /// With identity, a FAIL per transport Windows lists the keyboard's LampArray on (`listed`,
 /// `(usb, ble)`) while Foxglove holds none there: Windows' own controller may take that one and
 /// turn the keyboard's host link off (#179), and `foxglove-lab health` says so by its exit code.
-/// `last` is what the last open found (`lamp_hold::last_open`), so the row says why. None
+/// `refused` is the typed failure (`lamp_hold::refused`: Windows answered the open with "Element
+/// not found"). `last` is what the last open found (`lamp_hold::last_open`), so the row says why. None
 /// while `paused` (pause lets the holds go on purpose). [`hold_rows`] covers the ones held.
 pub fn unheld_rows(
     holds: super::lamp_hold::Holds,
     listed: (bool, bool),
     paused: bool,
     last: Option<&str>,
+    refused: bool,
 ) -> Vec<HealthRow> {
     if paused {
         return Vec::new();
@@ -214,13 +217,13 @@ pub fn unheld_rows(
             SUBSYSTEM,
             format!("Keyboard LampArray over {via}"),
             Level::Fail,
-            if last.contains(super::lamp_hold::NOT_FOUND_TEXT) {
+            if refused {
                 // Windows' own refusal, after Foxglove's bounded retries: not Foxglove's to fix.
                 format!(
-                    "Windows lists the keyboard's {via} LampArray but won't open it (Element not \
-                     found, 0x80070490). Foxglove already retried with a fresh listing and tries \
-                     again on the next device change. Windows' Dynamic Lighting settings show \
-                     whether Windows itself has it. Last open: {last}"
+                    "Windows lists the keyboard's {via} LampArray but won't let Foxglove open it. \
+                     Foxglove tried again with a fresh device list and will retry on the next \
+                     plug or device change. This usually sits with Windows: check Settings > \
+                     Personalization > Dynamic Lighting. Last open: {last}"
                 )
             } else {
                 format!(
@@ -596,7 +599,7 @@ mod tests {
         };
         let last =
             "keyboard LampArrays after a reopen: none opened: no host-link keyboard found yet";
-        let r = unheld_rows(usb_only, (true, true), false, Some(last));
+        let r = unheld_rows(usb_only, (true, true), false, Some(last), false);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].level, Level::Fail);
         assert_eq!(r[0].item, "Keyboard LampArray over Bluetooth");
@@ -607,21 +610,29 @@ mod tests {
             "no stray spaces: {}",
             r[0].detail
         );
-        assert!(unheld_rows(usb_only, (true, false), false, None).is_empty());
-        let refused = "keyboard LampArrays after a reopen: USB MISSED, BLE MISSED (Element not \
-                       found 0x80070490)";
-        let r = unheld_rows(usb_only, (true, true), false, Some(refused));
-        assert!(r[0].detail.contains("won't open it"), "{}", r[0].detail);
-        assert!(r[0].detail.contains("retried"), "{}", r[0].detail);
+        assert!(unheld_rows(usb_only, (true, false), false, None, false).is_empty());
+        // The typed failure, not the log line, picks the wording.
+        let r = unheld_rows(usb_only, (true, true), false, Some(last), true);
+        assert!(
+            r[0].detail.contains("won't let Foxglove open it"),
+            "{}",
+            r[0].detail
+        );
+        assert!(r[0].detail.contains("tried again"), "{}", r[0].detail);
+        assert!(
+            !r[0].detail.contains("0x8007"),
+            "no HRESULT: {}",
+            r[0].detail
+        );
         let both = Holds {
             usb: Some(true),
             ble: Some(false),
         };
         assert!(
-            unheld_rows(both, (true, true), false, None).is_empty(),
+            unheld_rows(both, (true, true), false, None, false).is_empty(),
             "held by another controller is hold_rows' WARN"
         );
-        let none = unheld_rows(Holds::default(), (true, true), false, None);
+        let none = unheld_rows(Holds::default(), (true, true), false, None, false);
         assert_eq!(none.len(), 2);
         assert!(
             none[0].detail.contains("no open has run"),
@@ -629,7 +640,7 @@ mod tests {
             none[0].detail
         );
         assert!(
-            unheld_rows(Holds::default(), (true, true), true, None).is_empty(),
+            unheld_rows(Holds::default(), (true, true), true, None, false).is_empty(),
             "paused lets go on purpose"
         );
     }

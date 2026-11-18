@@ -413,7 +413,9 @@ mod imp {
         skip: &dyn Fn(&str) -> bool,
         one_only: bool,
     ) -> windows::core::Result<Vec<(String, LampArray)>> {
-        matching_counted(vid, pid, skip, one_only).map(|c| c.found)
+        // Scenes and the Lights worker open on every start, outside the holder's once-per-
+        // episode gate: no retry there, so a refusing Windows costs them nothing extra.
+        matching_counted(vid, pid, skip, one_only, false).map(|c| c.found)
     }
 
     /// What [`matching_counted`] found.
@@ -437,6 +439,7 @@ mod imp {
         pid: u16,
         skip: &dyn Fn(&str) -> bool,
         one_only: bool,
+        retry: bool,
     ) -> windows::core::Result<Counted> {
         use super::super::lamp_hold::{
             retry_not_found, NotHeld, OpenFail, NOT_FOUND, RETRY_BACKOFF,
@@ -488,7 +491,7 @@ mod imp {
             }
             match open_id(&id) {
                 Ok(array) => classify(&mut c, id, array, vid, pid),
-                Err(e) if e.code == NOT_FOUND => {
+                Err(e) if retry && e.code == NOT_FOUND => {
                     states.insert(id.clone(), interface_state(&info));
                     pending.push((id, e));
                 }
@@ -652,7 +655,7 @@ mod imp {
                 listed,
                 skipped,
                 not_held,
-            } = matching_counted(vid, pid, &|_| false, false).unwrap_or_else(|e| {
+            } = matching_counted(vid, pid, &|_| false, false, true).unwrap_or_else(|e| {
                 eprintln!("Foxglove: holding the keyboard's Dynamic Lighting devices: {e}");
                 Counted {
                     found: Vec::new(),
