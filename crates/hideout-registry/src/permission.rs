@@ -859,14 +859,12 @@ impl Registry {
             if n > 20 {
                 b.attested.drain(..n - 20);
             }
-            // The keyboard record moves only with a follow-folder step. A dev-folder step
-            // leaves it: the router's move chain refuses that step, so `check_keyboard` voids
-            // the record on disk and the user is asked again.
-            if !dev_step {
-                if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
-                    k.sha256 = hash.clone();
-                    k.path = path.clone();
-                }
+            // The record moves with every kept step. On a dev-folder step it is the router's
+            // chain (`attested_keyboard_move`) that decides whether memory follows: it checks
+            // the enrolment again at that time, and a break there ends in a re-ask.
+            if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
+                k.sha256 = hash.clone();
+                k.path = path.clone();
             }
             kept = true;
         })?;
@@ -1012,9 +1010,11 @@ impl Registry {
     /// module, an `on` record that sits on a binding that is not void, was set by the
     /// dialog, is pinned to the same canonical local-fixed-drive file with the same `run[1..]`,
     /// and was reached from earlier hashes of that same file only by attested steps
-    /// (`updater`, `installer`, or `folder` while the follow still holds). A step that changed
-    /// the path, broke the hash chain, or has another `by` ends the chain there, so a moved,
-    /// void or unattested record yields nothing. Read-only; hub-side only.
+    /// (`updater`, `installer`, or `folder` while the follow still holds, or `dev-folder` while
+    /// `dev_enrolment` holds now, with both paths of the step inside the enrolled folder). A step
+    /// that changed the path (a dev-folder step only inside its folder), broke the hash chain,
+    /// or has another `by` ends the chain there, so a moved, void or unattested record yields
+    /// nothing. Read-only; hub-side only.
     pub fn attested_keyboard_moves(&self) -> Vec<crate::keyboard::KeyboardMove> {
         self.inventory
             .modules
@@ -1042,6 +1042,11 @@ impl Registry {
         }
         let mut ancestors: Vec<(String, String)> = Vec::new();
         let mut next = b.exe_sha256.clone();
+        let mut next_path = b.exe_path.clone();
+        // The enrolled folder, looked up now (not read from history) the first time a dev step
+        // is met; None when enrolment does not hold, which ends the chain at that step.
+        let mut dev_folder: Option<Option<String>> = None;
+        let mut used_dev = None;
         for a in b.attested.iter().rev() {
             // Only steps made under this binding: a re-Allow carries older steps over, which
             // this binding never vouched for. Hashes never repeat (no loop, no fork).
@@ -1053,22 +1058,46 @@ impl Registry {
             {
                 break;
             }
+            let dev = a.by == crate::dev_folder::DEV_ATTESTED_BY;
+            let folder = if dev {
+                dev_folder
+                    .get_or_insert_with(|| self.dev_enrolment(id, m, b, &b.exe_path))
+                    .clone()
+            } else {
+                None
+            };
             let by_ok = match a.by.as_str() {
                 "updater" | "installer" => true,
                 FOLLOW_ATTESTED_BY => self.follows(id, b, &b.exe_path),
-                _ => false,
+                _ => folder.is_some(),
+            };
+            let paths_ok = match &folder {
+                Some(f) => {
+                    crate::dev_folder::path_within(f, &a.from_path)
+                        && crate::dev_folder::path_within(f, &a.to_path)
+                        && !crate::keyboard::is_unc(&a.from_path)
+                        && on_local_fixed_drive(&a.from_path)
+                }
+                None => {
+                    crate::keyboard::same_path(&a.from_path, &b.exe_path)
+                        && crate::keyboard::same_path(&a.to_path, &b.exe_path)
+                }
             };
             if !by_ok
+                || !paths_ok
+                || !crate::keyboard::same_path(&a.to_path, &next_path)
                 || !a.to_sha256.eq_ignore_ascii_case(&next)
                 || !hash(&a.from_sha256)
                 || a.from_sha256.eq_ignore_ascii_case(&a.to_sha256)
-                || !crate::keyboard::same_path(&a.from_path, &b.exe_path)
-                || !crate::keyboard::same_path(&a.to_path, &b.exe_path)
             {
                 break;
             }
+            if folder.is_some() {
+                used_dev = folder;
+            }
             ancestors.push((a.from_path.clone(), a.from_sha256.to_ascii_lowercase()));
             next = a.from_sha256.clone();
+            next_path = a.from_path.clone();
         }
         if ancestors.is_empty() {
             return None;
@@ -1078,6 +1107,7 @@ impl Registry {
             id: id.into(),
             ancestors,
             to: k.clone(),
+            dev_folder: used_dev,
         })
     }
 }

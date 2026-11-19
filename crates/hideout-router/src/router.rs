@@ -958,8 +958,13 @@ impl Router {
                 || to.state != GrantState::On
                 || !hash(&to.sha256)
                 || to.sha256.eq_ignore_ascii_case(&cur.sha256)
-                || !same_path(&to.path, &cur.path)
+                || (!same_path(&to.path, &cur.path)
+                    && !mv.dev_folder.as_deref().is_some_and(|f| {
+                        hideout_registry::dev_folder::path_within(f, &to.path)
+                            && hideout_registry::dev_folder::path_within(f, &cur.path)
+                    }))
                 || is_unc(&to.path)
+                || is_unc(&cur.path)
                 || !std::path::Path::new(&to.path).is_absolute()
                 || !hideout_registry::permission::on_local_fixed_drive(&to.path)
                 || !mv.ancestors.iter().any(|(p, h)| cur.allows(p, h))

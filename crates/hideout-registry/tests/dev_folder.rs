@@ -336,26 +336,122 @@ fn a_listed_folder_that_becomes_writable_stops_counting() {
     assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
 }
 
-#[test]
-fn a_dev_folder_rebuild_does_not_move_the_keyboard_record() {
-    let mut f = fx("keyboard");
+/// An enrolled app with the keyboard allowed for build 1, then `n` more builds carried.
+fn with_keyboard(name: &str, n: usize) -> Fx {
+    let mut f = fx(name);
     allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
     let (path, old) = f.reg.current_program(ID).unwrap();
     f.reg.allow_keyboard(ID, &path, &old, NOW).unwrap();
-    rebuild(&f, b"build 2");
-    let (_, new) = f.reg.current_program(ID).unwrap();
-    // The grants carry, the keyboard grant does not: it stays at the file it was allowed for, so
-    // the check on turn-on voids it and the user is asked again.
-    assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
-    assert_eq!(granted(&f).len(), 2);
+    for i in 2..2 + n {
+        rebuild(&f, format!("build {i}").as_bytes());
+        assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
+    }
+    f
+}
+
+#[test]
+fn the_keyboard_record_follows_a_chain_of_three_dev_rebuilds() {
+    let f = with_keyboard("kb-chain", 3);
+    let (path, new) = f.reg.current_program(ID).unwrap();
     let k = f.reg.inventory.modules[ID].keyboard.clone().unwrap();
-    assert!(k.allows(&path, &old));
-    assert!(!k.allows(&path, &new));
-    // On disk too, which is what a fresh router loads.
+    assert!(k.allows(&path, &new), "the record moved on disk");
+    let moves = f.reg.attested_keyboard_moves();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].ancestors.len(), 3);
+    assert!(moves[0].dev_folder.is_some());
+    assert!(moves[0].to.allows(&path, &new));
+    // A fresh registry on the same home sees the same chain.
     let again = Registry::open(&f.home, true).unwrap();
-    let k = again.inventory.modules[ID].keyboard.clone().unwrap();
-    assert!(!k.allows(&path, &new));
-    assert!(again.attested_keyboard_moves().is_empty());
+    assert_eq!(again.attested_keyboard_moves(), moves);
+}
+
+#[test]
+fn a_path_change_inside_the_folder_keeps_the_chain_and_one_outside_ends_it() {
+    let mut f = with_keyboard("kb-path", 1);
+    // The manifest now names another file inside the folder.
+    let other = f.out.join("foxglove2.exe");
+    std::fs::write(&other, b"build 3").unwrap();
+    let dir = f.reg.module_dir(ID, "1.0.0");
+    std::fs::write(dir.join("module.toml"), manifest(&other)).unwrap();
+    f.reg = Registry::open(&f.home, true).unwrap();
+    assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
+    let (path, new) = f.reg.current_program(ID).unwrap();
+    assert!(same_path(&path, &canonical_path(&other).unwrap()));
+    let moves = f.reg.attested_keyboard_moves();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].ancestors.len(), 2);
+    assert!(moves[0].to.allows(&path, &new));
+
+    // A program outside the folder is no dev step: the grants and the keyboard void.
+    let mut g = fx("kb-path-out");
+    allow(&mut g, "dialog", &["hub.notify", "ui.window"]);
+    let (p0, h0) = g.reg.current_program(ID).unwrap();
+    g.reg.allow_keyboard(ID, &p0, &h0, NOW).unwrap();
+    let outside = temp("kb-path-elsewhere").join("foxglove.exe");
+    std::fs::write(&outside, b"build 2").unwrap();
+    let dir = g.reg.module_dir(ID, "1.0.0");
+    std::fs::write(dir.join("module.toml"), manifest(&outside)).unwrap();
+    g.reg = Registry::open(&g.home, true).unwrap();
+    assert!(g.reg.void_if_changed(ID, LATER).unwrap().is_some());
+    assert!(g.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn the_chain_ends_when_the_folder_is_removed() {
+    let mut f = with_keyboard("kb-removed", 3);
+    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
+    f.reg
+        .remove_dev_folder(&f.out.display().to_string())
+        .unwrap();
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn the_chain_is_nothing_with_dev_mode_off() {
+    let f = with_keyboard("kb-off", 3);
+    let shipped = Registry::open(&f.home, false).unwrap();
+    assert!(shipped.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn the_chain_ends_when_the_exe_or_folder_is_opened_to_others() {
+    let f = with_keyboard("kb-acl-exe", 2);
+    grant_everyone(&f.exe, "M");
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+    let g = with_keyboard("kb-acl-dir", 2);
+    grant_everyone(&g.out, "(OI)(CI)M");
+    assert!(g.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn a_cli_allow_ends_the_chain() {
+    let mut f = with_keyboard("kb-cli", 2);
+    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
+    // The Allow of the command line, over whatever the list shows now.
+    let list = f.reg.permission_list(ID).unwrap();
+    let chosen: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    f.reg
+        .approve_listed(ID, list.code(), &chosen, &[], LATER, "cli", false)
+        .unwrap();
+    assert!(f.reg.inventory.modules[ID].identity.is_none());
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn a_dev_step_not_recorded_by_this_enrolment_gives_no_move() {
+    // The record on disk names a hash the history does not reach (an edit): no move.
+    let f = with_keyboard("kb-edit", 2);
+    let mut reg = Registry::open(&f.home, true).unwrap();
+    let k = reg
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .keyboard
+        .as_mut()
+        .unwrap();
+    k.sha256 = "ab".repeat(32);
+    assert!(reg.attested_keyboard_moves().is_empty());
 }
 
 #[test]

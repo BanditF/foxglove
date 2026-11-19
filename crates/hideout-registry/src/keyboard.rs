@@ -109,6 +109,9 @@ pub struct KeyboardMove {
     pub ancestors: Vec<(String, String)>,
     /// The record as the file holds it now (`on`, same path, the chain's last hash).
     pub to: KeyboardGrant,
+    /// The enrolled dev folder when the chain has a `dev-folder` step: the only place the path
+    /// may change within (every ancestor and `to` lie inside it). None: the path never changes.
+    pub dev_folder: Option<String>,
 }
 
 /// A network path (`\\host\share`, or the verbatim `\\?\UNC\` form): never carries the grant,
