@@ -747,3 +747,24 @@ fn stop_keeping_through_the_api_ends_the_folder_steps() {
     assert!(f.reg.stop_keeping(ID).unwrap());
     assert!(f.reg.attested_keyboard_moves().is_empty());
 }
+
+#[test]
+fn the_binding_check_on_the_pinned_bytes_catches_a_swap_after_the_by_name_read() {
+    // S7 (F4): the launcher hands the registry the path and hash of the handle it holds.
+    let mut f = fx("pinned");
+    allow(&mut f, "dialog", false).unwrap();
+    let b = f.bound();
+    let canon = hideout_registry::keyboard::canonical_path(&f.exe).unwrap();
+    // The bound bytes pass; other bytes (a swap) void; another path is a move.
+    assert_eq!(f.reg.binding_void_pinned(ID, &canon, &b.exe_sha256), None);
+    let other = foxglove_plugin_trust::sha256_hex(b"swapped");
+    assert_eq!(
+        f.reg.binding_void_pinned(ID, &canon, &other),
+        Some(VoidReason::Changed)
+    );
+    assert_eq!(
+        f.reg
+            .binding_void_pinned(ID, &canon.replace("foxglove.exe", "x.exe"), &b.exe_sha256),
+        Some(VoidReason::Moved)
+    );
+}

@@ -1094,6 +1094,40 @@ impl Registry {
         })
     }
 
+    /// S7 (F4) for a hub-installed module (catalog, sideload, lab): the file the launcher holds
+    /// open (`pin_path`, canonical, with its `sha256` read through that handle) must be the
+    /// signed/recorded file of `run[0]`. `None` when it is (or for an adopted module, which the
+    /// binding check covers); `Some(why)` when the entry is missing or the hash differs, so the
+    /// launch fails closed. A program outside the module's own folder has no entry to compare
+    /// and is not covered (residual).
+    pub fn pinned_files_void(&self, id: &str, pin_path: &str, sha256: &str) -> Option<String> {
+        let m = self.inventory.modules.get(id)?;
+        if m.source == ADOPTED {
+            return None;
+        }
+        let dir = crate::keyboard::canonical_path(&self.module_dir(id, &m.version)).ok()?;
+        let norm = |p: &str| p.replace('/', "\\").to_lowercase();
+        let (p, d) = (norm(pin_path), norm(&dir));
+        let rel = p.strip_prefix(&format!("{}\\", d.trim_end_matches('\\')))?;
+        let expected = if m.source == LAB || m.source == SIDELOAD {
+            m.files.clone()
+        } else {
+            match self.trust.runnable(id, &m.version) {
+                Ok((_, entry)) => entry.files.clone(),
+                Err(e) => return Some(format!("{e:?}")),
+            }
+        };
+        let want = expected
+            .iter()
+            .find(|(k, _)| k.replace('/', "\\").to_lowercase() == rel)
+            .map(|(_, v)| v);
+        match want {
+            Some(h) if h.eq_ignore_ascii_case(sha256) => None,
+            Some(_) => Some(format!("{rel} is not the file that was checked")),
+            None => Some(format!("{rel} is not in the file list")),
+        }
+    }
+
     /// The hub started `launch` (after [`Registry::pre_launch`]).
     pub fn mark_running(&mut self, launch: &Launch) {
         self.running

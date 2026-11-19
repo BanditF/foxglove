@@ -138,6 +138,86 @@ mod tests {
     }
 
     #[test]
+    fn a_sharing_violation_fails_closed() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = temp("violation");
+        let exe = d.join("foxglove.exe");
+        std::fs::write(&exe, b"one").unwrap();
+        // Another writer already holds the file open for writing: it cannot be pinned.
+        let _writer = std::fs::OpenOptions::new()
+            .write(true)
+            .share_mode(7)
+            .open(&exe)
+            .unwrap();
+        assert!(Pin::open(&exe).is_err(), "a writable file is unverifiable");
+    }
+
+    #[test]
+    fn the_pin_holds_through_a_real_process_start_and_the_verified_bytes_run() {
+        // A harmless system binary copied next to the test: pinned, hashed, started, still
+        // locked while it runs, released after the pin is dropped.
+        let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let src = Path::new(&sys).join("System32").join("whoami.exe");
+        if !src.is_file() {
+            return;
+        }
+        let d = temp("launch");
+        let exe = d.join("harmless.exe");
+        std::fs::copy(&src, &exe).unwrap();
+        let pin = Pin::open(&exe).unwrap();
+        assert_eq!(pin.sha256, crate::sha256_file(&src).unwrap());
+        // A swap attempt between the hash and the start is refused.
+        assert!(std::fs::write(&exe, b"evil").is_err());
+        assert!(std::fs::rename(&exe, d.join("other.exe")).is_err());
+        let out = std::process::Command::new(&exe)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(std::fs::write(&exe, b"evil").is_err(), "still held");
+        assert_eq!(pin.rehash().unwrap(), pin.sha256);
+        drop(pin);
+        std::fs::write(&exe, b"after").unwrap();
+    }
+
+    #[test]
+    fn the_pin_path_stays_the_pinned_file_when_a_junction_is_retargeted() {
+        // S7: the launcher starts from `pin.path`; it must keep naming the hashed file.
+        let d = temp("retarget");
+        let (a, b) = (d.join("a"), d.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("x.exe"), b"A").unwrap();
+        std::fs::write(b.join("x.exe"), b"B").unwrap();
+        let link = d.join("link");
+        let mk = |t: &Path| {
+            std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&link)
+                .arg(t)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if !mk(&a) {
+            return;
+        }
+        let pin = Pin::open(&link.join("x.exe")).unwrap();
+        std::fs::remove_dir(&link).unwrap();
+        assert!(mk(&b));
+        // The name now leads to B; the pin's path and bytes are still A's.
+        assert_eq!(std::fs::read(link.join("x.exe")).unwrap(), b"B");
+        assert_eq!(std::fs::read(&pin.path).unwrap(), b"A");
+        assert!(hideout_registry::keyboard::same_path(
+            &pin.path,
+            &a.join("x.exe").display().to_string()
+        ));
+        let _ = std::fs::remove_dir(&link);
+    }
+
+    #[test]
     fn aliases_of_the_path_pin_the_same_canonical_file() {
         let d = temp("alias");
         let exe = d.join("Foxglove.exe");

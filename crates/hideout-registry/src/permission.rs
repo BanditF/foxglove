@@ -697,6 +697,21 @@ impl Registry {
     /// Whether a grant of `id` is bound and the program no longer matches (or was already
     /// voided). Read-only; [`Registry::void_if_changed`] writes.
     pub fn binding_void(&self, id: &str) -> Option<VoidReason> {
+        self.binding_void_with(id, || self.program(id))
+    }
+
+    /// [`Registry::binding_void`] against a program the caller already holds open and hashed
+    /// (S7, F4): `path` and `sha256` come from the pinned handle, so the check is about the
+    /// bytes that are about to run, not a second read of the name.
+    pub fn binding_void_pinned(&self, id: &str, path: &str, sha256: &str) -> Option<VoidReason> {
+        self.binding_void_with(id, || Ok((path.to_string(), sha256.to_string())))
+    }
+
+    fn binding_void_with(
+        &self,
+        id: &str,
+        program: impl FnOnce() -> Result<(String, String), Failure>,
+    ) -> Option<VoidReason> {
         let m = self.inventory.modules.get(id)?;
         let b = m.bound.as_ref()?;
         if b.void {
@@ -705,7 +720,7 @@ impl Registry {
         if m.source != ADOPTED || b.exe_sha256.is_empty() {
             return None;
         }
-        match self.program(id) {
+        match program() {
             Ok((path, hash)) => {
                 if !b.run_args.is_empty() && self.run_args(id) != b.run_args {
                     Some(VoidReason::Changed)
