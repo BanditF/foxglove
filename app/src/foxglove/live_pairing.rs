@@ -57,6 +57,8 @@ pub struct Pairing {
     held: bool,
     /// A ticket has been redeemed (S4): the old pasted token no longer admits.
     old_off: bool,
+    /// Connections admitted with the old pasted token (they hold no monitor).
+    old_clients: BTreeSet<u64>,
 }
 
 /// The one store: a [`Pairing`] behind a lock.
@@ -83,13 +85,21 @@ impl Pairing {
             allow: None,
             held: false,
             old_off: false,
+            old_clients: BTreeSet::new(),
         }
     }
 
     /// Stops admitting the old pasted token. Set once a ticket has really been redeemed and that
     /// is saved (S4), and at a feed start whose saved settings say so.
     pub fn set_old_token_off(&mut self, off: bool) {
-        self.old_off = off;
+        self.old_off = self.old_off || off;
+    }
+
+    /// The old token is retired now: it stops admitting, and the connections it admitted are
+    /// returned so the feed closes them.
+    pub fn retire_old_token(&mut self) -> Vec<u64> {
+        self.old_off = true;
+        std::mem::take(&mut self.old_clients).into_iter().collect()
     }
 
     pub fn old_token_off(&self) -> bool {
@@ -151,6 +161,13 @@ impl Pairing {
         if monitor.is_some() && self.held {
             return false;
         }
+        if monitor.is_none() {
+            // Admitted with the old token just before it was retired: not kept.
+            if self.old_off {
+                return false;
+            }
+            self.old_clients.insert(conn);
+        }
         if let Some(s) = monitor.and_then(|m| self.slots.get_mut(m)) {
             s.conn = Some(conn);
             s.capped = false;
@@ -160,6 +177,7 @@ impl Pairing {
 
     /// Connection `conn` closed.
     pub fn left(&mut self, conn: u64) {
+        self.old_clients.remove(&conn);
         for s in self.slots.values_mut().filter(|s| s.conn == Some(conn)) {
             s.conn = None;
         }
