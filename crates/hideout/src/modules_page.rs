@@ -671,6 +671,45 @@ mod tests {
         }
     }
 
+    /// Slice 2: what follows an Allow. Turn on goes to the supervisor and the row reads on;
+    /// Change only records; a supervisor that refuses leaves the row off.
+    #[test]
+    fn after_allow_turns_on_only_when_the_allow_says_so() {
+        use crate::permission_actions::{Done, Then};
+        let done = |then| Done {
+            id: "m.a".into(),
+            code: String::new(),
+            chosen: Vec::new(),
+            declined: Vec::new(),
+            then,
+        };
+        let inst = Installed {
+            adopted: true,
+            id: "m.a".into(),
+            name: "Art".into(),
+            version: "1.0.0".into(),
+            enabled: false,
+        };
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![inst],
+            facts: None,
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+        };
+        page.after_allow(done(Then::Nothing));
+        assert!(log.0.borrow().is_empty());
+        assert!(!page.installed[0].enabled);
+        page.after_allow(done(Then::TurnOn));
+        assert_eq!(*log.0.borrow(), ["turn-on m.a"]);
+        assert!(page.installed[0].enabled);
+    }
+
     const TAG: &str = "https://github.com/BanditF/foxglove/releases/tag/hideout-v0.4.0";
 
     /// Needs a newer Hideout rows (#991): Update Hideout opens the release the catalog names
