@@ -100,6 +100,8 @@ pub struct ModulesPage {
     pub grant: Option<crate::keyboard_actions::GrantUi>,
     /// The module permission dialog, header lines and sections (#1178); `None` on a second hub.
     pub perm: Option<crate::permission_actions::PermUi>,
+    /// The Found card and Add an app… (slice 5); `None` on a second hub.
+    pub discover: Option<crate::discover::DiscoverUi>,
     restarts: hideout_shell::modules_list::Restarts,
     /// The Remove confirm: the row menu asks, only the confirm's Remove removes.
     ask: hideout_shell::modules_list::RemoveAsk,
@@ -371,6 +373,21 @@ impl ModulesPage {
         }
     }
 
+    /// An app was just added (Found card or Browse): the list takes it now and the normal
+    /// first-run Allow dialog opens for it. Nothing is allowed or started until the user's Allow.
+    fn after_add(&mut self, id: &str) {
+        if let Some(home) = self.discover.as_ref().map(|d| d.home.clone()) {
+            match read_installed(&home) {
+                Ok(list) => self.installed = list,
+                Err(why) => log::warn!("Modules page: the list after adding {id}: {why}"),
+            }
+        }
+        if let Some(p) = self.perm.as_mut() {
+            p.refresh();
+            p.open(id, crate::permission_actions::Opener::TurnOn);
+        }
+    }
+
     fn set_enabled(&mut self, id: &str, on: bool) {
         if let Some(m) = self.installed.iter_mut().find(|m| m.id == id) {
             m.enabled = on;
@@ -557,6 +574,9 @@ impl hideout_shell::Page for ModulesPage {
         };
         let mut grant = self.grant.take();
         let mut perm = self.perm.take();
+        let mut discover = self.discover.take();
+        let ids: Vec<String> = self.installed.iter().map(|m| m.id.clone()).collect();
+        let mut added: Option<String> = None;
         let clicked = page_ui_with_head(ui, t, &rows, top, &mut |ui| {
             if let Some(g) = grant.as_mut() {
                 g.top(ui, t);
@@ -564,9 +584,16 @@ impl hideout_shell::Page for ModulesPage {
             if let Some(p) = perm.as_mut() {
                 p.top(ui, t);
             }
+            if let Some(d) = discover.as_mut() {
+                added = added.take().or(d.ui(ui, t, &ids));
+            }
         });
         self.grant = grant;
         self.perm = perm;
+        self.discover = discover;
+        if let Some(id) = added {
+            self.after_add(&id);
+        }
         if let Some(click) = clicked {
             if click == Click::CopyDiagnostics {
                 if let Some(f) = &self.finder {
@@ -609,6 +636,7 @@ pub fn pages(
     fresh: Option<Fresh>,
     grant: Option<crate::keyboard_actions::GrantUi>,
     perm: Option<crate::permission_actions::PermUi>,
+    discover: Option<crate::discover::DiscoverUi>,
 ) -> Vec<Box<dyn hideout_shell::Page>> {
     vec![Box::new(ModulesPage {
         installed,
@@ -619,6 +647,7 @@ pub fn pages(
         fresh,
         grant,
         perm,
+        discover,
         restarts: Default::default(),
         ask: Default::default(),
     })]
@@ -632,7 +661,7 @@ mod tests {
 
     #[test]
     fn the_hub_starts_with_only_the_modules_page() {
-        let pages = pages(Vec::new(), None, None, false, None, None, None, None);
+        let pages = pages(Vec::new(), None, None, false, None, None, None, None, None);
         assert_eq!(pages.len(), 1);
         assert_eq!((pages[0].id(), pages[0].title()), (ID, TITLE));
         assert_eq!(
@@ -665,6 +694,7 @@ mod tests {
             fresh: None,
             grant: None,
             perm: None,
+            discover: None,
             restarts: Default::default(),
             ask: Default::default(),
         };
@@ -700,6 +730,7 @@ mod tests {
             safe_by_closes: false,
             finder: None,
             fresh: Some(fresh.clone()),
+            discover: None,
             restarts: Default::default(),
             ask: Default::default(),
             grant: None,
@@ -846,6 +877,7 @@ mod tests {
             facts: Some(facts),
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
+            discover: None,
             restarts: Default::default(),
             ask: Default::default(),
             grant: None,
@@ -904,6 +936,7 @@ mod tests {
             facts: Some(facts),
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
+            discover: None,
             restarts: Default::default(),
             ask: Default::default(),
             grant: None,
@@ -958,6 +991,7 @@ mod tests {
             facts: Some(facts),
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
+            discover: None,
             restarts: Default::default(),
             ask: Default::default(),
             grant: None,
@@ -1008,6 +1042,7 @@ mod tests {
             fresh: None,
             grant: None,
             perm: None,
+            discover: None,
             restarts: Default::default(),
             ask: Default::default(),
         };

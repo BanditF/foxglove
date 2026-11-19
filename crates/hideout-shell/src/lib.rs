@@ -66,6 +66,11 @@ mod wake;
 pub use eframe::egui;
 #[cfg(windows)]
 pub use hideout_panels;
+/// The folder picker for Add an app… (Windows).
+#[cfg(windows)]
+pub fn pick_folder() -> Option<std::path::PathBuf> {
+    platform::pick_folder().map(std::path::PathBuf::from)
+}
 #[cfg(windows)]
 pub use shell::{
     hub_on_screen, open_logs_folder, open_module, open_module_log, open_update_page,

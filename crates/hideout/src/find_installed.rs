@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-//! H5.4 (docs: review/design-h5-rebrand.md §2): finds an installed Foxglove or Vulpes and offers
-//! to adopt it. UNWIRED: nothing calls this yet, so nothing is found, registered, started or
-//! written on a user's PC. The module-mode go turns it on.
+//! H5.4 (docs: review/design-h5-rebrand.md §2): finds an installed app and offers to adopt it.
+//! Wired through `discover` (the Found card and Add an app…). The fallback list of apps is data
+//! (`products.json`), read at run time; apps that register themselves are found by `discover`.
 //!
 //! - [`find`] reads the product's installer record (`HKCU\Software\<product>\Installer`, value
 //!   `App` = the install folder) and, failing that, its known install folders. Only a hit from
@@ -22,51 +22,116 @@ use std::path::{Path, PathBuf};
 use foxglove_plugin::owner::PeerPaths;
 
 /// How a product's manifest is made. `@EXE@` and `@VERSION@` are filled in.
+#[derive(Clone, Debug)]
 pub enum ManifestSource {
-    /// A template shipped inside this build (Foxglove's own `hub_link/module.toml`).
-    Builtin(&'static str),
+    /// A template shipped inside this build (the text).
+    Builtin(String),
     /// The template the product ships in its install folder, at this relative path.
-    InstallFolder(&'static str),
+    InstallFolder(String),
 }
 
-/// One product Hideout can adopt. The one place that names them: a rename changes this table.
+/// One product Hideout can adopt, read from the fallback data file (`products.json`). Nothing
+/// else in the hub names a product: a rename or a new entry changes that file.
+#[derive(Clone, Debug)]
 pub struct Product {
-    pub id: &'static str,
+    pub id: String,
     /// What the Modules page calls it.
-    pub name: &'static str,
+    pub name: String,
     /// Image paths relative to the install folder, first match wins.
-    pub exes: &'static [&'static str],
+    pub exes: Vec<String>,
     /// The installer record: `HKCU\<key>`, value `App` = install folder.
-    pub record_key: &'static str,
+    pub record_key: String,
     /// Known folders, as environment variable plus relative folder.
-    pub known: &'static [(&'static str, &'static str)],
+    pub known: Vec<(String, String)>,
     pub manifest: ManifestSource,
 }
 
-pub const PRODUCTS: &[Product] = &[
-    Product {
-        id: "foxglove",
-        name: "Foxglove",
-        exes: &["foxglove.exe"],
-        record_key: r"Software\Foxglove\Installer",
-        known: &[("LOCALAPPDATA", r"Programs\Foxglove")],
-        manifest: ManifestSource::Builtin(include_str!(
+/// The fallback list, as shipped in this build.
+const PRODUCTS_JSON: &str = include_str!("products.json");
+
+/// Manifest templates bundled in this build, by the name the data file uses.
+fn template(name: &str) -> Option<&'static str> {
+    match name {
+        "foxglove-hub-link" => Some(include_str!(
             "../../../app/src/foxglove/hub_link/module.toml"
         )),
-    },
-    Product {
-        id: "vulpes",
-        name: "Vulpes",
-        // A pip console script in the install folder's venv; there is no vulpes.exe.
-        exes: &[r"venv\Scripts\arete.exe"],
-        record_key: r"Software\Vulpes\Installer",
-        known: &[("LOCALAPPDATA", r"Programs\Arete")],
-        manifest: ManifestSource::InstallFolder(r"hideout\module.toml"),
-    },
-];
+        _ => None,
+    }
+}
+
+/// Reads a product list. An entry that is incomplete or names an unknown template is skipped
+/// (and logged); the rest still load.
+pub fn parse_products(text: &str) -> Vec<Product> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        log::warn!("product list: not valid JSON; no fallback entries");
+        return Vec::new();
+    };
+    let strings = |x: Option<&serde_json::Value>| -> Vec<String> {
+        x.and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut out = Vec::new();
+    for e in v
+        .get("products")
+        .and_then(|p| p.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or_default()
+    {
+        let s = |k: &str| e.get(k).and_then(|x| x.as_str()).map(String::from);
+        let manifest = e.get("manifest").and_then(|m| {
+            if let Some(t) = m.get("template").and_then(|t| t.as_str()) {
+                template(t).map(|t| ManifestSource::Builtin(t.to_string()))
+            } else {
+                m.get("install_folder")
+                    .and_then(|t| t.as_str())
+                    .map(|t| ManifestSource::InstallFolder(t.to_string()))
+            }
+        });
+        let known = e
+            .get("known")
+            .and_then(|k| k.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| {
+                        let p = p.as_array()?;
+                        Some((
+                            p.first()?.as_str()?.to_string(),
+                            p.get(1)?.as_str()?.to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        match (s("id"), s("name"), s("record_key"), manifest) {
+            (Some(id), Some(name), Some(record_key), Some(manifest)) => out.push(Product {
+                id,
+                name,
+                exes: strings(e.get("exes")),
+                record_key,
+                known,
+                manifest,
+            }),
+            _ => log::warn!(
+                "product list: an entry is incomplete or has an unknown template; skipped"
+            ),
+        }
+    }
+    out
+}
+
+/// The fallback products, parsed once.
+pub fn products() -> &'static [Product] {
+    static LIST: std::sync::OnceLock<Vec<Product>> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| parse_products(PRODUCTS_JSON))
+}
 
 pub fn product(id: &str) -> Option<&'static Product> {
-    PRODUCTS.iter().find(|p| p.id == id)
+    products().iter().find(|p| p.id == id)
 }
 
 /// What the finder needs from the PC. Read-only.
@@ -78,6 +143,8 @@ pub trait Machine {
     /// `major.minor.patch` of an exe's file version.
     fn exe_version(&self, p: &Path) -> Option<String>;
     fn read_text(&self, p: &Path) -> Option<String>;
+    /// The names of the subkeys under an `HKCU` key (empty when the key is absent).
+    fn registry_subkeys(&self, key: &str) -> Vec<String>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,7 +157,7 @@ pub enum Source {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Found {
-    pub id: &'static str,
+    pub id: String,
     pub exe: PathBuf,
     pub version: String,
     pub source: Source,
@@ -110,14 +177,14 @@ fn is_local(p: &Path) -> bool {
 /// known folders; a UNC folder is never accepted.
 pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
     let mut folders: Vec<(PathBuf, Source)> = Vec::new();
-    let record_dir = m.registry_string(p.record_key, "App").map(PathBuf::from);
-    let record_exe = m.registry_string(p.record_key, "Exe").map(PathBuf::from);
+    let record_dir = m.registry_string(&p.record_key, "App").map(PathBuf::from);
+    let record_exe = m.registry_string(&p.record_key, "Exe").map(PathBuf::from);
     let record_manifest = m
-        .registry_string(p.record_key, "Manifest")
+        .registry_string(&p.record_key, "Manifest")
         .map(PathBuf::from)
         .filter(|x| is_local(x));
     let record_version = m
-        .registry_string(p.record_key, "Version")
+        .registry_string(&p.record_key, "Version")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     // The record's own Exe first: it is what the installer wrote. It must be local, a real
@@ -130,7 +197,7 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
         if known_name && is_local(&exe) && m.is_file(&exe) {
             if let Some(version) = m.exe_version(&exe).or_else(|| record_version.clone()) {
                 return Some(Found {
-                    id: p.id,
+                    id: p.id.clone(),
                     exe,
                     version,
                     source: Source::Record,
@@ -143,8 +210,8 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
     if let Some(dir) = record_dir {
         folders.push((dir, Source::Record));
     }
-    for (var, rel) in p.known {
-        if let Some(base) = m.env(var) {
+    for (var, rel) in &p.known {
+        if let Some(base) = m.env(var.as_str()) {
             folders.push((Path::new(&base).join(rel), Source::KnownFolder));
         }
     }
@@ -152,7 +219,7 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
         if !is_local(&dir) {
             continue;
         }
-        for name in p.exes {
+        for name in &p.exes {
             let exe = dir.join(name);
             if m.is_file(&exe) {
                 // A pip launcher has no file-version resource: the record's Version stands in,
@@ -167,7 +234,7 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
                         .then(|| record_manifest.clone())
                         .flatten();
                     return Some(Found {
-                        id: p.id,
+                        id: p.id.clone(),
                         exe,
                         version,
                         source,
@@ -182,7 +249,7 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
 }
 
 pub fn find_all(m: &dyn Machine) -> Vec<Found> {
-    PRODUCTS.iter().filter_map(|p| find(m, p)).collect()
+    products().iter().filter_map(|p| find(m, p)).collect()
 }
 
 /// The `PeerPaths` records for `owner::judge`: installed exe paths from installer records only,
@@ -217,7 +284,7 @@ impl PeerPaths for InstalledPeers {
 /// The manifest text for `f`, with this PC's exe and version filled in.
 fn manifest_text(m: &dyn Machine, p: &Product, f: &Found) -> Result<String, String> {
     let template = match &p.manifest {
-        ManifestSource::Builtin(t) => (*t).to_string(),
+        ManifestSource::Builtin(t) => t.clone(),
         ManifestSource::InstallFolder(rel) => {
             // From the record's Manifest value, else from the install folder (never exe.parent():
             // the exe sits in venv\Scripts).
@@ -246,9 +313,9 @@ pub fn adopt(
     found: &Found,
     now: &str,
 ) -> Result<String, String> {
-    let p = product(found.id).ok_or_else(|| "not an app Hideout knows".to_string())?;
+    let p = product(&found.id).ok_or_else(|| "not an app Hideout knows".to_string())?;
     let text = manifest_text(m, p, found)?;
-    let dir = staging.join(p.id);
+    let dir = staging.join(&p.id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     std::fs::write(dir.join("module.toml"), text)
         .map_err(|e| format!("manifest not saved: {e}"))?;
@@ -344,7 +411,10 @@ mod real {
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, VS_FIXEDFILEINFO,
     };
-    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+        RRF_RT_REG_SZ,
+    };
 
     pub struct RealMachine;
 
@@ -430,6 +500,41 @@ mod real {
         fn read_text(&self, p: &Path) -> Option<String> {
             std::fs::read_to_string(p).ok()
         }
+        fn registry_subkeys(&self, key: &str) -> Vec<String> {
+            let k = wide(key.as_ref());
+            let mut out = Vec::new();
+            // SAFETY: read-only open, enumerate into our buffer, close.
+            unsafe {
+                let mut h: HKEY = std::mem::zeroed();
+                if RegOpenKeyExW(HKEY_CURRENT_USER, k.as_ptr(), 0, KEY_READ, &mut h) != 0 {
+                    return out;
+                }
+                let mut i = 0u32;
+                loop {
+                    let mut buf = [0u16; 256];
+                    let mut len = buf.len() as u32;
+                    let e = RegEnumKeyExW(
+                        h,
+                        i,
+                        buf.as_mut_ptr(),
+                        &mut len,
+                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    );
+                    if e != 0 {
+                        break;
+                    }
+                    if let Ok(s) = String::from_utf16(&buf[..len as usize]) {
+                        out.push(s);
+                    }
+                    i += 1;
+                }
+                RegCloseKey(h);
+            }
+            out
+        }
     }
 }
 
@@ -462,6 +567,9 @@ mod tests {
         fn read_text(&self, p: &Path) -> Option<String> {
             self.files.get(p).and_then(|f| f.1.clone())
         }
+        fn registry_subkeys(&self, _key: &str) -> Vec<String> {
+            Vec::new()
+        }
     }
 
     fn fox() -> &'static Product {
@@ -471,7 +579,7 @@ mod tests {
     fn with_record(dir: &str, exe_present: bool) -> Fake {
         let mut f = Fake::default();
         f.reg
-            .insert((fox().record_key.into(), "App".into()), dir.to_string());
+            .insert((fox().record_key.clone(), "App".into()), dir.to_string());
         if exe_present {
             f.files.insert(
                 PathBuf::from(dir).join("foxglove.exe"),
@@ -505,7 +613,7 @@ mod tests {
         assert_eq!(found.source, Source::KnownFolder);
         // A record that points at a missing exe also falls through to the known folder.
         f.reg
-            .insert((fox().record_key.into(), "App".into()), r"D:\gone".into());
+            .insert((fox().record_key.clone(), "App".into()), r"D:\gone".into());
         assert_eq!(find(&f, fox()).unwrap().source, Source::KnownFolder);
     }
 
@@ -518,7 +626,7 @@ mod tests {
     #[test]
     fn only_the_installer_record_gives_peer_trust() {
         let rec = Found {
-            id: "foxglove",
+            id: "foxglove".into(),
             exe: r"C:\R\foxglove.exe".into(),
             version: "0.3.0".into(),
             source: Source::Record,
@@ -526,7 +634,7 @@ mod tests {
             manifest: None,
         };
         let known = Found {
-            id: "vulpes",
+            id: "vulpes".into(),
             exe: r"C:\K\vulpes.exe".into(),
             version: "0.1.0".into(),
             source: Source::KnownFolder,
@@ -595,6 +703,9 @@ mod tests {
         }
         fn read_text(&self, p: &Path) -> Option<String> {
             self.0.read_text(p)
+        }
+        fn registry_subkeys(&self, k: &str) -> Vec<String> {
+            self.0.registry_subkeys(k)
         }
     }
 
@@ -719,7 +830,7 @@ mod tests {
             (String::new(), Some(rendered.clone())),
         );
         let mut found = Found {
-            id: "vulpes",
+            id: "vulpes".into(),
             exe: exe.clone(),
             version: "0.9.2".into(),
             source: Source::Record,
@@ -792,7 +903,7 @@ mod tests {
         let home = temp("home");
         let staging = temp("staging");
         let found = Found {
-            id: "foxglove",
+            id: "foxglove".into(),
             exe,
             version: "0.3.0".into(),
             source: Source::Record,
@@ -826,7 +937,7 @@ mod tests {
         let exe = install.join("vulpes.exe");
         std::fs::write(&exe, b"x").unwrap();
         let found = Found {
-            id: "vulpes",
+            id: "vulpes".into(),
             exe,
             version: "0.1.0".into(),
             source: Source::Record,
@@ -850,7 +961,7 @@ mod tests {
         let exe = PathBuf::from(r"C:\R\foxglove.exe");
         m.files.insert(exe.clone(), ("0.3.0".into(), None));
         let found = Found {
-            id: "foxglove",
+            id: "foxglove".into(),
             exe: exe.clone(),
             version: "0.3.0".into(),
             source: Source::Record,
@@ -907,5 +1018,43 @@ mod tests {
             Some("Remove from list")
         );
         assert!(Row::Ready.button("x").is_none());
+    }
+}
+
+#[cfg(test)]
+mod data_tests {
+    use super::*;
+
+    #[test]
+    fn the_bundled_list_still_has_the_two_known_apps() {
+        let ids: Vec<&str> = products().iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["foxglove", "vulpes"]);
+        assert!(matches!(
+            product("foxglove").unwrap().manifest,
+            ManifestSource::Builtin(_)
+        ));
+        assert!(matches!(
+            product("vulpes").unwrap().manifest,
+            ManifestSource::InstallFolder(_)
+        ));
+    }
+
+    #[test]
+    fn an_added_entry_is_an_app_with_no_code_change_and_bad_entries_are_skipped() {
+        let list = parse_products(
+            r#"{"products":[
+              {"id":"gizmo","name":"Gizmo","exes":["gizmo.exe"],"record_key":"Software\\Gizmo\\Installer",
+               "known":[["LOCALAPPDATA","Programs\\Gizmo"]],"manifest":{"install_folder":"hideout\\module.toml"}},
+              {"id":"nokey","name":"No key","manifest":{"install_folder":"x"}},
+              {"id":"odd","name":"Odd","record_key":"k","manifest":{"template":"no-such-template"}}
+            ]}"#,
+        );
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "gizmo");
+        assert_eq!(
+            list[0].known,
+            [("LOCALAPPDATA".to_string(), r"Programs\Gizmo".to_string())]
+        );
+        assert!(parse_products("not json").is_empty());
     }
 }

@@ -17,6 +17,8 @@ mod adopt;
 mod catalog_fetch;
 #[cfg(windows)]
 mod control;
+#[cfg(windows)]
+mod discover;
 mod find_installed;
 #[cfg(windows)]
 mod grant_queue;
@@ -364,6 +366,11 @@ fn main() {
             permission_actions::PermUi::new(&paths.root, h)
                 .with_queue(grant_queue::shared().clone())
         }),
+        // The Found card and Add an app…: the same hub only (adding goes through its dialog).
+        started
+            ._router
+            .as_ref()
+            .map(|_| discover::DiscoverUi::new(paths.root.clone())),
     );
     // Settings: Privacy with Forget seen apps, and About (#991), at the sidebar's bottom.
     let mut settings =

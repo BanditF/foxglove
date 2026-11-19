@@ -647,6 +647,39 @@ pub fn pick_file(filter: Option<&str>) -> Option<String> {
     })
 }
 
+/// The Windows folder picker (Add an app…), modal to the hub window. The chosen full path, or
+/// `None` when cancelled or the picker failed (logged).
+pub fn pick_folder() -> Option<String> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+    };
+    let result = (|| -> windows::core::Result<Option<String>> {
+        // SAFETY: COM calls on the UI thread; the path from GetDisplayName is freed after it is
+        // copied.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+            dialog.SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)?;
+            if dialog.Show(main_window()).is_err() {
+                return Ok(None); // cancelled
+            }
+            let item = dialog.GetResult()?;
+            let path = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+            let s = path.to_string().ok();
+            windows::Win32::System::Com::CoTaskMemFree(Some(path.0 as *const _));
+            Ok(s)
+        }
+    })();
+    result.unwrap_or_else(|e| {
+        log::warn!("folder picker: {e}");
+        None
+    })
+}
+
 // ---- Pop-out windows (H2.11, contract §2.5) -------------------------------------------------
 //
 // eframe gives an immediate viewport no handle, so a pop-out's window is found by its title once
