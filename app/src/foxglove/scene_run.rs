@@ -322,6 +322,8 @@ struct Running {
     name: String,
     /// The scene's clock, so the Scenes page's preview shows the phase the lights show.
     clock: Clock,
+    /// The look it shows now, so the Lights page can draw it.
+    effect: Effect,
 }
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
@@ -483,8 +485,10 @@ pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
     super::screen_glow::scene_started();
     // Before the thread, whose end (even a failed start) takes it back.
     *ART.lock().unwrap_or_else(|e| e.into_inner()) = Some(None);
+    let shown_effect = effect.clone();
+    let effect_now = effect;
     let thread = super::services::spawn_named("scene-control", move || {
-        control(&name, effect, limit, clock, &own, &rx)
+        control(&name, effect_now, limit, clock, &own, &rx)
     });
     super::lights_heal::context_changed();
     *running = Some(Running {
@@ -492,6 +496,7 @@ pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
         thread,
         name: shown,
         clock,
+        effect: shown_effect,
     });
     true
 }
@@ -507,6 +512,16 @@ pub fn running() -> Option<(String, Clock)> {
         .map(|r| (r.name.clone(), r.clock))
 }
 
+/// The running scene's name, look and clock, or `None` when none runs.
+pub fn running_look() -> Option<(String, Effect, Clock)> {
+    RUNNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|r| !r.thread.is_finished())
+        .map(|r| (r.name.clone(), r.effect.clone(), r.clock))
+}
+
 /// Gives the running scene another look (a no-op when none runs).
 pub fn set_effect(name: &str, effect: Effect) {
     if !may_run(&effect, super::screen_glow::allowed()) {
@@ -517,6 +532,7 @@ pub fn set_effect(name: &str, effect: Effect) {
     let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = running.as_mut().filter(|r| !r.thread.is_finished()) {
         r.name = name.to_string();
+        r.effect = effect.clone();
         let _ = r.tx.send(Ctl::Effect(name.to_string(), Box::new(effect)));
         status().name = Some(name.to_string());
     }

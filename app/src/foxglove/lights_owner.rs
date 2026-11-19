@@ -303,6 +303,11 @@ pub fn lock(s: &Mutex<State>) -> MutexGuard<'_, State> {
     s.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Who has the lights now (the Lights page's live drawing), without holding the lock.
+pub fn owner_now() -> Option<Owner> {
+    STATE.try_lock().ok().and_then(|s| s.owner())
+}
+
 /// The link whose reports feed [`STATE`], and the watch.
 #[allow(clippy::type_complexity)]
 static TAP: Mutex<

@@ -18,6 +18,7 @@ mod keymap_session;
 mod knob_mockup;
 mod lamp_keyboard;
 mod layout;
+mod lights_live;
 mod overlay;
 #[cfg(test)]
 mod pill_groups;

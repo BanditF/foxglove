@@ -252,6 +252,15 @@ fn state(ctx: &egui::Context) -> DimState {
     s
 }
 
+/// Each half's dim level now (percent), as last read; 100 while unknown. Asks nothing.
+pub fn levels() -> [u8; 2] {
+    let (_, s) = *STATE.lock().unwrap_or_else(|e| e.into_inner());
+    match s {
+        DimState::Known(d) => [d.left.level, d.right.map_or(d.left.level, |(h, _)| h.level)],
+        _ => [100, 100],
+    }
+}
+
 /// The switch and its levels, inside the Lights page's Keyboard card.
 pub fn show(ui: &mut egui::Ui) {
     #[cfg(test)]

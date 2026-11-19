@@ -974,6 +974,13 @@ pub fn set_wake(wake: crate::ui_wake::UiWake) {
 }
 
 /// The lights' holders as of the last lease change (#376).
+/// The lease showing on `device` over everything (a plugin's colour), not the scene's own.
+pub fn showing_on(device: &str) -> Option<Lease> {
+    try_with(|a| a.winner(device).cloned())
+        .flatten()
+        .filter(|l| l.conn != super::scene_run::SCENE_CONN)
+}
+
 pub fn holding() -> Holders {
     HOLDING.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
