@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use windows::core::{Interface, HSTRING, PCWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
+use windows::Win32::Storage::FileSystem::GetDriveTypeW;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IPersistFile,
     CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, STGM_READ,
@@ -14,7 +15,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_BINARY, REG_OPTION_NON_VOLATILE,
-    REG_VALUE_TYPE,
+    REG_SZ, REG_VALUE_TYPE,
 };
 use windows::Win32::UI::Shell::{
     FOLDERID_Startup, IShellLinkW, SHGetKnownFolderPath, ShellLink, KF_FLAG_DEFAULT,
@@ -42,6 +43,30 @@ fn refuse_in_tests() -> Result<(), String> {
 
 fn io(e: impl ToString) -> String {
     e.to_string()
+}
+
+/// `FILE_ATTRIBUTE_REPARSE_POINT`: a symlink, a junction, a mount point or any other reparse tag.
+const REPARSE: u32 = 0x400;
+
+/// Refuses (fails closed) when `p` is a reparse point or cannot be inspected. A path that does not
+/// exist is fine: the write creates it.
+fn refuse_reparse(p: &Path) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.file_attributes() & REPARSE != 0 || m.file_type().is_symlink() => Err(format!(
+            "{} is a link or junction; Hideout will not write through it",
+            p.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot check {}: {e}", p.display())),
+    }
+}
+
+/// The Startup folder and the shortcut in it must both be plain (no reparse point).
+fn check_plain(dir: &Path, lnk: &Path) -> Result<(), String> {
+    refuse_reparse(dir)?;
+    refuse_reparse(lnk)
 }
 
 /// `<Startup folder>\Hideout.lnk`.
@@ -82,7 +107,7 @@ fn with_com<T>(f: impl FnOnce() -> windows::core::Result<T>) -> Result<T, String
 impl StartupFolder for RealStartup {
     fn read(&self) -> Option<Link> {
         let lnk = self.path();
-        if !lnk.is_file() {
+        if check_plain(&self.dir, &lnk).is_err() || !lnk.is_file() {
             return None;
         }
         with_com(|| {
@@ -110,8 +135,10 @@ impl StartupFolder for RealStartup {
 
     fn write(&mut self, link: &Link) -> Result<(), String> {
         refuse_in_tests()?;
-        std::fs::create_dir_all(&self.dir).map_err(io)?;
         let lnk = self.path();
+        check_plain(&self.dir, &lnk)?;
+        std::fs::create_dir_all(&self.dir).map_err(io)?;
+        check_plain(&self.dir, &lnk)?;
         with_com(|| {
             // SAFETY: a ShellLink object with this exe, saved into the Startup folder.
             unsafe {
@@ -130,6 +157,7 @@ impl StartupFolder for RealStartup {
 
     fn delete(&mut self) -> Result<(), String> {
         refuse_in_tests()?;
+        check_plain(&self.dir, &self.path())?;
         match std::fs::remove_file(self.path()) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io(e)),
             _ => Ok(()),
@@ -137,7 +165,7 @@ impl StartupFolder for RealStartup {
     }
 
     fn exists(&self, path: &Path) -> bool {
-        path.is_file()
+        refuse_reparse(path).is_ok() && path.is_file()
     }
 }
 
@@ -267,15 +295,40 @@ impl Approval for RealApproval {
     }
 }
 
-/// The install folder the Hideout installer recorded (`HKCU\Software\Hideout\Installer`, value
-/// `App`), the same record `find_installed` reads for the other products.
-pub fn installed_folder() -> Option<PathBuf> {
-    let (_, bytes) = query(INSTALLER_KEY, "App")?;
+/// A REG_SZ value's text, up to the first NUL. Any other type (EXPAND_SZ, BINARY, ...) is `None`.
+fn reg_sz(ty: REG_VALUE_TYPE, bytes: &[u8]) -> Option<String> {
+    if ty != REG_SZ {
+        return None;
+    }
     let (pairs, _) = bytes.as_chunks::<2>();
     let u16s: Vec<u16> = pairs.iter().map(|c| u16::from_le_bytes(*c)).collect();
     let n = u16s.iter().position(|&c| c == 0).unwrap_or(u16s.len());
     let s = String::from_utf16_lossy(&u16s[..n]);
-    (!s.is_empty()).then(|| PathBuf::from(s))
+    (!s.is_empty()).then_some(s)
+}
+
+/// `X:\...` where `X:\` is a fixed drive per `fixed`: not a mapped network drive, a removable or
+/// optical drive. UNC and `\\?\` forms are not drive paths here.
+fn on_fixed_drive(path: &str, fixed: impl Fn(&str) -> bool) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\' && fixed(&path[..3])
+}
+
+fn drive_is_fixed(root: &str) -> bool {
+    const DRIVE_FIXED: u32 = 3;
+    let w = wide(root);
+    // SAFETY: `w` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe { GetDriveTypeW(PCWSTR(w.as_ptr())) == DRIVE_FIXED }
+}
+
+/// The install folder the Hideout installer recorded (`HKCU\Software\Hideout\Installer`, value
+/// `App`), the same record `find_installed` reads for the other products. `None` (so "not
+/// installed", nothing written) unless the value is REG_SZ and names a folder on a fixed local
+/// drive.
+pub fn installed_folder() -> Option<PathBuf> {
+    let (ty, bytes) = query(INSTALLER_KEY, "App")?;
+    let s = reg_sz(ty, &bytes)?;
+    on_fixed_drive(&s, drive_is_fixed).then(|| PathBuf::from(s))
 }
 
 /// The switch over the real Startup folder and registry, for this exe. `HubPaths::overridden`
@@ -290,4 +343,125 @@ pub fn real(
         RealStartup::new()?,
         RealApproval::new()?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("hideout-h52-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn junction(link: &Path, target: &Path) {
+        let ok = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "mklink /J failed");
+    }
+
+    fn unjunction(link: &Path) {
+        let _ = std::fs::remove_dir(link); // removes the junction, not its target
+    }
+
+    #[test]
+    fn plain_dir_with_or_without_lnk_passes() {
+        let d = temp("plain");
+        assert!(check_plain(&d, &d.join(LINK_NAME)).is_ok());
+        std::fs::write(d.join(LINK_NAME), b"x").unwrap();
+        assert!(check_plain(&d, &d.join(LINK_NAME)).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn junction_as_the_startup_folder_is_refused() {
+        let d = temp("jdir");
+        let real = d.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = d.join("Startup");
+        junction(&link, &real);
+        let r = check_plain(&link, &link.join(LINK_NAME));
+        assert!(r.unwrap_err().contains("link or junction"));
+        unjunction(&link);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn junction_as_the_shortcut_path_is_refused() {
+        let d = temp("jlnk");
+        let real = d.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = d.join(LINK_NAME);
+        junction(&link, &real);
+        assert!(check_plain(&d, &link).is_err());
+        assert!(!RealStartup { dir: d.clone() }.exists(&link));
+        assert!(RealStartup { dir: d.clone() }.read().is_none());
+        unjunction(&link);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A file symlink needs Developer Mode or elevation; where it cannot be made, the junction
+    /// tests above still cover the reparse check.
+    #[test]
+    fn file_symlink_as_the_shortcut_is_refused() {
+        let d = temp("slnk");
+        let target = d.join("other.lnk");
+        std::fs::write(&target, b"x").unwrap();
+        let link = d.join(LINK_NAME);
+        if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+            eprintln!("skipped: no symlink privilege");
+        } else {
+            assert!(check_plain(&d, &link).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn uninspectable_path_fails_closed() {
+        // A NUL in the path cannot be queried: an error other than NotFound is a refusal.
+        assert!(refuse_reparse(Path::new("C:\\bad\0name")).is_err());
+    }
+
+    #[test]
+    fn test_builds_never_reach_the_real_folder_or_registry() {
+        assert!(RealStartup::new().is_err());
+        assert!(RealApproval::new().is_err());
+    }
+
+    #[test]
+    fn registry_value_must_be_reg_sz() {
+        let sz: Vec<u8> = "C:\\Hideout\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(reg_sz(REG_SZ, &sz).as_deref(), Some("C:\\Hideout"));
+        assert_eq!(reg_sz(REG_BINARY, &sz), None);
+        assert_eq!(reg_sz(REG_VALUE_TYPE(2), &sz), None); // REG_EXPAND_SZ
+        assert_eq!(reg_sz(REG_SZ, &[0, 0]), None); // empty
+    }
+
+    #[test]
+    fn only_fixed_drive_letters_pass() {
+        let fixed = |root: &str| root.eq_ignore_ascii_case("C:\\");
+        assert!(on_fixed_drive("C:\\Program Files\\Hideout", fixed));
+        assert!(!on_fixed_drive("Z:\\Hideout", fixed)); // mapped network drive
+        assert!(!on_fixed_drive("\\\\server\\share\\Hideout", fixed));
+        assert!(!on_fixed_drive("\\\\?\\C:\\Hideout", fixed));
+        assert!(!on_fixed_drive("C:Hideout", fixed));
+        assert!(!on_fixed_drive("", fixed));
+    }
+
+    #[test]
+    fn a_nonexistent_drive_is_not_fixed() {
+        assert!(!drive_is_fixed("?:\\"));
+    }
 }
