@@ -412,6 +412,115 @@ pub fn admit(origin: Option<&str>, token_given: Option<&str>, token: &str) -> Re
     Ok(())
 }
 
+/// How long a pairing ticket stays good.
+#[allow(dead_code)] // wired into the feed by slice S2
+pub const TICKET_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Most tickets outstanding at once (one per monitor, replaced on a new mint, so this is only a
+/// bound on monitors); a mint beyond it fails until one is used or expires.
+#[allow(dead_code)] // wired into the feed by slice S2
+pub const MAX_TICKETS: usize = 8;
+
+/// One-time pairing tickets, in memory only: minted for a monitor, used up by the first redeem,
+/// dead after [`TICKET_TTL`]. Never logged, saved or shown; `Debug` hides the values.
+#[allow(dead_code)] // wired into the feed by slice S2
+#[derive(Default)]
+pub struct Tickets {
+    open: Vec<Ticket>,
+}
+
+#[allow(dead_code)] // wired into the feed by slice S2
+struct Ticket {
+    value: String,
+    monitor: String,
+    expires: std::time::Instant,
+}
+
+impl std::fmt::Debug for Tickets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Tickets({} outstanding)", self.open.len())
+    }
+}
+
+#[allow(dead_code)] // wired into the feed by slice S2
+impl Tickets {
+    pub const fn new() -> Self {
+        Tickets { open: Vec::new() }
+    }
+
+    /// A fresh ticket for `monitor` (24 characters from the OS random source). A ticket already
+    /// open for that monitor is cancelled. `None` when the random source fails or
+    /// [`MAX_TICKETS`] are outstanding.
+    pub fn mint(&mut self, monitor: &str, now: std::time::Instant) -> Option<String> {
+        self.open
+            .retain(|t| t.expires > now && t.monitor != monitor);
+        if self.open.len() >= MAX_TICKETS {
+            return None;
+        }
+        let value = new_token()?;
+        self.open.push(Ticket {
+            value: value.clone(),
+            monitor: monitor.to_string(),
+            expires: now + TICKET_TTL,
+        });
+        Some(value)
+    }
+
+    /// Uses `given` up if it is a live ticket for `monitor`. Every outstanding ticket is compared
+    /// in constant time, without stopping at a match. A ticket presented for another monitor
+    /// stays valid; an expired one is dropped.
+    pub fn redeem(&mut self, given: &str, monitor: &str, now: std::time::Instant) -> bool {
+        self.open.retain(|t| t.expires > now);
+        let mut hit = None;
+        for (i, t) in self.open.iter().enumerate() {
+            let ok = same(given.as_bytes(), t.value.as_bytes())
+                & same(monitor.as_bytes(), t.monitor.as_bytes());
+            if ok {
+                hit = Some(i);
+            }
+        }
+        match hit {
+            Some(i) => {
+                self.open.swap_remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Cancels every outstanding ticket (Disconnect all).
+    pub fn clear(&mut self) {
+        self.open.clear();
+    }
+
+    /// Tickets outstanding and not yet expired at `now`.
+    pub fn outstanding(&self, now: std::time::Instant) -> usize {
+        self.open.iter().filter(|t| t.expires > now).count()
+    }
+}
+
+/// [`admit`] that also takes a one-time ticket for `monitor`: a live ticket is used up and
+/// admits; otherwise the old long-lived token decides, unchanged. The origin gate comes first
+/// either way, and a ticket is only looked at after it.
+#[allow(dead_code)] // wired into the feed by slice S2
+pub fn admit_or_ticket(
+    origin: Option<&str>,
+    given: Option<&str>,
+    token: &str,
+    tickets: &mut Tickets,
+    monitor: &str,
+    now: std::time::Instant,
+) -> Result<(), Denied> {
+    match origin {
+        None | Some("null") | Some("file://") => {}
+        Some(o) => return Err(Denied::Origin(o.to_string())),
+    }
+    if given.is_some_and(|g| tickets.redeem(g, monitor, now)) {
+        return Ok(());
+    }
+    admit(origin, given, token)
+}
+
 /// Why [`admit`] said no.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Denied {
@@ -938,6 +1047,99 @@ mod tests {
             r.refused(at(2000)),
             ["live feed refused a connection: wrong or missing token"]
         );
+    }
+
+    #[test]
+    fn tickets_are_single_use_bound_and_expire() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let mut k = Tickets::new();
+        let a = k.mint("mon1", t0).unwrap();
+        assert_eq!(a.len(), 24);
+        assert!(!k.redeem(&a, "mon2", t0), "wrong monitor");
+        assert!(!k.redeem("x", "mon1", t0), "wrong ticket");
+        assert!(k.redeem(&a, "mon1", t0 + Duration::from_secs(5)));
+        assert!(
+            !k.redeem(&a, "mon1", t0 + Duration::from_secs(6)),
+            "used up"
+        );
+        let b = k.mint("mon1", t0).unwrap();
+        assert!(!k.redeem(&b, "mon1", t0 + TICKET_TTL), "expired at 120 s");
+        let c = k.mint("mon1", t0).unwrap();
+        assert!(k.redeem(&c, "mon1", t0 + TICKET_TTL - Duration::from_secs(1)));
+        // A new mint for a monitor cancels its old ticket.
+        let d = k.mint("m", t0).unwrap();
+        let e = k.mint("m", t0).unwrap();
+        assert!(!k.redeem(&d, "m", t0));
+        assert!(k.redeem(&e, "m", t0));
+        // The cap, and expiry freeing room.
+        for i in 0..MAX_TICKETS {
+            assert!(k.mint(&format!("m{i}"), t0).is_some());
+        }
+        assert!(k.mint("extra", t0).is_none());
+        assert_eq!(k.outstanding(t0), MAX_TICKETS);
+        assert!(k.mint("extra", t0 + TICKET_TTL).is_some());
+        k.clear();
+        assert_eq!(k.outstanding(t0), 0);
+    }
+
+    #[test]
+    fn admit_takes_a_ticket_or_the_old_token() {
+        use std::time::Instant;
+        let now = Instant::now();
+        let old = "s3cretS3cretS3cretS3cret";
+        let mut k = Tickets::new();
+        let t = k.mint("mon", now).unwrap();
+        let go = |k: &mut Tickets, o, g| admit_or_ticket(o, g, old, k, "mon", now);
+        assert!(go(&mut k, Some("null"), Some(&t)).is_ok());
+        assert_eq!(
+            go(&mut k, Some("null"), Some(&t)),
+            Err(Denied::Token),
+            "single use"
+        );
+        assert!(
+            go(&mut k, Some("null"), Some(old)).is_ok(),
+            "old token still works"
+        );
+        assert!(go(&mut k, None, Some(old)).is_ok(), "and again");
+        let t2 = k.mint("mon", now).unwrap();
+        assert_eq!(
+            go(&mut k, Some("https://example.com"), Some(&t2)),
+            Err(Denied::Origin("https://example.com".into()))
+        );
+        assert!(
+            go(&mut k, Some("null"), Some(&t2)).is_ok(),
+            "a refused origin didn't burn it"
+        );
+        assert!(go(&mut k, Some("null"), None).is_err());
+        assert!(admit_or_ticket(Some("null"), Some(""), "", &mut k, "mon", now).is_err());
+    }
+
+    /// No log line, refusal text or Debug output carries a ticket or the token.
+    #[test]
+    fn no_log_or_diagnostic_text_carries_a_ticket_or_token() {
+        use std::time::Instant;
+        let now = Instant::now();
+        let old = new_token().unwrap();
+        let mut k = Tickets::new();
+        let t = k.mint("mon", now).unwrap();
+        let wrong = new_token().unwrap();
+        let mut texts = vec![format!("{k:?}")];
+        for d in [Denied::Token, Denied::Origin("https://example.com".into())] {
+            texts.push(d.to_string());
+            texts.push(format!("{d:?}"));
+        }
+        let mut r = Refusals::new();
+        for s in 0..200 {
+            texts.extend(r.refused(now + std::time::Duration::from_secs(s * 8)));
+        }
+        texts.push(format!("{r:?}"));
+        for text in &texts {
+            for secret in [&t, &old, &wrong] {
+                assert!(!text.contains(secret.as_str()), "leaked in: {text}");
+            }
+        }
+        let _ = k.redeem(&t, "mon", now);
     }
 
     #[test]
