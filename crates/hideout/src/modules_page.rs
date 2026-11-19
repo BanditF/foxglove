@@ -1097,6 +1097,7 @@ mod tests {
             name: id.into(),
             version: "1.0.0".into(),
             enabled: true,
+            dev: false,
         };
         let log = Log::default();
         let mut page = ModulesPage {
@@ -1162,6 +1163,7 @@ mod tests {
             name: id.into(),
             version: "1.0.0".into(),
             enabled: true,
+            dev: false,
         };
         let fresh = Fresh::default();
         let mut page = ModulesPage {
@@ -1212,6 +1214,7 @@ mod tests {
                 name: "Art".into(),
                 version: "1.0.0".into(),
                 enabled: true,
+                dev: false,
             }],
             facts: None,
             actions: None,

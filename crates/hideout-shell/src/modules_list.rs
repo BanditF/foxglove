@@ -1443,6 +1443,7 @@ mod tests {
                 name: name.into(),
                 version: "1.0.0".into(),
                 enabled: true,
+                dev: false,
                 adopted,
             },
             &|_| None,
