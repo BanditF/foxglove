@@ -329,7 +329,7 @@ mod tests {
             "live_feed",
             "Live wallpaper pairing",
             Level::Warn,
-            "a wallpaper is using an old pairing token",
+            "a wallpaper couldn't connect",
         )
         .with_notice("Short title", "The body.");
         assert_eq!(
@@ -340,14 +340,13 @@ mod tests {
             "live_feed",
             "Live wallpaper pairing",
             Level::Warn,
-            "a wallpaper is using an old pairing token",
+            "a wallpaper couldn't connect",
         );
         assert_eq!(
             text(&plain),
             (
                 "Live wallpaper pairing: warning".to_string(),
-                "a wallpaper is using an old pairing token. See Keyboard health on the App page."
-                    .to_string()
+                "a wallpaper couldn't connect. See Keyboard health on the App page.".to_string()
             )
         );
         assert_eq!(

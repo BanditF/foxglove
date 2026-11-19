@@ -71,7 +71,11 @@ pub struct LiveSettings {
     pub enabled: bool,
     pub port: u16,
     /// The pairing token the wallpaper presents; made on first use.
+    /// Blank once a ticket has been redeemed (`ticket_verified`).
     pub token: String,
+    /// A wallpaper has redeemed a ticket (S4): the pasted token is gone and no longer admits.
+    /// A fact, not a secret.
+    pub ticket_verified: bool,
     /// Foxglove's notifications go to a wallpaper that can show them, else to Windows.
     pub notify: bool,
 }
@@ -82,6 +86,7 @@ impl Default for LiveSettings {
             enabled: false,
             port: DEFAULT_PORT,
             token: String::new(),
+            ticket_verified: false,
             notify: true,
         }
     }
@@ -464,7 +469,7 @@ static CONNECTED: AtomicUsize = AtomicUsize::new(0);
 static REFUSALS: Mutex<wire::Refusals> = Mutex::new(wire::Refusals::new());
 
 /// The health view's rows (registered with `health::register` as "live_feed"): a warning while
-/// a wallpaper keeps presenting an old pairing token; and while the feed runs and the keyboard
+/// a wallpaper keeps being refused; and while the feed runs and the keyboard
 /// shows a piece, the art the feed has for it (`live_parity`, #1053).
 pub fn health_rows() -> Vec<super::health::HealthRow> {
     let warns = REFUSALS
@@ -492,11 +497,11 @@ fn refusal_rows(warns: bool) -> Vec<super::health::HealthRow> {
         "live_feed",
         "Live wallpaper pairing",
         super::health::Level::Warn,
-        "a wallpaper is using an old pairing token",
+        "a wallpaper couldn't connect",
     )
     .with_notice(
-        "Wallpaper needs the new pairing token",
-        "Copy it from App › Live wallpaper and paste it into the wallpaper's Foxglove pairing token.",
+        "Wallpaper couldn't connect",
+        "Foxglove hands it a new connection by itself. If it still doesn't connect, reload the wallpaper in Wallpaper Engine.",
     )]
 }
 
@@ -670,7 +675,13 @@ fn listen_in(s: &LiveSettings, store: Store) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     set_status(format!("Listening on 127.0.0.1:{}", s.port));
     eprintln!("Foxglove: live feed on 127.0.0.1:{}", s.port);
-    let token = s.token.clone();
+    // A verified feed admits tickets only: the stored token is blank, and the store says so.
+    let token = if s.ticket_verified {
+        String::new()
+    } else {
+        s.token.clone()
+    };
+    locked(store).set_old_token_off(s.ticket_verified);
     let (accept_tx, accept_stop) = (tx.clone(), stop.clone());
     // Both supervised (#587). The hub's queue outlives a panicking attempt, so the accept
     // thread, the clients and `send` keep a good sender.
@@ -772,6 +783,9 @@ fn serve(
     let monitor = match admitted {
         Ok(monitor) => {
             REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).paired();
+            if monitor.is_some() {
+                ticket_redeemed(store);
+            }
             monitor
         }
         Err(NotAdmitted::Token) => {
@@ -1605,7 +1619,8 @@ fn turned(
     saved: bool,
 ) -> Result<(LiveSettings, Option<TokenReason>), String> {
     s.enabled = on;
-    if !(on && s.token.is_empty()) {
+    // A verified feed has no token on purpose: none is made again.
+    if !(on && s.token.is_empty()) || s.ticket_verified {
         return Ok((s, None));
     }
     s.token = wire::new_token().ok_or("no random source for the pairing token")?;
@@ -1619,6 +1634,52 @@ fn turned(
 
 fn token_line(why: TokenReason) -> String {
     format!("Foxglove: live feed: new pairing token ({})", why.words())
+}
+
+/// The settings once a ticket has been redeemed: the flag set and the old token gone.
+/// Idempotent.
+fn verified(mut s: LiveSettings) -> LiveSettings {
+    s.ticket_verified = true;
+    s.token.clear();
+    s
+}
+
+/// The first ticket redeem (S4): saves the verified settings, and only then does the old token
+/// stop admitting, so a failed save leaves the old path working. `Ok(Some(settings))` when this
+/// call migrated, `Ok(None)` when it was done already. Nothing here names a token or ticket.
+fn migrate(
+    load: impl FnOnce() -> Result<Option<LiveSettings>, String>,
+    store: impl FnOnce(&LiveSettings) -> Result<(), String>,
+) -> Result<Option<LiveSettings>, String> {
+    let current = load()
+        .map_err(|e| format!("settings unreadable: {e}"))?
+        .unwrap_or_default();
+    if current.ticket_verified && current.token.is_empty() {
+        return Ok(None);
+    }
+    let s = verified(current);
+    store(&s)?;
+    Ok(Some(s))
+}
+
+static MIGRATING: Mutex<()> = Mutex::new(());
+
+/// A wallpaper redeemed a ticket: the new path works, so retire the pasted token.
+fn ticket_redeemed(store: Store) {
+    let _one = MIGRATING.lock().unwrap_or_else(|e| e.into_inner());
+    if locked(store).old_token_off() {
+        return;
+    }
+    match migrate(|| super::store::section(STORE_OWNER, SECTION).load(), save) {
+        Ok(done) => {
+            locked(store).set_old_token_off(true);
+            if done.is_some() {
+                eprintln!("Foxglove: live feed: a wallpaper connected with a ticket; the pairing token is retired");
+            }
+        }
+        // The old path keeps working; the next redeem tries again.
+        Err(e) => eprintln!("Foxglove: live feed: couldn't retire the pairing token yet: {e}"),
+    }
 }
 
 /// A change from the Settings card.
@@ -1641,6 +1702,9 @@ fn change(
     let current = saved.unwrap_or_default();
     let (s, why) = match what {
         Change::Turn(on) => turned(current, on, present)?,
+        Change::NewToken if current.ticket_verified => {
+            return Err("Wallpapers connect without a pairing token now".into());
+        }
         Change::NewToken => {
             let mut s = current;
             s.token = wire::new_token().ok_or("no random source for the pairing token")?;
@@ -1681,7 +1745,7 @@ fn new_token() -> Result<(), String> {
 }
 
 /// What the settings card says the feed sends.
-pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the art screen's art, battery, connection and the keyboard's light colour. It gets which key position was pressed and when, never the letter or keycode, and only with the pairing token. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
+pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the art screen's art, battery, connection and the keyboard's light colour. It gets which key position was pressed and when, never the letter or keycode, and only when it is paired with Foxglove. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
 
 /// The notification switch's label and hover.
 pub const NOTIFY_LABEL: &str = "Show notifications on the wallpaper when it's on screen";
@@ -1715,28 +1779,31 @@ pub fn group(ui: &mut egui::Ui) {
         // What the store holds: a refused change shows no token (#741).
         let s = settings();
         if s.enabled {
-            ui.horizontal(|ui| {
-                ui.label("Pairing token");
-                let mut shown = s.token.clone();
-                ui.add(
-                    egui::TextEdit::singleline(&mut shown)
-                        .desired_width(200.0)
-                        .interactive(false),
+            // Hidden once tickets took over: there is no token to show (S5 removes the box).
+            if !s.ticket_verified {
+                ui.horizontal(|ui| {
+                    ui.label("Pairing token");
+                    let mut shown = s.token.clone();
+                    ui.add(
+                        egui::TextEdit::singleline(&mut shown)
+                            .desired_width(200.0)
+                            .interactive(false),
+                    );
+                    if ui.button("Copy").clicked() {
+                        ui.ctx().copy_text(s.token.clone());
+                    }
+                    if ui
+                        .button("New token")
+                        .on_hover_text("Wallpapers paired with the old token are disconnected")
+                        .clicked()
+                    {
+                        error = new_token().err();
+                    }
+                });
+                ui.weak(
+                    "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
                 );
-                if ui.button("Copy").clicked() {
-                    ui.ctx().copy_text(s.token.clone());
-                }
-                if ui
-                    .button("New token")
-                    .on_hover_text("Wallpapers paired with the old token are disconnected")
-                    .clicked()
-                {
-                    error = new_token().err();
-                }
-            });
-            ui.weak(
-                "Paste it into the wallpaper's \"Foxglove pairing token\" in Wallpaper Engine.",
-            );
+            }
             // #801: which keyboard the wallpaper shows, the focus or a pin.
             super::focus_pins::feed_row(ui);
             let mut notify = s.notify;
@@ -1843,20 +1910,22 @@ mod tests {
 
     /// The health row: a warning only while a wallpaper keeps presenting an old token.
     #[test]
-    fn the_health_row_names_an_old_pairing_token() {
+    fn the_health_row_uses_ticket_wording() {
         assert!(refusal_rows(false).is_empty());
         let rows = refusal_rows(true);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].level, super::super::health::Level::Warn);
-        assert_eq!(rows[0].detail, "a wallpaper is using an old pairing token");
+        assert_eq!(rows[0].detail, "a wallpaper couldn't connect");
+        let (title, body) = super::super::health_notice::text(&rows[0]);
+        assert_eq!(title, "Wallpaper couldn't connect");
         assert_eq!(
-            super::super::health_notice::text(&rows[0]),
-            (
-                "Wallpaper needs the new pairing token".to_string(),
-                "Copy it from App › Live wallpaper and paste it into the wallpaper's Foxglove pairing token."
-                    .to_string()
-            )
+            body,
+            "Foxglove hands it a new connection by itself. If it still doesn't connect, reload the wallpaper in Wallpaper Engine."
         );
+        for text in [&rows[0].detail, &title, &body] {
+            let low = text.to_lowercase();
+            assert!(!low.contains("paste") && !low.contains("token") && !low.contains("copy"));
+        }
     }
 
     /// #587: a hub that panics drops its tap, which moves the shared generation on, so the old
@@ -2954,6 +3023,15 @@ mod tests {
             );
         };
 
+        // Before any ticket is redeemed the old pasted token still pairs, and names no monitor.
+        let mut old = StandIn::connect(port, &token).expect("the old token");
+        assert!(old
+            .next(Duration::from_secs(5))
+            .unwrap()
+            .contains(r#""t":"hello""#));
+        drop(old);
+        assert!(!settings().ticket_verified);
+
         // The ticket admits once.
         let t1 = mint("M1");
         let mut w1 = StandIn::connect_with_ticket(port, &t1).expect("upgraded");
@@ -2963,13 +3041,9 @@ mod tests {
         refused(&mut again);
         // M1 has a socket: that refusal marked nobody.
         assert!(locked(store).take_due().is_empty());
-        // The old pasted token still pairs, and names no monitor.
-        let mut old = StandIn::connect(port, &token).expect("the old token");
-        assert!(old
-            .next(Duration::from_secs(5))
-            .unwrap()
-            .contains(r#""t":"hello""#));
-        drop(old);
+        // The first redeem verified the new path: the old pasted token is retired, and refused.
+        let mut old = StandIn::connect(port, &token).expect("upgraded, to be refused");
+        refused(&mut old);
 
         // M1's wallpaper goes away; a refusal now asks for a fresh ticket for M1 (and only M1).
         drop(w1);
@@ -3010,6 +3084,93 @@ mod tests {
         locked(store).reconnect();
         assert!(locked(store).take_due().contains(&"M1".to_string()));
         stop();
+        // Leave the shared test settings as found.
+        *SETTINGS.lock().unwrap() = None;
+        let _ =
+            crate::foxglove::store::section(STORE_OWNER, SECTION).save(&LiveSettings::default());
+    }
+
+    /// WE handover S4: the store half of the migration, on a temp file. Unverified keeps the
+    /// token and admits it; the first redeem sets the flag and blanks the token; verified refuses
+    /// the old value; running it again changes nothing; nothing it says holds a token.
+    #[test]
+    fn the_first_redeemed_ticket_retires_the_pasted_token() {
+        use crate::foxglove::store;
+        let dir = store::test_config_dir().join("live-migrate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foxglove.toml");
+        let load = || store::try_load_at::<LiveSettings>(&path, SECTION);
+        let save =
+            |s: &LiveSettings| store::save_at(&path, SECTION, s, false).map_err(|e| e.to_string());
+        let pasted = "the-pasted-token-0000000";
+        let old = LiveSettings {
+            enabled: true,
+            token: pasted.into(),
+            ..LiveSettings::default()
+        };
+        save(&old).unwrap();
+
+        // Unverified: nothing changes, and the token admits.
+        let now = Instant::now();
+        let mut pairing = pairing::Pairing::new();
+        assert!(!load().unwrap().unwrap().ticket_verified);
+        assert!(pairing.admit(None, Some(pasted), pasted, now).is_ok());
+        // Turning it on or off keeps the token.
+        let (s, why) = change(Change::Turn(true), load, save).unwrap();
+        assert_eq!((s.token.as_str(), why), (pasted, None));
+
+        // A failed save leaves the old path as it was.
+        assert!(migrate(load, |_| Err("disk full".into())).is_err());
+        assert_eq!(load().unwrap().unwrap().token, pasted);
+
+        // The first redeem: flag set, token blank, and the feed refuses the old value.
+        let done = migrate(load, save).unwrap().expect("migrated");
+        assert!(done.ticket_verified && done.token.is_empty());
+        let on_disk = load().unwrap().unwrap();
+        assert!(on_disk.ticket_verified && on_disk.token.is_empty() && on_disk.enabled);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains(pasted));
+        pairing.set_old_token_off(on_disk.ticket_verified);
+        assert!(pairing.admit(None, Some(pasted), pasted, now).is_err());
+        assert!(pairing.admit(None, Some(""), "", now).is_err());
+
+        // Idempotent: again does nothing, and a flag set beside a token still blanks it.
+        assert!(migrate(load, save).unwrap().is_none());
+        assert_eq!(load().unwrap().unwrap(), on_disk);
+        save(&LiveSettings {
+            ticket_verified: true,
+            token: pasted.into(),
+            ..on_disk.clone()
+        })
+        .unwrap();
+        assert!(migrate(load, save).unwrap().is_some());
+        assert!(load().unwrap().unwrap().token.is_empty());
+
+        // Verified stays blank: turning on makes no token, and New token is refused.
+        let (s, why) = change(Change::Turn(true), load, save).unwrap();
+        assert!(s.token.is_empty() && why.is_none());
+        let err = change(Change::NewToken, load, save).unwrap_err();
+        assert!(
+            !err.contains(pasted) && !err.to_lowercase().contains("paste"),
+            "{err}"
+        );
+        assert!(load().unwrap().unwrap().token.is_empty());
+
+        // Nothing shown or logged holds the token.
+        let rows = refusal_rows(true);
+        let mut texts = vec![format!("{:?}", load().unwrap().unwrap())];
+        texts.push(rows[0].detail.clone());
+        let (title, body) = super::super::health_notice::text(&rows[0]);
+        texts.extend([
+            title,
+            body,
+            EXPLAINER.to_string(),
+            token_line(TokenReason::NewToken),
+        ]);
+        for text in &texts {
+            assert!(!text.contains(pasted), "{text}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
