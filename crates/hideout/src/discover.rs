@@ -35,25 +35,44 @@ pub mod words {
     pub const ADD_AN_APP: &str = "Add an app\u{2026}";
     pub const ADD_TITLE: &str = "Add an app";
     pub const ADD_BODY: &str =
-        "Choose the app's folder. Hideout looks there for the file that describes the app.";
+        "Choose the folder the app was installed in. Hideout looks there for the file that describes the app.";
+    pub const NOT_NOW: &str = "Not now";
+    pub const LIST_NOT_READ: &str =
+        "The app was added, but the list could not be refreshed. Close Hideout and open it again.";
     pub const BROWSE: &str = "Browse\u{2026}";
     pub const CANCEL: &str = "Cancel";
-    pub const NO_FILE: &str = "That folder has no app file Hideout can use.";
+    pub const NO_FILE: &str =
+        "Hideout can't find the app here. Choose the folder the app was installed in.";
     pub const NOT_READ: &str = "That app's file could not be read.";
-    pub const NOT_ADDABLE: &str = "That app can't be added this way.";
+    pub const NOT_ADDABLE: &str = "That app can't be added to Hideout.";
     pub const NOT_THIS_PC: &str = "That folder is not on this PC.";
     pub fn already(name: &str) -> String {
         format!("{name} is already in Hideout.")
     }
-    pub fn not_added(name: &str, why: &str) -> String {
-        format!("{name} could not be added: {why}")
+    /// The program the app's file names is not there.
+    pub fn program_missing(name: &str) -> String {
+        format!("The program for {name} is missing. Reinstall it, then try again.")
+    }
+    /// Anything else that went wrong while adding (the raw reason goes to the log).
+    pub fn not_saved(name: &str) -> String {
+        format!("Hideout could not save {name}. Try again.")
+    }
+    /// The app's file changed between the look and the add.
+    pub fn changed(name: &str) -> String {
+        format!("{name} changed while Hideout was adding it. Try again.")
+    }
+    pub fn added(name: &str) -> String {
+        format!("Added {name}. Choose what it may do.")
+    }
+    pub fn add_label(name: &str) -> String {
+        format!("Add {name}")
     }
     /// The line for one found app.
     pub fn found_line(name: &str, version: &str) -> String {
         format!("{name} {version}")
     }
-    pub fn add_hover(name: &str) -> String {
-        format!("Add {name} to Hideout")
+    pub fn add_hover(name: &str, folder: &str) -> String {
+        format!("Add {name} to Hideout. Found in {folder}")
     }
 }
 
@@ -73,6 +92,34 @@ pub struct Candidate {
     pub name: String,
     pub version: String,
     pub origin: Origin,
+    /// The program the app's file names (the card is not offered when it is gone).
+    pub program: Option<PathBuf>,
+}
+
+impl Candidate {
+    /// The folder the app was found in, for the card's detail line.
+    pub fn folder(&self) -> String {
+        let p = match &self.origin {
+            Origin::Folder(f) => Some(f.clone()),
+            Origin::Product(f) => f
+                .folder
+                .clone()
+                .or_else(|| f.exe.parent().map(Path::to_path_buf)),
+        };
+        p.map(|p| p.display().to_string()).unwrap_or_default()
+    }
+}
+
+/// Text a registrant controls, as the card shows it: no control characters, at most 64
+/// characters.
+fn clean(s: &str) -> String {
+    s.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+        .take(64)
+        .collect()
 }
 
 /// The folder picker (a trait so tests choose without a window).
@@ -96,13 +143,19 @@ fn is_manifest_file(p: &Path) -> bool {
 /// The app described by the manifest in `at`: the folder, the manifest file, or a folder with
 /// the manifest one level down in `hideout\`. Plain-words error when it is not an addable app.
 pub fn from_folder(m: &dyn Machine, at: &Path) -> Result<Candidate, String> {
-    if !is_local(at) {
+    // Local fixed drives only. Checked on the text first (no disk access, so a dead network
+    // drive can't stall the page), then on the canonical path, which is what is read and added.
+    if !is_local(at) || !m.is_local_fixed(at) {
         return Err(words::NOT_THIS_PC.into());
     }
-    let folder = if is_manifest_file(at) {
+    let at = m.canonical(at).ok_or_else(|| words::NO_FILE.to_string())?;
+    if !is_local(&at) || !m.is_local_fixed(&at) {
+        return Err(words::NOT_THIS_PC.into());
+    }
+    let folder = if is_manifest_file(&at) {
         at.parent().map(Path::to_path_buf).unwrap_or_default()
     } else {
-        at.to_path_buf()
+        at
     };
     let (folder, text) = [folder.clone(), folder.join("hideout")]
         .into_iter()
@@ -113,11 +166,17 @@ pub fn from_folder(m: &dyn Machine, at: &Path) -> Result<Candidate, String> {
     if module.kind != Kind::Adopted {
         return Err(words::NOT_ADDABLE.into());
     }
+    let program = module
+        .run
+        .as_ref()
+        .and_then(|r| r.first())
+        .map(|r| folder.join(r));
     Ok(Candidate {
         id: module.id,
-        name: module.name,
-        version: module.version,
+        name: clean(&module.name),
+        version: clean(&module.version),
         origin: Origin::Folder(folder),
+        program,
     })
 }
 
@@ -135,7 +194,11 @@ pub fn discover(m: &dyn Machine, installed: &[String]) -> Vec<Candidate> {
         };
         match from_folder(m, Path::new(&path)) {
             // The key names the app; a manifest for another id is not that key's app.
-            Ok(c) if c.id == sub => out.push(c),
+            // An app whose program is gone is not offered: there is nothing to add.
+            Ok(c) if c.id == sub && c.program.as_deref().is_some_and(|p| m.is_file(p)) => {
+                out.push(c)
+            }
+            Ok(c) if c.id == sub => log::info!("discover: {}: its program is gone", c.id),
             Ok(c) => log::warn!(
                 "discover: key {sub} points at an app file for {}; skipped",
                 c.id
@@ -151,7 +214,8 @@ pub fn discover(m: &dyn Machine, installed: &[String]) -> Vec<Candidate> {
             out.push(Candidate {
                 id: p.id.clone(),
                 name: p.name.clone(),
-                version: f.version.clone(),
+                version: clean(&f.version),
+                program: Some(f.exe.clone()),
                 origin: Origin::Product(f),
             });
         }
@@ -162,7 +226,9 @@ pub fn discover(m: &dyn Machine, installed: &[String]) -> Vec<Candidate> {
 }
 
 /// Registers `c` in the hub folder `home` (the `--adopt` code; no grant, nothing started).
-/// Returns the app's id.
+/// Returns the app's id. What the user saw is what is registered: the folder is read again
+/// first and must still name the same app, and the id the adopt code registered must be the
+/// card's. A failure is one plain sentence; the raw reason goes to the log.
 pub fn add(
     m: &dyn Machine,
     home: &Path,
@@ -170,12 +236,58 @@ pub fn add(
     c: &Candidate,
     now: &str,
 ) -> Result<String, String> {
+    if let Origin::Folder(f) = &c.origin {
+        match from_folder(m, f) {
+            Ok(again) if again.id == c.id && again.version == c.version => {}
+            _ => return Err(words::changed(&c.name)),
+        }
+    }
     let done = match &c.origin {
         Origin::Folder(f) => crate::adopt::run(home, f, now),
         Origin::Product(found) => find_installed::adopt(m, home, staging, found, now),
     };
-    done.map(|_| c.id.clone())
-        .map_err(|why| words::not_added(&c.name, &why))
+    match done {
+        Ok(line) if line.starts_with(&format!("registered {} ", c.id)) => Ok(c.id.clone()),
+        Ok(line) => {
+            log::warn!(
+                "discover: asked to add {} but the adopt code said: {line}",
+                c.id
+            );
+            Err(words::changed(&c.name))
+        }
+        Err(why) => {
+            log::warn!("discover: {} not added: {why}", c.id);
+            let gone = c.program.as_deref().is_some_and(|p| !m.is_file(p));
+            Err(if gone {
+                words::program_missing(&c.name)
+            } else {
+                words::not_saved(&c.name)
+            })
+        }
+    }
+}
+
+/// What the user is told after a click.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    pub text: String,
+    /// A refusal (shown as a problem); otherwise information.
+    pub error: bool,
+}
+
+impl Note {
+    pub fn error(text: impl Into<String>) -> Note {
+        Note {
+            text: text.into(),
+            error: true,
+        }
+    }
+    pub fn info(text: impl Into<String>) -> Note {
+        Note {
+            text: text.into(),
+            error: false,
+        }
+    }
 }
 
 /// What the Found card and Add an app… show, and the steps behind their buttons.
@@ -184,8 +296,10 @@ pub struct AddApp {
     pub found: Vec<Candidate>,
     /// The Add an app… box is open.
     pub adding: bool,
-    /// The last thing to tell the user (a refusal, "already in Hideout").
-    pub note: Option<String>,
+    /// The last thing to tell the user (a refusal, "already in Hideout", "Added ...").
+    pub note: Option<Note>,
+    /// Apps the user chose Not now on, until the next start.
+    pub dismissed: Vec<String>,
     scanned_for: Option<Vec<String>>,
 }
 
@@ -211,6 +325,20 @@ impl AddApp {
         self.note = None;
     }
 
+    /// **Not now** on the Found card: hides these apps until the next start.
+    pub fn dismiss(&mut self) {
+        self.dismissed = self.found.iter().map(|c| c.id.clone()).collect();
+        self.note = None;
+    }
+
+    /// The apps the card lists (the ones not dismissed).
+    pub fn shown(&self) -> Vec<&Candidate> {
+        self.found
+            .iter()
+            .filter(|c| !self.dismissed.contains(&c.id))
+            .collect()
+    }
+
     /// **Browse…**: the user picks a folder; an addable app there is registered. `Some(id)` when
     /// it was added (the page then opens its Allow dialog).
     pub fn browse(
@@ -225,12 +353,12 @@ impl AddApp {
         let folder = picker.pick_folder()?;
         match from_folder(m, &folder) {
             Ok(c) if installed.contains(&c.id) => {
-                self.note = Some(words::already(&c.name));
+                self.note = Some(Note::info(words::already(&c.name)));
                 None
             }
             Ok(c) => self.register(m, home, staging, &c, now),
             Err(why) => {
-                self.note = Some(why);
+                self.note = Some(Note::error(why));
                 None
             }
         }
@@ -260,12 +388,12 @@ impl AddApp {
         match add(m, home, staging, c, now) {
             Ok(id) => {
                 self.adding = false;
-                self.note = None;
                 self.found.retain(|f| f.id != id);
+                self.note = Some(Note::info(words::added(&c.name)));
                 Some(id)
             }
             Err(why) => {
-                self.note = Some(why);
+                self.note = Some(Note::error(why));
                 None
             }
         }
@@ -303,6 +431,7 @@ mod ui {
         OpenBox,
         Browse,
         Cancel,
+        NotNow,
     }
 
     fn c(x: hideout_shell::theme::Rgb) -> egui::Color32 {
@@ -348,6 +477,10 @@ mod ui {
                     self.state.cancel();
                     None
                 }
+                Click::NotNow => {
+                    self.state.dismiss();
+                    None
+                }
             }
         }
 
@@ -361,7 +494,13 @@ mod ui {
         ) -> Option<String> {
             self.state.scan(self.machine.as_ref(), installed, false);
             let mut click = None;
-            if !self.state.found.is_empty() {
+            let shown: Vec<Candidate> = self.state.shown().into_iter().cloned().collect();
+            if self.state.adding
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
+                click = Some(Click::Cancel);
+            }
+            if !shown.is_empty() {
                 frame(ui, t, |ui| {
                     let head =
                         ui.label(RichText::new(words::FOUND_TITLE).strong().color(c(t.text)));
@@ -370,13 +509,18 @@ mod ui {
                     });
                     ui.label(RichText::new(words::FOUND_BODY).color(c(t.text_muted)));
                     ui.add_space(6.0);
-                    for f in &self.state.found {
+                    for f in &shown {
                         ui.push_id(("hub.found", &f.id), |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(words::found_line(&f.name, &f.version))
-                                        .color(c(t.text)),
-                                );
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        RichText::new(words::found_line(&f.name, &f.version))
+                                            .color(c(t.text)),
+                                    );
+                                    ui.label(
+                                        RichText::new(f.folder()).small().color(c(t.text_muted)),
+                                    );
+                                });
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -387,7 +531,11 @@ mod ui {
                                                 )
                                                 .fill(c(t.accent)),
                                             )
-                                            .on_hover_text(words::add_hover(&f.name));
+                                            .on_hover_text(words::add_hover(&f.name, &f.folder()));
+                                        let label = words::add_label(&f.name);
+                                        ui.ctx().accesskit_node_builder(b.id, |n| {
+                                            n.set_label(label);
+                                        });
                                         if b.clicked() {
                                             click = Some(Click::Add(f.id.clone()));
                                         }
@@ -396,18 +544,28 @@ mod ui {
                             });
                         });
                     }
+                    if !self.state.adding {
+                        if let Some(note) = &self.state.note {
+                            note_label(ui, t, note);
+                        }
+                    }
+                    if ui.button(words::NOT_NOW).clicked() {
+                        click = Some(Click::NotNow);
+                    }
                 });
                 ui.add_space(8.0);
+            } else if !self.state.adding {
+                if let Some(note) = &self.state.note {
+                    note_label(ui, t, note);
+                    ui.add_space(6.0);
+                }
             }
             if self.state.adding {
                 frame(ui, t, |ui| {
                     ui.label(RichText::new(words::ADD_TITLE).strong().color(c(t.text)));
                     ui.label(RichText::new(words::ADD_BODY).color(c(t.text_muted)));
                     if let Some(note) = &self.state.note {
-                        let n = ui.label(RichText::new(note).color(c(t.danger)));
-                        ui.ctx().accesskit_node_builder(n.id, |x| {
-                            x.set_live(egui::accesskit::Live::Polite);
-                        });
+                        note_label(ui, t, note);
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -436,6 +594,15 @@ mod ui {
         }
     }
 
+    /// A note: a refusal in the problem colour, information in the plain one. Announced politely.
+    fn note_label(ui: &mut egui::Ui, t: &Tokens, note: &Note) {
+        let colour = if note.error { c(t.danger) } else { c(t.text) };
+        let n = ui.label(RichText::new(&note.text).color(colour));
+        ui.ctx().accesskit_node_builder(n.id, |x| {
+            x.set_live(egui::accesskit::Live::Polite);
+        });
+    }
+
     fn frame(ui: &mut egui::Ui, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
         egui::Frame::new()
             .fill(c(t.surface))
@@ -461,6 +628,14 @@ mod tests {
         env: BTreeMap<String, String>,
         /// path -> (file version, text)
         files: BTreeMap<PathBuf, (String, Option<String>)>,
+        /// Folders (and everything below) that are not on a local fixed drive.
+        remote: Vec<PathBuf>,
+        /// path -> the path it resolves to
+        links: BTreeMap<PathBuf, PathBuf>,
+    }
+
+    fn norm(p: &Path) -> String {
+        p.to_string_lossy().replace('/', "\\").to_lowercase()
     }
 
     impl Machine for Fake {
@@ -471,7 +646,7 @@ mod tests {
             self.env.get(n).cloned()
         }
         fn is_file(&self, p: &Path) -> bool {
-            self.files.contains_key(p)
+            self.files.keys().any(|k| norm(k) == norm(p))
         }
         fn exe_version(&self, p: &Path) -> Option<String> {
             self.files.get(p).map(|f| f.0.clone())
@@ -485,6 +660,17 @@ mod tests {
             } else {
                 Vec::new()
             }
+        }
+        fn canonical(&self, p: &Path) -> Option<PathBuf> {
+            Some(
+                self.links
+                    .get(p)
+                    .cloned()
+                    .unwrap_or_else(|| p.to_path_buf()),
+            )
+        }
+        fn is_local_fixed(&self, p: &Path) -> bool {
+            !self.remote.iter().any(|r| p.starts_with(r))
         }
     }
 
@@ -518,6 +704,8 @@ mod tests {
                 Some(manifest(id, name, version, "adopted", "C:/Apps/x.exe")),
             ),
         );
+        f.files
+            .insert(PathBuf::from("C:/Apps/x.exe"), ("1.0".into(), None));
         f.subkeys.push(id.to_string());
         let at = if as_file { toml } else { folder };
         f.reg.insert(
@@ -661,6 +849,7 @@ mod tests {
         let mut f = Fake::default();
         f.files
             .insert(install.join("module.toml"), (String::new(), Some(text)));
+        f.files.insert(exe, ("1.0".into(), None));
         (install, f)
     }
 
@@ -675,7 +864,11 @@ mod tests {
         assert!(s.adding);
         let id = s.browse(&f, &Pick(Some(install)), &home, &temp("stg"), &[], NOW);
         assert_eq!(id.as_deref(), Some("gizmo"));
-        assert!(!s.adding && s.note.is_none());
+        assert!(!s.adding);
+        assert_eq!(
+            s.note,
+            Some(Note::info("Added Gizmo. Choose what it may do."))
+        );
         let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
         assert!(reg.inventory.modules.contains_key("gizmo"));
         // Registered, never allowed: the first-run Allow dialog is the user's.
@@ -700,7 +893,7 @@ mod tests {
             &[],
             NOW,
         );
-        assert_eq!(s.note.as_deref(), Some(words::NO_FILE));
+        assert_eq!(s.note, Some(Note::error(words::NO_FILE)));
         // A share.
         let _ = s.browse(
             &f,
@@ -710,7 +903,7 @@ mod tests {
             &[],
             NOW,
         );
-        assert_eq!(s.note.as_deref(), Some(words::NOT_THIS_PC));
+        assert_eq!(s.note, Some(Note::error(words::NOT_THIS_PC)));
         // Already added.
         let _ = s.browse(
             &f,
@@ -720,7 +913,7 @@ mod tests {
             &["gizmo".into()],
             NOW,
         );
-        assert_eq!(s.note.as_deref(), Some("Gizmo is already in Hideout."));
+        assert_eq!(s.note, Some(Note::info("Gizmo is already in Hideout.")));
         let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
         assert!(reg.inventory.modules.is_empty());
     }
@@ -743,25 +936,133 @@ mod tests {
             Some("gizmo")
         );
         assert!(s.found.is_empty());
-        // The program is gone: refused with a sentence, the card stays.
+        // The program is gone: the card is not offered at all.
         let (gone, mut g) = app_on_disk("found2", "gizmo");
         g.subkeys.push("gizmo".into());
         g.reg.insert(
             (format!(r"{MODULES_KEY}\gizmo"), String::new()),
             gone.display().to_string(),
         );
-        std::fs::remove_file(gone.join("tool.exe")).unwrap();
+        g.files.remove(&gone.join("tool.exe"));
         let mut s2 = AddApp::default();
         s2.scan(&g, &[], false);
-        assert!(s2
-            .add_found(&g, "gizmo", &temp("found2-home"), &stg, NOW)
+        assert!(s2.found.is_empty());
+    }
+
+    #[test]
+    fn a_program_that_vanishes_after_the_look_is_refused_in_plain_words_and_the_card_stays() {
+        let (install, mut f) = app_on_disk("vanish", "gizmo");
+        f.subkeys.push("gizmo".into());
+        f.reg.insert(
+            (format!(r"{MODULES_KEY}\gizmo"), String::new()),
+            install.display().to_string(),
+        );
+        let mut s = AddApp::default();
+        s.scan(&f, &[], false);
+        assert_eq!(s.found.len(), 1);
+        f.files.remove(&install.join("tool.exe"));
+        std::fs::remove_file(install.join("tool.exe")).unwrap();
+        assert!(s
+            .add_found(&f, "gizmo", &temp("vanish-home"), &temp("stg5"), NOW)
             .is_none());
-        assert!(s2
-            .note
-            .as_deref()
-            .unwrap()
-            .starts_with("Gizmo could not be added: "));
-        assert_eq!(s2.found.len(), 1);
+        let n = s.note.clone().unwrap();
+        assert!(n.error);
+        assert_eq!(n.text, words::program_missing("Gizmo"));
+        assert!(!n.text.contains("os error") && !n.text.contains('\\'));
+        assert_eq!(s.found.len(), 1);
+        // The card shows the note even with the Add an app box closed (the UI draws it there).
+        assert!(!s.adding);
+    }
+
+    #[test]
+    fn a_network_or_mapped_drive_is_not_this_pc_and_a_junction_is_followed() {
+        let (install, mut f) = app_on_disk("net", "gizmo");
+        f.remote.push(install.clone());
+        assert_eq!(
+            from_folder(&f, &install).unwrap_err(),
+            words::NOT_THIS_PC.to_string()
+        );
+        // A local-looking path that resolves onto a remote drive is refused too.
+        let mut g = Fake::default();
+        g.remote.push(PathBuf::from(r"Z:\share"));
+        g.links.insert(
+            PathBuf::from(r"C:\Apps\link"),
+            PathBuf::from(r"Z:\share\app"),
+        );
+        assert_eq!(
+            from_folder(&g, Path::new(r"C:\Apps\link")).unwrap_err(),
+            words::NOT_THIS_PC.to_string()
+        );
+        // And it never reaches discovery.
+        let mut h = Fake::default();
+        register(&mut h, "gizmo", "Gizmo", "1.0.0", false);
+        h.remote.push(dir("gizmo"));
+        assert!(discover(&h, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_manifest_that_changed_after_the_look_is_refused_and_nothing_is_registered() {
+        let (install, mut f) = app_on_disk("swap", "gizmo");
+        f.subkeys.push("gizmo".into());
+        f.reg.insert(
+            (format!(r"{MODULES_KEY}\gizmo"), String::new()),
+            install.display().to_string(),
+        );
+        let home = temp("swap-home");
+        let mut s = AddApp::default();
+        s.scan(&f, &[], false);
+        // Another app's manifest lands in the folder (the fake and the disk agree).
+        let exe = install
+            .join("tool.exe")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let text = manifest("intruder", "Gizmo", "1.4.0", "adopted", &exe);
+        std::fs::write(install.join("module.toml"), &text).unwrap();
+        f.files
+            .insert(install.join("module.toml"), (String::new(), Some(text)));
+        assert!(s
+            .add_found(&f, "gizmo", &home, &temp("stg6"), NOW)
+            .is_none());
+        assert_eq!(s.note, Some(Note::error(words::changed("Gizmo"))));
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert!(reg.inventory.modules.is_empty());
+    }
+
+    #[test]
+    fn names_and_versions_are_cleaned_and_the_card_gives_the_folder() {
+        let mut f = Fake::default();
+        register(&mut f, "gizmo", "Gizmo", "1.0.0", false);
+        f.files.insert(
+            dir("gizmo").join("module.toml"),
+            (
+                String::new(),
+                Some(manifest(
+                    "gizmo",
+                    "Gi\u{202e}zmo",
+                    "1.0.0",
+                    "adopted",
+                    "C:/Apps/x.exe",
+                )),
+            ),
+        );
+        let found = discover(&f, &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "Gizmo");
+        assert_eq!(found[0].folder(), dir("gizmo").display().to_string());
+    }
+
+    #[test]
+    fn not_now_hides_the_card_for_the_session() {
+        let mut f = Fake::default();
+        register(&mut f, "gizmo", "Gizmo", "1.0.0", false);
+        let mut s = AddApp::default();
+        s.scan(&f, &[], false);
+        assert_eq!(s.shown().len(), 1);
+        s.dismiss();
+        assert!(s.shown().is_empty());
+        // Still there for Add an app.
+        assert_eq!(s.found.len(), 1);
     }
 
     #[test]
@@ -793,8 +1094,17 @@ mod tests {
             words::NOT_READ,
             words::NOT_ADDABLE,
             words::NOT_THIS_PC,
+            words::NOT_NOW,
+            words::LIST_NOT_READ,
         ];
-        for w in all {
+        let sentences = [
+            words::added("Gizmo"),
+            words::program_missing("Gizmo"),
+            words::not_saved("Gizmo"),
+            words::changed("Gizmo"),
+            words::add_label("Gizmo"),
+        ];
+        for w in sentences.iter().map(String::as_str).chain(all) {
             let l = w.to_lowercase();
             for p in find_installed::products() {
                 assert!(!l.contains(&p.name.to_lowercase()), "{w}");

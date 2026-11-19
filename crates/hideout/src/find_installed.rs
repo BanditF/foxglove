@@ -145,6 +145,12 @@ pub trait Machine {
     fn read_text(&self, p: &Path) -> Option<String>;
     /// The names of the subkeys under an `HKCU` key (empty when the key is absent).
     fn registry_subkeys(&self, key: &str) -> Vec<String>;
+    /// The canonical form of an existing path (`..`, junctions and short names resolved, no
+    /// `\?\` prefix); `None` when it can't be resolved.
+    fn canonical(&self, p: &Path) -> Option<PathBuf>;
+    /// Whether `p` is on one of this PC's fixed drives: not UNC, not a mapped network drive,
+    /// not removable. Reads no files, so a dead network drive can't block on it.
+    fn is_local_fixed(&self, p: &Path) -> bool;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -498,7 +504,21 @@ mod real {
             }
         }
         fn read_text(&self, p: &Path) -> Option<String> {
+            // A manifest is small; a huge file is not one.
+            const MAX: u64 = 256 * 1024;
+            if std::fs::metadata(p).ok()?.len() > MAX {
+                return None;
+            }
             std::fs::read_to_string(p).ok()
+        }
+        fn canonical(&self, p: &Path) -> Option<PathBuf> {
+            let c = std::fs::canonicalize(p).ok()?;
+            Some(PathBuf::from(hideout_registry::keyboard::strip_verbatim(
+                &c.to_string_lossy(),
+            )))
+        }
+        fn is_local_fixed(&self, p: &Path) -> bool {
+            hideout_registry::permission::on_local_fixed_drive(&p.to_string_lossy())
         }
         fn registry_subkeys(&self, key: &str) -> Vec<String> {
             let k = wide(key.as_ref());
@@ -569,6 +589,12 @@ mod tests {
         }
         fn registry_subkeys(&self, _key: &str) -> Vec<String> {
             Vec::new()
+        }
+        fn canonical(&self, p: &Path) -> Option<PathBuf> {
+            Some(p.to_path_buf())
+        }
+        fn is_local_fixed(&self, _p: &Path) -> bool {
+            true
         }
     }
 
@@ -706,6 +732,12 @@ mod tests {
         }
         fn registry_subkeys(&self, k: &str) -> Vec<String> {
             self.0.registry_subkeys(k)
+        }
+        fn canonical(&self, p: &Path) -> Option<PathBuf> {
+            self.0.canonical(p)
+        }
+        fn is_local_fixed(&self, p: &Path) -> bool {
+            self.0.is_local_fixed(p)
         }
     }
 

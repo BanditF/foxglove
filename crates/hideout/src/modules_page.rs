@@ -379,7 +379,14 @@ impl ModulesPage {
         if let Some(home) = self.discover.as_ref().map(|d| d.home.clone()) {
             match read_installed(&home) {
                 Ok(list) => self.installed = list,
-                Err(why) => log::warn!("Modules page: the list after adding {id}: {why}"),
+                Err(why) => {
+                    log::warn!("Modules page: the list after adding {id}: {why}");
+                    if let Some(d) = self.discover.as_mut() {
+                        d.state.note = Some(crate::discover::Note::error(
+                            crate::discover::words::LIST_NOT_READ,
+                        ));
+                    }
+                }
             }
         }
         if let Some(p) = self.perm.as_mut() {
