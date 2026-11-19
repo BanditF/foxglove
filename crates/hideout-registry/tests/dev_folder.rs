@@ -377,3 +377,79 @@ fn removing_a_folder_by_another_spelling_works_and_says_so() {
     assert!(f.reg.dev_folders().is_empty());
     assert!(!f.reg.remove_dev_folder(&alias).unwrap());
 }
+
+// ---- re-review: below the folder (M3), conditional ACEs (L8), drop zones (L7) ----
+
+/// A dev-folder app at `<out>\suboxglove.exe`, enrolled, then `edit` runs on the layout.
+fn nested(name: &str) -> (Fx, PathBuf) {
+    let mut f = fx(name);
+    let sub = f.out.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let exe = sub.join("foxglove.exe");
+    std::fs::write(&exe, b"build 1").unwrap();
+    let dir = f.reg.module_dir(ID, "1.0.0");
+    std::fs::write(dir.join("module.toml"), manifest(&exe)).unwrap();
+    let reg = Registry::open(&f.home, true).unwrap();
+    f.reg = reg;
+    f.exe = exe;
+    (f, sub)
+}
+
+#[test]
+fn a_subfolder_other_accounts_can_write_is_not_carried() {
+    let (mut f, sub) = nested("sub-open");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    assert!(
+        f.reg.dev_folder_of(ID).is_some(),
+        "private subfolder is fine"
+    );
+    grant_everyone(&sub, "(OI)(CI)M");
+    assert!(f.reg.dev_folder_of(ID).is_none());
+    rebuild(&f, b"build 2");
+    assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
+}
+
+#[test]
+fn an_exe_other_accounts_can_write_is_not_carried() {
+    let (mut f, _) = nested("exe-open");
+    allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
+    assert!(f.reg.dev_folder_of(ID).is_some());
+    grant_everyone(&f.exe, "M");
+    assert!(f.reg.dev_folder_of(ID).is_none());
+    rebuild(&f, b"build 2");
+    assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
+}
+
+#[test]
+fn a_conditional_allow_ace_counts_as_write() {
+    let mut f = fx("conditional");
+    let dir = temp("conditional-dir");
+    // A callback ACE (SDDL XA) gives Everyone full control when a condition holds.
+    let script = format!(
+        "$p='{}'; $a=Get-Acl -LiteralPath $p;          $a.SetSecurityDescriptorSddlForm($a.Sddl + '(XA;OICI;FA;;;WD;(Member_of{{SID(BU)}}))');          Set-Acl -LiteralPath $p -AclObject $a",
+        dir.display()
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(f.reg.add_dev_folder(&dir.display().to_string()).is_err());
+}
+
+#[test]
+fn the_children_of_temp_and_appdata_are_refused() {
+    let mut f = fx("dropzones");
+    for var in ["TEMP", "LOCALAPPDATA", "APPDATA"] {
+        let base = PathBuf::from(std::env::var(var).unwrap());
+        let child = base.join(format!("hideout-devfolder-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&child).unwrap();
+        let r = f.reg.add_dev_folder(&child.display().to_string());
+        let _ = std::fs::remove_dir_all(&child);
+        assert!(r.is_err(), "{var}");
+    }
+}

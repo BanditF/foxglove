@@ -838,6 +838,7 @@ mod tests {
             name: "Art".into(),
             version: "1.0.0".into(),
             enabled: false,
+            dev: false,
         };
         let log = Log::default();
         let mut page = ModulesPage {

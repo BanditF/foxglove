@@ -56,20 +56,43 @@ fn trusted_writer(sid: &str, me: &str) -> bool {
         || sid.starts_with("S-1-5-80-")
 }
 
+/// What matters on the drive root: swapping or deleting what is in it. Add-file and add-folder
+/// are left out (every default root grants them); inherit-only ACEs there apply to children only.
+const ROOT_WRITE: u32 = 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x1000_0000;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Where {
+    Folder,
+    Root,
+}
+
 #[cfg(windows)]
-fn writable_by_others(dir: &std::path::Path, mask: u32, me: &str) -> bool {
-    // A DACL that can't be read is not known to be safe.
-    match hideout_acl::dacl(dir) {
-        Ok(d) => d
-            .aces
-            .iter()
-            .any(|a| a.allow && a.mask & mask != 0 && !trusted_writer(&a.sid, me)),
-        Err(_) => true,
+fn writable_by_others(path: &std::path::Path, mask: u32, at: Where, me: &str) -> bool {
+    // A DACL or owner that can't be read is not known to be safe.
+    let Ok(d) = hideout_acl::dacl(path) else {
+        return true;
+    };
+    let acl_open = d.aces.iter().any(|a| {
+        if at == Where::Root && a.inherit_only {
+            return false;
+        }
+        if a.kind > 1 {
+            // A callback, object or other kind of ACE carries conditions that aren't read here:
+            // one that could grant write counts as granting it.
+            a.mask & mask != 0
+        } else {
+            a.allow && a.mask & mask != 0 && !trusted_writer(&a.sid, me)
+        }
+    });
+    if acl_open {
+        return true;
     }
+    // The owner can rewrite the DACL whatever it says.
+    at == Where::Folder && !hideout_acl::owner(path).is_ok_and(|o| trusted_writer(&o, me))
 }
 
 #[cfg(not(windows))]
-fn writable_by_others(_: &std::path::Path, _: u32, _: &str) -> bool {
+fn writable_by_others(_: &std::path::Path, _: u32, _: Where, _: &str) -> bool {
     true
 }
 
@@ -83,39 +106,48 @@ fn current_sid() -> std::io::Result<String> {
     Err(std::io::Error::other("windows only"))
 }
 
+/// An environment folder in the form program paths have: canonical, no `\?\` prefix (so an 8.3
+/// `%TEMP%` is compared by its long name).
 fn env_path(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    let v = std::env::var(name).ok().filter(|v| !v.is_empty())?;
+    canonical_path(std::path::Path::new(&v)).ok()
 }
 
 /// Why `canon` (a canonical folder path) can't be a dev folder, in plain words, or None. Applied
 /// when a folder is added and again every time the list is read, so a hand edit or a later ACL
 /// change fails closed.
 ///
-/// Refused: a drive root (or `C:`); the user's profile folder, `AppData`, the temp folder and
-/// Downloads (and any folder that contains one of them); Windows, Program Files, ProgramData and
-/// Public (and everything inside them); a folder that another account can write into, and a
-/// folder above it (below the drive root) another account can swap out. "Another account" is
-/// anyone but you, SYSTEM, Administrators and TrustedInstaller.
+/// Refused: a drive root (or `C:`); the user's profile folder (and any folder holding it);
+/// `AppData`, the temp folder and Downloads, those folders and everything inside or above them;
+/// Windows, Program Files, ProgramData and Public (and everything inside them); a folder that
+/// another account can write into or owns, and a folder above it, drive root included, that
+/// another account can swap out. "Another account" is anyone but you, SYSTEM, Administrators and
+/// TrustedInstaller. Names are compared in canonical long form.
 pub fn folder_problem(canon: &str) -> Option<&'static str> {
     let trimmed = canon.trim_end_matches(['\\', '/']);
     if norm(trimmed).len() <= 2 {
         return Some("a drive is too much to trust as a dev folder");
     }
     let profile = env_path("USERPROFILE");
-    let broad = [
-        profile.clone(),
+    if profile
+        .iter()
+        .any(|b| same_path(trimmed, b) || path_within(trimmed, b))
+    {
+        return Some("that folder holds your whole profile");
+    }
+    let drop_zones = [
         env_path("APPDATA"),
         env_path("LOCALAPPDATA"),
         env_path("TEMP"),
         env_path("TMP"),
         profile.map(|p| format!("{}\\Downloads", p.trim_end_matches('\\'))),
     ];
-    if broad
+    if drop_zones
         .iter()
         .flatten()
-        .any(|b| same_path(trimmed, b) || path_within(trimmed, b))
+        .any(|b| same_path(trimmed, b) || path_within(trimmed, b) || path_within(b, trimmed))
     {
-        return Some("that folder holds too much (your profile, AppData, Temp or Downloads)");
+        return Some("AppData, Temp and Downloads can't hold a dev folder");
     }
     let system = [
         env_path("SystemRoot"),
@@ -135,19 +167,50 @@ pub fn folder_problem(canon: &str) -> Option<&'static str> {
         return Some("couldn't tell who you are to check the folder's permissions");
     };
     let mut dir = std::path::Path::new(trimmed);
-    if writable_by_others(dir, FOLDER_WRITE, &me) {
+    if writable_by_others(dir, FOLDER_WRITE, Where::Folder, &me) {
         return Some("other accounts on this PC can change files in that folder");
     }
     while let Some(parent) = dir.parent() {
-        if parent.parent().is_none() {
-            break;
-        }
-        if writable_by_others(parent, PARENT_WRITE, &me) {
+        let root = parent.parent().is_none();
+        let (mask, at) = if root {
+            (ROOT_WRITE, Where::Root)
+        } else {
+            (PARENT_WRITE, Where::Folder)
+        };
+        if writable_by_others(parent, mask, at, &me) {
             return Some("other accounts on this PC can change a folder above it");
+        }
+        if root {
+            break;
         }
         dir = parent;
     }
     None
+}
+
+/// Whether the program `exe` inside the dev folder `folder` can be changed by another account:
+/// every directory from the program's own up to `folder`, and the file itself. A project that was
+/// moved in from a shared place keeps the permissions it had there, so the folder's own check
+/// is not enough. Fails closed on anything that can't be read.
+fn exe_open_to_others(folder: &str, exe: &str) -> bool {
+    let Ok(me) = current_sid() else {
+        return true;
+    };
+    let exe_path = std::path::Path::new(exe);
+    if writable_by_others(exe_path, FOLDER_WRITE, Where::Folder, &me) {
+        return true;
+    }
+    let mut dir = exe_path.parent();
+    while let Some(d) = dir {
+        if !path_within(folder, &d.display().to_string()) {
+            break;
+        }
+        if writable_by_others(d, FOLDER_WRITE, Where::Folder, &me) {
+            return true;
+        }
+        dir = d.parent();
+    }
+    false
 }
 
 impl Registry {
@@ -224,11 +287,22 @@ impl Registry {
         if !self.dev_folders_on() || path.is_empty() || !on_local_fixed_drive(path) {
             return None;
         }
-        self.dev_folders().into_iter().find(|f| {
+        let folders = self.dev_folders();
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        if !folders.is_empty() {
+            WARNED.call_once(|| {
+                log::warn!(
+                    "developer mode is on and {} dev folder(s) are listed: apps inside them keep                      their grants over a rebuild",
+                    folders.len()
+                );
+            });
+        }
+        folders.into_iter().find(|f| {
             path_within(f, path)
                 && on_local_fixed_drive(&format!("{}\\x", f.trim_end_matches('\\')))
                 && std::path::Path::new(f).is_dir()
                 && folder_problem(f).is_none()
+                && !exe_open_to_others(f, path)
         })
     }
 

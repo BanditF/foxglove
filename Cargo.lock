@@ -2075,6 +2075,7 @@ dependencies = [
  "foxglove-plugin-trust",
  "hideout-acl",
  "hideout-contract",
+ "log",
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",
