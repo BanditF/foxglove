@@ -13,7 +13,7 @@ Nothing here was launched when this page was written.
 | Thing | Where | Note |
 |---|---|---|
 | `hideout.exe` | `cargo build -p hideout` in this checkout (own `CARGO_TARGET_DIR`) | Windows only |
-| `foxglove.exe` of this build | `cargo build -p foxglove` (the `app/` crate) | Its version (`app/Cargo.toml`, 0.3.0) goes into the manifest; the hub stops a module whose `initialize` version differs (contract 7.5) |
+| `foxglove.exe` of this build | `cargo build --manifest-path app/Cargo.toml` (the `app/` crate, outside the root workspace) | Its version (`app/Cargo.toml`, 0.3.0) goes into the manifest; the hub stops a module whose `initialize` version differs (contract 7.4, "verify") |
 | Arete's module folder | a folder with Arete's `module.toml` (its repo: `src/arete/hideout/module.toml`) | `run[0]` is a placeholder in the vendored copy, so pass `-AreteExe` |
 | `arete.exe` | this PC's Arete install | Its version MUST equal the manifest `version` (0.1.0 in the vendored copy) |
 
@@ -48,7 +48,7 @@ Run from the checkout in PowerShell. `$exe` values are your paths.
 6. **What each shows (UNVERIFIED live; the content is pinned by tests).**
    - Foxglove (`app/src/foxglove/hub_panels.rs`): read-only tiles drawn from the `keyboard.*`
      facts; one button, "Open Foxglove settings".
-   - Vulpes (`crates/hideout-panels/tests/vulpes.rs` and `vectors/vulpes.json`): GPU holder and
+   - Vulpes (`crates/hideout-panels/tests/vulpes.rs` and `crates/hideout-panels/tests/vectors/vulpes.json`): GPU holder and
      the gaming reservation, with the actions "Free GPU" and "Release GPU reservation".
 
 ## One fixed app folder (rebuilds keep the same exe path)
@@ -93,7 +93,8 @@ powershell -File scripts\ops\demo-up.ps1 -DemoHome <the same folder> -Down -Clea
 `-Down` stops only the process whose pid is in `hub.pid` and only if it is named `hideout`;
 `-Clean` deletes the demo folder. Modules the hub started end with it (contract 7.9: Foxglove
 hands its devices back and exits after the 30-second grace period; stop it by pid if it lingers,
-never by name). Nothing outside `-DemoHome` was written.
+never by name). If the module is still in its 30 s grace, `-Clean` may fail to delete
+`appsoxgloveoxglove.exe`; wait 30 s and run `-Clean` again. Nothing outside `-DemoHome` was written.
 
 ## Rules and warnings
 

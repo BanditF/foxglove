@@ -15,8 +15,8 @@ The definition is `app/wix/main.wxs`; cargo-wix discovers it automatically.
 This package targets x64 Windows. Its version defaults to `app/Cargo.toml`;
 override it with `cargo wix --no-build --install-version 0.1.1`. Use increasing MSI
 versions (major/minor <= 255, patch <= 65535). Keep the UpgradeCode fixed.
-The installer tools could not be installed or exercised in the offline development
-environment; an actual MSI build and Windows install/uninstall smoke test remain required.
+CI builds the MSI on every run (`app.yml`) and the unsigned MSI is content-verified; install/uninstall
+tests on the user's profile are still running (On-call).
 
 ## Installed files and startup
 
@@ -120,7 +120,7 @@ are, and no data is moved or copied when Hideout is installed.
 - Hideout finds an installed Foxglove through Windows Installer's own records (planned, H5.4) and
   offers **Use in Hideout**. Until the user turns that on, Foxglove runs on its own and owns the
   keyboard as it does today.
-- The Hideout MSI will write no Startup entry (planned): **Start with Windows** stays a switch in
+- The Hideout MSI writes no Startup entry: **Start with Windows** stays a switch in
   the app, and Hideout never reads or writes `Foxglove.lnk`.
 - Rolling back is uninstalling Hideout. Foxglove was never moved, so it keeps running as before.
 
@@ -131,7 +131,7 @@ this repo runs it. It is a WiX 3.14 MSI (the same toolchain as Foxglove's) from
 `crates/hideout/wix/hideout.wxs`, built with `candle` and `light` directly.
 
 ```powershell
-# Lists what the MSI would write. Builds and installs nothing; needs no WiX or cargo.
+# Lists what the MSI would write (runs python scripts/hideout_installer_plan.py). Builds and installs nothing; needs no WiX or cargo.
 powershell -File scripts/build-hideout-installer.ps1 -DryRun
 # Builds target\hideout-installer\hideout-x64.msi (CARGO_TARGET_DIR is honoured). Needs WiX 3.14 on PATH.
 powershell -File scripts/build-hideout-installer.ps1 [-Version 0.1.0] [-OutDir <folder>]
@@ -191,8 +191,8 @@ and nothing turns it on: not an install, not the first run, not a startup pass (
   exe. Without a window: `hideout.exe --autostart-remove` (and `--autostart-status`, read-only:
   missing, on, off, foreign).
 - It writes only from an installed hub: this exe must sit in the folder that
-  `HKCU\Software\Hideout\Installer` value `App` names (a UNC folder never counts). Until the
-  Hideout MSI (H5.6) writes that value no hub is installed, so the row says "Available once Hideout
+  `HKCU\Software\Hideout\Installer` value `App` names (a UNC folder never counts). The
+  locally built Hideout MSI (H5.6) writes that value; without it the row says "Available once Hideout
   is installed" and writes nothing. A run on `HIDEOUT_CONFIG_DIR` / `HIDEOUT_HOME` writes nothing.
 - Foxglove's `Foxglove.lnk` and its own autostart are never read or written.
 - Fault avoided from the old autostart code: Windows' disabled state is never turned back on by
@@ -277,7 +277,7 @@ release signed by the previous key and a coordinated key transition.
 The release job requires the secret and produces `foxglove.exe`,
 `foxglove-x64.msi`, `latest.json`, and `latest.json.sig`. The latter is a base64
 Ed25519 signature over the exact JSON bytes (including whitespace). The manifest
-contains:
+contains (shown compact; the file written by `foxglove-update-sign` is pretty-printed):
 
 ```json
 {"version":"1.2.3","tag":"app-v1.2.3","msi":{"name":"foxglove-x64.msi","url":"https://github.com/BanditF/foxglove/releases/download/app-v1.2.3/foxglove-x64.msi","sha256":"64 hexadecimal characters","size":12345},"notes":"Release notes","published":"2026-10-23T00:00:00Z","exe_sha256":"64 hexadecimal characters"}
@@ -308,7 +308,7 @@ without elevation (the MSI is per user, #444). It waits for installation and res
 elevation. Cancellation or installation failure leaves `error.txt` for the next
 startup and restarts the old install. Windows Installer handles upgrades;
 settings under `%APPDATA%\Foxglove\config` are preserved. The startup preference
-is `[updates] check_at_startup = true` in `updates.ini` beside the other settings.
+is `check_at_startup = true` in the `[updates]` table of `foxglove.toml`; an old `updates.ini` is imported once and renamed `*.migrated`.
 
 Before shipping, exercise UAC acceptance/cancellation, installer failure,
 interrupted download, successful upgrade/relaunch, and settings preservation on
