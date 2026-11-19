@@ -577,6 +577,7 @@ fn installed() -> Vec<Installed> {
     .iter()
     .map(|(id, name)| Installed {
         adopted: false,
+        dev: false,
         id: (*id).into(),
         name: (*name).into(),
         version: "1.0.0".into(),
@@ -1206,6 +1207,7 @@ fn renders_the_state_sidebar_for_review() {
 fn renders_adopted_row_states_for_review() {
     let mk = |id: &str, name: &str, v: &str, adopted: bool| Installed {
         adopted,
+        dev: false,
         id: id.into(),
         name: name.into(),
         version: v.into(),
@@ -1274,6 +1276,7 @@ fn the_planned_restart_row_has_no_count_and_the_crash_row_keeps_it() {
         .iter()
         .map(|(id, name)| Installed {
             adopted: false,
+            dev: false,
             id: (*id).into(),
             name: (*name).into(),
             version: "1.0.0".into(),

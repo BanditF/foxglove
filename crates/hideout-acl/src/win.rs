@@ -10,13 +10,14 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
-    TokenUser, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION,
+    TokenUser, ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
     PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY,
     TOKEN_USER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 const INHERITED_ACE: u8 = 0x10;
+const INHERIT_ONLY_ACE: u8 = 0x08;
 /// SYSTEM and the built-in Administrators group.
 const SYSTEM_SID: &str = "S-1-5-18";
 const ADMINS_SID: &str = "S-1-5-32-544";
@@ -370,6 +371,13 @@ pub struct Ace {
     /// The trustee's SID string.
     pub sid: String,
     pub inherited: bool,
+    /// True when the ACE applies to children only, not to the object itself.
+    pub inherit_only: bool,
+    /// The raw ACE type (0 allow, 1 deny; anything else is a callback, object or other kind whose
+    /// conditions are not read here).
+    pub kind: u8,
+    /// The ACE's access mask (file-object rights, plus the generic bits as stored).
+    pub mask: u32,
 }
 
 /// A DACL as read from a file or folder.
@@ -426,6 +434,9 @@ pub fn dacl(path: &Path) -> io::Result<Dacl> {
                     allow: kind == 0,
                     sid,
                     inherited: ace.Header.AceFlags & INHERITED_ACE != 0,
+                    inherit_only: ace.Header.AceFlags & INHERIT_ONLY_ACE != 0,
+                    kind,
+                    mask: ace.Mask,
                 });
             }
             Ok(Dacl {
@@ -433,6 +444,35 @@ pub fn dacl(path: &Path) -> io::Result<Dacl> {
                 aces,
             })
         })();
+        LocalFree(sd.cast());
+        out
+    }
+}
+
+/// The owner of a file or folder, as a SID string.
+pub fn owner(path: &Path) -> io::Result<String> {
+    let p = wide_path(path);
+    unsafe {
+        let mut owner: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let rc = GetNamedSecurityInfoW(
+            p.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut sd,
+        );
+        if rc != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(rc as i32));
+        }
+        let out = if owner.is_null() {
+            Err(io::Error::other("no owner"))
+        } else {
+            sid_string(owner)
+        };
         LocalFree(sd.cast());
         out
     }

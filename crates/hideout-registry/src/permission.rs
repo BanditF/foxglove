@@ -268,7 +268,7 @@ fn list_changed(shown: &str, now: &str) -> Failure {
     ))
 }
 
-fn io_invalid(msg: &str) -> Failure {
+pub(crate) fn io_invalid(msg: &str) -> Failure {
     Failure::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))
 }
 
@@ -334,7 +334,7 @@ impl Registry {
     /// A module the hub installed itself has no external program: its path is empty and its
     /// hash is the hash of the signed file map.
     /// `run[1..]` of an adopted module now; empty for any other (or an unreadable manifest).
-    fn run_args(&self, id: &str) -> Vec<String> {
+    pub(crate) fn run_args(&self, id: &str) -> Vec<String> {
         let adopted = self
             .inventory
             .modules
@@ -575,9 +575,36 @@ impl Registry {
             .iter()
             .map(|p| Capability::parse(p))
             .collect::<Result<_, _>>()?;
+        // Dev mode: an Allow from the window for an app inside a dev folder enrols it there
+        // (identity `dev-folder`, nothing inherited: `sensitive_confirmed` starts empty). Any
+        // other Allow (and a Deny, which allows nothing) drops a dev-folder identity the app had.
+        let dev_folder = if by == FOLLOW_SET_BY
+            && !chosen.is_empty()
+            && self.inventory.modules[id].source == ADOPTED
+        {
+            self.dev_folder_for(&list.exe_path)
+        } else {
+            None
+        };
         let before = self.inventory.modules[id].granted.clone();
         let refused = self.inventory.grant(id, &asked).unwrap_or_default();
         let m = self.inventory.modules.get_mut(id).expect("listed");
+        m.identity = match dev_folder {
+            Some(folder) => Some(crate::inventory::Identity {
+                class: crate::inventory::IdentityClass::DevFolder {
+                    folder: Some(folder),
+                },
+                kind: Some(m.kind),
+                visibility: Some(m.visibility),
+                established_at: Some(now.into()),
+                established_by: Some(FOLLOW_SET_BY.into()),
+                sensitive_confirmed: Vec::new(),
+            }),
+            None => m
+                .identity
+                .take()
+                .filter(|i| !matches!(i.class, crate::inventory::IdentityClass::DevFolder { .. })),
+        };
         let got: Vec<String> = m
             .granted
             .iter()
@@ -724,10 +751,12 @@ impl Registry {
             Ok((path, hash)) => {
                 if !b.run_args.is_empty() && self.run_args(id) != b.run_args {
                     Some(VoidReason::Changed)
-                } else if !crate::keyboard::same_path(&path, &b.exe_path) {
+                } else if !crate::keyboard::same_path(&path, &b.exe_path)
+                    && self.dev_enrolment(id, m, b, &path).is_none()
+                {
                     Some(VoidReason::Moved)
                 } else if !hash.eq_ignore_ascii_case(&b.exe_sha256) {
-                    if self.follows(id, b, &path) {
+                    if self.follows(id, b, &path) || self.dev_enrolment(id, m, b, &path).is_some() {
                         None
                     } else {
                         Some(VoidReason::Changed)
@@ -771,7 +800,7 @@ impl Registry {
         let Some(m) = self.inventory.modules.get(id) else {
             return Ok(false);
         };
-        let Some(b) = m.bound.as_ref().filter(|b| b.follow.is_some()) else {
+        let Some(b) = m.bound.as_ref() else {
             return Ok(false);
         };
         if m.source != ADOPTED {
@@ -780,10 +809,21 @@ impl Registry {
         let Ok((path, hash)) = self.program(id) else {
             return Ok(false);
         };
-        if hash.eq_ignore_ascii_case(&b.exe_sha256) || !self.follows(id, b, &path) {
+        let same = crate::keyboard::same_path(&path, &b.exe_path);
+        let by = if same && b.follow.is_some() && self.follows(id, b, &path) {
+            FOLLOW_ATTESTED_BY
+        } else if self.dev_enrolment(id, m, b, &path).is_some() {
+            crate::dev_folder::DEV_ATTESTED_BY
+        } else {
+            return Ok(false);
+        };
+        if same && hash.eq_ignore_ascii_case(&b.exe_sha256) {
             return Ok(false);
         }
-        let (old, follow, version) = (b.exe_sha256.clone(), b.follow.clone(), m.version.clone());
+        let (old, old_path) = (b.exe_sha256.clone(), b.exe_path.clone());
+        let (follow, version) = (b.follow.clone(), m.version.clone());
+        let dev_step = by == crate::dev_folder::DEV_ATTESTED_BY;
+        let enrolled = m.identity.clone();
         let rec = crate::inventory::Attestation {
             from_sha256: old.clone(),
             to_sha256: hash.clone(),
@@ -791,7 +831,7 @@ impl Registry {
             to_path: path.clone(),
             version,
             at: now.into(),
-            by: FOLLOW_ATTESTED_BY.into(),
+            by: by.into(),
         };
         let mut kept = false;
         let inv = crate::inventory::Inventory::update(&self.home.join("inventory.json"), |inv| {
@@ -804,18 +844,29 @@ impl Registry {
                 !b.void
                     && b.exe_sha256.eq_ignore_ascii_case(&old)
                     && b.follow == follow
-                    && crate::keyboard::same_path(&b.exe_path, &path)
+                    && crate::keyboard::same_path(&b.exe_path, &old_path)
+                    // A dev-folder step also needs the enrolment as it is on disk now: a
+                    // CLI Allow or a void from another process wins over this carry.
+                    && (!dev_step
+                        || (m.identity == enrolled && m.source == ADOPTED && b.by == FOLLOW_SET_BY))
             }) else {
                 return;
             };
             b.exe_sha256 = hash.clone();
+            b.exe_path = path.clone();
             b.attested.push(rec.clone());
             let n = b.attested.len();
             if n > 20 {
                 b.attested.drain(..n - 20);
             }
-            if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&path, &old)) {
-                k.sha256 = hash.clone();
+            // The keyboard record moves only with a follow-folder step. A dev-folder step
+            // leaves it: the router's move chain refuses that step, so `check_keyboard` voids
+            // the record on disk and the user is asked again.
+            if !dev_step {
+                if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
+                    k.sha256 = hash.clone();
+                    k.path = path.clone();
+                }
             }
             kept = true;
         })?;
@@ -852,6 +903,12 @@ impl Registry {
                 m.pending_permissions.sort();
                 m.pending_permissions.dedup();
                 m.last_choice = old;
+                // A void is an identity change: a dev-folder enrolment ends with it.
+                if m.identity.as_ref().is_some_and(|i| {
+                    matches!(i.class, crate::inventory::IdentityClass::DevFolder { .. })
+                }) {
+                    m.identity = None;
+                }
                 if let Some(b) = m.bound.as_mut() {
                     b.void = true;
                     b.exe_sha256.clear();
