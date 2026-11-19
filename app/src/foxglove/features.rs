@@ -80,7 +80,7 @@ pub static FEATURES: &[Feature] = &[
         &["api", "apps-watch", "identity", "away"],
         &["App"],
         &["tile:profile"],
-        &["autostart", "gpu_resets", "settings_window"],
+        &["autostart", "gpu_resets", "settings_window", "signin"],
     ),
     f(
         "foxglove.link",

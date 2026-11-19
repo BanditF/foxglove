@@ -41,6 +41,8 @@ mod rebuild_watch;
 #[cfg(windows)]
 mod router_start;
 mod settings_page;
+#[cfg(windows)]
+mod signin_fact;
 
 /// What runs beside the shell: kept alive for the life of the process.
 #[cfg(windows)]
@@ -381,7 +383,17 @@ fn main() {
     // Start with Windows (H5.2): OFF until the user's click in its dialog; nothing here turns it
     // on, and a hub that is not the installed one (or a test run) cannot write it.
     if let Some(sw) = startup_switch(&paths) {
-        settings = settings.with_startup(Box::new(sw));
+        // The router hears whether Hideout starts at sign-in and tells running modules
+        // (`module.<id>.starts_at_sign_in`, read-only): only the hub that holds the router.
+        let sw: Box<dyn hideout_shell::startup_switch::StartupControl> =
+            match started._router.clone() {
+                Some(hub) => Box::new(signin_fact::Announcing::new(
+                    sw,
+                    Box::new(move |on| hub.act(|r| r.set_starts_at_sign_in(on))),
+                )),
+                None => Box::new(sw),
+            };
+        settings = settings.with_startup(sw);
     }
     pages.push(Box::new(settings));
     let opts = hideout_shell::ShellOptions {

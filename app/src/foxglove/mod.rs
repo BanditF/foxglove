@@ -166,6 +166,7 @@ pub mod settings_open;
 pub mod settings_ui;
 pub mod settings_window;
 pub mod shell;
+pub mod signin_flag;
 pub mod signin_handoff;
 pub mod single_instance;
 pub mod startup;
