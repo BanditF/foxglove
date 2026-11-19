@@ -43,9 +43,9 @@ impl Verified {
 ///
 /// Always applies (every caller): the release must be strictly newer than the module's
 /// recorded installed version and every attested one (if none parses: refused), and, when the
-/// signed manifest carries `exe_sha256`, the program at `run[0]` must hash to it. A manifest
-/// without the hash only gets the version rule (logged): the hash in the manifest is the real
-/// fix and the release pipeline is to emit it (docs/hideout-permission-grant.md).
+/// signed manifest must carry `exe_sha256` and the program at `run[0]` must hash to it. A
+/// manifest without the hash is refused (no version-only fallback); the release pipeline
+/// already emits it (docs/hideout-permission-grant.md).
 pub fn attest_installed(home: &Path, id: &str, update: &Verified) -> Result<(), String> {
     let mut reg = Registry::open(home, hideout_registry::dev_mode_from_env())
         .map_err(|e| format!("{e:?}"))?;
@@ -69,7 +69,14 @@ pub fn attest_installed(home: &Path, id: &str, update: &Verified) -> Result<(), 
                 ));
             }
         }
-        None => log::warn!("supervisor: {id}: release has no exe hash; version rule only"),
+        // F3: a version alone proves nothing about the file in the folder. Fail closed; the
+        // change then voids at the next check and the user is asked again.
+        None => {
+            return Err(format!(
+                "{id}: release {} carries no exe_sha256; refused",
+                update.version
+            ))
+        }
     }
     reg.attest_update(
         id,
