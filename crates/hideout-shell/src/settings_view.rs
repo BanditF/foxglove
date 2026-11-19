@@ -18,6 +18,7 @@ pub const ABOUT: &str = "About";
 /// The privacy line (the #1040 review, without examples: the hub names no app, #1087).
 pub const PRIVACY_LINE: &str = "Hideout notices when apps that your modules work with start or \
 quit, so their tiles show up. It keeps a list of those apps on this PC only.";
+pub const OPEN_LOGS: &str = "Open log folder";
 pub const FORGET: &str = "Forget seen apps";
 pub const FORGOTTEN: &str =
     "Hideout forgot the apps it has seen. Their tiles hide until the apps start again.";
@@ -45,6 +46,8 @@ pub fn settings_ui(ui: &mut egui::Ui, t: &Tokens, version: &str, forgotten: bool
 #[derive(Default)]
 pub struct Actions {
     pub forget: bool,
+    /// Open log folder was pressed.
+    pub logs: bool,
     pub startup: Option<Click>,
 }
 
@@ -128,8 +131,11 @@ pub fn settings_ui_with(
     let startup = startup.and_then(|row| startup_section(ui, t, row));
     heading(ui, t, ABOUT);
     ui.label(RichText::new(version_line(version)).color(c(t.text)));
+    ui.add_space(8.0);
+    let logs = ui.button(OPEN_LOGS).clicked();
     Actions {
         forget: pressed,
+        logs,
         startup,
     }
 }

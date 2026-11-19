@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! The Settings page (#991, the #1087 design review): **Privacy**, with what the app watch
 //! keeps (`hideout.appwatch`, contract §4.6) and **Forget seen apps**, then **About** with the
-//! hub's version. Forget seen apps clears `apps-seen.txt` and the running watch's list
+//! hub's version and **Open log folder**. Forget seen apps clears `apps-seen.txt` and the running watch's list
 //! (`hideout_appwatch::forget_seen`), so the tiles that wait for a seen app hide again until it
 //! runs. The words and drawing are `hideout_shell::settings_view`'s; this page owns the action.
 //! Generic only: it names no module or app.
@@ -73,6 +73,9 @@ impl hideout_shell::Page for SettingsPage {
         );
         if acts.forget {
             self.forget();
+        }
+        if acts.logs {
+            hideout_shell::open_logs_folder(&self.home);
         }
         if let (Some(c), Some(s)) = (acts.startup, self.startup.as_mut()) {
             s.click(c);
