@@ -154,7 +154,10 @@ impl Installed {
             && self.anchor.as_deref() == anchor
             && self.kind == kind
             && (source != SIDELOAD
-                || (self.sideload_folder.is_some() && self.sideload_folder.as_deref() == folder))
+                || match (self.sideload_folder.as_deref(), folder) {
+                    (Some(old), Some(new)) => crate::keyboard::same_path(old, new),
+                    _ => false,
+                })
     }
 
     /// Who this module is for the never-list (§6.6).

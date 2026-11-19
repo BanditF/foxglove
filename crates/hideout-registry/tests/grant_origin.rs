@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use hideout_contract::module::{Kind, Visibility};
-use hideout_registry::inventory::{Inventory, ADOPTED, SIDELOAD};
+use hideout_registry::inventory::{Bound, FollowFolder, Inventory, ADOPTED, SIDELOAD};
 use hideout_registry::keyboard::{GrantState, KeyboardGrant};
 use hideout_registry::trust::ROOT_ANCHOR;
 use hideout_registry::Registry;
@@ -151,16 +151,23 @@ fn adopted_to_catalog_voids_and_same_origin_carries() {
     let mut reg = signed(&home, &vectors);
     reg.install(&folder, NOW).unwrap();
 
-    // Same origin (catalog): last_choice is carried as it was, here empty.
-    reg.inventory.modules.get_mut(id).unwrap().granted = vec!["hub.notify".into()];
-    reg.inventory.modules.get_mut(id).unwrap().version = "0.0.1".into();
+    // Same origin (catalog): nothing is voided. This catalog module asks for nothing, so the
+    // install's own ask() drops `granted`; a sentinel in last_choice shows the void did not run
+    // (a void would replace it with the old grants).
+    {
+        let m = reg.inventory.modules.get_mut(id).unwrap();
+        m.granted = vec!["hub.notify".into()];
+        m.last_choice = vec!["sentinel".into()];
+        m.version = "0.0.1".into();
+    }
     reg.install(&folder, NOW).unwrap();
-    assert!(reg.inventory.modules[id].last_choice.is_empty());
+    assert_eq!(reg.inventory.modules[id].last_choice, ["sentinel"]);
 
     // The old entry was adopted: the carried grant is voided into the dialog default.
     {
         let m = reg.inventory.modules.get_mut(id).unwrap();
         m.granted = vec!["hub.notify".into()];
+        m.last_choice.clear();
         m.source = ADOPTED.into();
         m.anchor = None;
         m.kind = Kind::Adopted;
@@ -258,4 +265,110 @@ fn an_old_inventory_without_the_folder_loads_and_fails_closed_once() {
         .unwrap();
     assert_voided(&reg, NOTES);
     assert!(reg.inventory.modules[NOTES].sideload_folder.is_some());
+}
+
+fn bind(reg: &mut Registry, home: &Path, id: &str) {
+    let m = reg.inventory.modules.get_mut(id).unwrap();
+    m.bound = Some(Bound {
+        manifest_sha256: "m".repeat(8),
+        exe_path: "C:/x/notes.exe".into(),
+        exe_sha256: "a".repeat(64),
+        list_hash: "l".into(),
+        at: NOW.into(),
+        by: "dialog".into(),
+        run_args: Vec::new(),
+        void: false,
+        attested: Vec::new(),
+        follow: Some(FollowFolder {
+            folder: "C:/x".into(),
+            file_name: "notes.exe".into(),
+            at: NOW.into(),
+            by: "dialog".into(),
+        }),
+    });
+    reg.inventory.save(&home.join("inventory.json")).unwrap();
+}
+
+#[test]
+fn the_binding_and_keep_ok_are_cleared_on_void_and_kept_on_same_origin() {
+    let home = temp("bind-home");
+    let mut reg = Registry::open(&home, true).unwrap();
+    reg.install(&sideload_folder("bind-a", "0.1.0"), NOW)
+        .unwrap();
+    grant_all(&mut reg, &home, NOTES);
+    bind(&mut reg, &home, NOTES);
+    reg.install(&sideload_folder("bind-a", "0.2.0"), NOW)
+        .unwrap();
+    assert!(reg.inventory.modules[NOTES]
+        .bound
+        .as_ref()
+        .unwrap()
+        .follow
+        .is_some());
+    reg.install(&sideload_folder("bind-b", "0.3.0"), NOW)
+        .unwrap();
+    assert_voided(&reg, NOTES);
+    assert!(reg.inventory.modules[NOTES].bound.is_none());
+}
+
+#[test]
+fn the_same_folder_spelled_differently_still_carries() {
+    let home = temp("spell-home");
+    let a = sideload_folder("spell-a", "0.1.0");
+    let mut reg = Registry::open(&home, true).unwrap();
+    reg.install(&a, NOW).unwrap();
+    grant_all(&mut reg, &home, NOTES);
+
+    // Another case.
+    let upper = PathBuf::from(a.display().to_string().to_uppercase());
+    sideload_folder("spell-a", "0.2.0");
+    reg.install(&upper, NOW).unwrap();
+    assert_carried(&reg, NOTES);
+
+    // A trailing slash.
+    sideload_folder("spell-a", "0.3.0");
+    let slash = PathBuf::from(format!("{}\\", a.display()));
+    reg.install(&slash, NOW).unwrap();
+    assert_carried(&reg, NOTES);
+
+    // A junction to the same folder; a junction to another folder voids.
+    let link = temp("spell-link-parent").join("link");
+    let ok = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(&a)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if ok {
+        sideload_folder("spell-a", "0.4.0");
+        reg.install(&link, NOW).unwrap();
+        assert_carried(&reg, NOTES);
+        let b = sideload_folder("spell-b", "0.5.0");
+        let link_b = temp("spell-link-b-parent").join("link");
+        let ok_b = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link_b)
+            .arg(&b)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok_b {
+            reg.install(&link_b, NOW).unwrap();
+            assert_voided(&reg, NOTES);
+        }
+    }
+}
+
+#[test]
+fn the_recorded_folder_has_no_verbatim_prefix() {
+    let home = temp("prefix-home");
+    let mut reg = Registry::open(&home, true).unwrap();
+    reg.install(&sideload_folder("prefix-a", "0.1.0"), NOW)
+        .unwrap();
+    let f = reg.inventory.modules[NOTES]
+        .sideload_folder
+        .clone()
+        .unwrap();
+    assert!(!f.starts_with(r"\\?\"), "{f}");
 }

@@ -193,12 +193,10 @@ fn under(path: &Path, base: &Path) -> bool {
     p == b || p.starts_with(&format!("{b}\\"))
 }
 
-/// The canonical folder a sideload comes from (verbatim prefix stripped); the path as given when
-/// it cannot be resolved.
-fn canonical_folder(folder: &Path) -> String {
-    let p = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
-    let s = p.display().to_string();
-    s.strip_prefix(r"\?\").map(String::from).unwrap_or(s)
+/// The canonical folder a sideload comes from (verbatim prefix stripped, links resolved); none
+/// when it cannot be resolved, which fails closed: the next sideload install re-asks.
+fn canonical_folder(folder: &Path) -> Option<String> {
+    keyboard::canonical_path(folder).ok()
 }
 
 /// An entry's carried grants after an origin change (trust model F1/F2): everything granted goes
@@ -754,7 +752,11 @@ impl Registry {
             .or_else(|| old.as_ref().and_then(|o| o.previous.clone()));
         // Grants follow the origin, not the id (trust model F1/F2): a changed source, anchor,
         // kind or sideload folder voids what was carried, so the user is asked again.
-        let sideload_folder = (source == SIDELOAD).then(|| canonical_folder(folder));
+        let sideload_folder = if source == SIDELOAD {
+            canonical_folder(folder)
+        } else {
+            None
+        };
         let mut old = old;
         if let Some(o) = old.as_mut() {
             if !o.same_origin(
