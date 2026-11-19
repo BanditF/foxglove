@@ -2950,21 +2950,36 @@ fn renders_the_settings_page_for_review() {
 #[test]
 fn renders_the_start_with_windows_dialog_for_review() {
     let t = theme::tokens(true);
-    let (w, h) = (720u32, 520u32);
-    for (status, replaces, file) in [
+    let (w, h) = (720u32, 600u32);
+    for (status, replaces, apps, file) in [
         (
             crate::startup_switch::STATUS_OFF,
+            false,
             false,
             "built-settings-start-with-windows.png",
         ),
         (
             crate::startup_switch::STATUS_FOREIGN,
             true,
+            false,
             "built-settings-start-with-windows-replaces.png",
+        ),
+        (
+            crate::startup_switch::STATUS_OFF,
+            false,
+            true,
+            "built-settings-start-with-windows-apps.png",
+        ),
+        (
+            crate::startup_switch::STATUS_FOREIGN,
+            true,
+            true,
+            "built-settings-start-with-windows-apps-replaces.png",
         ),
     ] {
         let row = crate::startup_switch::Row {
             status: status.to_string(),
+            apps,
             dialog: Some(replaces),
             ..Default::default()
         };
@@ -4281,4 +4296,36 @@ fn the_first_run_dialog_answers_per_app_and_counts_only_understood_sensitive_ite
         });
     }
     assert_eq!(ans, Some(FirstRunAnswer::NotNow));
+}
+
+/// The Start with Windows dialog opens with Not now focused: Enter never turns it on.
+#[test]
+fn the_start_with_windows_dialog_opens_on_not_now() {
+    use crate::startup_switch::{Click, Row};
+    let t = theme::tokens(true);
+    let row = Row {
+        status: crate::startup_switch::STATUS_OFF.to_string(),
+        dialog: Some(false),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    let mut clicks = Vec::new();
+    for i in 0..4 {
+        let ev = if i == 3 {
+            vec![key(Key::Enter, Modifiers::NONE)]
+        } else {
+            vec![]
+        };
+        let _ = ctx.run(input(800.0, 600.0, ev), |c| {
+            egui::CentralPanel::default().show(c, |ui| {
+                let a = crate::settings_view::settings_ui_with(ui, &t, "0.3.0", false, Some(&row));
+                clicks.push(a.startup);
+            });
+        });
+    }
+    assert!(
+        clicks.iter().all(|c| *c != Some(Click::Confirm)),
+        "{clicks:?}"
+    );
+    assert_eq!(clicks.last().unwrap(), &Some(Click::Cancel), "{clicks:?}");
 }
