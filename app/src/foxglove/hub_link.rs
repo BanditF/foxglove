@@ -343,6 +343,13 @@ struct Hub {
     holders_changed: bool,
     /// The page's Resume was pressed: the link ends the hub's leases (`lease.end`).
     resume_asked: bool,
+    /// Told the hub's `starts_at_sign_in` fact (a change, or its first sight); `None` ignores it.
+    signin: Option<Box<dyn Fn(bool) + Send>>,
+}
+
+/// The hub fact saying Hideout starts at sign-in (read-only).
+fn signin_key() -> String {
+    format!("module.{ID}.starts_at_sign_in")
 }
 
 /// The hub fact naming who holds this module's leases (contract section 8.5, v1.17).
@@ -398,6 +405,12 @@ impl Handler for Hub {
         }
         if params["key"].as_str() == Some(holders_key().as_str()) {
             self.set_holders(we_holders(&params["value"]));
+            return;
+        }
+        if params["key"].as_str() == Some(signin_key().as_str()) {
+            if let (Some(tell), Some(on)) = (&self.signin, params["value"].as_bool()) {
+                tell(on);
+            }
             return;
         }
         if let Some(key) = params["key"].as_str().filter(|k| is_provides(k)) {
@@ -763,6 +776,12 @@ impl<W: Write> Link<W> {
         }
     }
 
+    /// Tells `tell` what the hub says about starting at sign-in.
+    pub fn with_signin(mut self, tell: Box<dyn Fn(bool) + Send>) -> Self {
+        self.hub.signin = Some(tell);
+        self
+    }
+
     /// Reads Wallpaper Engine for the page through `probe` (tests).
     #[cfg(test)]
     pub fn with_wallpaper(mut self, probe: WallpaperProbe) -> Self {
@@ -1110,6 +1129,13 @@ impl<W: Write> Link<W> {
                             .filter(|f| {
                                 if f["key"].as_str() == Some(holders_key().as_str()) {
                                     self.hub.set_holders(we_holders(&f["value"]));
+                                }
+                                if f["key"].as_str() == Some(signin_key().as_str()) {
+                                    if let (Some(tell), Some(on)) =
+                                        (&self.hub.signin, f["value"].as_bool())
+                                    {
+                                        tell(on);
+                                    }
                                 }
                                 f["key"].as_str().is_some_and(is_provides)
                             })
@@ -1710,7 +1736,12 @@ mod runner {
     ) -> (Ended, bool) {
         let devices: Arc<dyn foxglove_plugin_host::Devices> =
             Arc::new(crate::foxglove::api::AppDevices);
-        let mut link = Link::new(conn, launch.clone()).with_devices(devices.clone());
+        let hub_pid = launch.hub_pid;
+        let mut link = Link::new(conn, launch.clone())
+            .with_devices(devices.clone())
+            .with_signin(Box::new(move |on| {
+                crate::foxglove::signin_flag::on_fact(on, owner::image_of(hub_pid));
+            }));
         // Routed calls run on one worker of this connection (it ends when the link drops and
         // closes the queue), never on the link thread.
         let queue = link.with_worker();

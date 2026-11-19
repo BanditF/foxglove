@@ -1801,6 +1801,37 @@ fn the_page_names_the_hubs_holders_and_resume_ends_their_leases() {
     assert!(said(rig.link.shown.as_ref().unwrap(), "Playing"));
 }
 
+/// Sign-in hand-over slice 2: the hub's `module.foxglove.starts_at_sign_in` fact reaches the
+/// link's sink, from a change and from the survey; no sink, no effect. The store is not touched.
+#[test]
+fn the_hubs_starts_at_sign_in_fact_reaches_the_sink() {
+    let told = Arc::new(Mutex::new(Vec::<bool>::new()));
+    let seen = told.clone();
+    let mut link = Link::new(Vec::new(), launch())
+        .with_signin(Box::new(move |on| seen.lock().unwrap().push(on)));
+    let changed = |v: Value| {
+        json!({"jsonrpc":"2.0","method":"facts.changed","params":
+            {"subscription":1,"key":"module.foxglove.starts_at_sign_in","value":v}})
+        .to_string()
+    };
+    link.line(&changed(json!(true))).unwrap();
+    link.line(&changed(json!(false))).unwrap();
+    // Not a bool (or a removed fact): nothing to learn.
+    link.line(&changed(Value::Null)).unwrap();
+    link.line(&changed(json!("yes"))).unwrap();
+    // Another module's fact of the same name is not the hub's word to this module.
+    link.line(
+        &json!({"jsonrpc":"2.0","method":"facts.changed","params":
+            {"subscription":1,"key":"module.other.starts_at_sign_in","value":true}})
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(*told.lock().unwrap(), [true, false]);
+    // Without a sink the same notification is ignored.
+    let mut plain = Link::new(Vec::new(), launch());
+    plain.line(&changed(json!(true))).unwrap();
+}
+
 #[test]
 fn before_the_hub_has_the_module_nothing_registers_and_a_click_opens_nothing() {
     use crate::foxglove::shell::Page;

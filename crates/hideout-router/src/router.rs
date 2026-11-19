@@ -452,6 +452,10 @@ pub struct Router {
     app_watches: HashMap<ConnId, BTreeMap<String, String>>,
     /// The hub's calls waiting for their module to start (§4.6, v1.16): a tray press.
     hub_queue: Vec<hub_queue::HubQueued>,
+    /// Hideout starts at sign-in (the Start with Windows switch is on): published to each running
+    /// module as `module.<id>.starts_at_sign_in`, read-only, so an app can tell whether it needs
+    /// its own startup entry. Off until the hub says otherwise.
+    starts_at_sign_in: bool,
 }
 
 /// The file in a v1 plugin's settings folder where the hub keeps the values the user changed.
@@ -544,6 +548,7 @@ impl Router {
             services: Default::default(),
             app_watches: HashMap::new(),
             hub_queue: Vec::new(),
+            starts_at_sign_in: false,
         };
         let safe = r.settings.safe_mode;
         r.facts.insert("hub.safe_mode".into(), json!(safe));
@@ -1170,6 +1175,33 @@ impl Router {
     pub fn set_safe_mode(&mut self, on: bool) -> Vec<Out> {
         self.settings.safe_mode = on;
         self.publish("hub.safe_mode", json!(on))
+    }
+
+    /// Whether Hideout starts at sign-in changed (or is first known): the fact
+    /// `module.<id>.starts_at_sign_in` of every running module follows. A module that becomes
+    /// ready later gets the current value then.
+    pub fn set_starts_at_sign_in(&mut self, on: bool) -> Vec<Out> {
+        self.starts_at_sign_in = on;
+        let running: Vec<String> = self
+            .facts
+            .iter()
+            .filter(|(_, v)| v.as_str() == Some("running"))
+            .filter_map(|(k, _)| {
+                k.strip_prefix("module")?
+                    .strip_prefix('.')?
+                    .strip_suffix(".state")
+            })
+            .map(str::to_string)
+            .collect();
+        let mut out = Vec::new();
+        for id in running {
+            self.set_fact(
+                &format!("module.{id}.starts_at_sign_in"),
+                json!(on),
+                &mut out,
+            );
+        }
+        out
     }
 
     /// How many wire faults (§8.1 frame-too-large) module `id` has caused; the supervisor counts
@@ -2722,6 +2754,8 @@ impl Router {
             lease_closed_to(conn, &lease, &reason, out);
         }
         self.set_fact(&format!("module.{module}.state"), json!("running"), out);
+        let flag = json!(self.starts_at_sign_in);
+        self.set_fact(&format!("module.{module}.starts_at_sign_in"), flag, out);
         out.push(Out::Ready(module.to_string()));
         let mut keep = VecDeque::new();
         while let Some(q) = self.queue.pop_front() {
