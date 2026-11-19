@@ -413,23 +413,19 @@ pub fn admit(origin: Option<&str>, token_given: Option<&str>, token: &str) -> Re
 }
 
 /// How long a pairing ticket stays good.
-#[allow(dead_code)] // wired into the feed by slice S2
 pub const TICKET_TTL: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Most tickets outstanding at once (one per monitor, replaced on a new mint, so this is only a
 /// bound on monitors); a mint beyond it fails until one is used or expires.
-#[allow(dead_code)] // wired into the feed by slice S2
 pub const MAX_TICKETS: usize = 8;
 
 /// One-time pairing tickets, in memory only: minted for a monitor, used up by the first redeem,
 /// dead after [`TICKET_TTL`]. Never logged, saved or shown; `Debug` hides the values.
-#[allow(dead_code)] // wired into the feed by slice S2
 #[derive(Default)]
 pub struct Tickets {
     open: Vec<Ticket>,
 }
 
-#[allow(dead_code)] // wired into the feed by slice S2
 struct Ticket {
     value: String,
     monitor: String,
@@ -442,7 +438,6 @@ impl std::fmt::Debug for Tickets {
     }
 }
 
-#[allow(dead_code)] // wired into the feed by slice S2
 impl Tickets {
     pub const fn new() -> Self {
         Tickets { open: Vec::new() }
@@ -493,7 +488,33 @@ impl Tickets {
         self.open.clear();
     }
 
+    /// The monitor a live ticket `given` was minted for, so a connecting wallpaper's monitor is
+    /// the one Foxglove pushed that ticket to (S2: the server derives it, the client sends none).
+    /// Every outstanding ticket is compared in constant time, without stopping at a match.
+    pub fn monitor_of(&self, given: &str, now: std::time::Instant) -> Option<String> {
+        let mut hit = None;
+        for (i, t) in self.open.iter().enumerate() {
+            if (t.expires > now) & same(given.as_bytes(), t.value.as_bytes()) {
+                hit = Some(i);
+            }
+        }
+        hit.map(|i| self.open[i].monitor.clone())
+    }
+
+    /// Whether a live ticket is outstanding for `monitor` at `now`.
+    pub fn has_open(&self, monitor: &str, now: std::time::Instant) -> bool {
+        self.open
+            .iter()
+            .any(|t| t.expires > now && t.monitor == monitor)
+    }
+
+    /// Cancels the ticket for `monitor` (its push failed).
+    pub fn cancel(&mut self, monitor: &str) {
+        self.open.retain(|t| t.monitor != monitor);
+    }
+
     /// Tickets outstanding and not yet expired at `now`.
+    #[allow(dead_code)] // for tests and the Hideout panel (S5)
     pub fn outstanding(&self, now: std::time::Instant) -> usize {
         self.open.iter().filter(|t| t.expires > now).count()
     }
@@ -502,7 +523,6 @@ impl Tickets {
 /// [`admit`] that also takes a one-time ticket for `monitor`: a live ticket is used up and
 /// admits; otherwise the old long-lived token decides, unchanged. The origin gate comes first
 /// either way, and a ticket is only looked at after it.
-#[allow(dead_code)] // wired into the feed by slice S2
 pub fn admit_or_ticket(
     origin: Option<&str>,
     given: Option<&str>,

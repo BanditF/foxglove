@@ -48,6 +48,8 @@ pub enum Reason {
     Reinstalled,
     /// A wallpaper connected to the live feed (it just loaded): it is sent everything again.
     Reconnect,
+    /// A refused or expired ticket, or the user's Reconnect: the wallpaper gets a fresh one.
+    Pairing,
 }
 
 impl Reason {
@@ -62,6 +64,7 @@ impl Reason {
             Reason::Reload => "after a full-screen program (Wallpaper Engine's reload)",
             Reason::Reinstalled => "a wallpaper on screen was reinstalled or updated",
             Reason::Reconnect => "a wallpaper connected to the live feed",
+            Reason::Pairing => "a wallpaper's pairing ticket was handed over again",
         }
     }
 }

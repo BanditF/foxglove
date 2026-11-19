@@ -104,6 +104,7 @@ pub mod lights_palette;
 pub mod link;
 pub mod live_art;
 pub mod live_feed;
+pub mod live_pairing;
 pub mod live_parity;
 pub mod live_wire;
 pub mod mic_broker;
