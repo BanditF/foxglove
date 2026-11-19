@@ -1,0 +1,21 @@
+{
+  "_about": "Fallback list of apps Hideout can find when they have not registered themselves under the Hideout Modules registry key. Read at run time; add an entry here, not in code. manifest.template names a template bundled in this build; manifest.install_folder is a path inside the install folder.",
+  "products": [
+    {
+      "id": "foxglove",
+      "name": "Foxglove",
+      "exes": ["foxglove.exe"],
+      "record_key": "Software\\Foxglove\\Installer",
+      "known": [["LOCALAPPDATA", "Programs\\Foxglove"]],
+      "manifest": { "template": "foxglove-hub-link" }
+    },
+    {
+      "id": "vulpes",
+      "name": "Vulpes",
+      "exes": ["venv\\Scripts\\arete.exe"],
+      "record_key": "Software\\Vulpes\\Installer",
+      "known": [["LOCALAPPDATA", "Programs\\Arete"]],
+      "manifest": { "install_folder": "hideout\\module.toml" }
+    }
+  ]
+}
