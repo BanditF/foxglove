@@ -75,6 +75,72 @@ pub struct Installed {
         deserialize_with = "crate::keyboard::lenient"
     )]
     pub keyboard: Option<crate::keyboard::KeyboardGrant>,
+    /// Who this module is, for the trust model (S1): dormant. Nothing reads it yet; none = a
+    /// record from before it existed, which behaves exactly as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<Identity>,
+}
+
+/// The identity a module's grants are bound to (trust model §3-4). Dormant in S1: it is stored
+/// and read back, and no check uses it. The module id is the map key and is not repeated.
+///
+/// The class is the `class` tag; an unknown future class reads as [`IdentityClass::Unknown`]
+/// (kept, never matching any known one) and fields this version does not know are ignored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "class", rename_all = "kebab-case")]
+pub enum IdentityClass {
+    /// Adopted by path (today's path + SHA-256), not signed by anyone.
+    Adopted,
+    /// A developer folder (dev mode, S5): reserved, nothing creates it yet.
+    DevFolder {
+        #[serde(default)]
+        folder: Option<String>,
+    },
+    /// A dev-mode install copied from `folder` (canonical source folder).
+    Sideload {
+        #[serde(default)]
+        folder: Option<String>,
+    },
+    /// Hub-installed from a catalog source: the anchor id, the SHA-256 of the anchor key, and
+    /// the family.
+    Catalog {
+        #[serde(default)]
+        anchor: Option<String>,
+        #[serde(default)]
+        key_fpr: Option<String>,
+        #[serde(default)]
+        family: Option<String>,
+    },
+    /// A publisher-signed install (Foxglove MSI + updater): dormant until the update key exists.
+    InstalledSigned {
+        #[serde(default)]
+        key_fpr: Option<String>,
+        #[serde(default)]
+        folder: Option<String>,
+    },
+    /// A class written by a newer version.
+    #[serde(other)]
+    Unknown,
+}
+
+/// The identity record (`Installed.identity`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Identity {
+    #[serde(flatten)]
+    pub class: IdentityClass,
+    /// The manifest's `kind`, `visibility` and `family` at the Allow, as written in the manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<Kind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub established_at: Option<String>,
+    /// Always `dialog` once written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub established_by: Option<String>,
+    /// Sensitive items the user confirmed under this identity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sensitive_confirmed: Vec<String>,
 }
 
 /// The list, manifest and program a grant was made for (#1178, contract §6.4).
