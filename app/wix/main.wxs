@@ -82,8 +82,8 @@
     </Directory>
 
     <!-- "Start with Windows" belongs to the app alone (#444): Settings has the switch, on by
-         default, and the app writes HKCU\...\Run\Foxglove at its first start. The MSI writes no
-         Run value; uninstall asks the app to remove the one it wrote. -->
+         default, and the app manages its own Startup-folder entry (autostart.rs). The MSI writes no
+         startup entry; uninstall asks the app to remove the one it wrote. -->
     <Feature Id="App" Title="Foxglove" Description="The app and its Start menu entry."
              Level="1" Absent="disallow" Display="expand">
       <ComponentRef Id="Application" />
