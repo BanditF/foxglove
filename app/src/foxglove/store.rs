@@ -674,7 +674,7 @@ pub fn update<T: DeserializeOwned + Serialize + Default>(
     update_at(&path, section, change)
 }
 
-fn update_at<T: DeserializeOwned + Serialize + Default>(
+pub(super) fn update_at<T: DeserializeOwned + Serialize + Default>(
     path: &Path,
     section: &str,
     change: impl FnOnce(&mut T),
@@ -685,7 +685,17 @@ fn update_at<T: DeserializeOwned + Serialize + Default>(
         )));
     }
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut table = upgrade(read(path).map_err(std::io::Error::other)?);
+    let read_table = match read(path) {
+        Ok(t) => {
+            mark_read(path, section);
+            t
+        }
+        Err(e) => {
+            mark_unread(path, section, &e);
+            return Err(std::io::Error::other(e));
+        }
+    };
+    let mut table = upgrade(read_table);
     let mut value: T = match get(&table, section) {
         Some(v) => v
             .clone()

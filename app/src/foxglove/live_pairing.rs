@@ -11,7 +11,7 @@
 //!   monitor, so nothing it says can name another monitor), then `admit_or_ticket` redeems it
 //!   under the same lock. The monitor binding is therefore a guard against mix-ups, not a
 //!   second secret (S2-2); the origin check and the ticket are the gate. The old pasted token
-//!   still admits, unchanged, until S4.
+//!   still admits, unchanged, until the first ticket is redeemed (S4, `set_old_token_off`).
 //! - **Refusal:** a refused connection (any local client) may ask for a re-push, but only for
 //!   monitors Foxglove itself pushed to, whose wallpaper has no socket and whose ticket is
 //!   spent or expired (so a refusal never cancels a ticket still waiting to be used), and at
@@ -55,6 +55,10 @@ pub struct Pairing {
     allow: Option<BTreeSet<String>>,
     /// Disconnect all: no tickets until Reconnect.
     held: bool,
+    /// A ticket has been redeemed (S4): the old pasted token no longer admits.
+    old_off: bool,
+    /// Connections admitted with the old pasted token (they hold no monitor).
+    old_clients: BTreeSet<u64>,
 }
 
 /// The one store: a [`Pairing`] behind a lock.
@@ -80,7 +84,26 @@ impl Pairing {
             slots: BTreeMap::new(),
             allow: None,
             held: false,
+            old_off: false,
+            old_clients: BTreeSet::new(),
         }
+    }
+
+    /// Stops admitting the old pasted token. Set once a ticket has really been redeemed and that
+    /// is saved (S4), and at a feed start whose saved settings say so.
+    pub fn set_old_token_off(&mut self, off: bool) {
+        self.old_off = self.old_off || off;
+    }
+
+    /// The old token is retired now: it stops admitting, and the connections it admitted are
+    /// returned so the feed closes them.
+    pub fn retire_old_token(&mut self) -> Vec<u64> {
+        self.old_off = true;
+        std::mem::take(&mut self.old_clients).into_iter().collect()
+    }
+
+    pub fn old_token_off(&self) -> bool {
+        self.old_off
     }
 
     pub fn set_allowed(&mut self, files: Option<BTreeSet<String>>) {
@@ -126,6 +149,8 @@ impl Pairing {
         let monitor = given
             .and_then(|g| self.tickets.monitor_of(g, now))
             .unwrap_or_default();
+        // A blank stored token admits nothing, so once verified only tickets pass.
+        let token = if self.old_off { "" } else { token };
         wire::admit_or_ticket(origin, given, token, &mut self.tickets, &monitor, now)?;
         Ok((!monitor.is_empty()).then_some(monitor))
     }
@@ -136,6 +161,13 @@ impl Pairing {
         if monitor.is_some() && self.held {
             return false;
         }
+        if monitor.is_none() {
+            // Admitted with the old token just before it was retired: not kept.
+            if self.old_off {
+                return false;
+            }
+            self.old_clients.insert(conn);
+        }
         if let Some(s) = monitor.and_then(|m| self.slots.get_mut(m)) {
             s.conn = Some(conn);
             s.capped = false;
@@ -145,6 +177,7 @@ impl Pairing {
 
     /// Connection `conn` closed.
     pub fn left(&mut self, conn: u64) {
+        self.old_clients.remove(&conn);
         for s in self.slots.values_mut().filter(|s| s.conn == Some(conn)) {
             s.conn = None;
         }
