@@ -742,6 +742,22 @@ fn accept_loop(
     }
 }
 
+/// Registers an admitted connection and hands it to the hub, under the store lock. Disconnect
+/// all sets its hold under the same lock and queues `Msg::DisconnectAll` after releasing it, so
+/// either this runs first (the `Join` is queued before the `DisconnectAll` and gets closed by
+/// it) or it sees the hold and the socket is never joined.
+fn join(store: Store, tx: &Sender<Msg>, id: u64, monitor: Option<&str>, writer: TcpStream) -> bool {
+    let mut p = locked(store);
+    if !p.joined(id, monitor) {
+        return false;
+    }
+    if tx.send(Msg::Join(id, writer)).is_err() {
+        p.left(id);
+        return false;
+    }
+    true
+}
+
 /// One connection: the upgrade, the checks, then the wallpaper's own messages until it closes.
 fn serve(
     mut stream: TcpStream,
@@ -753,14 +769,10 @@ fn serve(
 ) {
     let admitted = handshake_in(&mut stream, token, store);
     pending.fetch_sub(1, Ordering::SeqCst);
-    match admitted {
+    let monitor = match admitted {
         Ok(monitor) => {
             REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).paired();
-            if !locked(store).joined(id, monitor.as_deref()) {
-                // Disconnect all came between the ticket and now.
-                let _ = stream.shutdown(Shutdown::Both);
-                return;
-            }
+            monitor
         }
         Err(NotAdmitted::Token) => {
             let lines = REFUSALS
@@ -785,13 +797,14 @@ fn serve(
             let _ = stream.shutdown(Shutdown::Both);
             return;
         }
-    }
+    };
     let Ok(writer) = stream.try_clone() else {
         return;
     };
     let _ = writer.set_write_timeout(Some(WRITE_LIMIT));
-    if tx.send(Msg::Join(id, writer)).is_err() {
-        locked(store).left(id);
+    if !join(store, tx, id, monitor.as_deref(), writer) {
+        // Disconnect all came between the ticket and now, or the hub is gone.
+        let _ = stream.shutdown(Shutdown::Both);
         return;
     }
     let mut reader = ws::Reader::default();
@@ -2861,6 +2874,46 @@ mod tests {
                 || StandIn::connect(port, &token).is_none(),
             "stopped: nothing listens"
         );
+    }
+
+    /// M1 (sec-1298): Disconnect all against a socket that was admitted and has not joined yet.
+    /// Either it joins first (its `Join` is queued before the `DisconnectAll`, so the hub closes
+    /// it) or it finds the hold and is never joined.
+    #[test]
+    fn a_socket_joining_as_disconnect_all_runs_is_closed_or_never_joined() {
+        let store: Store = Box::leak(Box::new(Mutex::new(pairing::Pairing::new())));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let writer = || {
+            let c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _s = listener.accept().unwrap();
+            c
+        };
+        let admit = |m: &str| {
+            let now = Instant::now();
+            let t = locked(store).mint(m, "hud/index.html", now).unwrap();
+            assert_eq!(
+                locked(store).admit(Some("null"), Some(&t), "", now),
+                Ok(Some(m.to_string()))
+            );
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Disconnect all comes after the join: the Join is in the queue ahead of it.
+        admit("M1");
+        assert!(join(store, &tx, 1, Some("M1"), writer()));
+        pairing::disconnect_all(store);
+        let _ = tx.send(Msg::DisconnectAll);
+        assert!(matches!(rx.try_recv(), Ok(Msg::Join(1, _))));
+        assert!(matches!(rx.try_recv(), Ok(Msg::DisconnectAll)));
+        // Disconnect all comes between the redeem and the join: the socket never joins.
+        locked(store).reconnect();
+        admit("M2");
+        pairing::disconnect_all(store);
+        assert!(!join(store, &tx, 2, Some("M2"), writer()));
+        assert!(rx.try_recv().is_err(), "no Join after the hold");
+        // And its slot shows no socket, so Reconnect hands the monitor a ticket.
+        locked(store).reconnect();
+        assert!(locked(store).take_due().contains(&"M2".to_string()));
     }
 
     /// WE handover S2, end to end on loopback with a stand-in wallpaper and a store of its own: a

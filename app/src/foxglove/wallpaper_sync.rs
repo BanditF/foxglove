@@ -2007,6 +2007,67 @@ mod tests {
         assert_eq!(tickets, [true, true, false, true]);
     }
 
+    /// S2-4's sweep: the ticket appears only on the command line of the push itself. Not in what
+    /// is kept for comparison, the failure text, the health state, the reason's text or a Debug.
+    #[test]
+    fn the_ticket_is_in_no_text_foxglove_keeps_or_shows() {
+        let store = own_store();
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef), target(WE_RIGHT, reef)];
+        let mut fake = Fake {
+            running: true,
+            store: Some(store),
+            ..Fake::default()
+        };
+        let mut p = Pusher::new(&mut fake);
+        let mut h = crate::foxglove::wallpaper_sync_health::SyncHealth::default();
+        let synced = p.sync_counted(&live_state(), &targets);
+        h.synced(
+            Reason::Pairing,
+            synced.pushed,
+            synced.unchanged,
+            Instant::now(),
+        );
+        let kept: Vec<String> = p.sent.values().map(|s| s.props.clone()).collect();
+        let debug = format!("{:?}", h);
+        let label = Reason::Pairing.label();
+        drop(p);
+        let tickets: Vec<String> = fake
+            .pushes
+            .iter()
+            .map(|(_, props)| ticket_in(props).expect("pushed with a ticket"))
+            .collect();
+        assert_eq!(tickets.len(), 2);
+        // A second Foxglove whose pushes fail: the failure text and health.
+        let mut failing = Fake {
+            running: true,
+            fail: true,
+            store: Some(own_store()),
+            ..Fake::default()
+        };
+        let mut q = Pusher::new(&mut failing);
+        let failed = q.sync_counted(&live_state(), &targets).failed;
+        let failed_kept = q.sent.len();
+        drop(q);
+        let failed_store_open = failing.store.unwrap().lock().unwrap().open(Instant::now());
+        h.failed(failed.clone().unwrap());
+        let debug_failed = format!("{:?}", h);
+        assert_eq!(failed_kept, 0);
+        assert_eq!(
+            failed_store_open, 0,
+            "a failed push leaves nothing outstanding"
+        );
+        for t in &tickets {
+            for text in kept.iter().chain([&debug, &debug_failed]) {
+                assert!(!text.contains(t.as_str()), "{text}");
+            }
+            assert!(!label.contains(t.as_str()));
+            assert!(!failed.clone().unwrap().contains(t.as_str()));
+            assert!(!format!("{:?}", fake.pushes.len()).contains(t.as_str()));
+        }
+        assert!(kept.iter().all(|k| !k.contains(TICKET)));
+    }
+
     #[test]
     fn a_failed_push_takes_its_ticket_back() {
         let store = own_store();

@@ -426,7 +426,31 @@ mod tests {
         assert_eq!(p.open(now), 1);
     }
 
-    /// The pairing's Debug-free surface prints no ticket; the refusal and join paths log counts.
+    /// S2-4's sweep for this module: the store has no `Debug`, the ticket store's prints a count,
+    /// and a refused connection leaves nothing to print but counts.
+    #[test]
+    fn nothing_the_store_can_print_holds_a_ticket() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let t = ticket(&mut p, A, now);
+        assert!(!format!("{:?}", p.tickets).contains(&t));
+        assert_eq!(p.refused(now), 0);
+        assert!(!format!("{:?}", p.tickets).contains(&t));
+    }
+
+    /// Disconnect all against a connection that has been admitted but not yet joined: the join
+    /// is refused once the hold is set (the live feed does both under this lock).
+    #[test]
+    fn a_connection_admitted_before_disconnect_all_cannot_join_after_it() {
+        let (mut p, now) = (Pairing::new(), Instant::now());
+        let t = ticket(&mut p, A, now);
+        assert_eq!(p.admit(None, Some(&t), "", now), Ok(Some(A.into())));
+        p.disconnect_all();
+        assert!(!p.joined(9, Some(A)), "held: the socket must close");
+        // Nothing recorded a socket, so Reconnect hands the monitor a fresh ticket.
+        p.reconnect();
+        assert_eq!(p.take_due(), [A.to_string()]);
+    }
+
     #[test]
     fn stopping_the_feed_clears_everything_outstanding() {
         let (mut p, now) = (Pairing::new(), Instant::now());
