@@ -294,3 +294,31 @@ fn an_installed_revoked_version_is_withdrawn_running_or_not() {
     assert_eq!(reg.go_back_version(id_), None);
     let _ = std::fs::remove_dir_all(home);
 }
+
+#[test]
+fn the_pinned_program_must_be_the_checked_file_of_run0() {
+    // S7 (F4): the launcher passes the canonical path and hash of the file it holds open.
+    let home = home("pinned-files");
+    let mut reg = signed(&home);
+    let folder = vectors().join("folders/foxglove.example-art-0.4.0");
+    reg.install(&folder, NOW).unwrap();
+    reg.set_enabled("foxglove.example-art", true).unwrap();
+    let launch = reg.pre_launch("foxglove.example-art").unwrap();
+    let exe =
+        hideout_registry::keyboard::canonical_path(&launch.dir.join("example-art.exe")).unwrap();
+    let good = foxglove_plugin_trust::sha256_hex(&std::fs::read(&exe).unwrap());
+    assert_eq!(
+        reg.pinned_files_void("foxglove.example-art", &exe, &good),
+        None
+    );
+    let other = foxglove_plugin_trust::sha256_hex(b"swapped");
+    assert!(reg
+        .pinned_files_void("foxglove.example-art", &exe, &other)
+        .is_some());
+    // A file in the folder that is not in the signed list is refused too.
+    let stray = exe.replace("example-art.exe", "stray.exe");
+    assert!(reg
+        .pinned_files_void("foxglove.example-art", &stray, &good)
+        .is_some());
+    let _ = std::fs::remove_dir_all(home);
+}

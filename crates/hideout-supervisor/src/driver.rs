@@ -282,6 +282,17 @@ pub mod lab;
 const NEEDS_HUB: &str = "manifest.hub";
 /// A launch error that is the program missing: the text after it is its path.
 const NOT_INSTALLED: &str = "not installed: ";
+type LaunchHook = Box<dyn Fn(&str) + Send + Sync>;
+static LAUNCH_HOOK: Mutex<Option<LaunchHook>> = Mutex::new(None);
+
+/// Test seam (S7), process-wide: `f("before-pin")` runs in a launch after the pre-launch check
+/// and before the program is pinned, `f("pinned")` right after the pin and its checks. `None`
+/// clears it. Tests that set it must not run concurrently with other launches.
+#[doc(hidden)]
+pub fn set_launch_hook(f: Option<LaunchHook>) {
+    *LAUNCH_HOOK.lock().unwrap() = f;
+}
+
 const NEEDS_OK: &str = "needs-ok";
 /// How [`Supervisor::launch`]'s answer starts when containment is on and the module may not
 /// run without one (§7.7).
@@ -1441,6 +1452,12 @@ impl Supervisor {
         }
     }
 
+    fn launch_hook(&self, stage: &str) {
+        if let Some(f) = LAUNCH_HOOK.lock().unwrap().as_ref() {
+            f(stage);
+        }
+    }
+
     fn launch(&self, id: &str) -> Result<(), String> {
         // A new build a follow-folder grant keeps is recorded (history, keyboard record) before
         // the check; any other change is left to the check, which refuses it.
@@ -1488,6 +1505,7 @@ impl Supervisor {
         }
         // The program is pinned (write-locked) and hashed through that one handle, which stays
         // open until the instance is gone (#1155-B).
+        self.launch_hook("before-pin");
         let pin =
             Arc::new(crate::pin::Pin::open(&exe).map_err(|e| format!("{}: {e}", exe.display()))?);
         let sha256 = pin.sha256.clone();
@@ -1497,7 +1515,15 @@ impl Supervisor {
             log::warn!("supervisor: {id}: the program changed before it started ({why:?})");
             return Err(NEEDS_OK.to_string());
         }
+        if let Some(why) = reg.pinned_files_void(id, &pin.path, &sha256) {
+            log::warn!("supervisor: {id}: the program is not the checked file: {why}");
+            return Err(format!("{}: {why}", pin.path));
+        }
         self.check_keyboard(id, &pin.path, &sha256);
+        self.launch_hook("pinned");
+        // From here the process starts from the held handle's own canonical path, never from the
+        // name, so a junction or link retargeted after the pin cannot run other bytes (S7).
+        let exe = PathBuf::from(&pin.path);
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
         let caps = self.caps_of(Some(&reg), id);
         let job = Arc::new(

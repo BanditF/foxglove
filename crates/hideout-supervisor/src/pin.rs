@@ -181,6 +181,43 @@ mod tests {
     }
 
     #[test]
+    fn the_pin_path_stays_the_pinned_file_when_a_junction_is_retargeted() {
+        // S7: the launcher starts from `pin.path`; it must keep naming the hashed file.
+        let d = temp("retarget");
+        let (a, b) = (d.join("a"), d.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("x.exe"), b"A").unwrap();
+        std::fs::write(b.join("x.exe"), b"B").unwrap();
+        let link = d.join("link");
+        let mk = |t: &Path| {
+            std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&link)
+                .arg(t)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if !mk(&a) {
+            return;
+        }
+        let pin = Pin::open(&link.join("x.exe")).unwrap();
+        std::fs::remove_dir(&link).unwrap();
+        assert!(mk(&b));
+        // The name now leads to B; the pin's path and bytes are still A's.
+        assert_eq!(std::fs::read(link.join("x.exe")).unwrap(), b"B");
+        assert_eq!(std::fs::read(&pin.path).unwrap(), b"A");
+        assert!(hideout_registry::keyboard::same_path(
+            &pin.path,
+            &a.join("x.exe").display().to_string()
+        ));
+        let _ = std::fs::remove_dir(&link);
+    }
+
+    #[test]
     fn aliases_of_the_path_pin_the_same_canonical_file() {
         let d = temp("alias");
         let exe = d.join("Foxglove.exe");
