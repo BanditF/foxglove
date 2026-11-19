@@ -662,6 +662,9 @@ pub fn pages(
 }
 
 #[cfg(all(test, windows))]
+mod first_run;
+
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use hideout_shell::modules_list::Installed;
