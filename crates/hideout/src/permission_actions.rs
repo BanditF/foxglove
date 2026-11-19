@@ -435,7 +435,8 @@ fn asked_pending(v: &View) -> Vec<&hideout_registry::permission::Item> {
 pub fn header_kind(v: &View, enabled: bool, cli_seen: bool) -> Option<HeaderKind> {
     if v.void.is_some() {
         Some(HeaderKind::Changed)
-    } else if v.bound.is_none() && v.adopted && enabled && !v.pending.is_empty() {
+    } else if v.bound.is_none() && v.adopted && !v.pending.is_empty() {
+        // Slice 2 (allow means on): an Off adopted app asks too, because Allow turns it on.
         Some(HeaderKind::Ask)
     } else if v.bound.is_some() && enabled && !asked_pending(v).is_empty() {
         Some(HeaderKind::More)
@@ -1233,8 +1234,8 @@ mod tests {
         assert!(v.bound.is_none() && v.adopted);
         // What Supervisor::turn_on refuses on, and what routes Turn on to the dialog.
         assert!(f.ui.needs_ok(FX));
-        // Off: no header line yet; on (enabled, still unanswered): the first-run Ask header.
-        assert_eq!(header_kind(&v, false, true), None);
+        // Off or on, still unanswered: the first-run Ask header (Allow turns the app on).
+        assert_eq!(header_kind(&v, false, true), Some(HeaderKind::Ask));
         assert_eq!(header_kind(&v, true, true), Some(HeaderKind::Ask));
         // Turn on opens the dialog, listing every ask; the user's Allow records them all.
         f.ui.open(FX, Opener::TurnOn);
@@ -1295,6 +1296,43 @@ mod tests {
         // Review on an update waiting for the user lets the swap run; Change only records.
         assert_eq!(Opener::Review.then(), Then::Review);
         assert_eq!(Opener::Change.then(), Then::Nothing);
+    }
+
+    /// Slice 2, allow means on: an adopted app that is Off gets the Ask header, its Allow (from
+    /// the header) says turn on, Not now says nothing and grants nothing, and a re-Allow of an
+    /// app that is already allowed never asks again (no header, nothing pending).
+    #[test]
+    fn allow_on_an_adopted_off_app_means_turn_on_and_not_now_does_not() {
+        let mut f = fx("allowon", &["hub.notify", "ui.window"]);
+        let v = view(&f);
+        assert!(!Registry::open_from_env(&f.home).unwrap().hub.enabled(ID));
+        assert_eq!(header_kind(&v, false, true), Some(HeaderKind::Ask));
+        // Not now: nothing is allowed and nothing says turn on.
+        f.ui.open(ID, Opener::Header);
+        assert!(f.ui.answer(PermAnswer::NotNow).is_none());
+        assert!(view(&f).granted.is_empty());
+        assert!(f.ui.needs_ok(ID));
+        // Allow: recorded, and the page is told to turn it on.
+        let done = allow_all(&mut f, Opener::Header).unwrap();
+        assert_eq!(done.then, Then::TurnOn);
+        assert!(!f.ui.needs_ok(ID));
+        let v = view(&f);
+        assert_eq!(header_kind(&v, false, true), None);
+        // Opened again from Change (the section): records only, never turns on.
+        let again = allow_all(&mut f, Opener::Change).unwrap();
+        assert_eq!(again.then, Then::Nothing);
+    }
+
+    /// A list that changed while the dialog was open grants nothing and says nothing to turn on.
+    #[test]
+    fn a_refused_allow_does_not_turn_anything_on() {
+        let mut f = fx("allowrefused", &["hub.notify", "ui.window"]);
+        f.ui.open(ID, Opener::Header);
+        let mut a = f.ui.dialog.as_ref().unwrap().allowed();
+        a.code = "0".repeat(16);
+        assert!(f.ui.answer(PermAnswer::Allow(a)).is_none());
+        assert!(view(&f).granted.is_empty());
+        assert!(f.ui.needs_ok(ID));
     }
 
     fn queue_for(f: &mut Fx, items: &[&str]) -> crate::grant_queue::GrantQueue {

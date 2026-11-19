@@ -763,7 +763,7 @@ impl Section {
 /// Modules page, one dialog with a section per app. Plain words ("app"); nothing here
 /// pre-confirms or allows anything.
 pub const FIRST_RUN_BODY: &str =
-    "Each app stays off until you allow it. You review each app's permissions one by one.";
+    "Each app stays off until you allow it, and starts when you do. You review each app's permissions one by one.";
 pub const FIRST_RUN_INTRO: &str = "Each app has its own list. Nothing is allowed until you press Allow, and each sensitive item needs its own “I understand”.";
 
 /// "2 apps wait for your OK".
@@ -850,7 +850,7 @@ pub fn header(kind: HeaderKind, id: &str, name: &str, cli: Option<(usize, &str)>
     let (title, body, dismiss) = match kind {
         HeaderKind::Ask => (
             format!("{name} needs your OK to run in Hideout"),
-            format!("Until you allow it, {name} stays off."),
+            format!("Until you allow it, {name} stays off. Allow, and it starts."),
             NOT_NOW,
         ),
         HeaderKind::Changed => (
@@ -1137,7 +1137,10 @@ mod tests {
             "Its app file is new or was moved, so Hideout stopped it until you allow it again."
         );
         let h = header(HeaderKind::Ask, "foxglove", "Foxglove", None);
-        assert_eq!(h.body, "Until you allow it, Foxglove stays off.");
+        assert_eq!(
+            h.body,
+            "Until you allow it, Foxglove stays off. Allow, and it starts."
+        );
         let h = header(
             HeaderKind::Cli,
             "foxglove",
