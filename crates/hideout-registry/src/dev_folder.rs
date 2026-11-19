@@ -13,6 +13,10 @@
 //!   was never allowed, whose grant is void, or that now runs from outside the folder falls back
 //!   to the ordinary check, which voids the grant (a full re-ask: the identity is dropped and
 //!   sensitive items are never carried);
+//! - the carry pins the folder, not the bytes: the launch check accepts any file hash inside an
+//!   enrolled folder, so `attested[].to_sha256` is the file as hashed at the carry, which may not
+//!   be the image that later ran (anyone who can write into the folder can swap it, which is why
+//!   [`folder_problem`] refuses a folder others can write);
 //! - the carry moves only the file binding. It never adds a grant: what a rebuild newly asks for
 //!   stays pending, and the user's Allow is still the only thing that grants it.
 
@@ -37,6 +41,115 @@ pub fn path_within(folder: &str, path: &str) -> bool {
     !f.is_empty() && p.len() > f.len() + 1 && p.starts_with(f) && p.as_bytes()[f.len()] == b'\\'
 }
 
+/// Rights that let a trustee change what is in a folder (add a file or subfolder, delete, rewrite
+/// the ACL, take ownership, and the generic write and all bits).
+const FOLDER_WRITE: u32 =
+    0x2 | 0x4 | 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x4000_0000 | 0x1000_0000;
+/// What matters on a folder above: swapping or renaming the folder below it.
+const PARENT_WRITE: u32 = 0x2 | 0x40 | 0x1_0000 | 0x4_0000 | 0x8_0000 | 0x4000_0000 | 0x1000_0000;
+
+/// Trustees that may write: SYSTEM, Administrators, the TrustedInstaller service, CREATOR OWNER
+/// (an inherit-only placeholder) and the current user.
+fn trusted_writer(sid: &str, me: &str) -> bool {
+    sid == me
+        || matches!(sid, "S-1-5-18" | "S-1-5-32-544" | "S-1-3-0")
+        || sid.starts_with("S-1-5-80-")
+}
+
+#[cfg(windows)]
+fn writable_by_others(dir: &std::path::Path, mask: u32, me: &str) -> bool {
+    // A DACL that can't be read is not known to be safe.
+    match hideout_acl::dacl(dir) {
+        Ok(d) => d
+            .aces
+            .iter()
+            .any(|a| a.allow && a.mask & mask != 0 && !trusted_writer(&a.sid, me)),
+        Err(_) => true,
+    }
+}
+
+#[cfg(not(windows))]
+fn writable_by_others(_: &std::path::Path, _: u32, _: &str) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn current_sid() -> std::io::Result<String> {
+    hideout_acl::current_user_sid()
+}
+
+#[cfg(not(windows))]
+fn current_sid() -> std::io::Result<String> {
+    Err(std::io::Error::other("windows only"))
+}
+
+fn env_path(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+/// Why `canon` (a canonical folder path) can't be a dev folder, in plain words, or None. Applied
+/// when a folder is added and again every time the list is read, so a hand edit or a later ACL
+/// change fails closed.
+///
+/// Refused: a drive root (or `C:`); the user's profile folder, `AppData`, the temp folder and
+/// Downloads (and any folder that contains one of them); Windows, Program Files, ProgramData and
+/// Public (and everything inside them); a folder that another account can write into, and a
+/// folder above it (below the drive root) another account can swap out. "Another account" is
+/// anyone but you, SYSTEM, Administrators and TrustedInstaller.
+pub fn folder_problem(canon: &str) -> Option<&'static str> {
+    let trimmed = canon.trim_end_matches(['\\', '/']);
+    if norm(trimmed).len() <= 2 {
+        return Some("a drive is too much to trust as a dev folder");
+    }
+    let profile = env_path("USERPROFILE");
+    let broad = [
+        profile.clone(),
+        env_path("APPDATA"),
+        env_path("LOCALAPPDATA"),
+        env_path("TEMP"),
+        env_path("TMP"),
+        profile.map(|p| format!("{}\\Downloads", p.trim_end_matches('\\'))),
+    ];
+    if broad
+        .iter()
+        .flatten()
+        .any(|b| same_path(trimmed, b) || path_within(trimmed, b))
+    {
+        return Some("that folder holds too much (your profile, AppData, Temp or Downloads)");
+    }
+    let system = [
+        env_path("SystemRoot"),
+        env_path("ProgramFiles"),
+        env_path("ProgramFiles(x86)"),
+        env_path("ProgramData"),
+        env_path("PUBLIC"),
+    ];
+    if system
+        .iter()
+        .flatten()
+        .any(|b| same_path(trimmed, b) || path_within(b, trimmed) || path_within(trimmed, b))
+    {
+        return Some("a system or shared folder can't be a dev folder");
+    }
+    let Ok(me) = current_sid() else {
+        return Some("couldn't tell who you are to check the folder's permissions");
+    };
+    let mut dir = std::path::Path::new(trimmed);
+    if writable_by_others(dir, FOLDER_WRITE, &me) {
+        return Some("other accounts on this PC can change files in that folder");
+    }
+    while let Some(parent) = dir.parent() {
+        if parent.parent().is_none() {
+            break;
+        }
+        if writable_by_others(parent, PARENT_WRITE, &me) {
+            return Some("other accounts on this PC can change a folder above it");
+        }
+        dir = parent;
+    }
+    None
+}
+
 impl Registry {
     /// The dev folders as `hideout.toml` has them on disk now (a file that can't be read gives
     /// none: fail closed).
@@ -48,11 +161,18 @@ impl Registry {
             .unwrap_or_default()
     }
 
+    /// Developer mode is on, and not only through the legacy Foxglove plugin variable: a plugin
+    /// developer who set `FOXGLOVE_DEV_UNSIGNED_PLUGINS` did not ask for dev-folder trust.
+    fn dev_folders_on(&self) -> bool {
+        let var = |n: &str| std::env::var(n).is_ok_and(|s| s == "1");
+        self.dev_mode && !(var("FOXGLOVE_DEV_UNSIGNED_PLUGINS") && !var("HIDEOUT_DEV_UNSIGNED"))
+    }
+
     /// Marks `path` as a dev folder. Needs developer mode; the folder must exist, be a directory,
     /// canonicalize onto this PC's local fixed drive and not be a drive root. Returns the stored
     /// canonical path. Adding one that is already there is fine.
     pub fn add_dev_folder(&mut self, path: &str) -> Result<String, Failure> {
-        if !self.dev_mode {
+        if !self.dev_folders_on() {
             return Err(crate::permission::io_invalid("developer mode is off"));
         }
         let p = std::path::Path::new(path);
@@ -66,10 +186,8 @@ impl Registry {
                 "a dev folder must be on this PC's own drive",
             ));
         }
-        if canon.trim_end_matches('\\').len() <= 2 {
-            return Err(crate::permission::io_invalid(
-                "a drive is too much to trust as a dev folder",
-            ));
+        if let Some(why) = folder_problem(&canon) {
+            return Err(crate::permission::io_invalid(why));
         }
         let mut list = self.dev_folders();
         if !list.iter().any(|f| same_path(f, &canon)) {
@@ -81,26 +199,36 @@ impl Registry {
 
     /// Takes `path` off the list. Apps in it stop being carried: their next changed file voids
     /// the grant as for any app.
-    pub fn remove_dev_folder(&mut self, path: &str) -> Result<(), Failure> {
-        let list: Vec<String> = self
-            .dev_folders()
-            .into_iter()
-            .filter(|f| !same_path(f, path))
+    ///
+    /// The path may be an alias (8.3 name, junction, other spelling) of a listed folder that still
+    /// exists. Returns whether a folder was taken off.
+    pub fn remove_dev_folder(&mut self, path: &str) -> Result<bool, Failure> {
+        let canon = canonical_path(std::path::Path::new(path)).ok();
+        let all = self.dev_folders();
+        let list: Vec<String> = all
+            .iter()
+            .filter(|f| !(same_path(f, path) || canon.as_ref().is_some_and(|c| same_path(f, c))))
+            .cloned()
             .collect();
-        self.change_hub(|h| h.set_dev_folders(&list))
+        if list.len() == all.len() {
+            return Ok(false);
+        }
+        self.change_hub(|h| h.set_dev_folders(&list))?;
+        Ok(true)
     }
 
     /// The dev folder a canonical program path sits in, now: developer mode on, the path on a
     /// local fixed drive, and strictly inside a listed folder that is still a directory on a
     /// local fixed drive.
     pub fn dev_folder_for(&self, path: &str) -> Option<String> {
-        if !self.dev_mode || path.is_empty() || !on_local_fixed_drive(path) {
+        if !self.dev_folders_on() || path.is_empty() || !on_local_fixed_drive(path) {
             return None;
         }
         self.dev_folders().into_iter().find(|f| {
             path_within(f, path)
                 && on_local_fixed_drive(&format!("{}\\x", f.trim_end_matches('\\')))
                 && std::path::Path::new(f).is_dir()
+                && folder_problem(f).is_none()
         })
     }
 
@@ -112,12 +240,18 @@ impl Registry {
         // Only the place, not the bytes: this runs for every row of the Modules page.
         let exe = crate::adopted_exe(&self.manifest_checked(id).ok()?).ok()?;
         let path = canonical_path(&exe).ok()?;
-        self.dev_enrolment(m, b, &path)
+        self.dev_enrolment(id, m, b, &path)
     }
 
     /// The enrolment check shared by the chip and the carry: the dev folder that keeps the
     /// binding `b` of `m` for the program now at `path`, or None.
-    pub(crate) fn dev_enrolment(&self, m: &Installed, b: &Bound, path: &str) -> Option<String> {
+    pub(crate) fn dev_enrolment(
+        &self,
+        id: &str,
+        m: &Installed,
+        b: &Bound,
+        path: &str,
+    ) -> Option<String> {
         let Some(Identity {
             class: IdentityClass::DevFolder {
                 folder: Some(enrolled),
@@ -133,6 +267,7 @@ impl Registry {
             || b.by != crate::permission::FOLLOW_SET_BY
             || b.void
             || b.exe_sha256.is_empty()
+            || self.run_args(id) != b.run_args
         {
             return None;
         }

@@ -334,7 +334,7 @@ impl Registry {
     /// A module the hub installed itself has no external program: its path is empty and its
     /// hash is the hash of the signed file map.
     /// `run[1..]` of an adopted module now; empty for any other (or an unreadable manifest).
-    fn run_args(&self, id: &str) -> Vec<String> {
+    pub(crate) fn run_args(&self, id: &str) -> Vec<String> {
         let adopted = self
             .inventory
             .modules
@@ -577,8 +577,11 @@ impl Registry {
             .collect::<Result<_, _>>()?;
         // Dev mode: an Allow from the window for an app inside a dev folder enrols it there
         // (identity `dev-folder`, nothing inherited: `sensitive_confirmed` starts empty). Any
-        // other Allow drops a dev-folder identity the app had.
-        let dev_folder = if by == FOLLOW_SET_BY && self.inventory.modules[id].source == ADOPTED {
+        // other Allow (and a Deny, which allows nothing) drops a dev-folder identity the app had.
+        let dev_folder = if by == FOLLOW_SET_BY
+            && !chosen.is_empty()
+            && self.inventory.modules[id].source == ADOPTED
+        {
             self.dev_folder_for(&list.exe_path)
         } else {
             None
@@ -749,11 +752,11 @@ impl Registry {
                 if !b.run_args.is_empty() && self.run_args(id) != b.run_args {
                     Some(VoidReason::Changed)
                 } else if !crate::keyboard::same_path(&path, &b.exe_path)
-                    && self.dev_enrolment(m, b, &path).is_none()
+                    && self.dev_enrolment(id, m, b, &path).is_none()
                 {
                     Some(VoidReason::Moved)
                 } else if !hash.eq_ignore_ascii_case(&b.exe_sha256) {
-                    if self.follows(id, b, &path) || self.dev_enrolment(m, b, &path).is_some() {
+                    if self.follows(id, b, &path) || self.dev_enrolment(id, m, b, &path).is_some() {
                         None
                     } else {
                         Some(VoidReason::Changed)
@@ -809,7 +812,7 @@ impl Registry {
         let same = crate::keyboard::same_path(&path, &b.exe_path);
         let by = if same && b.follow.is_some() && self.follows(id, b, &path) {
             FOLLOW_ATTESTED_BY
-        } else if self.run_args(id) == b.run_args && self.dev_enrolment(m, b, &path).is_some() {
+        } else if self.dev_enrolment(id, m, b, &path).is_some() {
             crate::dev_folder::DEV_ATTESTED_BY
         } else {
             return Ok(false);
@@ -819,6 +822,8 @@ impl Registry {
         }
         let (old, old_path) = (b.exe_sha256.clone(), b.exe_path.clone());
         let (follow, version) = (b.follow.clone(), m.version.clone());
+        let dev_step = by == crate::dev_folder::DEV_ATTESTED_BY;
+        let enrolled = m.identity.clone();
         let rec = crate::inventory::Attestation {
             from_sha256: old.clone(),
             to_sha256: hash.clone(),
@@ -840,6 +845,10 @@ impl Registry {
                     && b.exe_sha256.eq_ignore_ascii_case(&old)
                     && b.follow == follow
                     && crate::keyboard::same_path(&b.exe_path, &old_path)
+                    // A dev-folder step also needs the enrolment as it is on disk now: a
+                    // CLI Allow or a void from another process wins over this carry.
+                    && (!dev_step
+                        || (m.identity == enrolled && m.source == ADOPTED && b.by == FOLLOW_SET_BY))
             }) else {
                 return;
             };
@@ -850,9 +859,14 @@ impl Registry {
             if n > 20 {
                 b.attested.drain(..n - 20);
             }
-            if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
-                k.sha256 = hash.clone();
-                k.path = path.clone();
+            // The keyboard record moves only with a follow-folder step. A dev-folder step
+            // leaves it: the router's move chain refuses that step, so `check_keyboard` voids
+            // the record on disk and the user is asked again.
+            if !dev_step {
+                if let Some(k) = m.keyboard.as_mut().filter(|k| k.allows(&old_path, &old)) {
+                    k.sha256 = hash.clone();
+                    k.path = path.clone();
+                }
             }
             kept = true;
         })?;

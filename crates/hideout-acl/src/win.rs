@@ -370,6 +370,8 @@ pub struct Ace {
     /// The trustee's SID string.
     pub sid: String,
     pub inherited: bool,
+    /// The ACE's access mask (file-object rights, plus the generic bits as stored).
+    pub mask: u32,
 }
 
 /// A DACL as read from a file or folder.
@@ -426,6 +428,7 @@ pub fn dacl(path: &Path) -> io::Result<Dacl> {
                     allow: kind == 0,
                     sid,
                     inherited: ace.Header.AceFlags & INHERITED_ACE != 0,
+                    mask: ace.Mask,
                 });
             }
             Ok(Dacl {
