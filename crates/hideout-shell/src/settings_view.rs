@@ -57,7 +57,7 @@ fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
     ui.add(egui::Label::new(RichText::new(&row.status).color(c(t.text))).wrap());
     ui.add_space(8.0);
     if let Some(replaces) = row.dialog {
-        // The confirmation: the only way to Turn on. Cancel is the first button, so Enter on
+        // The confirmation: the only way to Turn on. Not now is the first button, so Enter on
         // the opening focus never turns it on by itself.
         egui::Frame::new()
             .stroke(egui::Stroke::new(1.0_f32, c(t.text_muted)))
@@ -72,12 +72,25 @@ fn startup_section(ui: &mut egui::Ui, t: &Tokens, row: &Row) -> Option<Click> {
                     egui::Label::new(RichText::new(startup_switch::DIALOG_BODY).color(c(t.text)))
                         .wrap(),
                 );
+                if row.apps {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(startup_switch::DIALOG_APPS).color(c(t.text)),
+                        )
+                        .wrap(),
+                    );
+                }
                 if replaces {
                     ui.label(RichText::new(startup_switch::DIALOG_REPLACES).color(c(t.text)));
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button(startup_switch::DIALOG_CANCEL).clicked() {
+                    // Not now is first and takes the focus when nothing else has it.
+                    let not_now = ui.button(startup_switch::DIALOG_CANCEL);
+                    if ui.memory(|m| m.focused().is_none()) {
+                        not_now.request_focus();
+                    }
+                    if not_now.clicked() {
                         click = Some(Click::Cancel);
                     }
                     if ui.button(startup_switch::DIALOG_CONFIRM).clicked() {

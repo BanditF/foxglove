@@ -27,10 +27,12 @@ use crate::autostart::{self, Approval, Context, Outcome, StartupFolder, State};
 pub const HEADING: &str = "Start with Windows";
 pub const STATUS_OFF: &str = "Hideout does not start when you sign in to Windows.";
 pub const STATUS_ON: &str = "Hideout starts in the tray when you sign in to Windows.";
-pub const STATUS_OFF_IN_WINDOWS: &str = "Hideout is turned off in Windows' startup list, so it \
-does not start when you sign in.";
-pub const STATUS_FOREIGN: &str =
-    "Another copy of Hideout is set to start when you sign in to Windows.";
+/// Shown instead of [`STATUS_ON`] when at least one app runs in Hideout.
+pub const STATUS_ON_APPS: &str =
+    "Hideout starts in the tray when you sign in, and starts your apps: Foxglove.";
+pub const STATUS_OFF_IN_WINDOWS: &str = "Off. Hideout does not start when you sign in. You can \
+turn it on here or in Windows Settings > Apps > Startup.";
+pub const STATUS_FOREIGN: &str = "Another Hideout shortcut is set to start when you sign in.";
 pub const STATUS_NOT_INSTALLED: &str =
     "Available once Hideout is installed. This copy does not start with Windows.";
 pub const STATUS_TEST_RUN: &str = "Not available in a test run. Nothing is written.";
@@ -38,13 +40,16 @@ pub const TURN_ON: &str = "Turn on\u{2026}";
 pub const TURN_OFF: &str = "Turn off";
 pub const REMOVE: &str = "Remove shortcut";
 pub const DIALOG_TITLE: &str = "Start Hideout when you sign in?";
-pub const DIALOG_BODY: &str = "Hideout adds a shortcut to your Startup folder. It then opens in \
+pub const DIALOG_BODY: &str = "Hideout adds a shortcut to your Startup folder. It then starts in \
 the tray each time you sign in to Windows. You can turn it off here, or in Windows Settings under \
 Apps, then Startup.";
+/// Shown in the dialog only when an app runs in Hideout.
+pub const DIALOG_APPS: &str = "Hideout then starts Foxglove too. Foxglove's own startup entry \
+stays as a backup: if Hideout does not start, Foxglove starts on its own.";
 pub const DIALOG_REPLACES: &str =
     "The other copy of Hideout will no longer start when you sign in.";
 pub const DIALOG_CONFIRM: &str = "Turn on";
-pub const DIALOG_CANCEL: &str = "Cancel";
+pub const DIALOG_CANCEL: &str = "Not now";
 pub const DONE_ON: &str = "Turned on. Hideout starts when you sign in.";
 pub const DONE_OFF: &str = "Turned off. Hideout does not start when you sign in.";
 pub const DONE_REMOVED: &str = "Removed the startup shortcut.";
@@ -113,6 +118,8 @@ pub struct Row {
     pub turn_off: bool,
     pub remove: bool,
     pub message: Option<String>,
+    /// At least one app runs in Hideout: the status and the dialog say that apps start too.
+    pub apps: bool,
     /// `Some(replaces)` while the dialog is open.
     pub dialog: Option<bool>,
 }
@@ -139,6 +146,8 @@ pub struct Switch<F: StartupFolder, A: Approval> {
     approval: A,
     dialog: Option<Dialog>,
     message: Option<String>,
+    /// Set by the hub while at least one app runs in Hideout (copy only; never a write gate).
+    apps: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// (state, a shortcut exists, when read): the page draws many frames, the shell and COM
     /// are read at most every two seconds and after every click.
     snap: Option<(State, bool, std::time::Instant)>,
@@ -155,8 +164,19 @@ impl<F: StartupFolder, A: Approval> Switch<F, A> {
             approval,
             dialog: None,
             message: None,
+            apps: Default::default(),
             snap: None,
         }
+    }
+
+    /// Gives the switch the flag the hub keeps while an app runs in Hideout.
+    pub fn with_apps(mut self, apps: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.apps = apps;
+        self
+    }
+
+    fn apps_run(&self) -> bool {
+        self.apps.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn snapshot(&mut self) -> (State, bool) {
@@ -217,9 +237,11 @@ impl<F: StartupFolder, A: Approval> StartupControl for Switch<F, A> {
     fn row(&mut self) -> Row {
         let avail = self.availability();
         let (state, has_link) = self.snapshot();
+        let apps = self.apps_run();
         let status = match (avail, state) {
             (Availability::TestRun, _) => STATUS_TEST_RUN,
             (Availability::NotInstalled, _) => STATUS_NOT_INSTALLED,
+            (_, State::On) if apps => STATUS_ON_APPS,
             (_, State::On) => STATUS_ON,
             (_, State::Foreign) => STATUS_FOREIGN,
             (_, State::Off) if has_link => STATUS_OFF_IN_WINDOWS,
@@ -235,6 +257,7 @@ impl<F: StartupFolder, A: Approval> StartupControl for Switch<F, A> {
                 && matches!(state, State::On | State::Off)
                 && has_link,
             message: self.message.clone(),
+            apps,
             dialog: self.dialog.as_ref().map(Dialog::replaces_other),
         }
     }
@@ -545,8 +568,60 @@ mod tests {
             .take_while(|l| !l.contains("mod tests"))
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(!code.to_lowercase().contains("foxglove"));
+        // The copy may say "Foxglove"; the code never names its shortcut or startup entry.
+        assert!(!code.to_lowercase().contains("foxglove.lnk"));
         assert!(!code.contains("autostart::ensure("));
+    }
+
+    /// Every user-visible string, exact (the PR body lists the same).
+    #[test]
+    fn the_copy_is_exact() {
+        assert_eq!(
+            STATUS_OFF,
+            "Hideout does not start when you sign in to Windows."
+        );
+        assert_eq!(
+            STATUS_ON,
+            "Hideout starts in the tray when you sign in to Windows."
+        );
+        assert_eq!(
+            STATUS_ON_APPS,
+            "Hideout starts in the tray when you sign in, and starts your apps: Foxglove."
+        );
+        assert_eq!(
+            STATUS_OFF_IN_WINDOWS,
+            "Off. Hideout does not start when you sign in. You can turn it on here or in Windows Settings > Apps > Startup."
+        );
+        assert_eq!(
+            STATUS_FOREIGN,
+            "Another Hideout shortcut is set to start when you sign in."
+        );
+        assert_eq!(DIALOG_CANCEL, "Not now");
+        assert_eq!(
+            DIALOG_BODY,
+            "Hideout adds a shortcut to your Startup folder. It then starts in the tray each time you sign in to Windows. You can turn it off here, or in Windows Settings under Apps, then Startup."
+        );
+        assert_eq!(
+            DIALOG_APPS,
+            "Hideout then starts Foxglove too. Foxglove's own startup entry stays as a backup: if Hideout does not start, Foxglove starts on its own."
+        );
+    }
+
+    #[test]
+    fn the_apps_line_shows_only_when_an_app_runs_in_hideout() {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut s = sw(true, false).with_apps(flag.clone());
+        s.click(Click::Ask);
+        s.click(Click::Confirm);
+        assert_eq!(s.row().status, STATUS_ON);
+        assert!(!s.row().apps);
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        s.snap = None;
+        assert_eq!(s.row().status, STATUS_ON_APPS);
+        assert!(s.row().apps);
+        // Off states never claim apps start.
+        s.click(Click::TurnOff);
+        assert_eq!(s.row().status, STATUS_OFF_IN_WINDOWS);
     }
 
     #[test]
