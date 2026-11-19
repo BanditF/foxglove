@@ -179,6 +179,17 @@ fn is_local(p: &Path) -> bool {
     p.is_absolute() && !s.starts_with(r"\\") && !s.starts_with("//")
 }
 
+/// `p` as a local path on a fixed drive of this PC, canonical, or `None`. The text is checked
+/// first, then the drive type (neither reads a file), and only then is the path resolved, so a
+/// disconnected network drive is refused before any file access.
+pub fn local_path(m: &dyn Machine, p: &Path) -> Option<PathBuf> {
+    if !is_local(p) || !m.is_local_fixed(p) {
+        return None;
+    }
+    let c = m.canonical(p)?;
+    (is_local(&c) && m.is_local_fixed(&c)).then_some(c)
+}
+
 /// The installed copy of `p`, if any. A record that names a missing exe falls through to the
 /// known folders; a UNC folder is never accepted.
 pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
@@ -188,7 +199,7 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
     let record_manifest = m
         .registry_string(&p.record_key, "Manifest")
         .map(PathBuf::from)
-        .filter(|x| is_local(x));
+        .and_then(|x| local_path(m, &x));
     let record_version = m
         .registry_string(&p.record_key, "Version")
         .map(|v| v.trim().to_string())
@@ -200,14 +211,20 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
             let leaf = rel.rsplit('\\').next().unwrap_or(rel);
             file_name_is(&exe, leaf)
         });
-        if known_name && is_local(&exe) && m.is_file(&exe) {
+        // Text and drive type first; the file is only touched after both.
+        let exe = if known_name {
+            local_path(m, &exe)
+        } else {
+            None
+        };
+        if let Some(exe) = exe.filter(|e| m.is_file(e)) {
             if let Some(version) = m.exe_version(&exe).or_else(|| record_version.clone()) {
                 return Some(Found {
                     id: p.id.clone(),
                     exe,
                     version,
                     source: Source::Record,
-                    folder: record_dir.filter(|d| is_local(d)),
+                    folder: record_dir.as_deref().and_then(|d| local_path(m, d)),
                     manifest: record_manifest,
                 });
             }
@@ -222,9 +239,9 @@ pub fn find(m: &dyn Machine, p: &Product) -> Option<Found> {
         }
     }
     for (dir, source) in folders {
-        if !is_local(&dir) {
+        let Some(dir) = local_path(m, &dir) else {
             continue;
-        }
+        };
         for name in &p.exes {
             let exe = dir.join(name);
             if m.is_file(&exe) {
@@ -569,6 +586,8 @@ mod tests {
         env: BTreeMap<String, String>,
         /// path -> (version, text)
         files: BTreeMap<PathBuf, (String, Option<String>)>,
+        /// Folders (and everything below) on a mapped or removable drive.
+        remote: Vec<PathBuf>,
     }
 
     impl Machine for Fake {
@@ -593,8 +612,8 @@ mod tests {
         fn canonical(&self, p: &Path) -> Option<PathBuf> {
             Some(p.to_path_buf())
         }
-        fn is_local_fixed(&self, _p: &Path) -> bool {
-            true
+        fn is_local_fixed(&self, p: &Path) -> bool {
+            !self.remote.iter().any(|r| p.starts_with(r))
         }
     }
 
@@ -641,6 +660,13 @@ mod tests {
         f.reg
             .insert((fox().record_key.clone(), "App".into()), r"D:\gone".into());
         assert_eq!(find(&f, fox()).unwrap().source, Source::KnownFolder);
+    }
+
+    #[test]
+    fn a_record_on_a_mapped_or_removable_drive_is_never_a_find_and_no_file_is_asked_about() {
+        let mut f = with_record("D:/Mapped/Foxglove", true);
+        f.remote.push(PathBuf::from("D:/Mapped"));
+        assert!(find(&f, fox()).is_none());
     }
 
     #[test]

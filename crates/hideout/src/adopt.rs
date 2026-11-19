@@ -21,9 +21,23 @@ use hideout_registry::Registry;
 pub fn run(home: &Path, folder: &Path, now: &str) -> Result<String, String> {
     let text = std::fs::read_to_string(folder.join("module.toml"))
         .map_err(|e| format!("{}: {e}", folder.join("module.toml").display()))?;
-    let id = Module::parse(&text, &Context::default())
-        .map_err(|e| format!("module.toml: {e}"))?
-        .id;
+    let module =
+        Module::parse(&text, &Context::default()).map_err(|e| format!("module.toml: {e}"))?;
+    let id = module.id;
+    // The program must be on one of this PC's fixed drives: the text and drive type first (no
+    // file is touched for a share or a mapped drive), then the resolved path. (Where on those
+    // drives is the app's own business: a manifest may sit apart from its program.)
+    if let Some(run0) = module.run.as_ref().and_then(|r| r.first()) {
+        let run0 = Path::new(run0);
+        let local = |p: &str| hideout_registry::permission::on_local_fixed_drive(p);
+        let resolved = hideout_registry::keyboard::canonical_path(run0);
+        if !local(&run0.to_string_lossy()) || resolved.as_deref().is_ok_and(|c| !local(c)) {
+            return Err(format!(
+                "run {} is not on a local drive of this PC",
+                run0.display()
+            ));
+        }
+    }
     let mut reg = Registry::open_from_env(home).map_err(|e| format!("registry not read: {e}"))?;
     let m = reg
         .register_adopted(folder, now)
@@ -85,6 +99,14 @@ mod tests {
         // Not an adopted manifest.
         let svc = folder("svc", "service", &exe);
         assert!(run(&temp("home3"), &svc, NOW).is_err());
+        // A program on a share (or any drive that is not a local fixed one) is refused before
+        // it is looked at, and nothing is recorded.
+        let share = folder("share", "adopted", Path::new(r"\\srv\x\tool.exe"));
+        let h = temp("home5");
+        let e = run(&h, &share, NOW).unwrap_err();
+        assert!(e.contains("not on a local drive"), "{e}");
+        let reg = Registry::open_from_env(&h).unwrap();
+        assert!(reg.inventory.modules.is_empty());
         // No manifest in the folder.
         let e = run(&temp("home4"), &temp("empty"), NOW).unwrap_err();
         assert!(e.contains("module.toml"), "{e}");

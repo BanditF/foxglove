@@ -94,6 +94,9 @@ pub struct Candidate {
     pub origin: Origin,
     /// The program the app's file names (the card is not offered when it is gone).
     pub program: Option<PathBuf>,
+    /// The manifest text that was read and validated (folder origin). It is what gets
+    /// registered: the add stages exactly this text, never a second read of the folder.
+    pub text: Option<String>,
 }
 
 impl Candidate {
@@ -171,7 +174,15 @@ pub fn from_folder(m: &dyn Machine, at: &Path) -> Result<Candidate, String> {
         .as_ref()
         .and_then(|r| r.first())
         .map(|r| folder.join(r));
+    // The program is on a local fixed drive too (text and drive type, then resolved).
+    let program = match program {
+        Some(p) => {
+            Some(find_installed::local_path(m, &p).ok_or_else(|| words::NOT_THIS_PC.to_string())?)
+        }
+        None => None,
+    };
     Ok(Candidate {
+        text: Some(text),
         id: module.id,
         name: clean(&module.name),
         version: clean(&module.version),
@@ -216,6 +227,7 @@ pub fn discover(m: &dyn Machine, installed: &[String]) -> Vec<Candidate> {
                 name: p.name.clone(),
                 version: clean(&f.version),
                 program: Some(f.exe.clone()),
+                text: None,
                 origin: Origin::Product(f),
             });
         }
@@ -236,15 +248,25 @@ pub fn add(
     c: &Candidate,
     now: &str,
 ) -> Result<String, String> {
-    if let Origin::Folder(f) = &c.origin {
-        match from_folder(m, f) {
-            Ok(again) if again.id == c.id && again.version == c.version => {}
-            _ => return Err(words::changed(&c.name)),
+    let done = match (&c.origin, &c.text) {
+        (Origin::Folder(f), Some(text)) => {
+            // Still the same file, byte for byte (name, program and permissions too)...
+            match from_folder(m, f) {
+                Ok(again) if again.text.as_deref() == Some(text.as_str()) => {}
+                _ => return Err(words::changed(&c.name)),
+            }
+            // ...and what is registered is the text the user was shown, staged and adopted
+            // from there, so a swap after this point cannot reach the inventory.
+            let dir = staging.join(format!("add-{}", c.id));
+            let staged = std::fs::create_dir_all(&dir)
+                .and_then(|()| std::fs::write(dir.join("module.toml"), text))
+                .map_err(|e| format!("{}: {e}", dir.display()))
+                .and_then(|()| crate::adopt::run(home, &dir, now));
+            let _ = std::fs::remove_dir_all(&dir);
+            staged
         }
-    }
-    let done = match &c.origin {
-        Origin::Folder(f) => crate::adopt::run(home, f, now),
-        Origin::Product(found) => find_installed::adopt(m, home, staging, found, now),
+        (Origin::Folder(_), None) => return Err(words::changed(&c.name)),
+        (Origin::Product(found), _) => find_installed::adopt(m, home, staging, found, now),
     };
     match done {
         Ok(line) if line.starts_with(&format!("registered {} ", c.id)) => Ok(c.id.clone()),
@@ -1027,6 +1049,71 @@ mod tests {
         assert_eq!(s.note, Some(Note::error(words::changed("Gizmo"))));
         let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
         assert!(reg.inventory.modules.is_empty());
+    }
+
+    #[test]
+    fn any_change_to_the_manifest_after_the_look_is_refused_not_only_the_id_and_version() {
+        let (install, mut f) = app_on_disk("swap2", "gizmo");
+        f.subkeys.push("gizmo".into());
+        f.reg.insert(
+            (format!(r"{MODULES_KEY}\gizmo"), String::new()),
+            install.display().to_string(),
+        );
+        let home = temp("swap2-home");
+        let mut s = AddApp::default();
+        s.scan(&f, &[], false);
+        // Same id and version, another program.
+        let other = install
+            .join("other.exe")
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        let text = manifest("gizmo", "Gizmo", "1.4.0", "adopted", &other);
+        f.files
+            .insert(install.join("module.toml"), (String::new(), Some(text)));
+        assert!(s
+            .add_found(&f, "gizmo", &home, &temp("stg7"), NOW)
+            .is_none());
+        assert_eq!(s.note, Some(Note::error(words::changed("Gizmo"))));
+        let reg = hideout_registry::Registry::open_from_env(&home).unwrap();
+        assert!(reg.inventory.modules.is_empty());
+    }
+
+    #[test]
+    fn what_is_registered_is_the_text_that_was_shown() {
+        let (install, mut f) = app_on_disk("same", "gizmo");
+        f.subkeys.push("gizmo".into());
+        f.reg.insert(
+            (format!(r"{MODULES_KEY}\gizmo"), String::new()),
+            install.display().to_string(),
+        );
+        let home = temp("same-home");
+        let mut s = AddApp::default();
+        s.scan(&f, &[], false);
+        let shown = s.found[0].text.clone().unwrap();
+        // The disk file changes after the card; the fake still shows the old text (a swap
+        // that lands after the re-read). The registered record is still the shown text.
+        std::fs::write(install.join("module.toml"), "id = \"gizmo\"\n").unwrap();
+        assert!(s
+            .add_found(&f, "gizmo", &home, &temp("stg8"), NOW)
+            .is_some());
+        let rec = hideout_registry::Registry::open_from_env(&home).unwrap();
+        let dir = rec.module_dir("gizmo", "1.4.0");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("module.toml")).unwrap(),
+            shown
+        );
+    }
+
+    #[test]
+    fn a_program_on_a_remote_drive_is_not_this_pc() {
+        let mut f = Fake::default();
+        register(&mut f, "gizmo", "Gizmo", "1.0.0", false);
+        f.remote.push(PathBuf::from("C:/Apps/x.exe"));
+        assert_eq!(
+            from_folder(&f, &dir("gizmo")).unwrap_err(),
+            words::NOT_THIS_PC.to_string()
+        );
     }
 
     #[test]
