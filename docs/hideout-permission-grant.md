@@ -86,15 +86,17 @@ anywhere means the change voids at the next check as before (the user is asked a
 
 Guards added after the security review: the version rule always applies (strictly newer than the
 installed and every attested version; if neither parses, refused); the hand-off must be newer than the
-module's current instance; and when the signed manifest carries `exe_sha256` the program at `run[0]`
-must match it. The control pipe keeps the caller check on retired jobs (children that outlive their
+module's current instance; and the signed manifest must carry `exe_sha256` and the program at
+`run[0]` must match it (a release without the hash is refused, F3). The control pipe keeps the caller check on retired jobs (children that outlive their
 module), opens the client once, refuses a bad caller without reading, and reads with a 2 s deadline.
 An Allow widens the router only by what it granted, never by what `inventory.json` says, and a
 binding also records the program's arguments (a change voids).
 
-Open item (pipeline): the hash-in-manifest is the real fix. Until the release pipeline emits
-`exe_sha256` in `latest.json` (`foxglove-update manifest --exe-sha256 <hex>` is ready), a release
-without it gets only the version rule and a warning in the log.
+The hash-in-manifest is the real fix and is now required (F3): a version alone says nothing about
+the file in the folder, so a signed release without `exe_sha256` is refused (fail closed, no
+version-only fallback). The release pipeline (`.github/workflows/app.yml`) already emits it via
+`foxglove-update manifest --exe-sha256 <hex>`. A refused update voids at the next check and the
+user is asked once again.
 
 ### Design limit
 

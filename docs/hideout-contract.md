@@ -1420,14 +1420,14 @@ stays the launcher; the tabs are what is open. UX, states and wording: [hideout-
   `approve_listed`; `modules.manage` is not enough.
 - (#1179) **Attestation guards.** The hub-side attestation (`attest_installed`) always requires
   the release's version to be strictly greater than the module's recorded installed version
-  and every version already attested (neither parsing: refused). When the signed `latest.json`
-  carries `exe_sha256` (SHA-256 of `foxglove.exe` in that release; optional field) the program
-  at `run[0]` must hash to it, case-insensitively, else refused; without it only the version
-  rule applies (logged: "release has no exe hash; version rule only"). The hand-off file is
+  and every version already attested (neither parsing: refused). The signed `latest.json`
+  must carry `exe_sha256` (SHA-256 of `foxglove.exe` in that release) and the program
+  at `run[0]` must hash to it, case-insensitively, else refused; a release without it is
+  refused (F3, fail closed: no version-only fallback, the change then voids at the next check
+  and the user is asked again). The hand-off file is
   also ignored when it is older than the module's current instance (the hub's own record).
-  **Open item:** the hash-in-manifest is the real fix (without it a signed old-or-new release
-  proves only that the updater ran, not which file is on disk); the release pipeline must emit
-  `exe_sha256` (`foxglove-update manifest --exe-sha256 <hex>` takes it). A binding also records
+  The release pipeline (`.github/workflows/app.yml`) already emits `exe_sha256`
+  (`foxglove-update manifest --exe-sha256 <hex>`). A binding also records
   `run[1..]` (the program's arguments); a later difference voids the grant (empty = not
   recorded, not checked).
 - (#1179) **Design limit.** A module that runs outside an AppContainer has the user's token. It

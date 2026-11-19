@@ -16,8 +16,14 @@ use ring::signature::{Ed25519KeyPair, KeyPair};
 
 const NOW: &str = "2026-11-13T00:00:00Z";
 
+/// A release with no `exe_sha256` (the updater now refuses these).
 fn signed(version: &str, seed: u8) -> (Vec<u8>, Vec<u8>, [u8; 32]) {
     signed_with(version, seed, None)
+}
+
+/// A release that names the hash of the program bytes now at `run[0]`.
+fn signed_for(version: &str, seed: u8, program: &[u8]) -> (Vec<u8>, Vec<u8>, [u8; 32]) {
+    signed_with(version, seed, Some(&sha_hex(program)))
 }
 
 fn signed_with(version: &str, seed: u8, exe: Option<&str>) -> (Vec<u8>, Vec<u8>, [u8; 32]) {
@@ -88,7 +94,7 @@ fn a_signed_update_in_the_same_folder_keeps_the_grant_and_is_recorded() {
     allow(&sup, &home, &id);
 
     std::fs::write(&exe, b"program v2").unwrap();
-    let (json, sig, key) = signed("1.1.0", 7);
+    let (json, sig, key) = signed_for("1.1.0", 7, b"program v2");
     let v = Verified::from_signed(&json, &sig, &key).unwrap();
     sup.attest_verified_update(&id, &v).unwrap();
 
@@ -142,7 +148,7 @@ fn another_folder_or_a_void_grant_is_refused_and_changes_nothing() {
         .unwrap()
         .register_adopted(&folder, NOW)
         .unwrap();
-    let (json, sig, key) = signed("1.1.0", 7);
+    let (json, sig, key) = signed_for("1.1.0", 7, b"program v1");
     let v = Verified::from_signed(&json, &sig, &key).unwrap();
     assert!(sup_a.attest_verified_update(&id, &v).is_err());
     let reg = Registry::open_from_env(&home_a).unwrap();
@@ -170,8 +176,8 @@ fn handoff_dir(home: &Path) -> PathBuf {
     d
 }
 
-fn write_handoff(dir: &Path, version: &str, seed: u8) -> [u8; 32] {
-    let (json, sig, key) = signed(version, seed);
+fn write_handoff(dir: &Path, version: &str, seed: u8, program: &[u8]) -> [u8; 32] {
+    let (json, sig, key) = signed_for(version, seed, program);
     foxglove_update::handoff::write(dir, &foxglove_update::Signed { json, sig }).unwrap();
     key
 }
@@ -185,7 +191,7 @@ fn the_updaters_handoff_keeps_the_grant_once_and_only_when_signed_and_newer() {
 
     // A hand-off signed by another key is dropped and consumed; nothing is attested.
     std::fs::write(&exe, b"program v2").unwrap();
-    let _ = write_handoff(&dir, "1.1.0", 8);
+    let _ = write_handoff(&dir, "1.1.0", 8, b"program v2");
     let key = signed("1.1.0", 7).2;
     assert!(
         hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).is_none(),
@@ -194,7 +200,7 @@ fn the_updaters_handoff_keeps_the_grant_once_and_only_when_signed_and_newer() {
     assert!(!dir.join(foxglove_update::handoff::FILE).exists());
 
     // The real key's release is attested, once; the file is gone afterwards.
-    let _ = write_handoff(&dir, "1.1.0", 7);
+    let _ = write_handoff(&dir, "1.1.0", 7, b"program v2");
     assert_eq!(
         hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).as_deref(),
         Some("1.1.0")
@@ -209,7 +215,7 @@ fn the_updaters_handoff_keeps_the_grant_once_and_only_when_signed_and_newer() {
 
     // The same release again, with the program changed once more, is a replay: refused.
     std::fs::write(&exe, b"program v3").unwrap();
-    let _ = write_handoff(&dir, "1.1.0", 7);
+    let _ = write_handoff(&dir, "1.1.0", 7, b"program v3");
     assert!(
         hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).is_none()
     );
@@ -234,7 +240,7 @@ fn a_stale_handoff_is_not_used() {
     allow(&sup, &home, &id);
     let dir = handoff_dir(&home);
     std::fs::write(&exe, b"program v2").unwrap();
-    let key = write_handoff(&dir, "1.1.0", 7);
+    let key = write_handoff(&dir, "1.1.0", 7, b"program v2");
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 3600);
     std::fs::File::options()
         .write(true)
@@ -267,16 +273,18 @@ fn the_version_rule_always_applies_to_the_installed_version_too() {
     // The module is recorded at 1.0.0: the same or an older release is a replay; a version that
     // doesn't parse is refused too.
     for v in ["1.0.0", "0.9.0", "banana"] {
-        let (json, sig, key) = signed(v, 7);
+        let (json, sig, key) = signed_for(v, 7, b"program v2");
         let ver = Verified::from_signed(&json, &sig, &key).unwrap();
         assert!(sup.attest_verified_update(&id, &ver).is_err(), "{v}");
     }
     assert_eq!(attested(&home, &id), 0);
-    let (json, sig, key) = signed("1.0.1", 7);
+    let (json, sig, key) = signed_for("1.0.1", 7, b"program v2");
     let ver = Verified::from_signed(&json, &sig, &key).unwrap();
     sup.attest_verified_update(&id, &ver).unwrap();
-    // Now 1.0.1 is the floor.
+    // Now 1.0.1 is the floor (the hash is right: only the version is a replay).
     std::fs::write(&exe, b"program v3").unwrap();
+    let (json, sig, key) = signed_for("1.0.1", 7, b"program v3");
+    let ver = Verified::from_signed(&json, &sig, &key).unwrap();
     assert!(sup.attest_verified_update(&id, &ver).is_err());
     assert_eq!(attested(&home, &id), 1);
     drop(sup);
@@ -310,13 +318,13 @@ fn a_handoff_older_than_the_instance_is_not_used() {
     allow(&sup, &home, &id);
     let dir = handoff_dir(&home);
     std::fs::write(&exe, b"program v2").unwrap();
-    let key = write_handoff(&dir, "1.1.0", 7);
+    let key = write_handoff(&dir, "1.1.0", 7, b"program v2");
     let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
     assert!(
         hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, Some(later))
             .is_none()
     );
-    let _ = write_handoff(&dir, "1.1.0", 7);
+    let _ = write_handoff(&dir, "1.1.0", 7, b"program v2");
     let before = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
     assert_eq!(
         hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, Some(before))
@@ -354,7 +362,7 @@ fn an_attested_update_moves_the_keyboard_record_to_the_new_file() {
     .unwrap();
 
     std::fs::write(&exe, b"program v2").unwrap();
-    let (json, sig, key) = signed("1.1.0", 7);
+    let (json, sig, key) = signed_for("1.1.0", 7, b"program v2");
     let v = Verified::from_signed(&json, &sig, &key).unwrap();
     sup.attest_verified_update(&id, &v).unwrap();
 
@@ -401,13 +409,44 @@ fn an_attested_update_never_turns_a_keyboard_record_on() {
             inv.modules.get_mut(&id).unwrap().keyboard = Some(g.clone());
         })
         .unwrap();
-        std::fs::write(&exe, format!("program {}", g.sha256).as_bytes()).unwrap();
-        let (json, sig, key) = signed(&format!("1.{}.0", g.sha256.len() + 1), 7);
+        let program = format!("program {}", g.sha256);
+        std::fs::write(&exe, program.as_bytes()).unwrap();
+        let (json, sig, key) = signed_for(
+            &format!("1.{}.0", g.sha256.len() + 1),
+            7,
+            program.as_bytes(),
+        );
         let v = Verified::from_signed(&json, &sig, &key).unwrap();
         sup.attest_verified_update(&id, &v).unwrap();
         let reg = Registry::open_from_env(&home).unwrap();
         assert_eq!(reg.inventory.modules[&id].keyboard.as_ref(), Some(&g));
     }
+    drop(sup);
+    let _ = std::fs::remove_dir_all(home.parent().unwrap());
+}
+
+#[test]
+fn a_signed_newer_release_without_exe_sha256_is_refused() {
+    let (home, exe, id) = home("nohash", None);
+    let sup = sup(&home);
+    allow(&sup, &home, &id);
+    std::fs::write(&exe, b"program v2").unwrap();
+    // Validly signed and newer, but it names no hash: the version alone proves nothing.
+    let (json, sig, key) = signed("1.1.0", 7);
+    let ver = Verified::from_signed(&json, &sig, &key).unwrap();
+    let err = sup.attest_verified_update(&id, &ver).unwrap_err();
+    assert!(err.contains("exe_sha256"), "{err}");
+    assert_eq!(attested(&home, &id), 0);
+    let reg = Registry::open_from_env(&home).unwrap();
+    assert_eq!(reg.inventory.modules[&id].granted, ["hub.notify"]);
+
+    // The same through the hand-off: nothing is attested, the file is consumed.
+    let dir = handoff_dir(&home);
+    foxglove_update::handoff::write(&dir, &foxglove_update::Signed { json, sig }).unwrap();
+    assert!(
+        hideout_supervisor::attest::attest_from_handoff(&home, &dir, &id, &key, None).is_none()
+    );
+    assert_eq!(attested(&home, &id), 0);
     drop(sup);
     let _ = std::fs::remove_dir_all(home.parent().unwrap());
 }
