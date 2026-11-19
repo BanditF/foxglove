@@ -320,45 +320,77 @@ mod win {
     /// Reads with read-only sharing, so a writer that still holds the file shows as busy.
     pub struct FileProbe;
 
+    /// The largest program and manifest the probe reads (bigger is "unreadable", never allocated).
+    const MAX_EXE: u64 = 1 << 30;
+    const MAX_MANIFEST: u64 = 1 << 20;
+
     impl Probe for FileProbe {
         fn check(&mut self, path: &Path, which: Which) -> Probed {
-            let mut f = match std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ)
-                .open(path)
-            {
-                Ok(f) => f,
-                Err(e)
-                    if matches!(
-                        e.raw_os_error(),
-                        Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
-                    ) =>
-                {
-                    return Probed::Busy
-                }
+            let max = if which == Which::Exe {
+                MAX_EXE
+            } else {
+                MAX_MANIFEST
+            };
+            check_capped(path, which, max)
+        }
+    }
+
+    /// Reads in chunks on one handle (no buffer sized from the file), hashing as it goes.
+    pub(super) fn check_capped(path: &Path, which: Which, max: u64) -> Probed {
+        use sha2::{Digest, Sha256};
+        let busy = |e: &std::io::Error| {
+            matches!(
+                e.raw_os_error(),
+                Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+            )
+        };
+        let mut f = match std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+        {
+            Ok(f) => f,
+            Err(e) if busy(&e) => return Probed::Busy,
+            Err(e) => return Probed::Unreadable(e.to_string()),
+        };
+        let len = match f.metadata() {
+            Ok(m) => m.len(),
+            Err(e) => return Probed::Unreadable(e.to_string()),
+        };
+        if len > max {
+            return Probed::Unreadable("too large".into());
+        }
+        let mut hash = Sha256::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        let mut total = 0u64;
+        let mut head: Vec<u8> = Vec::new();
+        loop {
+            let n = match f.read(&mut chunk) {
+                Ok(n) => n,
+                Err(e) if busy(&e) => return Probed::Busy,
                 Err(e) => return Probed::Unreadable(e.to_string()),
             };
-            let len = match f.metadata() {
-                Ok(m) => m.len(),
-                Err(e) => return Probed::Unreadable(e.to_string()),
-            };
-            let mut buf = Vec::with_capacity(len as usize);
-            if let Err(e) = f.read_to_end(&mut buf) {
-                return match e.raw_os_error() {
-                    Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION) => Probed::Busy,
-                    _ => Probed::Unreadable(e.to_string()),
-                };
+            if n == 0 {
+                break;
             }
-            if buf.len() as u64 != len {
-                return Probed::SizeChanged;
+            total += n as u64;
+            if total > max {
+                return Probed::Unreadable("too large".into());
             }
-            if which == Which::Exe && !looks_like_pe(&buf) {
-                return Probed::BadHeader;
+            hash.update(&chunk[..n]);
+            if head.len() < 0x1000 {
+                head.extend_from_slice(&chunk[..n.min(0x1000)]);
             }
-            Probed::Ready {
-                size: len,
-                sha256: foxglove_plugin_trust::sha256_hex(&buf),
-            }
+        }
+        if total != len {
+            return Probed::SizeChanged;
+        }
+        if which == Which::Exe && !looks_like_pe(&head) {
+            return Probed::BadHeader;
+        }
+        Probed::Ready {
+            size: len,
+            sha256: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(),
         }
     }
 
@@ -409,9 +441,17 @@ mod win {
                 let e = std::io::Error::last_os_error();
                 return Err(std::io::Error::other(format!("{}: {e}", dir.display())));
             }
+            // Made before `d`, so the folder handle is closed if the event can't be.
+            let ev = match Ev::new() {
+                Ok(ev) => ev,
+                Err(e) => {
+                    unsafe { CloseHandle(h) };
+                    return Err(e);
+                }
+            };
             let mut d = Dir {
                 h,
-                ev: Ev::new()?,
+                ev,
                 ov: Box::new(unsafe { std::mem::zeroed() }),
                 buf: Box::new([0; 4096]),
                 names,
@@ -536,6 +576,16 @@ mod win {
                     .ok_or_else(|| std::io::Error::other("no folder"))
             };
             let (ef, mf) = (folder(&t.exe)?, folder(&t.manifest)?);
+            // Before any open: opening a UNC path would send the user's credentials to that host.
+            for d in [&ef, &mf] {
+                let shown = d.display().to_string();
+                let probe = format!("{}\\x", shown.trim_end_matches('\\'));
+                if !hideout_registry::permission::on_local_fixed_drive(&probe) {
+                    return Err(std::io::Error::other(format!(
+                        "not a local folder: {shown}"
+                    )));
+                }
+            }
             let dirs = if ef == mf {
                 vec![Dir::open(
                     &ef,
@@ -569,8 +619,9 @@ mod win {
         fn wait(&mut self, timeout: Option<Duration>) -> std::io::Result<Wake> {
             let end = timeout.map(|t| Instant::now() + t);
             loop {
-                let mut hs: Vec<HANDLE> = self.dirs.iter().map(|d| d.ev.0).collect();
-                hs.push(self.stop.0);
+                // Stop first: the lowest signalled index wins, so a flood of events cannot starve it.
+                let mut hs: Vec<HANDLE> = vec![self.stop.0];
+                hs.extend(self.dirs.iter().map(|d| d.ev.0));
                 let ms = end.map_or(INFINITE, |e| {
                     e.saturating_duration_since(Instant::now())
                         .as_millis()
@@ -584,10 +635,10 @@ mod win {
                 if i >= hs.len() {
                     return Err(std::io::Error::last_os_error());
                 }
-                if i == self.dirs.len() {
+                if i == 0 {
                     return Ok(Wake::Stop);
                 }
-                let files = self.dirs[i].complete()?;
+                let files = self.dirs[i - 1].complete()?;
                 if !files.is_empty() {
                     return Ok(Wake::Changed(files));
                 }
@@ -943,6 +994,91 @@ mod tests {
             std::fs::write(dir.join("other.txt"), "x").unwrap();
             assert!(rx.recv_timeout(ms(600)).is_err());
             drop(h);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn network_and_non_local_paths_are_refused_before_any_open() {
+            for p in [
+                r"\\localhost\c$\dev",
+                r"\\?\UNC\host\share\dev",
+                r"relative\dir",
+                r"\\.\C:\dev",
+            ] {
+                let d = PathBuf::from(p);
+                let t = Target {
+                    id: "x".into(),
+                    exe: d.join("a.exe"),
+                    manifest: d.join("module.toml"),
+                };
+                let e = spawn_with(t, Timing::DEFAULT, Box::new(|_| {}))
+                    .err()
+                    .expect(p);
+                assert!(e.to_string().contains("not a local folder"), "{p}: {e}");
+            }
+        }
+
+        #[test]
+        fn stop_is_not_delayed_by_an_event_flood() {
+            let dir =
+                std::env::temp_dir().join(format!("hideout-rebuild-flood-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let t = Target {
+                id: "app".into(),
+                exe: dir.join("app.exe"),
+                manifest: dir.join("module.toml"),
+            };
+            let h = spawn_with(t.clone(), Timing::DEFAULT, Box::new(|_| {})).unwrap();
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flood = {
+                let (stop, exe) = (stop.clone(), t.exe.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = std::fs::write(&exe, b"x");
+                    }
+                })
+            };
+            std::thread::sleep(ms(200));
+            let t0 = std::time::Instant::now();
+            drop(h);
+            let took = t0.elapsed();
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            flood.join().unwrap();
+            assert!(took < Duration::from_secs(3), "stop took {took:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_huge_file_is_unreadable_and_a_big_one_hashes_in_chunks() {
+            let dir =
+                std::env::temp_dir().join(format!("hideout-rebuild-big-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let big = dir.join("module.toml");
+            std::fs::File::create(&big)
+                .unwrap()
+                .set_len(2 << 20)
+                .unwrap();
+            assert_eq!(
+                FileProbe.check(&big, Which::Manifest),
+                Probed::Unreadable("too large".into())
+            );
+            let exe = dir.join("a.exe");
+            let mut b = pe();
+            b.extend((0..300_000u32).map(|i| (i % 251) as u8));
+            std::fs::write(&exe, &b).unwrap();
+            assert_eq!(
+                FileProbe.check(&exe, Which::Exe),
+                Probed::Ready {
+                    size: b.len() as u64,
+                    sha256: foxglove_plugin_trust::sha256_hex(&b)
+                }
+            );
+            assert_eq!(
+                super::super::win::check_capped(&exe, Which::Exe, 1000),
+                Probed::Unreadable("too large".into())
+            );
             let _ = std::fs::remove_dir_all(&dir);
         }
 
