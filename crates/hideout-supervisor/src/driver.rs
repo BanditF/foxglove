@@ -1488,9 +1488,17 @@ impl Supervisor {
         };
         if g.state != hideout_registry::keyboard::GrantState::On || g.allows(canon, sha256) {
             // The file may hold a kept build's moved record the router doesn't know yet (#1267).
+            // A dev-folder move whose chain no longer holds is voided on disk first, so the
+            // file never says `on` for a build the router refuses.
+            let voided = reg.void_unchained_dev_keyboards(&crate::now_utc());
             let moves = reg.attested_keyboard_moves();
-            if !moves.is_empty() {
-                self.0.hub.act(|r| r.adopt_keyboard_moves(&moves));
+            if !moves.is_empty() || !voided.is_empty() {
+                let grants = keyboard_grants(&reg).into_iter().collect();
+                self.0.hub.act(|r| {
+                    let mut out = r.adopt_keyboard_moves(&moves);
+                    out.extend(r.narrow_keyboard_grants(&grants));
+                    out
+                });
             }
             return;
         }

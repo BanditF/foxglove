@@ -653,6 +653,7 @@ fn mv(ancestors: &[(&str, &str)], to: KeyboardGrant) -> hideout_registry::keyboa
             .map(|(p, h)| (p.to_string(), h.to_string()))
             .collect(),
         to,
+        dev_folder: None,
     }
 }
 
@@ -742,7 +743,7 @@ fn a_move_is_refused_unless_every_condition_holds() {
     assert!(!adopt_and_try(mv(&[(PATH, HASH)], other_path), NEWER));
     // The moved record is a network path.
     let mut unc = moved_to(NEWER);
-    unc.path = r"\host\share\foxglove.exe".into();
+    unc.path = r"\\host\share\foxglove.exe".into();
     assert!(!adopt_and_try(mv(&[(PATH, HASH)], unc), NEWER));
     // The moved record is not `on`, or has no valid hash.
     let mut off = moved_to(NEWER);
@@ -775,4 +776,85 @@ fn the_router_refuses_a_moved_record_with_a_relative_or_non_fixed_path() {
     let mut dev = moved_to(NEWER);
     dev.path = r"\.\C:\Apps\Foxglove\foxglove.exe".into();
     assert!(!adopt_and_try(mv(&[(PATH, HASH)], dev), NEWER));
+}
+
+#[test]
+fn a_dev_folder_move_may_change_the_path_only_inside_its_folder() {
+    const DIR: &str = r"C:\Apps\Foxglove";
+    let inside = format!(r"{DIR}\out\foxglove.exe");
+    let dev = |anc: &str, to: &str, folder: Option<&str>| {
+        let mut m = mv(&[(anc, HASH)], moved_to(NEWER));
+        m.to.path = to.into();
+        m.dev_folder = folder.map(String::from);
+        m
+    };
+    // Memory holds the record for `PATH`; the router follows a step inside the folder.
+    let now = Instant::now();
+    let id = identity(&inside, NEWER);
+    let mut r = rig(&id);
+    r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+    r.adopt_keyboard_moves(&[dev(PATH, &inside, Some(DIR))]);
+    r.narrow_keyboard_grants(&grants(Some({
+        let mut g = moved_to(NEWER);
+        g.path = inside.clone();
+        g
+    })));
+    let (f, c) = connect_both(&mut r, now);
+    register(&mut r, f, &strs(&areas()), now);
+    let allowed = try_call(&mut r, c, f, "devices.list", now).0.len() == 1;
+    assert!(allowed, "a step inside the folder is followed");
+
+    // Never without a dev folder, outside it, or to a network path.
+    for (to, folder) in [
+        (inside.as_str(), None),
+        (r"C:\Other\foxglove.exe", Some(DIR)),
+        (r"\\host\share\foxglove.exe", Some(r"\\host\share")),
+        (
+            r"\\?\UNC\host\share\foxglove.exe",
+            Some(r"\\?\UNC\host\share"),
+        ),
+    ] {
+        let id = identity(to, NEWER);
+        let mut r = rig(&id);
+        r.set_keyboard_grants(grants(Some(grant(GrantState::On))));
+        r.adopt_keyboard_moves(&[dev(PATH, to, folder)]);
+        r.narrow_keyboard_grants(&grants(Some({
+            let mut g = moved_to(NEWER);
+            g.path = to.into();
+            g
+        })));
+        let (f, c) = connect_both(&mut r, Instant::now());
+        register(&mut r, f, &strs(&areas()), Instant::now());
+        assert!(try_call(&mut r, c, f, "devices.list", Instant::now())
+            .0
+            .is_empty());
+    }
+}
+
+#[test]
+fn a_dev_move_from_outside_the_folder_or_a_network_file_is_refused() {
+    const DIR: &str = r"C:\Apps\Foxglove";
+    // Memory holds the record for a file outside the folder; the move ends inside it.
+    let outside = r"C:\Other\foxglove.exe";
+    let inside = r"C:\Apps\Foxglove\out\foxglove.exe";
+    let unc = r"\\host\share\foxglove.exe";
+    for (from, to) in [(outside, inside), (unc, unc), (PATH, unc)] {
+        let id = identity(to, NEWER);
+        let mut r = rig(&id);
+        let mut held = grant(GrantState::On);
+        held.path = from.into();
+        r.set_keyboard_grants(grants(Some(held)));
+        let mut m = mv(&[(from, HASH)], moved_to(NEWER));
+        m.to.path = to.into();
+        m.dev_folder = Some(DIR.into());
+        r.adopt_keyboard_moves(&[m]);
+        let mut now_rec = moved_to(NEWER);
+        now_rec.path = to.into();
+        r.narrow_keyboard_grants(&grants(Some(now_rec)));
+        let (f, c) = connect_both(&mut r, Instant::now());
+        register(&mut r, f, &strs(&areas()), Instant::now());
+        assert!(try_call(&mut r, c, f, "devices.list", Instant::now())
+            .0
+            .is_empty());
+    }
 }

@@ -336,26 +336,122 @@ fn a_listed_folder_that_becomes_writable_stops_counting() {
     assert_eq!(f.reg.binding_void(ID), Some(VoidReason::Changed));
 }
 
-#[test]
-fn a_dev_folder_rebuild_does_not_move_the_keyboard_record() {
-    let mut f = fx("keyboard");
+/// An enrolled app with the keyboard allowed for build 1, then `n` more builds carried.
+fn with_keyboard(name: &str, n: usize) -> Fx {
+    let mut f = fx(name);
     allow(&mut f, "dialog", &["hub.notify", "ui.window"]);
     let (path, old) = f.reg.current_program(ID).unwrap();
     f.reg.allow_keyboard(ID, &path, &old, NOW).unwrap();
-    rebuild(&f, b"build 2");
-    let (_, new) = f.reg.current_program(ID).unwrap();
-    // The grants carry, the keyboard grant does not: it stays at the file it was allowed for, so
-    // the check on turn-on voids it and the user is asked again.
-    assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
-    assert_eq!(granted(&f).len(), 2);
+    for i in 2..2 + n {
+        rebuild(&f, format!("build {i}").as_bytes());
+        assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
+    }
+    f
+}
+
+#[test]
+fn the_keyboard_record_follows_a_chain_of_three_dev_rebuilds() {
+    let f = with_keyboard("kb-chain", 3);
+    let (path, new) = f.reg.current_program(ID).unwrap();
     let k = f.reg.inventory.modules[ID].keyboard.clone().unwrap();
-    assert!(k.allows(&path, &old));
-    assert!(!k.allows(&path, &new));
-    // On disk too, which is what a fresh router loads.
+    assert!(k.allows(&path, &new), "the record moved on disk");
+    let moves = f.reg.attested_keyboard_moves();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].ancestors.len(), 3);
+    assert!(moves[0].dev_folder.is_some());
+    assert!(moves[0].to.allows(&path, &new));
+    // A fresh registry on the same home sees the same chain.
     let again = Registry::open(&f.home, true).unwrap();
-    let k = again.inventory.modules[ID].keyboard.clone().unwrap();
-    assert!(!k.allows(&path, &new));
-    assert!(again.attested_keyboard_moves().is_empty());
+    assert_eq!(again.attested_keyboard_moves(), moves);
+}
+
+#[test]
+fn a_path_change_inside_the_folder_keeps_the_chain_and_one_outside_ends_it() {
+    let mut f = with_keyboard("kb-path", 1);
+    // The manifest now names another file inside the folder.
+    let other = f.out.join("foxglove2.exe");
+    std::fs::write(&other, b"build 3").unwrap();
+    let dir = f.reg.module_dir(ID, "1.0.0");
+    std::fs::write(dir.join("module.toml"), manifest(&other)).unwrap();
+    f.reg = Registry::open(&f.home, true).unwrap();
+    assert_eq!(f.reg.void_if_changed(ID, LATER).unwrap(), None);
+    let (path, new) = f.reg.current_program(ID).unwrap();
+    assert!(same_path(&path, &canonical_path(&other).unwrap()));
+    let moves = f.reg.attested_keyboard_moves();
+    assert_eq!(moves.len(), 1);
+    assert_eq!(moves[0].ancestors.len(), 2);
+    assert!(moves[0].to.allows(&path, &new));
+
+    // A program outside the folder is no dev step: the grants and the keyboard void.
+    let mut g = fx("kb-path-out");
+    allow(&mut g, "dialog", &["hub.notify", "ui.window"]);
+    let (p0, h0) = g.reg.current_program(ID).unwrap();
+    g.reg.allow_keyboard(ID, &p0, &h0, NOW).unwrap();
+    let outside = temp("kb-path-elsewhere").join("foxglove.exe");
+    std::fs::write(&outside, b"build 2").unwrap();
+    let dir = g.reg.module_dir(ID, "1.0.0");
+    std::fs::write(dir.join("module.toml"), manifest(&outside)).unwrap();
+    g.reg = Registry::open(&g.home, true).unwrap();
+    assert!(g.reg.void_if_changed(ID, LATER).unwrap().is_some());
+    assert!(g.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn the_chain_ends_when_the_folder_is_removed() {
+    let mut f = with_keyboard("kb-removed", 3);
+    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
+    f.reg
+        .remove_dev_folder(&f.out.display().to_string())
+        .unwrap();
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn the_chain_is_nothing_with_dev_mode_off() {
+    let f = with_keyboard("kb-off", 3);
+    let shipped = Registry::open(&f.home, false).unwrap();
+    assert!(shipped.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn the_chain_ends_when_the_exe_or_folder_is_opened_to_others() {
+    let f = with_keyboard("kb-acl-exe", 2);
+    grant_everyone(&f.exe, "M");
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+    let g = with_keyboard("kb-acl-dir", 2);
+    grant_everyone(&g.out, "(OI)(CI)M");
+    assert!(g.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn a_cli_allow_ends_the_chain() {
+    let mut f = with_keyboard("kb-cli", 2);
+    assert_eq!(f.reg.attested_keyboard_moves().len(), 1);
+    // The Allow of the command line, over whatever the list shows now.
+    let list = f.reg.permission_list(ID).unwrap();
+    let chosen: Vec<String> = list.items.iter().map(|i| i.raw.clone()).collect();
+    f.reg
+        .approve_listed(ID, list.code(), &chosen, &[], LATER, "cli", false)
+        .unwrap();
+    assert!(f.reg.inventory.modules[ID].identity.is_none());
+    assert!(f.reg.attested_keyboard_moves().is_empty());
+}
+
+#[test]
+fn a_dev_step_not_recorded_by_this_enrolment_gives_no_move() {
+    // The record on disk names a hash the history does not reach (an edit): no move.
+    let f = with_keyboard("kb-edit", 2);
+    let mut reg = Registry::open(&f.home, true).unwrap();
+    let k = reg
+        .inventory
+        .modules
+        .get_mut(ID)
+        .unwrap()
+        .keyboard
+        .as_mut()
+        .unwrap();
+    k.sha256 = "ab".repeat(32);
+    assert!(reg.attested_keyboard_moves().is_empty());
 }
 
 #[test]
@@ -452,4 +548,123 @@ fn the_children_of_temp_and_appdata_are_refused() {
         let _ = std::fs::remove_dir_all(&child);
         assert!(r.is_err(), "{var}");
     }
+}
+
+// ---- review of R1: a refused dev step must not leave the file `on` (M1), refusals (L2) ----
+
+use hideout_registry::keyboard::KeyboardState;
+
+fn granted_for(reg: &Registry) -> bool {
+    matches!(reg.keyboard_state(ID), KeyboardState::Granted { .. })
+}
+
+/// What the hub does before it reads the file: void a dev move whose chain broke.
+fn hub_pass(home: &std::path::Path) -> (Registry, Vec<String>) {
+    let mut reg = Registry::open(home, true).unwrap();
+    let voided = reg.void_unchained_dev_keyboards(LATER);
+    (reg, voided)
+}
+
+#[test]
+fn a_chain_that_still_holds_is_left_on() {
+    let f = with_keyboard("m1-ok", 2);
+    let (reg, voided) = hub_pass(&f.home);
+    assert!(voided.is_empty());
+    assert!(granted_for(&reg));
+}
+
+#[test]
+fn a_refused_dev_move_voids_the_record_on_disk_and_stays_void_after_a_reload() {
+    // Folder removed, dev mode off and an exe opened to others all make the chain refuse.
+    let mut f = with_keyboard("m1-folder", 2);
+    f.reg
+        .remove_dev_folder(&f.out.display().to_string())
+        .unwrap();
+    let (reg, voided) = hub_pass(&f.home);
+    assert_eq!(voided, [ID]);
+    assert!(!granted_for(&reg));
+    let (_, new) = reg.current_program(ID).unwrap();
+    assert!(!reg.inventory.modules[ID]
+        .keyboard
+        .clone()
+        .unwrap()
+        .allows(&reg.current_program(ID).unwrap().0, &new));
+    // A fresh read of the file (what a restarted router loads) still says void, and re-adding
+    // the folder does not revive it.
+    let mut again = Registry::open(&f.home, true).unwrap();
+    assert!(!granted_for(&again));
+    again.add_dev_folder(&f.out.display().to_string()).unwrap();
+    let again = Registry::open(&f.home, true).unwrap();
+    assert!(!granted_for(&again));
+    assert!(again.attested_keyboard_moves().is_empty());
+
+    let g = with_keyboard("m1-off", 2);
+    let mut shipped = Registry::open(&g.home, false).unwrap();
+    assert_eq!(shipped.void_unchained_dev_keyboards(LATER), [ID]);
+    assert!(!granted_for(&Registry::open(&g.home, true).unwrap()));
+
+    let h = with_keyboard("m1-acl", 2);
+    grant_everyone(&h.exe, "M");
+    let (reg, voided) = hub_pass(&h.home);
+    assert_eq!(voided, [ID]);
+    assert!(!granted_for(&reg));
+    assert!(!granted_for(&Registry::open(&h.home, true).unwrap()));
+}
+
+#[test]
+fn a_fresh_allow_after_the_rebuild_is_not_voided() {
+    let mut f = with_keyboard("m1-fresh", 2);
+    let (path, new) = f.reg.current_program(ID).unwrap();
+    f.reg
+        .allow_keyboard(ID, &path, &new, "2026-11-19T23:00:00Z")
+        .unwrap();
+    f.reg
+        .remove_dev_folder(&f.out.display().to_string())
+        .unwrap();
+    let (reg, voided) = hub_pass(&f.home);
+    assert!(voided.is_empty());
+    assert!(granted_for(&reg));
+}
+
+/// Edits `inventory.json` of the fixture by hand, then reads it again.
+fn edited(f: &Fx, edit: impl FnOnce(&mut serde_json::Value)) -> Registry {
+    let p = f.home.join("inventory.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    edit(&mut v["modules"][ID]);
+    std::fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
+    Registry::open(&f.home, true).unwrap()
+}
+
+#[test]
+fn hand_edited_histories_give_no_move() {
+    // Each case starts from a chain that does give a move, so the edit is what refuses.
+    let case = |name: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+        let f = with_keyboard(name, 3);
+        assert_eq!(f.reg.attested_keyboard_moves().len(), 1, "{name} control");
+        let reg = edited(&f, |m| edit(m));
+        assert!(reg.attested_keyboard_moves().is_empty(), "{name}");
+    };
+    // The module is not enrolled (no identity), or was enrolled by the command line.
+    case("no-identity", &|m| m["identity"] = serde_json::Value::Null);
+    case("cli-enrolled", &|m| {
+        m["identity"]["established_by"] = "cli".into()
+    });
+    // The newest step starts outside the folder.
+    case("from-outside", &|m| {
+        let a = m["bound"]["attested"].as_array_mut().unwrap();
+        a.last_mut().unwrap()["from_path"] = r"C:\Elsewhere\foxglove.exe".into();
+    });
+    // A splice: the newest step does not end where the bound file is.
+    case("spliced", &|m| {
+        let a = m["bound"]["attested"].as_array_mut().unwrap();
+        let sub = a.last().unwrap()["to_path"]
+            .as_str()
+            .unwrap()
+            .replace("foxglove.exe", "other/foxglove.exe");
+        a.last_mut().unwrap()["to_path"] = sub.into();
+    });
+    // Steps older than the binding are not its own.
+    case("older-than-binding", &|m| {
+        m["bound"]["at"] = "2099-01-01T00:00:00Z".into()
+    });
 }
