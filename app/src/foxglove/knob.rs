@@ -220,6 +220,7 @@ impl Cycle {
             return Tell::Nothing;
         };
         self.listen(sessions);
+        let active = rows.len();
         let mut list = self.hidden.offer(self.heard.offer(rows));
         sessions::tell_apart(&mut list);
         let at = match &self.target {
@@ -234,6 +235,16 @@ impl Cycle {
             "Foxglove: knob: {}",
             click_line(next.as_ref(), (at + 1, list.len()))
         );
+        if list.is_empty() {
+            eprintln!(
+                "Foxglove: knob: {}",
+                none_heard_line(
+                    active,
+                    self.playing.len(),
+                    foxglove_panel::master::device().map(|d| d.name).as_deref()
+                )
+            );
+        }
         let was_app = self.target.is_some();
         let tell = self.set(next);
         self.place = self.target.as_ref().map(|_| (at + 1, list.len()));
@@ -681,6 +692,19 @@ fn app_of(row: &AppGroup) -> App {
         exe: row.exe.clone(),
         members: row.members.clone(),
     }
+}
+
+/// Why a click found no app: how many apps have an Active session, and how many sessions read
+/// audible just now, so "the knob stays on master" can be told from "nothing was playing".
+pub fn none_heard_line(
+    active_apps: usize,
+    audible_sessions: usize,
+    endpoint: Option<&str>,
+) -> String {
+    format!(
+        "no app offered: {active_apps} with an active session, {audible_sessions} audible now; sessions listed on {}",
+        endpoint.unwrap_or("(no output device)")
+    )
 }
 
 /// The log line for a click (#1061): the target, its place, and each of its sessions' process id
@@ -2329,6 +2353,11 @@ mod tests {
             format!("Vivaldi 1 of 1 (pid 18132 {VIVALDI}, pid 43484 {VIVALDI})")
         );
         assert_eq!(click_line(None, (1, 0)), "master");
+        assert_eq!(
+            none_heard_line(2, 0, Some("Headphones (Xbox Controller)")),
+            "no app offered: 2 with an active session, 0 audible now; sessions listed on Headphones (Xbox Controller)"
+        );
+        assert!(none_heard_line(0, 0, None).ends_with("(no output device)"));
         let unknown = App {
             members: vec![Member {
                 id: "x".into(),
