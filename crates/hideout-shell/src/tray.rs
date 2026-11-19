@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! The tray icon and its fixed menu frame (design UX8): a status line, Open Hideout; then the
 //! pinned quick actions (the modules' `action` panels, `crate::quick_actions`, between two
-//! separators, none without any); then Pause Hideout, Open log
-//! folder, Quit Hideout. The icon has three states (`icon::State`). In safe mode **Start
+//! separators, none without any); then Pause Hideout, Quit Hideout (Open log folder lives in
+//! Settings, About). The icon has three states (`icon::State`). In safe mode **Start
 //! normally** comes right under the status line (docs/hideout-supervisor-ux.md, column Tr).
 //! While a search for the module that breaks Hideout runs (#1033), **Start round k** (between
 //! rounds) and **Stop finding** come right after Open Hideout, and Start normally goes.
@@ -25,7 +25,6 @@ pub enum Command {
     /// window opens (#997, #1076).
     DoubleClick,
     Pause(bool),
-    OpenLogs,
     Quit,
     /// **Start normally** (safe mode only): safe mode ends and the enabled modules start.
     StartNormally,
@@ -50,7 +49,6 @@ fn quick_number(id: &str) -> Option<u32> {
 
 const OPEN: &str = "hideout.open";
 const PAUSE: &str = "hideout.pause";
-const LOGS: &str = "hideout.logs";
 const QUIT: &str = "hideout.quit";
 const START_NORMALLY: &str = "hideout.start-normally";
 const START_ROUND: &str = "hideout.start-round";
@@ -126,7 +124,6 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
     let status = MenuItem::new(crate::marks::QUIET_LINE, false, None);
     let open = MenuItem::with_id(OPEN, "Open Hideout", true, None);
     let pause = CheckMenuItem::with_id(PAUSE, "Pause Hideout", true, false, None);
-    let logs = MenuItem::with_id(LOGS, "Open log folder", true, None);
     let quit = MenuItem::with_id(QUIT, "Quit Hideout", true, None);
     let start_normally = MenuItem::with_id(START_NORMALLY, START_NORMALLY_LABEL, true, None);
     let start_round = MenuItem::with_id(START_ROUND, "", true, None);
@@ -143,12 +140,11 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
         &open,
         &PredefinedMenuItem::separator(),
         &pause,
-        &logs,
         &quit,
     ])
     .map_err(|e| e.to_string())?;
     let icon = TrayIconBuilder::new()
-        .with_tooltip(crate::PRODUCT)
+        .with_tooltip(crate::product_name())
         .with_menu(Box::new(menu.clone()))
         .with_menu_on_left_click(false)
         .with_icon(glyph(State::Normal).ok_or("tray glyph")?)
@@ -186,7 +182,6 @@ fn install_inner(on_command: impl Fn(Command) + Send + Sync + 'static) -> Result
             PAUSE => Command::Pause(
                 TRAY.with(|t| t.borrow().as_ref().is_some_and(|t| t.pause.is_checked())),
             ),
-            LOGS => Command::OpenLogs,
             QUIT => Command::Quit,
             START_NORMALLY => Command::StartNormally,
             START_ROUND => Command::StartRound,

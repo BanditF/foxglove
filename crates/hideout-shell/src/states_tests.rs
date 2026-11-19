@@ -739,6 +739,35 @@ fn the_tray_names_only_what_needs_the_user() {
     );
 }
 
+/// #8: every supervisor state has its own plain status line and tooltip; "No modules yet" is
+/// for no modules only; the quiet states keep the dot quiet.
+#[test]
+fn the_tray_has_a_line_for_every_state() {
+    for (s, want) in [
+        ("waiting", "Art is waiting for another module"),
+        ("quarantined", "Art's page couldn't be shown"),
+        ("updating", "Art is updating"),
+        ("update-busy", "Art will update when it is idle"),
+        ("update-waiting", "Art has an update ready to install"),
+        ("running", "1 module is running"),
+    ] {
+        let m = tray_for(&[("m.art", s)]);
+        let (state, line, tip) = m.look();
+        assert_eq!(state, crate::icon::State::Normal, "{s}");
+        assert_eq!(line, want, "{s}");
+        assert_eq!(tip, format!("Hideout \u{b7} {want}"), "{s}");
+    }
+    assert_eq!(Marks::default().look().1, "No modules yet");
+}
+
+/// The menu has no Open log folder (it is in Settings, About).
+#[test]
+fn the_log_folder_is_not_in_the_tray_menu() {
+    let src = include_str!("tray.rs");
+    assert!(!src.contains("\"Open log folder\""));
+    assert_eq!(crate::settings_view::OPEN_LOGS, "Open log folder");
+}
+
 /// No id from "Never shown", and no module id, in any string these states draw: the pages,
 /// the tiles, the rows and the tray lines.
 #[test]
@@ -1002,6 +1031,7 @@ fn renders_the_state_tray_for_review() {
         ("updating", vec![("m.art", "updating")]),
         ("update-busy", vec![("m.art", "update-busy")]),
         ("update-waiting", vec![("m.art", "update-waiting")]),
+        ("running", vec![("m.art", "running")]),
     ];
     let (s, w, rh) = (48u32, 1000u32, 64u32);
     let mut parts = Vec::new();

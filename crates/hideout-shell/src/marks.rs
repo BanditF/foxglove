@@ -9,8 +9,38 @@ use crate::icon::State;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-/// The menu's status line with nothing to say.
+/// The menu's status line while there are no modules at all (and only then).
 pub const QUIET_LINE: &str = "No modules yet";
+/// Modules exist but none is running (all turned off).
+pub const NONE_RUNNING: &str = "No module is running";
+/// The menu's status line while Hideout is paused.
+pub const PAUSED_LINE: &str = "Paused";
+
+/// The longest module name a tray line shows whole.
+const NAME_MAX: usize = 30;
+
+/// "1 module is running", "3 modules are running".
+pub fn running_line(n: usize) -> String {
+    if n == 1 {
+        "1 module is running".into()
+    } else {
+        format!("{n} modules are running")
+    }
+}
+
+/// What a module's state says in the tray when nobody has to act, most pressing first: the
+/// order the status line picks.
+const NOTES: &[&str] = &[
+    "needs-ok",
+    "couldnt-start",
+    "quarantined",
+    "update-waiting",
+    "update-busy",
+    "updating",
+    "restarting",
+    "starting",
+    "waiting",
+];
 
 /// Lease families the tray menu offers Resume for (#1142, contract §8.5 v1.17): the family, the
 /// item's words and how the holders are introduced. One item, only while a lease of it is held;
@@ -56,12 +86,96 @@ pub struct Marks {
     holders: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     /// What the menu's Resume item shows now (the last `take_resume_change`).
     shown_resume: Option<Option<String>>,
+    /// Each module's state fact (`module.<id>.state`), as the hub published it.
+    states: BTreeMap<String, String>,
+    /// Why an install-failed module failed (`module.<id>.failed`: "ok" or "launch").
+    failed: BTreeMap<String, String>,
+    /// This hub runs on a folder of its own: "Hideout (lab)".
+    lab: bool,
 }
 
 impl Marks {
     /// A module's name for people, from its manifest.
     pub fn name(&mut self, id: &str, name: &str) {
         self.names.insert(id.into(), name.into());
+    }
+
+    /// A hub on a folder of its own says "Hideout (lab)" in its tooltip.
+    pub fn set_lab(&mut self, on: bool) {
+        self.lab = on;
+    }
+
+    fn product(&self) -> &'static str {
+        if self.lab {
+            crate::PRODUCT_LAB
+        } else {
+            crate::PRODUCT
+        }
+    }
+
+    /// The name in a line, cut with an ellipsis past [`NAME_MAX`] characters so the tooltip
+    /// stays inside Windows' 127.
+    fn module_name(&self, id: &str) -> String {
+        let name = self.names.get(id).map_or(id, String::as_str);
+        if name.chars().count() <= NAME_MAX {
+            name.to_string()
+        } else {
+            let head: String = name.chars().take(NAME_MAX - 1).collect();
+            format!("{}\u{2026}", head.trim_end())
+        }
+    }
+
+    /// The note a module's state gives (a member of [`NOTES`]), `None` for a quiet one.
+    fn note(&self, id: &str) -> Option<&'static str> {
+        let state = self.states.get(id)?.as_str();
+        Some(match state {
+            // No known cause is still a failure: the safe generic line.
+            "install-failed" => match self.failed.get(id).map(String::as_str) {
+                Some("ok") => "needs-ok",
+                _ => "couldnt-start",
+            },
+            "quarantined" => "quarantined",
+            "update-waiting" => "update-waiting",
+            "update-busy" => "update-busy",
+            "updating" => "updating",
+            "restarting" => "restarting",
+            "starting" => "starting",
+            "waiting" => "waiting",
+            _ => return None,
+        })
+    }
+
+    /// The plain line for a module and a note: names the module, never an id.
+    fn note_line(&self, id: &str, note: &str) -> String {
+        let name = self.module_name(id);
+        match note {
+            "needs-ok" => format!("{name} needs your OK"),
+            "couldnt-start" => format!("{name} couldn't start"),
+            "quarantined" => hideout_supervisor::words::quarantined_title(&name),
+            "update-waiting" => format!("{name} has an update ready to install"),
+            "update-busy" => format!("{name} will update when it is idle"),
+            "updating" => format!("{name} is updating"),
+            "restarting" => format!("{name} is restarting"),
+            "starting" => format!("{name} is starting"),
+            _ => format!("{name} is waiting for another module"),
+        }
+    }
+
+    /// The status line when no module needs the red dot: the most pressing note, else how many
+    /// run. "No modules yet" only when Hideout knows no module at all.
+    fn quiet_line(&self) -> String {
+        for want in NOTES {
+            if let Some(id) = self.states.keys().find(|id| self.note(id) == Some(*want)) {
+                return self.note_line(id, want);
+            }
+        }
+        if self.names.is_empty() && self.states.is_empty() {
+            return QUIET_LINE.into();
+        }
+        match self.states.values().filter(|s| *s == "running").count() {
+            0 => NONE_RUNNING.into(),
+            n => running_line(n),
+        }
     }
 
     /// A hub fact. Only `module.<id>.state`, `module.<id>.lease_holders` and `hub.safe_mode`
@@ -85,11 +199,25 @@ impl Marks {
             }
             return;
         }
+        if let Some(id) = key
+            .strip_prefix("module.")
+            .and_then(|r| r.strip_suffix(".failed"))
+        {
+            match value.as_str() {
+                Some(f) => self.failed.insert(id.into(), f.into()),
+                None => self.failed.remove(id),
+            };
+            return;
+        }
         let Some(id) = key
             .strip_prefix("module.")
             .and_then(|r| r.strip_suffix(".state"))
         else {
             return;
+        };
+        match value.as_str() {
+            Some(s) => self.states.insert(id.into(), s.into()),
+            None => self.states.remove(id),
         };
         let need = match value.as_str() {
             Some("crash-stopped" | "crash-looped") => Some(Need::Stopped),
@@ -167,12 +295,16 @@ impl Marks {
     /// The glyph, the menu's status line and the icon's tooltip. Root cause once: one module is
     /// named, the first that needs the user.
     pub fn look(&self) -> (State, String, String) {
-        let product = crate::PRODUCT;
+        let product = self.product();
         if self.paused {
-            return (State::Paused, "Paused".into(), product.into());
+            return (
+                State::Paused,
+                PAUSED_LINE.into(),
+                format!("{product} \u{b7} paused"),
+            );
         }
         if let Some((id, need)) = self.needs.first() {
-            let name = self.names.get(id).cloned().unwrap_or_else(|| id.clone());
+            let name = self.module_name(id);
             let line = match need {
                 Need::Stopped => {
                     let (a, b) = hideout_supervisor::words::tray_lines(&name);
@@ -198,7 +330,11 @@ impl Marks {
                 format!("{product} \u{b7} safe mode"),
             );
         }
-        (State::Normal, QUIET_LINE.into(), product.into())
+        // The dot stays quiet (nothing here needs a decision); the line always says where
+        // things stand.
+        let line = self.quiet_line();
+        let tip = format!("{product} \u{b7} {line}");
+        (State::Normal, line, tip)
     }
 
     /// The look, when it differs from what the tray shows; it then counts as shown.
@@ -260,6 +396,12 @@ fn wake_if_changed() {
             w();
         }
     }
+}
+
+/// Whether this hub runs on a folder of its own (the shell calls it at start).
+pub(crate) fn note_lab(on: bool) {
+    with(|m| m.set_lab(on));
+    wake_if_changed();
 }
 
 /// A module's name for the tray lines (the hub calls it for each manifest).
@@ -347,7 +489,8 @@ mod tests {
                 "module.a.art.restart",
                 &json!({"delay_s": 4, "crash": 2, "of": 5}),
             );
-            assert_eq!(m.take_change(), None, "{s} touched the tray");
+            // The line may say where things stand; the dot stays quiet.
+            assert_eq!(m.look().0, State::Normal, "{s} touched the dot");
         }
         m.fact("module.a.art.state", &json!("crash-stopped"));
         let (state, line, tip) = m.take_change().unwrap();
@@ -516,6 +659,103 @@ mod tests {
         m.fact("module.other.lease_holders", &serde_json::Value::Null);
         assert_eq!(m.take_resume_change(), Some(None));
         assert!(!m.changed());
+    }
+
+    /// Every state has a plain line; "No modules yet" is only for no modules at all (#8).
+    #[test]
+    fn every_state_has_a_status_line() {
+        let mut m = Marks::default();
+        assert_eq!(m.look().1, "No modules yet");
+        m.name("a.art", "Art");
+        assert_eq!(m.look().1, "No module is running", "known but off");
+        let line = |m: &mut Marks, state: &str| {
+            m.fact("module.a.art.state", &json!(state));
+            m.look()
+        };
+        for (state, want) in [
+            ("running", "1 module is running"),
+            ("off", "No module is running"),
+            ("starting", "Art is starting"),
+            ("restarting", "Art is restarting"),
+            ("waiting", "Art is waiting for another module"),
+            ("updating", "Art is updating"),
+            ("update-busy", "Art will update when it is idle"),
+            ("update-waiting", "Art has an update ready to install"),
+            ("quarantined", "Art's page couldn't be shown"),
+        ] {
+            let (_, got, tip) = line(&mut m, state);
+            assert_eq!(got, want, "{state}");
+            assert_ne!(got, "No modules yet", "{state}");
+            assert_eq!(tip, format!("Hideout \u{b7} {want}"), "{state}");
+        }
+        // Refused for a missing OK, or for a launch failure: told apart by `failed`.
+        m.fact("module.a.art.state", &json!("install-failed"));
+        assert_eq!(m.look().1, "Art couldn't start", "no known cause");
+        m.fact("module.a.art.failed", &json!("ok"));
+        assert_eq!(m.look().1, "Art needs your OK");
+        m.fact("module.a.art.failed", &json!("launch"));
+        assert_eq!(m.look().1, "Art couldn't start");
+        m.fact("module.a.art.failed", &serde_json::Value::Null);
+        // Two running, and a module that waits on the user is named over the count.
+        m.fact("module.a.art.state", &json!("running"));
+        m.fact("module.b.x.state", &json!("running"));
+        assert_eq!(m.look().1, "2 modules are running");
+        m.name("b.x", "Echo");
+        m.fact("module.b.x.state", &json!("update-waiting"));
+        assert_eq!(m.look().1, "Echo has an update ready to install");
+        // Paused and safe mode keep their own lines.
+        m.set_paused(true);
+        assert_eq!(m.look().1, "Paused");
+        m.set_paused(false);
+        // A module that goes away leaves nothing behind.
+        m.fact("module.b.x.state", &serde_json::Value::Null);
+        assert_eq!(m.look().1, "1 module is running");
+    }
+
+    /// A long manifest name is cut with an ellipsis; the tooltip fits Windows' 127 characters.
+    #[test]
+    fn a_long_name_is_cut_and_the_tooltip_fits() {
+        let long = "A very long module name that goes on and on and on and on";
+        for state in [
+            "starting",
+            "waiting",
+            "update-busy",
+            "update-waiting",
+            "quarantined",
+            "crash-stopped",
+            "revoked",
+            "needs-hub",
+        ] {
+            let mut m = Marks::default();
+            m.set_lab(true);
+            m.name("a.art", long);
+            m.fact("module.a.art.state", &json!(state));
+            let (_, line, tip) = m.look();
+            assert!(line.contains('\u{2026}'), "{state}: {line}");
+            assert!(!line.contains(long), "{state}: {line}");
+            assert!(tip.encode_utf16().count() <= 127, "{state}: {tip}");
+        }
+        let mut m = Marks::default();
+        m.name("a.art", "Art");
+        m.fact("module.a.art.state", &json!("starting"));
+        assert_eq!(m.look().1, "Art is starting", "a short name is whole");
+    }
+
+    /// A lab hub (own folder) says so in the tooltip; the user's hub never does.
+    #[test]
+    fn a_lab_hub_says_lab_in_the_tooltip() {
+        let mut m = Marks::default();
+        m.name("a.art", "Art");
+        m.fact("module.a.art.state", &json!("running"));
+        assert_eq!(m.look().2, "Hideout \u{b7} 1 module is running");
+        m.set_lab(true);
+        assert_eq!(m.look().2, "Hideout (lab) \u{b7} 1 module is running");
+        m.fact("hub.safe_mode", &json!(true));
+        assert_eq!(m.look().2, "Hideout (lab) \u{b7} safe mode");
+        m.set_paused(true);
+        assert_eq!(m.look().2, "Hideout (lab) \u{b7} paused");
+        m.set_lab(false);
+        assert!(!m.look().2.contains("lab"));
     }
 
     #[test]

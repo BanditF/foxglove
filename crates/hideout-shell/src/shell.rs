@@ -261,6 +261,8 @@ pub fn run(opts: ShellOptions) -> Result<(), String> {
     let paths = opts.paths;
     // The hub folder is current-user-only (+ SYSTEM, Administrators), contract §2.3: made so on
     // creation, fixed on start if an older run left it open. Logged once the log is open.
+    crate::set_lab(paths.overridden);
+    crate::marks::note_lab(paths.overridden);
     let acl = hideout_acl::create_private_dir_all(&paths.root)
         .and_then(|()| hideout_acl::ensure_private_dir(&paths.root));
     match FileLog::open(&paths.logs_dir(), log::LevelFilter::Info) {
@@ -488,15 +490,6 @@ fn on_tray(cmd: tray::Command, shared: &Shared, ctx: &egui::Context) {
             crate::marks::note_paused(on);
             crate::quick_actions::note_paused(on);
             tray_sync();
-        }
-        tray::Command::OpenLogs => {
-            let dir = shared.paths.logs_dir();
-            // Under the supervisor's spawn lock: no contained module's handle goes with it.
-            if let Err(e) =
-                hideout_supervisor::win::spawn(std::process::Command::new("explorer.exe").arg(&dir))
-            {
-                log::warn!("open {}: {e}", dir.display());
-            }
         }
         tray::Command::Quit => shared.ask_quit(ctx),
         tray::Command::StartNormally => match &shared.start_normally {
@@ -2122,7 +2115,7 @@ impl Hub {
             )
             .show(ctx, |ui| {
                 ui.label(
-                    egui::RichText::new(PRODUCT)
+                    egui::RichText::new(crate::product_name())
                         .size(20.0)
                         .strong()
                         .color(c(t.text)),
@@ -3778,6 +3771,17 @@ fn main_viewport(title: &str, start_in_tray: bool) -> egui::ViewportBuilder {
         b.with_visible(false)
     } else {
         b
+    }
+}
+
+/// Opens the hub's log folder (Settings, About).
+pub fn open_logs_folder(home: &std::path::Path) {
+    let dir = home.join("logs");
+    // Under the supervisor's spawn lock: no contained module's handle goes with it.
+    if let Err(e) =
+        hideout_supervisor::win::spawn(std::process::Command::new("explorer.exe").arg(&dir))
+    {
+        log::warn!("open {}: {e}", dir.display());
     }
 }
 

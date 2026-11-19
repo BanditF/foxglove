@@ -68,8 +68,9 @@ pub use eframe::egui;
 pub use hideout_panels;
 #[cfg(windows)]
 pub use shell::{
-    hub_on_screen, open_module, open_module_log, open_update_page, open_update_page_at, run,
-    show_hub, Finder, FinderHost, Page, ShellOptions, StartNormally, TabHooks,
+    hub_on_screen, open_logs_folder, open_module, open_module_log, open_update_page,
+    open_update_page_at, run, show_hub, Finder, FinderHost, Page, ShellOptions, StartNormally,
+    TabHooks,
 };
 
 /// The hub's AppUserModelID: the hub window, its pop-outs and module windows group under it
@@ -79,12 +80,34 @@ pub const AUMID: &str = "BanditF.Hideout";
 /// The product name in titles, the tray tooltip and the log.
 pub const PRODUCT: &str = "Hideout";
 
-/// A window title in the contract's form, `Hideout · <page or window name>` (§2.5).
-pub fn window_title(page: &str) -> String {
-    if page.is_empty() {
-        PRODUCT.to_string()
+/// The product name for a hub on a folder of its own (a lab or test hub, `HubPaths::overridden`):
+/// it never reads as the user's hub.
+pub const PRODUCT_LAB: &str = "Hideout (lab)";
+
+static LAB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This hub runs on a folder that is not the default one (set once, at start).
+pub fn set_lab(on: bool) {
+    LAB.store(on, std::sync::atomic::Ordering::Release);
+}
+
+/// The name titles and the tray tooltip carry: "Hideout", or "Hideout (lab)" for a lab hub.
+pub fn product_name() -> &'static str {
+    if LAB.load(std::sync::atomic::Ordering::Acquire) {
+        PRODUCT_LAB
     } else {
-        format!("{PRODUCT} \u{b7} {page}")
+        PRODUCT
+    }
+}
+
+/// A window title in the contract's form, `Hideout · <page or window name>` (§2.5); a lab hub
+/// says `Hideout (lab) · <page>`.
+pub fn window_title(page: &str) -> String {
+    let product = product_name();
+    if page.is_empty() {
+        product.to_string()
+    } else {
+        format!("{product} \u{b7} {page}")
     }
 }
 
@@ -107,6 +130,8 @@ mod tests {
     fn titles_use_the_contract_form() {
         assert_eq!(window_title("Modules"), "Hideout \u{b7} Modules");
         assert_eq!(window_title(""), "Hideout");
+        assert_eq!(product_name(), "Hideout");
+        assert_eq!(PRODUCT_LAB, "Hideout (lab)");
     }
 
     /// Update Hideout opens a release page only on the allow-list (#991).
