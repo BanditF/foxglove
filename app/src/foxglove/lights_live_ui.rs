@@ -26,7 +26,7 @@ const HEIGHT: (f32, f32) = (84.0, 180.0);
 /// A key that is off: the dark plate every key sits on.
 const PLATE: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x20);
 /// A lit key never shows darker than this share of full value: a dim key must still read as lit.
-const FLOOR: u8 = 51;
+const FLOOR: u8 = 96;
 
 pub const LIGHTS_OFF: &str = "Lights off";
 pub const NOT_CONNECTED: &str = "Keyboard not connected. Its lights show here when it's back.";
@@ -223,8 +223,29 @@ fn lease_name(conn: u64) -> String {
 /// What the keyboard's lights show now, from the app's state: the keyboard's report, who holds
 /// the lights, a running scene. `layout` is the keyboard's key drawing.
 pub fn live_now(rgb: Option<&RgbState>, layout: KeyLayout) -> Live {
+    live_with(rgb, layout, None)
+}
+
+/// [`live_now`] with the card's draft: the lights the user picked or sent, drawn before the
+/// keyboard reports them (L3). The line and the name say the drafted lights too.
+pub fn live_with(
+    rgb: Option<&RgbState>,
+    layout: KeyLayout,
+    draft: Option<&lights_live::Draft>,
+) -> Live {
     use super::lights_owner::owner_now;
     use foxglove_link::lights_owner::Owner;
+    let drafted = rgb.map(|r| {
+        let mut r = *r;
+        if let Some(d) = draft {
+            r.left = d.left.unwrap_or(r.left);
+            if let (Some(h), Some((_, age))) = (d.right, r.right) {
+                r.right = Some((h, age));
+            }
+        }
+        r
+    });
+    let rgb = drafted.as_ref();
     let key = super::devices::keyboard_key();
     let connected = key.is_some();
     let owner = owner_now();
@@ -247,6 +268,10 @@ pub fn live_now(rgb: Option<&RgbState>, layout: KeyLayout) -> Live {
         rgb: rgb.copied(),
         dim: super::battery_dim_ui::levels(),
         windows,
+        right_apart: matches!(
+            super::keyboard_settings::rgb_sync(),
+            super::keyboard_settings::RgbSync::Known { on: false }
+        ),
     };
     let lease = key
         .as_deref()
@@ -258,13 +283,21 @@ pub fn live_now(rgb: Option<&RgbState>, layout: KeyLayout) -> Live {
         effect: effect.clone(),
         room: super::scene_room::room(),
     });
-    let look = lights_live::look(
+    let mut look = lights_live::look(
         &report,
         owner,
         lease.as_ref().map(|(who, l)| (who.as_str(), l)),
         run.as_ref(),
-        None,
+        draft,
     );
+    // Windows draws the pick too; a lease or a scene over everything is not waiting on it.
+    if let Some(d) = draft {
+        look.sending = d.sent
+            && matches!(
+                look.state,
+                State::Keyboard | State::CannotDraw(_) | State::ThroughWindows
+            );
+    }
     let animations = super::screen_glow::animations_on();
     let (line, name) = words(&look, rgb, report.dim, &Parts::current(), animations);
     Live {

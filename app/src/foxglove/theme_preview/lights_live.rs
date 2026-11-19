@@ -18,6 +18,7 @@ fn report(state: Option<RgbState>, connected: bool) -> Report {
         rgb: state,
         dim: [100, 100],
         windows: None,
+        right_apart: false,
     }
 }
 
@@ -101,6 +102,33 @@ fn states() -> Vec<(&'static str, Live)> {
     v.push((
         "A scene runs (preview room is empty, so outlines)",
         live_of(l, Some(&swirl), true),
+    ));
+    // A pick sent (Solid orange -> Swirl): drawn at once, "Sending…" until the keyboard reports.
+    let sent = crate::foxglove::lights_draft::shown(
+        &crate::foxglove::lights_page::Draft::default(),
+        &solid,
+        Some(&crate::foxglove::lights_draft::Sent {
+            change: crate::foxglove::lights_draft::Change::Effect(3),
+            at: std::time::Instant::now(),
+        }),
+    )
+    .expect("a change");
+    let drafted = RgbState {
+        left: sent.left.expect("left"),
+        ..solid
+    };
+    let l = look(&report(Some(solid), true), None, None, None, Some(&sent));
+    v.push((
+        "Effect picked, keyboard not reported yet (Sending…)",
+        live_of(l, Some(&drafted), true),
+    ));
+    // Right half's lights apart from the left's, nothing heard from it: outlines only.
+    let mut apart = report(Some(solid), true);
+    apart.right_apart = true;
+    let l = look(&apart, None, None, None, None);
+    v.push((
+        "Right follows left is off, right half not reported",
+        live_of(l, Some(&solid), true),
     ));
     let l = look(&report(None, true), None, None, None, None);
     v.push(("Reading the keyboard", live_of(l, None, true)));

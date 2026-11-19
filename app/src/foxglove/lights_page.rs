@@ -182,6 +182,8 @@ pub struct Draft {
     pub custom_open: bool,
     /// A focused LampArray keyboard's picks until Apply (#825), as its row held them.
     pub lamp: super::pc_lights_ui::Draft,
+    /// The last change sent to the keyboard, drawn on the keyboard drawing until it reports (L3).
+    pub sent: Option<super::lights_draft::Sent>,
 }
 
 impl Draft {
@@ -194,6 +196,12 @@ impl Draft {
         }
         if self.speed == Some(s.left.speed) {
             self.speed = None;
+        }
+        if let Some(sent) = &self.sent {
+            let read = super::keyboard_settings::last_read();
+            if super::lights_draft::settled(sent, read, std::time::Instant::now()) {
+                self.sent = None;
+            }
         }
     }
 }
@@ -241,6 +249,7 @@ static DRAFT: Mutex<Draft> = Mutex::new(Draft {
         removing: None,
         openrgb: None,
     },
+    sent: None,
 });
 
 #[cfg(test)]
@@ -350,6 +359,13 @@ pub fn show(ui: &mut egui::Ui) {
                     });
                 }
             }
+        }
+        // The drawing shows what was asked until the keyboard reports it (L3).
+        if let Some(change) = super::lights_draft::change_of(&intent) {
+            draft.sent = Some(super::lights_draft::Sent {
+                change,
+                at: std::time::Instant::now(),
+            });
         }
         match intent {
             Intent::Lights(on) => ks::set_lights(on, ctx.clone()),
@@ -581,7 +597,19 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
         }
         if let (false, Some(live)) = (zones_open, &v.live) {
             ui.add_space(4.0);
-            super::lights_live_ui::show(ui, live);
+            // A pick or a sent change shows before the keyboard answers (L3); one repaint is
+            // asked for the moment the drawing lets go of it.
+            let drafted = v.state.as_ref().and_then(|rgb| {
+                super::lights_draft::shown(draft, rgb, draft.sent.as_ref()).map(|d| {
+                    super::lights_live_ui::live_with(Some(rgb), live.layout.clone(), Some(&d))
+                })
+            });
+            if let Some(sent) = &draft.sent {
+                ui.ctx().request_repaint_after(
+                    super::lights_draft::GIVE_UP.saturating_sub(sent.at.elapsed()),
+                );
+            }
+            super::lights_live_ui::show(ui, drafted.as_ref().unwrap_or(live));
         }
         ui.add_space(8.0);
         let gap = 24.0;
@@ -1289,6 +1317,8 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         // back to the keyboard's report (#624).
         if picked != Some((*hue, *sat, *brightness)) {
             *edited = true;
+            // The drawing above shows the pick on the next frame (L3).
+            ui.ctx().request_repaint();
         }
         if apply {
             out.push(Intent::Apply { hue: *hue, sat: *sat, brightness: *brightness });

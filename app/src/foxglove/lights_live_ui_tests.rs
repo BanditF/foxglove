@@ -29,6 +29,7 @@ fn report(state: Option<RgbState>) -> Report {
         rgb: state,
         dim: [100, 100],
         windows: None,
+        right_apart: false,
     }
 }
 
