@@ -744,11 +744,11 @@ fn the_tray_names_only_what_needs_the_user() {
 #[test]
 fn the_tray_has_a_line_for_every_state() {
     for (s, want) in [
-        ("waiting", "Art is waiting"),
+        ("waiting", "Art is waiting for another module"),
         ("quarantined", "Art's page couldn't be shown"),
         ("updating", "Art is updating"),
-        ("update-busy", "Art has an update ready"),
-        ("update-waiting", "Art has an update waiting for you"),
+        ("update-busy", "Art will update when it is idle"),
+        ("update-waiting", "Art has an update ready to install"),
         ("running", "1 module is running"),
     ] {
         let m = tray_for(&[("m.art", s)]);

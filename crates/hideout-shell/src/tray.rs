@@ -2,7 +2,8 @@
 //! The tray icon and its fixed menu frame (design UX8): a status line, Open Hideout; then the
 //! pinned quick actions (the modules' `action` panels, `crate::quick_actions`, between two
 //! separators, none without any); then Pause Hideout, Quit Hideout (Open log folder lives in
-//! Settings, About). The icon has three states (`icon::State`). In safe mode **Start normally** comes right under the status line (docs/hideout-supervisor-ux.md, column Tr).
+//! Settings, About). The icon has three states (`icon::State`). In safe mode **Start
+//! normally** comes right under the status line (docs/hideout-supervisor-ux.md, column Tr).
 //! While a search for the module that breaks Hideout runs (#1033), **Start round k** (between
 //! rounds) and **Stop finding** come right after Open Hideout, and Start normally goes.
 //!

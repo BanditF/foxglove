@@ -3774,8 +3774,6 @@ fn main_viewport(title: &str, start_in_tray: bool) -> egui::ViewportBuilder {
     }
 }
 
-/// Opens a module's log, `logs\<id>.log` under the hub folder, in the app Windows opens `.log`
-/// files with (the crash bar, Couldn't start and the rollback notification's Open log).
 /// Opens the hub's log folder (Settings, About).
 pub fn open_logs_folder(home: &std::path::Path) {
     let dir = home.join("logs");
@@ -3787,6 +3785,8 @@ pub fn open_logs_folder(home: &std::path::Path) {
     }
 }
 
+/// Opens a module's log, `logs\<id>.log` under the hub folder, in the app Windows opens `.log`
+/// files with (the crash bar, Couldn't start and the rollback notification's Open log).
 pub fn open_module_log(home: &std::path::Path, module: &str) {
     let file = home.join("logs").join(format!("{module}.log"));
     if let Err(e) =

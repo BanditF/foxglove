@@ -16,6 +16,9 @@ pub const NONE_RUNNING: &str = "No module is running";
 /// The menu's status line while Hideout is paused.
 pub const PAUSED_LINE: &str = "Paused";
 
+/// The longest module name a tray line shows whole.
+const NAME_MAX: usize = 30;
+
 /// "1 module is running", "3 modules are running".
 pub fn running_line(n: usize) -> String {
     if n == 1 {
@@ -110,21 +113,26 @@ impl Marks {
         }
     }
 
+    /// The name in a line, cut with an ellipsis past [`NAME_MAX`] characters so the tooltip
+    /// stays inside Windows' 127.
     fn module_name(&self, id: &str) -> String {
-        self.names
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| id.to_string())
+        let name = self.names.get(id).map_or(id, String::as_str);
+        if name.chars().count() <= NAME_MAX {
+            name.to_string()
+        } else {
+            let head: String = name.chars().take(NAME_MAX - 1).collect();
+            format!("{}\u{2026}", head.trim_end())
+        }
     }
 
     /// The note a module's state gives (a member of [`NOTES`]), `None` for a quiet one.
     fn note(&self, id: &str) -> Option<&'static str> {
         let state = self.states.get(id)?.as_str();
         Some(match state {
+            // No known cause is still a failure: the safe generic line.
             "install-failed" => match self.failed.get(id).map(String::as_str) {
                 Some("ok") => "needs-ok",
-                Some("launch") => "couldnt-start",
-                _ => return None,
+                _ => "couldnt-start",
             },
             "quarantined" => "quarantined",
             "update-waiting" => "update-waiting",
@@ -144,12 +152,12 @@ impl Marks {
             "needs-ok" => format!("{name} needs your OK"),
             "couldnt-start" => format!("{name} couldn't start"),
             "quarantined" => hideout_supervisor::words::quarantined_title(&name),
-            "update-waiting" => format!("{name} has an update waiting for you"),
-            "update-busy" => format!("{name} has an update ready"),
+            "update-waiting" => format!("{name} has an update ready to install"),
+            "update-busy" => format!("{name} will update when it is idle"),
             "updating" => format!("{name} is updating"),
             "restarting" => format!("{name} is restarting"),
             "starting" => format!("{name} is starting"),
-            _ => format!("{name} is waiting"),
+            _ => format!("{name} is waiting for another module"),
         }
     }
 
@@ -296,7 +304,7 @@ impl Marks {
             );
         }
         if let Some((id, need)) = self.needs.first() {
-            let name = self.names.get(id).cloned().unwrap_or_else(|| id.clone());
+            let name = self.module_name(id);
             let line = match need {
                 Need::Stopped => {
                     let (a, b) = hideout_supervisor::words::tray_lines(&name);
@@ -669,10 +677,10 @@ mod tests {
             ("off", "No module is running"),
             ("starting", "Art is starting"),
             ("restarting", "Art is restarting"),
-            ("waiting", "Art is waiting"),
+            ("waiting", "Art is waiting for another module"),
             ("updating", "Art is updating"),
-            ("update-busy", "Art has an update ready"),
-            ("update-waiting", "Art has an update waiting for you"),
+            ("update-busy", "Art will update when it is idle"),
+            ("update-waiting", "Art has an update ready to install"),
             ("quarantined", "Art's page couldn't be shown"),
         ] {
             let (_, got, tip) = line(&mut m, state);
@@ -682,7 +690,7 @@ mod tests {
         }
         // Refused for a missing OK, or for a launch failure: told apart by `failed`.
         m.fact("module.a.art.state", &json!("install-failed"));
-        assert_eq!(m.look().1, "No module is running", "no cause yet");
+        assert_eq!(m.look().1, "Art couldn't start", "no known cause");
         m.fact("module.a.art.failed", &json!("ok"));
         assert_eq!(m.look().1, "Art needs your OK");
         m.fact("module.a.art.failed", &json!("launch"));
@@ -694,7 +702,7 @@ mod tests {
         assert_eq!(m.look().1, "2 modules are running");
         m.name("b.x", "Echo");
         m.fact("module.b.x.state", &json!("update-waiting"));
-        assert_eq!(m.look().1, "Echo has an update waiting for you");
+        assert_eq!(m.look().1, "Echo has an update ready to install");
         // Paused and safe mode keep their own lines.
         m.set_paused(true);
         assert_eq!(m.look().1, "Paused");
@@ -702,6 +710,35 @@ mod tests {
         // A module that goes away leaves nothing behind.
         m.fact("module.b.x.state", &serde_json::Value::Null);
         assert_eq!(m.look().1, "1 module is running");
+    }
+
+    /// A long manifest name is cut with an ellipsis; the tooltip fits Windows' 127 characters.
+    #[test]
+    fn a_long_name_is_cut_and_the_tooltip_fits() {
+        let long = "A very long module name that goes on and on and on and on";
+        for state in [
+            "starting",
+            "waiting",
+            "update-busy",
+            "update-waiting",
+            "quarantined",
+            "crash-stopped",
+            "revoked",
+            "needs-hub",
+        ] {
+            let mut m = Marks::default();
+            m.set_lab(true);
+            m.name("a.art", long);
+            m.fact("module.a.art.state", &json!(state));
+            let (_, line, tip) = m.look();
+            assert!(line.contains('\u{2026}'), "{state}: {line}");
+            assert!(!line.contains(long), "{state}: {line}");
+            assert!(tip.encode_utf16().count() <= 127, "{state}: {tip}");
+        }
+        let mut m = Marks::default();
+        m.name("a.art", "Art");
+        m.fact("module.a.art.state", &json!("starting"));
+        assert_eq!(m.look().1, "Art is starting", "a short name is whole");
     }
 
     /// A lab hub (own folder) says so in the tooltip; the user's hub never does.
