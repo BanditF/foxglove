@@ -1491,6 +1491,12 @@ impl Supervisor {
         let pin =
             Arc::new(crate::pin::Pin::open(&exe).map_err(|e| format!("{}: {e}", exe.display()))?);
         let sha256 = pin.sha256.clone();
+        // The binding is checked against the pinned bytes, not the earlier by-name read: a file
+        // swapped between `pre_launch` and the pin no longer matches and is not started (S7, F4).
+        if let Some(why) = reg.binding_void_pinned(id, &pin.path, &sha256) {
+            log::warn!("supervisor: {id}: the program changed before it started ({why:?})");
+            return Err(NEEDS_OK.to_string());
+        }
         self.check_keyboard(id, &pin.path, &sha256);
         let instance = self.0.next_instance.fetch_add(1, Ordering::Relaxed);
         let caps = self.caps_of(Some(&reg), id);
