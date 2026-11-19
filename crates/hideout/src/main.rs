@@ -35,6 +35,9 @@ mod modules_page;
 mod panel_feed;
 #[cfg(windows)]
 mod permission_actions;
+// R2 of the 0-click rebuild plan: not started by the hub yet (R3 wires it).
+#[allow(dead_code)]
+mod rebuild_watch;
 #[cfg(windows)]
 mod router_start;
 mod settings_page;
