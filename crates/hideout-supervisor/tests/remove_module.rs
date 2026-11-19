@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hideout_registry::Registry;
 use hideout_router::server::Hub;
@@ -67,15 +67,18 @@ fn a_running_module_is_stopped_first_and_then_removed() {
     let pid = sup.pid(&id).expect("the module was not started");
     let proc = Process::open(pid).unwrap();
     assert!(installed(&home, &id));
+    let (tx, done) = mpsc::channel();
+    sup.set_remove_done(std::sync::Arc::new(move |id: &str, r| {
+        let _ = tx.send((id.to_string(), r));
+    }));
 
     sup.remove(&id).unwrap();
     // Stopped (the handle's wait is the event), then removed when its instance ends.
     let _ = proc.wait();
     assert!(!proc.running(), "the module was not stopped");
-    let limit = Instant::now() + Duration::from_secs(15);
-    while installed(&home, &id) && Instant::now() < limit {
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    // The driver says when it is gone (an event, no polling).
+    let (who, result) = done.recv_timeout(Duration::from_secs(30)).expect("no end");
+    assert_eq!((who.as_str(), result), (id.as_str(), Ok(())));
     assert!(!installed(&home, &id), "still in the inventory");
     assert!(!home.join("modules").join(&id).exists());
     assert!(!sup.knows(&id));

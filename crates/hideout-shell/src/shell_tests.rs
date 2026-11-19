@@ -2780,11 +2780,13 @@ fn renders_the_search_for_review() {
                 }),
                 locked: false,
                 remove: None,
+                can_remove: true,
             },
             Some(s) => Top {
                 banner: None,
                 locked: s.active(),
                 remove: None,
+                can_remove: true,
             },
         };
         let mut hub = hub_in(&dir, None);

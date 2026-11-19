@@ -1050,24 +1050,27 @@ impl Registry {
         let Some(gone) = self.inventory.modules.remove(id) else {
             return Err(Failure::NotInstalled(id.into()));
         };
-        let dir = self.home.join("modules").join(id);
-        // Only ever the hub's own `modules\<id>`: an id that isn't one plain folder name never
+        let modules = self.home.join("modules");
+        let dir = modules.join(id);
+        // Only ever the hub's own `modules\<id>`: an id outside the inventory's charset never
         // reaches a delete (the entry is still forgotten below).
-        let own_folder = {
-            let mut parts = Path::new(id).components();
-            matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none()
-        };
-        if !own_folder {
+        if !plain_id(id) {
             // Nothing to delete.
         } else if gone.source == ADOPTED {
             // Unregister only: the external install is never touched, and what the hub kept for
-            // the module (settings, data, secrets) stays; only the manifest record goes.
-            let version = dir.join(&gone.version);
-            let _ = std::fs::remove_file(version.join("module.toml"));
-            let _ = std::fs::remove_dir(&version);
-            let _ = std::fs::remove_dir(&dir);
-        } else if dir.exists() {
-            std::fs::remove_dir_all(dir)?;
+            // the module (settings, data, secrets) stays; only the manifest record goes. The
+            // version comes from a manifest, so it is checked before it is joined; nothing is
+            // reached through a link.
+            if plain_version(&gone.version) && !is_link(&dir) {
+                let version = dir.join(&gone.version);
+                if !is_link(&version) {
+                    let _ = std::fs::remove_file(version.join("module.toml"));
+                    let _ = std::fs::remove_dir(&version);
+                }
+                let _ = std::fs::remove_dir(&dir);
+            }
+        } else {
+            remove_own_dir(&modules, &dir)?;
         }
         self.save_inventory()?;
         self.change_hub(|h| h.forget(id))
@@ -1290,4 +1293,97 @@ impl Registry {
             .filter_map(|(id, v)| self.revocation_at(id, v))
             .collect()
     }
+}
+
+/// An id the inventory could have written: `[a-z0-9][a-z0-9._-]*`, no trailing dot (Windows
+/// drops it, so `foxglove.` would name the folder `foxglove`), not a device name (`con`, `nul`,
+/// `com1`...). No colon, space, separator or `~` either.
+fn plain_id(id: &str) -> bool {
+    let mut chars = id.chars();
+    let first = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    let rest = chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c));
+    let stem = id.split('.').next().unwrap_or(id);
+    let device = matches!(stem, "con" | "prn" | "aux" | "nul")
+        || (stem.len() == 4
+            && (stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    first && rest && !id.ends_with('.') && !device
+}
+
+/// A version as a manifest writes it (semver: digits, letters, `.`, `-`, `+`), never a path.
+fn plain_version(v: &str) -> bool {
+    !v.is_empty()
+        && !v.ends_with('.')
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-+".contains(c))
+        && v != "."
+        && !v.starts_with("..")
+}
+
+/// A symlink or junction (any reparse point), or a path that can't be inspected (treated as
+/// one: nothing is followed or deleted through it).
+fn is_link(p: &Path) -> bool {
+    match std::fs::symlink_metadata(p) {
+        Err(e) => e.kind() != io::ErrorKind::NotFound,
+        Ok(m) => {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                m.file_attributes() & 0x400 != 0
+            }
+            #[cfg(not(windows))]
+            {
+                m.file_type().is_symlink()
+            }
+        }
+    }
+}
+
+/// Deletes the hub's own copy `dir` (`modules\<id>`) and nothing else: a link there is only
+/// unlinked, the folder's real path must be inside `modules`, and no link inside it is
+/// followed (each is unlinked, its target stays).
+fn remove_own_dir(modules: &Path, dir: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+        Ok(_) => {}
+    }
+    if is_link(dir) {
+        return unlink(dir);
+    }
+    let (real, root) = (dir.canonicalize()?, modules.canonicalize()?);
+    if real.parent() != Some(root.as_path()) {
+        return Err(io::Error::other(format!(
+            "{} is not inside the modules folder",
+            dir.display()
+        )));
+    }
+    remove_tree(dir)
+}
+
+/// Removes a link itself (a junction or directory link by `remove_dir`, a file link by
+/// `remove_file`); never its target.
+fn unlink(p: &Path) -> io::Result<()> {
+    std::fs::remove_dir(p).or_else(|_| std::fs::remove_file(p))
+}
+
+fn remove_tree(dir: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if is_link(&path) {
+            unlink(&path)?;
+        } else if std::fs::symlink_metadata(&path)?.is_dir() {
+            remove_tree(&path)?;
+        } else if std::fs::remove_file(&path).is_err() {
+            // A read-only file: allow the write, then delete.
+            let mut perm = std::fs::metadata(&path)?.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perm.set_readonly(false);
+            std::fs::set_permissions(&path, perm)?;
+            std::fs::remove_file(&path)?;
+        }
+    }
+    std::fs::remove_dir(dir)
 }

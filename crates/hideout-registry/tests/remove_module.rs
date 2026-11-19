@@ -196,3 +196,113 @@ fn a_hub_installed_module_loses_only_its_own_folder_under_modules() {
     // The source folders the module came from are never touched.
     assert!(one.join("a.exe").is_file());
 }
+
+/// A junction (no admin needed), made with the shell.
+fn junction(link: &Path, target: &Path) {
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+fn hub_copy(home: &Path, src: &Path, id: &str) -> Registry {
+    std::env::set_var("HIDEOUT_DEV_UNSIGNED", "1");
+    let dir = src.join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.exe"), id).unwrap();
+    std::fs::write(
+        dir.join("module.toml"),
+        format!(
+            "id = \"{id}\"\nname = \"{id}\"\nversion = \"0.1.0\"\nkind = \"service\"\n\
+             family = \"third-party\"\nhub = \"1.0\"\nvisibility = \"private\"\n\
+             run = [\"a.exe\"]\n"
+        ),
+    )
+    .unwrap();
+    let mut reg = Registry::open(home, true).unwrap();
+    reg.install(&dir, NOW).unwrap();
+    reg
+}
+
+/// A junction planted inside the module's own folder is unlinked, never followed: the decoy it
+/// points at keeps every file.
+#[test]
+fn a_junction_inside_the_copy_is_not_followed() {
+    let home = temp("junction-in-home");
+    let src = temp("junction-in-src");
+    let decoy = temp("junction-in-decoy");
+    std::fs::write(decoy.join("precious.txt"), b"keep").unwrap();
+    let mut reg = hub_copy(&home, &src, "example.rm.link");
+    let own = home.join("modules").join("example.rm.link");
+    junction(&own.join("0.1.0").join("evil"), &decoy);
+
+    reg.remove("example.rm.link").unwrap();
+
+    assert!(!own.exists());
+    assert!(
+        decoy.join("precious.txt").is_file(),
+        "the decoy was deleted through a junction"
+    );
+}
+
+/// `modules\<id>` itself a junction to a folder elsewhere: only the link goes.
+#[test]
+fn a_junction_as_the_module_folder_only_loses_the_link() {
+    let home = temp("junction-top-home");
+    let src = temp("junction-top-src");
+    let decoy = temp("junction-top-decoy");
+    std::fs::write(decoy.join("precious.txt"), b"keep").unwrap();
+    let mut reg = hub_copy(&home, &src, "example.rm.top");
+    let own = home.join("modules").join("example.rm.top");
+    std::fs::remove_dir_all(&own).unwrap();
+    junction(&own, &decoy);
+
+    reg.remove("example.rm.top").unwrap();
+
+    assert!(!own.exists());
+    assert!(decoy.join("precious.txt").is_file());
+}
+
+/// An id outside the inventory's charset forgets its entry but never reaches a delete: a
+/// trailing dot names another module's folder on Windows, and a device name is no folder.
+#[test]
+fn an_id_that_is_not_plain_never_deletes_a_folder() {
+    let home = temp("odd-home");
+    let src = temp("odd-src");
+    let mut reg = hub_copy(&home, &src, "example.rm.odd");
+    let own = home.join("modules").join("example.rm.odd");
+    for odd in [
+        "example.rm.odd.",
+        "example.rm.odd ",
+        "con",
+        "..",
+        r"a\b",
+        "Example.Rm.Odd",
+    ] {
+        let entry = reg.inventory.modules["example.rm.odd"].clone();
+        reg.inventory.modules.insert(odd.into(), entry);
+        reg.remove(odd).unwrap();
+        assert!(
+            own.join("0.1.0").is_dir(),
+            "{odd:?} deleted another module's folder"
+        );
+    }
+}
+
+/// An adopted module's version comes from a manifest: a path there is never joined.
+#[test]
+fn an_adopted_version_that_is_a_path_deletes_nothing() {
+    let mut f = adopted("oddversion");
+    let outside = temp("oddversion-outside");
+    std::fs::write(outside.join("module.toml"), b"x").unwrap();
+    let rel = format!(
+        r"..\..\..\{}",
+        outside.file_name().unwrap().to_string_lossy()
+    );
+    f.reg.inventory.modules.get_mut(ID).unwrap().version = rel;
+    f.reg.remove(ID).unwrap();
+    assert!(outside.join("module.toml").is_file());
+}
