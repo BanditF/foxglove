@@ -305,7 +305,13 @@ pub fn lock(s: &Mutex<State>) -> MutexGuard<'_, State> {
 
 /// Who has the lights now (the Lights page's live drawing), without holding the lock.
 pub fn owner_now() -> Option<Owner> {
-    STATE.try_lock().ok().and_then(|s| s.owner())
+    static LAST: Mutex<Option<Owner>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    // A busy lock keeps the last answer, so the line doesn't flicker for a frame.
+    if let Ok(s) = STATE.try_lock() {
+        *last = s.owner();
+    }
+    *last
 }
 
 /// The link whose reports feed [`STATE`], and the watch.

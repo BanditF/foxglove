@@ -22,7 +22,7 @@ use super::scene_card::CardLook;
 use super::theme;
 
 /// The drawing's height: a share of the card's width, within these (min, max).
-const HEIGHT: (f32, f32) = (84.0, 120.0);
+const HEIGHT: (f32, f32) = (84.0, 180.0);
 /// A key that is off: the dark plate every key sits on.
 const PLATE: Color32 = Color32::from_rgb(0x1c, 0x1c, 0x20);
 /// A lit key never shows darker than this share of full value: a dim key must still read as lit.
@@ -153,14 +153,17 @@ fn own_words(rgb: &RgbState, dim: [u8; 2], parts: &Parts) -> (String, String) {
     let right = rgb
         .right
         .map_or_else(|| left.clone(), |(h, _)| half_words(rgb, &h, dim[1]));
-    let name_of = |h: &RgbHalf| {
+    let name_of = |h: &RgbHalf, dim: u8| {
         if !h.on {
             return "off".to_string();
         }
         let effect = super::effect_controls::underglow_in(Some(rgb), h.effect)
             .map_or_else(|| format!("effect {}", h.effect), |s| s.name.to_lowercase());
         let colour = super::effect_controls::colour_name(h.hue, h.sat);
-        format!("{effect}, {colour}, {} percent", h.brightness)
+        format!(
+            "{effect}, {colour}, {} percent",
+            u16::from(h.brightness) * u16::from(dim.min(100)) / 100
+        )
     };
     let right_half = rgb.right.map_or(rgb.left, |(h, _)| h);
     if left == right {
@@ -172,7 +175,7 @@ fn own_words(rgb: &RgbState, dim: [u8; 2], parts: &Parts) -> (String, String) {
                     || format!("effect {}", rgb.left.effect),
                     |s| s.name.to_string(),
                 );
-            let rest = name_of(&rgb.left);
+            let rest = name_of(&rgb.left, dim[0]);
             let rest = rest.split_once(", ").map_or("", |(_, r)| r);
             format!("Keyboard lights: {first}, {rest}")
         };
@@ -189,9 +192,9 @@ fn own_words(rgb: &RgbState, dim: [u8; 2], parts: &Parts) -> (String, String) {
         format!(
             "Keyboard lights: {} {}, {} {}",
             a.to_lowercase(),
-            name_of(&rgb.left),
+            name_of(&rgb.left, dim[0]),
             b.to_lowercase(),
-            name_of(&right_half)
+            name_of(&right_half, dim[1])
         ),
     )
 }
@@ -203,6 +206,18 @@ pub fn about(look: &Look) -> String {
     } else {
         ABOUT.into()
     }
+}
+
+/// Who holds a lease, by the plugin's name in its manifest; "An app" for anyone else.
+fn lease_name(conn: u64) -> String {
+    foxglove_plugin_host::plugin_of(conn)
+        .and_then(|id| {
+            super::plugin_install::installed()
+                .into_iter()
+                .find(|p| p.manifest.id == id)
+                .map(|p| p.manifest.name)
+        })
+        .unwrap_or_else(|| "An app".into())
 }
 
 /// What the keyboard's lights show now, from the app's state: the keyboard's report, who holds
@@ -236,10 +251,7 @@ pub fn live_now(rgb: Option<&RgbState>, layout: KeyLayout) -> Live {
     let lease = key
         .as_deref()
         .and_then(super::lighting_leases::showing_on)
-        .map(|l| {
-            let who = foxglove_plugin_host::plugin_of(l.conn).unwrap_or_else(|| "A tool".into());
-            (who, l)
-        });
+        .map(|l| (lease_name(l.conn), l));
     let scene = super::scene_run::running_look();
     let run = scene.as_ref().map(|(name, effect, _)| SceneRun {
         name: name.clone(),
@@ -310,8 +322,11 @@ pub(crate) fn held(ctx: &egui::Context, id: egui::Id, front: bool, now: Keys) ->
     shown
 }
 
-/// A lit key's colour on screen: never darker than [`FLOOR`], so a dim key reads as lit.
+/// A lit key's colour on screen: lifted by a perceptual curve so a 60% orange still reads as
+/// orange, and never darker than [`FLOOR`], so a dim key reads as lit.
 fn lit(c: Color32) -> Color32 {
+    let lift = |v: u8| (255.0 * (f32::from(v) / 255.0).powf(0.75)).round() as u8;
+    let c = Color32::from_rgb(lift(c.r()), lift(c.g()), lift(c.b()));
     let top = c.r().max(c.g()).max(c.b());
     if top >= FLOOR {
         return c;
@@ -362,11 +377,16 @@ pub fn show(ui: &mut egui::Ui, live: &Live) {
         let part = keys.get(a);
         for (i, k) in g.keys(&live.layout, a).iter().enumerate() {
             let colour = part.and_then(|p| p.get(i)).copied().flatten();
+            // The outline reads against the well in both themes; on the light one every key sits
+            // on the dark plate, so white and yellow have something to show on.
+            let outline = Stroke::new(1.0, p.muted);
+            if !p.dark {
+                painter.add(g.key_shape(a, k, PLATE, outline));
+            }
             let shape = match colour {
-                None => g.key_shape(a, k, Color32::TRANSPARENT, Stroke::new(1.0, p.line)),
-                Some(c) if c == Color32::BLACK => {
-                    g.key_shape(a, k, PLATE, Stroke::new(1.0, p.line))
-                }
+                None if p.dark => g.key_shape(a, k, Color32::TRANSPARENT, outline),
+                None => continue,
+                Some(c) if c == Color32::BLACK => g.key_shape(a, k, PLATE, outline),
                 Some(c) => g.key_shape(a, k, lit(c), Stroke::new(1.0, p.line)),
             };
             painter.add(shape);

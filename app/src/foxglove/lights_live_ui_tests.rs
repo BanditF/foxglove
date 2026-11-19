@@ -239,10 +239,9 @@ fn behind_another_window_the_last_frame_is_held() {
 
 #[test]
 fn a_dim_key_still_reads_as_lit() {
-    assert_eq!(
-        lit(Color32::from_rgb(200, 100, 0)),
-        Color32::from_rgb(200, 100, 0)
-    );
+    // The curve lifts a mid colour and keeps the brightest channel's order.
+    let mid = lit(Color32::from_rgb(200, 100, 0));
+    assert!(mid.r() > 200 && mid.g() > 100 && mid.r() > mid.g());
     let dim = lit(Color32::from_rgb(10, 5, 0));
     assert!(dim.r() >= FLOOR);
     assert_eq!(lit(Color32::BLACK), Color32::from_gray(FLOOR));

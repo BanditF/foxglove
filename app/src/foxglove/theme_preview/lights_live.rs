@@ -60,6 +60,43 @@ fn states() -> Vec<(&'static str, Live)> {
         "Windows animation effects off",
         live_of(l, Some(&swirl), false),
     ));
+    let lease = crate::foxglove::lighting_leases::Lease {
+        id: 1,
+        conn: 9,
+        device: "kb".into(),
+        priority: crate::foxglove::lighting_leases::Priority::High,
+        hue: 0,
+        sat: 100,
+        brightness: 100,
+        effect: "0".into(),
+    };
+    let l = look(
+        &report(Some(swirl), true),
+        None,
+        Some(("Mic muted", &lease)),
+        None,
+        None,
+    );
+    v.push((
+        "A plugin's lease shows over the lights",
+        live_of(l, Some(&swirl), true),
+    ));
+    let mut windows = report(Some(swirl), true);
+    windows.windows = Some(crate::foxglove::scene_card::CardLook {
+        lights: crate::foxglove::pc_lights::KeyboardLights {
+            hue: 26,
+            sat: 100,
+            brightness: 60,
+            effect: 3,
+        },
+        speed: 3,
+        in_colour: true,
+    });
+    let l = look(&windows, Some(Owner::LampArrayUsb), None, None, None);
+    v.push((
+        "Foxglove draws through Windows",
+        live_of(l, Some(&swirl), true),
+    ));
     let l = look(&report(Some(swirl), true), None, None, Some(&scene()), None);
     v.push((
         "A scene runs (preview room is empty, so outlines)",
