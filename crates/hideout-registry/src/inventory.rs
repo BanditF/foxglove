@@ -37,6 +37,11 @@ pub struct Installed {
     pub anchor: Option<String>,
     #[serde(default)]
     pub channel: String,
+    /// The canonical folder a sideload was installed from (trust model F2). None for every other
+    /// source, and for a sideload recorded before this field existed: that one fails closed, so
+    /// the next install of it from any folder asks again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sideload_folder: Option<String>,
     pub installed: String,
     /// Every file outside `data\` and its SHA-256.
     #[serde(default)]
@@ -134,6 +139,27 @@ pub struct Attestation {
 }
 
 impl Installed {
+    /// Whether an install now of kind `kind` from `source`/`anchor` (and, for a sideload, the
+    /// canonical `folder`) is the same origin as this entry. Only the same origin carries the
+    /// user's grants (trust model F1/F2); a recorded entry with no sideload folder is never the
+    /// same origin as a sideload (fails closed once).
+    pub fn same_origin(
+        &self,
+        source: &str,
+        anchor: Option<&str>,
+        kind: Kind,
+        folder: Option<&str>,
+    ) -> bool {
+        self.source == source
+            && self.anchor.as_deref() == anchor
+            && self.kind == kind
+            && (source != SIDELOAD
+                || match (self.sideload_folder.as_deref(), folder) {
+                    (Some(old), Some(new)) => crate::keyboard::same_path(old, new),
+                    _ => false,
+                })
+    }
+
     /// Who this module is for the never-list (§6.6).
     pub fn holder(&self) -> Holder {
         // A lab module holds permissions as a sideload does, never as a first-party module.

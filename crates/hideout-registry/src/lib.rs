@@ -193,6 +193,33 @@ fn under(path: &Path, base: &Path) -> bool {
     p == b || p.starts_with(&format!("{b}\\"))
 }
 
+/// The canonical folder a sideload comes from (verbatim prefix stripped, links resolved); none
+/// when it cannot be resolved, which fails closed: the next sideload install re-asks.
+fn canonical_folder(folder: &Path) -> Option<String> {
+    keyboard::canonical_path(folder).ok()
+}
+
+/// An entry's carried grants after an origin change (trust model F1/F2): everything granted goes
+/// back to the user's choice (`last_choice`, asked again as pending), the binding and the
+/// follow-folder keep are dropped and the keyboard grant is void. Only narrows.
+fn void_carried(o: &mut Installed, now: &str) {
+    let old = std::mem::take(&mut o.granted);
+    if !old.is_empty() {
+        o.last_choice = old;
+    }
+    o.bound = None;
+    if let Some(k) = o
+        .keyboard
+        .as_mut()
+        .filter(|k| k.state == keyboard::GrantState::On)
+    {
+        k.state = keyboard::GrantState::Void;
+        k.sha256.clear();
+        k.reason = Some(keyboard::VoidReason::Other);
+        k.at = now.into();
+    }
+}
+
 fn hash_files(dir: &Path) -> io::Result<BTreeMap<String, String>> {
     hash_dir(dir, &[DATA_DIR])
 }
@@ -349,6 +376,7 @@ impl Registry {
                 source: LAB.into(),
                 anchor: None,
                 channel: "lab".into(),
+                sideload_folder: None,
                 installed: String::new(),
                 files,
                 footprint: Vec::new(),
@@ -407,6 +435,7 @@ impl Registry {
                 source: LAB.into(),
                 anchor: None,
                 channel: "lab".into(),
+                sideload_folder: None,
                 installed: String::new(),
                 files,
                 footprint: Vec::new(),
@@ -721,6 +750,24 @@ impl Registry {
             .map(|o| o.version.clone())
             .filter(|v| *v != m.version)
             .or_else(|| old.as_ref().and_then(|o| o.previous.clone()));
+        // Grants follow the origin, not the id (trust model F1/F2): a changed source, anchor,
+        // kind or sideload folder voids what was carried, so the user is asked again.
+        let sideload_folder = if source == SIDELOAD {
+            canonical_folder(folder)
+        } else {
+            None
+        };
+        let mut old = old;
+        if let Some(o) = old.as_mut() {
+            if !o.same_origin(
+                &source,
+                anchor.as_deref(),
+                m.kind,
+                sideload_folder.as_deref(),
+            ) {
+                void_carried(o, now);
+            }
+        }
         let entry = Installed {
             version: m.version.clone(),
             kind: m.kind,
@@ -729,6 +776,7 @@ impl Registry {
             source,
             anchor,
             channel,
+            sideload_folder,
             installed: now.into(),
             files: found,
             footprint: old
@@ -792,6 +840,12 @@ impl Registry {
         if self.running.contains_key(&m.id) {
             return Err(Failure::Running(m.id));
         }
+        let mut old = old;
+        if let Some(o) = old.as_mut() {
+            if !o.same_origin(ADOPTED, None, m.kind, None) {
+                void_carried(o, now);
+            }
+        }
         let text = std::fs::read(folder.join("module.toml"))?;
         let dir = self.module_dir(&m.id, &m.version);
         std::fs::create_dir_all(&dir)?;
@@ -810,6 +864,7 @@ impl Registry {
             source: ADOPTED.into(),
             anchor: None,
             channel: "adopted".into(),
+            sideload_folder: None,
             installed: old
                 .as_ref()
                 .map_or_else(|| now.into(), |o| o.installed.clone()),
