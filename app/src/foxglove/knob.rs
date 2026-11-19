@@ -221,6 +221,7 @@ impl Cycle {
         };
         self.listen(sessions);
         let active = rows.len();
+        let all_rows = rows.clone();
         let mut list = self.hidden.offer(self.heard.offer(rows));
         sessions::tell_apart(&mut list);
         let at = match &self.target {
@@ -236,6 +237,12 @@ impl Cycle {
             click_line(next.as_ref(), (at + 1, list.len()))
         );
         if list.is_empty() {
+            for row in &all_rows {
+                eprintln!(
+                    "Foxglove: knob: left out: {}",
+                    left_out_line(row, &self.heard, &self.hidden)
+                );
+            }
             eprintln!(
                 "Foxglove: knob: {}",
                 none_heard_line(
@@ -704,6 +711,23 @@ pub fn none_heard_line(
     format!(
         "no app offered: {active_apps} with an active session, {audible_sessions} audible now; sessions listed on {}",
         endpoint.unwrap_or("(no output device)")
+    )
+}
+
+/// Why a click left `row` out: not heard, windowless, or hidden (and by whom).
+pub fn left_out_line(row: &AppGroup, heard: &Heard, hidden: &Hidden) -> String {
+    let is_heard = row.members.iter().any(|m| heard.has(&m.id));
+    let why = hidden.why(row.exe.as_deref()).map(|w| match w {
+        super::knob_hide::Why::User { .. } => "hidden by you",
+        super::knob_hide::Why::Seed => "on the shipped hide list",
+    });
+    format!(
+        "{} ({}): heard {}, windowed {:?}, {}",
+        row.name,
+        row.exe.as_deref().unwrap_or("program unknown"),
+        if is_heard { "yes" } else { "no" },
+        row.windowed,
+        why.unwrap_or("not hidden")
     )
 }
 
@@ -2358,6 +2382,20 @@ mod tests {
             "no app offered: 2 with an active session, 0 audible now; sessions listed on Headphones (Xbox Controller)"
         );
         assert!(none_heard_line(0, 0, None).ends_with("(no output device)"));
+        let row = AppGroup {
+            name: "Vivaldi".into(),
+            exe: Some("vivaldi.exe".into()),
+            windowed: Some(false),
+            members: vec![Member {
+                id: "s1".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            left_out_line(&row, &Heard::default(), &Hidden::default()),
+            "Vivaldi (vivaldi.exe): heard no, windowed Some(false), not hidden"
+        );
         let unknown = App {
             members: vec![Member {
                 id: "x".into(),
