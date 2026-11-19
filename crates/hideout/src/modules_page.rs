@@ -809,6 +809,7 @@ mod tests {
             perm: None,
             finder: None,
             fresh: None,
+            ask: Default::default(),
         };
         page.after_allow(done(Then::Nothing));
         assert!(log.0.borrow().is_empty());
