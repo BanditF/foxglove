@@ -50,6 +50,27 @@ the real check.
   using an old pairing token". It clears when a wallpaper pairs, or 10 minutes after the last
   refusal. Nothing runs on a timer for either.
 
+### One-time tickets (additive; the pasted token above keeps working)
+
+Beside `foxglove_live`, Foxglove puts `foxglove_ticket` (24 characters, valid 120 s, used once)
+in the same `applyProperties` push, for a wallpaper that reads the feed, only when the feed is
+on, the wallpaper is allowed, its monitor has no live socket and no ticket outstanding
+(`live_pairing`). The wallpaper connects with the sub-protocols `foxglove-live.v1, <ticket>`.
+
+- **Which monitor:** the server takes it from the ticket (it was minted for one monitor); the
+  client sends no monitor, so nothing it says can claim another one's. The binding is a guard
+  against mix-ups, not a second secret: the origin check and the ticket are the gate.
+- **Refusal:** a refused connection re-pushes a fresh ticket only to monitors Foxglove pushed
+  to that have no socket and no ticket outstanding, at most 3 times per monitor per 10 minutes
+  (counted server-side). When the budget is spent, Keyboard health warns "a wallpaper couldn't
+  reconnect" until Reconnect. No timer is involved.
+- **Reconnect / Disconnect all** (functions only; the Hideout panel is S5): Reconnect resets the
+  budget and hands every monitor without a socket a fresh ticket. Disconnect all clears the
+  tickets, closes every socket and hands out no ticket until Reconnect. A wallpaper still using
+  the old pasted token can reconnect after Disconnect all; S4 retires that path.
+- **Logs:** counts only. The ticket, the protocol header and the wallpaper command line are
+  never logged.
+
 ## Messages
 
 JSON text frames on `ws://127.0.0.1:<port>/live?token=<token>`. The wallpaper can instead

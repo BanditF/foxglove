@@ -47,6 +47,7 @@ use foxglove_devices::DeviceEvent;
 use foxglove_plugin::ws;
 use serde::{Deserialize, Serialize};
 
+use super::live_pairing::{self as pairing, Store};
 use super::live_wire::{self as wire, Message, Why};
 use super::notice::Note;
 
@@ -153,6 +154,8 @@ enum Msg {
     Board,
     /// Foxglove paused, or the session went away, or either came back.
     Gates,
+    /// Disconnect all: every wallpaper's socket closes.
+    DisconnectAll,
     Stop,
 }
 
@@ -447,6 +450,8 @@ struct Running {
     /// The accept thread's supervisor, joined on stop so the port is free before it's bound
     /// again.
     accept: Option<std::thread::JoinHandle<()>>,
+    /// The pairing store this feed redeems tickets from.
+    store: Store,
 }
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
@@ -467,6 +472,14 @@ pub fn health_rows() -> Vec<super::health::HealthRow> {
         .unwrap_or_else(|e| e.into_inner())
         .warns(Instant::now());
     let mut rows = refusal_rows(warns);
+    if pairing::stuck(pairing::store()) {
+        rows.push(super::health::HealthRow::new(
+            "live_feed",
+            "Live wallpaper",
+            super::health::Level::Warn,
+            "a wallpaper couldn't reconnect",
+        ));
+    }
     rows.extend(super::live_parity::rows_now());
     rows
 }
@@ -491,6 +504,26 @@ fn send(msg: Msg) {
     if let Some(r) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         let _ = r.tx.send(msg);
     }
+}
+
+/// Disconnect all wallpapers (the Hideout panel's button, S5; no UI yet): every ticket is
+/// cancelled, every socket is closed, and no ticket is handed out until [`reconnect`]. The
+/// allowances stay.
+#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
+pub fn disconnect_all() {
+    let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    let store = running.as_ref().map_or_else(pairing::store, |r| r.store);
+    pairing::disconnect_all(store);
+    if let Some(r) = running.as_ref() {
+        let _ = r.tx.send(Msg::DisconnectAll);
+    }
+}
+
+/// The user's Reconnect: wallpapers that lost their ticket or their socket get a fresh ticket
+/// (`wallpaper_sync::reconnect`).
+#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
+pub fn reconnect() {
+    super::wallpaper_sync::reconnect();
 }
 
 fn set_status(text: impl Into<String>) {
@@ -616,11 +649,20 @@ pub fn stop() {
     if let Some(accept) = r.accept.filter(|_| woke.is_ok() && !backing_off) {
         let _ = accept.join();
     }
+    locked(r.store).stopped();
     super::wallpaper_sync::live(None);
     set_status("");
 }
 
 fn listen(s: &LiveSettings) -> Result<(), String> {
+    listen_in(s, pairing::store())
+}
+
+fn locked(store: Store) -> std::sync::MutexGuard<'static, pairing::Pairing> {
+    store.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn listen_in(s: &LiveSettings, store: Store) -> Result<(), String> {
     stop();
     let listener = TcpListener::bind(("127.0.0.1", s.port))
         .map_err(|e| format!("Can't listen on 127.0.0.1:{}: {e}", s.port))?;
@@ -633,13 +675,14 @@ fn listen(s: &LiveSettings) -> Result<(), String> {
     // Both supervised (#587). The hub's queue outlives a panicking attempt, so the accept
     // thread, the clients and `send` keep a good sender.
     let accept = super::services::spawn_supervised("live-accept", move || {
-        accept_loop(&listener, &accept_stop, &accept_tx, &token)
+        accept_loop(&listener, &accept_stop, &accept_tx, &token, store)
     });
     *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
         tx: tx.clone(),
         stop,
         port: s.port,
         accept,
+        store,
     });
     let facts = super::devices::bus().facts();
     forward_facts(facts, "keyboard.*", &tx, || Msg::State);
@@ -657,7 +700,13 @@ fn listen(s: &LiveSettings) -> Result<(), String> {
     Ok(())
 }
 
-fn accept_loop(listener: &TcpListener, stop: &AtomicBool, tx: &Sender<Msg>, token: &str) {
+fn accept_loop(
+    listener: &TcpListener,
+    stop: &AtomicBool,
+    tx: &Sender<Msg>,
+    token: &str,
+    store: Store,
+) {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let pending = Arc::new(AtomicUsize::new(0));
     let mut errors = 0;
@@ -688,17 +737,43 @@ fn accept_loop(listener: &TcpListener, stop: &AtomicBool, tx: &Sender<Msg>, toke
         let (tx, token, pending) = (tx.clone(), token.to_string(), pending.clone());
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         super::services::spawn_named("live-client", move || {
-            serve(stream, id, &tx, &token, &pending)
+            serve(stream, id, &tx, &token, &pending, store)
         });
     }
 }
 
+/// Registers an admitted connection and hands it to the hub, under the store lock. Disconnect
+/// all sets its hold under the same lock and queues `Msg::DisconnectAll` after releasing it, so
+/// either this runs first (the `Join` is queued before the `DisconnectAll` and gets closed by
+/// it) or it sees the hold and the socket is never joined.
+fn join(store: Store, tx: &Sender<Msg>, id: u64, monitor: Option<&str>, writer: TcpStream) -> bool {
+    let mut p = locked(store);
+    if !p.joined(id, monitor) {
+        return false;
+    }
+    if tx.send(Msg::Join(id, writer)).is_err() {
+        p.left(id);
+        return false;
+    }
+    true
+}
+
 /// One connection: the upgrade, the checks, then the wallpaper's own messages until it closes.
-fn serve(mut stream: TcpStream, id: u64, tx: &Sender<Msg>, token: &str, pending: &AtomicUsize) {
-    let admitted = handshake(&mut stream, token);
+fn serve(
+    mut stream: TcpStream,
+    id: u64,
+    tx: &Sender<Msg>,
+    token: &str,
+    pending: &AtomicUsize,
+    store: Store,
+) {
+    let admitted = handshake_in(&mut stream, token, store);
     pending.fetch_sub(1, Ordering::SeqCst);
-    match admitted {
-        Ok(()) => REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).paired(),
+    let monitor = match admitted {
+        Ok(monitor) => {
+            REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).paired();
+            monitor
+        }
         Err(NotAdmitted::Token) => {
             let lines = REFUSALS
                 .lock()
@@ -708,6 +783,13 @@ fn serve(mut stream: TcpStream, id: u64, tx: &Sender<Msg>, token: &str, pending:
                 eprintln!("Foxglove: {line}");
             }
             let _ = stream.shutdown(Shutdown::Both);
+            // A wallpaper that lost its ticket asks for another, at most 3 times per monitor
+            // in 10 min and only for monitors Foxglove pushed to (`live_pairing`).
+            let again = locked(store).refused(Instant::now());
+            if again > 0 {
+                eprintln!("Foxglove: live feed: {again} wallpaper(s) are handed a new ticket");
+                super::wallpaper_sync::repush();
+            }
             return;
         }
         Err(NotAdmitted::Other(e)) => {
@@ -715,12 +797,14 @@ fn serve(mut stream: TcpStream, id: u64, tx: &Sender<Msg>, token: &str, pending:
             let _ = stream.shutdown(Shutdown::Both);
             return;
         }
-    }
+    };
     let Ok(writer) = stream.try_clone() else {
         return;
     };
     let _ = writer.set_write_timeout(Some(WRITE_LIMIT));
-    if tx.send(Msg::Join(id, writer)).is_err() {
+    if !join(store, tx, id, monitor.as_deref(), writer) {
+        // Disconnect all came between the ticket and now, or the hub is gone.
+        let _ = stream.shutdown(Shutdown::Both);
         return;
     }
     let mut reader = ws::Reader::default();
@@ -744,6 +828,7 @@ fn serve(mut stream: TcpStream, id: u64, tx: &Sender<Msg>, token: &str, pending:
             Ok(_) => {}
         }
     }
+    locked(store).left(id);
     let _ = tx.send(Msg::Leave(id));
 }
 
@@ -769,7 +854,19 @@ enum NotAdmitted {
     Other(String),
 }
 
+#[cfg(test)]
 fn handshake(stream: &mut TcpStream, token: &str) -> Result<(), NotAdmitted> {
+    handshake_in(stream, token, pairing::store()).map(|_| ())
+}
+
+/// The upgrade and the checks. `Ok(Some(monitor))`: a one-time ticket admitted, and the monitor
+/// is the one it was minted for (the client sends none); `Ok(None)`: the old token did. The
+/// offered sub-protocols and the query are never logged.
+fn handshake_in(
+    stream: &mut TcpStream,
+    token: &str,
+    store: Store,
+) -> Result<Option<String>, NotAdmitted> {
     let other = |e: std::io::Error| NotAdmitted::Other(e.to_string());
     let h = ws::read_handshake(&mut Deadline(stream, Instant::now() + HANDSHAKE_LIMIT))
         .map_err(other)?;
@@ -785,8 +882,15 @@ fn handshake(stream: &mut TcpStream, token: &str) -> Result<(), NotAdmitted> {
     let protocol = offered
         .is_some_and(|p| p.split(',').any(|p| p.trim() == wire::PROTOCOL))
         .then_some(wire::PROTOCOL);
-    match wire::admit(h.origin(), wire::token_from(&h.path, offered), token) {
-        Ok(()) => {}
+    // The ticket store is asked under its one lock, at the moment of the handshake.
+    let decided = locked(store).admit(
+        h.origin(),
+        wire::token_from(&h.path, offered),
+        token,
+        Instant::now(),
+    );
+    let monitor = match decided {
+        Ok(monitor) => monitor,
         // A web page gets a plain 403 and no WebSocket at all.
         Err(e @ wire::Denied::Origin(_)) => {
             let _ = ws::reject(stream, 403, "Forbidden");
@@ -799,9 +903,10 @@ fn handshake(stream: &mut TcpStream, token: &str) -> Result<(), NotAdmitted> {
             refuse(stream, &h, protocol);
             return Err(NotAdmitted::Token);
         }
-    }
+    };
     ws::accept(stream, &h, protocol).map_err(other)?;
-    stream.set_read_timeout(None).map_err(other)
+    stream.set_read_timeout(None).map_err(other)?;
+    Ok(monitor)
 }
 
 /// Tells a client with a wrong token so, then closes: `{"t":"refused","why":"token"}` and a
@@ -894,6 +999,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
         match msg {
             None => {}
             Some(Msg::Stop) => break,
+            Some(Msg::DisconnectAll) => dead = clients.iter().map(|c| c.id).collect(),
             Some(Msg::Join(id, stream)) => {
                 clients.push(Client {
                     id,
@@ -2482,15 +2588,53 @@ mod tests {
         drop(held);
     }
 
+    /// The tests that run the real listener share the one running feed: one at a time.
+    static FEED: Mutex<()> = Mutex::new(());
+
     /// A stand-in wallpaper's end of the socket: the upgrade, then the server's frames.
     struct StandIn(TcpStream);
 
     impl StandIn {
         fn connect(port: u16, token: &str) -> Option<StandIn> {
+            StandIn::open(
+                port,
+                &format!("GET /live?token={token} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: null\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"),
+            )
+        }
+
+        /// The way a paired wallpaper connects: the ticket as the second sub-protocol.
+        fn connect_with_ticket(port: u16, ticket: &str) -> Option<StandIn> {
+            StandIn::open(
+                port,
+                &format!("GET /live HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: null\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: foxglove-live.v1, {ticket}\r\n\r\n"),
+            )
+        }
+
+        /// Whether the server closes this socket within `wait`.
+        fn closed_within(&mut self, wait: Duration) -> bool {
+            use std::io::Read;
+            let _ = self.0.set_read_timeout(Some(Duration::from_millis(200)));
+            let end = Instant::now() + wait;
+            let mut b = [0u8; 256];
+            while Instant::now() < end {
+                match self.0.read(&mut b) {
+                    Ok(0) => return true,
+                    Ok(_) => {}
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => return true,
+                }
+            }
+            false
+        }
+
+        fn open(port: u16, req: &str) -> Option<StandIn> {
             use std::io::Read;
             let mut c = TcpStream::connect(("127.0.0.1", port)).ok()?;
             c.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-            let req = format!("GET /live?token={token} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: null\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
             c.write_all(req.as_bytes()).ok()?;
             let mut head = Vec::new();
             let mut b = [0u8; 1];
@@ -2539,6 +2683,7 @@ mod tests {
     /// and the full-screen gate and the wallpaper's own pause each stop the keys.
     #[test]
     fn end_to_end_with_a_stand_in_wallpaper() {
+        let _one_feed_at_a_time = FEED.lock().unwrap_or_else(|e| e.into_inner());
         crate::foxglove::store::test_config_dir();
         let port = TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -2729,6 +2874,142 @@ mod tests {
                 || StandIn::connect(port, &token).is_none(),
             "stopped: nothing listens"
         );
+    }
+
+    /// M1 (sec-1298): Disconnect all against a socket that was admitted and has not joined yet.
+    /// Either it joins first (its `Join` is queued before the `DisconnectAll`, so the hub closes
+    /// it) or it finds the hold and is never joined.
+    #[test]
+    fn a_socket_joining_as_disconnect_all_runs_is_closed_or_never_joined() {
+        let store: Store = Box::leak(Box::new(Mutex::new(pairing::Pairing::new())));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let writer = || {
+            let c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let _s = listener.accept().unwrap();
+            c
+        };
+        let admit = |m: &str| {
+            let now = Instant::now();
+            let t = locked(store).mint(m, "hud/index.html", now).unwrap();
+            assert_eq!(
+                locked(store).admit(Some("null"), Some(&t), "", now),
+                Ok(Some(m.to_string()))
+            );
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Disconnect all comes after the join: the Join is in the queue ahead of it.
+        admit("M1");
+        assert!(join(store, &tx, 1, Some("M1"), writer()));
+        pairing::disconnect_all(store);
+        let _ = tx.send(Msg::DisconnectAll);
+        assert!(matches!(rx.try_recv(), Ok(Msg::Join(1, _))));
+        assert!(matches!(rx.try_recv(), Ok(Msg::DisconnectAll)));
+        // Disconnect all comes between the redeem and the join: the socket never joins.
+        locked(store).reconnect();
+        admit("M2");
+        pairing::disconnect_all(store);
+        assert!(!join(store, &tx, 2, Some("M2"), writer()));
+        assert!(rx.try_recv().is_err(), "no Join after the hold");
+        // And its slot shows no socket, so Reconnect hands the monitor a ticket.
+        locked(store).reconnect();
+        assert!(locked(store).take_due().contains(&"M2".to_string()));
+    }
+
+    /// WE handover S2, end to end on loopback with a stand-in wallpaper and a store of its own: a
+    /// pushed ticket admits once, a refusal asks for a fresh one only when Foxglove pushed to a
+    /// monitor with no socket, Disconnect all closes the sockets and voids the tickets, and the
+    /// old pasted token keeps working beside all of it.
+    #[test]
+    fn tickets_pair_a_wallpaper_and_disconnect_all_closes_it() {
+        let _one_feed_at_a_time = FEED.lock().unwrap_or_else(|e| e.into_inner());
+        crate::foxglove::store::test_config_dir();
+        let store: Store = Box::leak(Box::new(Mutex::new(pairing::Pairing::new())));
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let token = wire::new_token().unwrap();
+        *GEOMETRY.lock().unwrap() = Some(corne());
+        listen_in(
+            &LiveSettings {
+                enabled: true,
+                port,
+                token: token.clone(),
+                ..LiveSettings::default()
+            },
+            store,
+        )
+        .unwrap();
+        let mint = |monitor: &str| {
+            locked(store)
+                .mint(monitor, "hud/index.html", Instant::now())
+                .expect("a ticket")
+        };
+        let refused = |s: &mut StandIn| {
+            assert_eq!(
+                s.next(Duration::from_secs(5)).as_deref(),
+                Some(r#"{"t":"refused","why":"token"}"#)
+            );
+        };
+
+        // The ticket admits once.
+        let t1 = mint("M1");
+        let mut w1 = StandIn::connect_with_ticket(port, &t1).expect("upgraded");
+        let hello = w1.next(Duration::from_secs(5)).unwrap();
+        assert!(hello.starts_with(r#"{"t":"hello","v":1"#), "{hello}");
+        let mut again = StandIn::connect_with_ticket(port, &t1).expect("upgraded, to be refused");
+        refused(&mut again);
+        // M1 has a socket: that refusal marked nobody.
+        assert!(locked(store).take_due().is_empty());
+        // The old pasted token still pairs, and names no monitor.
+        let mut old = StandIn::connect(port, &token).expect("the old token");
+        assert!(old
+            .next(Duration::from_secs(5))
+            .unwrap()
+            .contains(r#""t":"hello""#));
+        drop(old);
+
+        // M1's wallpaper goes away; a refusal now asks for a fresh ticket for M1 (and only M1).
+        drop(w1);
+        let mut due = Vec::new();
+        for _ in 0..50 {
+            let mut bad = StandIn::connect_with_ticket(port, "not-a-ticket-at-all-0000").unwrap();
+            refused(&mut bad);
+            due = locked(store).take_due();
+            if !due.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(due, ["M1".to_string()]);
+
+        // The fresh ticket pairs it again. A second monitor holds a ticket that Disconnect all voids.
+        let t2 = mint("M1");
+        let t3 = mint("M2");
+        let mut w2 = StandIn::connect_with_ticket(port, &t2).expect("upgraded");
+        assert!(w2
+            .next(Duration::from_secs(5))
+            .unwrap()
+            .contains(r#""t":"hello""#));
+        disconnect_all();
+        assert!(
+            w2.closed_within(Duration::from_secs(5)),
+            "its socket is closed"
+        );
+        let mut voided = StandIn::connect_with_ticket(port, &t3).expect("upgraded, to be refused");
+        refused(&mut voided);
+        assert!(
+            locked(store)
+                .mint("M1", "hud/index.html", Instant::now())
+                .is_none(),
+            "no tickets while disconnected"
+        );
+        // Reconnect: the monitor without a socket is due again.
+        locked(store).reconnect();
+        assert!(locked(store).take_due().contains(&"M1".to_string()));
+        stop();
     }
 
     #[test]

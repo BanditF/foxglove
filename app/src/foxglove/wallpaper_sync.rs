@@ -75,6 +75,10 @@ pub const SCENE: &str = "foxglove_scene";
 /// The live feed's port while it listens, 0 when it doesn't (#499): the wallpaper connects
 /// when this changes, so it never retries on a timer. The pairing token never goes here.
 pub const LIVE: &str = "foxglove_live";
+/// A one-time pairing ticket for the monitor it is pushed to (`live_pairing`), sent in the same
+/// push as the port while the wallpaper isn't connected. It works once, for 120 s, and is never
+/// kept: not in what a monitor was "last sent", not in a log line.
+pub const TICKET: &str = "foxglove_ticket";
 /// Windows' app mode, `"light"` or `"dark"` (`""` when Windows doesn't say, or Foxglove has
 /// gone): every wallpaper set to "Follow Windows" takes it, so two monitors never disagree.
 pub const THEME: &str = "foxglove_theme";
@@ -164,6 +168,16 @@ pub fn game_mode(active: &[u8], names: &[Option<String>]) -> bool {
 /// One monitor's properties as compact JSON, only those its wallpaper supports: no spaces, and
 /// no quotes inside the values, so it passes through `RAW~(...)~END` as typed.
 pub fn properties(state: &State, monitor: Option<Rect>, supports: Supports) -> String {
+    properties_with(state, monitor, supports, None)
+}
+
+/// [`properties`] with a pairing ticket (`foxglove_ticket`) beside the port.
+fn properties_with(
+    state: &State,
+    monitor: Option<Rect>,
+    supports: Supports,
+    ticket: Option<&str>,
+) -> String {
     let mut out = serde_json::Map::new();
     if supports.game {
         out.insert(GAME.into(), state.game.into());
@@ -173,6 +187,9 @@ pub fn properties(state: &State, monitor: Option<Rect>, supports: Supports) -> S
     }
     if supports.live {
         out.insert(LIVE.into(), state.live.unwrap_or(0).into());
+        if let Some(t) = ticket {
+            out.insert(TICKET.into(), t.into());
+        }
     }
     if supports.theme {
         let mode = state
@@ -237,6 +254,11 @@ pub trait Apply: Send {
     fn control(&mut self, command: &str) -> Result<(), String>;
     /// Each Windows display's interface path, for [`monitor_rect`].
     fn interfaces(&mut self) -> Vec<(String, String)>;
+    /// The pairing store the pushes take tickets from; `None`: no tickets (the default; only
+    /// Wallpaper Engine's own command line hands them over).
+    fn tickets(&mut self) -> Option<super::live_pairing::Store> {
+        None
+    }
 }
 
 /// One monitor showing a wallpaper that reads Foxglove's properties.
@@ -321,6 +343,17 @@ impl<A: Apply> Pusher<A> {
         let mut out = Synced::default();
         self.sent
             .retain(|k, _| targets.iter().any(|t| t.location == *k));
+        let store = self.apply.tickets();
+        if let Some(store) = store {
+            // The monitors a refusal or Reconnect marked are pushed again; the ones off screen
+            // are forgotten with their tickets.
+            let mut p = store.lock().unwrap_or_else(|e| e.into_inner());
+            for location in p.take_due() {
+                self.sent.remove(&location);
+            }
+            let on: Vec<&str> = targets.iter().map(|t| t.location.as_str()).collect();
+            p.keep(&on);
+        }
         if targets.is_empty() {
             return out;
         }
@@ -356,7 +389,30 @@ impl<A: Apply> Pusher<A> {
                 out.unchanged += 1;
                 continue;
             }
-            match self.apply.apply(location, &props) {
+            // A ticket goes only with a port, to a monitor that has none outstanding and no
+            // socket (`Pairing::mint`); `props` (what is kept and compared) never holds it.
+            let ticket = store
+                .filter(|_| supports.live && state.live.is_some())
+                .and_then(|st| {
+                    st.lock().unwrap_or_else(|e| e.into_inner()).mint(
+                        location,
+                        file,
+                        Instant::now(),
+                    )
+                });
+            let wire = match &ticket {
+                Some(t) => properties_with(state, monitor, *supports, Some(t)),
+                None => props.clone(),
+            };
+            let pushed = self.apply.apply(location, &wire);
+            if pushed.is_err() && ticket.is_some() {
+                if let Some(st) = store {
+                    st.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .cancel(location);
+                }
+            }
+            match pushed {
                 Ok(()) => {
                     self.sent.insert(
                         location.clone(),
@@ -779,6 +835,20 @@ pub fn live(port: Option<u16>) {
 /// everything again. Which monitor it is on isn't known.
 pub fn reconnected() {
     wake(Wake::Reconnected);
+}
+
+/// A refusal marked monitors for a fresh ticket (`live_pairing`): they are pushed again now.
+pub fn repush() {
+    changed(Reason::Pairing, |_| {});
+}
+
+/// The user's Reconnect (the Hideout panel, S5, calls this; there is no button yet): the
+/// re-push budget is new and every monitor without a socket gets a fresh ticket, pushed now.
+/// Event-driven: nothing retries on its own after this.
+#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
+pub fn reconnect() {
+    super::live_pairing::reconnect(super::live_pairing::store());
+    repush();
 }
 
 fn wake(w: Wake) {
@@ -1412,6 +1482,10 @@ impl Apply for Cli {
     fn interfaces(&mut self) -> Vec<(String, String)> {
         interfaces()
     }
+
+    fn tickets(&mut self) -> Option<super::live_pairing::Store> {
+        Some(super::live_pairing::store())
+    }
 }
 
 #[cfg(windows)]
@@ -1558,9 +1632,14 @@ mod tests {
         interface_reads: usize,
         fail: bool,
         controls: Vec<String>,
+        /// The pairing store the pushes take tickets from (none: no tickets).
+        store: Option<crate::foxglove::live_pairing::Store>,
     }
 
     impl Apply for &mut Fake {
+        fn tickets(&mut self) -> Option<crate::foxglove::live_pairing::Store> {
+            self.store
+        }
         fn ready(&mut self) -> bool {
             self.running
         }
@@ -1801,6 +1880,242 @@ mod tests {
         let scene_push = &fake.pushes[4].1;
         assert!(scene_push.contains("v=1;id=demo-scanline;fx=scanline"));
         assert!(fake.pushes[7].1.contains(r#""foxglove_scene":"""#));
+    }
+
+    /// A store of this test's own (the process-wide one is shared with the live feed's tests).
+    fn own_store() -> crate::foxglove::live_pairing::Store {
+        Box::leak(Box::new(Mutex::new(
+            crate::foxglove::live_pairing::Pairing::new(),
+        )))
+    }
+
+    fn live_state() -> State {
+        State {
+            live: Some(8768),
+            ..State::default()
+        }
+    }
+
+    /// The ticket (24 characters) in a push, if it carries one.
+    fn ticket_in(props: &str) -> Option<String> {
+        let v: serde_json::Value = serde_json::from_str(props).unwrap();
+        v.get(TICKET).map(|t| t.as_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn a_ticket_goes_beside_the_port_once_and_is_never_kept_for_comparison() {
+        let store = own_store();
+        let mut fake = Fake {
+            running: true,
+            store: Some(store),
+            ..Fake::default()
+        };
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef), target(WE_RIGHT, reef)];
+        let state = live_state();
+        let mut p = Pusher::new(&mut fake);
+        assert_eq!(p.sync(&state, &targets), 2);
+        // Nothing changed: no push, so no second ticket.
+        assert_eq!(p.sync(&state, &targets), 0);
+        drop(p);
+        let tickets: Vec<String> = fake
+            .pushes
+            .iter()
+            .map(|(_, props)| {
+                assert!(props.contains(r#""foxglove_live":8768"#), "{props}");
+                ticket_in(props).expect("a ticket beside the port")
+            })
+            .collect();
+        assert_eq!(tickets.len(), 2);
+        assert_eq!(tickets[0].len(), 24);
+        assert_ne!(tickets[0], tickets[1], "one per monitor");
+        // Both redeem once, each for its own monitor, and not twice.
+        let now = Instant::now();
+        let mut pairing = store.lock().unwrap();
+        for (t, m) in tickets.iter().zip([WE_LEFT, WE_RIGHT]) {
+            assert_eq!(
+                pairing.admit(Some("null"), Some(t), "x", now),
+                Ok(Some(m.to_string()))
+            );
+            assert!(pairing.admit(Some("null"), Some(t), "x", now).is_err());
+        }
+    }
+
+    #[test]
+    fn no_ticket_without_a_port_a_store_or_a_manifest_asking_for_the_feed() {
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef)];
+        // No port: nothing to connect to.
+        let mut fake = Fake {
+            running: true,
+            store: Some(own_store()),
+            ..Fake::default()
+        };
+        Pusher::new(&mut fake).sync(&State::default(), &targets);
+        assert!(fake.pushes.iter().all(|(_, p)| !p.contains(TICKET)));
+        // No store (a test fake, or any other Apply): the old path only.
+        let mut fake = Fake {
+            running: true,
+            ..Fake::default()
+        };
+        Pusher::new(&mut fake).sync(&live_state(), &targets);
+        assert!(fake.pushes.iter().all(|(_, p)| !p.contains(TICKET)));
+        // A wallpaper that does not read the feed.
+        let mut fake = Fake {
+            running: true,
+            store: Some(own_store()),
+            ..Fake::default()
+        };
+        let mut t = target(WE_LEFT, reef);
+        t.supports.live = false;
+        Pusher::new(&mut fake).sync(&live_state(), &[t]);
+        assert!(fake.pushes.iter().all(|(_, p)| !p.contains(TICKET)));
+    }
+
+    #[test]
+    fn a_refusal_or_reconnect_pushes_a_fresh_ticket_and_nothing_else_does() {
+        let store = own_store();
+        let mut fake = Fake {
+            running: true,
+            store: Some(store),
+            ..Fake::default()
+        };
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef)];
+        let state = live_state();
+        let mut p = Pusher::new(&mut fake);
+        assert_eq!(p.sync(&state, &targets), 1);
+        // A refusal while the first ticket still waits changes nothing.
+        assert_eq!(store.lock().unwrap().refused(Instant::now()), 0);
+        assert_eq!(p.sync(&state, &targets), 0);
+        // Reconnect cancels the waiting ticket and pushes a fresh one. (A refusal after expiry
+        // marks the monitor the same way; `live_pairing` tests that with a clock of their own.)
+        store.lock().unwrap().reconnect();
+        assert_eq!(p.sync(&state, &targets), 1);
+        // Disconnect all: no ticket, even on a re-push; Reconnect brings it back.
+        store.lock().unwrap().disconnect_all();
+        p.resend();
+        assert_eq!(p.sync(&state, &targets), 1);
+        store.lock().unwrap().reconnect();
+        assert_eq!(p.sync(&state, &targets), 1);
+        drop(p);
+        let tickets: Vec<bool> = fake
+            .pushes
+            .iter()
+            .map(|(_, p)| p.contains(TICKET))
+            .collect();
+        assert_eq!(tickets, [true, true, false, true]);
+    }
+
+    /// S2-4's sweep: the ticket appears only on the command line of the push itself. Not in what
+    /// is kept for comparison, the failure text, the health state, the reason's text or a Debug.
+    #[test]
+    fn the_ticket_is_in_no_text_foxglove_keeps_or_shows() {
+        let store = own_store();
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef), target(WE_RIGHT, reef)];
+        let mut fake = Fake {
+            running: true,
+            store: Some(store),
+            ..Fake::default()
+        };
+        let mut p = Pusher::new(&mut fake);
+        let mut h = crate::foxglove::wallpaper_sync_health::SyncHealth::default();
+        let synced = p.sync_counted(&live_state(), &targets);
+        h.synced(
+            Reason::Pairing,
+            synced.pushed,
+            synced.unchanged,
+            Instant::now(),
+        );
+        let kept: Vec<String> = p.sent.values().map(|s| s.props.clone()).collect();
+        let debug = format!("{:?}", h);
+        let label = Reason::Pairing.label();
+        drop(p);
+        let tickets: Vec<String> = fake
+            .pushes
+            .iter()
+            .map(|(_, props)| ticket_in(props).expect("pushed with a ticket"))
+            .collect();
+        assert_eq!(tickets.len(), 2);
+        // A second Foxglove whose pushes fail: the failure text and health.
+        let mut failing = Fake {
+            running: true,
+            fail: true,
+            store: Some(own_store()),
+            ..Fake::default()
+        };
+        let mut q = Pusher::new(&mut failing);
+        let failed = q.sync_counted(&live_state(), &targets).failed;
+        let failed_kept = q.sent.len();
+        drop(q);
+        let failed_store_open = failing.store.unwrap().lock().unwrap().open(Instant::now());
+        h.failed(failed.clone().unwrap());
+        let debug_failed = format!("{:?}", h);
+        assert_eq!(failed_kept, 0);
+        assert_eq!(
+            failed_store_open, 0,
+            "a failed push leaves nothing outstanding"
+        );
+        for t in &tickets {
+            for text in kept.iter().chain([&debug, &debug_failed]) {
+                assert!(!text.contains(t.as_str()), "{text}");
+            }
+            assert!(!label.contains(t.as_str()));
+            assert!(!failed.clone().unwrap().contains(t.as_str()));
+            assert!(!format!("{:?}", fake.pushes.len()).contains(t.as_str()));
+        }
+        assert!(kept.iter().all(|k| !k.contains(TICKET)));
+    }
+
+    #[test]
+    fn a_failed_push_takes_its_ticket_back() {
+        let store = own_store();
+        let mut fake = Fake {
+            running: true,
+            fail: true,
+            store: Some(store),
+            ..Fake::default()
+        };
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let mut p = Pusher::new(&mut fake);
+        assert_eq!(p.sync(&live_state(), &[target(WE_LEFT, reef)]), 0);
+        drop(p);
+        assert_eq!(store.lock().unwrap().open(Instant::now()), 0);
+    }
+
+    /// Through the real command line into the Wallpaper Engine stand-in (`review/we-shim`), which
+    /// records what `applyProperties` would have received. Skipped unless `WE_SHIM_EXE` names it;
+    /// nothing here starts Wallpaper Engine.
+    #[cfg(windows)]
+    #[test]
+    fn the_shim_capture_shows_the_ticket_in_the_command_line() {
+        let Some(exe) = std::env::var_os("WE_SHIM_EXE") else {
+            eprintln!("skipped: WE_SHIM_EXE not set");
+            return;
+        };
+        let trace = std::env::temp_dir().join(format!("we-s2-trace-{}.jsonl", std::process::id()));
+        let _ = std::fs::remove_file(&trace);
+        std::env::set_var("WE_SHIM_TRACE", &trace);
+        let store = own_store();
+        let ticket = store
+            .lock()
+            .unwrap()
+            .mint(WE_LEFT, "hud/index.html", Instant::now())
+            .unwrap();
+        let props = properties_with(&live_state(), None, Supports::ALL, Some(&ticket));
+        let (args, raw) = arguments(WE_LEFT, &props);
+        let done = run_cli(std::path::Path::new(&exe), &args, &raw);
+        std::env::remove_var("WE_SHIM_TRACE");
+        let captured = std::fs::read_to_string(&trace).unwrap_or_default();
+        let _ = std::fs::remove_file(&trace);
+        done.unwrap();
+        assert!(captured.contains("applyProperties"), "{captured}");
+        assert!(
+            captured.contains(&format!("foxglove_ticket:{ticket}")),
+            "{captured}"
+        );
+        assert!(captured.contains("foxglove_live:8768"), "{captured}");
     }
 
     #[test]
