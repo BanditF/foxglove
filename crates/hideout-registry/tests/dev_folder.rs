@@ -549,3 +549,122 @@ fn the_children_of_temp_and_appdata_are_refused() {
         assert!(r.is_err(), "{var}");
     }
 }
+
+// ---- review of R1: a refused dev step must not leave the file `on` (M1), refusals (L2) ----
+
+use hideout_registry::keyboard::KeyboardState;
+
+fn granted_for(reg: &Registry) -> bool {
+    matches!(reg.keyboard_state(ID), KeyboardState::Granted { .. })
+}
+
+/// What the hub does before it reads the file: void a dev move whose chain broke.
+fn hub_pass(home: &std::path::Path) -> (Registry, Vec<String>) {
+    let mut reg = Registry::open(home, true).unwrap();
+    let voided = reg.void_unchained_dev_keyboards(LATER);
+    (reg, voided)
+}
+
+#[test]
+fn a_chain_that_still_holds_is_left_on() {
+    let f = with_keyboard("m1-ok", 2);
+    let (reg, voided) = hub_pass(&f.home);
+    assert!(voided.is_empty());
+    assert!(granted_for(&reg));
+}
+
+#[test]
+fn a_refused_dev_move_voids_the_record_on_disk_and_stays_void_after_a_reload() {
+    // Folder removed, dev mode off and an exe opened to others all make the chain refuse.
+    let mut f = with_keyboard("m1-folder", 2);
+    f.reg
+        .remove_dev_folder(&f.out.display().to_string())
+        .unwrap();
+    let (reg, voided) = hub_pass(&f.home);
+    assert_eq!(voided, [ID]);
+    assert!(!granted_for(&reg));
+    let (_, new) = reg.current_program(ID).unwrap();
+    assert!(!reg.inventory.modules[ID]
+        .keyboard
+        .clone()
+        .unwrap()
+        .allows(&reg.current_program(ID).unwrap().0, &new));
+    // A fresh read of the file (what a restarted router loads) still says void, and re-adding
+    // the folder does not revive it.
+    let mut again = Registry::open(&f.home, true).unwrap();
+    assert!(!granted_for(&again));
+    again.add_dev_folder(&f.out.display().to_string()).unwrap();
+    let again = Registry::open(&f.home, true).unwrap();
+    assert!(!granted_for(&again));
+    assert!(again.attested_keyboard_moves().is_empty());
+
+    let g = with_keyboard("m1-off", 2);
+    let mut shipped = Registry::open(&g.home, false).unwrap();
+    assert_eq!(shipped.void_unchained_dev_keyboards(LATER), [ID]);
+    assert!(!granted_for(&Registry::open(&g.home, true).unwrap()));
+
+    let h = with_keyboard("m1-acl", 2);
+    grant_everyone(&h.exe, "M");
+    let (reg, voided) = hub_pass(&h.home);
+    assert_eq!(voided, [ID]);
+    assert!(!granted_for(&reg));
+    assert!(!granted_for(&Registry::open(&h.home, true).unwrap()));
+}
+
+#[test]
+fn a_fresh_allow_after_the_rebuild_is_not_voided() {
+    let mut f = with_keyboard("m1-fresh", 2);
+    let (path, new) = f.reg.current_program(ID).unwrap();
+    f.reg
+        .allow_keyboard(ID, &path, &new, "2026-11-19T23:00:00Z")
+        .unwrap();
+    f.reg
+        .remove_dev_folder(&f.out.display().to_string())
+        .unwrap();
+    let (reg, voided) = hub_pass(&f.home);
+    assert!(voided.is_empty());
+    assert!(granted_for(&reg));
+}
+
+/// Edits `inventory.json` of the fixture by hand, then reads it again.
+fn edited(f: &Fx, edit: impl FnOnce(&mut serde_json::Value)) -> Registry {
+    let p = f.home.join("inventory.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    edit(&mut v["modules"][ID]);
+    std::fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
+    Registry::open(&f.home, true).unwrap()
+}
+
+#[test]
+fn hand_edited_histories_give_no_move() {
+    // Each case starts from a chain that does give a move, so the edit is what refuses.
+    let case = |name: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+        let f = with_keyboard(name, 3);
+        assert_eq!(f.reg.attested_keyboard_moves().len(), 1, "{name} control");
+        let reg = edited(&f, |m| edit(m));
+        assert!(reg.attested_keyboard_moves().is_empty(), "{name}");
+    };
+    // The module is not enrolled (no identity), or was enrolled by the command line.
+    case("no-identity", &|m| m["identity"] = serde_json::Value::Null);
+    case("cli-enrolled", &|m| {
+        m["identity"]["established_by"] = "cli".into()
+    });
+    // The newest step starts outside the folder.
+    case("from-outside", &|m| {
+        let a = m["bound"]["attested"].as_array_mut().unwrap();
+        a.last_mut().unwrap()["from_path"] = r"C:\Elsewhere\foxglove.exe".into();
+    });
+    // A splice: the newest step does not end where the bound file is.
+    case("spliced", &|m| {
+        let a = m["bound"]["attested"].as_array_mut().unwrap();
+        let sub = a.last().unwrap()["to_path"]
+            .as_str()
+            .unwrap()
+            .replace("foxglove.exe", "other/foxglove.exe");
+        a.last_mut().unwrap()["to_path"] = sub.into();
+    });
+    // Steps older than the binding are not its own.
+    case("older-than-binding", &|m| {
+        m["bound"]["at"] = "2099-01-01T00:00:00Z".into()
+    });
+}

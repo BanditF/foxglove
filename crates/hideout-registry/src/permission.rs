@@ -1014,13 +1014,60 @@ impl Registry {
     /// `dev_enrolment` holds now, with both paths of the step inside the enrolled folder). A step
     /// that changed the path (a dev-folder step only inside its folder), broke the hash chain,
     /// or has another `by` ends the chain there, so a moved, void or unattested record yields
-    /// nothing. Read-only; hub-side only.
+    /// nothing. Ancestors' old paths are checked by name only (inside the folder, local, not
+    /// UNC): an old file is never run. Read-only; hub-side only.
     pub fn attested_keyboard_moves(&self) -> Vec<crate::keyboard::KeyboardMove> {
         self.inventory
             .modules
             .keys()
             .filter_map(|id| self.attested_keyboard_move(id))
             .collect()
+    }
+
+    /// A dev-folder step moved the keyboard record on disk (`keep_followed`), but the router
+    /// follows it only while the chain holds now (enrolment, ACLs, paths). When the record is
+    /// still `on` for the program the binding names, the binding's newest step is a dev-folder
+    /// step, and the record was not allowed after that step, yet no move is confirmed, the
+    /// record goes void on disk (`Changed`), so the file never says `on` for a build the router
+    /// refused: the user is asked again, and a fresh router does not revive it. Fails closed:
+    /// if the file cannot be written the record is void in this copy all the same. Returns the
+    /// ids voided. Hub-side; call it before [`Registry::attested_keyboard_moves`].
+    pub fn void_unchained_dev_keyboards(&mut self, now: &str) -> Vec<String> {
+        let ids: Vec<String> =
+            self.inventory
+                .modules
+                .iter()
+                .filter(|(id, m)| {
+                    let (Some(k), Some(b)) = (m.keyboard.as_ref(), m.bound.as_ref()) else {
+                        return false;
+                    };
+                    let newest_is_dev = b.attested.last().is_some_and(|a| {
+                        a.by == crate::dev_folder::DEV_ATTESTED_BY && k.at <= a.at
+                    });
+                    m.source == ADOPTED
+                        && k.state == crate::keyboard::GrantState::On
+                        && !b.void
+                        && newest_is_dev
+                        && k.allows(&b.exe_path, &b.exe_sha256)
+                        && self.attested_keyboard_move(id).is_none()
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+        for id in &ids {
+            let reason = crate::keyboard::VoidReason::Changed;
+            if self.void_keyboard(id, reason, now).is_err() {
+                if let Some(k) = self
+                    .inventory
+                    .modules
+                    .get_mut(id)
+                    .and_then(|m| m.keyboard.as_mut())
+                {
+                    k.state = crate::keyboard::GrantState::Void;
+                    k.sha256.clear();
+                }
+            }
+        }
+        ids
     }
 
     fn attested_keyboard_move(&self, id: &str) -> Option<crate::keyboard::KeyboardMove> {

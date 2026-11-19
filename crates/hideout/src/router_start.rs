@@ -332,7 +332,7 @@ fn watch_inventory(
             }
             // One read for the supervisor and the page, so the page never lists what the
             // supervisor hasn't seen (#1076). A failed read keeps the page's last list.
-            let reg = match hideout_registry::Registry::open_from_env(&at) {
+            let mut reg = match hideout_registry::Registry::open_from_env(&at) {
                 Ok(r) => r,
                 Err(e) => {
                     log::warn!(
@@ -342,6 +342,9 @@ fn watch_inventory(
                     return;
                 }
             };
+            // A dev-folder move whose chain no longer holds goes void on disk before the file is
+            // read for the grants, so a refused build is never left `on` (re-ask, not a revive).
+            let _ = reg.void_unchained_dev_keyboards(&hideout_supervisor::now_utc());
             // The keyboard grants as the file says now (#1155-B): a turn-off or a void closes the
             // legacy module's areas at once.
             let grants = hideout_supervisor::driver::keyboard_grants(&reg)

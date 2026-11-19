@@ -743,7 +743,7 @@ fn a_move_is_refused_unless_every_condition_holds() {
     assert!(!adopt_and_try(mv(&[(PATH, HASH)], other_path), NEWER));
     // The moved record is a network path.
     let mut unc = moved_to(NEWER);
-    unc.path = r"\host\share\foxglove.exe".into();
+    unc.path = r"\\host\share\foxglove.exe".into();
     assert!(!adopt_and_try(mv(&[(PATH, HASH)], unc), NEWER));
     // The moved record is not `on`, or has no valid hash.
     let mut off = moved_to(NEWER);
@@ -808,7 +808,11 @@ fn a_dev_folder_move_may_change_the_path_only_inside_its_folder() {
     for (to, folder) in [
         (inside.as_str(), None),
         (r"C:\Other\foxglove.exe", Some(DIR)),
-        (r"\host\share\foxglove.exe", Some(r"\host\share")),
+        (r"\\host\share\foxglove.exe", Some(r"\\host\share")),
+        (
+            r"\\?\UNC\host\share\foxglove.exe",
+            Some(r"\\?\UNC\host\share"),
+        ),
     ] {
         let id = identity(to, NEWER);
         let mut r = rig(&id);
@@ -819,6 +823,34 @@ fn a_dev_folder_move_may_change_the_path_only_inside_its_folder() {
             g.path = to.into();
             g
         })));
+        let (f, c) = connect_both(&mut r, Instant::now());
+        register(&mut r, f, &strs(&areas()), Instant::now());
+        assert!(try_call(&mut r, c, f, "devices.list", Instant::now())
+            .0
+            .is_empty());
+    }
+}
+
+#[test]
+fn a_dev_move_from_outside_the_folder_or_a_network_file_is_refused() {
+    const DIR: &str = r"C:\Apps\Foxglove";
+    // Memory holds the record for a file outside the folder; the move ends inside it.
+    let outside = r"C:\Other\foxglove.exe";
+    let inside = r"C:\Apps\Foxglove\out\foxglove.exe";
+    let unc = r"\\host\share\foxglove.exe";
+    for (from, to) in [(outside, inside), (unc, unc), (PATH, unc)] {
+        let id = identity(to, NEWER);
+        let mut r = rig(&id);
+        let mut held = grant(GrantState::On);
+        held.path = from.into();
+        r.set_keyboard_grants(grants(Some(held)));
+        let mut m = mv(&[(from, HASH)], moved_to(NEWER));
+        m.to.path = to.into();
+        m.dev_folder = Some(DIR.into());
+        r.adopt_keyboard_moves(&[m]);
+        let mut now_rec = moved_to(NEWER);
+        now_rec.path = to.into();
+        r.narrow_keyboard_grants(&grants(Some(now_rec)));
         let (f, c) = connect_both(&mut r, Instant::now());
         register(&mut r, f, &strs(&areas()), Instant::now());
         assert!(try_call(&mut r, c, f, "devices.list", Instant::now())
