@@ -8,9 +8,6 @@
 //! at the keyboard's pace ([`scene_card::period_ms`]); a running scene is rendered over its
 //! room. Still looks (Solid, off, a lease's colour, unknown) ask for no next frame.
 
-// Slice L1 has no caller yet; L2 draws it on the Lights page and removes this.
-#![allow(dead_code)]
-
 use std::time::Duration;
 
 use egui::Color32;

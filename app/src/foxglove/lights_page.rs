@@ -107,6 +107,9 @@ pub struct View {
     pub lamp: Option<Lamp>,
     /// The palette picker (#871): the chosen palette and its effect that runs now.
     pub palette: PaletteView,
+    /// What the keyboard's lights show now, drawn at the top of the card (L2); `None` for a
+    /// keyboard Foxglove reads no lights from (L4 draws those).
+    pub live: Option<super::lights_live_ui::Live>,
 }
 
 /// The palette picker's state (#871, `lights_palette`).
@@ -576,6 +579,10 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
                 None => {}
             }
         }
+        if let (false, Some(live)) = (zones_open, &v.live) {
+            ui.add_space(4.0);
+            super::lights_live_ui::show(ui, live);
+        }
         ui.add_space(8.0);
         let gap = 24.0;
         let width = ui.available_width();
@@ -643,6 +650,7 @@ pub fn read_only_view(focus: super::focus_ui::Focused, zones: super::light_zones
         focus: Some(focus),
         lamp: None,
         palette: PaletteView::default(),
+        live: None,
     }
 }
 
@@ -1023,6 +1031,10 @@ pub fn live_view(state: Option<RgbState>) -> View {
             return read_only_view(f.clone(), super::light_zones::line(None, &layout));
         }
     }
+    let live = Some(super::lights_live_ui::live_now(
+        state.as_ref(),
+        super::key_layout::current(),
+    ));
     View {
         state,
         sync: ks::rgb_sync(),
@@ -1042,6 +1054,7 @@ pub fn live_view(state: Option<RgbState>) -> View {
         focus,
         lamp: None,
         palette: PaletteView::now(),
+        live,
     }
 }
 
@@ -1717,6 +1730,7 @@ pub mod tests {
             focus: None,
             lamp: None,
             palette: PaletteView::default(),
+            live: None,
         }
     }
 
@@ -1899,6 +1913,7 @@ pub mod tests {
             focus: None,
             lamp: None,
             palette: PaletteView::default(),
+            live: None,
         }
     }
 
