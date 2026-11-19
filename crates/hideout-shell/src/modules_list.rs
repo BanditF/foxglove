@@ -62,6 +62,51 @@ pub enum Does {
     Review,
 }
 
+/// The row menu's button (its accessible name is "More actions for <module>").
+pub const MORE: &str = "More actions";
+/// The row menu's one item.
+pub const REMOVE_MENU: &str = "Remove from Hideout\u{2026}";
+/// The confirm's question, for `name`.
+pub fn remove_question(name: &str) -> String {
+    format!("Remove {name} from Hideout?")
+}
+/// What Remove does to a module Hideout only registered (an install made elsewhere).
+pub const REMOVE_ADOPTED: &str =
+    "Hideout forgets its permissions and stops it. Its own settings and files stay.";
+/// What Remove does to a module Hideout installed itself: its copy in Hideout's own
+/// `modules` folder goes too; its settings stay.
+pub const REMOVE_OWN: &str = "Hideout forgets its permissions, stops it and deletes its copy in Hideout's modules folder. Its settings stay.";
+/// The confirm's buttons.
+pub const REMOVE: &str = "Remove";
+pub const CANCEL: &str = "Cancel";
+
+/// The one-step confirm of Remove from Hideout: the menu only [`RemoveAsk::ask`]s, nothing is
+/// removed until [`RemoveAsk::confirm`] answers for the same module.
+#[derive(Debug, Default)]
+pub struct RemoveAsk(Option<String>);
+
+impl RemoveAsk {
+    /// The menu item: the confirm shows for `id` (replacing another's).
+    pub fn ask(&mut self, id: &str) {
+        self.0 = Some(id.into());
+    }
+    /// The module whose confirm shows.
+    pub fn pending(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+    pub fn cancel(&mut self) {
+        self.0 = None;
+    }
+    /// The confirm's Remove for `id`: `true` once, and only when that module was asked about.
+    pub fn confirm(&mut self, id: &str) -> bool {
+        if self.0.as_deref() == Some(id) {
+            self.0 = None;
+            return true;
+        }
+        false
+    }
+}
+
 /// A row's one main button (never two on a row).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Primary {
@@ -89,6 +134,9 @@ pub struct Row {
     pub label: String,
     /// The main button for the state; Open is always there besides.
     pub primary: Option<Primary>,
+    /// An install Hideout registered but did not make: Remove only forgets it (the confirm's
+    /// words say so).
+    pub adopted: bool,
 }
 
 /// What a click on the page asks for.
@@ -98,6 +146,12 @@ pub enum Click {
     Open(String),
     /// A row's main button.
     Primary(String, Does),
+    /// The row's **...** menu, **Remove from Hideout...**: only asks; nothing is removed.
+    AskRemove(String),
+    /// The confirm's **Remove**: the one click that removes.
+    Remove(String),
+    /// The confirm's **Cancel** (or Escape).
+    CancelRemove,
     /// The safe-mode banner's **Start normally**.
     StartNormally,
     /// The banner's **Find the module that breaks Hideout** (or "Check whether <Module> …").
@@ -132,6 +186,8 @@ pub struct Banner<'a> {
 pub struct Top<'a> {
     pub banner: Option<Banner<'a>>,
     pub locked: bool,
+    /// The module whose Remove confirm shows under its row ([`RemoveAsk`]).
+    pub remove: Option<&'a str>,
 }
 
 /// A row's words during a search (#1033): `on` is `Some(true)` for a module on in this round,
@@ -316,6 +372,7 @@ pub fn row_in(
         Some(s) => (state_words(s).to_string(), s == "install-failed", None),
     };
     Row {
+        adopted: m.adopted,
         id: m.id.clone(),
         name: m.name.clone(),
         version: if m.adopted {
@@ -476,6 +533,7 @@ pub fn page_ui(ui: &mut egui::Ui, t: &Tokens, rows: &[Row], banner: Option<&str>
             find: Find::Later,
         }),
         locked: false,
+        remove: None,
     };
     page_ui_with(ui, t, rows, top)
 }
@@ -557,6 +615,20 @@ pub fn page_ui_with_head(
                             ui.label(RichText::new(&r.state).color(c(state_col)));
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let said = format!("{MORE} for {}", r.name);
+                            let more = ui.menu_button(RichText::new("\u{2026}").size(16.0), |ui| {
+                                // A search locks it like Turn on / Turn off.
+                                if ui
+                                    .add_enabled(!top.locked, egui::Button::new(REMOVE_MENU))
+                                    .clicked()
+                                {
+                                    click = Some(Click::AskRemove(r.id.clone()));
+                                    ui.close();
+                                }
+                            });
+                            more.response.widget_info(move || {
+                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &said)
+                            });
                             let b = ui.button(OPEN).on_hover_text(words::open_module(&r.name));
                             if b.clicked() {
                                 click = Some(Click::Open(r.id.clone()));
@@ -582,6 +654,36 @@ pub fn page_ui_with_head(
                             }
                         });
                     });
+                    if top.remove == Some(r.id.as_str()) {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.label(
+                            RichText::new(remove_question(&r.name))
+                                .strong()
+                                .color(c(t.text)),
+                        );
+                        let line = if r.adopted {
+                            REMOVE_ADOPTED
+                        } else {
+                            REMOVE_OWN
+                        };
+                        ui.label(RichText::new(line).color(c(t.text_muted)));
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            let go = ui.add(
+                                egui::Button::new(RichText::new(REMOVE).color(c(t.on_accent)))
+                                    .fill(c(t.danger)),
+                            );
+                            if go.clicked() {
+                                click = Some(Click::Remove(r.id.clone()));
+                            }
+                            if ui.button(CANCEL).clicked()
+                                || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                            {
+                                click = Some(Click::CancelRemove);
+                            }
+                        });
+                    }
                 });
         });
         ui.add_space(8.0);
@@ -832,6 +934,7 @@ mod tests {
             off,
             label: String::new(),
             primary: None,
+            adopted: false,
         };
         let mut rows = vec![
             mk("Beat", false, false),
@@ -1036,6 +1139,7 @@ mod tests {
                     let top = Top {
                         banner: None,
                         locked: true,
+                        remove: None,
                     };
                     if let Some(c) = page_ui_with(ui, &t, &rows, top) {
                         clicked = Some(c);
@@ -1154,5 +1258,95 @@ mod tests {
             .collect();
         assert!(labels.contains(&words::SAFE_MODE_LINE_SET), "{labels:?}");
         assert!(!labels.contains(&words::SAFE_MODE_LINE), "{labels:?}");
+    }
+
+    /// The menu only asks; the confirm answers once, for the module it asked about.
+    #[test]
+    fn remove_needs_the_confirm_for_that_module_and_answers_once() {
+        let mut a = RemoveAsk::default();
+        assert!(!a.confirm("art"), "nothing was asked");
+        a.ask("art");
+        assert_eq!(a.pending(), Some("art"));
+        assert!(!a.confirm("beat"), "another module's confirm");
+        assert_eq!(a.pending(), Some("art"));
+        assert!(a.confirm("art"));
+        assert!(!a.confirm("art"), "answers once");
+        a.ask("art");
+        a.cancel();
+        assert!(!a.confirm("art"), "cancelled");
+        a.ask("art");
+        a.ask("beat");
+        assert!(!a.confirm("art"), "a newer ask replaces the older");
+    }
+
+    fn labels_of(rows: &[Row], remove: Option<&str>) -> (Vec<String>, Option<Click>) {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let t = crate::theme::tokens(false);
+        let mut clicked = None;
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let top = Top {
+                    remove,
+                    ..Top::default()
+                };
+                clicked = page_ui_with(ui, &t, rows, top);
+            });
+        });
+        let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+        let labels = nodes
+            .iter()
+            .filter_map(|(_, n)| n.label().or(n.value()).map(String::from))
+            .collect();
+        (labels, clicked)
+    }
+
+    fn row_of(id: &str, name: &str, adopted: bool) -> Row {
+        row(
+            &Installed {
+                id: id.into(),
+                name: name.into(),
+                version: "1.0.0".into(),
+                enabled: true,
+                adopted,
+            },
+            &|_| None,
+            None,
+        )
+    }
+
+    /// The confirm shows only under the row that was asked about, says plainly what happens
+    /// (never an id), and drawing a page clicks nothing.
+    #[test]
+    fn the_confirm_says_what_happens_and_only_shows_when_asked() {
+        let rows = [row_of("m.one", "One", true), row_of("m.two", "Two", false)];
+        let (l, c) = labels_of(&rows, None);
+        assert_eq!(c, None);
+        for s in [REMOVE_ADOPTED, REMOVE_OWN, REMOVE, CANCEL] {
+            assert!(!l.iter().any(|x| x == s), "{s} shown unasked: {l:?}");
+        }
+        assert!(l.iter().any(|x| x == "More actions for One"), "{l:?}");
+
+        let (l, c) = labels_of(&rows, Some("m.one"));
+        assert_eq!(c, None, "the confirm never clicks itself");
+        assert!(l.iter().any(|x| x == REMOVE_ADOPTED), "{l:?}");
+        assert!(!l.iter().any(|x| x == REMOVE_OWN), "{l:?}");
+        assert!(l.iter().any(|x| x == &remove_question("One")), "{l:?}");
+        assert!(l.iter().any(|x| x == REMOVE) && l.iter().any(|x| x == CANCEL));
+
+        let (l, _) = labels_of(&rows, Some("m.two"));
+        assert!(l.iter().any(|x| x == REMOVE_OWN), "{l:?}");
+        assert!(!l.iter().any(|x| x == REMOVE_ADOPTED), "{l:?}");
+
+        for s in [
+            REMOVE_ADOPTED,
+            REMOVE_OWN,
+            REMOVE_MENU,
+            &remove_question("x"),
+        ] {
+            for never in words::NEVER_SHOWN {
+                assert!(!s.to_lowercase().contains(&never.to_lowercase()), "{s}");
+            }
+        }
     }
 }

@@ -32,6 +32,12 @@ pub trait Actions {
     fn force_update(&self, id: &str);
     /// Review on "Update waiting for you" after the user's Allow: the swap runs.
     fn review(&self, _id: &str) {}
+    /// "Remove from Hideout..." after the user's confirm: the module is stopped if it runs
+    /// and the registry forgets it ([`hideout_supervisor::driver::Supervisor::remove`]).
+    /// Its own settings and files are never deleted.
+    fn remove(&self, _id: &str) -> Result<(), String> {
+        Err("no supervisor in this hub".into())
+    }
     /// The page Update Hideout opens for `id` (#991): its catalog's release page, else the
     /// releases page. `None`: the releases page.
     fn update_hideout_url(&self, _id: &str) -> Option<String> {
@@ -68,6 +74,9 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     fn review(&self, id: &str) {
         hideout_supervisor::driver::Supervisor::review(self, id)
     }
+    fn remove(&self, id: &str) -> Result<(), String> {
+        hideout_supervisor::driver::Supervisor::remove(self, id)
+    }
     fn update_hideout_url(&self, id: &str) -> Option<String> {
         Some(hideout_supervisor::driver::Supervisor::update_hideout_url(
             self, id,
@@ -92,6 +101,8 @@ pub struct ModulesPage {
     /// The module permission dialog, header lines and sections (#1178); `None` on a second hub.
     pub perm: Option<crate::permission_actions::PermUi>,
     restarts: hideout_shell::modules_list::Restarts,
+    /// The Remove confirm: the row menu asks, only the confirm's Remove removes.
+    ask: hideout_shell::modules_list::RemoveAsk,
 }
 
 /// The Modules page's list as the inventory watch last read it (#1054.1): the watch thread
@@ -159,7 +170,12 @@ impl ModulesPage {
         use hideout_shell::modules_list::{Click, Does};
         let id = match &click {
             Click::Open(id) | Click::Primary(id, _) => Some(id.clone()),
-            Click::StartNormally | Click::FindCulprit | Click::CopyDiagnostics => None,
+            Click::StartNormally
+            | Click::FindCulprit
+            | Click::CopyDiagnostics
+            | Click::AskRemove(_)
+            | Click::Remove(_)
+            | Click::CancelRemove => None,
         };
         let a = self.actions.as_deref();
         let open = match click {
@@ -180,6 +196,18 @@ impl ModulesPage {
             }
             // Copied by the page itself (it has the egui context).
             Click::CopyDiagnostics => false,
+            Click::AskRemove(id) => {
+                self.ask.ask(&id);
+                false
+            }
+            Click::CancelRemove => {
+                self.ask.cancel();
+                false
+            }
+            Click::Remove(id) => {
+                self.remove_confirmed(&id);
+                false
+            }
             Click::Primary(id, does) => match (does, a) {
                 (Does::UpdateHub, _) => {
                     hideout_shell::open_update_page_at(&self.update_page(&id));
@@ -260,6 +288,31 @@ impl ModulesPage {
         };
         if let (true, Some(id)) = (open, id) {
             hideout_shell::open_module(&id);
+        }
+    }
+
+    /// The confirm's Remove: only for the module that was asked about, and only with a
+    /// supervisor to stop it. The row goes at once; the inventory watch's list agrees.
+    fn remove_confirmed(&mut self, id: &str) {
+        if !self.ask.confirm(id) {
+            log::warn!("Modules page: Remove {id} without its confirm; ignored");
+            return;
+        }
+        let Some(a) = self.actions.as_deref() else {
+            log::warn!("Modules page: Remove {id}: no supervisor in this hub");
+            return;
+        };
+        match a.remove(id) {
+            Ok(()) => {
+                self.installed.retain(|m| m.id != id);
+                if let Some(g) = self.grant.as_mut() {
+                    g.refresh();
+                }
+                if let Some(p) = self.perm.as_mut() {
+                    p.refresh();
+                }
+            }
+            Err(why) => log::warn!("Modules page: {id} not removed ({why})"),
         }
     }
 
@@ -457,6 +510,7 @@ impl hideout_shell::Page for ModulesPage {
             banner: banner_shown.then_some(Banner { line, note, find }),
             // Locked while it runs; the result's buttons are the way out.
             locked: active,
+            remove: self.ask.pending(),
         };
         let mut grant = self.grant.take();
         let mut perm = self.perm.take();
@@ -523,6 +577,7 @@ pub fn pages(
         grant,
         perm,
         restarts: Default::default(),
+        ask: Default::default(),
     })]
 }
 
@@ -568,6 +623,7 @@ mod tests {
             grant: None,
             perm: None,
             restarts: Default::default(),
+            ask: Default::default(),
         };
         let (rows, counting) = page.rows();
         let words: Vec<_> = rows.iter().map(|r| r.state.as_str()).collect();
@@ -602,6 +658,7 @@ mod tests {
             finder: None,
             fresh: Some(fresh.clone()),
             restarts: Default::default(),
+            ask: Default::default(),
             grant: None,
             perm: None,
         };
@@ -661,6 +718,10 @@ mod tests {
         }
         fn force_update(&self, id: &str) {
             self.0.borrow_mut().push(format!("force {id}"));
+        }
+        fn remove(&self, id: &str) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("remove {id}"));
+            Ok(())
         }
         fn update_hideout_url(&self, id: &str) -> Option<String> {
             match id {
@@ -738,6 +799,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            ask: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -795,6 +857,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            ask: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -848,6 +911,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            ask: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -897,6 +961,7 @@ mod tests {
             grant: None,
             perm: None,
             restarts: Default::default(),
+            ask: Default::default(),
         };
         assert!(page.safe_mode());
         let (rows, _) = page.rows();
@@ -919,5 +984,84 @@ mod tests {
         let (rows, _) = page.rows();
         assert_eq!(rows[0].state, "On");
         assert_eq!(rows[1].state, "On");
+    }
+
+    /// Remove from Hideout: the menu only asks, a Remove without its confirm does nothing, the
+    /// confirm removes once (the supervisor stops and the registry forgets), Cancel asks
+    /// for nothing, and the row goes.
+    #[test]
+    fn remove_needs_the_confirm_and_reaches_the_supervisor_once() {
+        use hideout_shell::modules_list::Click;
+        let inst = |id: &str| Installed {
+            adopted: true,
+            id: id.into(),
+            name: id.into(),
+            version: "1.0.0".into(),
+            enabled: true,
+        };
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![inst("m.a"), inst("m.b")],
+            facts: None,
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            ask: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+        };
+        let ids =
+            |p: &mut ModulesPage| -> Vec<String> { p.rows().0.into_iter().map(|r| r.id).collect() };
+        // Not asked: ignored.
+        page.on_click(Click::Remove("m.a".into()));
+        assert!(log.0.borrow().is_empty());
+        // Asking removes nothing.
+        page.on_click(Click::AskRemove("m.a".into()));
+        assert!(log.0.borrow().is_empty());
+        assert_eq!(page.ask.pending(), Some("m.a"));
+        // The confirm for another module is not this one's.
+        page.on_click(Click::Remove("m.b".into()));
+        assert!(log.0.borrow().is_empty());
+        // Cancel: nothing, and a later Remove is unasked again.
+        page.on_click(Click::CancelRemove);
+        page.on_click(Click::Remove("m.a".into()));
+        assert!(log.0.borrow().is_empty());
+        assert_eq!(ids(&mut page), ["m.a", "m.b"]);
+        // Ask, confirm: once.
+        page.on_click(Click::AskRemove("m.a".into()));
+        page.on_click(Click::Remove("m.a".into()));
+        page.on_click(Click::Remove("m.a".into()));
+        assert_eq!(*log.0.borrow(), ["remove m.a"]);
+        assert_eq!(ids(&mut page), ["m.b"]);
+        assert_eq!(page.ask.pending(), None);
+    }
+
+    /// Without a supervisor (a second hub) the confirm removes nothing and the row stays.
+    #[test]
+    fn without_a_supervisor_remove_changes_nothing() {
+        use hideout_shell::modules_list::Click;
+        let mut page = ModulesPage {
+            installed: vec![Installed {
+                adopted: false,
+                id: "m.a".into(),
+                name: "Art".into(),
+                version: "1.0.0".into(),
+                enabled: true,
+            }],
+            facts: None,
+            actions: None,
+            safe_by_closes: false,
+            restarts: Default::default(),
+            ask: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+        };
+        page.on_click(Click::AskRemove("m.a".into()));
+        page.on_click(Click::Remove("m.a".into()));
+        assert_eq!(page.installed.len(), 1);
     }
 }

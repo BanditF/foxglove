@@ -1051,7 +1051,15 @@ impl Registry {
             return Err(Failure::NotInstalled(id.into()));
         };
         let dir = self.home.join("modules").join(id);
-        if gone.source == ADOPTED {
+        // Only ever the hub's own `modules\<id>`: an id that isn't one plain folder name never
+        // reaches a delete (the entry is still forgotten below).
+        let own_folder = {
+            let mut parts = Path::new(id).components();
+            matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none()
+        };
+        if !own_folder {
+            // Nothing to delete.
+        } else if gone.source == ADOPTED {
             // Unregister only: the external install is never touched, and what the hub kept for
             // the module (settings, data, secrets) stays; only the manifest record goes.
             let version = dir.join(&gone.version);
