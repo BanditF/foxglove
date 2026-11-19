@@ -726,7 +726,42 @@ fn has_master_volume(link: &Link) -> bool {
     let Some(hello) = link.state().connected.and_then(|c| c.hello) else {
         return false;
     };
-    foxglove_link::hello_v2::read(link, &hello).word2() & caps2::KNOB_VOLUME != 0
+    master_volume_offered(link, &hello, std::thread::sleep)
+}
+
+/// Waits before the extra tries at reading the capability words (a connect is a busy moment on the
+/// link: the keyboard's reply queue can be full and drop D5 88). Bounded: three more tries.
+const CAPS_RETRY: [Duration; 3] = [
+    Duration::from_millis(300),
+    Duration::from_millis(700),
+    Duration::from_millis(1500),
+];
+
+/// Whether `hello`'s keyboard offers master volume. A read that FAILED is not "no": it is tried
+/// again after each of [`CAPS_RETRY`]'s waits, because taking it as no left the keyboard sending
+/// the volume keys (Windows' own flyout on top of Foxglove's card) for the whole connection, with
+/// nothing in the log. Firmware before HELLO v2 is a plain no, at once.
+fn master_volume_offered(
+    t: &impl Transport,
+    hello: &foxglove_link::protocol::Hello,
+    wait: impl Fn(Duration),
+) -> bool {
+    use foxglove_link::hello_v2::{read, State};
+    let mut tries = CAPS_RETRY.iter();
+    loop {
+        match read(t, hello) {
+            State::Failed(why) => match tries.next() {
+                Some(w) => wait(*w),
+                None => {
+                    eprintln!(
+                        "Foxglove: knob: master volume not held: the keyboard's capability words                          weren't read ({why})"
+                    );
+                    return false;
+                }
+            },
+            state => return state.word2() & caps2::KNOB_VOLUME != 0,
+        }
+    }
 }
 
 /// The report that puts `cycle`'s target on the keyboard, or hands the knob back.
@@ -1940,6 +1975,79 @@ mod tests {
         // #855: master volume, as tests/zmk-sim/knob sends it.
         assert_eq!(wire::volume_hold(true), [0xD7, 0x16, 1]);
         assert_eq!(wire::volume_hold(false), [0xD7, 0x16, 0]);
+    }
+
+    /// A keyboard that answers each request with the next canned reply (none left: no reply).
+    struct Caps(Mutex<Vec<Result<[u8; protocol::REPORT], ()>>>);
+
+    impl Transport for Caps {
+        fn send(&self, _: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn request(
+            &self,
+            _: &[u8],
+            _: u8,
+            _: u8,
+            _: Duration,
+        ) -> anyhow::Result<[u8; protocol::REPORT]> {
+            let mut r = self.0.lock().unwrap();
+            if r.is_empty() {
+                anyhow::bail!("no reply");
+            }
+            r.remove(0).map_err(|_| anyhow::anyhow!("no reply"))
+        }
+    }
+
+    fn caps_reply(word2: u32) -> Result<[u8; protocol::REPORT], ()> {
+        let mut r = [0u8; protocol::REPORT];
+        r[..3].copy_from_slice(&[0xD5, 0x88, 1]);
+        r[3..7].copy_from_slice(&word2.to_le_bytes());
+        Ok(r)
+    }
+
+    fn v2() -> protocol::Hello {
+        protocol::Hello {
+            version: 2,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_lost_capability_read_is_tried_again_not_taken_as_no_master_volume() {
+        // Both tries of the first read lose their reply (a busy connect), the next one lands.
+        let board = Caps(Mutex::new(vec![
+            Err(()),
+            Err(()),
+            caps_reply(caps2::KNOB_VOLUME),
+        ]));
+        let waits = Mutex::new(0);
+        let held = master_volume_offered(&board, &v2(), |_| *waits.lock().unwrap() += 1);
+        assert!(held, "the hold is taken once the words are read");
+        assert_eq!(*waits.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_keyboard_that_never_answers_ends_after_the_bounded_tries() {
+        let board = Caps(Mutex::new(vec![]));
+        let waits = Mutex::new(Vec::new());
+        assert!(!master_volume_offered(&board, &v2(), |w| waits
+            .lock()
+            .unwrap()
+            .push(w)));
+        assert_eq!(*waits.lock().unwrap(), CAPS_RETRY.to_vec());
+    }
+
+    #[test]
+    fn read_words_without_the_bit_and_old_firmware_say_no_at_once() {
+        let board = Caps(Mutex::new(vec![caps_reply(0)]));
+        assert!(!master_volume_offered(&board, &v2(), |_| panic!("no wait")));
+        let old = protocol::Hello {
+            version: 1,
+            ..Default::default()
+        };
+        let board = Caps(Mutex::new(vec![]));
+        assert!(!master_volume_offered(&board, &old, |_| panic!("no wait")));
     }
 
     fn master_now(s: &FakeSessions) -> (u8, bool) {
