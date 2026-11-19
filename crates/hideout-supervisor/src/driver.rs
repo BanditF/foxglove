@@ -33,6 +33,11 @@ pub type Notifier = Box<dyn FnMut(&str, &str, &str, &[String]) + Send>;
 /// catalog fetch registers one; without one, Check for updates reads "Couldn't check" (#1026).
 pub type Refresh = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
+/// The end of a Remove from Hideout that had to wait for the module to stop: `Ok` when it is
+/// gone, `Err` (plain reason in the log, not for the screen) when it could not be removed. The
+/// shell sets one to tell the Modules page without polling.
+pub type RemoveDone = Arc<dyn Fn(&str, Result<(), String>) + Send + Sync>;
+
 /// What Copy diagnostics says about a withdrawal (#1026).
 #[derive(Clone, Debug, Default)]
 struct Withdrawal {
@@ -262,6 +267,10 @@ struct Inner {
     caps: Caps,
     refresh: Mutex<Option<Refresh>>,
     withdrawals: Mutex<BTreeMap<String, Withdrawal>>,
+    /// Modules asked to be removed (Remove from Hideout) while they run: stopped first, removed
+    /// from the registry when their instance ends ([`Supervisor::remove`]).
+    removing: Mutex<BTreeSet<String>>,
+    remove_done: Mutex<Option<RemoveDone>>,
     /// Notifications made before the shell's notifier was set (a withdrawal found at hub start):
     /// delivered by [`Supervisor::set_notifier`]. At most [`EARLY_NOTES`].
     early: Mutex<Vec<EarlyNote>>,
@@ -428,6 +437,8 @@ impl Supervisor {
             caps: Caps::default(),
             refresh: Mutex::new(None),
             withdrawals: Mutex::new(BTreeMap::new()),
+            removing: Mutex::new(BTreeSet::new()),
+            remove_done: Mutex::new(None),
             early: Mutex::new(Vec::new()),
             calls: Mutex::new(BTreeMap::new()),
             next_tag: AtomicU64::new(1),
@@ -1037,6 +1048,53 @@ impl Supervisor {
         self.feed(Ev::Disable { id: id.into() });
     }
 
+    /// "Remove from Hideout…" (product slice 6): the module is stopped first if it runs, then
+    /// the registry forgets it (its permissions, keyboard grant and binding go with the
+    /// inventory entry; a hub-installed module's own `modules\<id>` folder goes, an adopted
+    /// one's install and settings are never touched) and the supervisor drops its records. A
+    /// running module is removed when its instance ends (no waiting, no polling); `Ok` then
+    /// means "stopping, then removed". The page's row goes with the inventory watch's next list.
+    pub fn remove(&self, id: &str) -> Result<(), String> {
+        if self.0.live.lock().unwrap().contains_key(id) {
+            self.0.removing.lock().unwrap().insert(id.into());
+            self.feed(Ev::Disable { id: id.into() });
+            // It may have ended between the check and the flag.
+            if !self.0.live.lock().unwrap().contains_key(id)
+                && self.0.removing.lock().unwrap().remove(id)
+            {
+                return self.finish_remove(id);
+            }
+            return Ok(());
+        }
+        self.finish_remove(id)
+    }
+
+    /// Where the end of a waiting Remove is told ([`RemoveDone`]).
+    pub fn set_remove_done(&self, f: RemoveDone) {
+        *self.0.remove_done.lock().unwrap() = Some(f);
+    }
+
+    fn remove_done(&self, id: &str, r: Result<(), String>) {
+        let f = self.0.remove_done.lock().unwrap().clone();
+        if let Some(f) = f {
+            f(id, r);
+        }
+    }
+
+    /// The registry's own "running" guard can't fire here (this opens a fresh registry; only the
+    /// supervisor knows what runs), so the supervisor's `live` map is the guard: nothing is
+    /// removed while an instance of the module is live.
+    fn finish_remove(&self, id: &str) -> Result<(), String> {
+        if self.0.live.lock().unwrap().contains_key(id) {
+            return Err(format!("{id} is still running"));
+        }
+        let mut reg = Registry::open_from_env(&self.0.home).map_err(|e| format!("{e:?}"))?;
+        reg.remove(id).map_err(|e| format!("{e:?}"))?;
+        self.forget(id);
+        log::info!("supervisor: {id} removed from Hideout");
+        Ok(())
+    }
+
     /// Whether process `pid` may not grant (#1178): it runs inside a module's Job Object (a
     /// module or any child of one; breakaway is not allowed), or can't be inspected (fail
     /// closed).
@@ -1141,6 +1199,10 @@ impl Supervisor {
         }
         if self.safe_mode() {
             log::info!("supervisor: {id}: turned on; not started in safe mode");
+        }
+        // Turned on again while its Remove waited for it to stop: the Remove is dropped.
+        if self.0.removing.lock().unwrap().remove(id) {
+            self.remove_done(id, Err("turned on again".into()));
         }
         self.feed(Ev::Enable { id: id.into() });
         // A fact it waits for that was set while it was off starts it now (§4.6, v1.10).
@@ -1999,6 +2061,15 @@ fn ended(me: Weak<Inner>, id: &str, instance: u64, code: i64) {
             id: id.into(),
             instance,
         });
+    }
+    // A Remove from Hideout asked while it ran: it has stopped, now it goes.
+    let removing = sup.0.removing.lock().unwrap().remove(id);
+    if removing && !sup.0.live.lock().unwrap().contains_key(id) {
+        let done = sup.finish_remove(id);
+        if let Err(e) = &done {
+            log::warn!("supervisor: {id}: not removed after it stopped: {e}");
+        }
+        sup.remove_done(id, done);
     }
 }
 

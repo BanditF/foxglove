@@ -271,6 +271,15 @@ pub fn start(
         sup.set_refresh(crate::catalog_fetch::refresh(home, fetch.clone()));
         crate::catalog_fetch::fetch_at_start(home, sup.clone(), fetch);
     }
+    // A Remove that waited for its module to stop and then failed: the page shows the error.
+    {
+        let (fresh, side) = (fresh.clone(), side.clone());
+        sup.set_remove_done(std::sync::Arc::new(move |id: &str, r| {
+            if r.is_err() && fresh.put_failed(id) {
+                side.wake();
+            }
+        }));
+    }
     let s = sup.clone();
     std::thread::Builder::new()
         .name("hideout-router-events".into())

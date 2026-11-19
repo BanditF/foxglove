@@ -32,6 +32,12 @@ pub trait Actions {
     fn force_update(&self, id: &str);
     /// Review on "Update waiting for you" after the user's Allow: the swap runs.
     fn review(&self, _id: &str) {}
+    /// "Remove from Hideout..." after the user's confirm: the module is stopped if it runs
+    /// and the registry forgets it ([`hideout_supervisor::driver::Supervisor::remove`]).
+    /// Its own settings and files are never deleted.
+    fn remove(&self, _id: &str) -> Result<(), String> {
+        Err("no supervisor in this hub".into())
+    }
     /// The page Update Hideout opens for `id` (#991): its catalog's release page, else the
     /// releases page. `None`: the releases page.
     fn update_hideout_url(&self, _id: &str) -> Option<String> {
@@ -68,6 +74,9 @@ impl Actions for hideout_supervisor::driver::Supervisor {
     fn review(&self, id: &str) {
         hideout_supervisor::driver::Supervisor::review(self, id)
     }
+    fn remove(&self, id: &str) -> Result<(), String> {
+        hideout_supervisor::driver::Supervisor::remove(self, id)
+    }
     fn update_hideout_url(&self, id: &str) -> Option<String> {
         Some(hideout_supervisor::driver::Supervisor::update_hideout_url(
             self, id,
@@ -92,6 +101,8 @@ pub struct ModulesPage {
     /// The module permission dialog, header lines and sections (#1178); `None` on a second hub.
     pub perm: Option<crate::permission_actions::PermUi>,
     restarts: hideout_shell::modules_list::Restarts,
+    /// The Remove confirm: the row menu asks, only the confirm's Remove removes.
+    ask: hideout_shell::modules_list::RemoveAsk,
 }
 
 /// The Modules page's list as the inventory watch last read it (#1054.1): the watch thread
@@ -106,6 +117,8 @@ pub struct Fresh(std::sync::Arc<std::sync::Mutex<FreshInner>>);
 struct FreshInner {
     last: Option<Vec<hideout_shell::modules_list::Installed>>,
     waiting: bool,
+    /// Modules whose Remove failed after they stopped (the supervisor says so).
+    failed: Vec<String>,
 }
 
 #[cfg(windows)]
@@ -120,6 +133,17 @@ impl Fresh {
         f.last = Some(list);
         f.waiting = true;
         true
+    }
+
+    /// A Remove that waited for the module to stop did not work; answers whether the page
+    /// needs a frame (always).
+    pub fn put_failed(&self, id: &str) -> bool {
+        self.0.lock().unwrap().failed.push(id.into());
+        true
+    }
+
+    pub(crate) fn take_failed(&self) -> Vec<String> {
+        std::mem::take(&mut self.0.lock().unwrap().failed)
     }
 
     /// The list put since the last take, if any.
@@ -159,7 +183,13 @@ impl ModulesPage {
         use hideout_shell::modules_list::{Click, Does};
         let id = match &click {
             Click::Open(id) | Click::Primary(id, _) => Some(id.clone()),
-            Click::StartNormally | Click::FindCulprit | Click::CopyDiagnostics => None,
+            Click::StartNormally
+            | Click::FindCulprit
+            | Click::CopyDiagnostics
+            | Click::AskRemove(_)
+            | Click::Remove(_)
+            | Click::CancelRemove
+            | Click::DismissRemove(_) => None,
         };
         let a = self.actions.as_deref();
         let open = match click {
@@ -180,6 +210,22 @@ impl ModulesPage {
             }
             // Copied by the page itself (it has the egui context).
             Click::CopyDiagnostics => false,
+            Click::AskRemove(id) => {
+                self.ask.ask(&id);
+                false
+            }
+            Click::CancelRemove => {
+                self.ask.cancel();
+                false
+            }
+            Click::DismissRemove(id) => {
+                self.ask.clear(&id);
+                false
+            }
+            Click::Remove(id) => {
+                self.remove_confirmed(&id);
+                false
+            }
             Click::Primary(id, does) => match (does, a) {
                 (Does::UpdateHub, _) => {
                     hideout_shell::open_update_page_at(&self.update_page(&id));
@@ -263,6 +309,38 @@ impl ModulesPage {
         }
     }
 
+    /// The confirm's Remove: only for the module that was asked about, and only with a
+    /// supervisor to stop it. The row goes at once; the inventory watch's list agrees.
+    fn remove_confirmed(&mut self, id: &str) {
+        if !self.ask.confirm(id) {
+            log::warn!("Modules page: Remove {id} without its confirm; ignored");
+            return;
+        }
+        let Some(a) = self.actions.as_deref() else {
+            log::warn!("Modules page: Remove {id}: no supervisor in this hub");
+            return;
+        };
+        match a.remove(id) {
+            Ok(()) => {
+                // The row stays as "Removing…" until the inventory list no longer has it (a
+                // module that runs is only stopping): the page never says it is gone first.
+                self.ask
+                    .set(id, hideout_shell::modules_list::Removal::Removing);
+                if let Some(g) = self.grant.as_mut() {
+                    g.refresh();
+                }
+                if let Some(p) = self.perm.as_mut() {
+                    p.refresh();
+                }
+            }
+            Err(why) => {
+                log::warn!("Modules page: {id} not removed ({why})");
+                self.ask
+                    .set(id, hideout_shell::modules_list::Removal::Failed);
+            }
+        }
+    }
+
     /// What follows the user's Allow in the permission dialog: the module turns on (Turn on…,
     /// a header's Review…) or its update swaps (Review…); Change… only records.
     fn after_allow(&mut self, done: crate::permission_actions::Done) {
@@ -305,12 +383,25 @@ impl ModulesPage {
         use hideout_shell::modules_list::row_in;
         if let Some(list) = self.fresh.as_ref().and_then(Fresh::take) {
             self.installed = list;
+            let listed = &self.installed;
+            self.ask
+                .retain_listed(|id| listed.iter().any(|m| m.id == id));
             if let Some(g) = self.grant.as_mut() {
                 g.refresh();
             }
             if let Some(p) = self.perm.as_mut() {
                 p.refresh();
             }
+        }
+        // A Remove that had to wait for the module to stop and then did not work.
+        for id in self
+            .fresh
+            .as_ref()
+            .map(Fresh::take_failed)
+            .unwrap_or_default()
+        {
+            self.ask
+                .set(&id, hideout_shell::modules_list::Removal::Failed);
         }
         let none = |_: &str| None;
         let facts: &dyn Fn(&str) -> Option<serde_json::Value> = match &self.facts {
@@ -337,6 +428,9 @@ impl ModulesPage {
                 let on = s.in_search.contains(&r.id).then(|| s.on.contains(&r.id));
                 hideout_shell::modules_list::search_words(r, on);
             }
+        }
+        for r in &mut rows {
+            r.removal = self.ask.state(&r.id);
         }
         hideout_shell::modules_list::order(&mut rows);
         (rows, counting)
@@ -457,6 +551,9 @@ impl hideout_shell::Page for ModulesPage {
             banner: banner_shown.then_some(Banner { line, note, find }),
             // Locked while it runs; the result's buttons are the way out.
             locked: active,
+            remove: self.ask.pending(),
+            // Without a supervisor (a second hub) there is nothing to stop it with.
+            can_remove: self.actions.is_some(),
         };
         let mut grant = self.grant.take();
         let mut perm = self.perm.take();
@@ -523,6 +620,7 @@ pub fn pages(
         grant,
         perm,
         restarts: Default::default(),
+        ask: Default::default(),
     })]
 }
 
@@ -568,6 +666,7 @@ mod tests {
             grant: None,
             perm: None,
             restarts: Default::default(),
+            ask: Default::default(),
         };
         let (rows, counting) = page.rows();
         let words: Vec<_> = rows.iter().map(|r| r.state.as_str()).collect();
@@ -602,6 +701,7 @@ mod tests {
             finder: None,
             fresh: Some(fresh.clone()),
             restarts: Default::default(),
+            ask: Default::default(),
             grant: None,
             perm: None,
         };
@@ -662,6 +762,14 @@ mod tests {
         fn force_update(&self, id: &str) {
             self.0.borrow_mut().push(format!("force {id}"));
         }
+        fn remove(&self, id: &str) -> Result<(), String> {
+            self.0.borrow_mut().push(format!("remove {id}"));
+            // "m.bad" is a module the supervisor can't remove.
+            if id == "m.bad" {
+                return Err("still running".into());
+            }
+            Ok(())
+        }
         fn update_hideout_url(&self, id: &str) -> Option<String> {
             match id {
                 "m.tag" => Some(TAG.into()),
@@ -701,6 +809,7 @@ mod tests {
             perm: None,
             finder: None,
             fresh: None,
+            ask: Default::default(),
         };
         page.after_allow(done(Then::Nothing));
         assert!(log.0.borrow().is_empty());
@@ -738,6 +847,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            ask: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -795,6 +905,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            ask: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -848,6 +959,7 @@ mod tests {
             actions: Some(Box::new(log.clone())),
             safe_by_closes: false,
             restarts: Default::default(),
+            ask: Default::default(),
             grant: None,
             perm: None,
             finder: None,
@@ -897,6 +1009,7 @@ mod tests {
             grant: None,
             perm: None,
             restarts: Default::default(),
+            ask: Default::default(),
         };
         assert!(page.safe_mode());
         let (rows, _) = page.rows();
@@ -919,5 +1032,146 @@ mod tests {
         let (rows, _) = page.rows();
         assert_eq!(rows[0].state, "On");
         assert_eq!(rows[1].state, "On");
+    }
+
+    /// Remove from Hideout: the menu only asks, a Remove without its confirm does nothing, the
+    /// confirm removes once (the supervisor stops and the registry forgets), Cancel asks
+    /// for nothing, and the row goes.
+    #[test]
+    fn remove_needs_the_confirm_and_reaches_the_supervisor_once() {
+        use hideout_shell::modules_list::Click;
+        let inst = |id: &str| Installed {
+            adopted: true,
+            id: id.into(),
+            name: id.into(),
+            version: "1.0.0".into(),
+            enabled: true,
+        };
+        let log = Log::default();
+        let mut page = ModulesPage {
+            installed: vec![inst("m.a"), inst("m.b")],
+            facts: None,
+            actions: Some(Box::new(log.clone())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            ask: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+        };
+        let ids =
+            |p: &mut ModulesPage| -> Vec<String> { p.rows().0.into_iter().map(|r| r.id).collect() };
+        // Not asked: ignored.
+        page.on_click(Click::Remove("m.a".into()));
+        assert!(log.0.borrow().is_empty());
+        // Asking removes nothing.
+        page.on_click(Click::AskRemove("m.a".into()));
+        assert!(log.0.borrow().is_empty());
+        assert_eq!(page.ask.pending(), Some("m.a"));
+        // The confirm for another module is not this one's.
+        page.on_click(Click::Remove("m.b".into()));
+        assert!(log.0.borrow().is_empty());
+        // Cancel: nothing, and a later Remove is unasked again.
+        page.on_click(Click::CancelRemove);
+        page.on_click(Click::Remove("m.a".into()));
+        assert!(log.0.borrow().is_empty());
+        assert_eq!(ids(&mut page), ["m.a", "m.b"]);
+        // Ask, confirm: once.
+        page.on_click(Click::AskRemove("m.a".into()));
+        page.on_click(Click::Remove("m.a".into()));
+        page.on_click(Click::Remove("m.a".into()));
+        assert_eq!(*log.0.borrow(), ["remove m.a"]);
+        assert_eq!(page.ask.pending(), None);
+        // The row does not vanish on Ok: it reads Removing until the inventory's list drops it.
+        use hideout_shell::modules_list::Removal;
+        assert_eq!(ids(&mut page), ["m.a", "m.b"]);
+        let removal = |p: &mut ModulesPage, id: &str| {
+            p.rows().0.into_iter().find(|r| r.id == id).unwrap().removal
+        };
+        assert_eq!(removal(&mut page, "m.a"), Some(Removal::Removing));
+        assert_eq!(removal(&mut page, "m.b"), None);
+        // The list without it: the row and its state go.
+        page.installed.retain(|m| m.id != "m.a");
+        page.ask
+            .retain_listed(|id| page.installed.iter().any(|m| m.id == id));
+        assert_eq!(ids(&mut page), ["m.b"]);
+        assert_eq!(page.ask.state("m.a"), None);
+    }
+
+    /// A Remove that fails keeps the row with an error (Try again asks again, Close puts it
+    /// away); one that fails after the module stopped (the supervisor says so) shows the same.
+    #[test]
+    fn a_failed_remove_keeps_the_row_with_an_error() {
+        use hideout_shell::modules_list::{Click, Removal};
+        let inst = |id: &str| Installed {
+            adopted: false,
+            id: id.into(),
+            name: id.into(),
+            version: "1.0.0".into(),
+            enabled: true,
+        };
+        let fresh = Fresh::default();
+        let mut page = ModulesPage {
+            installed: vec![inst("m.bad"), inst("m.late")],
+            facts: None,
+            actions: Some(Box::new(Log::default())),
+            safe_by_closes: false,
+            restarts: Default::default(),
+            ask: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: Some(fresh.clone()),
+        };
+        let state = |p: &mut ModulesPage, id: &str| {
+            p.rows()
+                .0
+                .into_iter()
+                .find(|r| r.id == id)
+                .map(|r| r.removal)
+        };
+        page.on_click(Click::AskRemove("m.bad".into()));
+        page.on_click(Click::Remove("m.bad".into()));
+        assert_eq!(state(&mut page, "m.bad"), Some(Some(Removal::Failed)));
+        // Try again asks (the error goes, the confirm shows); Close puts the error away.
+        page.on_click(Click::AskRemove("m.bad".into()));
+        assert_eq!(state(&mut page, "m.bad"), Some(None));
+        assert_eq!(page.ask.pending(), Some("m.bad"));
+        page.on_click(Click::CancelRemove);
+        page.on_click(Click::AskRemove("m.bad".into()));
+        page.on_click(Click::Remove("m.bad".into()));
+        page.on_click(Click::DismissRemove("m.bad".into()));
+        assert_eq!(state(&mut page, "m.bad"), Some(None));
+        // Failing after it stopped: the supervisor's word reaches the row.
+        assert!(fresh.put_failed("m.late"));
+        assert_eq!(state(&mut page, "m.late"), Some(Some(Removal::Failed)));
+    }
+
+    /// Without a supervisor (a second hub) the confirm removes nothing and the row stays.
+    #[test]
+    fn without_a_supervisor_remove_changes_nothing() {
+        use hideout_shell::modules_list::Click;
+        let mut page = ModulesPage {
+            installed: vec![Installed {
+                adopted: false,
+                id: "m.a".into(),
+                name: "Art".into(),
+                version: "1.0.0".into(),
+                enabled: true,
+            }],
+            facts: None,
+            actions: None,
+            safe_by_closes: false,
+            restarts: Default::default(),
+            ask: Default::default(),
+            grant: None,
+            perm: None,
+            finder: None,
+            fresh: None,
+        };
+        page.on_click(Click::AskRemove("m.a".into()));
+        page.on_click(Click::Remove("m.a".into()));
+        assert_eq!(page.installed.len(), 1);
     }
 }
