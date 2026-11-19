@@ -387,6 +387,7 @@ impl Registry {
                 last_choice: Vec::new(),
                 bound: None,
                 keyboard: None,
+                identity: None,
             },
         );
         self.inventory.grant(&m.id, &m.permissions);
@@ -446,6 +447,7 @@ impl Registry {
                 last_choice: Vec::new(),
                 bound: None,
                 keyboard: None,
+                identity: None,
             },
         );
         if self.hub.enabled_set(&head.id).is_none() {
@@ -797,6 +799,7 @@ impl Registry {
             bound: old.as_ref().and_then(|o| o.bound.clone()),
             // The grant is for the adopted legacy module only; a catalog install never has one.
             keyboard: None,
+            identity: None,
         };
         self.inventory.modules.insert(m.id.clone(), entry);
         self.inventory.ask(&m.id, &m.permissions);
@@ -885,6 +888,7 @@ impl Registry {
             // Registering again keeps the user's grant as it is: it is checked against the
             // program's path and hash at every launch, never carried by the id.
             keyboard: old.as_ref().and_then(|o| o.keyboard.clone()),
+            identity: None,
         };
         self.inventory.modules.insert(m.id.clone(), entry);
         self.inventory.ask(&m.id, &m.permissions);
