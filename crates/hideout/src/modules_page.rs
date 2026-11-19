@@ -848,6 +848,7 @@ mod tests {
             finder: None,
             fresh: None,
             ask: Default::default(),
+            discover: None,
         };
         page.after_allow(done(Then::Nothing));
         assert!(log.0.borrow().is_empty());
@@ -1101,6 +1102,7 @@ mod tests {
             perm: None,
             finder: None,
             fresh: None,
+            discover: None,
         };
         let ids =
             |p: &mut ModulesPage| -> Vec<String> { p.rows().0.into_iter().map(|r| r.id).collect() };
@@ -1165,6 +1167,7 @@ mod tests {
             perm: None,
             finder: None,
             fresh: Some(fresh.clone()),
+            discover: None,
         };
         let state = |p: &mut ModulesPage, id: &str| {
             p.rows()
@@ -1211,6 +1214,7 @@ mod tests {
             perm: None,
             finder: None,
             fresh: None,
+            discover: None,
         };
         page.on_click(Click::AskRemove("m.a".into()));
         page.on_click(Click::Remove("m.a".into()));
