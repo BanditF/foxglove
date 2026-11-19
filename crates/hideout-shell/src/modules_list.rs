@@ -31,10 +31,17 @@ pub struct Installed {
     /// An `adopted` module (§3): an install the hub registered but did not make. Its row's
     /// version reads "1.2.0 · installed separately" (UX plan #1117: "adopted" is jargon).
     pub adopted: bool,
+    /// Developer mode: the module runs from a dev folder and keeps its grants over rebuilds.
+    /// Its row's version ends with the **Dev** marker.
+    pub dev: bool,
 }
 
 /// The marker after an adopted module's version.
 pub const ADOPTED: &str = "installed separately";
+/// The marker after the version of a module that runs from a dev folder (developer mode).
+pub const DEV: &str = "Dev";
+/// What a screen reader says for [`DEV`].
+pub const DEV_SAID: &str = "dev build";
 
 /// What a row's main button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -421,15 +428,25 @@ pub fn row_in(
         adopted: m.adopted,
         id: m.id.clone(),
         name: m.name.clone(),
-        version: if m.adopted {
-            format!("{} \u{b7} {ADOPTED}", m.version)
-        } else {
-            m.version.clone()
+        version: {
+            let mut v = m.version.clone();
+            if m.adopted {
+                v = format!("{v} \u{b7} {ADOPTED}");
+            }
+            if m.dev {
+                v = format!("{v} \u{b7} {DEV}");
+            }
+            v
         },
-        version_said: if m.adopted {
-            format!("version {}, {ADOPTED}", m.version)
-        } else {
-            format!("version {}", m.version)
+        version_said: {
+            let mut v = format!("version {}", m.version);
+            if m.adopted {
+                v = format!("{v}, {ADOPTED}");
+            }
+            if m.dev {
+                v = format!("{v}, {DEV_SAID}");
+            }
+            v
         },
         // "Art's page couldn't be shown" and the adopted failures' sentences already name the
         // module. An adopted module's name carries the marker, so a screen reader says
@@ -798,6 +815,7 @@ mod tests {
     fn m(id: &str, enabled: bool) -> Installed {
         Installed {
             adopted: false,
+            dev: false,
             id: id.into(),
             name: "Art".into(),
             version: "0.5.0".into(),
@@ -1085,6 +1103,24 @@ mod tests {
         assert_eq!(r.left("m", None, t0), None);
     }
 
+    /// A module that runs from a dev folder (developer mode) shows the Dev marker after its
+    /// version, and says "dev build" to a screen reader.
+    #[test]
+    fn a_dev_folder_module_shows_the_dev_marker() {
+        let fact = |_: &str| None;
+        let mut a = m("vulpes", true);
+        a.adopted = true;
+        a.dev = true;
+        let r = row(&a, &fact, None);
+        assert_eq!(r.version, "0.5.0 \u{b7} installed separately \u{b7} Dev");
+        assert_eq!(
+            r.version_said,
+            "version 0.5.0, installed separately, dev build"
+        );
+        a.adopted = false;
+        assert_eq!(row(&a, &fact, None).version, "0.5.0 \u{b7} Dev");
+    }
+
     /// During a search (#1033): rows say on or off for the round, Off rows aren't part of it,
     /// rows that need the user keep their words; a locked Turn on keeps its focus, says the
     /// lock line as its description and does nothing.
@@ -1198,6 +1234,7 @@ mod tests {
         };
         let m = |id: &str, name: &str, enabled| Installed {
             adopted: false,
+            dev: false,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),

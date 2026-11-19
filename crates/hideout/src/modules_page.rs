@@ -506,6 +506,7 @@ pub fn list(reg: &hideout_registry::Registry) -> Vec<hideout_shell::modules_list
             version: m.version.clone(),
             enabled: reg.hub.enabled(id),
             adopted: m.source == hideout_registry::inventory::ADOPTED,
+            dev: reg.dev_folder_of(id).is_some(),
         })
         .collect();
     out.sort_by_key(|m| m.name.to_lowercase());
@@ -687,6 +688,7 @@ mod tests {
         });
         let inst = |id: &str, name: &str| Installed {
             adopted: false,
+            dev: false,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),
@@ -724,6 +726,7 @@ mod tests {
     fn the_page_takes_the_watchs_fresh_list() {
         let inst = |id: &str, name: &str| Installed {
             adopted: false,
+            dev: false,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),
@@ -874,6 +877,7 @@ mod tests {
         });
         let inst = |id: &str| Installed {
             adopted: false,
+            dev: false,
             id: id.into(),
             name: id.into(),
             version: "1.0.0".into(),
@@ -927,6 +931,7 @@ mod tests {
         });
         let inst = |id: &str, name: &str| Installed {
             adopted: false,
+            dev: false,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),
@@ -991,6 +996,7 @@ mod tests {
         let mut page = ModulesPage {
             installed: vec![Installed {
                 adopted: false,
+                dev: false,
                 id: "m.a".into(),
                 name: "Art".into(),
                 version: "0.5.0".into(),
@@ -1036,6 +1042,7 @@ mod tests {
         let log = Log::default();
         let inst = |id: &str, name: &str, enabled: bool| Installed {
             adopted: false,
+            dev: false,
             id: id.into(),
             name: name.into(),
             version: "1.0.0".into(),

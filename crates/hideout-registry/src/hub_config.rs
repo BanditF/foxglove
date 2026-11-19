@@ -133,6 +133,45 @@ impl HubConfig {
             .unwrap_or(false)
     }
 
+    /// `[dev] folders`: the dev folders the user marked (trust model, dev mode). Canonical paths
+    /// as written by [`crate::Registry::add_dev_folder`]; a hand-edited non-string entry is
+    /// ignored. Whether they count is decided by dev mode, never by this list.
+    pub fn dev_folders(&self) -> Vec<String> {
+        self.table
+            .get("dev")
+            .and_then(|d| d.get("folders"))
+            .and_then(|f| f.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Replaces the dev folder list; an empty list removes the table's key.
+    pub fn set_dev_folders(&mut self, folders: &[String]) {
+        let dev = self
+            .table
+            .entry("dev")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(dev) = dev {
+            if folders.is_empty() {
+                dev.remove("folders");
+            } else {
+                dev.insert(
+                    "folders".into(),
+                    toml::Value::Array(
+                        folders
+                            .iter()
+                            .map(|f| toml::Value::String(f.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+        }
+    }
+
     /// Drops a removed module's table.
     pub fn forget(&mut self, id: &str) {
         if let Some(toml::Value::Table(modules)) = self.table.get_mut("modules") {
