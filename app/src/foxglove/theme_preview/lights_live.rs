@@ -122,14 +122,39 @@ fn states() -> Vec<(&'static str, Live)> {
         "Effect picked, keyboard not reported yet (Sending…)",
         live_of(l, Some(&drafted), true),
     ));
+    // A colour picked, not applied yet: drawn, and the line says it is not the keyboard's.
+    let picked = crate::foxglove::lights_draft::shown(
+        &crate::foxglove::lights_page::Draft {
+            color: Some((10, 100, 90)),
+            edited: true,
+            ..Default::default()
+        },
+        &solid,
+        None,
+    )
+    .expect("a pick");
+    let drafted = RgbState {
+        left: picked.left.expect("left"),
+        ..solid
+    };
+    let l = look(&report(Some(solid), true), None, None, None, Some(&picked));
+    let mut live = live_of(l, Some(&drafted), true);
+    (live.line, live.name) = crate::foxglove::lights_live_ui::not_applied(live.line, live.name);
+    v.push(("Colour picked, not applied", live));
     // Right half's lights apart from the left's, nothing heard from it: outlines only.
     let mut apart = report(Some(solid), true);
     apart.right_apart = true;
     let l = look(&apart, None, None, None, None);
-    v.push((
-        "Right follows left is off, right half not reported",
-        live_of(l, Some(&solid), true),
-    ));
+    let mut live = live_of(l, Some(&solid), true);
+    (live.line, live.name) = crate::foxglove::lights_live_ui::words_with(
+        &live.look,
+        Some(&solid),
+        [100, 100],
+        &crate::foxglove::fixtures::users_desk::board().parts(),
+        true,
+        true,
+    );
+    v.push(("Right follows left is off, right half not reported", live));
     let l = look(&report(None, true), None, None, None, None);
     v.push(("Reading the keyboard", live_of(l, None, true)));
     let l = look(&report(None, false), None, None, None, None);

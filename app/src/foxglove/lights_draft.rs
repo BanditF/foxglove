@@ -70,8 +70,26 @@ pub fn change_of(intent: &Intent) -> Option<Change> {
 }
 
 /// The keyboard has answered since `sent` (a report read after it), or it has been too long.
+/// Any newer read counts, even one already on its way with the old state: a rare flicker, and
+/// the next report puts the change back.
 pub fn settled(sent: &Sent, last_read: Option<Instant>, now: Instant) -> bool {
     last_read.is_some_and(|r| r > sent.at) || now.saturating_duration_since(sent.at) >= GIVE_UP
+}
+
+/// Lets go of `sent` once settled, and of a speed pick with it: the keyboard has had its say, so
+/// a refused speed is not kept drawn. Returns whether the change settled.
+pub fn settle(draft: &mut Draft, last_read: Option<Instant>, now: Instant) -> bool {
+    let Some(sent) = draft.sent else {
+        return false;
+    };
+    if !settled(&sent, last_read, now) {
+        return false;
+    }
+    draft.sent = None;
+    if matches!(sent.change, Change::Speed(_)) {
+        draft.speed = None;
+    }
+    true
 }
 
 /// The lights to draw instead of the report's: the pick not applied yet (colour, brightness,
@@ -232,6 +250,31 @@ mod tests {
             None,
             "the report wins"
         );
+    }
+
+    #[test]
+    fn a_refused_speed_snaps_back_too() {
+        let t0 = Instant::now();
+        let mut d = Draft {
+            speed: Some(5),
+            sent: Some(sent(Change::Speed(5), t0)),
+            ..Draft::default()
+        };
+        let rgb = state(); // the keyboard still says its own speed
+        assert_eq!(
+            shown(&d, &rgb, d.sent.as_ref())
+                .unwrap()
+                .left
+                .unwrap()
+                .speed,
+            5
+        );
+        assert!(!settle(&mut d, None, t0 + Duration::from_millis(10)));
+        assert_eq!(d.speed, Some(5));
+        let later = t0 + Duration::from_millis(50);
+        assert!(settle(&mut d, Some(later), later));
+        assert_eq!(d.speed, None);
+        assert_eq!(shown(&d, &rgb, d.sent.as_ref()), None, "the report wins");
     }
 
     #[test]

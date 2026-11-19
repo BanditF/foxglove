@@ -247,3 +247,17 @@ fn a_dim_key_still_reads_as_lit() {
     assert!(dim.r() >= FLOOR);
     assert_eq!(lit(Color32::BLACK), Color32::from_gray(FLOOR));
 }
+
+#[test]
+fn the_line_says_when_a_pick_is_not_applied_or_a_half_is_unheard() {
+    let (line, name) = not_applied("Solid · Blue · 60%".into(), "Keyboard lights: solid".into());
+    assert_eq!(line, "Solid · Blue · 60% · not applied yet");
+    assert!(name.ends_with(", not applied yet"));
+    let solid = rgb(half(true, 0, 26, 80), None);
+    let l = own_look(solid);
+    let (line, name) = words_with(&l, Some(&solid), [100, 100], &parts(), true, true);
+    assert!(line.contains("Right: no report yet"), "{line}");
+    assert!(name.contains("no report yet"), "{name}");
+    let (line, _) = words_with(&l, Some(&solid), [100, 100], &parts(), true, false);
+    assert!(!line.contains("no report yet"), "{line}");
+}

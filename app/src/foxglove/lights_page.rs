@@ -197,12 +197,8 @@ impl Draft {
         if self.speed == Some(s.left.speed) {
             self.speed = None;
         }
-        if let Some(sent) = &self.sent {
-            let read = super::keyboard_settings::last_read();
-            if super::lights_draft::settled(sent, read, std::time::Instant::now()) {
-                self.sent = None;
-            }
-        }
+        let read = super::keyboard_settings::last_read();
+        super::lights_draft::settle(self, read, std::time::Instant::now());
     }
 }
 
