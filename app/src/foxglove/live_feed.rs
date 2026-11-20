@@ -518,15 +518,26 @@ pub fn health_rows() -> Vec<super::health::HealthRow> {
         .warns(Instant::now());
     let mut rows = refusal_rows(warns);
     if pairing::stuck(pairing::store()) {
-        rows.push(super::health::HealthRow::new(
-            "live_feed",
-            "Live wallpaper",
-            super::health::Level::Warn,
-            "a wallpaper couldn't reconnect",
-        ));
+        rows.push(stuck_row(super::hub_link::module_mode()));
     }
     rows.extend(super::live_parity::rows_now());
     rows
+}
+
+/// The row for a wallpaper whose re-push budget is spent. Its fix is the Reconnect the user can
+/// reach: Hideout's section when the hub has the module, else Settings (S5d).
+pub(crate) fn stuck_row(hub: bool) -> super::health::HealthRow {
+    let fix = if hub {
+        "Press Reconnect in Hideout's Wallpaper Engine section."
+    } else {
+        "Press Reconnect in Settings \u{203a} Live wallpaper."
+    };
+    super::health::HealthRow::new(
+        "live_feed",
+        "Live wallpaper",
+        super::health::Level::Warn,
+        format!("a wallpaper couldn't reconnect. {fix}"),
+    )
 }
 
 fn refusal_rows(warns: bool) -> Vec<super::health::HealthRow> {
@@ -2058,6 +2069,27 @@ mod tests {
         let _ = stream.shutdown(Shutdown::Both);
         drop(stream);
         (client.join().unwrap(), r)
+    }
+
+    /// S5d: the fix line names the Reconnect the user can reach, and uses no banned word.
+    #[test]
+    fn the_stuck_health_row_says_where_reconnect_is() {
+        let hub = stuck_row(true);
+        let plain = stuck_row(false);
+        assert_eq!(
+            hub.detail,
+            "a wallpaper couldn't reconnect. Press Reconnect in Hideout's Wallpaper Engine section."
+        );
+        assert_eq!(
+            plain.detail,
+            "a wallpaper couldn't reconnect. Press Reconnect in Settings \u{203a} Live wallpaper."
+        );
+        for r in [&hub, &plain] {
+            let t = r.detail.to_lowercase();
+            for w in ["token", "ticket", "pair", "paste"] {
+                assert!(!t.contains(w), "{w}");
+            }
+        }
     }
 
     /// A wallpaper with an old token: the upgrade completes so a browser can see why, it hears

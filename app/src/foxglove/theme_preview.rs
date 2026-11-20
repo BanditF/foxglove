@@ -3505,6 +3505,37 @@ fn health_card_renders() {
     assert_eq!(count(&without, DARK.danger), 0);
 }
 
+/// S5d: the Keyboard health card with the stuck wallpaper's row and its fix line, with and
+/// without the hub, dark and light, wide and narrow.
+#[test]
+fn health_card_stuck_wallpaper_renders() {
+    use crate::foxglove::theme::{Choice, DARK, LIGHT};
+    for (choice, theme, ground) in [
+        (Choice::Dark, "dark", DARK.ground),
+        (Choice::Light, "light", LIGHT.ground),
+    ] {
+        for (width, size) in [(640.0f32, "wide"), (340.0, "narrow")] {
+            for (hub, case) in [(true, "hub"), (false, "plain")] {
+                let mut view = crate::foxglove::health::tests::sample_none();
+                view.keyboard = true;
+                view.when = "Checked just now".into();
+                view.rows = vec![crate::foxglove::live_feed::stuck_row(hub)];
+                let ctx = preview_ctx();
+                crate::foxglove::theme::apply_choice(&ctx, choice);
+                let img = render_ui(&ctx, egui::vec2(width, 260.0), ground, move |ui| {
+                    egui::Frame::new()
+                        .fill(ground)
+                        .inner_margin(egui::Margin::same(16))
+                        .show(ui, |ui| {
+                            crate::foxglove::health::draw(ui, &view);
+                        });
+                });
+                keep(&format!("health-stuck-{case}-{size}-{theme}.png"), &img);
+            }
+        }
+    }
+}
+
 /// The settings' "Other keyboards (VIA)" group (#74): off (the default), and on with generic
 /// discovery and one board per definition source.
 #[test]
