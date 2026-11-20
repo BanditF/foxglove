@@ -533,7 +533,6 @@ fn send(msg: Msg) {
 /// every socket is closed (the ones the old pasted token admitted too), the saved token is
 /// blanked the way the first redeemed ticket blanks it, and no ticket is handed out until
 /// [`reconnect`]. The allowances stay.
-#[allow(dead_code)] // Entry point for the Hideout panel (S5b); no UI calls it yet.
 pub fn disconnect_all() {
     {
         let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
@@ -555,11 +554,10 @@ fn allowed_set(s: &LiveSettings) -> std::collections::BTreeSet<String> {
     s.allowed.iter().cloned().collect()
 }
 
-/// Whether the allow list gates the feed. Off until S5b ships the switch: with it on and no way
-/// to flip a wallpaper on, a wallpaper that works today would silently lose its ticket (UX review
-/// of #1316). While off, every wallpaper that asks is allowed, as before; the list is still
-/// saved so S5b starts from the user's choices. S5b turns this on.
-const ALLOW_GATE: bool = false;
+/// Whether the allow list gates the feed. On since S5b ships the switches: a wallpaper gets a
+/// ticket only after the user allows it in the Wallpaper Engine section. (Off in S5a, so a
+/// wallpaper that worked kept working until there was a switch to flip.)
+const ALLOW_GATE: bool = true;
 
 /// What the pairing store is told: the saved list when the gate is on, else no restriction.
 fn gate(s: &LiveSettings) -> Option<std::collections::BTreeSet<String>> {
@@ -573,7 +571,6 @@ const MAX_ALLOWED: usize = 256;
 /// saved, handed to the pairing store, and the pusher is woken: switching on gets the wallpaper
 /// a ticket at the next sync, switching off cancels its ticket and closes its socket now.
 /// The error is fixed words; the store's own text can quote the settings file.
-#[allow(dead_code)] // Entry point for the Hideout panel (S5b); no UI calls it yet.
 pub fn allow_wallpaper(key: &str, on: bool) -> Result<(), String> {
     allow_with(key, on, update_settings)
 }
@@ -602,6 +599,7 @@ fn allow_with(key: &str, on: bool, update: impl Updater) -> Result<(), String> {
         return Err(FAILED.into());
     }
     apply_allowed(&s);
+    super::we_panel::changed();
     Ok(())
 }
 
@@ -621,7 +619,6 @@ fn apply_allowed(s: &LiveSettings) {
 
 /// The user's Reconnect: wallpapers that lost their ticket or their socket get a fresh ticket
 /// (`wallpaper_sync::reconnect`).
-#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
 pub fn reconnect() {
     super::wallpaper_sync::reconnect();
 }
@@ -872,6 +869,8 @@ fn join(store: Store, tx: &Sender<Msg>, id: u64, monitor: Option<&str>, writer: 
         p.left(id);
         return false;
     }
+    drop(p);
+    super::we_panel::changed();
     true
 }
 
@@ -950,6 +949,7 @@ fn serve(
     }
     locked(store).left(id);
     let _ = tx.send(Msg::Leave(id));
+    super::we_panel::changed();
 }
 
 /// Reads with one deadline for the whole upgrade request, however it trickles in.
@@ -3399,13 +3399,17 @@ mod tests {
         assert!(!e.contains("secret"));
     }
 
-    /// Until S5b ships the switch, an empty saved list must not cut a working wallpaper off.
+    /// With the switches in the panel (S5b), an empty saved list allows nothing.
     #[test]
-    fn an_empty_allow_list_gates_nothing_until_s5b() {
-        let s = LiveSettings::default();
-        assert!(s.allowed.is_empty());
-        assert_eq!(gate(&s), None);
+    fn the_allow_list_gates_the_feed() {
+        let mut s = LiveSettings::default();
+        assert_eq!(gate(&s), Some(Default::default()));
         let mut p = pairing::Pairing::new();
+        p.set_allowed(gate(&s));
+        assert!(p
+            .mint("//?/DISPLAY#A", "hud/index.html", Instant::now())
+            .is_none());
+        s.allowed = vec!["hud".into()];
         p.set_allowed(gate(&s));
         assert!(p
             .mint("//?/DISPLAY#A", "hud/index.html", Instant::now())

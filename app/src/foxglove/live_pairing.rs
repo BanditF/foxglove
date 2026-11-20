@@ -340,7 +340,7 @@ impl Pairing {
     }
 
     /// What the Hideout panel needs to know, per wallpaper folder (S5a).
-    #[allow(dead_code)] // S5b wires the panel
+    #[cfg_attr(test, allow(dead_code))]
     pub fn links(&self, now: Instant) -> Links {
         let mut by_dir: BTreeMap<String, Link> = BTreeMap::new();
         for (monitor, s) in &self.slots {
@@ -380,15 +380,19 @@ fn locked(store: Store) -> std::sync::MutexGuard<'static, Pairing> {
 
 /// The user's Reconnect (the Hideout panel's button calls this, S5): see
 /// [`Pairing::reconnect`]. The caller (`wallpaper_sync::reconnect`) wakes the pusher.
-#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
 pub fn reconnect(store: Store) {
     locked(store).reconnect();
 }
 
 /// Disconnect all, the store's half: see [`Pairing::disconnect_all`].
-#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
 pub fn disconnect_all(store: Store) -> Vec<u64> {
     locked(store).disconnect_all()
+}
+
+/// What the Hideout panel shows per wallpaper folder.
+#[cfg_attr(test, allow(dead_code))]
+pub fn links(store: Store) -> Links {
+    locked(store).links(Instant::now())
 }
 
 /// Whether a wallpaper couldn't reconnect (for the health row).

@@ -2351,3 +2351,38 @@ fn an_unreadable_hub_image_counts_as_present() {
     let nowhere = std::env::temp_dir().join("foxglove-no-such-hub-image.exe");
     assert!(!super::image_present(&nowhere));
 }
+
+/// S5b: a switch means the row the hub was last shown, by index; an index the hub was never shown
+/// is refused with the fixed words, and nothing is saved.
+#[test]
+fn a_switch_the_hub_was_never_shown_is_refused_in_fixed_words() {
+    fn probe(_: &[String]) -> Option<super::super::hub_panels::Wallpaper> {
+        Some(super::super::hub_panels::Wallpaper {
+            running: true,
+            allow: Some(super::super::we_panel::Inputs {
+                feed_on: true,
+                engine_running: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+    let mut rig = Rig::new(&[GRANT]);
+    rig.link = Link::new(Vec::new(), launch()).with_wallpaper(probe);
+    let facts = board();
+    rig.connect(&facts);
+    rig.link
+        .refresh_panels(&facts.list(FACTS), STOPPED_NONE)
+        .unwrap();
+    assert!(rig.link.hub.we_keys.is_empty(), "no rows were shown");
+    written(&mut rig);
+    let flip = json!({"jsonrpc":"2.0","id":4,"method":"ui.event","params":
+        {"panel":"page","node":"we-allow:7","kind":"change","value":true}});
+    rig.link.line(&flip.to_string()).unwrap();
+    let out = written(&mut rig);
+    let answer = out.iter().find(|m| m["id"] == 4).expect("answered");
+    assert_eq!(
+        answer["error"]["message"],
+        "Couldn't change this. Try again."
+    );
+}

@@ -10,7 +10,6 @@
 //! panel by its index in [`View::keys`], a list Foxglove keeps.
 
 // The model lands first and is exercised by its tests; S5b wires it into the page and removes this.
-#![allow(dead_code)]
 
 use std::collections::BTreeSet;
 
@@ -20,6 +19,60 @@ use super::live_pairing::{Link, Links};
 use super::wallpaper_manifest::{self as manifest, Manifest};
 use super::wallpaper_sync::Target;
 use foxglove_plugin::ui;
+
+type Notify = Box<dyn Fn() + Send + Sync>;
+static NOTIFY: std::sync::Mutex<Option<Notify>> = std::sync::Mutex::new(None);
+
+/// The hub link registers how to say "the section changed" (it refreshes the panels).
+pub fn on_change(f: impl Fn() + Send + Sync + 'static) {
+    *NOTIFY.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
+}
+
+/// Something the section shows changed: a switch, a socket, the wallpapers on screen. An event,
+/// never a timer; the link drops a refresh that changes nothing.
+pub fn changed() {
+    if let Some(f) = NOTIFY.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        f();
+    }
+}
+
+/// The inputs from what Foxglove knows now (the app; tests build [`Inputs`] themselves).
+#[cfg(not(test))]
+pub fn inputs_now(engine_running: bool, full_screen: bool) -> Inputs {
+    let allowed: BTreeSet<String> = super::live_feed::settings().allowed.into_iter().collect();
+    Inputs {
+        feed_on: super::live_feed::settings().enabled,
+        engine_running,
+        asks: asks(
+            &manifest::known(),
+            &super::wallpaper_sync::targets_now(),
+            &allowed,
+        ),
+        links: super::live_pairing::links(super::live_pairing::store()),
+        hold: full_screen.then_some(Hold::FullScreenGame),
+    }
+}
+
+/// Does what a click or switch on `node` asks, against the row keys the hub was last shown.
+/// `Err` carries the words the hub shows beside the switch (never the store's own text).
+pub fn handle(node: &str, value: Option<bool>, keys: &[String]) -> Result<(), String> {
+    let Some(ev) = event(node, value) else {
+        return Ok(());
+    };
+    let key = |n: usize| keys.get(n).cloned().ok_or_else(|| REFUSED.to_string());
+    match ev {
+        Event::Allow(n, on) => super::live_feed::allow_wallpaper(&key(n)?, on),
+        Event::Reconnect(n) => key(n).map(|_| super::live_feed::reconnect()),
+        Event::ReconnectAll => {
+            super::live_feed::reconnect();
+            Ok(())
+        }
+        Event::DisconnectAll => {
+            super::live_feed::disconnect_all();
+            Ok(())
+        }
+    }
+}
 
 /// The allow list's section, inside the Wallpaper Engine section.
 pub const ASKS: &str = "we-asks";
@@ -39,6 +92,7 @@ pub const REFUSED: &str = "Couldn't change this. Try again.";
 
 /// Why the feed holds back for a moment (the feed's own reason).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Only the full-screen game is read so far; the other reasons wait for their signals.
 pub enum Hold {
     FullScreenGame,
     Paused,

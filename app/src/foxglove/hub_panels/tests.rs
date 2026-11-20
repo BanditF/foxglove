@@ -598,12 +598,83 @@ fn the_panels_match_the_hub_vectors() {
             "Wallpaper Engine not running",
             panels(&we_view(Wallpaper::default())),
         ),
+        (
+            "Allow list: connected, off, not on screen",
+            panels(&we_view(allow_case("connected"))),
+        ),
+        (
+            "Allow list: needs you, Reconnect",
+            panels(&we_view(allow_case("capped"))),
+        ),
+        (
+            "Allow list: after Disconnect all",
+            panels(&we_view(allow_case("held"))),
+        ),
+        (
+            "Allow list: connected the old way",
+            panels(&we_view(allow_case("old"))),
+        ),
+        (
+            "Allow list: feed off",
+            panels(&we_view(allow_case("feed-off"))),
+        ),
+        (
+            "Allow list: nothing asked yet",
+            panels(&we_view(allow_case("none"))),
+        ),
     ];
     for (name, all) in &states {
         assert_valid(all);
         let _ = name;
     }
     foxglove_plugin::ui::check_vectors("foxglove.json", (&m.id, &m.name, &declared, &[]), states);
+}
+
+/// The allow list's states for the vectors and the review images (S5b).
+fn allow_case(case: &str) -> Wallpaper {
+    use super::super::live_pairing::{Link, Links};
+    use super::super::we_panel::{Ask, Inputs};
+    let ask = |key: &str, title: &str, on_screen, allowed| Ask {
+        key: key.into(),
+        title: title.into(),
+        on_screen,
+        allowed,
+        needs_update: false,
+    };
+    let asks = vec![
+        ask("d:/we/hud", "Bandit HUD", true, true),
+        ask("d:/we/courier", "Courier", false, true),
+        ask("d:/we/neon", "Neon Rain (Workshop)", false, false),
+    ];
+    let mut links = Links::default();
+    let mut inputs = Inputs {
+        feed_on: true,
+        engine_running: true,
+        asks,
+        ..Inputs::default()
+    };
+    match case {
+        "connected" => {
+            links.by_dir.insert("d:/we/hud".into(), Link::Connected);
+        }
+        "capped" => {
+            links.by_dir.insert("d:/we/hud".into(), Link::Capped);
+        }
+        "held" => links.held = true,
+        "old" => {
+            links.old_way = 2;
+            inputs.asks.iter_mut().for_each(|a| a.allowed = false);
+        }
+        "feed-off" => inputs.feed_on = false,
+        "none" => inputs.asks.clear(),
+        other => panic!("{other}"),
+    }
+    inputs.links = links;
+    Wallpaper {
+        running: true,
+        allow: Some(inputs),
+        ..Wallpaper::default()
+    }
 }
 
 /// The page with a Wallpaper Engine section (#1142).
@@ -845,4 +916,44 @@ fn the_page_meters_are_named_in_words_and_not_said_twice() {
         stack.extend(n["children"].as_array().into_iter().flatten());
     }
     assert_eq!(meters, 3);
+}
+
+/// S5b: the allow list sits in the Wallpaper Engine section after the state and Resume; with
+/// Wallpaper Engine off, its own line is not said twice.
+#[test]
+fn the_allow_list_is_part_of_the_wallpaper_engine_section() {
+    use super::super::we_panel::{Ask, Inputs};
+    let inputs = |engine_running| Inputs {
+        feed_on: true,
+        engine_running,
+        asks: vec![Ask {
+            key: "d:/we/hud".into(),
+            title: "Bandit HUD".into(),
+            on_screen: true,
+            allowed: false,
+            needs_update: false,
+        }],
+        ..Inputs::default()
+    };
+    let mut w = held(&[]);
+    w.holders.clear();
+    w.reasons.clear();
+    w.allow = Some(inputs(true));
+    let all = panels(&we_view(w));
+    let text = serde_json::to_string(&panel(&all, PAGE)["tree"]).unwrap();
+    for want in [
+        "Wallpapers that want your keyboard",
+        "we-allow:0",
+        "Let Bandit HUD use your keyboard",
+        "Bandit HUD can see which key positions you press and when, never the letters.",
+        "Playing",
+    ] {
+        assert!(text.contains(want), "{want}");
+    }
+    assert!(!text.contains("d:/we"), "no path on the page");
+    let mut off = Wallpaper::default();
+    off.allow = Some(inputs(false));
+    let all = panels(&we_view(off));
+    let text = serde_json::to_string(&panel(&all, PAGE)["tree"]).unwrap();
+    assert_eq!(text.matches("Wallpaper Engine isn't running.").count(), 1);
 }

@@ -837,6 +837,12 @@ pub fn reconnected() {
     wake(Wake::Reconnected);
 }
 
+/// The monitors showing a wallpaper that reads Foxglove's properties now.
+#[cfg_attr(test, allow(dead_code))]
+pub fn targets_now() -> Vec<Target> {
+    with(|s| s.targets.clone())
+}
+
 /// A refusal marked monitors for a fresh ticket (`live_pairing`): they are pushed again now.
 pub fn repush() {
     changed(Reason::Pairing, |_| {});
@@ -845,7 +851,6 @@ pub fn repush() {
 /// The user's Reconnect (the Hideout panel, S5, calls this; there is no button yet): the
 /// re-push budget is new and every monitor without a socket gets a fresh ticket, pushed now.
 /// Event-driven: nothing retries on its own after this.
-#[allow(dead_code)] // Entry point for the Hideout panel (S5); no UI calls it yet.
 pub fn reconnect() {
     super::live_pairing::reconnect(super::live_pairing::store());
     repush();
@@ -901,6 +906,7 @@ pub fn wallpapers(targets: Vec<Target>, reloads: bool) {
         s.reloads = reloads;
         again
     });
+    super::we_panel::changed();
     // A reinstall waits for the copy and Wallpaper Engine's reload; anything else goes at once.
     wake(if again {
         Wake::Reinstalled

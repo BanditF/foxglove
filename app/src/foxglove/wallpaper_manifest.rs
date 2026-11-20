@@ -545,7 +545,18 @@ pub fn scenes_of(manifests: &[Manifest]) -> Scenes {
 /// The wallpaper service gathered `found`: the Scenes page's looks follow. True when they
 /// changed (the page repaints).
 pub fn set(found: &[Manifest]) -> bool {
-    looks::set_scenes(scenes_of(found))
+    *KNOWN.lock().unwrap_or_else(|e| e.into_inner()) = found.to_vec();
+    let changed = looks::set_scenes(scenes_of(found));
+    super::we_panel::changed();
+    changed
+}
+
+static KNOWN: std::sync::Mutex<Vec<Manifest>> = std::sync::Mutex::new(Vec::new());
+
+/// The manifests the wallpaper service gathered last (the Hideout panel's asks).
+#[cfg_attr(test, allow(dead_code))]
+pub fn known() -> Vec<Manifest> {
+    KNOWN.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[cfg(test)]
