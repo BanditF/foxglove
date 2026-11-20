@@ -157,13 +157,28 @@ fn converse<R: Read, W: Write>(r: R, mut w: W) -> bool {
     }
 }
 
+/// A read end that fails once the wait has been cancelled.
+struct Gated {
+    r: Box<dyn Read + Send>,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Read for Gated {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(std::io::ErrorKind::ConnectionAborted.into());
+        }
+        self.r.read(b)
+    }
+}
+
 /// [`converse`] on a worker thread, answered within `limit`. When the limit passes the blocked
 /// read is cancelled, so the worker ends and the connection is let go (no thread is left behind
 /// for each Start again).
 fn within<O: Open>(o: Arc<O>, limit: Duration) -> bool {
     use std::sync::atomic::{AtomicBool, Ordering};
     let (tx, rx) = mpsc::channel();
-    let (cancel_tx, cancel_rx) = mpsc::channel::<Cancel>();
+    let (cancel_tx, cancel_rx) = mpsc::channel::<Arc<Cancel>>();
     let late = Arc::new(AtomicBool::new(false));
     let worker_late = late.clone();
     let spawned = std::thread::Builder::new()
@@ -171,14 +186,22 @@ fn within<O: Open>(o: Arc<O>, limit: Duration) -> bool {
         .spawn(move || {
             let went = match o.open() {
                 Some((r, w, cancel)) => {
-                    // The wait may have ended while the pipe was opening: end at once.
+                    // A cancel ends the read pending now and fails every later one, so a copy
+                    // that keeps sending cannot hold the worker (`CancelIoEx` alone reaches only
+                    // a read that is already waiting).
+                    let stopped = Arc::new(AtomicBool::new(false));
+                    let flag = stopped.clone();
+                    let cancel: Arc<Cancel> = Arc::new(Box::new(move || {
+                        flag.store(true, Ordering::SeqCst);
+                        cancel();
+                    }));
+                    // Hand the cancel over first, then look at the flag: whichever of the two
+                    // threads comes second finds the other's mark, so one of them cancels.
+                    let _ = cancel_tx.send(cancel.clone());
                     if worker_late.load(Ordering::SeqCst) {
                         cancel();
-                        false
-                    } else {
-                        let _ = cancel_tx.send(cancel);
-                        converse(r, w)
                     }
+                    converse(Gated { r, stopped }, w)
                 }
                 None => false,
             };
@@ -268,6 +291,14 @@ impl Open for PipeOpen {
         // The same step the hub takes at its start: a probe first, then the name only if nobody
         // is on it (a copy that started again keeps it).
         let alias = self.hub.alias_pipe();
+        if self.pipe != alias {
+            // A hub folder of its own has its own alias name, which the copy never held.
+            log::info!(
+                "hand-over: the copy held {}, not {alias}; no alias claimed",
+                self.pipe
+            );
+            return;
+        }
         match self.hub.serve_alias(&alias) {
             hideout_router::AliasOutcome::Served => {
                 log::info!("hand-over: serving the alias {alias}")
@@ -656,7 +687,9 @@ mod tests {
                     // Blocks until cancelled (no timeout of its own), then fails as a cancel does.
                     let _ = self.0.recv();
                     let _ = self.2.send(());
-                    Err(std::io::ErrorKind::Interrupted.into())
+                    // As the real cancel fails a read: ERROR_OPERATION_ABORTED, which
+                    // `read_until` does not retry (it does retry `Interrupted`).
+                    Err(std::io::Error::from_raw_os_error(995))
                 }
             }
             let (tx, rx) = mpsc::channel::<()>();

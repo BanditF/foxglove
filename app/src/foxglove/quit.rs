@@ -59,6 +59,14 @@ pub fn within(deadline: Instant, chains: Vec<Chain>) -> Vec<&'static str> {
 /// from outside leaves exactly as a quit from the tray does. The hand-backs are the bounded part
 /// (4 s at most); a chain that is stuck is left as it is, and the process still exits.
 pub fn quit_app(why: &str) -> ! {
+    static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    // The first quit wins; a second one (the tray during a hand-over's quit, or the reverse)
+    // waits for the exit, so two hand-backs never run at once.
+    if QUITTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        loop {
+            std::thread::park();
+        }
+    }
     quit_with(why, hand_back, || std::process::exit(0))
 }
 
