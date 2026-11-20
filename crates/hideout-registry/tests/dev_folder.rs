@@ -727,13 +727,7 @@ fn a_hand_edited_removal_ends_the_enrolment_and_re_listing_needs_an_allow() {
 /// `mklink /J link target` (a junction needs no admin rights). cmd reads `/` as a switch, so the
 /// paths go in with backslashes only.
 fn junction(link: &std::path::Path, target: &std::path::Path) {
-    let plain = |p: &std::path::Path| {
-        p.display()
-            .to_string()
-            .replace('/', "\\")
-            .trim_start_matches("\\?\\")
-            .to_string()
-    };
+    let plain = |p: &std::path::Path| p.display().to_string().replace('/', "\\");
     let st = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
         .arg(plain(link))
@@ -775,11 +769,10 @@ fn a_junction_out_of_the_folder_or_an_alias_into_it_never_matches_by_spelling() 
     junction(&alias, &f.out);
     let raw = alias.join("foxglove.exe").display().to_string();
     assert!(f.reg.dev_folder_for(&raw).is_none());
-    assert_eq!(
-        f.reg
-            .dev_folder_for(&canonical_path(&alias.join("foxglove.exe")).unwrap()),
-        f.reg.dev_folder_for(&canon_exe)
-    );
+    // Same file, so only the spelling differs: the canonical form is accepted, the raw one is not.
+    let via = canonical_path(&alias.join("foxglove.exe")).unwrap();
+    assert!(same_path(&via, &canon_exe));
+    assert!(f.reg.dev_folder_for(&via).is_some());
 }
 
 #[test]
@@ -804,4 +797,26 @@ fn an_8_3_short_name_or_other_case_is_the_same_folder_not_another_one() {
             .dev_folder_for(&canonical_path(std::path::Path::new(&short)).unwrap())
             .is_some());
     }
+}
+
+#[test]
+fn a_dotdot_path_inside_the_folder_text_never_matches() {
+    let f = fx("dotdot");
+    let outside = temp("dotdot-outside");
+    std::fs::write(outside.join("foxglove.exe"), b"evil").unwrap();
+    let name = outside.file_name().unwrap().to_string_lossy().into_owned();
+    // `<folder>\..\<sibling>oxglove.exe` starts with the folder's text but is the sibling's file.
+    let canon_out = canonical_path(&f.out).unwrap();
+    let sneaky = format!(r"{canon_out}\..\{name}\foxglove.exe");
+    assert!(
+        path_within(&canon_out, &sneaky),
+        "the text looks inside: {sneaky}"
+    );
+    assert!(std::path::Path::new(&sneaky).exists(), "{sneaky}");
+    assert!(f.reg.dev_folder_for(&sneaky).is_none());
+    // The real file, spelled canonically, is accepted.
+    assert!(f
+        .reg
+        .dev_folder_for(&canonical_path(&f.exe).unwrap())
+        .is_some());
 }

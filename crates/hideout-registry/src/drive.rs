@@ -266,8 +266,8 @@ mod tests {
         assert!(!local(r"E:\dev\app.exe", &two));
         // A UNC path is refused before the probe is asked, whatever it would say.
         let any = Fake::on('S', true, Some(BusType::Sata));
-        assert!(!local(r"\srv\share\a.exe", &any));
-        assert!(!local(r"\?\UNC\srv\share\a.exe", &any));
+        assert!(!local(r"\\srv\share\a.exe", &any));
+        assert!(!local(r"\\?\UNC\srv\share\a.exe", &any));
     }
 
     #[test]
