@@ -7,6 +7,8 @@
 //! No vendor is named here. The system is asked ([`SystemSync`]): the path sits under a sync
 //! root, or carries a cloud placeholder attribute (a file or folder that is fetched on use, or
 //! that the service pins or unpins). The question sits behind [`SyncProbe`] so tests use a fake.
+//! Known limit (trust model): a sync tool that registers no sync root and sets no placeholder
+//! attribute (a Syncthing-style mirror) is not detected and counts as [`SyncAnswer::Local`].
 //! Fails closed: an answer that can't be read is [`SyncAnswer::Unknown`], and Unknown refuses.
 
 /// What the probe could tell about one path.

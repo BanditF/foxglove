@@ -124,8 +124,9 @@ pub enum Out {
     ModuleFault(String),
     /// `hub.notify` from a module, already permission-checked.
     Notify { module: String, params: Value },
-    /// `hub.show` (v1.19) from a verified same-user peer: the shell brings this module's page to
-    /// the front. The module is one the hub knows.
+    /// `hub.show` (v1.19) from a verified same-user peer: the shell brings this page to the
+    /// front. The id is a module the hub knows, or the hub's Apps page (`HUB_APPS_PAGE`, and no
+    /// other hub page).
     Show { module: String },
     /// Accepted panels from `ui.register`, for the panel host (§5.1), with the instance that
     /// registered them.
@@ -2087,7 +2088,8 @@ impl Router {
     /// transport verified (`admit`: same user, Medium integrity or the hub's own container) and
     /// that runs in no AppContainer may ask: a bridged plugin, a connection with no known
     /// process and a contained process are refused (error 5). The id must be a module the hub
-    /// has (-32602), so the call can't probe for anything else. It changes which page shows,
+    /// has, or the hub's Apps page (`HUB_APPS_PAGE`, and only that; -32602 otherwise), so the
+    /// call can't probe for anything else. It changes which page shows,
     /// nothing more.
     fn hub_show(
         &mut self,
@@ -2114,7 +2116,14 @@ impl Router {
                 Some("id is a module id"),
             );
         };
-        if !self.modules.contains_key(&module) && module != HUB_APPS_PAGE {
+        // `hub` is a reserved first label, so no module id starts with `hub.`; this also holds
+        // for a record read from an older inventory.
+        let known = if module.split('.').next() == Some("hub") {
+            module == HUB_APPS_PAGE
+        } else {
+            self.modules.contains_key(&module)
+        };
+        if !known {
             return error(
                 id,
                 code::INVALID_PARAMS,

@@ -899,9 +899,18 @@ impl Module {
         if !id.contains('.') && !family.first_party() {
             return fail(ManifestId, "one-label ids are for first-party modules only");
         }
+        // `hub.*` ids are the hub's own pages (`hub.modules`, `hub.settings`). The family is
+        // declared in the manifest, so no family may take the label: a local manifest must not
+        // pose as a hub page to `hub.show` or the shell.
+        if id.split('.').next() == Some("hub") {
+            return fail(
+                ManifestId,
+                format!("id {id:?} starts with hub, a name the hub keeps for its own pages"),
+            );
+        }
         match reserved_family(&id) {
             Some(f) if f != family => {
-                return fail(ManifestFamily, format!("id {id:?} needs family {f:?}"))
+                return fail(ManifestFamily, format!("id {id:?} needs family {f:?}"));
             }
             None if id.starts_with("org.foxglove.") && family != Family::Foxglove => {
                 return fail(ManifestFamily, "org.foxglove.* is family foxglove")
@@ -1560,6 +1569,73 @@ when = "!apps.seen.fourth"
             m.describe_permission_named(&watch("example-app.exe"), named),
             "see whether Example-App is running"
         );
+    }
+}
+
+#[cfg(test)]
+mod hub_label_tests {
+    use super::*;
+
+    fn manifest(id: &str, family: &str) -> String {
+        format!(
+            "id = \"{id}\"
+name = \"Pages\"
+version = \"1.0.0\"
+kind = \"service\"
+             family = \"{family}\"
+hub = \"1.0\"
+run = [\"pages.exe\"]
+"
+        )
+    }
+
+    /// `hub` is a reserved first label (A3 of the #1367 review): a module can't be named like a
+    /// hub page, so `hub.show` and the shell never mistake it for one.
+    #[test]
+    fn a_module_named_like_a_hub_page_is_refused_plainly() {
+        for id in ["hub.settings", "hub.modules", "hub.x", "hub"] {
+            for family in ["third-party", "hideout", "foxglove", "vulpes", "digitalis"] {
+                let e = Module::parse(&manifest(id, family), &Context::default()).unwrap_err();
+                assert_eq!(e.id, ErrorId::ManifestId, "{id} {family}: {e}");
+            }
+        }
+        let e = Module::parse(
+            &manifest("hub.settings", "third-party"),
+            &Context::default(),
+        )
+        .unwrap_err();
+        assert_eq!(e.id, ErrorId::ManifestId);
+        assert!(e.to_string().contains("hub"), "{e}");
+    }
+
+    /// Only a label of its own is reserved: ids that merely contain or start with the letters
+    /// still work, and a first-party id keeps working.
+    #[test]
+    fn other_ids_keep_working() {
+        for (id, family) in [
+            ("org.example.hub", "third-party"),
+            ("com.hub.tool", "third-party"),
+            ("hubble.tool", "third-party"),
+            ("hubs.example", "third-party"),
+            ("foxglove.hub", "foxglove"),
+            ("org.foxglove.temperature", "foxglove"),
+            ("hideout.hub", "hideout"),
+            ("hideout.hub.pages", "hideout"),
+        ] {
+            let r = Module::parse(&manifest(id, family), &Context::default());
+            assert!(r.is_ok(), "{id}: {:?}", r.err());
+        }
+    }
+
+    /// A manifest already on disk with such an id (installed before the rule) is a plain refusal
+    /// when it is read again, never a panic.
+    #[test]
+    fn an_existing_manifest_with_a_hub_id_reads_as_a_refusal() {
+        let text = manifest("hub.settings", "third-party");
+        for _ in 0..2 {
+            assert!(Module::parse(&text, &Context::default()).is_err());
+        }
+        assert!(Head::parse(&text).is_ok(), "the head only reads four keys");
     }
 }
 
