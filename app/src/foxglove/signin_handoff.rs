@@ -174,15 +174,32 @@ pub fn at_startup() -> bool {
             super::hub_fact::LIMIT,
         );
         if let Start::DeferToHub { show } = start {
-            super::app_log::early(&format!(
-                "Foxglove: the hub already runs Foxglove as its module; exiting{}",
-                if show {
-                    " after asking it to show Foxglove"
-                } else {
-                    ""
-                }
-            ));
+            if launch == Launch::Tray {
+                super::signin_counts::note(super::signin_counts::Kind::Deferred);
+                super::app_log::early(super::signin_counts::LOG_DEFERRED);
+            } else {
+                super::app_log::early(&format!(
+                    "Foxglove: the hub already runs Foxglove as its module; exiting{}",
+                    if show {
+                        " after asking it to show Foxglove"
+                    } else {
+                        ""
+                    }
+                ));
+            }
             return true;
+        }
+        // Hideout starts Foxglove at sign-in, yet this copy starts on its own: the backup ran.
+        if launch == Launch::Tray
+            && super::store::section("core", "signin")
+                .try_load::<super::signin_flag::SigninSettings>()
+                .unwrap_or_default()
+                .hideout_starts_me
+        {
+            super::signin_counts::note(super::signin_counts::Kind::OnItsOwn);
+            super::app_log::early(&super::signin_counts::on_its_own_line(
+                "not running as an app",
+            ));
         }
     }
     false

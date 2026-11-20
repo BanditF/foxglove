@@ -58,6 +58,7 @@ fn main() {
     }
     // Foxglove: settings and log redirected into another app's package (started from it)?
     foxglove::store_split::start();
+    foxglove::signin_counts::start(); // sign-in hand-over health row
     foxglove::update::start();
     os_layout::init();
     foxglove::gpu_reset::start(); // Foxglove (#346): a fresh copy after a GPU reset
