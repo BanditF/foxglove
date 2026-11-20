@@ -84,7 +84,7 @@ pub const REMOVE_ADOPTED: &str =
     "Hideout forgets its permissions and stops it. Its own settings and files stay. You can add it again later.";
 /// What Remove does to a module Hideout installed itself: its copy in Hideout's own
 /// `modules` folder goes too; its settings stay.
-pub const REMOVE_OWN: &str = "Hideout forgets its permissions, stops it and deletes its copy in Hideout's modules folder. Its settings stay. You can add it again later.";
+pub const REMOVE_OWN: &str = "Hideout forgets its permissions, stops it and deletes its copy in Hideout's own folder. Its settings stay. You can add it again later.";
 /// The confirm's buttons.
 pub const REMOVE: &str = "Remove";
 pub const CANCEL: &str = "Cancel";
@@ -533,9 +533,9 @@ pub fn order(rows: &mut [Row]) {
 }
 
 /// The page's empty state.
-pub const EMPTY_HEADING: &str = "No modules yet";
-pub const EMPTY_BODY: &str = "Modules add pages, tray tiles, status items and commands to \
-Hideout. Installed modules will be listed here, with their state and version.";
+pub const EMPTY_HEADING: &str = "No apps yet";
+pub const EMPTY_BODY: &str = "Apps add pages, tray tiles, status items and commands to \
+Hideout. Installed apps will be listed here, with their state and version.";
 /// The rows' secondary button.
 pub const OPEN: &str = words::OPEN;
 
@@ -673,12 +673,7 @@ pub fn page_ui_with_head(
 ) -> Option<Click> {
     use egui::RichText;
     let lock_line = hideout_supervisor::bisect::words::LOCKED;
-    ui.label(
-        RichText::new("Modules")
-            .size(24.0)
-            .strong()
-            .color(c(t.text)),
-    );
+    ui.label(RichText::new("Apps").size(24.0).strong().color(c(t.text)));
     ui.add_space(20.0);
     head(ui);
     let mut click = None;
@@ -1667,5 +1662,30 @@ mod tests {
                 assert!(!s.to_lowercase().contains(&never.to_lowercase()), "{s}");
             }
         }
+    }
+
+    #[test]
+    fn the_page_copy_says_app_never_module() {
+        // Same rule as the words.rs guard: one noun, "app", in what the user reads.
+        let all = [
+            remove_question("Art"),
+            REMOVE_MENU.to_string(),
+            REMOVE_ADOPTED.to_string(),
+            REMOVE_OWN.to_string(),
+            REMOVING.to_string(),
+            remove_failed("Art"),
+            turn_on_failed("Art", "x"),
+            EMPTY_HEADING.to_string(),
+            EMPTY_BODY.to_string(),
+            MORE.to_string(),
+            crate::settings_view::PRIVACY_LINE.to_string(),
+        ];
+        for line in &all {
+            assert!(
+                !line.to_lowercase().contains("module"),
+                "module in {line:?}"
+            );
+        }
+        assert_eq!(EMPTY_HEADING, "No apps yet");
     }
 }

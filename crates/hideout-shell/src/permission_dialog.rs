@@ -589,10 +589,7 @@ impl PermDialog {
             } else {
                 "If this file or this list changes, Hideout asks again.".into()
             },
-            format!(
-                "You can turn each one off any time in Modules, {}.",
-                self.name
-            ),
+            format!("You can turn each one off any time in Apps, {}.", self.name),
         ]
     }
 
@@ -1169,7 +1166,7 @@ mod tests {
                 ListItem {
                     allowable: false,
                     checked: false,
-                    reason: Some("Hideout never allows this for this module.".into()),
+                    reason: Some("Hideout never allows this for this app.".into()),
                     ..item("modules.manage", Group::CantBeAllowed, false, false)
                 },
             ],
@@ -1199,7 +1196,7 @@ mod tests {
         assert_eq!(d.all_label(), "All 2 other items");
         assert_eq!(
             d.binding_lines()[2],
-            "You can turn each one off any time in Modules, Foxglove."
+            "You can turn each one off any time in Apps, Foxglove."
         );
         assert_eq!(
             keyboard_line("Foxglove", false),
@@ -1493,7 +1490,7 @@ mod tests {
         );
         assert_eq!(
             d.binding_lines()[2],
-            "You can turn each one off any time in Modules, Foxglove."
+            "You can turn each one off any time in Apps, Foxglove."
         );
     }
 
@@ -1746,6 +1743,9 @@ mod tests {
             d.sensitive_note(),
             d.source_line().unwrap(),
             d.everyday_label(),
+            d.title(),
+            d.intro(),
+            "Hideout never allows this for this app.".to_string(),
             needs_ok_heading(4),
             ALLOW_AND_START.to_string(),
             SHOW.to_string(),
@@ -1760,6 +1760,7 @@ mod tests {
         ] {
             all.push(can_phrase(r).to_string());
         }
+        all.extend(d.binding_lines().iter().map(|l| l.to_string()));
         for text in &all {
             let l = text.to_lowercase();
             for bad in [

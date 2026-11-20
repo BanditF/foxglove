@@ -667,7 +667,7 @@ Windows' **Settings > System > Sound > Volume mixer > Reset** puts every app bac
 | the Hideout hub's settings, bound keys and tile layout | `%LOCALAPPDATA%\Hideout\hideout.toml` |
 | the apps the Hideout hub has seen run | `%LOCALAPPDATA%\Hideout\apps-seen.txt` |
 
-**Hideout and privacy:** Hideout notices when apps that your modules work with (like OBS or
+**Hideout and privacy:** Hideout notices when the apps it works with (like OBS or
 iCUE) start or quit, so their tiles show up. It keeps a list of those apps on this PC only.
 **Settings → Forget seen apps** clears that list.
 

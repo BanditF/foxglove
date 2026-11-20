@@ -2831,7 +2831,7 @@ impl Hub {
             let matches = self.palette.matches(&entries);
             if matches.is_empty() {
                 let msg = if entries.is_empty() {
-                    "No commands yet. Modules add their actions and pages here."
+                    "No commands yet. Apps add their actions and pages here."
                 } else {
                     "Nothing matches."
                 };

@@ -10,7 +10,7 @@
 
 /// The page's id and title, kept apart from egui so they test window-free.
 pub const ID: &str = "hub.modules";
-pub const TITLE: &str = "Modules";
+pub const TITLE: &str = "Apps";
 
 /// Where the page reads facts from (the router's cache); `None` on a hub without a router.
 #[cfg(windows)]
@@ -956,7 +956,7 @@ mod tests {
         assert_eq!((pages[0].id(), pages[0].title()), (ID, TITLE));
         assert_eq!(
             hideout_shell::window_title(pages[0].title()),
-            "Hideout \u{b7} Modules"
+            "Hideout \u{b7} Apps"
         );
     }
 

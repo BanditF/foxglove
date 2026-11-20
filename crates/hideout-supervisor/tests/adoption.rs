@@ -294,7 +294,7 @@ fn a_search_round_starts_its_module_and_stop_changes_nothing() {
     assert!(Search::path(&home).exists(), "progress not kept");
     assert_eq!(
         finder.tray().unwrap().line,
-        "Hideout \u{b7} finding the module (round 1 of 1)"
+        "Hideout \u{b7} finding the app (round 1 of 1)"
     );
 
     finder.act(Act::Stop);

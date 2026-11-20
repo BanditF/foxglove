@@ -291,7 +291,7 @@ fn queue_grant(
     (
         NEEDS_OK,
         format!(
-            "Queued: {n} item(s) for {}. Nothing is allowed yet: confirm in Hideout, on the Modules page.",
+            "Queued: {n} item(s) for {}. Nothing is allowed yet: confirm in Hideout, on the Apps page.",
             list.name
         ),
     )

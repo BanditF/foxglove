@@ -2536,7 +2536,7 @@ fn renders_the_modules_page_for_review() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Finding the module that breaks Hideout (#1033): a search whose view the test sets, and
+/// Finding the app that breaks Hideout (#1033): a search whose view the test sets, and
 /// whose buttons it records.
 #[derive(Default)]
 struct FakeFinder {
@@ -2642,8 +2642,8 @@ fn the_search_bar_is_a_landmark_first_in_tab_order_and_said_once() {
     );
     let t = drawn(&out);
     for s in [
-        "Finding the module that breaks Hideout \u{b7} Round 2 of 4",
-        "2 of 6 modules are on: Dock, Echo.",
+        "Finding the app that breaks Hideout \u{b7} Round 2 of 4",
+        "2 of 6 apps are on: Dock, Echo.",
         "This round ends in 4 min if Hideout stays open.",
     ] {
         assert!(t.iter().any(|x| x == s), "{s} not drawn: {t:?}");
