@@ -23,14 +23,11 @@ pub mod words {
     pub const HIDE_HINT: &str = "Hide this card";
     pub const LATER: &str = "Later, if you want";
     pub const SIGN_IN_LINE: &str = "Start Hideout when you sign in";
-    pub const SIGN_IN_BUTTON: &str = "Turn on\u{2026}";
-    pub const PRESS_A_LAYER_KEY: &str = "Press a layer key: the layer overlay should appear.";
+    pub const SIGN_IN_BUTTON: &str = "Open Settings\u{2026}";
     pub const NO_KEYBOARD: &str =
         "No keyboard found yet. Plug it in or turn it on, and this updates by itself.";
 
-    pub fn sharing_line(name: &str) -> String {
-        format!("Let {name} share your keyboard with other apps")
-    }
+    pub const SHARING_LINE: &str = "Share your keyboard with other apps";
     pub const SHARING_BUTTON: &str = "Review\u{2026}";
 
     pub fn more_line(name: &str) -> String {
@@ -48,7 +45,7 @@ pub mod words {
         format!("{name} is off.")
     }
     pub fn stopped(name: &str) -> String {
-        format!("{name} stopped. Its row below has the button to start it again.")
+        format!("{name} stopped. Press Start again on its row below.")
     }
 }
 
@@ -81,8 +78,6 @@ pub enum Press {
 pub struct Status {
     pub head: String,
     pub rest: String,
-    /// The line under it ("Press a layer key..."), only while the keyboard is there.
-    pub hint: Option<String>,
 }
 
 /// One offer line as drawn.
@@ -97,8 +92,14 @@ pub struct OfferLine {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Card {
     pub status: Status,
-    /// The main button's words: the manifest's for `identify`, else "Open <app>".
-    pub show: String,
+    /// The main button's words: the manifest's for `identify`, else "Open <app>". `None` while
+    /// the app is not running, or when it has neither `identify` nor a page: a button that goes
+    /// nowhere is not drawn.
+    pub show: Option<String>,
+    /// The manifest's line under the status ("Press a layer key..."), only while the app runs
+    /// and its keyboard is there; apps that declare none show none.
+    pub hint: Option<String>,
+    /// Offers wait until the app runs: none while it starts, is off or has stopped.
     pub offers: Vec<OfferLine>,
 }
 
@@ -109,6 +110,10 @@ pub struct Inputs<'a> {
     pub facts: &'a dyn Fn(&str) -> Option<Value>,
     /// The words of the manifest's `identify` action, when it has one.
     pub identify: Option<String>,
+    /// The `hint` the manifest gives the `identify` action.
+    pub hint: Option<String>,
+    /// The app registers a page that Open can go to.
+    pub has_page: bool,
     /// The keyboard-sharing grant is not on yet and this app can have it.
     pub sharing_open: bool,
     /// Other found apps not yet in Hideout: (id, name).
@@ -150,30 +155,37 @@ impl Done {
         let state = (i.facts)(&format!("module.{module}.state"))
             .and_then(|v| v.as_str().map(str::to_string));
         let status = status_line(i.name, state.as_deref(), i.facts);
-        let show = i
-            .identify
-            .clone()
-            .unwrap_or_else(|| format!("{}{}", words::SHOW_FALLBACK_PREFIX, i.name));
+        let running = state.as_deref() == Some("running");
+        let show = if !running {
+            None
+        } else if i.identify.is_some() {
+            i.identify.clone()
+        } else {
+            i.has_page
+                .then(|| format!("{}{}", words::SHOW_FALLBACK_PREFIX, i.name))
+        };
+        let keyboard = (i.facts)("keyboard.connected").and_then(|v| v.as_bool()) == Some(true);
+        let hint = i.hint.clone().filter(|_| running && keyboard);
         let mut offers = Vec::new();
         // Hideout already starts at sign-in: nothing to offer. Unknown reads as "not yet".
         let starts = (i.facts)(&format!("module.{module}.starts_at_sign_in"))
             .and_then(|v| v.as_bool())
             == Some(true);
-        if !starts {
+        if running && !starts {
             offers.push(OfferLine {
                 offer: Offer::StartWithWindows,
                 text: words::SIGN_IN_LINE.into(),
                 button: words::SIGN_IN_BUTTON.into(),
             });
         }
-        if i.sharing_open {
+        if running && i.sharing_open {
             offers.push(OfferLine {
                 offer: Offer::Sharing,
-                text: words::sharing_line(i.name),
+                text: words::SHARING_LINE.into(),
                 button: words::SHARING_BUTTON.into(),
             });
         }
-        for (id, name) in &i.more {
+        for (id, name) in i.more.iter().filter(|_| running) {
             offers.push(OfferLine {
                 offer: Offer::SetUp(id.clone()),
                 text: words::more_line(name),
@@ -184,6 +196,7 @@ impl Done {
         Some(Card {
             status,
             show,
+            hint,
             offers,
         })
     }
@@ -191,6 +204,10 @@ impl Done {
 
 /// The status line from the app's own facts (event driven: the page asks each frame it is
 /// drawn, and a fact change wakes it). Nothing is hardcoded about the app.
+///
+/// Known limit (follow-up): the `keyboard.*` facts are global, not the app's own. With one
+/// keyboard app that is right; a second app publishing keyboard facts would show here under
+/// this app's name.
 pub fn status_line(
     name: &str,
     state: Option<&str>,
@@ -199,13 +216,14 @@ pub fn status_line(
     let plain = |head: String| Status {
         head,
         rest: String::new(),
-        hint: None,
     };
+    // "Running" is said only for a state that says so. No fact yet, or a state this card does
+    // not know (stopping, ...), reads as starting: the card never claims more than it knows.
     match state {
-        Some("starting") | Some("restarting") => return plain(words::starting(name)),
+        Some("running") => {}
         Some("off") => return plain(words::off(name)),
         Some("crash-stopped") | Some("crash-looped") => return plain(words::stopped(name)),
-        _ => {}
+        _ => return plain(words::starting(name)),
     }
     let head = words::running(name);
     match facts("keyboard.connected").and_then(|v| v.as_bool()) {
@@ -228,27 +246,28 @@ pub fn status_line(
                     });
                 }
             }
-            if let Some(p) = battery(facts) {
-                parts.push(format!("battery {p} %"));
+            if let Some((p, n)) = battery(facts) {
+                // With two halves reporting the number is the lower one: say so.
+                let word = if n > 1 { "lowest battery" } else { "battery" };
+                parts.push(format!("{word} {p} %"));
             }
             Status {
                 head,
                 rest: parts.join(" \u{b7} "),
-                hint: Some(words::PRESS_A_LAYER_KEY.into()),
             }
         }
         Some(false) => Status {
             head,
             rest: words::NO_KEYBOARD.into(),
-            hint: None,
         },
         // This app shares no keyboard facts: the head alone says it runs.
         None => plain(head),
     }
 }
 
-/// The lowest battery percent any part reports (a half that is nearly flat matters most).
-fn battery(facts: &dyn Fn(&str) -> Option<Value>) -> Option<i64> {
+/// The lowest battery percent any part reports (a half that is nearly flat matters most), and
+/// how many parts report.
+fn battery(facts: &dyn Fn(&str) -> Option<Value>) -> Option<(i64, usize)> {
     [
         "keyboard.battery",
         "keyboard.left.battery",
@@ -257,7 +276,9 @@ fn battery(facts: &dyn Fn(&str) -> Option<Value>) -> Option<i64> {
     .iter()
     .filter_map(|k| facts(k).and_then(|v| v.as_i64()))
     .filter(|p| (0..=100).contains(p))
-    .min()
+    .fold(None, |acc: Option<(i64, usize)>, p| {
+        Some(acc.map_or((p, 1), |(m, n)| (m.min(p), n + 1)))
+    })
 }
 
 #[cfg(windows)]
@@ -285,7 +306,9 @@ mod ui {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal_wrapped(|ui| {
-                    let head = ui.label(RichText::new(&card.status.head).strong().color(c(t.text)));
+                    // No bold font is loaded, so the head is set apart by size, not weight.
+                    let head =
+                        ui.label(RichText::new(&card.status.head).size(16.0).color(c(t.text)));
                     ui.ctx().accesskit_node_builder(head.id, |n| {
                         n.set_live(egui::accesskit::Live::Polite);
                     });
@@ -293,19 +316,21 @@ mod ui {
                         ui.label(RichText::new(&card.status.rest).color(c(t.text)));
                     }
                 });
-                if let Some(h) = &card.status.hint {
+                if let Some(h) = &card.hint {
                     ui.label(RichText::new(h).color(c(t.text_muted)));
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(&card.show).color(c(t.on_accent)))
-                                .fill(c(t.accent)),
-                        )
-                        .clicked()
-                    {
-                        press = Some(Press::Show);
+                    if let Some(show) = &card.show {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new(show).color(c(t.on_accent)))
+                                    .fill(c(t.accent)),
+                            )
+                            .clicked()
+                        {
+                            press = Some(Press::Show);
+                        }
                     }
                     if ui
                         .button(super::words::HIDE)
@@ -317,15 +342,13 @@ mod ui {
                 });
                 if !card.offers.is_empty() {
                     ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(super::words::LATER)
-                            .small()
-                            .color(c(t.text_muted)),
-                    );
+                    ui.label(RichText::new(super::words::LATER).color(c(t.text_muted)));
                     for o in &card.offers {
                         ui.push_id(("hub.done.offer", format!("{:?}", o.offer)), |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(RichText::new(&o.text).color(c(t.text)));
+                            // Text on its own line, its two buttons together under it: at any
+                            // width "Not now" stays with the offer it belongs to.
+                            ui.label(RichText::new(&o.text).color(c(t.text)));
+                            ui.horizontal(|ui| {
                                 if ui.button(&o.button).clicked() {
                                     press = Some(Press::Offer(o.offer.clone()));
                                 }
@@ -359,6 +382,8 @@ mod tests {
             name: "Foxglove",
             facts: f,
             identify: None,
+            hint: Some("Press a layer key to see the layer overlay.".into()),
+            has_page: true,
             sharing_open: true,
             more: vec![("vulpes".into(), "Vulpes".into())],
         }
@@ -384,9 +409,66 @@ mod tests {
         assert_eq!(c.status.head, "Foxglove is running.");
         assert_eq!(
             c.status.rest,
-            "Keyboard: Eyelash Corne \u{b7} Base layer \u{b7} battery 82 %"
+            "Keyboard: Eyelash Corne \u{b7} Base layer \u{b7} lowest battery 82 %"
         );
-        assert_eq!(c.status.hint.as_deref(), Some(words::PRESS_A_LAYER_KEY));
+        assert_eq!(
+            c.hint.as_deref(),
+            Some("Press a layer key to see the layer overlay.")
+        );
+        // With one part reporting, the number is just "battery".
+        let one = facts(&[
+            ("module.foxglove.state", json!("running")),
+            ("keyboard.connected", json!(true)),
+            ("keyboard.battery", json!(64)),
+        ]);
+        let c = done().card(&inputs(&one)).unwrap();
+        assert_eq!(c.status.rest, "Keyboard connected \u{b7} battery 64 %");
+    }
+
+    #[test]
+    fn an_unknown_state_is_never_called_running() {
+        for state in [None, Some("stopping"), Some("starting"), Some("restarting")] {
+            let f = match state {
+                Some(s) => facts(&[("module.foxglove.state", json!(s))]),
+                None => facts(&[]),
+            };
+            let c = done().card(&inputs(&f)).unwrap();
+            assert_eq!(c.status.head, "Foxglove is starting\u{2026}", "{state:?}");
+            assert_eq!(c.show, None);
+            assert!(c.offers.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_stopped_or_off_app_has_no_button_and_no_offers() {
+        for s in ["crash-stopped", "crash-looped", "off"] {
+            let f = facts(&[
+                ("module.foxglove.state", json!(s)),
+                ("keyboard.connected", json!(true)),
+            ]);
+            let c = done().card(&inputs(&f)).unwrap();
+            assert_eq!(c.show, None, "{s}");
+            assert!(c.offers.is_empty(), "{s}");
+            assert_eq!(c.hint, None, "{s}");
+        }
+        let f = facts(&[("module.foxglove.state", json!("crash-stopped"))]);
+        let c = done().card(&inputs(&f)).unwrap();
+        assert_eq!(
+            c.status.head,
+            "Foxglove stopped. Press Start again on its row below."
+        );
+    }
+
+    #[test]
+    fn two_halves_say_lowest_battery() {
+        let f = facts(&[
+            ("module.foxglove.state", json!("running")),
+            ("keyboard.connected", json!(true)),
+            ("keyboard.left.battery", json!(82)),
+            ("keyboard.right.battery", json!(91)),
+        ]);
+        let c = done().card(&inputs(&f)).unwrap();
+        assert!(c.status.rest.ends_with("lowest battery 82 %"));
     }
 
     #[test]
@@ -397,11 +479,11 @@ mod tests {
         ]);
         let c = done().card(&inputs(&none)).unwrap();
         assert_eq!(c.status.rest, words::NO_KEYBOARD);
-        assert_eq!(c.status.hint, None);
+        assert_eq!(c.hint, None);
         // An app without keyboard facts: the head alone.
         let bare = facts(&[("module.foxglove.state", json!("running"))]);
         let c = done().card(&inputs(&bare)).unwrap();
-        assert_eq!((c.status.rest.as_str(), c.status.hint), ("", None));
+        assert_eq!((c.status.rest.as_str(), c.hint), ("", None));
         // A state that is not running says so, and shows no keyboard line.
         let down = facts(&[
             ("module.foxglove.state", json!("crash-stopped")),
@@ -414,11 +496,29 @@ mod tests {
 
     #[test]
     fn the_button_is_the_manifests_words_else_open_the_app() {
-        let f = facts(&[]);
+        let f = facts(&[("module.foxglove.state", json!("running"))]);
         let mut i = inputs(&f);
-        assert_eq!(done().card(&i).unwrap().show, "Open Foxglove");
+        assert_eq!(
+            done().card(&i).unwrap().show.as_deref(),
+            Some("Open Foxglove")
+        );
         i.identify = Some("Show the lights".into());
-        assert_eq!(done().card(&i).unwrap().show, "Show the lights");
+        assert_eq!(
+            done().card(&i).unwrap().show.as_deref(),
+            Some("Show the lights")
+        );
+        // No identify and no page: no button that would go nowhere.
+        i.identify = None;
+        i.has_page = false;
+        assert_eq!(done().card(&i).unwrap().show, None);
+        // No hint from the manifest: no hint line.
+        i.hint = None;
+        let kb = facts(&[
+            ("module.foxglove.state", json!("running")),
+            ("keyboard.connected", json!(true)),
+        ]);
+        i.facts = &kb;
+        assert_eq!(done().card(&i).unwrap().hint, None);
     }
 
     #[test]
@@ -446,18 +546,24 @@ mod tests {
 
     #[test]
     fn start_with_windows_is_not_offered_when_hideout_already_starts_at_sign_in() {
-        let f = facts(&[("module.foxglove.starts_at_sign_in", json!(true))]);
+        let f = facts(&[
+            ("module.foxglove.state", json!("running")),
+            ("module.foxglove.starts_at_sign_in", json!(true)),
+        ]);
         let c = done().card(&inputs(&f)).unwrap();
         assert!(!c.offers.iter().any(|o| o.offer == Offer::StartWithWindows));
         // Unknown (no fact yet) still offers it, as a button.
-        let unknown = facts(&[]);
+        let unknown = facts(&[("module.foxglove.state", json!("running"))]);
         let c = done().card(&inputs(&unknown)).unwrap();
         assert!(c.offers.iter().any(|o| o.offer == Offer::StartWithWindows));
     }
 
     #[test]
     fn not_now_hides_an_offer_until_the_next_start_and_hide_hides_the_card() {
-        let f = facts(&[]);
+        let f = facts(&[
+            ("module.foxglove.state", json!("running")),
+            ("module.other.state", json!("running")),
+        ]);
         let mut d = done();
         d.put_off(Offer::Sharing);
         d.put_off(Offer::Sharing);
@@ -474,7 +580,7 @@ mod tests {
 
     #[test]
     fn the_sharing_and_more_apps_offers_show_only_when_there_is_something_to_offer() {
-        let f = facts(&[]);
+        let f = facts(&[("module.foxglove.state", json!("running"))]);
         let mut i = inputs(&f);
         i.sharing_open = false;
         i.more.clear();
@@ -487,10 +593,14 @@ mod tests {
 
     #[test]
     fn the_words_use_app_and_none_of_the_banned_ones() {
-        let f = facts(&[("keyboard.connected", json!(true))]);
+        let f = facts(&[
+            ("module.foxglove.state", json!("running")),
+            ("keyboard.connected", json!(true)),
+        ]);
         let c = done().card(&inputs(&f)).unwrap();
-        let mut all = vec![c.status.head, c.status.rest, c.show];
-        all.extend(c.status.hint);
+        let mut all = vec![c.status.head, c.status.rest];
+        all.extend(c.show);
+        all.extend(c.hint);
         for o in c.offers {
             all.push(o.text);
             all.push(o.button);

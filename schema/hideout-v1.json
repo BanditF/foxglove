@@ -1301,6 +1301,14 @@
     "module.ModuleAction": {
       "description": "`[[actions]]`: as plugin.toml, plus `when`.",
       "properties": {
+        "hint": {
+          "default": null,
+          "description": "One plain line shown with the action's button after the first run (\"Press a layer key\nto see the layer overlay.\"). Optional: apps that declare none show none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "description": "Stable: bindings and `action.invoked` use it (`toggle-mute`).",
           "type": "string"

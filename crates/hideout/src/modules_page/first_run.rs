@@ -622,7 +622,13 @@ fn after_allow_the_done_card_is_live_and_no_offer_is_preselected() {
     let card = fx.page.done_card().expect("the Allow started the app");
     assert_eq!(card.status.head, "Gizmo Keys is running.");
     assert!(card.status.rest.starts_with("No keyboard found yet."));
-    assert_eq!(card.show, "Open Gizmo Keys", "no identify action declared");
+    // No identify action is declared: the button is "Open <app>" only when the app has a page
+    // (the shell's registry may not hold this test app), never one that goes nowhere.
+    assert!(
+        matches!(card.show.as_deref(), None | Some("Open Gizmo Keys")),
+        "{:?}",
+        card.show
+    );
     // The keyboard arrives: the same card reads it from the facts.
     fx.page.facts = Some(Box::new(|k| match k {
         "module.gizmo-keys.state" => Some(json!("running")),
@@ -680,8 +686,15 @@ fn the_start_with_windows_offer_follows_the_hubs_own_fact() {
             .iter()
             .any(|o| o.offer == Offer::StartWithWindows)
     };
+    // Not running yet (no state fact): no offers at all.
+    assert!(!has(&fx));
+    fx.page.facts = Some(Box::new(|k| match k {
+        "module.gizmo-keys.state" => Some(json!("running")),
+        _ => None,
+    }));
     assert!(has(&fx));
     fx.page.facts = Some(Box::new(|k| match k {
+        "module.gizmo-keys.state" => Some(json!("running")),
         "module.gizmo-keys.starts_at_sign_in" => Some(json!(true)),
         _ => None,
     }));

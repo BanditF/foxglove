@@ -3153,6 +3153,8 @@ fn renders_the_done_card_for_review() {
                             name: "Foxglove",
                             facts: f,
                             identify: identify.map(String::from),
+                            hint: Some("Press a layer key to see the layer overlay.".into()),
+                            has_page: true,
                             sharing_open: tail,
                             more: if tail {
                                 vec![("vulpes".into(), "Vulpes".into())]

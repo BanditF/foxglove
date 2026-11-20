@@ -438,6 +438,8 @@ impl ModulesPage {
             name: &name,
             facts,
             identify: hideout_shell::quick_actions::identify_words(id),
+            hint: hideout_shell::quick_actions::identify_hint(id),
+            has_page: hideout_shell::quick_actions::has_page(id),
             sharing_open: id == crate::keyboard_actions::MODULE
                 && self.grant.as_ref().is_some_and(|g| g.can_offer()),
             more,
@@ -701,7 +703,12 @@ impl hideout_shell::Page for ModulesPage {
         let mut pressed = None;
         // The Done card lists the other found apps itself: the Found card waits.
         if let Some(d) = discover.as_mut() {
-            d.quiet = card.is_some();
+            // The Found card steps aside only while this card still offers to set an app up.
+            d.quiet = card.as_ref().is_some_and(|c| {
+                c.offers
+                    .iter()
+                    .any(|o| matches!(o.offer, hideout_shell::done_card::Offer::SetUp(_)))
+            });
         }
         let clicked = page_ui_with_head(ui, t, &rows, top, &mut |ui| {
             if let Some(c) = &card {

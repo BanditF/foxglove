@@ -384,3 +384,26 @@ fn the_identify_action_is_the_done_cards_button_when_the_manifest_declares_it() 
     assert_eq!(q.identify("example.other"), None);
     assert_eq!(q.identify("example.nobody"), None);
 }
+
+/// The done card shows the manifest's hint for `identify` (none when absent) and offers "Open"
+/// only for an app that registers a page.
+#[test]
+fn the_identify_hint_and_the_page_come_from_the_manifest() {
+    let mut q = QuickActions::default();
+    q.manifest(&module(
+        "example.lights",
+        "[[actions]]\nid = \"identify\"\nname = \"Show the lights\"\nhint = \"Press a key to see it.\"\n\n[[ui.panels]]\nid = \"main\"\nslot = \"page\"\ntitle = \"Lights\"\nicon = \"mic\"\n",
+    ));
+    assert_eq!(
+        q.identify_hint("example.lights").as_deref(),
+        Some("Press a key to see it.")
+    );
+    assert!(q.has_page("example.lights"));
+    q.manifest(&module(
+        "example.bare",
+        "[[actions]]\nid = \"identify\"\nname = \"Show\"\n",
+    ));
+    assert_eq!(q.identify_hint("example.bare"), None);
+    assert!(!q.has_page("example.bare"));
+    assert!(!q.has_page("example.nobody"));
+}
